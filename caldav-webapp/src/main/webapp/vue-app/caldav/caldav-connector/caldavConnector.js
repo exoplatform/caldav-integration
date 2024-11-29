@@ -81,23 +81,87 @@ export default {
     events.map(event => {
       const caldavEvent= {};
       const data = ICAL.parse(event.data);
-      const iCal = new ICAL.Component(data);
-      const vEvent = iCal.getFirstSubcomponent('vevent');
+      const iCal = new ICAL.Component(data); //component
+      const eventComponent = iCal.getFirstSubcomponent('vevent'); //component
+      const vEvent = new ICAL.Event(eventComponent); //Event
       if (vEvent) {
-        const startDate = vEvent.getAllProperties('dtstart');
-        const endDate = vEvent.getAllProperties('dtend');
-        caldavEvent.summary = vEvent.getFirstPropertyValue('summary');
-        caldavEvent.uid = vEvent.getFirstPropertyValue('uid');
-        caldavEvent.color = '#FFFFFF';
-        caldavEvent.type = 'remoteEvent';
-        if (startDate && !startDate[0].jCal[3].includes('T')) {
-          caldavEvent.allDay=true;
+        if (vEvent.isRecurring()) {
+          const startRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodStartDate),false);//ICAL.Time
+          const endRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodEndDate),false);//ICAL.Time
+
+          //calculate the start of the range with the hour of the event
+          //without this, the expand will calculate ALL occurence even before the startRangeDate, which can lead to performance issues
+          //if the serie is very old
+          const startRangeDateForEventJSON = startRangeDate.toJSON();
+          startRangeDateForEventJSON.hour=vEvent.startDate.toJSON().hour;
+          startRangeDateForEventJSON.minute=vEvent.startDate.toJSON().minute;
+          startRangeDateForEventJSON.second=vEvent.startDate.toJSON().second;
+
+          const startRangeDateForEvent = new ICAL.Time(startRangeDateForEventJSON);
+
+          const expand = new ICAL.RecurExpansion({
+            component: eventComponent,
+            dtstart: startRangeDateForEvent
+          });
+          let next=expand.next(); //ICAL.Time
+          while (next && next.compare(endRangeDate)<0) {
+            console.log('Next : ',next);
+            if (next.compare(startRangeDate)>=0) {
+              //create a new event for the recurrence :
+              //we can have more than one occurence in the timerange requested
+              const occurenceEvent= {};
+              occurenceEvent.color = '#FFFFFF';
+              occurenceEvent.type = 'remoteEvent';
+              occurenceEvent.etag= event.etag;
+              occurenceEvent.url = event.url;
+
+              let realStartDate;
+
+              if (vEvent.exceptions[next.toString()]) {
+                //the current event have an exception for the next occurence
+                occurenceEvent.summary = vEvent.exceptions[next.toString()].summary;
+                occurenceEvent.uid = vEvent.exceptions[next.toString()].uid;
+                realStartDate = vEvent.exceptions[next.toString()].startDate;
+              } else {
+                occurenceEvent.summary = vEvent.summary;
+                occurenceEvent.uid = vEvent.uid;
+                realStartDate = next;
+              }
+              const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
+              occurenceEvent.start= new Date(realStartDate); //next : ICAL.Time
+              if (startDate && !startDate[0].jCal[3].includes('T')) {
+                occurenceEvent.allDay=true;
+              } else {
+                //if the event is not all day, we calculate the endDate as
+                //endDate = next + duration
+                //next is the startDate for the next occurence of the event
+                //duration is the duration of the first event of the recurrence
+                const calculatedEndDate = realStartDate.clone();
+                calculatedEndDate.addDuration(vEvent.duration);
+                occurenceEvent.end=calculatedEndDate.toJSDate();
+              }
+              listEvent.push(occurenceEvent);
+            }
+            next=expand.next();
+          }
+        } else {
+
+          caldavEvent.summary = vEvent.summary;
+          caldavEvent.uid = vEvent.uid;
+          caldavEvent.color = '#FFFFFF';
+          caldavEvent.type = 'remoteEvent';
+          caldavEvent.etag= event.etag;
+          caldavEvent.url = event.url;
+          const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
+          const endDate = eventComponent.getAllProperties('dtend'); //ICAL.Property
+          caldavEvent.start= startDate && new Date(startDate[0].jCal[3]);
+          if (startDate && !startDate[0].jCal[3].includes('T')) {
+            caldavEvent.allDay=true;
+          } else {
+            caldavEvent.end= endDate && new Date(endDate[0].jCal[3]);
+          }
+          listEvent.push(caldavEvent);
         }
-        caldavEvent.start= startDate && new Date(startDate[0].jCal[3]);
-        caldavEvent.end= endDate && new Date(endDate[0].jCal[3]);
-        caldavEvent.etag= event.etag;
-        caldavEvent.url = event.url;
-        listEvent.push(caldavEvent);
       } else {
         return Promise.all(null);
       }
