@@ -89,23 +89,12 @@ export default {
           const startRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodStartDate),false);//ICAL.Time
           const endRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodEndDate),false);//ICAL.Time
 
-          //calculate the start of the range with the hour of the event
-          //without this, the expand will calculate ALL occurence even before the startRangeDate, which can lead to performance issues
-          //if the serie is very old
-          const startRangeDateForEventJSON = startRangeDate.toJSON();
-          startRangeDateForEventJSON.hour=vEvent.startDate.toJSON().hour;
-          startRangeDateForEventJSON.minute=vEvent.startDate.toJSON().minute;
-          startRangeDateForEventJSON.second=vEvent.startDate.toJSON().second;
-
-          const startRangeDateForEvent = new ICAL.Time(startRangeDateForEventJSON);
-
           const expand = new ICAL.RecurExpansion({
             component: eventComponent,
-            dtstart: startRangeDateForEvent
+            dtstart: vEvent.startDate
           });
           let next=expand.next(); //ICAL.Time
           while (next && next.compare(endRangeDate)<0) {
-            console.log('Next : ',next);
             if (next.compare(startRangeDate)>=0) {
               //create a new event for the recurrence :
               //we can have more than one occurence in the timerange requested
