@@ -209,58 +209,91 @@ export default {
       },
       authMethod: 'Basic',
       defaultAccountType: 'caldav',
-    }).catch(() => {
-      console.error('cant connect to caldav client check username and password');
+    }).catch((e) => {
+      console.error('cant connect to caldav client check username and password', e);
+      return null;
     });
     //get calendar
-    const calendar = await this.getCalendar(clientCaldav);
+    const calendar = clientCaldav ? await this.getCalendar(clientCaldav) : null;
     if (!calendar) {
       return Promise.all(null);
-    } else {
-      const eventId = event.id;
-      let start = event.start.replace(/[-:]/g, '');
-      let end = event.end.replace(/[-:]/g, '');
-      let iCalString = `BEGIN:VCALENDAR
+    }
+    const isOccurrence = !!event.occurrence;
+    const parentEventId = isOccurrence ? event.parent.id : event.id; // L'UID doit être celui du parent pour les exceptions
+    const icalUID = parentEventId;
+    const filename = `${icalUID}.ics`;
+
+    let start = event.start.replace(/[-:]/g, '');
+    let end = event.end.replace(/[-:]/g, '');
+    const dtStamp = new Date().toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', 'Z');
+
+    let iCalString = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Exo Platform//NONSGML v1.0//EN
 BEGIN:VEVENT
 SUMMARY:${event.summary}
-UID:${eventId}
+UID:${icalUID}  
+DTSTAMP:${dtStamp}
 `;
-      if (event.allDay) {
-        start = start.substring(0,8);
-        end = end.substring(0,8);
-        iCalString += `DTSTART:${start}
+    if (event.allDay) {
+      start = start.substring(0, 8);
+      end = end.substring(0, 8);
+      iCalString += `DTSTART;VALUE=DATE:${start}
+DTEND;VALUE=DATE:${end}
 `;
-      } else {
-        iCalString += `DTSTART:${start}
-DTEND:${end}
+    } else {
+      iCalString += `DTSTART:${start}Z
+DTEND:${end}Z
 `;
+    }
+    if (event.location) {
+      iCalString += `LOCATION:${event.location}\n`;
+    }
+    let description = '';
+    if (event.description) {
+      description += `${event.description.replace(/\n/g, '\\n')}\\n`;
+    }
+    if (event.conferences?.length > 0) {
+      description += event.conferences[0]?.url;
+    }
+    if (description !== '') {
+      iCalString += `DESCRIPTION:${description}\n`;
+    }
+    if (isOccurrence) {
+      const recurrenceId = event.occurrence.id.replace(/[-:]|\.\d{3}/g, '');
+      const isTimePresent = event.occurrence.id.includes('T');
+      if (isTimePresent) {
+        iCalString += `RECURRENCE-ID:${recurrenceId}Z\n`; // Add Z for UTC if current time
+        iCalString += `RECURRENCE-ID;VALUE=DATE:${recurrenceId}\n`;
       }
-      if (event.location) {
-        iCalString += `LOCATION:${event.location}
-`;
+    } else if (event.recurrence?.rrule) {
+      let rruleValue = event.recurrence.rrule.trim();
+      rruleValue = rruleValue.replace(/COUNT=0;?/, '');
+      if (rruleValue.length > 0) {
+        iCalString += `RRULE:${rruleValue}\n`;
       }
-      let description = '';
-      if (event.description) {
-        description += `${event.description.replace('\n','\\n')}\\n`;
-      }
-      if (event.conferences.length > 0) {
-        description += event.conferences[0]?.url;
-      }
-      if (description !== '') {
-        iCalString += `DESCRIPTION:${description}
-`;
-      }
-      if (event.recurrence?.rrule) {
-        iCalString += `RRULE:${event.recurrence.rrule}
-`;
-      }
-      iCalString += `END:VEVENT
+    }
+    if (!isOccurrence && event.recurrence?.exceptions && event.recurrence.exceptions.length > 0) {
+      event.recurrence.exceptions.forEach(exdate => {
+        const exDateFormatted = exdate.date.replace(/[-:]|\.\d{3}/g, '');
+        if (exDateFormatted.includes('T')) {
+          iCalString += `EXDATE:${exDateFormatted}Z\n`;
+        } else {
+          iCalString += `EXDATE;VALUE=DATE:${exDateFormatted}\n`;
+        }
+      });
+    }
+    iCalString += `END:VEVENT
 END:VCALENDAR
 `;
-      iCalString=iCalString.trim();
+    iCalString = iCalString.trim();
+    try {
       await clientCaldav.createCalendarObject({
-        calendar, iCalString, filename: `${eventId}.ics`,headersToExclude: 'If-None-Match'
+        calendar, iCalString, filename, headersToExclude: 'If-None-Match'
       });
+    } catch (e) {
+      console.error('Error creating/updating CalDAV:', e, 'Contenu iCalString:', iCalString);
+      throw e;
     }
   }
 };
