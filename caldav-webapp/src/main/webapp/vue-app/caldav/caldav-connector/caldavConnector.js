@@ -223,8 +223,8 @@ export default {
     const icalUID = parentEventId;
     const filename = `${icalUID}.ics`;
 
-    let start = event.start.replace(/[-:]/g, '');
-    let end = event.end.replace(/[-:]/g, '');
+    let start = toUTCString(event.start);
+    let end = toUTCString(event.end);
     const dtStamp = new Date().toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', 'Z');
 
     let iCalString = `BEGIN:VCALENDAR
@@ -232,7 +232,7 @@ VERSION:2.0
 PRODID:-//Exo Platform//NONSGML v1.0//EN
 BEGIN:VEVENT
 SUMMARY:${event.summary}
-UID:${icalUID}  
+UID:${icalUID}
 DTSTAMP:${dtStamp}
 `;
     if (event.allDay) {
@@ -297,3 +297,8 @@ END:VCALENDAR
     }
   }
 };
+
+function toUTCString(dateStr) {
+  const d = new Date(dateStr);
+  return d.toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', '');
+}
