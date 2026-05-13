@@ -41,7 +41,7 @@ export default {
     });
   },
   async getCalendar(clientCaldav){
-    const calendars = await clientCaldav.fetchCalendars({headersToExclude: 'If-None-Match'});
+    const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
     if (calendars.length === 0) {
       console.error('No calendar found');
       return null;
@@ -75,7 +75,7 @@ export default {
         start: start,
         end: end,
       },
-      headersToExclude: 'If-None-Match'
+      headersToExclude: ['If-None-Match']
     });
     const listEvent = [];
     events.map(event => {
@@ -196,7 +196,7 @@ export default {
           url: event.url,
           etag: event.etag,
         },
-        headersToExclude: 'If-None-Match'
+        headersToExclude: ['If-None-Match']
       });
     }
   },
@@ -219,8 +219,7 @@ export default {
       return Promise.all(null);
     }
     const isOccurrence = !!event.occurrence;
-    const parentEventId = isOccurrence ? event.parent.id : event.id; // L'UID doit être celui du parent pour les exceptions
-    const icalUID = parentEventId;
+    const icalUID = crypto.randomUUID();
     const filename = `${icalUID}.ics`;
 
     let start = toUTCString(event.start);
@@ -289,8 +288,9 @@ END:VCALENDAR
     iCalString = iCalString.trim();
     try {
       await clientCaldav.createCalendarObject({
-        calendar, iCalString, filename, headersToExclude: 'If-None-Match'
+        calendar, iCalString, filename, headersToExclude: ['If-None-Match']
       });
+      return {id: icalUID};
     } catch (e) {
       console.error('Error creating/updating CalDAV:', e, 'Contenu iCalString:', iCalString);
       throw e;
