@@ -85,7 +85,28 @@ export default {
       const eventComponent = iCal.getFirstSubcomponent('vevent'); //component
       const vEvent = new ICAL.Event(eventComponent); //Event
       if (vEvent) {
-        if (vEvent.isRecurring()) {
+        if (vEvent.recurrenceId) {
+          const recurrentEvents = iCal.getAllSubcomponents('vevent');
+          recurrentEvents.forEach( e => {
+            const eventItem = new ICAL.Event(e);
+            const calEvent = {};
+            calEvent.summary = eventItem.summary;
+            calEvent.uid = eventItem.uid;
+            calEvent.id = eventItem.uid;
+            calEvent.color = '#FFFFFF';
+            calEvent.type = 'remoteEvent';
+            calEvent.recurringEventId = eventItem.uid;
+            const startDate = e.getAllProperties('dtstart'); //ICAL.Property
+            const endDate = e.getAllProperties('dtend'); //ICAL.Property
+            calEvent.start = startDate && new Date(startDate[0].jCal[3]);
+            if (startDate && !startDate[0].jCal[3].includes('T')) {
+              calEvent.allDay = true;
+            } else {
+              calEvent.end = endDate && new Date(endDate[0].jCal[3]);
+            }
+            listEvent.push(calEvent);
+          });
+        } else if (vEvent.isRecurring()) {
           const startRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodStartDate),false);//ICAL.Time
           const endRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodEndDate),false);//ICAL.Time
 
@@ -93,7 +114,7 @@ export default {
             component: eventComponent,
             dtstart: vEvent.startDate
           });
-          let next=expand.next(); //ICAL.Time
+          let next= expand.next(); //ICAL.Time
           while (next && next.compare(endRangeDate)<0) {
             if (next.compare(startRangeDate)>=0) {
               //create a new event for the recurrence :
@@ -137,6 +158,7 @@ export default {
 
           caldavEvent.summary = vEvent.summary;
           caldavEvent.uid = vEvent.uid;
+          caldavEvent.id = vEvent.uid;
           caldavEvent.color = '#FFFFFF';
           caldavEvent.type = 'remoteEvent';
           caldavEvent.etag= event.etag;
