@@ -241,7 +241,7 @@ export default {
       return Promise.all(null);
     }
     const isOccurrence = !!event.occurrence;
-    const icalUID = crypto.randomUUID();
+    const icalUID = isOccurrence ? event.parent.remoteId : event.remoteId || crypto.randomUUID();
     const filename = `${icalUID}.ics`;
 
     let start = toUTCString(event.start);
