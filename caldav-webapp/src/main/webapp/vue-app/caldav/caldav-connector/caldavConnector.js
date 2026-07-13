@@ -95,6 +95,8 @@ export default {
             calEvent.id = eventItem.uid;
             calEvent.color = '#FFFFFF';
             calEvent.type = 'remoteEvent';
+            calEvent.location = eventItem.location;
+            calEvent.description = eventItem.description;
             calEvent.recurringEventId = eventItem.uid;
             const startDate = e.getAllProperties('dtstart'); //ICAL.Property
             const endDate = e.getAllProperties('dtend'); //ICAL.Property
@@ -129,14 +131,21 @@ export default {
 
               if (vEvent.exceptions[next.toString()]) {
                 //the current event have an exception for the next occurence
-                occurenceEvent.summary = vEvent.exceptions[next.toString()].summary;
-                occurenceEvent.uid = vEvent.exceptions[next.toString()].uid;
-                realStartDate = vEvent.exceptions[next.toString()].startDate;
+                const exceptionEvent = vEvent.exceptions[next.toString()];
+                occurenceEvent.summary = exceptionEvent.summary;
+                occurenceEvent.uid = exceptionEvent.uid;
+                occurenceEvent.location = exceptionEvent.location;
+                occurenceEvent.description = exceptionEvent.description;
+                realStartDate = exceptionEvent.startDate;
               } else {
                 occurenceEvent.summary = vEvent.summary;
                 occurenceEvent.uid = vEvent.uid;
+                occurenceEvent.location = vEvent.location;
+                occurenceEvent.description = vEvent.description;
                 realStartDate = next;
               }
+              occurenceEvent.id = occurenceEvent.uid;
+              occurenceEvent.recurringEventId = occurenceEvent.uid;
               const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
               occurenceEvent.start= new Date(realStartDate); //next : ICAL.Time
               if (startDate && !startDate[0].jCal[3].includes('T')) {
@@ -166,6 +175,8 @@ export default {
           const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
           const endDate = eventComponent.getAllProperties('dtend'); //ICAL.Property
           caldavEvent.start= startDate && new Date(startDate[0].jCal[3]);
+          caldavEvent.location = vEvent.location;
+          caldavEvent.description = vEvent.description;
           if (startDate && !startDate[0].jCal[3].includes('T')) {
             caldavEvent.allDay=true;
           } else {
