@@ -3,7 +3,7 @@
   <parent>
     <groupId>org.exoplatform.addons.caldav</groupId>
     <artifactId>caldav-parent</artifactId>
-    <version>7.3.x-SNAPSHOT</version>
+    <version>7.3.0-20260729</version>
   </parent>
   <artifactId>caldav-api</artifactId>
   <name>eXo Caldav - API</name>
