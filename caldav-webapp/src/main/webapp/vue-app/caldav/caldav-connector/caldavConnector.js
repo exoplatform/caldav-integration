@@ -180,27 +180,77 @@ export default {
       return this.saveEvent(event, settings);
     });
   },
+  /**
+   * Removes an agenda event from the remote calendar.
+   *
+   * The previous implementation searched the remote events of the period for
+   * one whose UID equalled the agenda event id — a match that never held for
+   * the UUID identifiers this connector writes — and it deleted the calendar
+   * object by URL, so removing one occurrence of a recurring event removed
+   * the object holding the whole series. The event now identifies its own
+   * object through the remote identifier agenda stored at push time, and a
+   * single occurrence is excluded from the series instead of the series
+   * being deleted.
+   *
+   * @param {Object} event agenda event, or cancelled occurrence, to remove
+   * @returns {Promise} resolves null once the remote calendar reflects it
+   */
   deleteEvent(event) {
-    this.getEvents(event.startDate,event.endDate).then((events)=> {
-      events.forEach((obj) => {
-        if (event.id === parseInt(obj.uid)) {
-          return caldavConnectorService.getCaldavSetting().then((settings)=> {
-            return this.removeEvent(obj, settings);
-          });
-        }
-      });
+    return caldavConnectorService.getCaldavSetting().then((settings)=> {
+      return this.removeEvent(event, settings);
     });
   },
+  /**
+   * Applies a deletion to the calendar object backing the event.
+   *
+   * A whole event, recurring or not, removes its object — overrides included,
+   * since they live in the same object. A single occurrence must not: per RFC
+   * 4791 every component of the series shares one object, so the occurrence
+   * is excluded by rewriting the object without its override and with an
+   * EXDATE on the master, under If-Match so a concurrent change of the
+   * series surfaces as a conflict instead of being overwritten.
+   *
+   * @param {Object} event agenda event, or cancelled occurrence, to remove
+   * @param {Object} settings connector settings holding the URL and credentials
+   * @returns {Promise} resolves null once the remote calendar reflects it
+   */
   async removeEvent(event, settings) {
     const clientCaldav = await createClient(settings);
-    await this.getCalendar(clientCaldav);
-    return clientCaldav.deleteCalendarObject({
-      calendarObject: {
-        url: event.url,
-        etag: event.etag,
-      },
-      headersToExclude: ['If-None-Match']
-    });
+    const calendar = await this.getCalendar(clientCaldav);
+    const isOccurrence = !!event.occurrence;
+    const icalUID = isOccurrence ? event.parent && event.parent.remoteId : event.remoteId;
+    if (!icalUID) {
+      return null;
+    }
+    const existing = await fetchCalendarObject(calendar, `${icalUID}.ics`, settings);
+    if (!existing) {
+      return null;
+    }
+    try {
+      let response;
+      const data = isOccurrence ? excludeOccurrence(existing.data, event) : null;
+      if (data) {
+        response = await clientCaldav.updateCalendarObject({
+          calendarObject: {
+            url: existing.url,
+            data: data,
+            etag: existing.etag,
+          },
+        });
+      } else {
+        response = await clientCaldav.deleteCalendarObject({
+          calendarObject: {
+            url: existing.url,
+            etag: existing.etag,
+          },
+        });
+      }
+      ensureAccepted(response);
+      return null;
+    } catch (e) {
+      console.error('Error deleting from CalDAV:', e);
+      throw e.code ? e : caldavError('caldav.error.save', e);
+    }
   },
   async saveEvent(event, settings) {
     const clientCaldav = await createClient(settings);
@@ -283,13 +333,40 @@ END:VCALENDAR
 `;
     iCalString = iCalString.trim();
     try {
-      await clientCaldav.createCalendarObject({
-        calendar, iCalString, filename, headersToExclude: ['If-None-Match']
-      });
+      // RFC 4791 stores every component sharing a UID — the master with its
+      // RRULE plus one VEVENT per modified occurrence — in a single calendar
+      // object. A PUT replaces that object wholesale, so pushing the VEVENT
+      // built above on its own erased the rest of the series: writing an
+      // occurrence override dropped the master and every other override,
+      // which is how one edited occurrence deleted the whole series from the
+      // server. The object is therefore read first and the VEVENT spliced
+      // into what it already holds, and the write is conditional on the ETag
+      // observed, so a concurrent change from another client surfaces as a
+      // conflict instead of being silently overwritten.
+      const existing = await fetchCalendarObject(calendar, filename, settings);
+      let response;
+      if (existing) {
+        response = await clientCaldav.updateCalendarObject({
+          calendarObject: {
+            url: existing.url,
+            data: mergeIntoCalendarObject(existing.data, iCalString, isOccurrence),
+            etag: existing.etag,
+          },
+        });
+      } else {
+        // First push of the event: no read-modify-write needed, but the
+        // If-None-Match: * precondition is kept — the previous code excluded
+        // it because this call also served updates — so a concurrent creation
+        // of the same object comes back as a conflict, not an overwrite.
+        response = await clientCaldav.createCalendarObject({
+          calendar, iCalString, filename
+        });
+      }
+      ensureAccepted(response);
       return {id: icalUID};
     } catch (e) {
       console.error('Error creating/updating CalDAV:', e, 'iCalString:', iCalString);
-      throw caldavError('caldav.error.save', e);
+      throw e.code ? e : caldavError('caldav.error.save', e);
     }
   }
 };
@@ -340,6 +417,171 @@ function caldavError(code, cause) {
   error.status = cause?.status || cause?.response?.status;
   error.cause = cause;
   return error;
+}
+
+/**
+ * Checks the outcome of a write to the server. tsdav hands back the raw
+ * fetch Response without looking at it, so a rejected write — including the
+ * 412 a failed If-Match or If-None-Match precondition produces — would
+ * otherwise count as a success while the server kept its own version.
+ *
+ * @param {Object} response fetch Response of a PUT or DELETE
+ * @returns {void} nothing when the server accepted the write
+ * @throws {Error} caldav.error.conflict on 412, caldav.error.save otherwise
+ */
+function ensureAccepted(response) {
+  if (response.status === 412) {
+    throw caldavError('caldav.error.conflict', response);
+  }
+  if (!response.ok) {
+    throw caldavError('caldav.error.save', response);
+  }
+}
+
+/**
+ * Reads one calendar object of the connected calendar, with the ETag the
+ * later conditional write needs.
+ *
+ * The lookup is a plain GET on the one URL the filename denotes, rather than
+ * a calendar-multiget through tsdav: tsdav turns the 404 entry a multiget
+ * reports for a missing object into a thrown query failure, which would make
+ * "the object does not exist yet" — the normal first push of an event —
+ * indistinguishable from a real error. The GET answers it in one request
+ * with an unambiguous status.
+ *
+ * @param {Object} calendar calendar collection holding the object
+ * @param {String} filename name of the object inside the collection
+ * @param {Object} settings connector settings holding the URL and credentials
+ * @returns {Promise<Object>} the object with url, etag and data, or null
+ */
+async function fetchCalendarObject(calendar, filename, settings) {
+  const url = new URL(filename, calendar.url).href;
+  const response = await fetch(url, {
+    headers: {
+      authorization: `Basic ${btoa(`${settings.username}:${settings.password}`)}`,
+    },
+  });
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw caldavError('caldav.error.save', response);
+  }
+  return {
+    url: url,
+    etag: response.headers.get('etag'),
+    data: await response.text(),
+  };
+}
+
+/**
+ * Splices the freshly built VEVENT into the calendar object as the server
+ * holds it, keeping every component the push is not about.
+ *
+ * An occurrence override replaces the override carrying the same
+ * RECURRENCE-ID — so editing the same occurrence twice updates it rather
+ * than duplicating it — and is appended when none matches; the master and
+ * the other overrides are untouched. A master replaces the master and keeps
+ * the overrides: agenda re-pushes every exceptional occurrence right after
+ * the series itself, so the overrides converge on their own, and dropping
+ * them here would lose them entirely on the pushes — a response update, for
+ * one — that are not followed by that loop. Overrides falling on a date the
+ * new master excludes with an EXDATE are removed, though: their occurrence
+ * was deleted, and an override contradicting an EXDATE leaves the deleted
+ * occurrence visible on clients that favor the override.
+ *
+ * @param {String} existingData the calendar object as fetched from the server
+ * @param {String} newComponentString VCALENDAR holding the one VEVENT to push
+ * @param {Boolean} isOccurrence whether that VEVENT is an occurrence override
+ * @returns {String} the merged calendar object, ready to PUT
+ */
+function mergeIntoCalendarObject(existingData, newComponentString, isOccurrence) {
+  const calendar = new ICAL.Component(ICAL.parse(existingData));
+  const newEvent = new ICAL.Component(ICAL.parse(newComponentString)).getFirstSubcomponent('vevent');
+  let replaced;
+  if (isOccurrence) {
+    const recurrenceId = newEvent.getFirstPropertyValue('recurrence-id');
+    replaced = vevent => isSameOccurrence(vevent.getFirstPropertyValue('recurrence-id'), recurrenceId);
+  } else {
+    const exdates = newEvent.getAllProperties('exdate').map(property => property.getFirstValue());
+    replaced = vevent => {
+      const recurrenceId = vevent.getFirstPropertyValue('recurrence-id');
+      return !recurrenceId || exdates.some(exdate => isSameOccurrence(recurrenceId, exdate));
+    };
+  }
+  calendar.getAllSubcomponents('vevent').filter(replaced)
+    .forEach(vevent => calendar.removeSubcomponent(vevent));
+  calendar.addSubcomponent(newEvent);
+  return calendar.toString();
+}
+
+/**
+ * Rewrites the calendar object so that it no longer produces the given
+ * occurrence: the override carrying its RECURRENCE-ID, if any, is removed,
+ * and the master gains an EXDATE for the instance — in the value type of its
+ * own DTSTART, since RFC 5545 matches instances by identical value.
+ *
+ * @param {String} existingData the calendar object as fetched from the server
+ * @param {Object} event cancelled occurrence, carrying occurrence.id
+ * @returns {String} the object to PUT back, or null when nothing remains of
+ * it and the object itself should be deleted instead
+ */
+function excludeOccurrence(existingData, event) {
+  const calendar = new ICAL.Component(ICAL.parse(existingData));
+  const master = calendar.getAllSubcomponents('vevent')
+    .find(vevent => !vevent.getFirstPropertyValue('recurrence-id'));
+  const dtstart = master && master.getFirstPropertyValue('dtstart');
+  const occurrence = occurrenceToTime(event, dtstart ? dtstart.isDate : event.allDay);
+  calendar.getAllSubcomponents('vevent')
+    .filter(vevent => isSameOccurrence(vevent.getFirstPropertyValue('recurrence-id'), occurrence))
+    .forEach(vevent => calendar.removeSubcomponent(vevent));
+  if (calendar.getAllSubcomponents('vevent').length === 0) {
+    return null;
+  }
+  if (master && !master.getAllProperties('exdate').some(property => isSameOccurrence(property.getFirstValue(), occurrence))) {
+    const exdate = new ICAL.Property('exdate');
+    exdate.setValue(occurrence);
+    master.addProperty(exdate);
+  }
+  return calendar.toString();
+}
+
+/**
+ * The instant an occurrence identifier denotes, as an ICAL.Time in the form
+ * the series uses: the calendar date in the event's zone for an all-day
+ * series, the UTC instant otherwise — mirroring how saveEvent writes
+ * RECURRENCE-ID for the same identifier.
+ *
+ * @param {Object} event occurrence event, carrying occurrence.id
+ * @param {Boolean} asDate whether the series is date-valued
+ * @returns {Object} the occurrence as an ICAL.Time
+ */
+function occurrenceToTime(event, asDate) {
+  if (asDate) {
+    const {year, month, day} = datePartsInZone(event.occurrence.id, event.timeZoneId);
+    return new ICAL.Time({year, month, day, isDate: true});
+  }
+  return ICAL.Time.fromJSDate(new Date(event.occurrence.id), true);
+}
+
+/**
+ * Whether two RECURRENCE-ID or EXDATE values denote the same occurrence.
+ * When either side is date-valued the calendar dates are compared, so that a
+ * date reference finds the occurrence even against a component written with
+ * the other value type by an older client.
+ *
+ * @param {Object} left one value as an ICAL.Time, possibly absent
+ * @param {Object} right the other value as an ICAL.Time, possibly absent
+ * @returns {Boolean} whether both are present and denote the same occurrence
+ */
+function isSameOccurrence(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+  if (left.isDate || right.isDate) {
+    return left.year === right.year && left.month === right.month && left.day === right.day;
+  }
+  return left.compare(right) === 0;
 }
 
 /**
