@@ -16,23 +16,11 @@ export default {
     return new Promise((resolve, reject) => {
       document.dispatchEvent(new CustomEvent('open-caldav-connector-settings-drawer'));
       document.addEventListener('test-connection', (settings) => {
-        if (!settings.detail) {
+        if (settings.detail) {
+          resolve(settings.detail.username);
+        } else {
           reject('connection canceled');
-          return;
         }
-        // Actually reach the server before declaring the account connected.
-        // Saving the credentials only proves eXo stored them; until something
-        // asks the server, a mistyped password is accepted, the connector
-        // reports itself connected, and every later request answers 401 —
-        // which surfaces as an empty calendar list, or as the browser's own
-        // credentials dialog, rather than as "wrong password".
-        this.retrieveCalendars(settings.detail)
-          .then(() => resolve(settings.detail.username))
-          .catch(error => {
-            console.error('the CalDAV server refused the credentials', error);
-            document.dispatchEvent(new CustomEvent('caldav-connection-refused'));
-            reject('caldav.error.credentials');
-          });
       });
     });
   },
