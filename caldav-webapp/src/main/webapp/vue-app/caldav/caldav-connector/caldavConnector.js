@@ -107,6 +107,106 @@ export default {
       readOnly: isReadOnly(calendar),
     }));
   },
+
+  canCreateCalendar: true,
+  /**
+   * Creates, on the connected CalDAV server, the dedicated calendar that will
+   * receive the meetings eXo pushes — MKCALENDAR with the display name,
+   * colour and description set atomically — then stores its href as the push
+   * destination.
+   *
+   * The name is written once, in the language of the user at that moment, and
+   * never renamed afterwards: the href is the identity of the collection, so
+   * the user remains free to rename it from any of their own clients.
+   *
+   * MKCALENDAR is not universally permitted. A refusal surfaces as an error
+   * flagged calendarCreationRefused, so the caller can fall back to letting
+   * the user pick an existing calendar at connect time rather than fail at
+   * first push.
+   *
+   * @param {Object} calendarToCreate description of the wanted calendar
+   * @param {String} calendarToCreate.name display name, from the platform branding
+   * @param {String} calendarToCreate.color `#RRGGBB` colour, from the platform branding
+   * @param {String} calendarToCreate.description explains the calendar in the user's own client
+   * @returns {Promise<Object>} `{id}` where id is the href of the created collection
+   */
+  async createCalendar({name, color, description}) {
+    const settings = await caldavConnectorService.getCaldavSetting();
+    const clientCaldav = await createClient(settings);
+    const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+    const serverUrl = settings.caldavUrl.replace('{username}', settings.username);
+    const homeUrl = calendars.length && new URL('..', calendars[0].url).href
+      || (serverUrl.endsWith('/') && serverUrl || `${serverUrl}/`);
+    const url = new URL(`${collectionSlug(name)}-${crypto.randomUUID().substring(0, 8)}/`, homeUrl).href;
+    const props = {
+      [`${tsdav.DAVNamespaceShort.DAV}:displayname`]: name,
+    };
+    if (description) {
+      props[`${tsdav.DAVNamespaceShort.CALDAV}:calendar-description`] = description;
+    }
+    if (color) {
+      props[`${tsdav.DAVNamespaceShort.CALDAV_APPLE}:calendar-color`] = color;
+    }
+    const responses = await clientCaldav.makeCalendar({
+      url,
+      props,
+      headersToExclude: ['If-None-Match'],
+    });
+    const refusal = (responses || []).find(response => response && response.ok === false);
+    if (refusal) {
+      const error = new Error(`MKCALENDAR refused by the server with status ${refusal.status}`);
+      error.calendarCreationRefused = true;
+      error.status = refusal.status;
+      throw error;
+    }
+    await caldavConnectorService.saveMirrorCalendarHref(url);
+    return {id: url};
+  },
+  /**
+   * Points the mirror at an existing calendar of the connected account
+   * instead of a created one — the fallback when MKCALENDAR is refused, and
+   * an option the user may always prefer.
+   *
+   * @param {String} calendarId href of the chosen calendar collection
+   * @returns {Promise<Object>} `{id}` echoing the stored href
+   */
+  async setMirrorCalendar(calendarId) {
+    await caldavConnectorService.saveMirrorCalendarHref(calendarId);
+    return {id: calendarId};
+  },
+  /**
+   * The stored href of the mirror calendar, so UIs can single it out — for
+   * instance to keep it off calendar lists, since it only holds copies of
+   * events eXo already displays.
+   *
+   * @returns {Promise<String>} the href, or null when no mirror is configured
+   */
+  getMirrorCalendarId() {
+    return caldavConnectorService.getCaldavSetting().then(settings => settings.mirrorCalendarHref || null);
+  },
+  /**
+   * The calendar every push and remote deletion must target: the stored
+   * mirror calendar. Matching is done on decoded pathnames, so an encoding
+   * difference (%40 versus @) or a changed host never detaches the mirror.
+   * When the server no longer enumerates the collection, the href itself is
+   * still targeted rather than silently writing somewhere else.
+   *
+   * Accounts connected before the mirror existed have no stored href and keep
+   * the previous behaviour, the first calendar the server enumerates.
+   *
+   * @param {Object} clientCaldav authenticated tsdav client
+   * @param {Object} settings connector settings, holding mirrorCalendarHref
+   * @returns {Promise<Object>} the destination calendar, or null when none exists
+   */
+  async getDestinationCalendar(clientCaldav, settings) {
+    const mirrorCalendarHref = settings && settings.mirrorCalendarHref;
+    if (!mirrorCalendarHref) {
+      return this.getCalendar(clientCaldav);
+    }
+    const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+    return calendars.find(calendar => isSameCollection(calendar.url, mirrorCalendarHref))
+      || {url: mirrorCalendarHref};
+  },
   async getCalendar(clientCaldav){
     const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
     if (calendars.length === 0) {
@@ -272,17 +372,69 @@ export default {
       return this.saveEvent(event, settings);
     });
   },
+  /**
+   * Deletes the remote copy of an event. The copy is looked up in the mirror
+   * calendar — the collection every push targets — rather than in the first
+   * calendar the server happens to enumerate, which held nothing eXo wrote.
+   *
+   * @param {Object} event the eXo event whose remote copy must go
+   * @returns {Promise} resolves once the copy, when found, is deleted
+   */
   deleteEvent(event) {
-    this.getEvents(event.startDate,event.endDate).then((events)=> {
-      events.forEach((obj) => {
-        if (event.id === parseInt(obj.uid)) {
-          return caldavConnectorService.getCaldavSetting().then((settings)=> {
-            return this.removeEvent(obj, settings);
-          });
+    return caldavConnectorService.getCaldavSetting().then((settings)=> {
+      return this.retrieveMirrorEvents(settings, event.startDate || event.start, event.endDate || event.end).then((events)=> {
+        const remoteEvent = events.find((obj) => event.id === parseInt(obj.uid));
+        if (remoteEvent) {
+          return this.removeEvent(remoteEvent, settings);
         }
       });
     });
   },
+  /**
+   * Reads the events of the mirror calendar, reduced to what a deletion
+   * needs: uid, url and etag. The time range narrows the read when both
+   * bounds are known; otherwise the whole — small, eXo-owned — collection is
+   * scanned rather than guessing at a range.
+   *
+   * @param {Object} settings connector settings holding credentials and mirror href
+   * @param {String} periodStartDate start of the period, when known
+   * @param {String} periodEndDate end of the period, when known
+   * @returns {Promise<Array>} `{uid, url, etag}` per event of the mirror calendar
+   */
+  async retrieveMirrorEvents(settings, periodStartDate, periodEndDate) {
+    const clientCaldav = await createClient(settings);
+    const calendar = await this.getDestinationCalendar(clientCaldav, settings);
+    if (!calendar) {
+      return [];
+    }
+    const start = caldavConnectorService.toRFC3339(periodStartDate, false, true);
+    const end = caldavConnectorService.toRFC3339(periodEndDate, false, true);
+    const fetchParams = {
+      calendar,
+      headersToExclude: ['If-None-Match'],
+    };
+    if (start && end) {
+      fetchParams.timeRange = {start, end};
+    }
+    const events = await clientCaldav.fetchCalendarObjects(fetchParams);
+    return events.map(event => {
+      const component = new ICAL.Component(ICAL.parse(event.data));
+      const eventComponent = component.getFirstSubcomponent('vevent');
+      return {
+        uid: eventComponent && eventComponent.getFirstPropertyValue('uid'),
+        url: event.url,
+        etag: event.etag,
+      };
+    });
+  },
+  /**
+   * Deletes one calendar object from the mirror calendar of the connected
+   * account.
+   *
+   * @param {Object} event remote event descriptor holding url and etag
+   * @param {Object} settings connector settings holding credentials and mirror href
+   * @returns {Promise} resolves once the server confirmed the deletion
+   */
   async removeEvent(event, settings) {
     const clientCaldav = await tsdav.createDAVClient({
       serverUrl: settings.caldavUrl.replace('{username}',settings.username),
@@ -295,8 +447,8 @@ export default {
     }).catch(() => {
       console.error('cant connect to caldav client check username and password');
     });
-    //get calendar
-    const calendar = await this.getCalendar(clientCaldav);
+    //get the mirror calendar, the only collection eXo writes to
+    const calendar = await this.getDestinationCalendar(clientCaldav, settings);
     if (!calendar) {
       return Promise.all(null);
     } else {
@@ -309,6 +461,14 @@ export default {
       });
     }
   },
+  /**
+   * Writes an accepted eXo meeting to the mirror calendar of the connected
+   * account, as one ICS object named after its UID.
+   *
+   * @param {Object} event the eXo event to push
+   * @param {Object} settings connector settings holding credentials and mirror href
+   * @returns {Promise<Object>} `{id}` where id is the ICS UID of the pushed copy
+   */
   async saveEvent(event, settings) {
     const clientCaldav = await tsdav.createDAVClient({
       serverUrl: settings.caldavUrl.replace('{username}',settings.username),
@@ -322,8 +482,8 @@ export default {
       console.error('cant connect to caldav client check username and password', e);
       return null;
     });
-    //get calendar
-    const calendar = clientCaldav ? await this.getCalendar(clientCaldav) : null;
+    //get the mirror calendar, the only collection eXo writes to
+    const calendar = clientCaldav ? await this.getDestinationCalendar(clientCaldav, settings) : null;
     if (!calendar) {
       return Promise.all(null);
     }
@@ -407,6 +567,13 @@ END:VCALENDAR
   }
 };
 
+/**
+ * Formats a date as the basic UTC form iCalendar expects, without the
+ * trailing Z.
+ *
+ * @param {String} dateStr the date to format
+ * @returns {String} the date as `YYYYMMDDTHHMMSS`
+ */
 function toUTCString(dateStr) {
   const d = new Date(dateStr);
   return d.toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', '');
@@ -588,4 +755,69 @@ function caldavError(code, response) {
   error.code = code;
   error.status = response && response.status;
   return error;
+}
+
+/**
+ * Creates an authenticated tsdav client from the connector settings.
+ *
+ * @param {Object} settings connector settings holding the URL and credentials
+ * @returns {Promise<Object>} the tsdav client
+ */
+function createClient(settings) {
+  return tsdav.createDAVClient({
+    serverUrl: settings.caldavUrl.replace('{username}', settings.username),
+    credentials: {
+      username: settings.username,
+      password: settings.password,
+    },
+    authMethod: 'Basic',
+    defaultAccountType: 'caldav',
+  });
+}
+
+/**
+ * The decoded path of a collection URL, without a trailing slash — the part
+ * of an href that identifies the collection regardless of host or of how the
+ * server percent-encodes it.
+ *
+ * @param {String} url collection URL or href
+ * @returns {String} its decoded, slash-trimmed path
+ */
+function collectionPath(url) {
+  try {
+    return decodeURIComponent(new URL(url, window.location.origin).pathname).replace(/\/+$/, '');
+  } catch (e) {
+    return url;
+  }
+}
+
+/**
+ * Whether two hrefs designate the same calendar collection. Compared on
+ * decoded paths: the same collection may be written `%40` by the server and
+ * `@` by a client, or reached through different hosts.
+ *
+ * @param {String} url first collection URL
+ * @param {String} href second collection URL
+ * @returns {Boolean} true when both point at the same collection
+ */
+function isSameCollection(url, href) {
+  return !!url && !!href && collectionPath(url) === collectionPath(href);
+}
+
+/**
+ * A URL-safe slug of a calendar name, for the last path segment of the
+ * created collection. Falls back to a neutral constant when the name holds no
+ * usable character — the display name, not the path, is what users see.
+ *
+ * @param {String} name display name of the calendar
+ * @returns {String} a lowercase, dash-separated slug
+ */
+function collectionSlug(name) {
+  const slug = (name || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || 'exo-meetings';
 }

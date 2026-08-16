@@ -46,6 +46,31 @@ export const getCaldavSetting = () => {
   });
 };
 
+/**
+ * Persists the href of the mirror calendar in the CalDAV account settings of
+ * the current user. The href — never the display name — is the identity of
+ * the collection eXo pushes accepted meetings to.
+ *
+ * @param {String} mirrorCalendarHref href of the mirror calendar collection
+ * @returns {Promise<Number>} the HTTP status of the save
+ */
+export const saveMirrorCalendarHref = (mirrorCalendarHref) => {
+  return fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/v1/caldav/mirrorCalendar`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify({mirrorCalendarHref})
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    } else {
+      return resp.status;
+    }
+  });
+};
+
 export const deleteCaldavSetting = () => {
   return fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/v1/caldav`, {
     credentials: 'include',

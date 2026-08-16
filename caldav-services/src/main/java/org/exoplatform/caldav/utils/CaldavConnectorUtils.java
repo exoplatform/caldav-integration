@@ -34,6 +34,8 @@ public class CaldavConnectorUtils {
 
   public static final String CALDAV_PASSWORD_KEY            = "CaldavPassword";
 
+  public static final String CALDAV_MIRROR_CALENDAR_KEY     = "CaldavMirrorCalendarHref";
+
   public static final String CALDAV_SERVER_URL_INIT_PARAM   = "exo.agenda.caldav.connector.url";
 
   private static final Log   LOG                            = ExoLogger.getLogger(CaldavConnectorUtils.class);

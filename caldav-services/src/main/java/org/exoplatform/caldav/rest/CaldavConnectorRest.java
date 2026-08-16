@@ -85,6 +85,43 @@ public class CaldavConnectorRest implements ResourceContainer {
     }
   }
 
+  /**
+   * Saves the href of the mirror calendar of the current user: the collection,
+   * on the connected CalDAV server, that receives the meetings pushed by eXo.
+   * Only the href travels here — the collection itself is created (or picked)
+   * by the front-end connector, which is the only party holding a CalDAV
+   * session.
+   *
+   * @param caldavUserSetting a {@link CaldavUserSetting} carrying the
+   *          mirrorCalendarHref to store; other fields are ignored
+   * @return 200 when stored, 400 when the href is blank
+   */
+  @PUT
+  @Path("mirrorCalendar")
+  @Consumes(MediaType.APPLICATION_JSON)
+  @RolesAllowed("users")
+  @Operation(summary = "Save the mirror calendar href of the caldav user setting", method = "PUT")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Invalid query input"),
+      @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "500", description = "Internal server error") })
+  public Response saveMirrorCalendarHref(@Parameter(description = "Caldav user setting carrying the mirror calendar href", required = true)
+  CaldavUserSetting caldavUserSetting) {
+    if (caldavUserSetting == null) {
+      return Response.status(Response.Status.BAD_REQUEST).build();
+    }
+    long identityId = CaldavConnectorUtils.getCurrentUserIdentityId(identityManager);
+    try {
+      caldavConnectorService.saveMirrorCalendarHref(caldavUserSetting.getMirrorCalendarHref(), identityId);
+      return Response.ok().build();
+    } catch (IllegalArgumentException e) {
+      return Response.status(Response.Status.BAD_REQUEST).entity(e.getMessage()).build();
+    } catch (Exception e) {
+      LOG.error("Error when saving caldav mirror calendar href for user with id '{}'", identityId, e);
+      return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
+    }
+  }
+
   @DELETE
   @RolesAllowed("users")
   @Operation(summary = "Delete caldav user setting", method = "DELETE")

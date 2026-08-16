@@ -44,4 +44,16 @@ public interface CaldavConnectorService {
    * @param userIdentityId User identity deleting his caldav user setting
    */
   void deleteCaldavSetting(long userIdentityId);
+
+  /**
+   * Saves the href of the mirror calendar of a user: the collection, on the
+   * connected CalDAV server, that receives the meetings pushed by eXo. The
+   * href — never the display name — identifies the collection, so renaming it
+   * from any CalDAV client does not orphan it.
+   *
+   * @param mirrorCalendarHref href of the mirror calendar collection
+   * @param userIdentityId User identity saving his mirror calendar
+   * @throws IllegalArgumentException when the href is blank
+   */
+  void saveMirrorCalendarHref(String mirrorCalendarHref, long userIdentityId);
 }
