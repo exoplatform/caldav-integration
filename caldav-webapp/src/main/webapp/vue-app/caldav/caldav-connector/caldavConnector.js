@@ -16,11 +16,23 @@ export default {
     return new Promise((resolve, reject) => {
       document.dispatchEvent(new CustomEvent('open-caldav-connector-settings-drawer'));
       document.addEventListener('test-connection', (settings) => {
-        if (settings.detail) {
-          resolve(settings.detail.username);
-        } else {
+        if (!settings.detail) {
           reject('connection canceled');
+          return;
         }
+        // Actually reach the server before declaring the account connected.
+        // Saving the credentials only proves eXo stored them; until something
+        // asks the server, a mistyped password is accepted, the connector
+        // reports itself connected, and every later request answers 401 —
+        // which surfaces as an empty calendar list, or as the browser's own
+        // credentials dialog, rather than as "wrong password".
+        this.retrieveCalendars(settings.detail)
+          .then(() => resolve(settings.detail.username))
+          .catch(error => {
+            console.error('the CalDAV server refused the credentials', error);
+            document.dispatchEvent(new CustomEvent('caldav-connection-refused'));
+            reject('caldav.error.credentials');
+          });
       });
     });
   },
@@ -63,6 +75,33 @@ export default {
    * @returns {Promise<Array>} the calendars of that account
    */
   async retrieveCalendars(settings) {
+    // No account, no request. Once the user disconnects, the stored settings
+    // are gone and the username is null, which used to be interpolated into
+    // the URL and sent as /dav/cal/null/ — answered with a 401 that the
+    // browser turns into its own credentials prompt, in the middle of the
+    // agenda, for an account that no longer exists.
+    if (!settings || !settings.username || !settings.caldavUrl) {
+      return [];
+    }
+    // A rejected credential must surface as such. tsdav answers a 401 by
+    // falling back to probing the server root, which then fails with "cannot
+    // find principalUrl" — a message about discovery for what is simply a
+    // wrong password.
+    const probe = await fetch(settings.caldavUrl.replace('{username}', settings.username), {
+      method: 'PROPFIND',
+      headers: {
+        'Depth': '0',
+        'Content-Type': 'application/xml',
+        'Authorization': `Basic ${btoa(`${settings.username}:${settings.password}`)}`,
+      },
+      body: '<?xml version="1.0"?><propfind xmlns="DAV:"><prop><displayname/></prop></propfind>',
+    }).catch(() => null);
+    if (!probe) {
+      throw caldavError('caldav.error.connection');
+    }
+    if (probe.status === 401 || probe.status === 403) {
+      throw caldavError('caldav.error.credentials', probe);
+    }
     const clientCaldav = await tsdav.createDAVClient({
       serverUrl: settings.caldavUrl.replace('{username}', settings.username),
       credentials: {
@@ -73,10 +112,10 @@ export default {
       defaultAccountType: 'caldav',
     });
     const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
-    return calendars.map(calendar => ({
+    return calendars.map((calendar, index) => ({
       id: calendar.url,
       name: calendar.displayName || calendar.url,
-      color: calendarColor(calendar),
+      color: calendarColor(calendar, index, calendars.length),
       readOnly: isReadOnly(calendar),
     }));
   },
@@ -103,12 +142,16 @@ export default {
     }).catch(() => {
       console.error('cant connect to caldav client check username and password');
     });
-    //get calendar
-    const calendar = await this.getCalendar(clientCaldav);
-    if (!calendar) {
-      return Promise.all(null);
-    }
-    const events = await clientCaldav.fetchCalendarObjects({
+    // Every calendar of the account, not just the first the server happens to
+    // enumerate. Each event is tagged with the collection it came from, which
+    // is what lets the agenda show one calendar and hide another, and what
+    // gives an event the colour of its own calendar rather than one shared
+    // colour for everything remote.
+    const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+    // Read every calendar at once rather than one after another: a user with
+    // several collections would otherwise wait for the sum of the round trips
+    // each time the displayed period changes.
+    const objectsPerCalendar = await Promise.all(calendars.map(calendar => clientCaldav.fetchCalendarObjects({
       calendar,
       expand: true,
       timeRange: {
@@ -116,118 +159,123 @@ export default {
         end: end,
       },
       headersToExclude: ['If-None-Match']
-    });
+    })));
     const listEvent = [];
-    events.map(event => {
-      const caldavEvent= {};
-      const data = ICAL.parse(event.data);
-      const iCal = new ICAL.Component(data); //component
-      const eventComponent = iCal.getFirstSubcomponent('vevent'); //component
-      const vEvent = new ICAL.Event(eventComponent); //Event
-      if (vEvent) {
-        if (vEvent.recurrenceId) {
-          const recurrentEvents = iCal.getAllSubcomponents('vevent');
-          recurrentEvents.forEach( e => {
-            const eventItem = new ICAL.Event(e);
-            const calEvent = {};
-            calEvent.summary = eventItem.summary;
-            calEvent.uid = eventItem.uid;
-            calEvent.id = eventItem.uid;
-            calEvent.color = '#FFFFFF';
-            calEvent.type = 'remoteEvent';
-            calEvent.location = eventItem.location;
-            calEvent.description = eventItem.description;
-            calEvent.recurringEventId = eventItem.uid;
-            const startDate = e.getAllProperties('dtstart'); //ICAL.Property
-            const endDate = e.getAllProperties('dtend'); //ICAL.Property
-            calEvent.start = startDate && new Date(startDate[0].jCal[3]);
-            if (startDate && !startDate[0].jCal[3].includes('T')) {
-              calEvent.allDay = true;
-            } else {
-              calEvent.end = endDate && new Date(endDate[0].jCal[3]);
-            }
-            listEvent.push(calEvent);
-          });
-        } else if (vEvent.isRecurring()) {
-          const startRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodStartDate),false);//ICAL.Time
-          const endRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodEndDate),false);//ICAL.Time
+    calendars.forEach((calendar, calendarIndex) => {
+      const calendarId = calendar.url;
+      const color = calendarColor(calendar, calendarIndex, calendars.length);
+      const events = objectsPerCalendar[calendarIndex];
+      events.map(event => {
+        const caldavEvent= {};
+        const data = ICAL.parse(event.data);
+        const iCal = new ICAL.Component(data); //component
+        const eventComponent = iCal.getFirstSubcomponent('vevent'); //component
+        const vEvent = new ICAL.Event(eventComponent); //Event
+        if (vEvent) {
+          if (vEvent.recurrenceId) {
+            const recurrentEvents = iCal.getAllSubcomponents('vevent');
+            recurrentEvents.forEach( e => {
+              const eventItem = new ICAL.Event(e);
+              const calEvent = {};
+              calEvent.summary = eventItem.summary;
+              calEvent.uid = eventItem.uid;
+              calEvent.id = eventItem.uid;
+              calEvent.color = color;
+              calEvent.type = 'remoteEvent';
+              calEvent.location = eventItem.location;
+              calEvent.description = eventItem.description;
+              calEvent.recurringEventId = eventItem.uid;
+              const startDate = e.getAllProperties('dtstart'); //ICAL.Property
+              const endDate = e.getAllProperties('dtend'); //ICAL.Property
+              calEvent.start = startDate && new Date(startDate[0].jCal[3]);
+              if (startDate && !startDate[0].jCal[3].includes('T')) {
+                calEvent.allDay = true;
+              } else {
+                calEvent.end = endDate && new Date(endDate[0].jCal[3]);
+              }
+              calEvent.calendarId = calendarId;
+              listEvent.push(calEvent);
+            });
+          } else if (vEvent.isRecurring()) {
+            const startRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodStartDate),false);//ICAL.Time
+            const endRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodEndDate),false);//ICAL.Time
 
-          const expand = new ICAL.RecurExpansion({
-            component: eventComponent,
-            dtstart: vEvent.startDate
-          });
-          let next= expand.next(); //ICAL.Time
-          while (next && next.compare(endRangeDate)<0) {
-            if (next.compare(startRangeDate)>=0) {
+            const expand = new ICAL.RecurExpansion({
+              component: eventComponent,
+              dtstart: vEvent.startDate
+            });
+            let next= expand.next(); //ICAL.Time
+            while (next && next.compare(endRangeDate)<0) {
+              if (next.compare(startRangeDate)>=0) {
               //create a new event for the recurrence :
               //we can have more than one occurence in the timerange requested
-              const occurenceEvent= {};
-              occurenceEvent.color = '#FFFFFF';
-              occurenceEvent.type = 'remoteEvent';
-              occurenceEvent.etag= event.etag;
-              occurenceEvent.url = event.url;
+                const occurenceEvent= {};
+                occurenceEvent.color = color;
+                occurenceEvent.type = 'remoteEvent';
+                occurenceEvent.etag= event.etag;
+                occurenceEvent.url = event.url;
 
-              let realStartDate;
+                let realStartDate;
 
-              if (vEvent.exceptions[next.toString()]) {
+                if (vEvent.exceptions[next.toString()]) {
                 //the current event have an exception for the next occurence
-                const exceptionEvent = vEvent.exceptions[next.toString()];
-                occurenceEvent.summary = exceptionEvent.summary;
-                occurenceEvent.uid = exceptionEvent.uid;
-                occurenceEvent.location = exceptionEvent.location;
-                occurenceEvent.description = exceptionEvent.description;
-                realStartDate = exceptionEvent.startDate;
-              } else {
-                occurenceEvent.summary = vEvent.summary;
-                occurenceEvent.uid = vEvent.uid;
-                occurenceEvent.location = vEvent.location;
-                occurenceEvent.description = vEvent.description;
-                realStartDate = next;
-              }
-              occurenceEvent.id = occurenceEvent.uid;
-              occurenceEvent.recurringEventId = occurenceEvent.uid;
-              const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
-              occurenceEvent.start= new Date(realStartDate); //next : ICAL.Time
-              if (startDate && !startDate[0].jCal[3].includes('T')) {
-                occurenceEvent.allDay=true;
-              } else {
+                  const exceptionEvent = vEvent.exceptions[next.toString()];
+                  occurenceEvent.summary = exceptionEvent.summary;
+                  occurenceEvent.uid = exceptionEvent.uid;
+                  occurenceEvent.location = exceptionEvent.location;
+                  occurenceEvent.description = exceptionEvent.description;
+                  realStartDate = exceptionEvent.startDate;
+                } else {
+                  occurenceEvent.summary = vEvent.summary;
+                  occurenceEvent.uid = vEvent.uid;
+                  occurenceEvent.location = vEvent.location;
+                  occurenceEvent.description = vEvent.description;
+                  realStartDate = next;
+                }
+                occurenceEvent.id = occurenceEvent.uid;
+                occurenceEvent.recurringEventId = occurenceEvent.uid;
+                const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
+                occurenceEvent.start= new Date(realStartDate); //next : ICAL.Time
+                if (startDate && !startDate[0].jCal[3].includes('T')) {
+                  occurenceEvent.allDay=true;
+                } else {
                 //if the event is not all day, we calculate the endDate as
                 //endDate = next + duration
                 //next is the startDate for the next occurence of the event
                 //duration is the duration of the first event of the recurrence
-                const calculatedEndDate = realStartDate.clone();
-                calculatedEndDate.addDuration(vEvent.duration);
-                occurenceEvent.end=calculatedEndDate.toJSDate();
+                  const calculatedEndDate = realStartDate.clone();
+                  calculatedEndDate.addDuration(vEvent.duration);
+                  occurenceEvent.end=calculatedEndDate.toJSDate();
+                }
+                occurenceEvent.calendarId = calendarId;
+                listEvent.push(occurenceEvent);
               }
-              listEvent.push(occurenceEvent);
+              next=expand.next();
             }
-            next=expand.next();
-          }
-        } else {
-
-          caldavEvent.summary = vEvent.summary;
-          caldavEvent.uid = vEvent.uid;
-          caldavEvent.id = vEvent.uid;
-          caldavEvent.color = '#FFFFFF';
-          caldavEvent.type = 'remoteEvent';
-          caldavEvent.etag= event.etag;
-          caldavEvent.url = event.url;
-          const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
-          const endDate = eventComponent.getAllProperties('dtend'); //ICAL.Property
-          caldavEvent.start= startDate && new Date(startDate[0].jCal[3]);
-          caldavEvent.location = vEvent.location;
-          caldavEvent.description = vEvent.description;
-          if (startDate && !startDate[0].jCal[3].includes('T')) {
-            caldavEvent.allDay=true;
           } else {
-            caldavEvent.end= endDate && new Date(endDate[0].jCal[3]);
-          }
-          listEvent.push(caldavEvent);
-        }
-      } else {
-        return Promise.all(null);
-      }
 
+            caldavEvent.summary = vEvent.summary;
+            caldavEvent.uid = vEvent.uid;
+            caldavEvent.id = vEvent.uid;
+            caldavEvent.color = color;
+            caldavEvent.type = 'remoteEvent';
+            caldavEvent.etag= event.etag;
+            caldavEvent.url = event.url;
+            const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
+            const endDate = eventComponent.getAllProperties('dtend'); //ICAL.Property
+            caldavEvent.start= startDate && new Date(startDate[0].jCal[3]);
+            caldavEvent.location = vEvent.location;
+            caldavEvent.description = vEvent.description;
+            if (startDate && !startDate[0].jCal[3].includes('T')) {
+              caldavEvent.allDay=true;
+            } else {
+              caldavEvent.end= endDate && new Date(endDate[0].jCal[3]);
+            }
+            caldavEvent.calendarId = calendarId;
+            listEvent.push(caldavEvent);
+          }
+        }
+      });
     });
     return listEvent;
   },
@@ -473,9 +521,23 @@ function contrastWithWhite(color) {
  * @param {String} calendarUrl URL of the calendar collection
  * @returns {String} a stable, legible `#RRGGBB` colour for that collection
  */
-function derivedCalendarColor(calendarUrl) {
+function derivedCalendarColor(calendarUrl, position, total) {
   const hash = hashOf(calendarUrl || '');
-  const hue = hash % 360;
+  // Hashing the URL alone spreads colours over the whole wheel but guarantees
+  // nothing about the distance between any two of them: on a real account,
+  // two of three calendars landed nine degrees apart and read as the same
+  // magenta. The hue is therefore laid out across the account's calendars by
+  // position, from an offset the account itself decides, so the set is always
+  // separated and still stable from one device and session to the next.
+  //
+  // The trade this makes: adding or removing a calendar re-spaces the others,
+  // where pure hashing would have left them alone. A set that stays put keeps
+  // its colours, and being able to tell two calendars apart matters more than
+  // one never shifting.
+  const count = Math.max(total || 1, 1);
+  const index = Math.max(position || 0, 0);
+  const offset = hashOf(calendarUrl.replace(/[^/]+\/?$/, '')) % 360;
+  const hue = Math.round((offset + index * 360 / count) % 360);
   const saturation = 58 + (hash >>> 9) % 4 * 8;
   let lightness = 38 + (hash >>> 17) % 3 * 5;
   let color = hslToHex(hue, saturation, lightness);
@@ -495,8 +557,9 @@ function derivedCalendarColor(calendarUrl) {
  * @param {Object} calendar calendar collection as returned by tsdav
  * @returns {String} the `#RRGGBB` colour of that calendar
  */
-function calendarColor(calendar) {
-  return normalizeColor(calendar && calendar.calendarColor) || derivedCalendarColor(calendar && calendar.url);
+function calendarColor(calendar, position, total) {
+  return normalizeColor(calendar && calendar.calendarColor)
+      || derivedCalendarColor(calendar && calendar.url || '', position, total);
 }
 
 /**
@@ -517,4 +580,20 @@ function isReadOnly(calendar) {
     return false;
   }
   return !privileges.some(privilege => ['write', 'write-content', 'all'].includes(privilege));
+}
+/**
+ * An error carrying a stable code, so that agenda can turn a failure into a
+ * message the user can act on — check your credentials, this calendar is
+ * read-only, try again — without parsing text or reaching into tsdav's own
+ * error shapes.
+ *
+ * @param {String} code stable identifier for the kind of failure
+ * @param {Object} response response that produced it, when there was one
+ * @returns {Error} the error to reject with
+ */
+function caldavError(code, response) {
+  const error = new Error(code);
+  error.code = code;
+  error.status = response && response.status;
+  return error;
 }
