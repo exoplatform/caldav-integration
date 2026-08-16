@@ -137,7 +137,20 @@ export default {
     const serverUrl = settings.caldavUrl.replace('{username}', settings.username);
     const homeUrl = calendars.length && new URL('..', calendars[0].url).href
       || (serverUrl.endsWith('/') && serverUrl || `${serverUrl}/`);
-    const url = new URL(`${collectionSlug(name)}-${crypto.randomUUID().substring(0, 8)}/`, homeUrl).href;
+    // The path is derived from the name alone, with nothing random in it, so
+    // that asking twice for the same calendar means asking for the same
+    // collection. A random suffix made every request a different one, and a
+    // user who disconnected and reconnected — which forgets the stored href —
+    // collected a new calendar on the server each time.
+    const url = new URL(`${collectionSlug(name)}/`, homeUrl).href;
+    const existing = findMirrorCalendar(calendars, settings.mirrorCalendarHref, url, name);
+    if (existing) {
+      // Re-storing matters: after a reconnect the setting is empty even though
+      // the collection is still there, and without this the mirror would stay
+      // unconfigured until the next push guessed a destination.
+      await caldavConnectorService.saveMirrorCalendarHref(existing.url);
+      return {id: existing.url};
+    }
     const props = {
       [`${tsdav.DAVNamespaceShort.DAV}:displayname`]: name,
     };
@@ -154,6 +167,18 @@ export default {
     });
     const refusal = (responses || []).find(response => response && response.ok === false);
     if (refusal) {
+      // 405 on MKCALENDAR means a collection already sits at that URL. Since
+      // the URL is derived from the name, that collection is the one being
+      // asked for: adopt it rather than report a failure the user cannot act
+      // on. Any other status is a genuine refusal.
+      if (refusal.status === 405) {
+        const created = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+        const adopted = findMirrorCalendar(created, null, url, name);
+        if (adopted) {
+          await caldavConnectorService.saveMirrorCalendarHref(adopted.url);
+          return {id: adopted.url};
+        }
+      }
       const error = new Error(`MKCALENDAR refused by the server with status ${refusal.status}`);
       error.calendarCreationRefused = true;
       error.status = refusal.status;
@@ -802,6 +827,34 @@ function collectionPath(url) {
  */
 function isSameCollection(url, href) {
   return !!url && !!href && collectionPath(url) === collectionPath(href);
+}
+
+/**
+ * The mirror calendar among those the server enumerates, so that asking for
+ * it twice never produces a second one.
+ *
+ * Three signals, in decreasing order of confidence:
+ * the stored href, which is the identity of the collection and the only one
+ * that survives a rename; the URL the connector would create, which survives
+ * a disconnect (the setting does not) since it is derived from the name; and
+ * the display name itself, which is what recovers a collection created when
+ * storing its href failed.
+ *
+ * Name matching is a last resort on purpose: it is the only signal that can
+ * adopt a calendar the connector did not create, and it stops matching as
+ * soon as the user renames it — which is the right outcome, since the stored
+ * href takes over from the first successful configuration.
+ *
+ * @param {Array} calendars collections the server enumerates
+ * @param {String} mirrorCalendarHref stored mirror href, if any
+ * @param {String} url the URL this connector creates for that name
+ * @param {String} name display name asked for
+ * @returns {Object} the matching collection, or undefined when there is none
+ */
+function findMirrorCalendar(calendars, mirrorCalendarHref, url, name) {
+  return mirrorCalendarHref && (calendars || []).find(calendar => isSameCollection(calendar.url, mirrorCalendarHref))
+    || (calendars || []).find(calendar => isSameCollection(calendar.url, url))
+    || (calendars || []).find(calendar => calendar.displayName && calendar.displayName === name);
 }
 
 /**
