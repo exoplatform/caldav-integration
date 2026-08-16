@@ -220,8 +220,8 @@ UID:${icalUID}
 DTSTAMP:${dtStamp}
 `;
     if (event.allDay) {
-      iCalString += `DTSTART;VALUE=DATE:${toIcsDate(event.start)}
-DTEND;VALUE=DATE:${toIcsEndDate(event.end)}
+      iCalString += `DTSTART;VALUE=DATE:${toIcsDate(event.start, event.timeZoneId)}
+DTEND;VALUE=DATE:${toIcsEndDate(event.end, event.timeZoneId)}
 `;
     } else {
       iCalString += `DTSTART:${toUTCString(event.start)}Z
@@ -247,11 +247,18 @@ DTEND:${toUTCString(event.end)}Z
       // twice — it may occur at most once — while an all-day occurrence
       // carried none at all and, having no anchor, replaced the master event
       // instead of amending the single instance it was meant to.
-      const recurrenceId = event.occurrence.id.replace(/[-:]|\.\d{3}/g, '');
-      if (event.occurrence.id.includes('T')) {
-        iCalString += `RECURRENCE-ID:${recurrenceId}Z\n`;
+      //
+      // The form follows event.allDay, matching how DTSTART above decides, and
+      // not whether the occurrence identifier happens to contain a time. RFC
+      // 5545 requires this property to carry the same value type as the
+      // DTSTART of the series it points into, and agenda identifies an
+      // occurrence of an all-day event by an instant all the same — so keying
+      // off the identifier wrote a date-time reference into a date-valued
+      // series, which matches no instance at all.
+      if (event.allDay) {
+        iCalString += `RECURRENCE-ID;VALUE=DATE:${toIcsDate(event.occurrence.id, event.timeZoneId)}\n`;
       } else {
-        iCalString += `RECURRENCE-ID;VALUE=DATE:${recurrenceId}\n`;
+        iCalString += `RECURRENCE-ID:${event.occurrence.id.replace(/[-:]|\.\d{3}/g, '')}Z\n`;
       }
     } else if (event.recurrence?.rrule) {
       let rruleValue = event.recurrence.rrule.trim();
@@ -379,24 +386,51 @@ function htmlToText(html) {
 }
 
 /**
+ * The calendar date of a value, as seen in the event's own time zone.
+ *
+ * Neither of the obvious shortcuts works. Converting to UTC and truncating
+ * moves the day for every user east of Greenwich — midnight in Tunis is 23:00
+ * UTC the day before. Reading the leading YYYY-MM-DD off the string has the
+ * same fault whenever the value is an instant rather than a plain date, and
+ * agenda supplies both: an all-day event arrives with a date for its start and
+ * an instant for its end, so the two were resolving to different days and the
+ * event came out with no duration at all.
+ *
+ * The zone is therefore explicit, and the parts come from the formatter rather
+ * than from any string slicing.
+ *
+ * @param {String} value date or instant as agenda supplies it
+ * @param {String} timeZoneId the event's zone; the runtime's own zone if absent
+ * @returns {Object} the year, month and day in that zone
+ */
+function datePartsInZone(value, timeZoneId) {
+  const options = {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  };
+  if (timeZoneId) {
+    options.timeZone = timeZoneId;
+  }
+  const parts = new Intl.DateTimeFormat('en-US', options).formatToParts(new Date(value));
+  const read = type => parts.find(part => part.type === type).value;
+  return {
+    year: Number(read('year')),
+    month: Number(read('month')),
+    day: Number(read('day')),
+  };
+}
+
+/**
  * Formats the date part of a value for a VALUE=DATE property.
  *
- * Read from the string rather than through a Date, deliberately. Converting
- * to UTC first and truncating shifted the day for every user east of
- * Greenwich: midnight in Paris is 22:00 UTC the day before, so an event on
- * the 16th was written as the 15th. An all-day event carries no time and no
- * zone, so there is nothing to convert in the first place.
- *
- * @param {String} dateStr date as agenda supplies it, starting with YYYY-MM-DD
+ * @param {String} value date or instant as agenda supplies it
+ * @param {String} timeZoneId the event's zone
  * @returns {String} the date as YYYYMMDD
  */
-function toIcsDate(dateStr) {
-  const asString = String(dateStr);
-  if (/^\d{4}-\d{2}-\d{2}/.test(asString)) {
-    return asString.substring(0, 10).replace(/-/g, '');
-  }
-  const date = new Date(dateStr);
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`;
+function toIcsDate(value, timeZoneId) {
+  const {year, month, day} = datePartsInZone(value, timeZoneId);
+  return `${year}${pad(month)}${pad(day)}`;
 }
 
 /**
@@ -409,12 +443,13 @@ function toIcsDate(dateStr) {
  * The arithmetic is done at midday UTC so that no daylight-saving transition
  * can move the result onto a neighbouring day.
  *
- * @param {String} dateStr last day the event covers
+ * @param {String} value last day the event covers, a date or an instant
+ * @param {String} timeZoneId the event's zone, in which that day is read
  * @returns {String} the exclusive end date as YYYYMMDD
  */
-function toIcsEndDate(dateStr) {
-  const yyyymmdd = toIcsDate(dateStr);
-  const date = new Date(`${yyyymmdd.substring(0, 4)}-${yyyymmdd.substring(4, 6)}-${yyyymmdd.substring(6, 8)}T12:00:00Z`);
+function toIcsEndDate(value, timeZoneId) {
+  const {year, month, day} = datePartsInZone(value, timeZoneId);
+  const date = new Date(Date.UTC(year, month - 1, day, 12));
   date.setUTCDate(date.getUTCDate() + 1);
   return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}`;
 }
