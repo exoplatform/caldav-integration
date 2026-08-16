@@ -519,6 +519,8 @@ function contrastWithWhite(color) {
  * same value and would render as unreadable white-on-pale.
  *
  * @param {String} calendarUrl URL of the calendar collection
+ * @param {Number} position index of this calendar among the account's own
+ * @param {Number} total how many calendars the account holds
  * @returns {String} a stable, legible `#RRGGBB` colour for that collection
  */
 function derivedCalendarColor(calendarUrl, position, total) {
@@ -555,6 +557,8 @@ function derivedCalendarColor(calendarUrl, position, total) {
  * other clients.
  *
  * @param {Object} calendar calendar collection as returned by tsdav
+ * @param {Number} position index of this calendar among the account's own
+ * @param {Number} total how many calendars the account holds
  * @returns {String} the `#RRGGBB` colour of that calendar
  */
 function calendarColor(calendar, position, total) {
