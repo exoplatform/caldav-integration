@@ -40,6 +40,46 @@ export default {
       return this.retrieveEvents(settings, periodStartDate, periodEndDate);
     });
   },
+  canListCalendars: true,
+  /**
+   * The calendars of the connected account, in the shape agenda expects from
+   * any connector: an identity, a name, a colour that is always usable, and
+   * whether the collection may be written to.
+   *
+   * The identity is the collection URL and never the display name. A user
+   * renaming a calendar in their own client must not detach whatever eXo has
+   * associated with it, and nothing stops two collections sharing a name.
+   *
+   * @returns {Promise<Array>} one entry per calendar of the connected account
+   */
+  listCalendars() {
+    return caldavConnectorService.getCaldavSetting().then(settings => this.retrieveCalendars(settings));
+  },
+  /**
+   * Reads the calendar collections of an account and maps them to the
+   * normalised shape.
+   *
+   * @param {Object} settings connector settings holding the URL and credentials
+   * @returns {Promise<Array>} the calendars of that account
+   */
+  async retrieveCalendars(settings) {
+    const clientCaldav = await tsdav.createDAVClient({
+      serverUrl: settings.caldavUrl.replace('{username}', settings.username),
+      credentials: {
+        username: settings.username,
+        password: settings.password,
+      },
+      authMethod: 'Basic',
+      defaultAccountType: 'caldav',
+    });
+    const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+    return calendars.map(calendar => ({
+      id: calendar.url,
+      name: calendar.displayName || calendar.url,
+      color: calendarColor(calendar),
+      readOnly: isReadOnly(calendar),
+    }));
+  },
   async getCalendar(clientCaldav){
     const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
     if (calendars.length === 0) {
@@ -334,4 +374,147 @@ END:VCALENDAR
 function toUTCString(dateStr) {
   const d = new Date(dateStr);
   return d.toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', '');
+}
+
+/** Minimum contrast ratio a generated colour must reach against white text. */
+const MIN_CONTRAST_RATIO = 4.5;
+
+/**
+ * A `#RRGGBB` colour from whatever the server returned, or null.
+ *
+ * Two shapes have to be handled. tsdav reduces every propstat block of a
+ * response into one props object, including the 404 block listing the
+ * properties the server does not hold — so a calendar with no colour yields an
+ * empty object rather than undefined. Being truthy, it survives a `||`
+ * fallback and reaches the UI as "[object Object]". And Apple writes eight
+ * hex digits, the last two being alpha, which CSS before level 4 does not
+ * understand.
+ *
+ * @param {*} value the property as tsdav returned it
+ * @returns {String} a usable `#RRGGBB` colour, or null when there is none
+ */
+function normalizeColor(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const match = value.trim().match(/^#?([0-9a-f]{6})(?:[0-9a-f]{2})?$/i);
+  return match && `#${match[1].toUpperCase()}` || null;
+}
+
+/**
+ * A stable non-cryptographic hash of a string.
+ *
+ * @param {String} value string to hash
+ * @returns {Number} a non-negative integer derived from it
+ */
+function hashOf(value) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    hash = (hash << 5) - hash + value.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+/**
+ * Converts an HSL triplet to `#RRGGBB`.
+ *
+ * @param {Number} hue hue in degrees
+ * @param {Number} saturation saturation as a percentage
+ * @param {Number} lightness lightness as a percentage
+ * @returns {String} the colour as `#RRGGBB`
+ */
+function hslToHex(hue, saturation, lightness) {
+  const l = lightness / 100;
+  const a = saturation * Math.min(l, 1 - l) / 100;
+  const channel = n => {
+    const k = (n + hue / 30) % 12;
+    const value = l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
+    return Math.round(255 * value).toString(16).padStart(2, '0');
+  };
+  return `#${channel(0)}${channel(8)}${channel(4)}`.toUpperCase();
+}
+
+/**
+ * Contrast ratio of a colour against white, per WCAG.
+ *
+ * @param {String} color colour as `#RRGGBB`
+ * @returns {Number} the ratio, between 1 and 21
+ */
+function contrastWithWhite(color) {
+  const channel = index => {
+    const value = parseInt(color.substr(1 + index * 2, 2), 16) / 255;
+    return value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+  };
+  const luminance = 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2);
+  return 1.05 / (luminance + 0.05);
+}
+
+/**
+ * Derives a colour from a collection URL, for the very common case of a server
+ * holding none: MKCALENDAR assigns no colour, so an untouched account has none
+ * anywhere. This is the normal path, not an error path.
+ *
+ * A single shared fallback would leave every calendar looking alike, which is
+ * the problem being solved, and a random one would change on every read.
+ * Hashing the URL gives a calendar the same colour on every device and in
+ * every session, and two calendars different ones.
+ *
+ * The hue comes from the whole wheel rather than a fixed palette: a palette of
+ * N entries runs into the birthday problem as soon as an account holds a
+ * handful of calendars. Saturation and lightness take one of a few values from
+ * unrelated bits of the same hash, so two calendars landing on neighbouring
+ * hues still differ in tone.
+ *
+ * The result is then darkened until it is legible, because HSL lightness is
+ * not perceptual — a cyan at 48% is nearly twice as bright as a blue at the
+ * same value and would render as unreadable white-on-pale.
+ *
+ * @param {String} calendarUrl URL of the calendar collection
+ * @returns {String} a stable, legible `#RRGGBB` colour for that collection
+ */
+function derivedCalendarColor(calendarUrl) {
+  const hash = hashOf(calendarUrl || '');
+  const hue = hash % 360;
+  const saturation = 58 + (hash >>> 9) % 4 * 8;
+  let lightness = 38 + (hash >>> 17) % 3 * 5;
+  let color = hslToHex(hue, saturation, lightness);
+  while (lightness > 20 && contrastWithWhite(color) < MIN_CONTRAST_RATIO) {
+    lightness -= 2;
+    color = hslToHex(hue, saturation, lightness);
+  }
+  return color;
+}
+
+/**
+ * The colour to paint everything from a collection with: what the server holds
+ * when it holds one, the derived colour otherwise. A colour the server holds
+ * is never adjusted — it is the user's own choice, already mirrored in their
+ * other clients.
+ *
+ * @param {Object} calendar calendar collection as returned by tsdav
+ * @returns {String} the `#RRGGBB` colour of that calendar
+ */
+function calendarColor(calendar) {
+  return normalizeColor(calendar && calendar.calendarColor) || derivedCalendarColor(calendar && calendar.url);
+}
+
+/**
+ * Whether the connected user may only read a collection.
+ *
+ * Derived from the privileges the server reports. Servers are not obliged to
+ * report them, and this has never been observed returning true: the read-only
+ * calendar created on the test server for that purpose turned out fully
+ * writable. Absent evidence the collection is restricted, it is reported
+ * writable, so the answer is never a guess dressed as a fact.
+ *
+ * @param {Object} calendar calendar collection as returned by tsdav
+ * @returns {Boolean} true only when the server says writing is not permitted
+ */
+function isReadOnly(calendar) {
+  const privileges = calendar && calendar.privilegeSet;
+  if (!Array.isArray(privileges) || privileges.length === 0) {
+    return false;
+  }
+  return !privileges.some(privilege => ['write', 'write-content', 'all'].includes(privilege));
 }
