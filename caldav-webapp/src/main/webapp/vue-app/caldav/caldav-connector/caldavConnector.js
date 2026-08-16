@@ -100,12 +100,42 @@ export default {
       defaultAccountType: 'caldav',
     });
     const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+    await this.recoverMirrorCalendar(settings, calendars);
     return calendars.map((calendar, index) => ({
       id: calendar.url,
       name: calendar.displayName || calendar.url,
       color: calendarColor(calendar, index, calendars.length),
       readOnly: isReadOnly(calendar),
     }));
+  },
+  /**
+   * Takes the mirror calendar back over when the account holds one but
+   * nothing records it.
+   *
+   * Disconnecting forgets the stored href along with the credentials, which
+   * is right — a different account must not inherit the mirror of the last
+   * one. But reconnecting the same account left its own mirror unclaimed: it
+   * reappeared among the calendars as an ordinary one, showing every meeting
+   * a second time, and the copies went to whichever calendar the account
+   * listed first until the step was answered again.
+   *
+   * The calendar is recognised by its path, which eXo controls and which is
+   * the same in every language, so this claims back a calendar eXo made for
+   * this account and never one the user keeps for themselves.
+   *
+   * @param {Object} settings connector settings, holding mirrorCalendarHref
+   * @param {Array} calendars the collections the server enumerates
+   * @returns {Promise} resolves once a recovered href has been stored
+   */
+  async recoverMirrorCalendar(settings, calendars) {
+    if (!settings || settings.mirrorCalendarHref || !calendars || !calendars.length) {
+      return;
+    }
+    const existing = calendars.find(calendar => isMirrorCollection(calendar.url));
+    if (existing) {
+      await caldavConnectorService.saveMirrorCalendarHref(existing.url);
+      settings.mirrorCalendarHref = existing.url;
+    }
   },
 
   canCreateCalendar: true,
@@ -142,7 +172,7 @@ export default {
     // collection. A random suffix made every request a different one, and a
     // user who disconnected and reconnected — which forgets the stored href —
     // collected a new calendar on the server each time.
-    const url = new URL(`${collectionSlug(name)}/`, homeUrl).href;
+    const url = new URL(`${MIRROR_COLLECTION_SLUG}/`, homeUrl).href;
     const existing = findMirrorCalendar(calendars, settings.mirrorCalendarHref, url, name);
     if (existing) {
       // Re-storing matters: after a reconnect the setting is empty even though
@@ -858,19 +888,24 @@ function findMirrorCalendar(calendars, mirrorCalendarHref, url, name) {
 }
 
 /**
- * A URL-safe slug of a calendar name, for the last path segment of the
- * created collection. Falls back to a neutral constant when the name holds no
- * usable character — the display name, not the path, is what users see.
- *
- * @param {String} name display name of the calendar
- * @returns {String} a lowercase, dash-separated slug
+ * The last path segment of the mirror collection. A constant, not a slug of
+ * the display name: that name is branded and translated, so deriving the path
+ * from it produced a different collection per language — a user switching
+ * from English to French would ask for a path that does not exist and collect
+ * a second calendar. The path is shown to nobody; the display name is.
  */
-function collectionSlug(name) {
-  const slug = (name || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-  return slug || 'exo-meetings';
+const MIRROR_COLLECTION_SLUG = 'exo-meetings';
+
+/**
+ * Whether a collection is one eXo created to receive the copies, judged on
+ * its path alone so the answer does not depend on the language of whoever
+ * created it. Collections made before the path became a constant carry a
+ * random suffix, and are recognised too.
+ *
+ * @param {String} url collection URL
+ * @returns {Boolean} true when the collection is an eXo mirror
+ */
+function isMirrorCollection(url) {
+  const segment = collectionPath(url || '').split('/').pop();
+  return segment === MIRROR_COLLECTION_SLUG || segment.startsWith(`${MIRROR_COLLECTION_SLUG}-`);
 }
