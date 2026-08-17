@@ -304,7 +304,11 @@ DTEND:${toUTCString(event.end)}Z
       // by reading CONFERENCE, Thunderbird handles it partially — so the
       // description line stays the one thing every client can show, and the
       // property is what a client that does read it can act on.
-      iCalString += `CONFERENCE;VALUE=URI;FEATURE=VIDEO,AUDIO:${conferenceUrl}\n`;
+      // A single feature, not the VIDEO,AUDIO list RFC 7986 allows: ical.js
+      // quotes any parameter value holding a comma, which turns the list into
+      // one value that a strict reader then ignores. One correct token beats
+      // two that are read as none.
+      iCalString += `CONFERENCE;VALUE=URI;FEATURE=VIDEO:${conferenceUrl}\n`;
     }
     const created = toIcsTimestamp(event.created);
     if (created) {
