@@ -264,6 +264,7 @@ export default {
     let iCalString = `BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Exo Platform//NONSGML v1.0//EN
+CALSCALE:GREGORIAN
 BEGIN:VEVENT
 SUMMARY:${escapeText(event.summary)}
 UID:${icalUID}
@@ -281,16 +282,48 @@ DTEND:${toUTCString(event.end)}Z
     if (event.location) {
       iCalString += `LOCATION:${escapeText(event.location)}\n`;
     }
+    const conferenceUrl = toUri(event.conferences?.length > 0 && event.conferences[0]?.url);
     const descriptionParts = [];
     if (event.description) {
       descriptionParts.push(htmlToText(event.description));
     }
-    if (event.conferences?.length > 0 && event.conferences[0]?.url) {
-      descriptionParts.push(event.conferences[0].url);
+    if (conferenceUrl) {
+      descriptionParts.push(conferenceUrl);
     }
     if (descriptionParts.length > 0) {
       iCalString += `DESCRIPTION:${escapeText(descriptionParts.join('\n\n'))}\n`;
     }
+    const eventLink = eventUrl(event);
+    if (eventLink) {
+      iCalString += `URL:${eventLink}\n`;
+    }
+    if (conferenceUrl) {
+      // In addition to the line the description already carries, never
+      // instead of it: support for this property is patchy — Apple mostly
+      // recognises known providers by sniffing the description rather than
+      // by reading CONFERENCE, Thunderbird handles it partially — so the
+      // description line stays the one thing every client can show, and the
+      // property is what a client that does read it can act on.
+      iCalString += `CONFERENCE;VALUE=URI;FEATURE=VIDEO,AUDIO:${conferenceUrl}\n`;
+    }
+    const created = toIcsTimestamp(event.created);
+    if (created) {
+      iCalString += `CREATED:${created}\n`;
+    }
+    const lastModified = toIcsTimestamp(event.updated);
+    if (lastModified) {
+      iCalString += `LAST-MODIFIED:${lastModified}\n`;
+    }
+    // CONFIRMED for every event pushed, deliberately, rather than a mapping
+    // of the agenda status: eXo spells a date poll TENTATIVE, which in RFC
+    // 5545 means "provisionally scheduled" — a poll pushed with its own word
+    // would show up as a real meeting nobody has confirmed. An event only
+    // reaches this connector once it is scheduled, so the honest value is the
+    // constant. TRANSP is the RFC default and is written for explicitness, so
+    // that a client reading the object does not have to know the default.
+    iCalString += `STATUS:CONFIRMED
+TRANSP:OPAQUE
+`;
     if (isOccurrence) {
       // Exactly one RECURRENCE-ID, and always one. Both writes used to sit
       // under the same condition, so a timed occurrence carried the property
@@ -333,6 +366,10 @@ END:VCALENDAR
 `;
     iCalString = iCalString.trim();
     try {
+      // Inside the try so that a property built wrongly is reported as a
+      // failed save, with the offending object logged next to it, rather
+      // than escaping as a bare parser error.
+      iCalString = normalizeIcs(iCalString);
       // RFC 4791 stores every component sharing a UID — the master with its
       // RRULE plus one VEVENT per modified occurrence — in a single calendar
       // object. A PUT replaces that object wholesale, so pushing the VEVENT
@@ -582,6 +619,97 @@ function isSameOccurrence(left, right) {
     return left.year === right.year && left.month === right.month && left.day === right.day;
   }
   return left.compare(right) === 0;
+}
+
+/**
+ * Rewrites a calendar object through ical.js, so that what leaves the browser
+ * obeys the line rules of RFC 5545 section 3.1: CRLF endings, and content
+ * lines of at most 75 octets with the remainder folded onto continuation
+ * lines. The builder above concatenates bare newlines and folds nothing, so a
+ * description of a few sentences went out as a single 500-character line —
+ * which a strict server may reject outright and a lenient one stores as it
+ * sees fit.
+ *
+ * It also reconciles the two write paths. An update already passed through
+ * ical.js, since the VEVENT is spliced into the object the server holds and
+ * that object is re-serialised; a creation PUT the hand-built text as it was.
+ * The first push of an event and every later push of the same event were
+ * therefore structurally different documents, which is exactly the kind of
+ * difference that makes a bug reproduce on one client and not on another.
+ *
+ * Parsing here has a second effect worth as much as the folding: a property
+ * this connector builds wrongly fails in the browser, where the value that
+ * caused it is at hand, instead of coming back as a 400 with no detail.
+ *
+ * @param {String} iCalString calendar object as built by saveEvent
+ * @returns {String} the same object, folded and with CRLF endings
+ */
+function normalizeIcs(iCalString) {
+  return new ICAL.Component(ICAL.parse(iCalString)).toString();
+}
+
+/**
+ * Absolute link to the event in eXo, for the URL property — the one way back
+ * from the copy on the phone to the event itself, its attendees and its
+ * space. It has to be absolute: a client is not a browser sitting on the
+ * portal, so a path alone resolves against nothing.
+ *
+ * The path is the one the agenda application uses to open an event from
+ * outside itself, as its search results already do.
+ *
+ * @param {Object} event agenda event being pushed
+ * @returns {String} the link, or an empty string when the page carries no
+ * portal environment to build it from
+ */
+function eventUrl(event) {
+  const eventId = event.id || event.parent?.id;
+  const portal = window.eXo?.env?.portal;
+  if (!eventId || !portal?.portalName || !portal?.context) {
+    return '';
+  }
+  return `${window.location.origin}${portal.context}/${portal.portalName}/agenda?eventId=${eventId}`;
+}
+
+/**
+ * Prepares a value for a URI property. URI values are not TEXT: their commas
+ * and semicolons are part of the address and escaping them would corrupt it,
+ * so nothing is escaped here. A line break is the one character that cannot
+ * be carried — it would end the property and turn the rest of the address
+ * into a line of its own — and is removed rather than allowed to corrupt the
+ * object.
+ *
+ * @param {String} value address as agenda supplies it, possibly absent
+ * @returns {String} the address, or an empty string when there is none
+ */
+function toUri(value) {
+  if (!value) {
+    return '';
+  }
+  return String(value).replace(/[\r\n]/g, '').trim();
+}
+
+/**
+ * Formats one of the event's own timestamps as a UTC date-time, for CREATED
+ * and LAST-MODIFIED. Those two let a client tell which of two copies of an
+ * event is the newer one; DTSTAMP cannot, since it says when the object was
+ * written, which is now for every push.
+ *
+ * Agenda leaves the timestamp out on occasion — an event that has never been
+ * updated has no updated date — so an unusable value yields nothing rather
+ * than an epoch or an Invalid Date.
+ *
+ * @param {String} value timestamp as agenda supplies it, RFC 3339
+ * @returns {String} the value as YYYYMMDDTHHMMSSZ, or an empty string
+ */
+function toIcsTimestamp(value) {
+  if (!value) {
+    return '';
+  }
+  const date = new Date(value);
+  if (isNaN(date.getTime())) {
+    return '';
+  }
+  return `${toUTCString(date.toISOString())}Z`;
 }
 
 /**
