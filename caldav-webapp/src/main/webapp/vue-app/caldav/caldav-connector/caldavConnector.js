@@ -668,7 +668,15 @@ export function createCaldavConnector(server, index) {
     description: `${server.providerName}.description`,
     serverId: server.id,
     serverUrl: server.serverUrl,
+    // The visual identity, in the admin's order of precedence: the uploaded
+    // image, else the font icon chosen in admin, else the packaged CalDAV
+    // default. `avatar` stays an image URL for every consumer that renders
+    // an <img> (toolbar badge, timeline); `icon`+`imageUrl` let the connect
+    // drawer render the font icon when that is what the admin configured, so
+    // the drawer and the admin list show the same identity.
     avatar: server.imageUrl || caldavConnector.avatar,
+    icon: server.icon || null,
+    imageUrl: server.imageUrl || null,
     rank: caldavConnector.rank + (index || 0),
   });
 }
