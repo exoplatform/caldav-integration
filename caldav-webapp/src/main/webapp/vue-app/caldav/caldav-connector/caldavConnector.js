@@ -180,27 +180,77 @@ export default {
       return this.saveEvent(event, settings);
     });
   },
+  /**
+   * Removes an agenda event from the remote calendar.
+   *
+   * The previous implementation searched the remote events of the period for
+   * one whose UID equalled the agenda event id — a match that never held for
+   * the UUID identifiers this connector writes — and it deleted the calendar
+   * object by URL, so removing one occurrence of a recurring event removed
+   * the object holding the whole series. The event now identifies its own
+   * object through the remote identifier agenda stored at push time, and a
+   * single occurrence is excluded from the series instead of the series
+   * being deleted.
+   *
+   * @param {Object} event agenda event, or cancelled occurrence, to remove
+   * @returns {Promise} resolves null once the remote calendar reflects it
+   */
   deleteEvent(event) {
-    this.getEvents(event.startDate,event.endDate).then((events)=> {
-      events.forEach((obj) => {
-        if (event.id === parseInt(obj.uid)) {
-          return caldavConnectorService.getCaldavSetting().then((settings)=> {
-            return this.removeEvent(obj, settings);
-          });
-        }
-      });
+    return caldavConnectorService.getCaldavSetting().then((settings)=> {
+      return this.removeEvent(event, settings);
     });
   },
+  /**
+   * Applies a deletion to the calendar object backing the event.
+   *
+   * A whole event, recurring or not, removes its object — overrides included,
+   * since they live in the same object. A single occurrence must not: per RFC
+   * 4791 every component of the series shares one object, so the occurrence
+   * is excluded by rewriting the object without its override and with an
+   * EXDATE on the master, under If-Match so a concurrent change of the
+   * series surfaces as a conflict instead of being overwritten.
+   *
+   * @param {Object} event agenda event, or cancelled occurrence, to remove
+   * @param {Object} settings connector settings holding the URL and credentials
+   * @returns {Promise} resolves null once the remote calendar reflects it
+   */
   async removeEvent(event, settings) {
     const clientCaldav = await createClient(settings);
-    await this.getCalendar(clientCaldav);
-    return clientCaldav.deleteCalendarObject({
-      calendarObject: {
-        url: event.url,
-        etag: event.etag,
-      },
-      headersToExclude: ['If-None-Match']
-    });
+    const calendar = await this.getCalendar(clientCaldav);
+    const isOccurrence = !!event.occurrence;
+    const icalUID = isOccurrence ? event.parent && event.parent.remoteId : event.remoteId;
+    if (!icalUID) {
+      return null;
+    }
+    const existing = await fetchCalendarObject(calendar, `${icalUID}.ics`, settings);
+    if (!existing) {
+      return null;
+    }
+    try {
+      let response;
+      const data = isOccurrence ? excludeOccurrence(existing.data, event) : null;
+      if (data) {
+        response = await clientCaldav.updateCalendarObject({
+          calendarObject: {
+            url: existing.url,
+            data: data,
+            etag: existing.etag,
+          },
+        });
+      } else {
+        response = await clientCaldav.deleteCalendarObject({
+          calendarObject: {
+            url: existing.url,
+            etag: existing.etag,
+          },
+        });
+      }
+      ensureAccepted(response);
+      return null;
+    } catch (e) {
+      console.error('Error deleting from CalDAV:', e);
+      throw e.code ? e : caldavError('caldav.error.save', e);
+    }
   },
   async saveEvent(event, settings) {
     const clientCaldav = await createClient(settings);
@@ -209,90 +259,237 @@ export default {
     const icalUID = isOccurrence ? event.parent.remoteId : event.remoteId || crypto.randomUUID();
     const filename = `${icalUID}.ics`;
 
-    const dtStamp = new Date().toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', 'Z');
+    let iCalString = buildEventIcs(event, icalUID, isOccurrence);
+    try {
+      // Inside the try so that a property built wrongly is reported as a
+      // failed save, with the offending object logged next to it, rather
+      // than escaping as a bare parser error.
+      iCalString = normalizeIcs(iCalString);
+      // RFC 4791 stores every component sharing a UID — the master with its
+      // RRULE plus one VEVENT per modified occurrence — in a single calendar
+      // object. A PUT replaces that object wholesale, so pushing the VEVENT
+      // built above on its own erased the rest of the series: writing an
+      // occurrence override dropped the master and every other override,
+      // which is how one edited occurrence deleted the whole series from the
+      // server. The object is therefore read first and the VEVENT spliced
+      // into what it already holds, and the write is conditional on the ETag
+      // observed, so a concurrent change from another client surfaces as a
+      // conflict instead of being silently overwritten.
+      const existing = await fetchCalendarObject(calendar, filename, settings);
+      let response;
+      if (existing) {
+        response = await clientCaldav.updateCalendarObject({
+          calendarObject: {
+            url: existing.url,
+            data: mergeIntoCalendarObject(existing.data, iCalString, isOccurrence),
+            etag: existing.etag,
+          },
+        });
+      } else {
+        // First push of the event: no read-modify-write needed, but the
+        // If-None-Match: * precondition is kept — the previous code excluded
+        // it because this call also served updates — so a concurrent creation
+        // of the same object comes back as a conflict, not an overwrite.
+        response = await clientCaldav.createCalendarObject({
+          calendar, iCalString, filename
+        });
+      }
+      ensureAccepted(response);
+      return {id: icalUID};
+    } catch (e) {
+      console.error('Error creating/updating CalDAV:', e, 'iCalString:', iCalString);
+      throw e.code ? e : caldavError('caldav.error.save', e);
+    }
+  }
+};
 
-    let iCalString = `BEGIN:VCALENDAR
+/**
+ * The whole iCalendar object for one event, ready to be pushed.
+ * <p>
+ * Assembled from parts so that each stays readable on its own: the property
+ * set an event needs has grown well past what one function can hold without
+ * hiding its own shape.
+ *
+ * @param  {object} event - the event being pushed
+ * @param  {string} icalUID - the UID shared by the series and its overrides
+ * @param  {boolean} isOccurrence - whether this component amends one instance
+ * @returns {string} the VCALENDAR object, trimmed
+ */
+function buildEventIcs(event, icalUID, isOccurrence) {
+  const dtStamp = new Date().toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', 'Z');
+  let ics = `BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Exo Platform//NONSGML v1.0//EN
+CALSCALE:GREGORIAN
 BEGIN:VEVENT
 SUMMARY:${escapeText(event.summary)}
 UID:${icalUID}
 DTSTAMP:${dtStamp}
 `;
-    if (event.allDay) {
-      iCalString += `DTSTART;VALUE=DATE:${toIcsDate(event.start, event.timeZoneId)}
-DTEND;VALUE=DATE:${toIcsEndDate(event.end, event.timeZoneId)}
+  ics += scheduleLines(event);
+  ics += describeLines(event);
+  ics += stampLines(event);
+  // CONFIRMED for every event pushed, deliberately, rather than a mapping
+  // of the agenda status: eXo spells a date poll TENTATIVE, which in RFC
+  // 5545 means "provisionally scheduled" — a poll pushed with its own word
+  // would show up as a real meeting nobody has confirmed. An event only
+  // reaches this connector once it is scheduled, so the honest value is the
+  // constant. TRANSP is the RFC default and is written for explicitness, so
+  // that a client reading the object does not have to know the default.
+  ics += `STATUS:CONFIRMED
+TRANSP:OPAQUE
 `;
-    } else {
-      iCalString += `DTSTART:${toUTCString(event.start)}Z
-DTEND:${toUTCString(event.end)}Z
-`;
-    }
-    if (event.location) {
-      iCalString += `LOCATION:${escapeText(event.location)}\n`;
-    }
-    const descriptionParts = [];
-    if (event.description) {
-      descriptionParts.push(htmlToText(event.description));
-    }
-    if (event.conferences?.length > 0 && event.conferences[0]?.url) {
-      descriptionParts.push(event.conferences[0].url);
-    }
-    if (descriptionParts.length > 0) {
-      iCalString += `DESCRIPTION:${escapeText(descriptionParts.join('\n\n'))}\n`;
-    }
-    if (isOccurrence) {
-      // Exactly one RECURRENCE-ID, and always one. Both writes used to sit
-      // under the same condition, so a timed occurrence carried the property
-      // twice — it may occur at most once — while an all-day occurrence
-      // carried none at all and, having no anchor, replaced the master event
-      // instead of amending the single instance it was meant to.
-      //
-      // The form follows event.allDay, matching how DTSTART above decides, and
-      // not whether the occurrence identifier happens to contain a time. RFC
-      // 5545 requires this property to carry the same value type as the
-      // DTSTART of the series it points into, and agenda identifies an
-      // occurrence of an all-day event by an instant all the same — so keying
-      // off the identifier wrote a date-time reference into a date-valued
-      // series, which matches no instance at all.
-      if (event.allDay) {
-        iCalString += `RECURRENCE-ID;VALUE=DATE:${toIcsDate(event.occurrence.id, event.timeZoneId)}\n`;
-      } else {
-        iCalString += `RECURRENCE-ID:${event.occurrence.id.replace(/[-:]|\.\d{3}/g, '')}Z\n`;
-      }
-    } else if (event.recurrence?.rrule) {
-      let rruleValue = event.recurrence.rrule.trim();
-      rruleValue = rruleValue.replace(/COUNT=0;?/, '');
-      if (rruleValue.length > 0) {
-        iCalString += `RRULE:${rruleValue}\n`;
-      }
-    }
-    if (!isOccurrence && event.recurrence?.exceptions && event.recurrence.exceptions.length > 0) {
-      event.recurrence.exceptions.forEach(exdate => {
-        const exDateFormatted = exdate.date.replace(/[-:]|\.\d{3}/g, '');
-        if (exDateFormatted.includes('T')) {
-          iCalString += `EXDATE:${exDateFormatted}Z\n`;
-        } else {
-          iCalString += `EXDATE;VALUE=DATE:${exDateFormatted}\n`;
-        }
-      });
-    }
-    iCalString += buildAlarms(event);
-    iCalString += `END:VEVENT
+  ics += recurrenceLines(event, isOccurrence);
+  ics += exceptionLines(event, isOccurrence);
+  ics += buildAlarms(event);
+  ics += `END:VEVENT
 END:VCALENDAR
 `;
-    iCalString = iCalString.trim();
-    try {
-      await clientCaldav.createCalendarObject({
-        calendar, iCalString, filename, headersToExclude: ['If-None-Match']
-      });
-      return {id: icalUID};
-    } catch (e) {
-      console.error('Error creating/updating CalDAV:', e, 'iCalString:', iCalString);
-      throw caldavError('caldav.error.save', e);
+  return ics.trim();
+}
+
+/**
+ * The DTSTART/DTEND pair, in the form the event's own all-day flag calls for.
+ *
+ * @param  {object} event - the event being pushed
+ * @returns {string} the two lines, terminated
+ */
+function scheduleLines(event) {
+  let ics = '';
+  if (event.allDay) {
+    ics += `DTSTART;VALUE=DATE:${toIcsDate(event.start, event.timeZoneId)}
+DTEND;VALUE=DATE:${toIcsEndDate(event.end, event.timeZoneId)}
+`;
+  } else {
+    ics += `DTSTART:${toUTCString(event.start)}Z
+DTEND:${toUTCString(event.end)}Z
+`;
+  }
+  return ics;
+}
+
+/**
+ * Everything a reader shows as text: where it is, what it is about, where it
+ * lives in eXo, and the conference it can be joined through.
+ *
+ * @param  {object} event - the event being pushed
+ * @returns {string} the properties, each terminated
+ */
+function describeLines(event) {
+  let ics = '';
+  if (event.location) {
+    ics += `LOCATION:${escapeText(event.location)}\n`;
+  }
+  const conferenceUrl = toUri(event.conferences?.length > 0 && event.conferences[0]?.url);
+  const descriptionParts = [];
+  if (event.description) {
+    descriptionParts.push(htmlToText(event.description));
+  }
+  if (conferenceUrl) {
+    descriptionParts.push(conferenceUrl);
+  }
+  if (descriptionParts.length > 0) {
+    ics += `DESCRIPTION:${escapeText(descriptionParts.join('\n\n'))}\n`;
+  }
+  const eventLink = eventUrl(event);
+  if (eventLink) {
+    ics += `URL:${eventLink}\n`;
+  }
+  if (conferenceUrl) {
+    // In addition to the line the description already carries, never
+    // instead of it: support for this property is patchy — Apple mostly
+    // recognises known providers by sniffing the description rather than
+    // by reading CONFERENCE, Thunderbird handles it partially — so the
+    // description line stays the one thing every client can show, and the
+    // property is what a client that does read it can act on.
+    // A single feature, not the VIDEO,AUDIO list RFC 7986 allows: ical.js
+    // quotes any parameter value holding a comma, which turns the list into
+    // one value that a strict reader then ignores. One correct token beats
+    // two that are read as none.
+    ics += `CONFERENCE;VALUE=URI;FEATURE=VIDEO:${conferenceUrl}\n`;
+  }
+  return ics;
+}
+
+/**
+ * CREATED and LAST-MODIFIED, when the event carries them.
+ *
+ * @param  {object} event - the event being pushed
+ * @returns {string} the properties, each terminated
+ */
+function stampLines(event) {
+  let ics = '';
+  const created = toIcsTimestamp(event.created);
+  if (created) {
+    ics += `CREATED:${created}\n`;
+  }
+  const lastModified = toIcsTimestamp(event.updated);
+  if (lastModified) {
+    ics += `LAST-MODIFIED:${lastModified}\n`;
+  }
+  return ics;
+}
+
+/**
+ * What ties the component to a series: the occurrence it amends, or the rule
+ * the master repeats by.
+ *
+ * @param  {object} event - the event being pushed
+ * @param  {boolean} isOccurrence - whether this component amends one instance
+ * @returns {string} the property, or an empty string
+ */
+function recurrenceLines(event, isOccurrence) {
+  let ics = '';
+  if (isOccurrence) {
+    // Exactly one RECURRENCE-ID, and always one. Both writes used to sit
+    // under the same condition, so a timed occurrence carried the property
+    // twice — it may occur at most once — while an all-day occurrence
+    // carried none at all and, having no anchor, replaced the master event
+    // instead of amending the single instance it was meant to.
+    //
+    // The form follows event.allDay, matching how DTSTART above decides, and
+    // not whether the occurrence identifier happens to contain a time. RFC
+    // 5545 requires this property to carry the same value type as the
+    // DTSTART of the series it points into, and agenda identifies an
+    // occurrence of an all-day event by an instant all the same — so keying
+    // off the identifier wrote a date-time reference into a date-valued
+    // series, which matches no instance at all.
+    if (event.allDay) {
+      ics += `RECURRENCE-ID;VALUE=DATE:${toIcsDate(event.occurrence.id, event.timeZoneId)}\n`;
+    } else {
+      ics += `RECURRENCE-ID:${event.occurrence.id.replace(/[-:]|\.\d{3}/g, '')}Z\n`;
+    }
+  } else if (event.recurrence?.rrule) {
+    let rruleValue = event.recurrence.rrule.trim();
+    rruleValue = rruleValue.replace(/COUNT=0;?/, '');
+    if (rruleValue.length > 0) {
+      ics += `RRULE:${rruleValue}\n`;
     }
   }
-};
+  return ics;
+}
+
+/**
+ * The instances deleted from a series, written by the master only.
+ *
+ * @param  {object} event - the event being pushed
+ * @param  {boolean} isOccurrence - whether this component amends one instance
+ * @returns {string} one EXDATE per exception
+ */
+function exceptionLines(event, isOccurrence) {
+  let ics = '';
+  if (!isOccurrence && event.recurrence?.exceptions && event.recurrence.exceptions.length > 0) {
+    event.recurrence.exceptions.forEach(exdate => {
+      const exDateFormatted = exdate.date.replace(/[-:]|\.\d{3}/g, '');
+      if (exDateFormatted.includes('T')) {
+        ics += `EXDATE:${exDateFormatted}Z\n`;
+      } else {
+        ics += `EXDATE;VALUE=DATE:${exDateFormatted}\n`;
+      }
+    });
+  }
+  return ics;
+}
 
 /**
  * Opens a DAV client for the connected account.
@@ -340,6 +537,262 @@ function caldavError(code, cause) {
   error.status = cause?.status || cause?.response?.status;
   error.cause = cause;
   return error;
+}
+
+/**
+ * Checks the outcome of a write to the server. tsdav hands back the raw
+ * fetch Response without looking at it, so a rejected write — including the
+ * 412 a failed If-Match or If-None-Match precondition produces — would
+ * otherwise count as a success while the server kept its own version.
+ *
+ * @param {Object} response fetch Response of a PUT or DELETE
+ * @returns {void} nothing when the server accepted the write
+ * @throws {Error} caldav.error.conflict on 412, caldav.error.save otherwise
+ */
+function ensureAccepted(response) {
+  if (response.status === 412) {
+    throw caldavError('caldav.error.conflict', response);
+  }
+  if (!response.ok) {
+    throw caldavError('caldav.error.save', response);
+  }
+}
+
+/**
+ * Reads one calendar object of the connected calendar, with the ETag the
+ * later conditional write needs.
+ *
+ * The lookup is a plain GET on the one URL the filename denotes, rather than
+ * a calendar-multiget through tsdav: tsdav turns the 404 entry a multiget
+ * reports for a missing object into a thrown query failure, which would make
+ * "the object does not exist yet" — the normal first push of an event —
+ * indistinguishable from a real error. The GET answers it in one request
+ * with an unambiguous status.
+ *
+ * @param {Object} calendar calendar collection holding the object
+ * @param {String} filename name of the object inside the collection
+ * @param {Object} settings connector settings holding the URL and credentials
+ * @returns {Promise<Object>} the object with url, etag and data, or null
+ */
+async function fetchCalendarObject(calendar, filename, settings) {
+  const url = new URL(filename, calendar.url).href;
+  const response = await fetch(url, {
+    headers: {
+      authorization: `Basic ${btoa(`${settings.username}:${settings.password}`)}`,
+    },
+  });
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw caldavError('caldav.error.save', response);
+  }
+  return {
+    url: url,
+    etag: response.headers.get('etag'),
+    data: await response.text(),
+  };
+}
+
+/**
+ * Splices the freshly built VEVENT into the calendar object as the server
+ * holds it, keeping every component the push is not about.
+ *
+ * An occurrence override replaces the override carrying the same
+ * RECURRENCE-ID — so editing the same occurrence twice updates it rather
+ * than duplicating it — and is appended when none matches; the master and
+ * the other overrides are untouched. A master replaces the master and keeps
+ * the overrides: agenda re-pushes every exceptional occurrence right after
+ * the series itself, so the overrides converge on their own, and dropping
+ * them here would lose them entirely on the pushes — a response update, for
+ * one — that are not followed by that loop. Overrides falling on a date the
+ * new master excludes with an EXDATE are removed, though: their occurrence
+ * was deleted, and an override contradicting an EXDATE leaves the deleted
+ * occurrence visible on clients that favor the override.
+ *
+ * @param {String} existingData the calendar object as fetched from the server
+ * @param {String} newComponentString VCALENDAR holding the one VEVENT to push
+ * @param {Boolean} isOccurrence whether that VEVENT is an occurrence override
+ * @returns {String} the merged calendar object, ready to PUT
+ */
+function mergeIntoCalendarObject(existingData, newComponentString, isOccurrence) {
+  const calendar = new ICAL.Component(ICAL.parse(existingData));
+  const newEvent = new ICAL.Component(ICAL.parse(newComponentString)).getFirstSubcomponent('vevent');
+  let replaced;
+  if (isOccurrence) {
+    const recurrenceId = newEvent.getFirstPropertyValue('recurrence-id');
+    replaced = vevent => isSameOccurrence(vevent.getFirstPropertyValue('recurrence-id'), recurrenceId);
+  } else {
+    const exdates = newEvent.getAllProperties('exdate').map(property => property.getFirstValue());
+    replaced = vevent => {
+      const recurrenceId = vevent.getFirstPropertyValue('recurrence-id');
+      return !recurrenceId || exdates.some(exdate => isSameOccurrence(recurrenceId, exdate));
+    };
+  }
+  calendar.getAllSubcomponents('vevent').filter(replaced)
+    .forEach(vevent => calendar.removeSubcomponent(vevent));
+  calendar.addSubcomponent(newEvent);
+  return calendar.toString();
+}
+
+/**
+ * Rewrites the calendar object so that it no longer produces the given
+ * occurrence: the override carrying its RECURRENCE-ID, if any, is removed,
+ * and the master gains an EXDATE for the instance — in the value type of its
+ * own DTSTART, since RFC 5545 matches instances by identical value.
+ *
+ * @param {String} existingData the calendar object as fetched from the server
+ * @param {Object} event cancelled occurrence, carrying occurrence.id
+ * @returns {String} the object to PUT back, or null when nothing remains of
+ * it and the object itself should be deleted instead
+ */
+function excludeOccurrence(existingData, event) {
+  const calendar = new ICAL.Component(ICAL.parse(existingData));
+  const master = calendar.getAllSubcomponents('vevent')
+    .find(vevent => !vevent.getFirstPropertyValue('recurrence-id'));
+  const dtstart = master && master.getFirstPropertyValue('dtstart');
+  const occurrence = occurrenceToTime(event, dtstart ? dtstart.isDate : event.allDay);
+  calendar.getAllSubcomponents('vevent')
+    .filter(vevent => isSameOccurrence(vevent.getFirstPropertyValue('recurrence-id'), occurrence))
+    .forEach(vevent => calendar.removeSubcomponent(vevent));
+  if (calendar.getAllSubcomponents('vevent').length === 0) {
+    return null;
+  }
+  if (master && !master.getAllProperties('exdate').some(property => isSameOccurrence(property.getFirstValue(), occurrence))) {
+    const exdate = new ICAL.Property('exdate');
+    exdate.setValue(occurrence);
+    master.addProperty(exdate);
+  }
+  return calendar.toString();
+}
+
+/**
+ * The instant an occurrence identifier denotes, as an ICAL.Time in the form
+ * the series uses: the calendar date in the event's zone for an all-day
+ * series, the UTC instant otherwise — mirroring how saveEvent writes
+ * RECURRENCE-ID for the same identifier.
+ *
+ * @param {Object} event occurrence event, carrying occurrence.id
+ * @param {Boolean} asDate whether the series is date-valued
+ * @returns {Object} the occurrence as an ICAL.Time
+ */
+function occurrenceToTime(event, asDate) {
+  if (asDate) {
+    const {year, month, day} = datePartsInZone(event.occurrence.id, event.timeZoneId);
+    return new ICAL.Time({year, month, day, isDate: true});
+  }
+  return ICAL.Time.fromJSDate(new Date(event.occurrence.id), true);
+}
+
+/**
+ * Whether two RECURRENCE-ID or EXDATE values denote the same occurrence.
+ * When either side is date-valued the calendar dates are compared, so that a
+ * date reference finds the occurrence even against a component written with
+ * the other value type by an older client.
+ *
+ * @param {Object} left one value as an ICAL.Time, possibly absent
+ * @param {Object} right the other value as an ICAL.Time, possibly absent
+ * @returns {Boolean} whether both are present and denote the same occurrence
+ */
+function isSameOccurrence(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+  if (left.isDate || right.isDate) {
+    return left.year === right.year && left.month === right.month && left.day === right.day;
+  }
+  return left.compare(right) === 0;
+}
+
+/**
+ * Rewrites a calendar object through ical.js, so that what leaves the browser
+ * obeys the line rules of RFC 5545 section 3.1: CRLF endings, and content
+ * lines of at most 75 octets with the remainder folded onto continuation
+ * lines. The builder above concatenates bare newlines and folds nothing, so a
+ * description of a few sentences went out as a single 500-character line —
+ * which a strict server may reject outright and a lenient one stores as it
+ * sees fit.
+ *
+ * It also reconciles the two write paths. An update already passed through
+ * ical.js, since the VEVENT is spliced into the object the server holds and
+ * that object is re-serialised; a creation PUT the hand-built text as it was.
+ * The first push of an event and every later push of the same event were
+ * therefore structurally different documents, which is exactly the kind of
+ * difference that makes a bug reproduce on one client and not on another.
+ *
+ * Parsing here has a second effect worth as much as the folding: a property
+ * this connector builds wrongly fails in the browser, where the value that
+ * caused it is at hand, instead of coming back as a 400 with no detail.
+ *
+ * @param {String} iCalString calendar object as built by saveEvent
+ * @returns {String} the same object, folded and with CRLF endings
+ */
+function normalizeIcs(iCalString) {
+  return new ICAL.Component(ICAL.parse(iCalString)).toString();
+}
+
+/**
+ * Absolute link to the event in eXo, for the URL property — the one way back
+ * from the copy on the phone to the event itself, its attendees and its
+ * space. It has to be absolute: a client is not a browser sitting on the
+ * portal, so a path alone resolves against nothing.
+ *
+ * The path is the one the agenda application uses to open an event from
+ * outside itself, as its search results already do.
+ *
+ * @param {Object} event agenda event being pushed
+ * @returns {String} the link, or an empty string when the page carries no
+ * portal environment to build it from
+ */
+function eventUrl(event) {
+  const eventId = event.id || event.parent?.id;
+  const portal = window.eXo?.env?.portal;
+  if (!eventId || !portal?.portalName || !portal?.context) {
+    return '';
+  }
+  return `${window.location.origin}${portal.context}/${portal.portalName}/agenda?eventId=${eventId}`;
+}
+
+/**
+ * Prepares a value for a URI property. URI values are not TEXT: their commas
+ * and semicolons are part of the address and escaping them would corrupt it,
+ * so nothing is escaped here. A line break is the one character that cannot
+ * be carried — it would end the property and turn the rest of the address
+ * into a line of its own — and is removed rather than allowed to corrupt the
+ * object.
+ *
+ * @param {String} value address as agenda supplies it, possibly absent
+ * @returns {String} the address, or an empty string when there is none
+ */
+function toUri(value) {
+  if (!value) {
+    return '';
+  }
+  return String(value).replace(/[\r\n]/g, '').trim();
+}
+
+/**
+ * Formats one of the event's own timestamps as a UTC date-time, for CREATED
+ * and LAST-MODIFIED. Those two let a client tell which of two copies of an
+ * event is the newer one; DTSTAMP cannot, since it says when the object was
+ * written, which is now for every push.
+ *
+ * Agenda leaves the timestamp out on occasion — an event that has never been
+ * updated has no updated date — so an unusable value yields nothing rather
+ * than an epoch or an Invalid Date.
+ *
+ * @param {String} value timestamp as agenda supplies it, RFC 3339
+ * @returns {String} the value as YYYYMMDDTHHMMSSZ, or an empty string
+ */
+function toIcsTimestamp(value) {
+  if (!value) {
+    return '';
+  }
+  const date = new Date(value);
+  if (isNaN(date.getTime())) {
+    return '';
+  }
+  return `${toUTCString(date.toISOString())}Z`;
 }
 
 /**
