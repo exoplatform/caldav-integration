@@ -124,42 +124,104 @@ export default {
     },
   },
   methods: {
+    /**
+     * Opens the drawer holding the CalDAV account form.
+     *
+     * @returns {void}
+     */
     openCaldavDrawer() {
       this.$refs.caldavSettingsDrawer.open();
     },
+    /**
+     * Closes the drawer holding the CalDAV account form.
+     *
+     * @returns {void}
+     */
     closeCaldavDrawer() {
       this.$refs.caldavSettingsDrawer.close();
     },
+    /**
+     * Abandons the connection attempt: tells the pending connect() of the
+     * agenda connector that nothing was connected, and closes the drawer.
+     *
+     * @returns {void}
+     */
     cancelConnection() {
       document.dispatchEvent(new CustomEvent('test-connection'));
       this.closeCaldavDrawer();
     },
+    /**
+     * Connects the typed CalDAV account: asks the server itself whether it
+     * accepts the credentials, and only then stores them and declares the
+     * connector connected.
+     *
+     * The order matters. Storing first would leave a refused credential
+     * behind, half-connecting the account: every later request would answer
+     * 401, surfacing as an empty agenda or as the browser's own credentials
+     * dialog. So nothing is stored until the server has said yes; on a
+     * refusal the drawer stays open with what the user typed, under a message
+     * naming the actual failure — credentials refused, server unreachable, or
+     * a URL that reaches something that is not a CalDAV calendar.
+     *
+     * @returns {void}
+     */
     saveSettings() {
       if (!this.disableConnectButton) {
         this.saving = true;
-        const caldavSettings = {
-          'username': this.account,
-          'password': this.password
-        };
-        this.$agendaCaldavService.createCaldavSetting(caldavSettings).then((respStatus) => {
-          if (respStatus === 200) {
-            this.$emit('display-alert', this.$t('agenda.caldavCalendar.settings.connection.successMessage'));
-          }
-        }).then(() => {
-          this.$agendaCaldavService.getCaldavSetting().then((settings) => {
-            document.dispatchEvent(new CustomEvent('test-connection', {detail: settings}));
-            this.reset();
-            this.closeCaldavDrawer();
+        // The server URL is deployment configuration, served by the settings
+        // REST whether or not an account is stored yet — which is what makes
+        // verify-then-store possible at all.
+        this.$agendaCaldavService.getCaldavSetting()
+          .then(settings => this.$agendaCaldavService.probeCaldavAccount(settings.caldavUrl, this.account, this.password)
+            .then(() => this.$agendaCaldavService.createCaldavSetting({
+              'username': this.account,
+              'password': this.password
+            }))
+            .then(() => {
+              this.$emit('display-alert', this.$t('agenda.caldavCalendar.settings.connection.successMessage'));
+              document.dispatchEvent(new CustomEvent('test-connection', {
+                detail: {
+                  username: this.account,
+                  password: this.password,
+                  caldavUrl: settings.caldavUrl,
+                },
+              }));
+              this.reset();
+              this.closeCaldavDrawer();
+            }))
+          .catch(error => {
+            // The drawer stays open, keeping what the user typed: a refusal
+            // is something to correct, not a form to fill again.
+            this.$emit('display-alert', this.$t(this.errorMessageKey(error)), 'error');
+          })
+          .finally(() => {
+            window.setTimeout(() => {
+              this.saving = false;
+            }, 200);
           });
-        }).catch(() => {
-          this.$emit('display-alert', this.$t('agenda.caldavCalendar.settings.connection.errorMessage'), 'error');
-        }).finally(() => {
-          window.setTimeout(() => {
-            this.saving = false;
-          }, 200);
-        });
       }
     },
+    /**
+     * Resolves the message shown for a failed connection attempt. The probe
+     * rejects with an error carrying one of the stable caldav.error.* codes,
+     * which double as translation keys; anything else — the settings REST
+     * failing, an unexpected shape — falls back to the generic message.
+     *
+     * @param {Error} error the failure the connection attempt rejected with
+     * @returns {String} the translation key of the message to display
+     */
+    errorMessageKey(error) {
+      const knownCodes = ['caldav.error.credentials', 'caldav.error.connection', 'caldav.error.notCaldav'];
+      if (error && knownCodes.includes(error.code)) {
+        return error.code;
+      }
+      return 'agenda.caldavCalendar.settings.connection.errorMessage';
+    },
+    /**
+     * Empties the form, once its content has been stored or abandoned.
+     *
+     * @returns {void}
+     */
     reset() {
       this.account ='';
       this.password = '';
