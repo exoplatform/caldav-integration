@@ -21,8 +21,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     :width="iconSize"
     tile>
     <v-img
-      v-if="imageUrl"
-      :src="imageUrl"
+      v-if="imageSrc"
+      :src="imageSrc"
       :max-height="iconSize"
       :height="iconSize"
       :max-width="iconSize"
@@ -32,11 +32,13 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-else
       :size="iconSize"
       :class="iconClass">
-      {{ icon || 'fa-calendar-alt' }}
+      {{ icon }}
     </v-icon>
   </v-avatar>
 </template>
 <script>
+import {resolveServerImage} from '../../js/serverIconIdentity.js';
+
 export default {
   props: {
     iconSize: {
@@ -54,6 +56,19 @@ export default {
     iconClass: {
       type: String,
       default: 'icon-default-color',
+    },
+  },
+  computed: {
+    /**
+     * The image identifying the server, resolved by the shared rule:
+     * uploaded image, else — when no font icon was chosen either — the
+     * packaged CalDAV default. Null exactly when the font icon renders,
+     * so this preview always shows the identity the other surfaces show.
+     *
+     * @returns {String} the image URL to render, or null to render the font icon
+     */
+    imageSrc() {
+      return resolveServerImage(this.imageUrl, this.icon);
     },
   },
 };

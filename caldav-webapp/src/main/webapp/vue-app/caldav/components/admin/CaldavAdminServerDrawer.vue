@@ -198,7 +198,10 @@ export default {
     },
     /**
      * Creates or updates the drawer's server, then refreshes the table and
-     * tells the agenda apps that the connectors changed.
+     * tells the agenda apps that the connectors changed. A server whose
+     * administrator chose neither a font icon nor an image is saved with
+     * none: its identity stays the packaged CalDAV image everywhere, and
+     * a plain rename can never silently swap it for a generic glyph.
      *
      * @returns {Promise} resolves once saved and announced
      */
@@ -206,7 +209,6 @@ export default {
       this.loading = true;
       const isNew = !this.server.id;
       try {
-        this.server.icon = this.server.icon || 'fa-calendar-alt';
         if (isNew) {
           await this.$agendaCaldavService.createCaldavServer(this.server);
         } else {

@@ -27,7 +27,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       dense>
       <template #[`item.icon`]="{ item }">
         <caldav-server-icon
-          :image-url="rowImageUrl(item)"
+          :image-url="item.imageUrl"
           :icon="item.icon"
           class="flex-grow-0 flex-shrink-0 py-1" />
       </template>
@@ -91,17 +91,6 @@ export default {
     ];
   },
   methods: {
-    /**
-     * The image a row renders: its uploaded image, else — when no font icon
-     * was chosen either — the packaged CalDAV default, so this list shows
-     * exactly what the connect drawer shows for the same server.
-     *
-     * @param {Object} item the registered server of the row
-     * @returns {String} the image URL to render, or null to render the font icon
-     */
-    rowImageUrl(item) {
-      return item.imageUrl || (!item.icon && '/caldav/skin/image/caldav.png') || null;
-    },
     /**
      * Opens the drawer prefilled with the row to edit.
      *
