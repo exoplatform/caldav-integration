@@ -46,6 +46,72 @@ export const getCaldavSetting = () => {
   });
 };
 
+/**
+ * Asks the CalDAV server itself whether it recognises the account, before
+ * anything is stored or declared connected. The request is a plain PROPFIND
+ * rather than a tsdav call on purpose: tsdav reacts to a 401 by falling back
+ * to probing the server root and finally reports "cannot find principalUrl" —
+ * a discovery error for what is simply a rejected password.
+ *
+ * Three failures are told apart, each rejecting with an Error carrying its
+ * own stable code:
+ * - the server cannot be reached at all            -> caldav.error.connection
+ * - the server answers but refuses the credentials -> caldav.error.credentials
+ * - the URL reaches something that is not a CalDAV
+ *   collection (404, 405, a web page...)           -> caldav.error.notCaldav
+ *
+ * @param {String} caldavUrl URL of the CalDAV server, holding a {username} placeholder
+ * @param {String} username account to verify
+ * @param {String} password password to verify
+ * @returns {Promise} resolved when the server accepted the credentials,
+ *          rejected with an Error carrying a `code` and, when the server
+ *          answered, the HTTP `status` that produced it
+ */
+export const probeCaldavAccount = (caldavUrl, username, password) => {
+  if (!caldavUrl || !username) {
+    return Promise.reject(caldavError('caldav.error.connection'));
+  }
+  return fetch(caldavUrl.replace('{username}', username), {
+    method: 'PROPFIND',
+    headers: {
+      'Depth': '0',
+      'Content-Type': 'application/xml',
+      'Authorization': `Basic ${btoa(`${username}:${password}`)}`,
+    },
+    body: '<?xml version="1.0"?><propfind xmlns="DAV:"><prop><resourcetype/></prop></propfind>',
+  }).then(response => {
+    if (response.status === 401 || response.status === 403) {
+      throw caldavError('caldav.error.credentials', response.status);
+    }
+    // A CalDAV collection answers a PROPFIND with 207 Multi-Status. Anything
+    // else means the URL reaches something, but not a calendar: a wrong path
+    // (404), the server root (405), a web server serving a page (200)...
+    if (response.status !== 207) {
+      throw caldavError('caldav.error.notCaldav', response.status);
+    }
+  }, () => {
+    // fetch itself rejected: nothing answered at all (connection refused,
+    // unknown host, network down) — distinct from a server that answered no.
+    throw caldavError('caldav.error.connection');
+  });
+};
+
+/**
+ * Builds the error a CalDAV failure is reported with: a stable code the UI
+ * can translate into a message the user can act on, plus the HTTP status when
+ * there was a response, so logs keep the raw fact while the screen explains it.
+ *
+ * @param {String} code stable identifier for the kind of failure
+ * @param {Number} status HTTP status that produced it, when the server answered
+ * @returns {Error} the error to reject with
+ */
+function caldavError(code, status) {
+  const error = new Error(code);
+  error.code = code;
+  error.status = status;
+  return error;
+}
+
 export const deleteCaldavSetting = () => {
   return fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/v1/caldav`, {
     credentials: 'include',
