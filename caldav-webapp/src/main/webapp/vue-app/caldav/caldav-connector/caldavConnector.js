@@ -116,7 +116,11 @@ export default {
       projectedProps: {[PRIVILEGE_SET_PROP]: true},
       headersToExclude: ['If-None-Match'],
     });
-    await this.recoverMirrorCalendar(settings, calendars);
+    // Reconciling the mirror calendar must not be able to take the listing
+    // down with it: it is a background repair, and a transient failure here
+    // would otherwise leave the user with no calendars at all.
+    await this.recoverMirrorCalendar(settings, calendars)
+      .catch(e => console.error('cannot reclaim the mirror calendar', e));
     const ordered = inStableOrder(calendars);
     return ordered.map((calendar, index) => ({
       id: calendar.url,
@@ -151,7 +155,6 @@ export default {
     const existing = calendars.find(calendar => isMirrorCollection(calendar.url));
     if (existing) {
       await caldavConnectorService.saveMirrorCalendarHref(existing.url);
-      settings.mirrorCalendarHref = existing.url;
     }
   },
 
@@ -182,7 +185,14 @@ export default {
     const clientCaldav = await createClient(settings);
     const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
     const serverUrl = settings.caldavUrl.replace('{username}', settings.username);
-    const homeUrl = calendars.length && new URL('..', calendars[0].url).href
+    // The account's own calendar home, as tsdav discovered it, before either
+    // fallback. An account with no calendar yet has nothing to derive a home
+    // from, and the configured URL is not a safe substitute: the first form the
+    // README documents carries no {username}, so it names a root that may be
+    // shared between accounts — a mirror calendar created there would not be
+    // the user's own.
+    const homeUrl = clientCaldav.account && clientCaldav.account.homeUrl
+      || calendars.length && new URL('..', calendars[0].url).href
       || (serverUrl.endsWith('/') && serverUrl || `${serverUrl}/`);
     // The path is derived from the name alone, with nothing random in it, so
     // that asking twice for the same calendar means asking for the same
