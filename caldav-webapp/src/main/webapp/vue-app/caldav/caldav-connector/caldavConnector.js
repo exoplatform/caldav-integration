@@ -682,6 +682,31 @@ export function createCaldavConnector(server, index) {
 }
 
 /**
+ * The host a declared server points at, for the connect drawer's secondary
+ * line when the administrator typed no description: with several CalDAV
+ * servers sharing one icon, the host is the one piece of always-present data
+ * that genuinely tells two of them apart. The full URL would drag its path —
+ * often holding the raw `{username}` placeholder — into the UI; the host
+ * never does.
+ *
+ * @param {String} serverUrl the configured base URL of the server
+ * @returns {String} the host (with its port when one is set), or the trimmed
+ *          input when it does not parse as a URL, or an empty string
+ */
+export function serverHost(serverUrl) {
+  if (!serverUrl) {
+    return '';
+  }
+  try {
+    return new URL(serverUrl).host;
+  } catch (e) {
+    // not a parseable URL (relative path, bare host...): keep what identifies
+    // it best — everything up to the first slash after an optional scheme
+    return serverUrl.trim().replace(/^[a-z]+:\/\//i, '').split('/')[0];
+  }
+}
+
+/**
  * The whole iCalendar object for one event, ready to be pushed.
  * <p>
  * Assembled from parts so that each stays readable on its own: the property set

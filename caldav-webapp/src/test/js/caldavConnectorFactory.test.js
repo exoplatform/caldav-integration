@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-import caldavConnector, {createCaldavConnector} from '../../main/webapp/vue-app/caldav/caldav-connector/caldavConnector.js';
+import caldavConnector, {createCaldavConnector, serverHost} from '../../main/webapp/vue-app/caldav/caldav-connector/caldavConnector.js';
 
 /**
  * The contract agenda's left panel holds every connector to. My Calendars
@@ -122,5 +122,51 @@ describe('createCaldavConnector', () => {
    */
   it('gives each server its own rank', () => {
     expect(createCaldavConnector(seedServer, 0).rank).not.toBe(createCaldavConnector(declaredServer, 1).rank);
+  });
+
+  /**
+   * The connect drawer resolves a descriptor's secondary line through the
+   * i18n key `<providerName>.description` that main.js merges — the
+   * descriptor must therefore point its `description` at exactly that key,
+   * for every shape the factory produces.
+   */
+  it('keys the description on the provider name', () => {
+    expect(createCaldavConnector(seedServer, 0).description).toBe('agenda.caldavCalendar.description');
+    expect(createCaldavConnector(declaredServer, 1).description).toBe('agenda.caldavCalendar.6.description');
+  });
+});
+
+/**
+ * The host shown as the connect drawer's secondary line when the admin typed
+ * no description. It must never leak the URL's path — that is where the raw
+ * `{username}` placeholder lives — and must survive inputs that are not
+ * parseable URLs, because the field is admin-typed free text.
+ */
+describe('serverHost', () => {
+
+  /**
+   * A full CalDAV base URL: host and port survive, scheme and path (with its
+   * placeholder) do not.
+   */
+  it('keeps host and port, drops scheme and path', () => {
+    expect(serverHost('http://localhost:8888/dav/cal/{username}/')).toBe('localhost:8888');
+    expect(serverHost('https://webmail.demo3.livecollab.fr/dav/')).toBe('webmail.demo3.livecollab.fr');
+  });
+
+  /**
+   * A bare host, as an admin may well type it, is kept as it is rather than
+   * discarded by a failed URL parse.
+   */
+  it('keeps an unparseable input up to its first slash', () => {
+    expect(serverHost('calendar.example.com')).toBe('calendar.example.com');
+    expect(serverHost('calendar.example.com/dav/')).toBe('calendar.example.com');
+  });
+
+  /**
+   * No URL yields no line, not a crash.
+   */
+  it('yields an empty string for an empty input', () => {
+    expect(serverHost(null)).toBe('');
+    expect(serverHost('')).toBe('');
   });
 });

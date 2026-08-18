@@ -16,7 +16,7 @@
  */
 import './initComponents.js';
 import * as agendaCaldavService from './js/agendaCaldavService.js';
-import caldavConnector, {createCaldavConnector} from './caldav-connector/caldavConnector.js';
+import caldavConnector, {createCaldavConnector, serverHost} from './caldav-connector/caldavConnector.js';
 
 if (!Vue.prototype.$agendaCaldavService) {
   window.Object.defineProperty(Vue.prototype, '$agendaCaldavService', {
@@ -98,7 +98,10 @@ i18nPromise
     activeServers.forEach((server, index) => {
       extensionRegistry.registerExtension('agenda', 'connectors', createCaldavConnector(server, index));
       labels[server.providerName] = server.name;
-      labels[`${server.providerName}.description`] = server.description || server.serverUrl;
+      // The secondary line of the connect-drawer row: the admin's words when
+      // there are some, else the host — always present, and the thing that
+      // actually tells two look-alike CalDAV rows apart.
+      labels[`${server.providerName}.description`] = server.description || serverHost(server.serverUrl);
     });
     return i18nPromise.then(i18n => i18n.mergeLocaleMessage(lang, labels));
   })
