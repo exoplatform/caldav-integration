@@ -1,7 +1,7 @@
 import * as caldavConnectorService from '../js/agendaCaldavService.js';
 import * as tsdav from 'tsdav';
 import ICAL from 'ical.js';
-export default {
+const caldavConnector = {
   name: 'agenda.caldavCalendar',
   description: 'agenda.caldavCalendar.description',
   avatar: '/caldav/skin/image/caldav.png',
@@ -12,6 +12,10 @@ export default {
   isSignedIn: true,
   pushing: false,
   rank: 40,
+  // A multi-instance connector: its rows are managed in the dedicated CalDAV
+  // servers section of the agenda administration, not in the generic
+  // connectors table (which keeps Google/Office365/Exchange only).
+  multiInstance: true,
   /**
    * Opens the settings drawer and resolves once the CalDAV server itself has
    * accepted the account. The drawer verifies the credentials against the
@@ -26,7 +30,18 @@ export default {
    */
   connect() {
     return new Promise((resolve, reject) => {
-      document.dispatchEvent(new CustomEvent('open-caldav-connector-settings-drawer'));
+      // The drawer must know WHICH declared server this connector fronts:
+      // the URL to probe the typed credentials against, and the registration
+      // id to store beside them. A legacy (property-configured) connector
+      // carries neither, and the drawer falls back to the resolved settings
+      // URL exactly as before.
+      document.dispatchEvent(new CustomEvent('open-caldav-connector-settings-drawer', {
+        detail: {
+          serverId: this.serverId || null,
+          serverUrl: this.serverUrl || null,
+          name: this.name,
+        },
+      }));
       document.addEventListener('test-connection', (settings) => {
         if (settings.detail) {
           resolve(settings.detail.username);
@@ -632,6 +647,30 @@ export default {
     }
   }
 };
+
+export default caldavConnector;
+
+
+/**
+ * Builds one agenda connector descriptor for one declared CalDAV server: the
+ * base descriptor above, closed over the server's provider name, registration
+ * id and URL. The provider name is the descriptor's identity — it is what
+ * agenda's enabled-check and connected-provider binding key on — so every
+ * declared server becomes a full connector with zero agenda backend change.
+ *
+ * @param {Object} server a declared server {id, providerName, name, description, serverUrl}
+ * @param {Number} index position of the server in the declared list, keeps ranks distinct
+ * @returns {Object} the connector descriptor to register under agenda/connectors
+ */
+export function createCaldavConnector(server, index) {
+  return Object.assign({}, caldavConnector, {
+    name: server.providerName,
+    description: `${server.providerName}.description`,
+    serverId: server.id,
+    serverUrl: server.serverUrl,
+    rank: caldavConnector.rank + (index || 0),
+  });
+}
 
 /**
  * The whole iCalendar object for one event, ready to be pushed.

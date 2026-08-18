@@ -19,6 +19,7 @@ package org.exoplatform.caldav.service;
 import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -28,6 +29,14 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   private static final Log       LOG = ExoLogger.getLogger(CaldavConnectorServiceImpl.class);
 
   private String                 caldavUrl;
+
+  /**
+   * The registry of declared CalDAV servers — a Spring bean, while this class
+   * is a kernel component, so it is resolved lazily through the bridge rather
+   * than injected by the kernel constructor: at kernel wiring time the Spring
+   * context of this add-on may not have registered its beans back yet.
+   */
+  private CaldavServerService    caldavServerService;
 
   public CaldavConnectorServiceImpl(CaldavConnectorStorage caldavConnectorStorage) {
     String caldavUrl = System.getProperty("exo.agenda.caldav.connector.url");
@@ -44,11 +53,54 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     }
   }
 
+  /**
+   * Retrieves the CalDAV settings of a user, with the base URL of the server
+   * the account speaks to resolved in this order: the declared server the
+   * account references, else the seed registration, else the legacy
+   * {@code exo.agenda.caldav.connector.url} property — today's behaviour, kept
+   * for deployments whose registry is empty.
+   *
+   * @param userIdentityId User identity getting the caldav user setting
+   * @return the setting of that user, its caldavUrl resolved, never null
+   */
   @Override
   public CaldavUserSetting getCaldavSetting(long userIdentityId) {
     CaldavUserSetting caldavUserSetting = caldavConnectorStorage.getCaldavSetting(userIdentityId);
-    caldavUserSetting.setCaldavUrl(this.caldavUrl);
+    String resolvedUrl = null;
+    CaldavServerService serverRegistry = getCaldavServerService();
+    if (serverRegistry != null) {
+      resolvedUrl = serverRegistry.resolveServerUrl(caldavUserSetting.getServerId());
+    }
+    caldavUserSetting.setCaldavUrl(StringUtils.isNotBlank(resolvedUrl) ? resolvedUrl : this.caldavUrl);
     return caldavUserSetting;
+  }
+
+  /**
+   * Resolves the server registry lazily through the kernel/Spring bridge, and
+   * remembers it. A registry that cannot be resolved (the Spring context not
+   * up yet, or a test container without it) simply leaves the legacy
+   * property-based URL in charge.
+   *
+   * @return the registry, or null when the bridge cannot provide it
+   */
+  protected CaldavServerService getCaldavServerService() {
+    if (caldavServerService == null) {
+      try {
+        caldavServerService = ExoContainerContext.getService(CaldavServerService.class);
+      } catch (Exception e) {
+        LOG.debug("CalDAV server registry not resolvable yet, keeping the property-based URL", e);
+      }
+    }
+    return caldavServerService;
+  }
+
+  /**
+   * Hands the registry to tests, which have no container to resolve it from.
+   *
+   * @param caldavServerService the registry to use
+   */
+  protected void setCaldavServerService(CaldavServerService caldavServerService) {
+    this.caldavServerService = caldavServerService;
   }
 
   @Override

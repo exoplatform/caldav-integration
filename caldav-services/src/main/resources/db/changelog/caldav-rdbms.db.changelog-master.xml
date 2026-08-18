@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                      http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-3.4.xsd">
+
+  <!-- Managing both DB that use sequences and db that use auto increment -->
+  <property name="autoIncrement" value="true" dbms="mysql,mssql,h2,sybase,db2,hsqldb"/>
+  <property name="autoIncrement" value="false" dbms="oracle,postgresql"/>
+
+  <changeSet author="caldav" id="1.0.0-0" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The registry's sequence, on the vendors that have sequences — created in
+      the same breath as its table, the lesson email-connector's 1.0.0-43 paid
+      for and its 1.0.0-47/49 had to repeat.
+    </comment>
+    <createSequence sequenceName="SEQ_CALDAV_SERVER_ID" startValue="1"/>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-1">
+    <comment>
+      The CalDAV server registry: one row per server an administrator declared,
+      holding only what any authenticated user may see. Credentials are
+      deliberately absent — per-user secrets stay in the per-user settings
+      storage — so a read of this table can never leak one.
+
+      PROVIDER_NAME is the bridge to agenda's REMOTE_PROVIDER by name:
+      agenda.caldavCalendar for the seed row (migrated from the legacy
+      exo.agenda.caldav.connector.url property), agenda.caldavCalendar.&lt;id&gt;
+      for the rows declared afterwards. System-derived, never typed by anyone,
+      and unique — the separate index changeset below.
+
+      The unique index does NOT live in this changeset, on purpose: modifySql
+      is changeset-scoped, so the mysql ENGINE/CHARSET append below would also
+      be glued onto a CREATE INDEX sharing the changeset, which MySQL rejects
+      with error 1064 — and a failed changeset here takes the whole platform
+      down through Liquibase → entityManagerFactory → the Kernel/Spring
+      bridge. email-connector's 1.0.0-46/50 is the precedent, paid for on an
+      acceptance server.
+    </comment>
+    <createTable tableName="CALDAV_SERVER">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_CALDAV_SERVER"/>
+      </column>
+      <column name="PROVIDER_NAME" type="NVARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="NAME" type="NVARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="DESCRIPTION" type="NVARCHAR(500)"/>
+      <column name="SERVER_URL" type="NVARCHAR(1000)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="ACTIVE" type="BOOLEAN" defaultValueBoolean="true">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+    <modifySql dbms="mysql">
+      <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
+    </modifySql>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-2">
+    <comment>
+      CALDAV_SERVER's unique index on PROVIDER_NAME, in its own changeset with
+      NO modifySql — the separation the createTable comment above explains.
+      Uniqueness is what makes the provider name a safe join key to agenda's
+      REMOTE_PROVIDER: two rows sharing one provider name would silently steer
+      two server URLs through a single enabled-switch.
+    </comment>
+    <createIndex tableName="CALDAV_SERVER" indexName="UQ_CALDAV_SERVER_PROVIDER_NAME" unique="true">
+      <column name="PROVIDER_NAME"/>
+    </createIndex>
+  </changeSet>
+
+</databaseChangeLog>

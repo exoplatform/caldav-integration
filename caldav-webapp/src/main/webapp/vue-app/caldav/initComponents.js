@@ -17,11 +17,13 @@
 import CaldavAgendaConnectors from './components/CaldavAgendaConnectors.vue';
 import CaldavAgendaConnectorsAlert from './components/CaldavAgendaConnectorsAlert.vue';
 import CaldavSettingsDrawer from './components/CaldavSettingsDrawer.vue';
+import CaldavAdminServersSection from './components/admin/CaldavAdminServersSection.vue';
 
 const components = {
   'caldav-settings-drawer': CaldavSettingsDrawer,
   'caldav-agenda-connectors': CaldavAgendaConnectors,
-  'caldav-agenda-connectors-alert': CaldavAgendaConnectorsAlert
+  'caldav-agenda-connectors-alert': CaldavAgendaConnectorsAlert,
+  'caldav-admin-servers-section': CaldavAdminServersSection
 };
 
 for (const key in components) {

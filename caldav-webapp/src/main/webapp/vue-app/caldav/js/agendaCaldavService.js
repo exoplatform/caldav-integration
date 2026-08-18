@@ -33,6 +33,92 @@ export const createCaldavSetting = (caldavSettings) => {
   });
 };
 
+/**
+ * The declared CalDAV servers — the credential-free registry rows any
+ * authenticated user may read, since the browser itself needs the names and
+ * URLs to offer the connectors.
+ *
+ * @returns {Promise<Array>} every declared server
+ */
+export const getCaldavServers = () => {
+  return fetch('/caldav/rest/servers', {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    } else {
+      return resp.json();
+    }
+  });
+};
+
+/**
+ * Declares a new CalDAV server (administrators only).
+ *
+ * @param {Object} server the registration to create {name, description, serverUrl, active}
+ * @returns {Promise<Object>} the created registration, carrying its id and provider name
+ */
+export const createCaldavServer = (server) => {
+  return fetch('/caldav/rest/servers', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(server),
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    } else {
+      return resp.json();
+    }
+  });
+};
+
+/**
+ * Updates a declared CalDAV server (administrators only).
+ *
+ * @param {Object} server the registration to update, carrying its id
+ * @returns {Promise<Object>} the updated registration
+ */
+export const updateCaldavServer = (server) => {
+  return fetch(`/caldav/rest/servers/${server.id}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify(server),
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    } else {
+      return resp.json();
+    }
+  });
+};
+
+/**
+ * Activates or deactivates a declared CalDAV server (administrators only).
+ *
+ * @param {Number} serverId technical identifier of the registration
+ * @param {Boolean} active whether users may connect to this server
+ * @returns {Promise<Object>} the updated registration
+ */
+export const setCaldavServerStatus = (serverId, active) => {
+  return fetch(`/caldav/rest/servers/${serverId}/status?active=${active}`, {
+    credentials: 'include',
+    method: 'PATCH',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    } else {
+      return resp.json();
+    }
+  });
+};
+
 export const getCaldavSetting = () => {
   return fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/v1/caldav`, {
     credentials: 'include',

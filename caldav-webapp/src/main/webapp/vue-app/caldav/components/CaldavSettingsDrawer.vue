@@ -87,6 +87,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 export default {
 
+  props: {
+    /**
+     * The declared server this connection is being made to, or null for the
+     * legacy single-server connector: {serverId, serverUrl, name}.
+     */
+    server: {
+      type: Object,
+      default: () => null,
+    },
+  },
   data: () => ({
     account: '',
     password: '',
@@ -172,23 +182,30 @@ export default {
         // REST whether or not an account is stored yet — which is what makes
         // verify-then-store possible at all.
         this.$agendaCaldavService.getCaldavSetting()
-          .then(settings => this.$agendaCaldavService.probeCaldavAccount(settings.caldavUrl, this.account, this.password)
-            .then(() => this.$agendaCaldavService.createCaldavSetting({
-              'username': this.account,
-              'password': this.password
-            }))
-            .then(() => {
-              this.$emit('display-alert', this.$t('agenda.caldavCalendar.settings.connection.successMessage'));
-              document.dispatchEvent(new CustomEvent('test-connection', {
-                detail: {
-                  username: this.account,
-                  password: this.password,
-                  caldavUrl: settings.caldavUrl,
-                },
-              }));
-              this.reset();
-              this.closeCaldavDrawer();
-            }))
+          .then(settings => {
+            // The URL to verify against is the clicked server's own — several
+            // may now be declared — falling back to the resolved settings URL
+            // for the legacy connector, which is what it always probed.
+            const caldavUrl = this.server && this.server.serverUrl || settings.caldavUrl;
+            return this.$agendaCaldavService.probeCaldavAccount(caldavUrl, this.account, this.password)
+              .then(() => this.$agendaCaldavService.createCaldavSetting({
+                'username': this.account,
+                'password': this.password,
+                'serverId': this.server && this.server.serverId || null,
+              }))
+              .then(() => {
+                this.$emit('display-alert', this.$t('agenda.caldavCalendar.settings.connection.successMessage'));
+                document.dispatchEvent(new CustomEvent('test-connection', {
+                  detail: {
+                    username: this.account,
+                    password: this.password,
+                    caldavUrl: caldavUrl,
+                  },
+                }));
+                this.reset();
+                this.closeCaldavDrawer();
+              });
+          })
           .catch(error => {
             // The drawer stays open, keeping what the user typed: a refusal
             // is something to correct, not a form to fill again.

@@ -20,8 +20,10 @@ package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -29,6 +31,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 
 /**
@@ -74,5 +77,92 @@ public class CaldavConnectorServiceImplTest {
     assertEquals("caldav.mirrorCalendarHrefMandatory", missing.getMessage());
 
     verifyNoInteractions(caldavConnectorStorage);
+  }
+
+  /**
+   * URL resolution of a user's setting, in the documented order. The service
+   * is constructed inside each test rather than injected, because the legacy
+   * property is read once at construction and these tests need to control it.
+   */
+
+  private static final String LEGACY_PROPERTY = "exo.agenda.caldav.connector.url";
+
+  /**
+   * Builds the service with the legacy property holding the given value (or
+   * cleared), restoring nothing — each caller sets what it needs first.
+   *
+   * @param legacyUrl value of the legacy property, or null to clear it
+   * @return a service constructed under that property
+   */
+  private CaldavConnectorServiceImpl serviceWithLegacyProperty(String legacyUrl) {
+    String previous = System.getProperty(LEGACY_PROPERTY);
+    try {
+      if (legacyUrl == null) {
+        System.clearProperty(LEGACY_PROPERTY);
+      } else {
+        System.setProperty(LEGACY_PROPERTY, legacyUrl);
+      }
+      return new CaldavConnectorServiceImpl(caldavConnectorStorage);
+    } finally {
+      if (previous == null) {
+        System.clearProperty(LEGACY_PROPERTY);
+      } else {
+        System.setProperty(LEGACY_PROPERTY, previous);
+      }
+    }
+  }
+
+  /**
+   * An account referencing a declared server speaks to THAT server's URL,
+   * not to the legacy property's.
+   */
+  @Test
+  public void shouldResolveTheReferencedServerUrl() {
+    CaldavConnectorServiceImpl service = serviceWithLegacyProperty("https://legacy.example.org/");
+    CaldavServerService registry = mock(CaldavServerService.class);
+    service.setCaldavServerService(registry);
+    CaldavUserSetting stored = new CaldavUserSetting();
+    stored.setServerId(7L);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(stored);
+    when(registry.resolveServerUrl(7L)).thenReturn("https://declared.example.org/cal/{username}/");
+
+    CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
+
+    assertEquals("https://declared.example.org/cal/{username}/", setting.getCaldavUrl());
+  }
+
+  /**
+   * A registry that answers nothing (no referenced row, no seed) leaves the
+   * legacy property in charge — today's behaviour, unchanged.
+   */
+  @Test
+  public void shouldFallBackToTheLegacyPropertyUrl() {
+    CaldavConnectorServiceImpl service = serviceWithLegacyProperty("https://legacy.example.org/");
+    CaldavServerService registry = mock(CaldavServerService.class);
+    service.setCaldavServerService(registry);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(new CaldavUserSetting());
+    when(registry.resolveServerUrl(null)).thenReturn(null);
+
+    CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
+
+    assertEquals("https://legacy.example.org/", setting.getCaldavUrl());
+  }
+
+  /**
+   * An account referencing no server resolves through the registry with a
+   * null reference — which is where the seed row answers — and takes what the
+   * registry says over the property.
+   */
+  @Test
+  public void shouldResolveTheSeedUrlForUnreferencedAccounts() {
+    CaldavConnectorServiceImpl service = serviceWithLegacyProperty("https://legacy.example.org/");
+    CaldavServerService registry = mock(CaldavServerService.class);
+    service.setCaldavServerService(registry);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(new CaldavUserSetting());
+    when(registry.resolveServerUrl(null)).thenReturn("https://seed.example.org/");
+
+    CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
+
+    assertEquals("https://seed.example.org/", setting.getCaldavUrl());
   }
 }

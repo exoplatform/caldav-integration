@@ -30,6 +30,18 @@ public class CaldavConnectorStorage {
     this.settingService = settingService;
   }
 
+  /**
+   * Stores the credentials of the connected CalDAV account of a user and,
+   * when the account was connected through a declared server registration,
+   * the identifier of that registration. A connection made outside any
+   * registration (the legacy single-server deployment) removes a previously
+   * stored reference rather than leaving a stale one pointing the new account
+   * at the old server.
+   *
+   * @param caldavUserSetting setting holding the credentials and, optionally,
+   *          the server registration identifier
+   * @param userIdentityId technical identity identifier of the user
+   */
   public void createCaldavSetting(CaldavUserSetting caldavUserSetting, long userIdentityId) {
 
     String encodedPassword = CaldavConnectorUtils.encode(caldavUserSetting.getPassword());
@@ -42,6 +54,16 @@ public class CaldavConnectorStorage {
                             CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                             CaldavConnectorUtils.CALDAV_PASSWORD_KEY,
                             SettingValue.create(encodedPassword));
+    if (caldavUserSetting.getServerId() != null) {
+      this.settingService.set(Context.USER.id(String.valueOf(userIdentityId)),
+                              CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                              CaldavConnectorUtils.CALDAV_SERVER_ID_KEY,
+                              SettingValue.create(String.valueOf(caldavUserSetting.getServerId())));
+    } else {
+      this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
+                                 CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                 CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
+    }
   }
 
   /**
@@ -78,6 +100,9 @@ public class CaldavConnectorStorage {
     SettingValue<?> mirrorCalendarHref = this.settingService.get(Context.USER.id(String.valueOf(userIdentityId)),
                                                                  CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                                                  CaldavConnectorUtils.CALDAV_MIRROR_CALENDAR_KEY);
+    SettingValue<?> serverId = this.settingService.get(Context.USER.id(String.valueOf(userIdentityId)),
+                                                       CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                                       CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
 
 
     CaldavUserSetting caldavUserSetting = new CaldavUserSetting();
@@ -90,6 +115,15 @@ public class CaldavConnectorStorage {
     }
     if (mirrorCalendarHref != null) {
       caldavUserSetting.setMirrorCalendarHref((String) mirrorCalendarHref.getValue());
+    }
+    if (serverId != null && serverId.getValue() != null) {
+      try {
+        caldavUserSetting.setServerId(Long.valueOf(serverId.getValue().toString()));
+      } catch (NumberFormatException e) {
+        // An unreadable stored reference behaves exactly like no reference:
+        // the URL resolution falls back to the seed registration, then the
+        // legacy configuration property.
+      }
     }
     return caldavUserSetting;
   }
@@ -112,5 +146,8 @@ public class CaldavConnectorStorage {
     this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
                                CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                CaldavConnectorUtils.CALDAV_MIRROR_CALENDAR_KEY);
+    this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
+                               CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                               CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
   }
 }

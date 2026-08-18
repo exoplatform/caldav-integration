@@ -9,6 +9,14 @@
   <packaging>war</packaging>
   <name>eXo Caldav - Application</name>
   <dependencies>
+    <!-- Brings the Spring/kernel bridge (io.meeds.spring) the bootstrap class
+         extends, transitively and version-aligned — the same single dependency
+         email-connector's webapp boots Spring with. -->
+    <dependency>
+      <groupId>io.meeds.social</groupId>
+      <artifactId>social-component-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
     <dependency>
       <groupId>io.meeds.platform-ui</groupId>
       <artifactId>platform-ui-skin</artifactId>
