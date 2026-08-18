@@ -259,116 +259,7 @@ export default {
     const icalUID = isOccurrence ? event.parent.remoteId : event.remoteId || crypto.randomUUID();
     const filename = `${icalUID}.ics`;
 
-    const dtStamp = new Date().toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', 'Z');
-
-    let iCalString = `BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//Exo Platform//NONSGML v1.0//EN
-CALSCALE:GREGORIAN
-BEGIN:VEVENT
-SUMMARY:${escapeText(event.summary)}
-UID:${icalUID}
-DTSTAMP:${dtStamp}
-`;
-    if (event.allDay) {
-      iCalString += `DTSTART;VALUE=DATE:${toIcsDate(event.start, event.timeZoneId)}
-DTEND;VALUE=DATE:${toIcsEndDate(event.end, event.timeZoneId)}
-`;
-    } else {
-      iCalString += `DTSTART:${toUTCString(event.start)}Z
-DTEND:${toUTCString(event.end)}Z
-`;
-    }
-    if (event.location) {
-      iCalString += `LOCATION:${escapeText(event.location)}\n`;
-    }
-    const conferenceUrl = toUri(event.conferences?.length > 0 && event.conferences[0]?.url);
-    const descriptionParts = [];
-    if (event.description) {
-      descriptionParts.push(htmlToText(event.description));
-    }
-    if (conferenceUrl) {
-      descriptionParts.push(conferenceUrl);
-    }
-    if (descriptionParts.length > 0) {
-      iCalString += `DESCRIPTION:${escapeText(descriptionParts.join('\n\n'))}\n`;
-    }
-    const eventLink = eventUrl(event);
-    if (eventLink) {
-      iCalString += `URL:${eventLink}\n`;
-    }
-    if (conferenceUrl) {
-      // In addition to the line the description already carries, never
-      // instead of it: support for this property is patchy — Apple mostly
-      // recognises known providers by sniffing the description rather than
-      // by reading CONFERENCE, Thunderbird handles it partially — so the
-      // description line stays the one thing every client can show, and the
-      // property is what a client that does read it can act on.
-      // A single feature, not the VIDEO,AUDIO list RFC 7986 allows: ical.js
-      // quotes any parameter value holding a comma, which turns the list into
-      // one value that a strict reader then ignores. One correct token beats
-      // two that are read as none.
-      iCalString += `CONFERENCE;VALUE=URI;FEATURE=VIDEO:${conferenceUrl}\n`;
-    }
-    const created = toIcsTimestamp(event.created);
-    if (created) {
-      iCalString += `CREATED:${created}\n`;
-    }
-    const lastModified = toIcsTimestamp(event.updated);
-    if (lastModified) {
-      iCalString += `LAST-MODIFIED:${lastModified}\n`;
-    }
-    // CONFIRMED for every event pushed, deliberately, rather than a mapping
-    // of the agenda status: eXo spells a date poll TENTATIVE, which in RFC
-    // 5545 means "provisionally scheduled" — a poll pushed with its own word
-    // would show up as a real meeting nobody has confirmed. An event only
-    // reaches this connector once it is scheduled, so the honest value is the
-    // constant. TRANSP is the RFC default and is written for explicitness, so
-    // that a client reading the object does not have to know the default.
-    iCalString += `STATUS:CONFIRMED
-TRANSP:OPAQUE
-`;
-    if (isOccurrence) {
-      // Exactly one RECURRENCE-ID, and always one. Both writes used to sit
-      // under the same condition, so a timed occurrence carried the property
-      // twice — it may occur at most once — while an all-day occurrence
-      // carried none at all and, having no anchor, replaced the master event
-      // instead of amending the single instance it was meant to.
-      //
-      // The form follows event.allDay, matching how DTSTART above decides, and
-      // not whether the occurrence identifier happens to contain a time. RFC
-      // 5545 requires this property to carry the same value type as the
-      // DTSTART of the series it points into, and agenda identifies an
-      // occurrence of an all-day event by an instant all the same — so keying
-      // off the identifier wrote a date-time reference into a date-valued
-      // series, which matches no instance at all.
-      if (event.allDay) {
-        iCalString += `RECURRENCE-ID;VALUE=DATE:${toIcsDate(event.occurrence.id, event.timeZoneId)}\n`;
-      } else {
-        iCalString += `RECURRENCE-ID:${event.occurrence.id.replace(/[-:]|\.\d{3}/g, '')}Z\n`;
-      }
-    } else if (event.recurrence?.rrule) {
-      let rruleValue = event.recurrence.rrule.trim();
-      rruleValue = rruleValue.replace(/COUNT=0;?/, '');
-      if (rruleValue.length > 0) {
-        iCalString += `RRULE:${rruleValue}\n`;
-      }
-    }
-    if (!isOccurrence && event.recurrence?.exceptions && event.recurrence.exceptions.length > 0) {
-      event.recurrence.exceptions.forEach(exdate => {
-        const exDateFormatted = exdate.date.replace(/[-:]|\.\d{3}/g, '');
-        if (exDateFormatted.includes('T')) {
-          iCalString += `EXDATE:${exDateFormatted}Z\n`;
-        } else {
-          iCalString += `EXDATE;VALUE=DATE:${exDateFormatted}\n`;
-        }
-      });
-    }
-    iCalString += buildAlarms(event);
-    iCalString += `END:VEVENT
-END:VCALENDAR
-`;
-    iCalString = iCalString.trim();
+    let iCalString = buildEventIcs(event, icalUID, isOccurrence);
     try {
       // Inside the try so that a property built wrongly is reported as a
       // failed save, with the offending object logged next to it, rather
@@ -411,6 +302,194 @@ END:VCALENDAR
     }
   }
 };
+
+/**
+ * The whole iCalendar object for one event, ready to be pushed.
+ * <p>
+ * Assembled from parts so that each stays readable on its own: the property
+ * set an event needs has grown well past what one function can hold without
+ * hiding its own shape.
+ *
+ * @param  {object} event - the event being pushed
+ * @param  {string} icalUID - the UID shared by the series and its overrides
+ * @param  {boolean} isOccurrence - whether this component amends one instance
+ * @returns {string} the VCALENDAR object, trimmed
+ */
+function buildEventIcs(event, icalUID, isOccurrence) {
+  const dtStamp = new Date().toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', 'Z');
+  let ics = `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Exo Platform//NONSGML v1.0//EN
+CALSCALE:GREGORIAN
+BEGIN:VEVENT
+SUMMARY:${escapeText(event.summary)}
+UID:${icalUID}
+DTSTAMP:${dtStamp}
+`;
+  ics += scheduleLines(event);
+  ics += describeLines(event);
+  ics += stampLines(event);
+  // CONFIRMED for every event pushed, deliberately, rather than a mapping
+  // of the agenda status: eXo spells a date poll TENTATIVE, which in RFC
+  // 5545 means "provisionally scheduled" — a poll pushed with its own word
+  // would show up as a real meeting nobody has confirmed. An event only
+  // reaches this connector once it is scheduled, so the honest value is the
+  // constant. TRANSP is the RFC default and is written for explicitness, so
+  // that a client reading the object does not have to know the default.
+  ics += `STATUS:CONFIRMED
+TRANSP:OPAQUE
+`;
+  ics += recurrenceLines(event, isOccurrence);
+  ics += exceptionLines(event, isOccurrence);
+  ics += buildAlarms(event);
+  ics += `END:VEVENT
+END:VCALENDAR
+`;
+  return ics.trim();
+}
+
+/**
+ * The DTSTART/DTEND pair, in the form the event's own all-day flag calls for.
+ *
+ * @param  {object} event - the event being pushed
+ * @returns {string} the two lines, terminated
+ */
+function scheduleLines(event) {
+  let ics = '';
+  if (event.allDay) {
+    ics += `DTSTART;VALUE=DATE:${toIcsDate(event.start, event.timeZoneId)}
+DTEND;VALUE=DATE:${toIcsEndDate(event.end, event.timeZoneId)}
+`;
+  } else {
+    ics += `DTSTART:${toUTCString(event.start)}Z
+DTEND:${toUTCString(event.end)}Z
+`;
+  }
+  return ics;
+}
+
+/**
+ * Everything a reader shows as text: where it is, what it is about, where it
+ * lives in eXo, and the conference it can be joined through.
+ *
+ * @param  {object} event - the event being pushed
+ * @returns {string} the properties, each terminated
+ */
+function describeLines(event) {
+  let ics = '';
+  if (event.location) {
+    ics += `LOCATION:${escapeText(event.location)}\n`;
+  }
+  const conferenceUrl = toUri(event.conferences?.length > 0 && event.conferences[0]?.url);
+  const descriptionParts = [];
+  if (event.description) {
+    descriptionParts.push(htmlToText(event.description));
+  }
+  if (conferenceUrl) {
+    descriptionParts.push(conferenceUrl);
+  }
+  if (descriptionParts.length > 0) {
+    ics += `DESCRIPTION:${escapeText(descriptionParts.join('\n\n'))}\n`;
+  }
+  const eventLink = eventUrl(event);
+  if (eventLink) {
+    ics += `URL:${eventLink}\n`;
+  }
+  if (conferenceUrl) {
+    // In addition to the line the description already carries, never
+    // instead of it: support for this property is patchy — Apple mostly
+    // recognises known providers by sniffing the description rather than
+    // by reading CONFERENCE, Thunderbird handles it partially — so the
+    // description line stays the one thing every client can show, and the
+    // property is what a client that does read it can act on.
+    // A single feature, not the VIDEO,AUDIO list RFC 7986 allows: ical.js
+    // quotes any parameter value holding a comma, which turns the list into
+    // one value that a strict reader then ignores. One correct token beats
+    // two that are read as none.
+    ics += `CONFERENCE;VALUE=URI;FEATURE=VIDEO:${conferenceUrl}\n`;
+  }
+  return ics;
+}
+
+/**
+ * CREATED and LAST-MODIFIED, when the event carries them.
+ *
+ * @param  {object} event - the event being pushed
+ * @returns {string} the properties, each terminated
+ */
+function stampLines(event) {
+  let ics = '';
+  const created = toIcsTimestamp(event.created);
+  if (created) {
+    ics += `CREATED:${created}\n`;
+  }
+  const lastModified = toIcsTimestamp(event.updated);
+  if (lastModified) {
+    ics += `LAST-MODIFIED:${lastModified}\n`;
+  }
+  return ics;
+}
+
+/**
+ * What ties the component to a series: the occurrence it amends, or the rule
+ * the master repeats by.
+ *
+ * @param  {object} event - the event being pushed
+ * @param  {boolean} isOccurrence - whether this component amends one instance
+ * @returns {string} the property, or an empty string
+ */
+function recurrenceLines(event, isOccurrence) {
+  let ics = '';
+  if (isOccurrence) {
+    // Exactly one RECURRENCE-ID, and always one. Both writes used to sit
+    // under the same condition, so a timed occurrence carried the property
+    // twice — it may occur at most once — while an all-day occurrence
+    // carried none at all and, having no anchor, replaced the master event
+    // instead of amending the single instance it was meant to.
+    //
+    // The form follows event.allDay, matching how DTSTART above decides, and
+    // not whether the occurrence identifier happens to contain a time. RFC
+    // 5545 requires this property to carry the same value type as the
+    // DTSTART of the series it points into, and agenda identifies an
+    // occurrence of an all-day event by an instant all the same — so keying
+    // off the identifier wrote a date-time reference into a date-valued
+    // series, which matches no instance at all.
+    if (event.allDay) {
+      ics += `RECURRENCE-ID;VALUE=DATE:${toIcsDate(event.occurrence.id, event.timeZoneId)}\n`;
+    } else {
+      ics += `RECURRENCE-ID:${event.occurrence.id.replace(/[-:]|\.\d{3}/g, '')}Z\n`;
+    }
+  } else if (event.recurrence?.rrule) {
+    let rruleValue = event.recurrence.rrule.trim();
+    rruleValue = rruleValue.replace(/COUNT=0;?/, '');
+    if (rruleValue.length > 0) {
+      ics += `RRULE:${rruleValue}\n`;
+    }
+  }
+  return ics;
+}
+
+/**
+ * The instances deleted from a series, written by the master only.
+ *
+ * @param  {object} event - the event being pushed
+ * @param  {boolean} isOccurrence - whether this component amends one instance
+ * @returns {string} one EXDATE per exception
+ */
+function exceptionLines(event, isOccurrence) {
+  let ics = '';
+  if (!isOccurrence && event.recurrence?.exceptions && event.recurrence.exceptions.length > 0) {
+    event.recurrence.exceptions.forEach(exdate => {
+      const exDateFormatted = exdate.date.replace(/[-:]|\.\d{3}/g, '');
+      if (exDateFormatted.includes('T')) {
+        ics += `EXDATE:${exDateFormatted}Z\n`;
+      } else {
+        ics += `EXDATE;VALUE=DATE:${exDateFormatted}\n`;
+      }
+    });
+  }
+  return ics;
+}
 
 /**
  * Opens a DAV client for the connected account.
