@@ -111,16 +111,25 @@ export default {
       authMethod: 'Basic',
       defaultAccountType: 'caldav',
     });
-    const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
-    return calendars.map((calendar, index) => ({
+    const calendars = await clientCaldav.fetchCalendars({
+      props: calendarProps(),
+      projectedProps: {[PRIVILEGE_SET_PROP]: true},
+      headersToExclude: ['If-None-Match'],
+    });
+    const ordered = inStableOrder(calendars);
+    return ordered.map((calendar, index) => ({
       id: calendar.url,
-      name: calendar.displayName || calendar.url,
-      color: calendarColor(calendar, index, calendars.length),
+      name: calendarName(calendar),
+      color: calendarColor(calendar, index, ordered.length),
       readOnly: isReadOnly(calendar),
     }));
   },
   async getCalendar(clientCaldav){
-    const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+    const calendars = await clientCaldav.fetchCalendars({
+      props: calendarProps(),
+      projectedProps: {[PRIVILEGE_SET_PROP]: true},
+      headersToExclude: ['If-None-Match'],
+    });
     if (calendars.length === 0) {
       throw caldavError('caldav.error.noCalendar');
     }
@@ -135,11 +144,21 @@ export default {
     // is what lets the agenda show one calendar and hide another, and what
     // gives an event the colour of its own calendar rather than one shared
     // colour for everything remote.
-    const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+    const calendars = await clientCaldav.fetchCalendars({
+      props: calendarProps(),
+      projectedProps: {[PRIVILEGE_SET_PROP]: true},
+      headersToExclude: ['If-None-Match'],
+    });
     // Read every calendar at once rather than one after another: a user with
     // several collections would otherwise wait for the sum of the round trips
     // each time the displayed period changes.
-    const objectsPerCalendar = await Promise.all(calendars.map(calendar => clientCaldav.fetchCalendarObjects({
+    //
+    // Settled rather than all: with one collection a failure meant no events
+    // either way, but an account now has several, and letting one unreachable
+    // or misbehaving calendar reject the whole batch would empty the agenda of
+    // every other calendar too. A calendar that fails is logged and contributes
+    // nothing; the rest still render.
+    const readPerCalendar = await Promise.allSettled(calendars.map(calendar => clientCaldav.fetchCalendarObjects({
       calendar,
       expand: true,
       timeRange: {
@@ -148,10 +167,21 @@ export default {
       },
       headersToExclude: ['If-None-Match']
     })));
+    const objectsPerCalendar = readPerCalendar.map((outcome, index) => {
+      if (outcome.status === 'fulfilled') {
+        return outcome.value;
+      }
+      console.error('cannot read the calendar', calendars[index] && calendars[index].url, outcome.reason);
+      return [];
+    });
     const listEvent = [];
+    const ordered = inStableOrder(calendars);
     calendars.forEach((calendar, calendarIndex) => {
       const calendarId = calendar.url;
-      const color = calendarColor(calendar, calendarIndex, calendars.length);
+      // Position is taken from the stable order, not from this loop's index:
+      // the loop walks the server's order because that is what pairs a calendar
+      // with its own fetched objects, while the colour must not depend on it.
+      const color = calendarColor(calendar, ordered.findIndex(one => one.url === calendar.url), ordered.length);
       const events = objectsPerCalendar[calendarIndex];
       events.map(event => {
         const caldavEvent= {};
@@ -1256,7 +1286,8 @@ function contrastWithWhite(color) {
  * @returns {String} a stable, legible `#RRGGBB` colour for that collection
  */
 function derivedCalendarColor(calendarUrl, position, total) {
-  const hash = hashOf(calendarUrl || '');
+  const url = calendarUrl || '';
+  const hash = hashOf(url);
   // Hashing the URL alone spreads colours over the whole wheel but guarantees
   // nothing about the distance between any two of them: on a real account,
   // two of three calendars landed nine degrees apart and read as the same
@@ -1270,7 +1301,7 @@ function derivedCalendarColor(calendarUrl, position, total) {
   // one never shifting.
   const count = Math.max(total || 1, 1);
   const index = Math.max(position || 0, 0);
-  const offset = hashOf(calendarUrl.replace(/[^/]+\/?$/, '')) % 360;
+  const offset = hashOf(url.replace(/[^/]+\/?$/, '')) % 360;
   const hue = Math.round((offset + index * 360 / count) % 360);
   const saturation = 58 + (hash >>> 9) % 4 * 8;
   let lightness = 38 + (hash >>> 17) % 3 * 5;
@@ -1310,12 +1341,101 @@ function calendarColor(calendar, position, total) {
  * @param {Object} calendar calendar collection as returned by tsdav
  * @returns {Boolean} true only when the server says writing is not permitted
  */
+/**
+ * The properties every calendar listing asks the server for.
+ * <p>
+ * tsdav's own default list is repeated here because passing `props` replaces it
+ * rather than extending it, and dropping it would cost the display name and the
+ * colour. What this adds is `current-user-privilege-set`: the property that says
+ * whether the account may write to the collection. Without asking for it,
+ * `isReadOnly()` reads a field the server was never asked to send and every
+ * calendar looks writable — the refusal then surfaces at push time, on the first
+ * event the user tries to save into somebody else's calendar.
+ *
+ * @returns {object} the PROPFIND property set
+ */
+/**
+ * The calendars in an order the server cannot change under us.
+ * <p>
+ * The derived hue depends on a calendar's position among the others, and
+ * WebDAV promises nothing about the order of the `response` elements in a
+ * multistatus answer. Read twice — once for the legend, once for the events —
+ * the same account could come back in two orders and the same calendar would
+ * change colour between the two, which is the problem this is meant to solve.
+ * The URL is the one identifier the protocol does guarantee, so it is what the
+ * order is built on.
+ *
+ * @param  {Array} calendars - the calendars as the server returned them
+ * @returns {Array} the same calendars, in a stable order
+ */
+function inStableOrder(calendars) {
+  return [...(calendars || [])].sort((one, other) => (one.url || '').localeCompare(other.url || ''));
+}
+
+/**
+ * The name to show for a calendar.
+ * <p>
+ * `displayName` is typed as a string or an object because a property the server
+ * does not hold comes back as an empty object rather than as undefined — the
+ * same quirk `normalizeColor` guards against. An empty object is truthy, so the
+ * obvious `||` would render the calendar as "[object Object]".
+ *
+ * @param  {object} calendar - the calendar as tsdav returned it
+ * @returns {string} its display name, or its URL when the server holds none
+ */
+function calendarName(calendar) {
+  return (typeof calendar.displayName === 'string' && calendar.displayName) || calendar.url;
+}
+
+function calendarProps() {
+  return {
+    [`${tsdav.DAVNamespaceShort.CALDAV}:calendar-description`]: {},
+    [`${tsdav.DAVNamespaceShort.CALDAV}:calendar-timezone`]: {},
+    [`${tsdav.DAVNamespaceShort.DAV}:displayname`]: {},
+    [`${tsdav.DAVNamespaceShort.CALDAV_APPLE}:calendar-color`]: {},
+    [`${tsdav.DAVNamespaceShort.CALENDAR_SERVER}:getctag`]: {},
+    [`${tsdav.DAVNamespaceShort.DAV}:resourcetype`]: {},
+    [`${tsdav.DAVNamespaceShort.CALDAV}:supported-calendar-component-set`]: {},
+    [`${tsdav.DAVNamespaceShort.DAV}:sync-token`]: {},
+    [`${tsdav.DAVNamespaceShort.DAV}:current-user-privilege-set`]: {},
+  };
+}
+
+/** Where tsdav hands back a property it was asked to project. */
+const PRIVILEGE_SET_PROP = '{DAV:}current-user-privilege-set';
+
 function isReadOnly(calendar) {
-  const privileges = calendar && calendar.privilegeSet;
-  if (!Array.isArray(privileges) || privileges.length === 0) {
+  const projected = calendar && calendar.projectedProps && calendar.projectedProps[PRIVILEGE_SET_PROP];
+  const privileges = collectPrivileges(projected);
+  // A server that answers without the property tells us nothing about what we
+  // may do, and a calendar is treated as writable in that case: refusing a
+  // write nobody said was forbidden would take the feature away from every
+  // server that does not implement the property.
+  if (privileges.length === 0) {
     return false;
   }
   return !privileges.some(privilege => ['write', 'write-content', 'all'].includes(privilege));
+}
+
+/**
+ * The privilege names in a `current-user-privilege-set` answer.
+ * <p>
+ * The value arrives as parsed XML rather than as a list: one `privilege`
+ * element per granted right, each holding one empty element named after the
+ * right itself, and a single privilege comes back as an object where several
+ * come back as an array.
+ *
+ * @param  {object} projected - the property as the server answered it
+ * @returns {Array} the granted privilege names, lower-cased
+ */
+function collectPrivileges(projected) {
+  const privilege = projected && projected.privilege;
+  if (!privilege) {
+    return [];
+  }
+  return (Array.isArray(privilege) ? privilege : [privilege])
+    .flatMap(entry => Object.keys(entry || {}))
+    .map(name => name.replace(/^.*:/, '').toLowerCase());
 }
 /**
  * An error carrying a stable code, so that agenda can turn a failure into a
