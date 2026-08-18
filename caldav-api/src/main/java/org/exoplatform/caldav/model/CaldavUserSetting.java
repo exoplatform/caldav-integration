@@ -30,4 +30,12 @@ public class CaldavUserSetting {
   private String  password;
 
   private String  caldavUrl;
+
+  /**
+   * Href of the calendar collection, on the remote CalDAV server, that eXo
+   * created (or the user designated) to receive the meetings pushed by eXo.
+   * The href is the identity of that collection: it survives a rename made
+   * from any CalDAV client, which a display name would not.
+   */
+  private String  mirrorCalendarHref;
 }

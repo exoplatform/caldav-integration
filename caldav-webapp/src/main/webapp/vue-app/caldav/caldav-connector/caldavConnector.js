@@ -116,6 +116,11 @@ export default {
       projectedProps: {[PRIVILEGE_SET_PROP]: true},
       headersToExclude: ['If-None-Match'],
     });
+    // Reconciling the mirror calendar must not be able to take the listing
+    // down with it: it is a background repair, and a transient failure here
+    // would otherwise leave the user with no calendars at all.
+    await this.recoverMirrorCalendar(settings, calendars)
+      .catch(e => console.error('cannot reclaim the mirror calendar', e));
     const ordered = inStableOrder(calendars);
     return ordered.map((calendar, index) => ({
       id: calendar.url,
@@ -123,6 +128,166 @@ export default {
       color: calendarColor(calendar, index, ordered.length),
       readOnly: isReadOnly(calendar),
     }));
+  },
+  /**
+   * Takes the mirror calendar back over when the account holds one but
+   * nothing records it.
+   *
+   * Disconnecting forgets the stored href along with the credentials, which
+   * is right — a different account must not inherit the mirror of the last
+   * one. But reconnecting the same account left its own mirror unclaimed: it
+   * reappeared among the calendars as an ordinary one, showing every meeting
+   * a second time, and the copies went to whichever calendar the account
+   * listed first until the step was answered again.
+   *
+   * The calendar is recognised by its path, which eXo controls and which is
+   * the same in every language, so this claims back a calendar eXo made for
+   * this account and never one the user keeps for themselves.
+   *
+   * @param {Object} settings connector settings, holding mirrorCalendarHref
+   * @param {Array} calendars the collections the server enumerates
+   * @returns {Promise} resolves once a recovered href has been stored
+   */
+  async recoverMirrorCalendar(settings, calendars) {
+    if (!settings || settings.mirrorCalendarHref || !calendars || !calendars.length) {
+      return;
+    }
+    const existing = calendars.find(calendar => isMirrorCollection(calendar.url));
+    if (existing) {
+      await caldavConnectorService.saveMirrorCalendarHref(existing.url);
+    }
+  },
+
+  canCreateCalendar: true,
+  /**
+   * Creates, on the connected CalDAV server, the dedicated calendar that will
+   * receive the meetings eXo pushes — MKCALENDAR with the display name,
+   * colour and description set atomically — then stores its href as the push
+   * destination.
+   *
+   * The name is written once, in the language of the user at that moment, and
+   * never renamed afterwards: the href is the identity of the collection, so
+   * the user remains free to rename it from any of their own clients.
+   *
+   * MKCALENDAR is not universally permitted. A refusal surfaces as an error
+   * flagged calendarCreationRefused, so the caller can fall back to letting
+   * the user pick an existing calendar at connect time rather than fail at
+   * first push.
+   *
+   * @param {Object} calendarToCreate description of the wanted calendar
+   * @param {String} calendarToCreate.name display name, from the platform branding
+   * @param {String} calendarToCreate.color `#RRGGBB` colour, from the platform branding
+   * @param {String} calendarToCreate.description explains the calendar in the user's own client
+   * @returns {Promise<Object>} `{id}` where id is the href of the created collection
+   */
+  async createCalendar({name, color, description}) {
+    const settings = await caldavConnectorService.getCaldavSetting();
+    const clientCaldav = await createClient(settings);
+    const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+    const serverUrl = settings.caldavUrl.replace('{username}', settings.username);
+    // The account's own calendar home, as tsdav discovered it, before either
+    // fallback. An account with no calendar yet has nothing to derive a home
+    // from, and the configured URL is not a safe substitute: the first form the
+    // README documents carries no {username}, so it names a root that may be
+    // shared between accounts — a mirror calendar created there would not be
+    // the user's own.
+    const homeUrl = clientCaldav.account && clientCaldav.account.homeUrl
+      || calendars.length && new URL('..', calendars[0].url).href
+      || (serverUrl.endsWith('/') && serverUrl || `${serverUrl}/`);
+    // The path is derived from the name alone, with nothing random in it, so
+    // that asking twice for the same calendar means asking for the same
+    // collection. A random suffix made every request a different one, and a
+    // user who disconnected and reconnected — which forgets the stored href —
+    // collected a new calendar on the server each time.
+    const url = new URL(`${MIRROR_COLLECTION_SLUG}/`, homeUrl).href;
+    const existing = findMirrorCalendar(calendars, settings.mirrorCalendarHref, url, name);
+    if (existing) {
+      // Re-storing matters: after a reconnect the setting is empty even though
+      // the collection is still there, and without this the mirror would stay
+      // unconfigured until the next push guessed a destination.
+      await caldavConnectorService.saveMirrorCalendarHref(existing.url);
+      return {id: existing.url};
+    }
+    const props = {
+      [`${tsdav.DAVNamespaceShort.DAV}:displayname`]: name,
+    };
+    if (description) {
+      props[`${tsdav.DAVNamespaceShort.CALDAV}:calendar-description`] = description;
+    }
+    if (color) {
+      props[`${tsdav.DAVNamespaceShort.CALDAV_APPLE}:calendar-color`] = color;
+    }
+    const responses = await clientCaldav.makeCalendar({
+      url,
+      props,
+      headersToExclude: ['If-None-Match'],
+    });
+    const refusal = (responses || []).find(response => response && response.ok === false);
+    if (refusal) {
+      // 405 on MKCALENDAR means a collection already sits at that URL. Since
+      // the URL is derived from the name, that collection is the one being
+      // asked for: adopt it rather than report a failure the user cannot act
+      // on. Any other status is a genuine refusal.
+      if (refusal.status === 405) {
+        const created = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+        const adopted = findMirrorCalendar(created, null, url, name);
+        if (adopted) {
+          await caldavConnectorService.saveMirrorCalendarHref(adopted.url);
+          return {id: adopted.url};
+        }
+      }
+      const error = new Error(`MKCALENDAR refused by the server with status ${refusal.status}`);
+      error.calendarCreationRefused = true;
+      error.status = refusal.status;
+      throw error;
+    }
+    await caldavConnectorService.saveMirrorCalendarHref(url);
+    return {id: url};
+  },
+  /**
+   * Points the mirror at an existing calendar of the connected account
+   * instead of a created one — the fallback when MKCALENDAR is refused, and
+   * an option the user may always prefer.
+   *
+   * @param {String} calendarId href of the chosen calendar collection
+   * @returns {Promise<Object>} `{id}` echoing the stored href
+   */
+  async setMirrorCalendar(calendarId) {
+    await caldavConnectorService.saveMirrorCalendarHref(calendarId);
+    return {id: calendarId};
+  },
+  /**
+   * The stored href of the mirror calendar, so UIs can single it out — for
+   * instance to keep it off calendar lists, since it only holds copies of
+   * events eXo already displays.
+   *
+   * @returns {Promise<String>} the href, or null when no mirror is configured
+   */
+  getMirrorCalendarId() {
+    return caldavConnectorService.getCaldavSetting().then(settings => settings.mirrorCalendarHref || null);
+  },
+  /**
+   * The calendar every push and remote deletion must target: the stored
+   * mirror calendar. Matching is done on decoded pathnames, so an encoding
+   * difference (%40 versus @) or a changed host never detaches the mirror.
+   * When the server no longer enumerates the collection, the href itself is
+   * still targeted rather than silently writing somewhere else.
+   *
+   * Accounts connected before the mirror existed have no stored href and keep
+   * the previous behaviour, the first calendar the server enumerates.
+   *
+   * @param {Object} clientCaldav authenticated tsdav client
+   * @param {Object} settings connector settings, holding mirrorCalendarHref
+   * @returns {Promise<Object>} the destination calendar, or null when none exists
+   */
+  async getDestinationCalendar(clientCaldav, settings) {
+    const mirrorCalendarHref = settings && settings.mirrorCalendarHref;
+    if (!mirrorCalendarHref) {
+      return this.getCalendar(clientCaldav);
+    }
+    const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+    return calendars.find(calendar => isSameCollection(calendar.url, mirrorCalendarHref))
+      || {url: mirrorCalendarHref};
   },
   async getCalendar(clientCaldav){
     const calendars = await clientCaldav.fetchCalendars({
@@ -346,7 +511,7 @@ export default {
    */
   async removeEvent(event, settings) {
     const clientCaldav = await createClient(settings);
-    const calendar = await this.getCalendar(clientCaldav);
+    const calendar = await this.getDestinationCalendar(clientCaldav, settings);
     const isOccurrence = !!event.occurrence;
     const icalUID = isOccurrence ? event.parent && event.parent.remoteId : event.remoteId;
     if (!icalUID) {
@@ -382,9 +547,21 @@ export default {
       throw e.code ? e : caldavError('caldav.error.save', e);
     }
   },
+  /**
+   * Writes an accepted eXo meeting to the mirror calendar of the connected
+   * account, as one ICS object named after its UID.
+   *
+   * @param {Object} event the eXo event to push
+   * @param {Object} settings connector settings holding credentials and mirror href
+   * @returns {Promise<Object>} `{id}` where id is the ICS UID of the pushed copy
+   */
   async saveEvent(event, settings) {
     const clientCaldav = await createClient(settings);
-    const calendar = await this.getCalendar(clientCaldav);
+    //get the mirror calendar, the only collection eXo writes to
+    const calendar = await this.getDestinationCalendar(clientCaldav, settings);
+    if (!calendar) {
+      return null;
+    }
     const isOccurrence = !!event.occurrence;
     const icalUID = isOccurrence ? event.parent.remoteId : event.remoteId || crypto.randomUUID();
     const filename = `${icalUID}.ics`;
@@ -1740,4 +1917,85 @@ function toIcsLocalDateTime(value, timeZoneId) {
  */
 function referenceYear(start) {
   return new Date(start).getUTCFullYear() - 1;
+}
+
+
+/**
+ * The decoded path of a collection URL, without a trailing slash — the part
+ * of an href that identifies the collection regardless of host or of how the
+ * server percent-encodes it.
+ *
+ * @param {String} url collection URL or href
+ * @returns {String} its decoded, slash-trimmed path
+ */
+function collectionPath(url) {
+  try {
+    return decodeURIComponent(new URL(url, window.location.origin).pathname).replace(/\/+$/, '');
+  } catch (e) {
+    return url;
+  }
+}
+
+/**
+ * Whether two hrefs designate the same calendar collection. Compared on
+ * decoded paths: the same collection may be written `%40` by the server and
+ * `@` by a client, or reached through different hosts.
+ *
+ * @param {String} url first collection URL
+ * @param {String} href second collection URL
+ * @returns {Boolean} true when both point at the same collection
+ */
+function isSameCollection(url, href) {
+  return !!url && !!href && collectionPath(url) === collectionPath(href);
+}
+
+/**
+ * The mirror calendar among those the server enumerates, so that asking for
+ * it twice never produces a second one.
+ *
+ * Three signals, in decreasing order of confidence:
+ * the stored href, which is the identity of the collection and the only one
+ * that survives a rename; the URL the connector would create, which survives
+ * a disconnect (the setting does not) since it is derived from the name; and
+ * the display name itself, which is what recovers a collection created when
+ * storing its href failed.
+ *
+ * Name matching is a last resort on purpose: it is the only signal that can
+ * adopt a calendar the connector did not create, and it stops matching as
+ * soon as the user renames it — which is the right outcome, since the stored
+ * href takes over from the first successful configuration.
+ *
+ * @param {Array} calendars collections the server enumerates
+ * @param {String} mirrorCalendarHref stored mirror href, if any
+ * @param {String} url the URL this connector creates for that name
+ * @param {String} name display name asked for
+ * @returns {Object} the matching collection, or undefined when there is none
+ */
+function findMirrorCalendar(calendars, mirrorCalendarHref, url, name) {
+  return mirrorCalendarHref && (calendars || []).find(calendar => isSameCollection(calendar.url, mirrorCalendarHref))
+    || (calendars || []).find(calendar => isSameCollection(calendar.url, url))
+    || (calendars || []).find(calendar => calendar.displayName && calendar.displayName === name);
+}
+
+/**
+ * The last path segment of the mirror collection. A constant, not a slug of
+ * the display name: that name is branded and translated, so deriving the path
+ * from it produced a different collection per language — a user switching
+ * from English to French would ask for a path that does not exist and collect
+ * a second calendar. The path is shown to nobody; the display name is.
+ */
+const MIRROR_COLLECTION_SLUG = 'exo-meetings';
+
+/**
+ * Whether a collection is one eXo created to receive the copies, judged on
+ * its path alone so the answer does not depend on the language of whoever
+ * created it. Collections made before the path became a constant carry a
+ * random suffix, and are recognised too.
+ *
+ * @param {String} url collection URL
+ * @returns {Boolean} true when the collection is an eXo mirror
+ */
+function isMirrorCollection(url) {
+  const segment = collectionPath(url || '').split('/').pop();
+  return segment === MIRROR_COLLECTION_SLUG || segment.startsWith(`${MIRROR_COLLECTION_SLUG}-`);
 }
