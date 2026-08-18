@@ -78,6 +78,7 @@ export default {
       const caldavEvent= {};
       const data = ICAL.parse(event.data);
       const iCal = new ICAL.Component(data); //component
+      registerTimeZones(iCal);
       const eventComponent = iCal.getFirstSubcomponent('vevent'); //component
       const vEvent = new ICAL.Event(eventComponent); //Event
       if (vEvent) {
@@ -143,7 +144,14 @@ export default {
               occurenceEvent.id = occurenceEvent.uid;
               occurenceEvent.recurringEventId = occurenceEvent.uid;
               const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
-              occurenceEvent.start= new Date(realStartDate); //next : ICAL.Time
+              // toJSDate resolves the occurrence through the zone its series is
+              // anchored in; new Date(icalTime) went through toString(), which
+              // drops the zone unless it is UTC, so a series anchored on a TZID
+              // — as this connector now writes recurring events, and as most
+              // other clients write them — was read as if its wall clock were
+              // the reader's own, showing the meeting at the right hour only to
+              // users who happen to sit in the organiser's zone.
+              occurenceEvent.start= realStartDate.toJSDate(); //next : ICAL.Time
               if (startDate && !startDate[0].jCal[3].includes('T')) {
                 occurenceEvent.allDay=true;
               } else {
@@ -271,7 +279,30 @@ export default {
     const icalUID = isOccurrence ? event.parent.remoteId : event.remoteId || crypto.randomUUID();
     const filename = `${icalUID}.ics`;
 
-    let iCalString = buildEventIcs(event, icalUID, isOccurrence);
+    // A timed series must be anchored on the wall clock of a zone, not on an
+    // instant. RFC 5545 section 3.8.5.3 expands every occurrence of an RRULE
+    // from DTSTART, so a 09:00 Paris weekly meeting written as 08:00Z stays at
+    // 08:00Z all year and shows up at 10:00 local for the half of it that falls
+    // in summer time — on every client, because that is what the data says.
+    // Anchoring on TZID makes each occurrence 09:00 in that zone, whichever
+    // offset the zone is on that day.
+    //
+    // The parameter is worth nothing on its own: section 3.2.19 requires the
+    // TZID to name a VTIMEZONE carried by the same object, and without it a
+    // strict server rejects the PUT as invalid calendar data while a lenient
+    // parser reads the time as floating — a different wrong answer. So the two
+    // travel together, and when the component cannot be produced the event
+    // falls back to the UTC form rather than shipping a dangling reference.
+    //
+    // Only recurring events are moved: a single timed event is one instant,
+    // which UTC already states unambiguously. Occurrence overrides count as
+    // recurring — they belong to a series that is now TZID-anchored, and an
+    // override has to speak the same language as the master it amends.
+    const timeZoneId = event.timeZoneId || caldavConnectorService.USER_TIMEZONE_ID;
+    const isRecurring = isOccurrence || !!event.recurrence?.rrule;
+    const vTimeZone = !event.allDay && isRecurring ? await resolveVTimeZone(timeZoneId, referenceYear(event.start)) : null;
+
+    let iCalString = buildEventIcs(event, icalUID, isOccurrence, vTimeZone, timeZoneId);
     try {
       // Inside the try so that a property built wrongly is reported as a
       // failed save, with the offending object logged next to it, rather
@@ -318,41 +349,44 @@ export default {
 /**
  * The whole iCalendar object for one event, ready to be pushed.
  * <p>
- * Assembled from parts so that each stays readable on its own: the property
- * set an event needs has grown well past what one function can hold without
- * hiding its own shape.
+ * Assembled from parts so that each stays readable on its own: the property set
+ * an event needs has grown well past what one function can hold without hiding
+ * its own shape. The zone is resolved by the caller, which is where the await
+ * belongs, so that this stays a pure function of the event.
  *
  * @param  {object} event - the event being pushed
  * @param  {string} icalUID - the UID shared by the series and its overrides
  * @param  {boolean} isOccurrence - whether this component amends one instance
+ * @param  {string} vTimeZone - the VTIMEZONE component, when one was produced
+ * @param  {string} timeZoneId - the zone the wall clock is read in
  * @returns {string} the VCALENDAR object, trimmed
  */
-function buildEventIcs(event, icalUID, isOccurrence) {
+function buildEventIcs(event, icalUID, isOccurrence, vTimeZone, timeZoneId) {
   const dtStamp = new Date().toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', 'Z');
   let ics = `BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Exo Platform//NONSGML v1.0//EN
 CALSCALE:GREGORIAN
-BEGIN:VEVENT
+${vTimeZone || ''}BEGIN:VEVENT
 SUMMARY:${escapeText(event.summary)}
 UID:${icalUID}
 DTSTAMP:${dtStamp}
 `;
-  ics += scheduleLines(event);
+  ics += scheduleLines(event, vTimeZone, timeZoneId);
   ics += describeLines(event);
   ics += stampLines(event);
-  // CONFIRMED for every event pushed, deliberately, rather than a mapping
-  // of the agenda status: eXo spells a date poll TENTATIVE, which in RFC
-  // 5545 means "provisionally scheduled" — a poll pushed with its own word
-  // would show up as a real meeting nobody has confirmed. An event only
-  // reaches this connector once it is scheduled, so the honest value is the
-  // constant. TRANSP is the RFC default and is written for explicitness, so
-  // that a client reading the object does not have to know the default.
+  // CONFIRMED for every event pushed, deliberately, rather than a mapping of
+  // the agenda status: eXo spells a date poll TENTATIVE, which in RFC 5545
+  // means "provisionally scheduled" — a poll pushed with its own word would
+  // show up as a real meeting nobody has confirmed. An event only reaches this
+  // connector once it is scheduled, so the honest value is the constant.
+  // TRANSP is the RFC default and is written for explicitness, so that a client
+  // reading the object does not have to know the default.
   ics += `STATUS:CONFIRMED
 TRANSP:OPAQUE
 `;
-  ics += recurrenceLines(event, isOccurrence);
-  ics += exceptionLines(event, isOccurrence);
+  ics += recurrenceLines(event, isOccurrence, vTimeZone, timeZoneId);
+  ics += exceptionLines(event, isOccurrence, vTimeZone, timeZoneId);
   ics += buildAlarms(event);
   ics += `END:VEVENT
 END:VCALENDAR
@@ -361,16 +395,23 @@ END:VCALENDAR
 }
 
 /**
- * The DTSTART/DTEND pair, in the form the event's own all-day flag calls for.
+ * The DTSTART/DTEND pair: dates for an all-day event, wall clock anchored on
+ * the zone when the object carries its VTIMEZONE, and UTC otherwise.
  *
  * @param  {object} event - the event being pushed
+ * @param  {string} vTimeZone - the VTIMEZONE component, when one was produced
+ * @param  {string} timeZoneId - the zone the wall clock is read in
  * @returns {string} the two lines, terminated
  */
-function scheduleLines(event) {
+function scheduleLines(event, vTimeZone, timeZoneId) {
   let ics = '';
   if (event.allDay) {
     ics += `DTSTART;VALUE=DATE:${toIcsDate(event.start, event.timeZoneId)}
 DTEND;VALUE=DATE:${toIcsEndDate(event.end, event.timeZoneId)}
+`;
+  } else if (vTimeZone) {
+    ics += `DTSTART;TZID=${timeZoneId}:${toIcsLocalDateTime(event.start, timeZoneId)}
+DTEND;TZID=${timeZoneId}:${toIcsLocalDateTime(event.end, timeZoneId)}
 `;
   } else {
     ics += `DTSTART:${toUTCString(event.start)}Z
@@ -444,13 +485,16 @@ function stampLines(event) {
 
 /**
  * What ties the component to a series: the occurrence it amends, or the rule
- * the master repeats by.
+ * the master repeats by. An override has to denote its instance in the same
+ * form the master's DTSTART uses, hence the same three cases.
  *
  * @param  {object} event - the event being pushed
  * @param  {boolean} isOccurrence - whether this component amends one instance
+ * @param  {string} vTimeZone - the VTIMEZONE component, when one was produced
+ * @param  {string} timeZoneId - the zone the wall clock is read in
  * @returns {string} the property, or an empty string
  */
-function recurrenceLines(event, isOccurrence) {
+function recurrenceLines(event, isOccurrence, vTimeZone, timeZoneId) {
   let ics = '';
   if (isOccurrence) {
     // Exactly one RECURRENCE-ID, and always one. Both writes used to sit
@@ -466,8 +510,18 @@ function recurrenceLines(event, isOccurrence) {
     // occurrence of an all-day event by an instant all the same — so keying
     // off the identifier wrote a date-time reference into a date-valued
     // series, which matches no instance at all.
+    //
+    // The timed form follows DTSTART for the same reason it follows allDay:
+    // the property has to denote the instance as the master's RRULE produces
+    // it, and a TZID-anchored master produces wall-clock times. Naming the
+    // same instant in UTC would be equivalent only to a client that compares
+    // instants, and enough of them compare the written value instead — the
+    // override then binds to nothing and surfaces as a second event sitting
+    // next to the occurrence it was meant to replace.
     if (event.allDay) {
       ics += `RECURRENCE-ID;VALUE=DATE:${toIcsDate(event.occurrence.id, event.timeZoneId)}\n`;
+    } else if (vTimeZone) {
+      ics += `RECURRENCE-ID;TZID=${timeZoneId}:${toIcsLocalDateTime(event.occurrence.id, timeZoneId)}\n`;
     } else {
       ics += `RECURRENCE-ID:${event.occurrence.id.replace(/[-:]|\.\d{3}/g, '')}Z\n`;
     }
@@ -482,21 +536,29 @@ function recurrenceLines(event, isOccurrence) {
 }
 
 /**
- * The instances deleted from a series, written by the master only.
+ * The instances deleted from a series, written by the master only, in the same
+ * form its DTSTART uses.
  *
  * @param  {object} event - the event being pushed
  * @param  {boolean} isOccurrence - whether this component amends one instance
+ * @param  {string} vTimeZone - the VTIMEZONE component, when one was produced
+ * @param  {string} timeZoneId - the zone the wall clock is read in
  * @returns {string} one EXDATE per exception
  */
-function exceptionLines(event, isOccurrence) {
+function exceptionLines(event, isOccurrence, vTimeZone, timeZoneId) {
   let ics = '';
   if (!isOccurrence && event.recurrence?.exceptions && event.recurrence.exceptions.length > 0) {
+    // Same reasoning as RECURRENCE-ID above: an exclusion only removes an
+    // occurrence it matches, so it is written in the form the master
+    // generates.
     event.recurrence.exceptions.forEach(exdate => {
       const exDateFormatted = exdate.date.replace(/[-:]|\.\d{3}/g, '');
-      if (exDateFormatted.includes('T')) {
-        ics += `EXDATE:${exDateFormatted}Z\n`;
-      } else {
+      if (!exDateFormatted.includes('T')) {
         ics += `EXDATE;VALUE=DATE:${exDateFormatted}\n`;
+      } else if (vTimeZone) {
+        ics += `EXDATE;TZID=${timeZoneId}:${toIcsLocalDateTime(exdate.date, timeZoneId)}\n`;
+      } else {
+        ics += `EXDATE:${exDateFormatted}Z\n`;
       }
     });
   }
@@ -622,6 +684,12 @@ async function fetchCalendarObject(calendar, filename, settings) {
  * was deleted, and an override contradicting an EXDATE leaves the deleted
  * occurrence visible on clients that favor the override.
  *
+ * The VTIMEZONE the push carries is copied over as well when the object does
+ * not already define that zone. Only the VEVENT used to be lifted out of the
+ * pushed object, so every update after the first would have left the DTSTART
+ * of the series pointing at a TZID nothing in the object defined — the very
+ * dangling reference the push takes care to avoid.
+ *
  * @param {String} existingData the calendar object as fetched from the server
  * @param {String} newComponentString VCALENDAR holding the one VEVENT to push
  * @param {Boolean} isOccurrence whether that VEVENT is an occurrence override
@@ -629,7 +697,14 @@ async function fetchCalendarObject(calendar, filename, settings) {
  */
 function mergeIntoCalendarObject(existingData, newComponentString, isOccurrence) {
   const calendar = new ICAL.Component(ICAL.parse(existingData));
-  const newEvent = new ICAL.Component(ICAL.parse(newComponentString)).getFirstSubcomponent('vevent');
+  const newCalendar = new ICAL.Component(ICAL.parse(newComponentString));
+  registerTimeZones(calendar);
+  registerTimeZones(newCalendar);
+  const newEvent = newCalendar.getFirstSubcomponent('vevent');
+  newCalendar.getAllSubcomponents('vtimezone')
+    .filter(vtimezone => !calendar.getAllSubcomponents('vtimezone')
+      .some(known => known.getFirstPropertyValue('tzid') === vtimezone.getFirstPropertyValue('tzid')))
+    .forEach(vtimezone => calendar.addSubcomponent(vtimezone));
   let replaced;
   if (isOccurrence) {
     const recurrenceId = newEvent.getFirstPropertyValue('recurrence-id');
@@ -660,10 +735,11 @@ function mergeIntoCalendarObject(existingData, newComponentString, isOccurrence)
  */
 function excludeOccurrence(existingData, event) {
   const calendar = new ICAL.Component(ICAL.parse(existingData));
+  registerTimeZones(calendar);
   const master = calendar.getAllSubcomponents('vevent')
     .find(vevent => !vevent.getFirstPropertyValue('recurrence-id'));
   const dtstart = master && master.getFirstPropertyValue('dtstart');
-  const occurrence = occurrenceToTime(event, dtstart ? dtstart.isDate : event.allDay);
+  const occurrence = occurrenceToTime(event, dtstart ? dtstart.isDate : event.allDay, dtstart && dtstart.zone);
   calendar.getAllSubcomponents('vevent')
     .filter(vevent => isSameOccurrence(vevent.getFirstPropertyValue('recurrence-id'), occurrence))
     .forEach(vevent => calendar.removeSubcomponent(vevent));
@@ -681,19 +757,27 @@ function excludeOccurrence(existingData, event) {
 /**
  * The instant an occurrence identifier denotes, as an ICAL.Time in the form
  * the series uses: the calendar date in the event's zone for an all-day
- * series, the UTC instant otherwise — mirroring how saveEvent writes
- * RECURRENCE-ID for the same identifier.
+ * series, otherwise the instant expressed in the zone the series is anchored
+ * in — mirroring how saveEvent writes RECURRENCE-ID for the same identifier.
+ *
+ * Expressing it in the master's own zone rather than always in UTC matters
+ * once the series is TZID-anchored: the EXDATE this value becomes has to match
+ * an occurrence the master generates, and clients that compare the written
+ * value instead of the instant would otherwise keep showing the cancelled
+ * occurrence.
  *
  * @param {Object} event occurrence event, carrying occurrence.id
  * @param {Boolean} asDate whether the series is date-valued
+ * @param {Object} zone the master's ICAL.Timezone, when it has one
  * @returns {Object} the occurrence as an ICAL.Time
  */
-function occurrenceToTime(event, asDate) {
+function occurrenceToTime(event, asDate, zone) {
   if (asDate) {
     const {year, month, day} = datePartsInZone(event.occurrence.id, event.timeZoneId);
     return new ICAL.Time({year, month, day, isDate: true});
   }
-  return ICAL.Time.fromJSDate(new Date(event.occurrence.id), true);
+  const instant = ICAL.Time.fromJSDate(new Date(event.occurrence.id), true);
+  return zone && zone !== ICAL.Timezone.localTimezone ? instant.convertToZone(zone) : instant;
 }
 
 /**
@@ -990,4 +1074,309 @@ function pad(value) {
 function toUTCString(dateStr) {
   const d = new Date(dateStr);
   return d.toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', '');
+}
+
+/**
+ * Teaches ical.js the zones a calendar object defines.
+ *
+ * ical.js ships no time zone database — its own timezone_service calls itself
+ * "all manual registry" — and resolves a TZID solely against what has been
+ * registered. An unknown TZID is not an error there: the date-time silently
+ * becomes floating, which reads as "whatever the wall clock says here", so an
+ * event pushed at 09:00 Paris came back as 09:00 for a reader in Tunis. The
+ * VTIMEZONE the object carries is exactly the missing definition, so it is
+ * registered before anything is read out of the object.
+ *
+ * @param {Object} calendar the VCALENDAR as an ICAL.Component
+ * @returns {void} nothing; the zones become resolvable globally
+ */
+function registerTimeZones(calendar) {
+  calendar.getAllSubcomponents('vtimezone').forEach(vtimezone => {
+    const tzid = vtimezone.getFirstPropertyValue('tzid');
+    if (tzid && !ICAL.TimezoneService.has(tzid)) {
+      ICAL.TimezoneService.register(vtimezone);
+    }
+  });
+}
+
+const vTimeZoneCache = new Map();
+
+/**
+ * The VTIMEZONE component defining a zone, ready to be dropped into a
+ * VCALENDAR, or null when this connector cannot vouch for one.
+ *
+ * This is the single seam through which the object gets its zone definition,
+ * and it is asynchronous on purpose: the authoritative source is the server,
+ * which already builds these components from the ical4j registry — a full
+ * tzdata with the historical rules — in agenda's Utils.getICalTimeZone /
+ * getVTimeZone. The day agenda exposes them (see the endpoint proposed
+ * alongside this change), the body below becomes a fetch and nothing else in
+ * the file moves.
+ *
+ * Until then the component is derived in the browser, because the two other
+ * sources are worse. ical.js carries no tzdata at all — the npm package is
+ * lib and build, no timezone data anywhere — so ical.timezones.js would have
+ * to be vendored from the project's releases rather than installed: roughly a
+ * megabyte of generated definitions added to a bundle that is currently a
+ * fraction of that, pinned at the tzdb release it was cut from and going stale
+ * from the day it lands, with nothing in the build to tell us it has. The
+ * browser's own database, by contrast, is current, costs nothing to ship, and
+ * is the same one the user's clock already runs on.
+ *
+ * The result is memoised: a zone's rules do not change during a session, and a
+ * push should not re-derive them. The promise is returned rather than awaited
+ * so that the caller already treats this as a round trip, which is what the
+ * server-backed version will be.
+ *
+ * @param {String} timeZoneId IANA zone the event is anchored in
+ * @param {Number} year first year the definition has to cover
+ * @returns {Promise<String>} the VTIMEZONE component, or null when unavailable
+ */
+function resolveVTimeZone(timeZoneId, year) {
+  const key = `${timeZoneId}@${year}`;
+  if (!vTimeZoneCache.has(key)) {
+    let component = null;
+    try {
+      component = buildVTimeZone(timeZoneId, year);
+    } catch (e) {
+      console.warn('cannot describe the time zone', timeZoneId, '; the event will be pushed in UTC', e);
+    }
+    vTimeZoneCache.set(key, component);
+  }
+  return Promise.resolve(vTimeZoneCache.get(key));
+}
+
+/**
+ * Derives a VTIMEZONE from the browser's own time zone database, by observing
+ * what the zone actually does over a year rather than by looking its rules up.
+ *
+ * The offsets come from Intl, which is backed by the platform's tzdata, so the
+ * observed behaviour is authoritative; what has to be guessed is how to state
+ * it as a rule that also covers the years the series runs into. A zone that
+ * changes offset twice a year is described as two yearly rules — the shape
+ * every calendar client and every tzurl "Outlook" definition uses — and a zone
+ * that never changes as one fixed offset.
+ *
+ * A zone doing anything else in that year — a handful move their clocks on a
+ * lunar calendar and change offset three or four times — is declined rather
+ * than approximated, since a wrong VTIMEZONE is harder to notice than no
+ * VTIMEZONE. Declining returns the event to the UTC form it has today: still
+ * adrift across a transition, but no worse than before this change.
+ *
+ * Two limits are worth stating plainly, and both are why the server remains
+ * the better source. The rules are read from one year and projected forward,
+ * so a zone that changes its legislation mid-series — or a lunar-calendar zone
+ * that happens to show two transitions in the year read, and so is not
+ * declined — is described by the rule it followed then, not the one it follows
+ * later. And nothing here is versioned: agenda's ical4j registry carries the
+ * full historical record, this carries a snapshot of one year's behaviour.
+ *
+ * @param {String} timeZoneId IANA zone to describe
+ * @param {Number} year year whose behaviour is read, and from which the
+ * definition takes effect; every occurrence of the series is later than it
+ * @returns {String} the VTIMEZONE component, or null when it cannot be stated
+ */
+function buildVTimeZone(timeZoneId, year) {
+  const transitions = zoneTransitions(timeZoneId, year);
+  let subcomponents;
+  if (transitions.length === 0) {
+    const offset = formatUtcOffset(zoneOffsetMinutes(Date.UTC(year, 0, 1), timeZoneId));
+    subcomponents = `BEGIN:STANDARD
+DTSTART:${year}0101T000000
+TZOFFSETFROM:${offset}
+TZOFFSETTO:${offset}
+END:STANDARD
+`;
+  } else if (transitions.length === 2) {
+    subcomponents = transitions.map(zoneSubcomponent).join('');
+  } else {
+    return null;
+  }
+  return `BEGIN:VTIMEZONE
+TZID:${timeZoneId}
+${subcomponents}END:VTIMEZONE
+`;
+}
+
+/**
+ * States one observed offset change as a STANDARD or DAYLIGHT subcomponent
+ * recurring every year.
+ *
+ * Two details are easy to get wrong and both are load-bearing. The DTSTART of
+ * such a subcomponent is a local time read with the offset in force *before*
+ * the change, per RFC 5545 section 3.6.5 — the instant the change happens has
+ * no wall-clock reading in the new offset, since that is the hour the zone
+ * skips or repeats. And the day of the change is stated as an ordinal weekday,
+ * "the last Sunday of March" rather than "29 March", because that is the rule
+ * the zone follows; a fixed day would drift by up to six days each year.
+ *
+ * @param {Object} transition an observed change, its instant and both offsets
+ * @returns {String} the subcomponent, newline-terminated
+ */
+function zoneSubcomponent(transition) {
+  const name = transition.to > transition.from ? 'DAYLIGHT' : 'STANDARD';
+  const onset = new Date(transition.instant + transition.from * 60000);
+  const month = onset.getUTCMonth() + 1;
+  const day = onset.getUTCDate();
+  const lastDayOfMonth = new Date(Date.UTC(onset.getUTCFullYear(), month, 0)).getUTCDate();
+  const ordinal = day + 7 > lastDayOfMonth ? -1 : Math.floor((day - 1) / 7) + 1;
+  const weekday = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'][onset.getUTCDay()];
+  return `BEGIN:${name}
+DTSTART:${onset.getUTCFullYear()}${pad(month)}${pad(day)}T${pad(onset.getUTCHours())}${pad(onset.getUTCMinutes())}${pad(onset.getUTCSeconds())}
+TZOFFSETFROM:${formatUtcOffset(transition.from)}
+TZOFFSETTO:${formatUtcOffset(transition.to)}
+RRULE:FREQ=YEARLY;BYMONTH=${month};BYDAY=${ordinal}${weekday}
+END:${name}
+`;
+}
+
+/**
+ * Every offset change a zone goes through during a year.
+ *
+ * The year is swept a month at a time — a transition never happens twice
+ * inside one month — and each month whose ends disagree is then bisected, so
+ * the whole scan costs a few dozen formatter calls and lands on the exact
+ * second of the change.
+ *
+ * @param {String} timeZoneId IANA zone to observe
+ * @param {Number} year year to sweep
+ * @returns {Array} the changes found, in chronological order
+ */
+function zoneTransitions(timeZoneId, year) {
+  const transitions = [];
+  let previousMonth = Date.UTC(year, 0, 1);
+  let previousOffset = zoneOffsetMinutes(previousMonth, timeZoneId);
+  for (let month = 1; month <= 12; month++) {
+    const currentMonth = Date.UTC(year, month, 1);
+    const currentOffset = zoneOffsetMinutes(currentMonth, timeZoneId);
+    if (currentOffset !== previousOffset) {
+      transitions.push(findTransition(previousMonth, currentMonth, previousOffset, timeZoneId));
+    }
+    previousMonth = currentMonth;
+    previousOffset = currentOffset;
+  }
+  return transitions;
+}
+
+/**
+ * Narrows an interval known to contain one offset change down to the second it
+ * happens, by bisection.
+ *
+ * @param {Number} start instant still on the old offset
+ * @param {Number} end instant already on the new one
+ * @param {Number} offsetBefore the old offset, in minutes
+ * @param {String} timeZoneId IANA zone being observed
+ * @returns {Object} the change: its instant, and the offsets either side
+ */
+function findTransition(start, end, offsetBefore, timeZoneId) {
+  let low = start;
+  let high = end;
+  while (high - low > 1000) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (zoneOffsetMinutes(middle, timeZoneId) === offsetBefore) {
+      low = middle;
+    } else {
+      high = middle;
+    }
+  }
+  return {
+    instant: high,
+    from: offsetBefore,
+    to: zoneOffsetMinutes(high, timeZoneId),
+  };
+}
+
+/**
+ * How far a zone is from UTC at a given instant, in minutes.
+ *
+ * There is no API that answers this directly, but reading the instant's wall
+ * clock in the zone and subtracting the instant itself does: the difference
+ * between what the zone's clock shows and what UTC shows is the offset.
+ *
+ * @param {Number} instant the moment to measure, in milliseconds
+ * @param {String} timeZoneId IANA zone to measure it in
+ * @returns {Number} minutes to add to UTC to obtain that zone's wall clock
+ */
+function zoneOffsetMinutes(instant, timeZoneId) {
+  const {year, month, day, hour, minute, second} = wallClockInZone(instant, timeZoneId);
+  return Math.round((Date.UTC(year, month - 1, day, hour, minute, second) - instant) / 60000);
+}
+
+/**
+ * Formats an offset the way iCalendar states one, as +HHMM or -HHMM.
+ *
+ * @param {Number} minutes offset from UTC, negative west of Greenwich
+ * @returns {String} the offset as a UTC-OFFSET value
+ */
+function formatUtcOffset(minutes) {
+  const absolute = Math.abs(minutes);
+  return `${minutes < 0 ? '-' : '+'}${pad(Math.floor(absolute / 60))}${pad(absolute % 60)}`;
+}
+
+/**
+ * The wall clock a zone shows at a given moment, as numbers.
+ *
+ * The companion of datePartsInZone for values that carry a time, and it exists
+ * for the same reason: the parts have to come from a formatter told which zone
+ * to use, never from slicing the instant's own string representation.
+ *
+ * The hour is reduced modulo 24 because engines disagree on midnight under
+ * hour12: false — some report it as hour 24 of the previous day, which would
+ * put the event a day early and 24 hours late at once.
+ *
+ * @param {String|Number} value instant as agenda supplies it, or milliseconds
+ * @param {String} timeZoneId the zone to read it in; the runtime's if absent
+ * @returns {Object} the year, month, day, hour, minute and second shown there
+ */
+function wallClockInZone(value, timeZoneId) {
+  const options = {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  };
+  if (timeZoneId) {
+    options.timeZone = timeZoneId;
+  }
+  const parts = new Intl.DateTimeFormat('en-US', options).formatToParts(new Date(value));
+  const read = type => Number(parts.find(part => part.type === type).value);
+  return {
+    year: read('year'),
+    month: read('month'),
+    day: read('day'),
+    hour: read('hour') % 24,
+    minute: read('minute'),
+    second: read('second'),
+  };
+}
+
+/**
+ * Formats a value as an iCalendar local date-time, the form a TZID-qualified
+ * property carries: the wall clock of the zone, with neither offset nor Z.
+ *
+ * @param {String} value instant as agenda supplies it
+ * @param {String} timeZoneId the zone whose wall clock is written
+ * @returns {String} the value as YYYYMMDDTHHMMSS
+ */
+function toIcsLocalDateTime(value, timeZoneId) {
+  const {year, month, day, hour, minute, second} = wallClockInZone(value, timeZoneId);
+  return `${year}${pad(month)}${pad(day)}T${pad(hour)}${pad(minute)}${pad(second)}`;
+}
+
+/**
+ * The year a zone definition has to take effect from to cover a series.
+ *
+ * The year before the series starts, so that both of that year's transitions
+ * precede every occurrence: RFC 5545 leaves the offset ambiguous for a time
+ * earlier than a VTIMEZONE's first onset, and clients resolve that ambiguity
+ * differently.
+ *
+ * @param {String} start the first occurrence, as agenda supplies it
+ * @returns {Number} the year to describe the zone from
+ */
+function referenceYear(start) {
+  return new Date(start).getUTCFullYear() - 1;
 }
