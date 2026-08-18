@@ -12,6 +12,18 @@ export default {
   isSignedIn: true,
   pushing: false,
   rank: 40,
+  /**
+   * Opens the settings drawer and resolves once the CalDAV server itself has
+   * accepted the account. The drawer verifies the credentials against the
+   * server before storing anything, and only then dispatches the
+   * `test-connection` event with the connected settings — so receiving a
+   * payload here genuinely means tested, not merely saved. A drawer closed
+   * without connecting dispatches the event without payload. The listener is
+   * armed for a single event, so an abandoned attempt does not leave a stale
+   * listener behind to settle a later one.
+   *
+   * @returns {Promise<String>} the username of the connected account
+   */
   connect() {
     return new Promise((resolve, reject) => {
       document.dispatchEvent(new CustomEvent('open-caldav-connector-settings-drawer'));
@@ -21,7 +33,7 @@ export default {
         } else {
           reject('connection canceled');
         }
-      });
+      }, {once: true});
     });
   },
   disconnect() {
