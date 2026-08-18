@@ -44,6 +44,29 @@ public class CaldavConnectorStorage {
                             SettingValue.create(encodedPassword));
   }
 
+  /**
+   * Saves the href of the mirror calendar of a user, the remote collection
+   * every meeting pushed by eXo is written to. The href is stored beside the
+   * other settings of the CalDAV account of that user, so disconnecting the
+   * account removes it with the rest.
+   *
+   * @param mirrorCalendarHref href of the mirror calendar collection
+   * @param userIdentityId technical identity identifier of the user
+   */
+  public void saveMirrorCalendarHref(String mirrorCalendarHref, long userIdentityId) {
+    this.settingService.set(Context.USER.id(String.valueOf(userIdentityId)),
+                            CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                            CaldavConnectorUtils.CALDAV_MIRROR_CALENDAR_KEY,
+                            SettingValue.create(mirrorCalendarHref));
+  }
+
+  /**
+   * Retrieves the CalDAV settings of a user: the credentials of the connected
+   * account and, when one has been chosen, the href of the mirror calendar.
+   *
+   * @param userIdentityId technical identity identifier of the user
+   * @return the {@link CaldavUserSetting} of that user, never null
+   */
   public CaldavUserSetting getCaldavSetting(long userIdentityId) {
 
     SettingValue<?> username = this.settingService.get(Context.USER.id(String.valueOf(userIdentityId)),
@@ -52,6 +75,9 @@ public class CaldavConnectorStorage {
     SettingValue<?> password = this.settingService.get(Context.USER.id(String.valueOf(userIdentityId)),
                                                        CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                                        CaldavConnectorUtils.CALDAV_PASSWORD_KEY);
+    SettingValue<?> mirrorCalendarHref = this.settingService.get(Context.USER.id(String.valueOf(userIdentityId)),
+                                                                 CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                                                 CaldavConnectorUtils.CALDAV_MIRROR_CALENDAR_KEY);
 
 
     CaldavUserSetting caldavUserSetting = new CaldavUserSetting();
@@ -62,9 +88,19 @@ public class CaldavConnectorStorage {
       String decodePassword = CaldavConnectorUtils.decode((String) password.getValue());
       caldavUserSetting.setPassword(decodePassword);
     }
+    if (mirrorCalendarHref != null) {
+      caldavUserSetting.setMirrorCalendarHref((String) mirrorCalendarHref.getValue());
+    }
     return caldavUserSetting;
   }
 
+  /**
+   * Deletes every stored CalDAV setting of a user: credentials and mirror
+   * calendar href alike, so a later reconnection starts from a clean state
+   * and never silently reuses the mirror of a previous account.
+   *
+   * @param userIdentityId technical identity identifier of the user
+   */
   public void deleteCaldavSetting(long userIdentityId) {
 
     this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
@@ -73,5 +109,8 @@ public class CaldavConnectorStorage {
     this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
                                CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                CaldavConnectorUtils.CALDAV_PASSWORD_KEY);
+    this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
+                               CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                               CaldavConnectorUtils.CALDAV_MIRROR_CALENDAR_KEY);
   }
 }
