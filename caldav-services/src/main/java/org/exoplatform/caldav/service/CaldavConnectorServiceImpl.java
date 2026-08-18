@@ -55,4 +55,15 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   public void deleteCaldavSetting(long userIdentityId) {
     caldavConnectorStorage.deleteCaldavSetting(userIdentityId);
   }
+
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  public void saveMirrorCalendarHref(String mirrorCalendarHref, long userIdentityId) {
+    if (StringUtils.isBlank(mirrorCalendarHref)) {
+      throw new IllegalArgumentException("caldav.mirrorCalendarHrefMandatory");
+    }
+    caldavConnectorStorage.saveMirrorCalendarHref(mirrorCalendarHref, userIdentityId);
+  }
 }
