@@ -52,8 +52,84 @@ export default {
       return this.retrieveEvents(settings, periodStartDate, periodEndDate);
     });
   },
+  canListCalendars: true,
+  /**
+   * The calendars of the connected account, in the shape agenda expects from
+   * any connector: an identity, a name, a colour that is always usable, and
+   * whether the collection may be written to.
+   *
+   * The identity is the collection URL and never the display name. A user
+   * renaming a calendar in their own client must not detach whatever eXo has
+   * associated with it, and nothing stops two collections sharing a name.
+   *
+   * @returns {Promise<Array>} one entry per calendar of the connected account
+   */
+  listCalendars() {
+    return caldavConnectorService.getCaldavSetting().then(settings => this.retrieveCalendars(settings));
+  },
+  /**
+   * Reads the calendar collections of an account and maps them to the
+   * normalised shape.
+   *
+   * @param {Object} settings connector settings holding the URL and credentials
+   * @returns {Promise<Array>} the calendars of that account
+   */
+  async retrieveCalendars(settings) {
+    // No account, no request. Once the user disconnects, the stored settings
+    // are gone and the username is null, which used to be interpolated into
+    // the URL and sent as /dav/cal/null/ — answered with a 401 that the
+    // browser turns into its own credentials prompt, in the middle of the
+    // agenda, for an account that no longer exists.
+    if (!settings || !settings.username || !settings.caldavUrl) {
+      return [];
+    }
+    // A rejected credential must surface as such. tsdav answers a 401 by
+    // falling back to probing the server root, which then fails with "cannot
+    // find principalUrl" — a message about discovery for what is simply a
+    // wrong password.
+    const probe = await fetch(settings.caldavUrl.replace('{username}', settings.username), {
+      method: 'PROPFIND',
+      headers: {
+        'Depth': '0',
+        'Content-Type': 'application/xml',
+        'Authorization': `Basic ${btoa(`${settings.username}:${settings.password}`)}`,
+      },
+      body: '<?xml version="1.0"?><propfind xmlns="DAV:"><prop><displayname/></prop></propfind>',
+    }).catch(() => null);
+    if (!probe) {
+      throw caldavError('caldav.error.connection');
+    }
+    if (probe.status === 401 || probe.status === 403) {
+      throw caldavError('caldav.error.credentials', probe);
+    }
+    const clientCaldav = await tsdav.createDAVClient({
+      serverUrl: settings.caldavUrl.replace('{username}', settings.username),
+      credentials: {
+        username: settings.username,
+        password: settings.password,
+      },
+      authMethod: 'Basic',
+      defaultAccountType: 'caldav',
+    });
+    const calendars = await clientCaldav.fetchCalendars({
+      props: calendarProps(),
+      projectedProps: {[PRIVILEGE_SET_PROP]: true},
+      headersToExclude: ['If-None-Match'],
+    });
+    const ordered = inStableOrder(calendars);
+    return ordered.map((calendar, index) => ({
+      id: calendar.url,
+      name: calendarName(calendar),
+      color: calendarColor(calendar, index, ordered.length),
+      readOnly: isReadOnly(calendar),
+    }));
+  },
   async getCalendar(clientCaldav){
-    const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+    const calendars = await clientCaldav.fetchCalendars({
+      props: calendarProps(),
+      projectedProps: {[PRIVILEGE_SET_PROP]: true},
+      headersToExclude: ['If-None-Match'],
+    });
     if (calendars.length === 0) {
       throw caldavError('caldav.error.noCalendar');
     }
@@ -63,8 +139,26 @@ export default {
     const start = caldavConnectorService.toRFC3339(periodStartDate, false, true);
     const end = caldavConnectorService.toRFC3339(periodEndDate, false, true);
     const clientCaldav = await createClient(settings);
-    const calendar = await this.getCalendar(clientCaldav);
-    const events = await clientCaldav.fetchCalendarObjects({
+    // Every calendar of the account, not just the first the server happens to
+    // enumerate. Each event is tagged with the collection it came from, which
+    // is what lets the agenda show one calendar and hide another, and what
+    // gives an event the colour of its own calendar rather than one shared
+    // colour for everything remote.
+    const calendars = await clientCaldav.fetchCalendars({
+      props: calendarProps(),
+      projectedProps: {[PRIVILEGE_SET_PROP]: true},
+      headersToExclude: ['If-None-Match'],
+    });
+    // Read every calendar at once rather than one after another: a user with
+    // several collections would otherwise wait for the sum of the round trips
+    // each time the displayed period changes.
+    //
+    // Settled rather than all: with one collection a failure meant no events
+    // either way, but an account now has several, and letting one unreachable
+    // or misbehaving calendar reject the whole batch would empty the agenda of
+    // every other calendar too. A calendar that fails is logged and contributes
+    // nothing; the rest still render.
+    const readPerCalendar = await Promise.allSettled(calendars.map(calendar => clientCaldav.fetchCalendarObjects({
       calendar,
       expand: true,
       timeRange: {
@@ -72,126 +166,142 @@ export default {
         end: end,
       },
       headersToExclude: ['If-None-Match']
+    })));
+    const objectsPerCalendar = readPerCalendar.map((outcome, index) => {
+      if (outcome.status === 'fulfilled') {
+        return outcome.value;
+      }
+      console.error('cannot read the calendar', calendars[index] && calendars[index].url, outcome.reason);
+      return [];
     });
     const listEvent = [];
-    events.map(event => {
-      const caldavEvent= {};
-      const data = ICAL.parse(event.data);
-      const iCal = new ICAL.Component(data); //component
-      registerTimeZones(iCal);
-      const eventComponent = iCal.getFirstSubcomponent('vevent'); //component
-      const vEvent = new ICAL.Event(eventComponent); //Event
-      if (vEvent) {
-        if (vEvent.recurrenceId) {
-          const recurrentEvents = iCal.getAllSubcomponents('vevent');
-          recurrentEvents.forEach( e => {
-            const eventItem = new ICAL.Event(e);
-            const calEvent = {};
-            calEvent.summary = eventItem.summary;
-            calEvent.uid = eventItem.uid;
-            calEvent.id = eventItem.uid;
-            calEvent.color = '#FFFFFF';
-            calEvent.type = 'remoteEvent';
-            calEvent.location = eventItem.location;
-            calEvent.description = eventItem.description;
-            calEvent.recurringEventId = eventItem.uid;
-            const startDate = e.getAllProperties('dtstart'); //ICAL.Property
-            const endDate = e.getAllProperties('dtend'); //ICAL.Property
-            calEvent.start = startDate && new Date(startDate[0].jCal[3]);
-            if (startDate && !startDate[0].jCal[3].includes('T')) {
-              calEvent.allDay = true;
-            } else {
-              calEvent.end = endDate && new Date(endDate[0].jCal[3]);
-            }
-            listEvent.push(calEvent);
-          });
-        } else if (vEvent.isRecurring()) {
-          const startRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodStartDate),false);//ICAL.Time
-          const endRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodEndDate),false);//ICAL.Time
+    const ordered = inStableOrder(calendars);
+    calendars.forEach((calendar, calendarIndex) => {
+      const calendarId = calendar.url;
+      // Position is taken from the stable order, not from this loop's index:
+      // the loop walks the server's order because that is what pairs a calendar
+      // with its own fetched objects, while the colour must not depend on it.
+      const color = calendarColor(calendar, ordered.findIndex(one => one.url === calendar.url), ordered.length);
+      const events = objectsPerCalendar[calendarIndex];
+      events.map(event => {
+        const caldavEvent= {};
+        const data = ICAL.parse(event.data);
+        const iCal = new ICAL.Component(data); //component
+        registerTimeZones(iCal);
+        const eventComponent = iCal.getFirstSubcomponent('vevent'); //component
+        const vEvent = new ICAL.Event(eventComponent); //Event
+        if (vEvent) {
+          if (vEvent.recurrenceId) {
+            const recurrentEvents = iCal.getAllSubcomponents('vevent');
+            recurrentEvents.forEach( e => {
+              const eventItem = new ICAL.Event(e);
+              const calEvent = {};
+              calEvent.summary = eventItem.summary;
+              calEvent.uid = eventItem.uid;
+              calEvent.id = eventItem.uid;
+              calEvent.color = color;
+              calEvent.type = 'remoteEvent';
+              calEvent.location = eventItem.location;
+              calEvent.description = eventItem.description;
+              calEvent.recurringEventId = eventItem.uid;
+              const startDate = e.getAllProperties('dtstart'); //ICAL.Property
+              const endDate = e.getAllProperties('dtend'); //ICAL.Property
+              calEvent.start = startDate && new Date(startDate[0].jCal[3]);
+              if (startDate && !startDate[0].jCal[3].includes('T')) {
+                calEvent.allDay = true;
+              } else {
+                calEvent.end = endDate && new Date(endDate[0].jCal[3]);
+              }
+              calEvent.calendarId = calendarId;
+              listEvent.push(calEvent);
+            });
+          } else if (vEvent.isRecurring()) {
+            const startRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodStartDate),false);//ICAL.Time
+            const endRangeDate = ICAL.Time.fromJSDate(caldavConnectorService.toDate(periodEndDate),false);//ICAL.Time
 
-          const expand = new ICAL.RecurExpansion({
-            component: eventComponent,
-            dtstart: vEvent.startDate
-          });
-          let next= expand.next(); //ICAL.Time
-          while (next && next.compare(endRangeDate)<0) {
-            if (next.compare(startRangeDate)>=0) {
+            const expand = new ICAL.RecurExpansion({
+              component: eventComponent,
+              dtstart: vEvent.startDate
+            });
+            let next= expand.next(); //ICAL.Time
+            while (next && next.compare(endRangeDate)<0) {
+              if (next.compare(startRangeDate)>=0) {
               //create a new event for the recurrence :
               //we can have more than one occurence in the timerange requested
-              const occurenceEvent= {};
-              occurenceEvent.color = '#FFFFFF';
-              occurenceEvent.type = 'remoteEvent';
-              occurenceEvent.etag= event.etag;
-              occurenceEvent.url = event.url;
+                const occurenceEvent= {};
+                occurenceEvent.color = color;
+                occurenceEvent.type = 'remoteEvent';
+                occurenceEvent.etag= event.etag;
+                occurenceEvent.url = event.url;
 
-              let realStartDate;
+                let realStartDate;
 
-              if (vEvent.exceptions[next.toString()]) {
+                if (vEvent.exceptions[next.toString()]) {
                 //the current event have an exception for the next occurence
-                const exceptionEvent = vEvent.exceptions[next.toString()];
-                occurenceEvent.summary = exceptionEvent.summary;
-                occurenceEvent.uid = exceptionEvent.uid;
-                occurenceEvent.location = exceptionEvent.location;
-                occurenceEvent.description = exceptionEvent.description;
-                realStartDate = exceptionEvent.startDate;
-              } else {
-                occurenceEvent.summary = vEvent.summary;
-                occurenceEvent.uid = vEvent.uid;
-                occurenceEvent.location = vEvent.location;
-                occurenceEvent.description = vEvent.description;
-                realStartDate = next;
-              }
-              occurenceEvent.id = occurenceEvent.uid;
-              occurenceEvent.recurringEventId = occurenceEvent.uid;
-              const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
-              // toJSDate resolves the occurrence through the zone its series is
-              // anchored in; new Date(icalTime) went through toString(), which
-              // drops the zone unless it is UTC, so a series anchored on a TZID
-              // — as this connector now writes recurring events, and as most
-              // other clients write them — was read as if its wall clock were
-              // the reader's own, showing the meeting at the right hour only to
-              // users who happen to sit in the organiser's zone.
-              occurenceEvent.start= realStartDate.toJSDate(); //next : ICAL.Time
-              if (startDate && !startDate[0].jCal[3].includes('T')) {
-                occurenceEvent.allDay=true;
-              } else {
+                  const exceptionEvent = vEvent.exceptions[next.toString()];
+                  occurenceEvent.summary = exceptionEvent.summary;
+                  occurenceEvent.uid = exceptionEvent.uid;
+                  occurenceEvent.location = exceptionEvent.location;
+                  occurenceEvent.description = exceptionEvent.description;
+                  realStartDate = exceptionEvent.startDate;
+                } else {
+                  occurenceEvent.summary = vEvent.summary;
+                  occurenceEvent.uid = vEvent.uid;
+                  occurenceEvent.location = vEvent.location;
+                  occurenceEvent.description = vEvent.description;
+                  realStartDate = next;
+                }
+                occurenceEvent.id = occurenceEvent.uid;
+                occurenceEvent.recurringEventId = occurenceEvent.uid;
+                const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
+                // toJSDate resolves the occurrence through the zone its series is
+                // anchored in; new Date(icalTime) went through toString(), which
+                // drops the zone unless it is UTC, so a series anchored on a TZID
+                // — as this connector now writes recurring events, and as most
+                // other clients write them — was read as if its wall clock were
+                // the reader's own, showing the meeting at the right hour only to
+                // users who happen to sit in the organiser's zone.
+                occurenceEvent.start= realStartDate.toJSDate(); //next : ICAL.Time
+                if (startDate && !startDate[0].jCal[3].includes('T')) {
+                  occurenceEvent.allDay=true;
+                } else {
                 //if the event is not all day, we calculate the endDate as
                 //endDate = next + duration
                 //next is the startDate for the next occurence of the event
                 //duration is the duration of the first event of the recurrence
-                const calculatedEndDate = realStartDate.clone();
-                calculatedEndDate.addDuration(vEvent.duration);
-                occurenceEvent.end=calculatedEndDate.toJSDate();
+                  const calculatedEndDate = realStartDate.clone();
+                  calculatedEndDate.addDuration(vEvent.duration);
+                  occurenceEvent.end=calculatedEndDate.toJSDate();
+                }
+                occurenceEvent.calendarId = calendarId;
+                listEvent.push(occurenceEvent);
               }
-              listEvent.push(occurenceEvent);
+              next=expand.next();
             }
-            next=expand.next();
-          }
-        } else {
-
-          caldavEvent.summary = vEvent.summary;
-          caldavEvent.uid = vEvent.uid;
-          caldavEvent.id = vEvent.uid;
-          caldavEvent.color = '#FFFFFF';
-          caldavEvent.type = 'remoteEvent';
-          caldavEvent.etag= event.etag;
-          caldavEvent.url = event.url;
-          const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
-          const endDate = eventComponent.getAllProperties('dtend'); //ICAL.Property
-          caldavEvent.start= startDate && new Date(startDate[0].jCal[3]);
-          caldavEvent.location = vEvent.location;
-          caldavEvent.description = vEvent.description;
-          if (startDate && !startDate[0].jCal[3].includes('T')) {
-            caldavEvent.allDay=true;
           } else {
-            caldavEvent.end= endDate && new Date(endDate[0].jCal[3]);
-          }
-          listEvent.push(caldavEvent);
-        }
-      } else {
-        return Promise.all(null);
-      }
 
+            caldavEvent.summary = vEvent.summary;
+            caldavEvent.uid = vEvent.uid;
+            caldavEvent.id = vEvent.uid;
+            caldavEvent.color = color;
+            caldavEvent.type = 'remoteEvent';
+            caldavEvent.etag= event.etag;
+            caldavEvent.url = event.url;
+            const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
+            const endDate = eventComponent.getAllProperties('dtend'); //ICAL.Property
+            caldavEvent.start= startDate && new Date(startDate[0].jCal[3]);
+            caldavEvent.location = vEvent.location;
+            caldavEvent.description = vEvent.description;
+            if (startDate && !startDate[0].jCal[3].includes('T')) {
+              caldavEvent.allDay=true;
+            } else {
+              caldavEvent.end= endDate && new Date(endDate[0].jCal[3]);
+            }
+            caldavEvent.calendarId = calendarId;
+            listEvent.push(caldavEvent);
+          }
+        }
+      });
     });
     return listEvent;
   },
@@ -1076,6 +1186,257 @@ function toUTCString(dateStr) {
   return d.toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', '');
 }
 
+/** Minimum contrast ratio a generated colour must reach against white text. */
+const MIN_CONTRAST_RATIO = 4.5;
+
+/**
+ * A `#RRGGBB` colour from whatever the server returned, or null.
+ *
+ * Two shapes have to be handled. tsdav reduces every propstat block of a
+ * response into one props object, including the 404 block listing the
+ * properties the server does not hold — so a calendar with no colour yields an
+ * empty object rather than undefined. Being truthy, it survives a `||`
+ * fallback and reaches the UI as "[object Object]". And Apple writes eight
+ * hex digits, the last two being alpha, which CSS before level 4 does not
+ * understand.
+ *
+ * @param {*} value the property as tsdav returned it
+ * @returns {String} a usable `#RRGGBB` colour, or null when there is none
+ */
+function normalizeColor(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const match = value.trim().match(/^#?([0-9a-f]{6})(?:[0-9a-f]{2})?$/i);
+  return match && `#${match[1].toUpperCase()}` || null;
+}
+
+/**
+ * A stable non-cryptographic hash of a string.
+ *
+ * @param {String} value string to hash
+ * @returns {Number} a non-negative integer derived from it
+ */
+function hashOf(value) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    hash = (hash << 5) - hash + value.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+/**
+ * Converts an HSL triplet to `#RRGGBB`.
+ *
+ * @param {Number} hue hue in degrees
+ * @param {Number} saturation saturation as a percentage
+ * @param {Number} lightness lightness as a percentage
+ * @returns {String} the colour as `#RRGGBB`
+ */
+function hslToHex(hue, saturation, lightness) {
+  const l = lightness / 100;
+  const a = saturation * Math.min(l, 1 - l) / 100;
+  const channel = n => {
+    const k = (n + hue / 30) % 12;
+    const value = l - a * Math.max(-1, Math.min(k - 3, Math.min(9 - k, 1)));
+    return Math.round(255 * value).toString(16).padStart(2, '0');
+  };
+  return `#${channel(0)}${channel(8)}${channel(4)}`.toUpperCase();
+}
+
+/**
+ * Contrast ratio of a colour against white, per WCAG.
+ *
+ * @param {String} color colour as `#RRGGBB`
+ * @returns {Number} the ratio, between 1 and 21
+ */
+function contrastWithWhite(color) {
+  const channel = index => {
+    const value = parseInt(color.substr(1 + index * 2, 2), 16) / 255;
+    return value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+  };
+  const luminance = 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2);
+  return 1.05 / (luminance + 0.05);
+}
+
+/**
+ * Derives a colour from a collection URL, for the very common case of a server
+ * holding none: MKCALENDAR assigns no colour, so an untouched account has none
+ * anywhere. This is the normal path, not an error path.
+ *
+ * A single shared fallback would leave every calendar looking alike, which is
+ * the problem being solved, and a random one would change on every read.
+ * Hashing the URL gives a calendar the same colour on every device and in
+ * every session, and two calendars different ones.
+ *
+ * The hue comes from the whole wheel rather than a fixed palette: a palette of
+ * N entries runs into the birthday problem as soon as an account holds a
+ * handful of calendars. Saturation and lightness take one of a few values from
+ * unrelated bits of the same hash, so two calendars landing on neighbouring
+ * hues still differ in tone.
+ *
+ * The result is then darkened until it is legible, because HSL lightness is
+ * not perceptual — a cyan at 48% is nearly twice as bright as a blue at the
+ * same value and would render as unreadable white-on-pale.
+ *
+ * @param {String} calendarUrl URL of the calendar collection
+ * @param {Number} position index of this calendar among the account's own
+ * @param {Number} total how many calendars the account holds
+ * @returns {String} a stable, legible `#RRGGBB` colour for that collection
+ */
+function derivedCalendarColor(calendarUrl, position, total) {
+  const url = calendarUrl || '';
+  const hash = hashOf(url);
+  // Hashing the URL alone spreads colours over the whole wheel but guarantees
+  // nothing about the distance between any two of them: on a real account,
+  // two of three calendars landed nine degrees apart and read as the same
+  // magenta. The hue is therefore laid out across the account's calendars by
+  // position, from an offset the account itself decides, so the set is always
+  // separated and still stable from one device and session to the next.
+  //
+  // The trade this makes: adding or removing a calendar re-spaces the others,
+  // where pure hashing would have left them alone. A set that stays put keeps
+  // its colours, and being able to tell two calendars apart matters more than
+  // one never shifting.
+  const count = Math.max(total || 1, 1);
+  const index = Math.max(position || 0, 0);
+  const offset = hashOf(url.replace(/[^/]+\/?$/, '')) % 360;
+  const hue = Math.round((offset + index * 360 / count) % 360);
+  const saturation = 58 + (hash >>> 9) % 4 * 8;
+  let lightness = 38 + (hash >>> 17) % 3 * 5;
+  let color = hslToHex(hue, saturation, lightness);
+  while (lightness > 20 && contrastWithWhite(color) < MIN_CONTRAST_RATIO) {
+    lightness -= 2;
+    color = hslToHex(hue, saturation, lightness);
+  }
+  return color;
+}
+
+/**
+ * The colour to paint everything from a collection with: what the server holds
+ * when it holds one, the derived colour otherwise. A colour the server holds
+ * is never adjusted — it is the user's own choice, already mirrored in their
+ * other clients.
+ *
+ * @param {Object} calendar calendar collection as returned by tsdav
+ * @param {Number} position index of this calendar among the account's own
+ * @param {Number} total how many calendars the account holds
+ * @returns {String} the `#RRGGBB` colour of that calendar
+ */
+function calendarColor(calendar, position, total) {
+  return normalizeColor(calendar && calendar.calendarColor)
+      || derivedCalendarColor(calendar && calendar.url || '', position, total);
+}
+
+/**
+ * Whether the connected user may only read a collection.
+ *
+ * Derived from the privileges the server reports. Servers are not obliged to
+ * report them, and this has never been observed returning true: the read-only
+ * calendar created on the test server for that purpose turned out fully
+ * writable. Absent evidence the collection is restricted, it is reported
+ * writable, so the answer is never a guess dressed as a fact.
+ *
+ * @param {Object} calendar calendar collection as returned by tsdav
+ * @returns {Boolean} true only when the server says writing is not permitted
+ */
+/**
+ * The properties every calendar listing asks the server for.
+ * <p>
+ * tsdav's own default list is repeated here because passing `props` replaces it
+ * rather than extending it, and dropping it would cost the display name and the
+ * colour. What this adds is `current-user-privilege-set`: the property that says
+ * whether the account may write to the collection. Without asking for it,
+ * `isReadOnly()` reads a field the server was never asked to send and every
+ * calendar looks writable — the refusal then surfaces at push time, on the first
+ * event the user tries to save into somebody else's calendar.
+ *
+ * @returns {object} the PROPFIND property set
+ */
+/**
+ * The calendars in an order the server cannot change under us.
+ * <p>
+ * The derived hue depends on a calendar's position among the others, and
+ * WebDAV promises nothing about the order of the `response` elements in a
+ * multistatus answer. Read twice — once for the legend, once for the events —
+ * the same account could come back in two orders and the same calendar would
+ * change colour between the two, which is the problem this is meant to solve.
+ * The URL is the one identifier the protocol does guarantee, so it is what the
+ * order is built on.
+ *
+ * @param  {Array} calendars - the calendars as the server returned them
+ * @returns {Array} the same calendars, in a stable order
+ */
+function inStableOrder(calendars) {
+  return [...(calendars || [])].sort((one, other) => (one.url || '').localeCompare(other.url || ''));
+}
+
+/**
+ * The name to show for a calendar.
+ * <p>
+ * `displayName` is typed as a string or an object because a property the server
+ * does not hold comes back as an empty object rather than as undefined — the
+ * same quirk `normalizeColor` guards against. An empty object is truthy, so the
+ * obvious `||` would render the calendar as "[object Object]".
+ *
+ * @param  {object} calendar - the calendar as tsdav returned it
+ * @returns {string} its display name, or its URL when the server holds none
+ */
+function calendarName(calendar) {
+  return (typeof calendar.displayName === 'string' && calendar.displayName) || calendar.url;
+}
+
+function calendarProps() {
+  return {
+    [`${tsdav.DAVNamespaceShort.CALDAV}:calendar-description`]: {},
+    [`${tsdav.DAVNamespaceShort.CALDAV}:calendar-timezone`]: {},
+    [`${tsdav.DAVNamespaceShort.DAV}:displayname`]: {},
+    [`${tsdav.DAVNamespaceShort.CALDAV_APPLE}:calendar-color`]: {},
+    [`${tsdav.DAVNamespaceShort.CALENDAR_SERVER}:getctag`]: {},
+    [`${tsdav.DAVNamespaceShort.DAV}:resourcetype`]: {},
+    [`${tsdav.DAVNamespaceShort.CALDAV}:supported-calendar-component-set`]: {},
+    [`${tsdav.DAVNamespaceShort.DAV}:sync-token`]: {},
+    [`${tsdav.DAVNamespaceShort.DAV}:current-user-privilege-set`]: {},
+  };
+}
+
+/** Where tsdav hands back a property it was asked to project. */
+const PRIVILEGE_SET_PROP = '{DAV:}current-user-privilege-set';
+
+function isReadOnly(calendar) {
+  const projected = calendar && calendar.projectedProps && calendar.projectedProps[PRIVILEGE_SET_PROP];
+  const privileges = collectPrivileges(projected);
+  // A server that answers without the property tells us nothing about what we
+  // may do, and a calendar is treated as writable in that case: refusing a
+  // write nobody said was forbidden would take the feature away from every
+  // server that does not implement the property.
+  if (privileges.length === 0) {
+    return false;
+  }
+  return !privileges.some(privilege => ['write', 'write-content', 'all'].includes(privilege));
+}
+
+/**
+ * The privilege names in a `current-user-privilege-set` answer.
+ * <p>
+ * The value arrives as parsed XML rather than as a list: one `privilege`
+ * element per granted right, each holding one empty element named after the
+ * right itself, and a single privilege comes back as an object where several
+ * come back as an array.
+ *
+ * @param  {object} projected - the property as the server answered it
+ * @returns {Array} the granted privilege names, lower-cased
+ */
+function collectPrivileges(projected) {
+  const privilege = projected && projected.privilege;
+  if (!privilege) {
+    return [];
+  }
+  return (Array.isArray(privilege) ? privilege : [privilege])
+    .flatMap(entry => Object.keys(entry || {}))
+    .map(name => name.replace(/^.*:/, '').toLowerCase());
+}
 /**
  * Teaches ical.js the zones a calendar object defines.
  *
