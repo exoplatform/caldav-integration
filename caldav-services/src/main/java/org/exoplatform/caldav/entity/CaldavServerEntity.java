@@ -60,4 +60,20 @@ public class CaldavServerEntity {
 
   @Column(name = "ACTIVE")
   private boolean active;
+
+  /**
+   * Font-icon class chosen from the icon picker; the fallback identity when
+   * no image was uploaded.
+   */
+  @Column(name = "ICON")
+  private String  icon;
+
+  /**
+   * Identifier of the uploaded image in FileService, when an administrator
+   * uploaded one; null otherwise. Declared LAST on purpose: the entity is
+   * built positionally through its all-args constructor, and appending keeps
+   * every existing argument on its own field.
+   */
+  @Column(name = "IMAGE_FILE_ID")
+  private Long    imageFileId;
 }

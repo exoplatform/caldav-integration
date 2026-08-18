@@ -16,11 +16,16 @@
  */
 package org.exoplatform.caldav.rest;
 
+import java.io.InputStream;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -165,6 +170,66 @@ public class CaldavServerRest {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    }
+  }
+
+  /**
+   * Deletes a declared CalDAV server, refused with a 409 — carrying
+   * {@code caldav.server.referenced:<count>} — while connected accounts still
+   * reference it.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param serverId technical identifier of the registration
+   */
+  @DeleteMapping("/{serverId}")
+  @Secured("administrators")
+  @Operation(summary = "Deletes a declared CalDAV server", method = "DELETE",
+      description = "Deletes a declared CalDAV server, unless connected accounts still reference it")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found"),
+      @ApiResponse(responseCode = "409", description = "Connected accounts still reference this server") })
+  public void deleteServer(HttpServletRequest request,
+                           @Parameter(description = "Technical identifier of the registration", required = true)
+                           @PathVariable("serverId")
+                           long serverId) {
+    try {
+      caldavServerService.deleteServer(serverId, request.getRemoteUser());
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalStateException e) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    }
+  }
+
+  /**
+   * Serves the uploaded image of a declared CalDAV server — the icon the
+   * admin table and the connectors list render.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param serverId technical identifier of the registration
+   * @return the image bytes as PNG
+   */
+  @GetMapping("/{serverId}/image")
+  @Secured("users")
+  @Operation(summary = "Gets the image of a declared CalDAV server", method = "GET",
+      description = "Serves the uploaded image of a declared CalDAV server")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "404", description = "Not found") })
+  public ResponseEntity<InputStreamResource> getServerImage(HttpServletRequest request,
+                                                            @Parameter(description = "Technical identifier of the registration", required = true)
+                                                            @PathVariable("serverId")
+                                                            long serverId) {
+    try {
+      InputStream stream = caldavServerService.getServerImageInputStream(serverId);
+      if (stream == null) {
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND);
+      }
+      return ResponseEntity.ok().contentType(MediaType.IMAGE_PNG).body(new InputStreamResource(stream));
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     }
   }
 }

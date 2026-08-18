@@ -65,4 +65,31 @@ public class CaldavServer {
    * agenda remote provider, which is what actually hides the connector.
    */
   private boolean active;
+
+  /**
+   * Font-icon class chosen from the icon picker; the fallback identity when
+   * no image was uploaded.
+   */
+  private String  icon;
+
+  /**
+   * Identifier of the uploaded image in FileService, when one exists. Sending
+   * it back null (or 0) on an update removes the stored image.
+   */
+  private Long    imageFileId;
+
+  /**
+   * Transient, inbound only: identifier of a fresh browser upload the storage
+   * turns into a FileService file. Never persisted, never served back.
+   */
+  private String  imageUploadId;
+
+  /**
+   * Transient, outbound only: the URL the browser fetches the stored image
+   * from, versioned by its last modification. Null when no image exists.
+   * Declared LAST on purpose — the model is built positionally through its
+   * all-args constructor, and appending keeps every existing argument on its
+   * own field.
+   */
+  private String  imageUrl;
 }

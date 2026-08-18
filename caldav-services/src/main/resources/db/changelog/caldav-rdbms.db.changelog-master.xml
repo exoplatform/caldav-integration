@@ -75,4 +75,21 @@
     </createIndex>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-3">
+    <comment>
+      The visual identity of a registered server, exactly as email-connector
+      carries it: ICON holds a font-icon class chosen from the picker,
+      IMAGE_FILE_ID an uploaded image stored through FileService — the row
+      renders the image when both exist. A NEW changeset with addColumn and
+      deliberately NO modifySql: modifySql is changeset-scoped and its
+      ENGINE/CHARSET append is only valid on CREATE TABLE — appending it to an
+      ALTER TABLE is the same class of mistake as appending it to CREATE
+      INDEX, the one 1.0.0-2's comment recounts.
+    </comment>
+    <addColumn tableName="CALDAV_SERVER">
+      <column name="ICON" type="NVARCHAR(500)"/>
+      <column name="IMAGE_FILE_ID" type="BIGINT"/>
+    </addColumn>
+  </changeSet>
+
 </databaseChangeLog>

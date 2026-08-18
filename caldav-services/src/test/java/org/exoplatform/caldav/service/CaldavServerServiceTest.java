@@ -22,10 +22,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -41,8 +45,13 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
+import java.util.List;
+
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
+import org.exoplatform.commons.api.settings.SettingService;
+import org.exoplatform.commons.api.settings.SettingValue;
+import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.security.Identity;
@@ -71,6 +80,9 @@ public class CaldavServerServiceTest {
 
   @Mock
   private AgendaRemoteEventService agendaRemoteEventService;
+
+  @Mock
+  private SettingService           settingService;
 
   @InjectMocks
   private CaldavServerService      caldavServerService;
@@ -132,7 +144,7 @@ public class CaldavServerServiceTest {
   @Test
   public void shouldRefuseCreateToNonAdministrator() {
     withUser(REGULAR_USER, false);
-    CaldavServer server = new CaldavServer(0, null, "Nextcloud", null, SERVER_URL, true);
+    CaldavServer server = server(0, null, "Nextcloud", null, SERVER_URL, true);
 
     assertThrows(IllegalAccessException.class, () -> caldavServerService.createServer(server, REGULAR_USER));
 
@@ -146,7 +158,7 @@ public class CaldavServerServiceTest {
    */
   @Test
   public void shouldRefuseCreateToAnonymous() {
-    CaldavServer server = new CaldavServer(0, null, "Nextcloud", null, SERVER_URL, true);
+    CaldavServer server = server(0, null, "Nextcloud", null, SERVER_URL, true);
 
     assertThrows(IllegalAccessException.class, () -> caldavServerService.createServer(server, null));
 
@@ -168,14 +180,14 @@ public class CaldavServerServiceTest {
 
     IllegalArgumentException nameless =
                                       assertThrows(IllegalArgumentException.class,
-                                                   () -> caldavServerService.createServer(new CaldavServer(0, null, " ", null,
+                                                   () -> caldavServerService.createServer(server(0, null, " ", null,
                                                                                                            SERVER_URL, true),
                                                                                           ADMIN_USER));
     assertEquals("caldav.server.nameMandatory", nameless.getMessage());
 
     IllegalArgumentException urlless =
                                      assertThrows(IllegalArgumentException.class,
-                                                  () -> caldavServerService.createServer(new CaldavServer(0, null, "Nextcloud",
+                                                  () -> caldavServerService.createServer(server(0, null, "Nextcloud",
                                                                                                           null, " ", true),
                                                                                          ADMIN_USER));
     assertEquals("caldav.server.urlMandatory", urlless.getMessage());
@@ -192,8 +204,8 @@ public class CaldavServerServiceTest {
   @Test
   public void shouldCreateServerAndBridgeItsProvider() throws Exception {
     withUser(ADMIN_USER, true);
-    CaldavServer server = new CaldavServer(0, null, "Nextcloud", "Team server", SERVER_URL, true);
-    CaldavServer createdServer = new CaldavServer(7, "agenda.caldavCalendar.7", "Nextcloud", "Team server", SERVER_URL, true);
+    CaldavServer server = server(0, null, "Nextcloud", "Team server", SERVER_URL, true);
+    CaldavServer createdServer = server(7, "agenda.caldavCalendar.7", "Nextcloud", "Team server", SERVER_URL, true);
     when(caldavServerStorage.createServer(server, CaldavServerService.CALDAV_PROVIDER_NAME)).thenReturn(createdServer);
 
     CaldavServer result = caldavServerService.createServer(server, ADMIN_USER);
@@ -213,7 +225,7 @@ public class CaldavServerServiceTest {
   @Test
   public void shouldRefuseUpdateOfMissingServer() {
     withUser(ADMIN_USER, true);
-    CaldavServer server = new CaldavServer(99, null, "Nextcloud", null, SERVER_URL, true);
+    CaldavServer server = server(99, null, "Nextcloud", null, SERVER_URL, true);
     when(caldavServerStorage.updateServer(server)).thenReturn(null);
 
     assertThrows(ObjectNotFoundException.class, () -> caldavServerService.updateServer(server, ADMIN_USER));
@@ -229,7 +241,7 @@ public class CaldavServerServiceTest {
   @Test
   public void shouldPropagateActivationToAgenda() throws Exception {
     withUser(ADMIN_USER, true);
-    CaldavServer server = new CaldavServer(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
+    CaldavServer server = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
     when(caldavServerStorage.getServerById(7)).thenReturn(server);
     when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -255,50 +267,157 @@ public class CaldavServerServiceTest {
   }
 
   /**
-   * An empty registry plus a configured legacy property produces exactly the
-   * seed row: the fixed provider name, the property's URL, and the activation
-   * the legacy enabled property declares.
+   * An empty registry is seeded with exactly the two defaults: Stalwart under
+   * the FIXED legacy provider name (accounts connected before the registry
+   * keep resolving through it), carrying the legacy property's URL and the
+   * activation the legacy enabled property declares; and Bluemind as a
+   * normally-named row whose agenda remote provider is upserted here, since
+   * no kernel plugin declares it.
    */
   @Test
-  public void shouldSeedEmptyRegistryFromLegacyProperty() {
+  public void shouldSeedEmptyRegistryWithBothDefaults() {
     System.setProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY, SERVER_URL);
     System.setProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY, "false");
     when(caldavServerStorage.countServers()).thenReturn(0L);
+    CaldavServer createdBluemind = server(2, "agenda.caldavCalendar.2", "Bluemind", null,
+                                          CaldavServerService.DEFAULT_BLUEMIND_URL, true);
+    when(caldavServerStorage.createServer(any(), eq(CaldavServerService.CALDAV_PROVIDER_NAME))).thenReturn(createdBluemind);
 
-    caldavServerService.seedFromLegacyProperty();
+    caldavServerService.seedDefaultServers();
 
-    ArgumentCaptor<CaldavServer> seed = ArgumentCaptor.forClass(CaldavServer.class);
-    verify(caldavServerStorage).createSeedServer(seed.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
-    assertEquals(SERVER_URL, seed.getValue().getServerUrl());
-    assertEquals(false, seed.getValue().isActive());
-    verifyNoInteractions(agendaRemoteEventService);
+    ArgumentCaptor<CaldavServer> stalwart = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).createSeedServer(stalwart.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
+    assertEquals("Stalwart", stalwart.getValue().getName());
+    assertEquals(SERVER_URL, stalwart.getValue().getServerUrl());
+    assertEquals(false, stalwart.getValue().isActive());
+
+    ArgumentCaptor<CaldavServer> bluemind = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).createServer(bluemind.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
+    assertEquals("Bluemind", bluemind.getValue().getName());
+    assertEquals(CaldavServerService.DEFAULT_BLUEMIND_URL, bluemind.getValue().getServerUrl());
+    assertEquals(true, bluemind.getValue().isActive());
+
+    // BOTH providers are pushed: Stalwart's explicitly (the kernel plugin
+    // only creates a missing provider, it never re-enables a stored one, so
+    // the seeded row's activation must land on it here), then Bluemind's.
+    ArgumentCaptor<RemoteProvider> provider = ArgumentCaptor.forClass(RemoteProvider.class);
+    verify(agendaRemoteEventService, times(2)).saveRemoteProvider(provider.capture());
+    assertEquals(CaldavServerService.CALDAV_PROVIDER_NAME, provider.getAllValues().get(0).getName());
+    assertEquals(false, provider.getAllValues().get(0).isEnabled());
+    assertEquals("agenda.caldavCalendar.2", provider.getAllValues().get(1).getName());
+    assertEquals(true, provider.getAllValues().get(1).isEnabled());
   }
 
   /**
    * A registry an administrator already wrote into is never seeded again: a
-   * restart must not overwrite their edits with the property.
+   * restart must not overwrite their edits.
    */
   @Test
   public void shouldNotSeedNonEmptyRegistry() {
     System.setProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY, SERVER_URL);
     when(caldavServerStorage.countServers()).thenReturn(1L);
 
-    caldavServerService.seedFromLegacyProperty();
+    caldavServerService.seedDefaultServers();
 
     verify(caldavServerStorage, never()).createSeedServer(any(), anyString());
+    verify(caldavServerStorage, never()).createServer(any(), anyString());
+    verifyNoInteractions(agendaRemoteEventService);
   }
 
   /**
-   * No legacy property, nothing to migrate: the registry is left untouched
-   * without even being counted.
+   * Without the legacy property, Stalwart seeds its literal default URL —
+   * the registry still gets both defaults.
    */
   @Test
-  public void shouldNotSeedWithoutLegacyProperty() {
+  public void shouldSeedLiteralStalwartUrlWithoutLegacyProperty() {
     System.clearProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY);
+    System.clearProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY);
+    when(caldavServerStorage.countServers()).thenReturn(0L);
+    when(caldavServerStorage.createServer(any(), anyString()))
+                                                              .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null,
+                                                                                 CaldavServerService.DEFAULT_BLUEMIND_URL,
+                                                                                 true));
 
-    caldavServerService.seedFromLegacyProperty();
+    caldavServerService.seedDefaultServers();
+
+    ArgumentCaptor<CaldavServer> stalwart = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).createSeedServer(stalwart.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
+    assertEquals(CaldavServerService.DEFAULT_STALWART_URL, stalwart.getValue().getServerUrl());
+    assertEquals(true, stalwart.getValue().isActive());
+  }
+
+  /**
+   * A regular user's delete is refused before anything is read or removed.
+   */
+  @Test
+  public void shouldRefuseDeleteToNonAdministrator() {
+    withUser(REGULAR_USER, false);
+
+    assertThrows(IllegalAccessException.class, () -> caldavServerService.deleteServer(7, REGULAR_USER));
 
     verifyNoInteractions(caldavServerStorage);
+    verifyNoInteractions(agendaRemoteEventService);
+  }
+
+  /**
+   * Deleting a row that does not exist is a 404.
+   */
+  @Test
+  public void shouldRefuseDeleteOfMissingServer() {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(99)).thenReturn(null);
+
+    assertThrows(ObjectNotFoundException.class, () -> caldavServerService.deleteServer(99, ADMIN_USER));
+  }
+
+  /**
+   * A server that connected accounts still reference cannot be deleted:
+   * deleting under them would re-point their stored credentials at whatever
+   * the resolution falls back to — a different server. The refusal carries
+   * the count, and neither the row nor its provider is touched.
+   */
+  @Test
+  public void shouldRefuseDeleteOfReferencedServer() {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL,
+                                                                 true));
+    Context first = Context.USER.id("11");
+    Context second = Context.USER.id("22");
+    Context other = Context.USER.id("33");
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(),
+                                                                anyInt())).thenReturn(List.of(first, second, other));
+    doReturn(SettingValue.create("7")).when(settingService).get(eq(first), any(), anyString());
+    doReturn(SettingValue.create("7")).when(settingService).get(eq(second), any(), anyString());
+    doReturn(SettingValue.create("8")).when(settingService).get(eq(other), any(), anyString());
+
+    IllegalStateException refusal = assertThrows(IllegalStateException.class,
+                                                 () -> caldavServerService.deleteServer(7, ADMIN_USER));
+
+    assertEquals("caldav.server.referenced:2", refusal.getMessage());
+    verify(caldavServerStorage, never()).deleteServer(anyLong());
+    verifyNoInteractions(agendaRemoteEventService);
+  }
+
+  /**
+   * Deleting an unreferenced server first disables its agenda remote
+   * provider — agenda has no provider-delete API, and disabled is what
+   * removes the connector from every user's list — then removes the row.
+   */
+  @Test
+  public void shouldDeleteUnreferencedServerAndDisableItsProvider() throws Exception {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL,
+                                                                 true));
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(),
+                                                                anyInt())).thenReturn(List.of());
+
+    caldavServerService.deleteServer(7, ADMIN_USER);
+
+    ArgumentCaptor<RemoteProvider> provider = ArgumentCaptor.forClass(RemoteProvider.class);
+    verify(agendaRemoteEventService).saveRemoteProvider(provider.capture());
+    assertEquals("agenda.caldavCalendar.7", provider.getValue().getName());
+    assertEquals(false, provider.getValue().isEnabled());
+    verify(caldavServerStorage).deleteServer(7);
   }
 
   /**
@@ -309,8 +428,8 @@ public class CaldavServerServiceTest {
    */
   @Test
   public void shouldResolveServerUrlInOrder() {
-    CaldavServer declared = new CaldavServer(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
-    CaldavServer seed = new CaldavServer(1, "agenda.caldavCalendar", "CalDAV", null, "https://seed.example.org/", true);
+    CaldavServer declared = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
+    CaldavServer seed = server(1, "agenda.caldavCalendar", "CalDAV", null, "https://seed.example.org/", true);
 
     when(caldavServerStorage.getServerById(7)).thenReturn(declared);
     assertEquals(SERVER_URL, caldavServerService.resolveServerUrl(7L));
@@ -323,5 +442,22 @@ public class CaldavServerServiceTest {
 
     when(caldavServerStorage.getServerByProviderName(CaldavServerService.CALDAV_PROVIDER_NAME)).thenReturn(null);
     assertNull(caldavServerService.resolveServerUrl(null));
+  }
+
+  /**
+   * Builds a registration with the six identity fields — the icon/image
+   * fields default to null, exactly as a fresh REST payload leaves them.
+   *
+   * @param id technical identifier
+   * @param providerName agenda provider name
+   * @param name display name
+   * @param description optional description
+   * @param serverUrl base URL
+   * @param active activation
+   * @return the registration
+   */
+  private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
+                                     boolean active) {
+    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null);
   }
 }

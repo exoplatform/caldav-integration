@@ -668,6 +668,7 @@ export function createCaldavConnector(server, index) {
     description: `${server.providerName}.description`,
     serverId: server.id,
     serverUrl: server.serverUrl,
+    avatar: server.imageUrl || caldavConnector.avatar,
     rank: caldavConnector.rank + (index || 0),
   });
 }

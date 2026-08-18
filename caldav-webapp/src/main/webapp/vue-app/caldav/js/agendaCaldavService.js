@@ -119,6 +119,40 @@ export const setCaldavServerStatus = (serverId, active) => {
   });
 };
 
+/**
+ * Deletes a declared CalDAV server (administrators only). A 409 means
+ * connected accounts still reference it: the rejection carries `status` 409
+ * and `referenceCount` parsed from the server's message code
+ * (caldav.server.referenced:<count>), so the UI can explain rather than
+ * merely fail.
+ *
+ * @param {Number} serverId technical identifier of the registration
+ * @returns {Promise} resolves when deleted, rejects with {status, referenceCount}
+ */
+export const deleteCaldavServer = (serverId) => {
+  return fetch(`/caldav/rest/servers/${serverId}`, {
+    credentials: 'include',
+    method: 'DELETE',
+  }).then(resp => {
+    if (resp && resp.ok) {
+      return;
+    }
+    const error = new Error('Response code indicates a server error');
+    error.status = resp && resp.status;
+    if (error.status === 409) {
+      return resp.json().then(body => {
+        const message = body && body.message || '';
+        const count = message.split(':')[1];
+        error.referenceCount = count && parseInt(count) || null;
+        throw error;
+      }, () => {
+        throw error;
+      });
+    }
+    throw error;
+  });
+};
+
 export const getCaldavSetting = () => {
   return fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/v1/caldav`, {
     credentials: 'include',
@@ -201,9 +235,22 @@ export const probeCaldavAccount = (caldavUrl, username, password) => {
       throw caldavError('caldav.error.notCaldav', response.status);
     }
   }, () => {
-    // fetch itself rejected: nothing answered at all (connection refused,
-    // unknown host, network down) — distinct from a server that answered no.
-    throw caldavError('caldav.error.connection');
+    // fetch itself rejected. Two very different situations look identical
+    // here — the browser reports a blocked cross-origin request (a CalDAV
+    // server sending no CORS headers, like BlueMind) with the same opaque
+    // TypeError as a host that never answered. They are told apart with a
+    // second, no-cors GET: it needs no CORS permission, so if IT resolves the
+    // host is alive and the first failure was the browser refusing the
+    // cross-origin DAV request — something the administrator fixes by putting
+    // the server behind the portal's own origin, not by checking cables.
+    return fetch(caldavUrl.replace('{username}', username), {
+      method: 'GET',
+      mode: 'no-cors',
+    }).then(() => {
+      throw caldavError('caldav.error.cors');
+    }, () => {
+      throw caldavError('caldav.error.connection');
+    });
   });
 };
 

@@ -228,7 +228,7 @@ export default {
      * @returns {String} the translation key of the message to display
      */
     errorMessageKey(error) {
-      const knownCodes = ['caldav.error.credentials', 'caldav.error.connection', 'caldav.error.notCaldav'];
+      const knownCodes = ['caldav.error.credentials', 'caldav.error.connection', 'caldav.error.notCaldav', 'caldav.error.cors'];
       if (error && knownCodes.includes(error.code)) {
         return error.code;
       }

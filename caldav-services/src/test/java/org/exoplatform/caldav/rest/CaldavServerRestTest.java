@@ -25,8 +25,10 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
 
+import java.io.ByteArrayInputStream;
 import java.util.List;
 import java.util.Locale;
 
@@ -36,6 +38,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.CaldavServer;
@@ -78,8 +81,8 @@ public class CaldavServerRestTest {
    */
   @Test
   public void shouldListServersWithoutAnyCredential() throws Exception {
-    List<CaldavServer> servers = List.of(new CaldavServer(1, "agenda.caldavCalendar", "CalDAV", null, SERVER_URL, true),
-                                         new CaldavServer(2, "agenda.caldavCalendar.2", "Nextcloud", "Team", SERVER_URL,
+    List<CaldavServer> servers = List.of(server(1, "agenda.caldavCalendar", "CalDAV", null, SERVER_URL, true),
+                                         server(2, "agenda.caldavCalendar.2", "Nextcloud", "Team", SERVER_URL,
                                                           false));
     when(caldavServerService.getServers()).thenReturn(servers);
 
@@ -106,7 +109,7 @@ public class CaldavServerRestTest {
     ResponseStatusException refusal =
                                     assertThrows(ResponseStatusException.class,
                                                  () -> caldavServerRest.createServer(request,
-                                                                                     new CaldavServer(0, null, "X", null,
+                                                                                     server(0, null, "X", null,
                                                                                                       SERVER_URL, true)));
     assertEquals(HttpStatus.FORBIDDEN, refusal.getStatusCode());
   }
@@ -124,7 +127,7 @@ public class CaldavServerRestTest {
 
     ResponseStatusException refusal = assertThrows(ResponseStatusException.class,
                                                    () -> caldavServerRest.createServer(request,
-                                                                                       new CaldavServer(0, null, "X", null, " ",
+                                                                                       server(0, null, "X", null, " ",
                                                                                                         true)));
     assertEquals(HttpStatus.BAD_REQUEST, refusal.getStatusCode());
     assertEquals("caldav.server.urlMandatory", refusal.getReason());
@@ -144,13 +147,63 @@ public class CaldavServerRestTest {
     ResponseStatusException updateRefusal =
                                           assertThrows(ResponseStatusException.class,
                                                        () -> caldavServerRest.updateServer(request, 99,
-                                                                                           new CaldavServer(0, null, "X", null,
+                                                                                           server(0, null, "X", null,
                                                                                                             SERVER_URL, true)));
     assertEquals(HttpStatus.NOT_FOUND, updateRefusal.getStatusCode());
 
     ResponseStatusException statusRefusal = assertThrows(ResponseStatusException.class,
                                                          () -> caldavServerRest.setServerActive(request, 99, true));
     assertEquals(HttpStatus.NOT_FOUND, statusRefusal.getStatusCode());
+  }
+
+  /**
+   * A delete refused because connected accounts still reference the row is a
+   * 409 carrying the message code with the count — what the admin UI
+   * translates into an explanation, not a mystery failure.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void shouldAnswer409OnDeleteOfReferencedServer() throws Exception {
+    when(request.getRemoteUser()).thenReturn("root");
+    doThrow(new IllegalStateException("caldav.server.referenced:3")).when(caldavServerService).deleteServer(7, "root");
+
+    ResponseStatusException refusal = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavServerRest.deleteServer(request, 7));
+
+    assertEquals(HttpStatus.CONFLICT, refusal.getStatusCode());
+    assertEquals("caldav.server.referenced:3", refusal.getReason());
+  }
+
+  /**
+   * A row without an image answers 404 on its image endpoint — not a broken
+   * stream, not a placeholder pretending to be the upload.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void shouldAnswer404OnMissingImage() throws Exception {
+    when(caldavServerService.getServerImageInputStream(7)).thenReturn(null);
+
+    ResponseStatusException refusal = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavServerRest.getServerImage(request, 7));
+
+    assertEquals(HttpStatus.NOT_FOUND, refusal.getStatusCode());
+  }
+
+  /**
+   * A stored image is served back as a PNG stream.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void shouldServeTheStoredImage() throws Exception {
+    when(caldavServerService.getServerImageInputStream(7)).thenReturn(new ByteArrayInputStream(new byte[] { 1, 2, 3 }));
+
+    var response = caldavServerRest.getServerImage(request, 7);
+
+    assertEquals(200, response.getStatusCode().value());
+    assertEquals(MediaType.IMAGE_PNG, response.getHeaders().getContentType());
   }
 
   /**
@@ -165,9 +218,26 @@ public class CaldavServerRestTest {
     when(request.getRemoteUser()).thenReturn("root");
     when(caldavServerService.updateServer(any(), anyString())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    CaldavServer body = new CaldavServer(55, null, "X", null, SERVER_URL, true);
+    CaldavServer body = server(55, null, "X", null, SERVER_URL, true);
     CaldavServer updated = caldavServerRest.updateServer(request, 7, body);
 
     assertEquals(7, updated.getId());
+  }
+
+  /**
+   * Builds a registration with the six identity fields — the icon/image
+   * fields default to null, exactly as a fresh REST payload leaves them.
+   *
+   * @param id technical identifier
+   * @param providerName agenda provider name
+   * @param name display name
+   * @param description optional description
+   * @param serverUrl base URL
+   * @param active activation
+   * @return the registration
+   */
+  private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
+                                     boolean active) {
+    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null);
   }
 }

@@ -16,8 +16,11 @@
  */
 package org.exoplatform.caldav.storage;
 
+import java.io.ByteArrayInputStream;
+import java.util.Date;
 import java.util.List;
 
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
@@ -26,6 +29,14 @@ import org.springframework.transaction.annotation.Transactional;
 import org.exoplatform.caldav.dao.CaldavServerDAO;
 import org.exoplatform.caldav.entity.CaldavServerEntity;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.commons.file.model.FileInfo;
+import org.exoplatform.commons.file.model.FileItem;
+import org.exoplatform.commons.file.services.FileService;
+import org.exoplatform.commons.utils.IOUtil;
+import org.exoplatform.upload.UploadResource;
+import org.exoplatform.upload.UploadService;
+
+import lombok.SneakyThrows;
 
 /**
  * Maps CalDAV server registrations between their JPA entity and the
@@ -37,8 +48,25 @@ import org.exoplatform.caldav.model.CaldavServer;
 @Component
 public class CaldavServerStorage {
 
+  /**
+   * FileService namespace the uploaded server images are stored under.
+   */
+  public static final String NAME_SPACE            = "caldavServer";
+
+  /**
+   * Fallback cache-busting version for rows whose image has no readable
+   * modification date.
+   */
+  public static final Long   DEFAULT_LAST_MODIFIED = System.currentTimeMillis();
+
   @Autowired
-  private CaldavServerDAO caldavServerDAO;
+  private CaldavServerDAO    caldavServerDAO;
+
+  @Autowired
+  private UploadService      uploadService;
+
+  @Autowired
+  private FileService        fileService;
 
   /**
    * Reads every registration, seed first (it holds the lowest id by
@@ -97,6 +125,9 @@ public class CaldavServerStorage {
     CaldavServerEntity entity = toEntity(server);
     entity.setId(null);
     entity.setProviderName(providerNamePrefix + ".pending." + System.nanoTime());
+    if (StringUtils.isNotBlank(server.getImageUploadId())) {
+      entity.setImageFileId(saveImageFileItem(null, server.getImageUploadId()));
+    }
     entity = caldavServerDAO.save(entity);
     entity.setProviderName(providerNamePrefix + "." + entity.getId());
     entity = caldavServerDAO.save(entity);
@@ -135,8 +166,70 @@ public class CaldavServerStorage {
       entity.setDescription(server.getDescription());
       entity.setServerUrl(server.getServerUrl());
       entity.setActive(server.isActive());
+      entity.setIcon(server.getIcon());
+      Long oldImageFileId = entity.getImageFileId();
+      boolean imageRemoved = (server.getImageFileId() == null || server.getImageFileId() == 0)
+          && oldImageFileId != null && oldImageFileId > 0;
+      if (imageRemoved) {
+        // The image was explicitly dropped by the drawer: the stored file has
+        // no other referrer, so it goes with the reference.
+        entity.setImageFileId(null);
+        fileService.deleteFile(oldImageFileId);
+        oldImageFileId = null;
+      }
+      if (StringUtils.isNotBlank(server.getImageUploadId())) {
+        entity.setImageFileId(saveImageFileItem(oldImageFileId, server.getImageUploadId()));
+      }
       return fromEntity(caldavServerDAO.save(entity));
     }).orElse(null);
+  }
+
+  /**
+   * Deletes a registration row and, with it, its uploaded image — the file
+   * has no other referrer, so keeping it would only leak storage.
+   *
+   * @param serverId technical identifier of the registration
+   * @return true when a row was deleted, false when none carried that id
+   */
+  @Transactional
+  public boolean deleteServer(long serverId) {
+    return caldavServerDAO.findById(serverId).map(entity -> {
+      if (entity.getImageFileId() != null && entity.getImageFileId() > 0) {
+        fileService.deleteFile(entity.getImageFileId());
+      }
+      caldavServerDAO.delete(entity);
+      return true;
+    }).orElse(false);
+  }
+
+  /**
+   * Turns a fresh browser upload into a FileService file, updating the
+   * existing file when the row already had one — the exact mechanics of
+   * email-connector's admin images.
+   *
+   * @param imageFileId existing file to update, or null to write a new one
+   * @param uploadId identifier of the browser upload
+   * @return identifier of the stored file, or null when storing failed
+   */
+  @SneakyThrows
+  private Long saveImageFileItem(Long imageFileId, String uploadId) {
+    UploadResource uploadResource = uploadService.getUploadResource(uploadId);
+    byte[] bytesContent = IOUtil.getFileContentAsBytes(uploadResource.getStoreLocation());
+    FileItem fileItem = new FileItem(imageFileId,
+                                     "caldavServerIllustration",
+                                     "image/png",
+                                     NAME_SPACE,
+                                     bytesContent.length,
+                                     new Date(),
+                                     null,
+                                     false,
+                                     new ByteArrayInputStream(bytesContent));
+    if (imageFileId != null && imageFileId > 0) {
+      fileItem = fileService.updateFile(fileItem);
+    } else {
+      fileItem = fileService.writeFile(fileItem);
+    }
+    return fileItem == null || fileItem.getFileInfo() == null ? null : fileItem.getFileInfo().getId();
   }
 
   /**
@@ -146,12 +239,40 @@ public class CaldavServerStorage {
    * @return the DTO
    */
   private CaldavServer fromEntity(CaldavServerEntity entity) {
+    long imageLastModified = DEFAULT_LAST_MODIFIED;
+    if (entity.getImageFileId() != null && entity.getImageFileId() > 0) {
+      FileInfo fileInfo = fileService.getFileInfo(entity.getImageFileId());
+      if (fileInfo != null && fileInfo.getUpdatedDate() != null) {
+        imageLastModified = fileInfo.getUpdatedDate().getTime();
+      }
+    }
     return new CaldavServer(entity.getId() == null ? 0 : entity.getId(),
                             entity.getProviderName(),
                             entity.getName(),
                             entity.getDescription(),
                             entity.getServerUrl(),
-                            entity.isActive());
+                            entity.isActive(),
+                            entity.getIcon(),
+                            entity.getImageFileId(),
+                            null,
+                            getImageUrl(entity.getImageFileId(), entity.getId(), imageLastModified));
+  }
+
+  /**
+   * The URL the browser fetches a stored image from, versioned by its last
+   * modification so an updated image escapes the browser cache. Null when the
+   * row has no image.
+   *
+   * @param imageFileId identifier of the stored file, or null
+   * @param id identifier of the registration row
+   * @param imageLastModified cache-busting version
+   * @return the image URL, or null when no image exists
+   */
+  private String getImageUrl(Long imageFileId, Long id, long imageLastModified) {
+    if (imageFileId == null || imageFileId.longValue() == 0) {
+      return null;
+    }
+    return String.format("/caldav/rest/servers/%s/image?v=%s", id, imageLastModified);
   }
 
   /**
@@ -168,6 +289,8 @@ public class CaldavServerStorage {
     entity.setDescription(server.getDescription());
     entity.setServerUrl(server.getServerUrl());
     entity.setActive(server.isActive());
+    entity.setIcon(server.getIcon());
+    entity.setImageFileId(server.getImageFileId());
     return entity;
   }
 }
