@@ -238,33 +238,33 @@ export default {
 
                 if (vEvent.exceptions[next.toString()]) {
                 //the current event have an exception for the next occurence
-                const exceptionEvent = vEvent.exceptions[next.toString()];
-                occurenceEvent.summary = exceptionEvent.summary;
-                occurenceEvent.uid = exceptionEvent.uid;
-                occurenceEvent.location = exceptionEvent.location;
-                occurenceEvent.description = exceptionEvent.description;
-                realStartDate = exceptionEvent.startDate;
-              } else {
-                occurenceEvent.summary = vEvent.summary;
-                occurenceEvent.uid = vEvent.uid;
-                occurenceEvent.location = vEvent.location;
-                occurenceEvent.description = vEvent.description;
-                realStartDate = next;
-              }
-              occurenceEvent.id = occurenceEvent.uid;
-              occurenceEvent.recurringEventId = occurenceEvent.uid;
-              const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
-              // toJSDate resolves the occurrence through the zone its series is
-              // anchored in; new Date(icalTime) went through toString(), which
-              // drops the zone unless it is UTC, so a series anchored on a TZID
-              // — as this connector now writes recurring events, and as most
-              // other clients write them — was read as if its wall clock were
-              // the reader's own, showing the meeting at the right hour only to
-              // users who happen to sit in the organiser's zone.
-              occurenceEvent.start= realStartDate.toJSDate(); //next : ICAL.Time
-              if (startDate && !startDate[0].jCal[3].includes('T')) {
-                occurenceEvent.allDay=true;
-              } else {
+                  const exceptionEvent = vEvent.exceptions[next.toString()];
+                  occurenceEvent.summary = exceptionEvent.summary;
+                  occurenceEvent.uid = exceptionEvent.uid;
+                  occurenceEvent.location = exceptionEvent.location;
+                  occurenceEvent.description = exceptionEvent.description;
+                  realStartDate = exceptionEvent.startDate;
+                } else {
+                  occurenceEvent.summary = vEvent.summary;
+                  occurenceEvent.uid = vEvent.uid;
+                  occurenceEvent.location = vEvent.location;
+                  occurenceEvent.description = vEvent.description;
+                  realStartDate = next;
+                }
+                occurenceEvent.id = occurenceEvent.uid;
+                occurenceEvent.recurringEventId = occurenceEvent.uid;
+                const startDate = eventComponent.getAllProperties('dtstart'); //ICAL.Property
+                // toJSDate resolves the occurrence through the zone its series is
+                // anchored in; new Date(icalTime) went through toString(), which
+                // drops the zone unless it is UTC, so a series anchored on a TZID
+                // — as this connector now writes recurring events, and as most
+                // other clients write them — was read as if its wall clock were
+                // the reader's own, showing the meeting at the right hour only to
+                // users who happen to sit in the organiser's zone.
+                occurenceEvent.start= realStartDate.toJSDate(); //next : ICAL.Time
+                if (startDate && !startDate[0].jCal[3].includes('T')) {
+                  occurenceEvent.allDay=true;
+                } else {
                 //if the event is not all day, we calculate the endDate as
                 //endDate = next + duration
                 //next is the startDate for the next occurence of the event
@@ -1437,21 +1437,6 @@ function collectPrivileges(projected) {
     .flatMap(entry => Object.keys(entry || {}))
     .map(name => name.replace(/^.*:/, '').toLowerCase());
 }
-/**
- * An error carrying a stable code, so that agenda can turn a failure into a
- * message the user can act on — check your credentials, this calendar is
- * read-only, try again — without parsing text or reaching into tsdav's own
- * error shapes.
- *
- * @param {String} code stable identifier for the kind of failure
- * @param {Object} response response that produced it, when there was one
- * @returns {Error} the error to reject with
- */
-function caldavError(code, response) {
-  const error = new Error(code);
-  error.code = code;
-  error.status = response && response.status;
-  return error;
 /**
  * Teaches ical.js the zones a calendar object defines.
  *
