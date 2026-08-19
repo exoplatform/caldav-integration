@@ -619,7 +619,7 @@ const caldavConnector = {
           },
         });
       }
-      ensureAccepted(response);
+      await ensureAccepted(response);
       return null;
     } catch (e) {
       console.error('Error deleting from CalDAV:', e);
@@ -703,7 +703,7 @@ const caldavConnector = {
           calendar, iCalString, filename
         });
       }
-      ensureAccepted(response);
+      await ensureAccepted(response);
       return {id: icalUID};
     } catch (e) {
       console.error('Error creating/updating CalDAV:', e, 'iCalString:', iCalString);
@@ -799,6 +799,7 @@ DTSTAMP:${dtStamp}
   ics += scheduleLines(event, vTimeZone, timeZoneId);
   ics += describeLines(event);
   ics += stampLines(event);
+  ics += organizerLines(event);
   // CONFIRMED for every event pushed, deliberately, rather than a mapping of
   // the agenda status: eXo spells a date poll TENTATIVE, which in RFC 5545
   // means "provisionally scheduled" — a poll pushed with its own word would
@@ -905,6 +906,88 @@ function stampLines(event) {
     ics += `LAST-MODIFIED:${lastModified}\n`;
   }
   return ics;
+}
+
+/**
+ * The scheduling identities of the copy: who called the meeting, and who is
+ * expected in it. Added for servers whose model treats an organizer as part
+ * of an event's identity — BlueMind tends to fail such a PUT server-side
+ * rather than answer a clean 4xx — and written truthfully rather than
+ * expediently: ORGANIZER is the eXo event's organizer, `event.creator`,
+ * never the connected CalDAV account. For a meeting the user merely
+ * accepted, naming the account owner would put a subtly false event in
+ * their calendar, and their own client could then offer to send invitations
+ * on their behalf for a meeting somebody else called.
+ *
+ * The organizer's address comes from the creator's profile as agenda already
+ * ships it with the event, and profile visibility can withhold it. An
+ * address is never invented — RFC 5545 makes the value a CAL-ADDRESS, and a
+ * fabricated one would be forwarded as a reply-to by any client acting on
+ * the copy — so when none is visible the properties are omitted entirely,
+ * ATTENDEE included: RFC 5545 section 3.8.4.1 defines ATTENDEE only in
+ * group-scheduled components, which the ORGANIZER property is what marks.
+ *
+ * Every ATTENDEE carries SCHEDULE-AGENT=CLIENT, and so does ORGANIZER when
+ * the pushing user is not the organizer (the parameter belongs on ORGANIZER
+ * precisely in an attendee's copy, RFC 6638 section 7.1): the copy mirrors
+ * scheduling that already happened in eXo, and without the parameter a
+ * scheduling-aware server would take the PUT as an instruction to run that
+ * scheduling itself — mailing invitations to every attendee, or a reply to
+ * the organizer.
+ *
+ * Attendees without a visible address — spaces, and users whose profile
+ * hides their email — are left off the copy for the same no-invented-address
+ * reason; the roster on the phone may therefore be shorter than the one in
+ * eXo, which the URL property already links to in full.
+ *
+ * @param {Object} event agenda event being pushed
+ * @returns {String} the ORGANIZER and ATTENDEE lines, or an empty string
+ */
+function organizerLines(event) {
+  const organizerEmail = event.creator?.profile?.email;
+  if (!organizerEmail) {
+    return '';
+  }
+  const currentUserIdentityId = window.eXo?.env?.portal?.userIdentityId;
+  const pusherIsOrganizer = !!currentUserIdentityId && String(event.creator.id) === String(currentUserIdentityId);
+  const organizerAgent = pusherIsOrganizer ? '' : ';SCHEDULE-AGENT=CLIENT';
+  let ics = `ORGANIZER${cnParam(event.creator.profile.fullname)}${organizerAgent}:mailto:${toUri(organizerEmail)}\n`;
+  (event.attendees || []).forEach(attendee => {
+    const profile = attendee?.identity?.profile;
+    if (!profile?.email) {
+      return;
+    }
+    ics += `ATTENDEE${cnParam(profile.fullname)};PARTSTAT=${partStat(attendee.response)};SCHEDULE-AGENT=CLIENT:mailto:${toUri(profile.email)}\n`;
+  });
+  return ics;
+}
+
+/**
+ * A CN parameter naming a calendar user, always as a quoted string so that a
+ * name holding a comma or a semicolon does not end the parameter (RFC 5545
+ * section 3.2). A double quote cannot appear inside a quoted string at all
+ * and is removed, as are line breaks, which would end the content line.
+ *
+ * @param {String} name display name of the calendar user, possibly absent
+ * @returns {String} the `;CN="..."` parameter, or an empty string
+ */
+function cnParam(name) {
+  const cleaned = typeof name === 'string' && name.replace(/["\r\n]/g, '').trim();
+  return cleaned && `;CN="${cleaned}"` || '';
+}
+
+/**
+ * The PARTSTAT token for an agenda attendee response. Agenda's own values are
+ * the RFC 5545 tokens already — NEEDS-ACTION, ACCEPTED, DECLINED, TENTATIVE —
+ * up to the underscore spelling the enum constant uses; anything else becomes
+ * NEEDS-ACTION, the RFC default, rather than an invalid token.
+ *
+ * @param {String} response the attendee's response as agenda holds it
+ * @returns {String} a valid PARTSTAT value
+ */
+function partStat(response) {
+  const token = String(response || '').toUpperCase().replace(/_/g, '-');
+  return ['ACCEPTED', 'DECLINED', 'TENTATIVE'].includes(token) && token || 'NEEDS-ACTION';
 }
 
 /**
@@ -1044,16 +1127,44 @@ function caldavError(code, cause) {
  * otherwise count as a success while the server kept its own version.
  *
  * @param {Object} response fetch Response of a PUT or DELETE
- * @returns {void} nothing when the server accepted the write
+ * @returns {Promise} resolves when the server accepted the write
  * @throws {Error} caldav.error.conflict on 412, caldav.error.save otherwise
  */
-function ensureAccepted(response) {
+async function ensureAccepted(response) {
   if (response.status === 412) {
     throw caldavError('caldav.error.conflict', response);
   }
   if (!response.ok) {
-    throw caldavError('caldav.error.save', response);
+    throw await refusedByServer(response);
   }
+}
+
+/**
+ * Turns a refused request into an error that names itself: the status and the
+ * body the server answered with are read, logged, and carried on the error,
+ * instead of being discarded. The failure mode this ends: the connector
+ * reported `caldav.error.save` and threw away the one sentence in which the
+ * server said why — a BlueMind 500 then surfaced with nothing to diagnose it
+ * by, its body already unavailable by the time devtools was opened.
+ *
+ * Only the response is read, never the request: no credentials and no
+ * Authorization header can end up in the log.
+ *
+ * @param {Object} response fetch Response the server refused with
+ * @returns {Promise<Error>} the error to throw, carrying status and body
+ */
+async function refusedByServer(response) {
+  let body = '';
+  try {
+    body = await response.text();
+  } catch (e) {
+    body = `(the response body could not be read: ${e && e.message || e})`;
+  }
+  console.error('the CalDAV server refused the request:',
+    response.status, response.statusText || '', response.url || '', body);
+  const error = caldavError('caldav.error.save', response);
+  error.body = body;
+  return error;
 }
 
 /**
@@ -1083,7 +1194,7 @@ async function fetchCalendarObject(calendar, filename, settings) {
     return null;
   }
   if (!response.ok) {
-    throw caldavError('caldav.error.save', response);
+    throw await refusedByServer(response);
   }
   return {
     url: url,
