@@ -1193,6 +1193,24 @@ async function fetchCalendarObject(calendar, filename, settings) {
   if (response.status === 404) {
     return null;
   }
+  // A server error on the existence probe is not an answer about the event,
+  // and it must not abort the push. BlueMind answers 500 — not 404 — for an
+  // .ics that is simply not there, so treating anything but 404 as fatal made
+  // every first push of an event fail before a single byte was written.
+  //
+  // Reporting "absent" here is safe rather than optimistic: the creating
+  // write keeps its If-None-Match: * precondition, so if the object did exist
+  // after all and only the read failed, the server answers 412 and the push
+  // surfaces as a conflict. The worst case is a refused write, never a
+  // silently overwritten one.
+  if (response.status >= 500) {
+    console.warn(
+      'the CalDAV server failed to say whether the event exists, treating it as new:',
+      response.status,
+      response.statusText,
+      url);
+    return null;
+  }
   if (!response.ok) {
     throw await refusedByServer(response);
   }

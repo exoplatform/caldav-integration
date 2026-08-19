@@ -246,3 +246,53 @@ describe('a refused write names itself', () => {
     }
   });
 });
+
+describe('the existence probe that runs before a push', () => {
+  beforeEach(() => {
+    jest.resetAllMocks();
+    window.eXo = {env: {portal: {userIdentityId: CURRENT_USER_IDENTITY_ID, portalName: 'dw', context: '/portal'}}};
+  });
+
+  it('creates the event when the server errors instead of answering 404', async () => {
+    const {created} = stubPush({ok: true, status: 201});
+    // BlueMind answers 500, not 404, for an .ics that is simply not there.
+    global.fetch = jest.fn(() => Promise.resolve({
+      status: 500,
+      ok: false,
+      statusText: 'Internal Server Error',
+      text: () => Promise.resolve('java.lang.NullPointerException'),
+    }));
+    const consoleWarn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await caldavConnector.saveEvent(eventBy(ME, [{identity: ME, response: 'ACCEPTED'}]), SETTINGS);
+
+      expect(created).toHaveLength(1);
+      expect(result).toBeTruthy();
+      expect(consoleWarn.mock.calls.flat()).toContain(500);
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it('still refuses the push when the probe is rejected for permission', async () => {
+    const {created} = stubPush({ok: true, status: 201});
+    global.fetch = jest.fn(() => Promise.resolve({
+      status: 403,
+      ok: false,
+      statusText: 'Forbidden',
+      text: () => Promise.resolve('not your calendar'),
+    }));
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      let thrown;
+      await caldavConnector.saveEvent(eventBy(ME, [{identity: ME, response: 'ACCEPTED'}]), SETTINGS)
+        .catch(e => thrown = e);
+
+      expect(thrown).toBeTruthy();
+      expect(thrown.status).toBe(403);
+      expect(created).toHaveLength(0);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+});
