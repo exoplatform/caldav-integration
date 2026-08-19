@@ -126,8 +126,6 @@ public class CaldavServerService {
    * phase — the same deferral agenda's own provider plugin uses — because the
    * Bluemind default needs its agenda remote provider written, and agenda's
    * kernel services are only safely callable once the portal container is up.
-   *
-   * @return nothing
    */
   @PostConstruct
   public void start() {
@@ -164,8 +162,6 @@ public class CaldavServerService {
    * <li><b>Bluemind</b>, a normally-named row whose agenda remote provider is
    * upserted here, since no kernel plugin declares it.</li>
    * </ul>
-   *
-   * @return nothing
    */
   protected void seedDefaultServers() {
     if (caldavServerStorage.countServers() > 0) {
