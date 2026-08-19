@@ -184,10 +184,21 @@ const caldavConnector = {
    * never renamed afterwards: the href is the identity of the collection, so
    * the user remains free to rename it from any of their own clients.
    *
+   * Success means the server lists the calendar, not that MKCALENDAR failed
+   * to complain: the collection is re-fetched after the request and only its
+   * presence saves the href and reports success. MKCALENDAR is atomic (RFC
+   * 4791), so a server rejecting any single property answers 207 and creates
+   * nothing — and a 207 is a 2xx, which the previous check read as success,
+   * telling the user a calendar existed that did not. When the rejected
+   * property can only be the colour or the description — decoration, not
+   * identity — the request is retried with the display name alone: a mirror
+   * calendar with the wrong colour is worth far more than no calendar.
+   *
    * MKCALENDAR is not universally permitted. A refusal surfaces as an error
-   * flagged calendarCreationRefused, so the caller can fall back to letting
-   * the user pick an existing calendar at connect time rather than fail at
-   * first push.
+   * flagged calendarCreationRefused, so the caller can explain, at connect
+   * time, that the copies will go to the account's first calendar — which is
+   * exactly what pushing does while no mirror href is stored — rather than
+   * fail at first push.
    *
    * @param {Object} calendarToCreate description of the wanted calendar
    * @param {String} calendarToCreate.name display name, from the platform branding
@@ -223,41 +234,56 @@ const caldavConnector = {
       await caldavConnectorService.saveMirrorCalendarHref(existing.url);
       return {id: existing.url};
     }
-    const props = {
+    const minimalProps = {
       [`${tsdav.DAVNamespaceShort.DAV}:displayname`]: name,
     };
+    const props = {...minimalProps};
     if (description) {
       props[`${tsdav.DAVNamespaceShort.CALDAV}:calendar-description`] = description;
     }
     if (color) {
       props[`${tsdav.DAVNamespaceShort.CALDAV_APPLE}:calendar-color`] = color;
     }
-    const responses = await clientCaldav.makeCalendar({
+    let responses = await clientCaldav.makeCalendar({
       url,
       props,
       headersToExclude: ['If-None-Match'],
     });
-    const refusal = (responses || []).find(response => response && response.ok === false);
-    if (refusal) {
-      // 405 on MKCALENDAR means a collection already sits at that URL. Since
-      // the URL is derived from the name, that collection is the one being
-      // asked for: adopt it rather than report a failure the user cannot act
-      // on. Any other status is a genuine refusal.
-      if (refusal.status === 405) {
-        const created = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
-        const adopted = findMirrorCalendar(created, null, url, name);
-        if (adopted) {
-          await caldavConnectorService.saveMirrorCalendarHref(adopted.url);
-          return {id: adopted.url};
-        }
-      }
-      const error = new Error(`MKCALENDAR refused by the server with status ${refusal.status}`);
-      error.calendarCreationRefused = true;
-      error.status = refusal.status;
-      throw error;
+    let refusal = mkCalendarRefusal(responses);
+    // Whatever MKCALENDAR answered, only the server's own listing proves the
+    // calendar exists. This also adopts naturally on a 405, which means a
+    // collection already sits at that URL — and the URL being derived from
+    // the name, that collection is the one being asked for.
+    let mirror = await confirmMirrorCalendar(clientCaldav, url, name);
+    if (!mirror && (description || color)) {
+      // The full request could not be confirmed and it carried optional
+      // properties — the only ones a server may legitimately balk at. Ask
+      // again for the identity alone: MKCALENDAR being atomic, the first
+      // attempt created nothing, so this is not a duplicate.
+      responses = await clientCaldav.makeCalendar({
+        url,
+        props: minimalProps,
+        headersToExclude: ['If-None-Match'],
+      });
+      refusal = mkCalendarRefusal(responses) || refusal;
+      mirror = await confirmMirrorCalendar(clientCaldav, url, name);
     }
-    await caldavConnectorService.saveMirrorCalendarHref(url);
-    return {id: url};
+    if (mirror) {
+      await caldavConnectorService.saveMirrorCalendarHref(mirror.url);
+      return {id: mirror.url};
+    }
+    // Not on the server, even after the minimal attempt: the calendar was
+    // not created, whatever the responses claimed, and saying otherwise is
+    // the lie this check exists to prevent. No href is stored, so the copies
+    // will go to the account's first calendar — which is exactly what the
+    // calendarCreationRefused message promises the user.
+    const status = refusal && refusal.status;
+    const error = new Error(status
+      ? `MKCALENDAR refused by the server with status ${status}`
+      : 'MKCALENDAR reported no failure, but the server does not list the calendar');
+    error.calendarCreationRefused = true;
+    error.status = status;
+    throw error;
   },
   /**
    * Points the mirror at an existing calendar of the connected account
@@ -2048,6 +2074,111 @@ function findMirrorCalendar(calendars, mirrorCalendarHref, url, name) {
   return mirrorCalendarHref && (calendars || []).find(calendar => isSameCollection(calendar.url, mirrorCalendarHref))
     || (calendars || []).find(calendar => isSameCollection(calendar.url, url))
     || (calendars || []).find(calendar => calendar.displayName && calendar.displayName === name);
+}
+
+/**
+ * The mirror calendar as the server itself lists it after an MKCALENDAR, or
+ * undefined when the listing does not carry it. This is the only statement
+ * of success `createCalendar` accepts: MKCALENDAR responses have been caught
+ * telling both possible lies — a 207 whose failed propstat means nothing was
+ * created still counts as 2xx, and an empty response array carries no
+ * refusal to find — so presence in a fresh listing is checked instead of
+ * absence of a failure.
+ *
+ * A listing that cannot be fetched is left to throw: the outcome is then
+ * genuinely unknown — the calendar may well exist — and claiming a refusal
+ * would be as untrue as claiming a success. The caller reports it as an
+ * error the user can retry, and the retry adopts whatever the first attempt
+ * did create.
+ *
+ * @param {Object} clientCaldav connected tsdav client
+ * @param {String} url the URL the mirror collection was requested at
+ * @param {String} name display name the mirror was requested with
+ * @returns {Promise<Object>} the listed mirror collection, or undefined
+ */
+async function confirmMirrorCalendar(clientCaldav, url, name) {
+  const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+  return findMirrorCalendar(calendars, null, url, name);
+}
+
+/**
+ * The refusal an MKCALENDAR answer carries, or null when the server plainly
+ * claimed success. Deliberately not `response.ok`: tsdav derives `ok` from
+ * the HTTP status, and 207 is a 2xx — yet MKCALENDAR is atomic (RFC 4791
+ * section 5.3.1), so a 207 reports at least one rejected property and a
+ * collection that was NOT created. The failed statuses live inside the
+ * multistatus body, at propstat level, which tsdav keeps only in `raw`; they
+ * are read from there. An empty or absent answer is a refusal too: it proves
+ * nothing, and what proves nothing must not pass for a success.
+ *
+ * @param {Array} responses what tsdav's makeCalendar resolved with
+ * @returns {Object} `{status}` describing the refusal, or null
+ */
+function mkCalendarRefusal(responses) {
+  const list = Array.isArray(responses) ? responses : responses && [responses] || [];
+  if (!list.length) {
+    return {status: null};
+  }
+  for (const response of list) {
+    if (!response || response.ok !== true) {
+      return {status: response && response.status};
+    }
+    const failed = failedStatusesIn(response.raw);
+    if (failed.length) {
+      // 424 Failed Dependency marks a property that failed only because
+      // another one did — the other one carries the actual reason
+      return {status: failed.find(code => code !== 424) || failed[0]};
+    }
+    if (response.status === 207) {
+      // a multistatus with no readable failure is still not the 201 a
+      // created collection answers with — never a claim of success
+      return {status: 207};
+    }
+  }
+  return null;
+}
+
+/**
+ * Every non-2xx HTTP status carried anywhere inside a parsed DAV response
+ * body. Walked recursively rather than addressed by path because servers
+ * shape MKCALENDAR failures differently — propstat elements under a
+ * DAV:multistatus, or under a CALDAV:mkcalendar-response — and tsdav parses
+ * whichever arrived into `raw` without normalising it.
+ *
+ * @param {Object} node parsed response body, or any node inside it
+ * @param {Array} found accumulator, for the recursion
+ * @returns {Array} the failed status codes found, possibly empty
+ */
+function failedStatusesIn(node, found = []) {
+  if (!node || typeof node !== 'object') {
+    return found;
+  }
+  Object.entries(node).forEach(([key, value]) => {
+    if (key === 'status') {
+      const code = httpStatusCode(value);
+      if (code && (code < 200 || code >= 300)) {
+        found.push(code);
+      }
+    } else if (typeof value === 'object') {
+      failedStatusesIn(value, found);
+    }
+  });
+  return found;
+}
+
+/**
+ * The numeric code of a DAV status element, which arrives as a status line
+ * ("HTTP/1.1 403 Forbidden") or occasionally as a bare number.
+ *
+ * @param {String|Number} status the status element's value
+ * @returns {Number} the HTTP status code, or null when there is none
+ */
+function httpStatusCode(status) {
+  if (typeof status === 'number') {
+    return status;
+  }
+  const match = /\b(\d{3})\b/.exec(typeof status === 'string' ? status : '');
+  return match ? Number.parseInt(match[1], 10) : null;
 }
 
 /**

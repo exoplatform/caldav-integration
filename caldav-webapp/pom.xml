@@ -75,13 +75,19 @@
         <executions>
           <!-- The connector-descriptor regression tests (jest): the contract
                agenda's My Calendars panel holds every descriptor to broke
-               silently once, and only a test at this level catches it. -->
+               silently once, and only a test at this level catches it.
+               Bound to prepare-package, not test: the parent installs
+               node/npm at prepare-package, so a test-phase run only found a
+               node binary left over from a previous build - after mvn clean
+               it failed before node was ever installed. Child executions run
+               after the parent's within the same phase, so node, the npm
+               deps and the webpack build all precede this. -->
           <execution>
             <id>npm test</id>
             <goals>
               <goal>npm</goal>
             </goals>
-            <phase>test</phase>
+            <phase>prepare-package</phase>
             <configuration>
               <arguments>run test</arguments>
               <skip>${skipTests}</skip>
