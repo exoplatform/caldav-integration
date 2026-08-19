@@ -194,17 +194,25 @@ const caldavConnector = {
    * identity — the request is retried with the display name alone: a mirror
    * calendar with the wrong colour is worth far more than no calendar.
    *
-   * MKCALENDAR is not universally permitted. A refusal surfaces as an error
-   * flagged calendarCreationRefused, so the caller can explain, at connect
-   * time, that the copies will go to the account's first calendar — which is
-   * exactly what pushing does while no mirror href is stored — rather than
-   * fail at first push.
+   * MKCALENDAR is not universally permitted. When the server refuses, the
+   * account's first calendar — the very one pushing targeted while no mirror
+   * href was stored — is adopted as the destination instead: its href is
+   * stored, so the settings can name the calendar genuinely receiving the
+   * copies and the push switch has a destination to latch on, and the
+   * outcome is reported with `adopted` so the caller explains it rather
+   * than announcing a created calendar. Left implicit, the destination
+   * resolved nothing: the settings had no name to show, refused to store the
+   * setting, and pushing never happened. Only an account holding no calendar
+   * at all still surfaces an error flagged calendarCreationRefused — the
+   * copies then genuinely have nowhere to go.
    *
    * @param {Object} calendarToCreate description of the wanted calendar
    * @param {String} calendarToCreate.name display name, from the platform branding
    * @param {String} calendarToCreate.color `#RRGGBB` colour, from the platform branding
    * @param {String} calendarToCreate.description explains the calendar in the user's own client
-   * @returns {Promise<Object>} `{id}` where id is the href of the created collection
+   * @returns {Promise<Object>} `{id}` where id is the href of the destination
+   *          collection; `{id, adopted, name}` when an existing calendar was
+   *          adopted because the server refused to create one
    */
   async createCalendar({name, color, description}) {
     const settings = await caldavConnectorService.getCaldavSetting();
@@ -274,13 +282,26 @@ const caldavConnector = {
     }
     // Not on the server, even after the minimal attempt: the calendar was
     // not created, whatever the responses claimed, and saying otherwise is
-    // the lie this check exists to prevent. No href is stored, so the copies
-    // will go to the account's first calendar — which is exactly what the
-    // calendarCreationRefused message promises the user.
+    // the lie this check exists to prevent. Rather than leaving the
+    // destination implicit — with no stored href every push targeted the
+    // first calendar the account lists, but the settings could name no
+    // destination, so the copy switch never latched and nothing was ever
+    // pushed — that same first calendar is adopted openly: its href is
+    // stored and its name reported, so the user is told which calendar
+    // receives the copies and pushing actually starts. The copies written
+    // there are recognised on read-back by the UID agenda stored at push
+    // time and filtered from the display, so nothing shows twice.
     const status = refusal && refusal.status;
+    const fallbackCalendar = calendars.length && calendars[0] || null;
+    if (fallbackCalendar) {
+      await caldavConnectorService.saveMirrorCalendarHref(fallbackCalendar.url);
+      return {id: fallbackCalendar.url, adopted: true, name: calendarName(fallbackCalendar)};
+    }
+    // Nothing to adopt either: the account holds no calendar at all, so the
+    // copies genuinely have nowhere to go.
     const error = new Error(status
-      ? `MKCALENDAR refused by the server with status ${status}`
-      : 'MKCALENDAR reported no failure, but the server does not list the calendar');
+      ? `MKCALENDAR refused by the server with status ${status}, and the account holds no calendar to adopt`
+      : 'MKCALENDAR reported no failure, but the server does not list the calendar, and the account holds no calendar to adopt');
     error.calendarCreationRefused = true;
     error.status = status;
     throw error;
@@ -306,6 +327,23 @@ const caldavConnector = {
    */
   getMirrorCalendarId() {
     return caldavConnectorService.getCaldavSetting().then(settings => settings.mirrorCalendarHref || null);
+  },
+  /**
+   * Whether a mirror href designates a calendar eXo created to hold the
+   * copies, as opposed to an existing calendar of the user adopted when the
+   * server refused MKCALENDAR. The two must not be treated alike by UIs: a
+   * dedicated mirror holds nothing but copies of meetings the agenda already
+   * shows, so calendar lists leave it out — while an adopted calendar is one
+   * the user keeps for themselves, and hiding it would make a calendar they
+   * rely on quietly disappear. Judged on the collection path eXo controls,
+   * the same signal recoverMirrorCalendar trusts, so a rename in the user's
+   * own client never flips the answer.
+   *
+   * @param {String} href the mirror calendar href
+   * @returns {Boolean} true when the href is an eXo-created mirror collection
+   */
+  isDedicatedMirrorCalendar(href) {
+    return isMirrorCollection(href);
   },
   /**
    * The calendar every push and remote deletion must target: the stored

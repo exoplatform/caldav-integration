@@ -130,33 +130,36 @@ describe('createCalendar reports what the server did', () => {
 
   beforeEach(() => jest.clearAllMocks());
 
-  it('does not report success on a 207 whose failed propstat means nothing was created', async () => {
+  it('adopts the first calendar of the account on a 207 whose failed propstat means nothing was created', async () => {
     // both attempts answer 207 rejecting the displayname itself, and no
-    // listing ever carries the calendar: the BlueMind false-success shape
+    // listing ever carries the calendar: the BlueMind false-success shape.
+    // The destination must not stay implicit — with no stored href the push
+    // switch has no name to latch on and nothing is ever pushed — so the
+    // first calendar, the very one pushing targeted implicitly, is adopted.
     givenServer(
       [[multistatusRejecting('displayname')]],
       [OTHER_CALENDARS],
     );
 
     await expect(caldavConnector.createCalendar(REQUEST))
-      .rejects.toMatchObject({calendarCreationRefused: true, status: 403});
-    expect(caldavConnectorService.saveMirrorCalendarHref).not.toHaveBeenCalled();
+      .resolves.toEqual({id: `${HOME_URL}default/`, adopted: true, name: 'John Doe'});
+    expect(caldavConnectorService.saveMirrorCalendarHref).toHaveBeenCalledWith(`${HOME_URL}default/`);
   });
 
-  it('does not report success on an empty response array', async () => {
+  it('adopts the first calendar on an empty response array', async () => {
     givenServer([[]], [OTHER_CALENDARS]);
 
     await expect(caldavConnector.createCalendar(REQUEST))
-      .rejects.toMatchObject({calendarCreationRefused: true});
-    expect(caldavConnectorService.saveMirrorCalendarHref).not.toHaveBeenCalled();
+      .resolves.toEqual({id: `${HOME_URL}default/`, adopted: true, name: 'John Doe'});
+    expect(caldavConnectorService.saveMirrorCalendarHref).toHaveBeenCalledWith(`${HOME_URL}default/`);
   });
 
-  it('does not report success when MKCALENDAR claims 201 but the server does not list the calendar', async () => {
+  it('adopts the first calendar when MKCALENDAR claims 201 but the server does not list the calendar', async () => {
     givenServer([[CREATED_201]], [OTHER_CALENDARS]);
 
     await expect(caldavConnector.createCalendar(REQUEST))
-      .rejects.toMatchObject({calendarCreationRefused: true});
-    expect(caldavConnectorService.saveMirrorCalendarHref).not.toHaveBeenCalled();
+      .resolves.toEqual({id: `${HOME_URL}default/`, adopted: true, name: 'John Doe'});
+    expect(caldavConnectorService.saveMirrorCalendarHref).toHaveBeenCalledWith(`${HOME_URL}default/`);
   });
 
   it('retries with the display name alone when an optional property is rejected, and succeeds', async () => {
@@ -174,10 +177,23 @@ describe('createCalendar reports what the server did', () => {
     expect(caldavConnectorService.saveMirrorCalendarHref).toHaveBeenCalledWith(MIRROR_URL);
   });
 
-  it('still reports a refusal the user can understand when the server genuinely refuses', async () => {
+  it('adopts the first calendar when the server genuinely refuses MKCALENDAR', async () => {
     givenServer(
       [[{href: MIRROR_URL, status: 403, statusText: 'Forbidden', ok: false, raw: ''}]],
       [OTHER_CALENDARS],
+    );
+
+    await expect(caldavConnector.createCalendar(REQUEST))
+      .resolves.toEqual({id: `${HOME_URL}default/`, adopted: true, name: 'John Doe'});
+    expect(caldavConnectorService.saveMirrorCalendarHref).toHaveBeenCalledWith(`${HOME_URL}default/`);
+  });
+
+  it('still reports a refusal when the account holds no calendar to adopt', async () => {
+    // nothing to adopt: the copies genuinely have nowhere to go, and
+    // claiming a destination would be the lie the adopted path avoids
+    givenServer(
+      [[{href: MIRROR_URL, status: 403, statusText: 'Forbidden', ok: false, raw: ''}]],
+      [[]],
     );
 
     await expect(caldavConnector.createCalendar(REQUEST))
@@ -197,8 +213,11 @@ describe('createCalendar reports what the server did', () => {
     expect(caldavConnectorService.saveMirrorCalendarHref).toHaveBeenCalledWith(MIRROR_URL);
   });
 
-  it('still succeeds on a server that genuinely creates the collection', async () => {
-    // the Stalwart shape: 201 with an empty body, calendar listed afterwards
+  it('still succeeds on a server that genuinely creates the collection, without adopting anything', async () => {
+    // the Stalwart shape: 201 with an empty body, calendar listed afterwards.
+    // toEqual is exact on purpose: a created calendar must never carry the
+    // adopted flag, or the drawer would tell the user their meetings go to
+    // an existing calendar when a dedicated one was just made.
     const client = givenServer(
       [[CREATED_201]],
       [OTHER_CALENDARS, MIRROR_LISTED],
@@ -209,10 +228,10 @@ describe('createCalendar reports what the server did', () => {
     expect(caldavConnectorService.saveMirrorCalendarHref).toHaveBeenCalledWith(MIRROR_URL);
   });
 
-  it('leaves the outcome unknown — a plain error, not a refusal — when the verification listing fails', async () => {
-    // the calendar may well exist: claiming a refusal (whose message promises
-    // the copies go to the first calendar) would be as untrue as claiming a
-    // success — the user retries, and the retry adopts what was created
+  it('leaves the outcome unknown — a plain error, neither refusal nor adoption — when the verification listing fails', async () => {
+    // the calendar may well exist: adopting the first calendar here would
+    // point the copies away from a mirror that was probably just created —
+    // the user retries, and the retry adopts what the first attempt made
     const client = givenServer([[CREATED_201]], [OTHER_CALENDARS]);
     client.fetchCalendars
       .mockImplementationOnce(() => Promise.resolve(OTHER_CALENDARS))
@@ -220,5 +239,38 @@ describe('createCalendar reports what the server did', () => {
 
     await expect(caldavConnector.createCalendar(REQUEST)).rejects.toThrow('network down');
     expect(caldavConnectorService.saveMirrorCalendarHref).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The adopted destination must feed the settings switch: the push toggle
+ * only latches once `getMirrorCalendarId` names a stored href the calendar
+ * list can resolve to a name. And an adopted calendar must never be treated
+ * like a created mirror by the UIs that hide the mirror from calendar
+ * lists — it is the user's own calendar, typically their primary one, and
+ * hiding it would make it quietly disappear from the agenda.
+ */
+describe('an adopted destination behaves like one', () => {
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it('exposes the adopted href through getMirrorCalendarId, the input the push switch gates on', async () => {
+    caldavConnectorService.getCaldavSetting.mockResolvedValue({
+      username: 'john',
+      caldavUrl: 'https://server.test/dav/cal/{username}/',
+      mirrorCalendarHref: `${HOME_URL}default/`,
+    });
+
+    await expect(caldavConnector.getMirrorCalendarId()).resolves.toBe(`${HOME_URL}default/`);
+  });
+
+  it('tells a created mirror apart from an adopted calendar', () => {
+    // a created mirror sits at the constant collection path eXo controls…
+    expect(caldavConnector.isDedicatedMirrorCalendar(MIRROR_URL)).toBe(true);
+    // …including the legacy randomly-suffixed shape…
+    expect(caldavConnector.isDedicatedMirrorCalendar(`${HOME_URL}exo-meetings-3f2a/`)).toBe(true);
+    // …while an adopted calendar keeps the user's own path, and must keep
+    // appearing in calendar lists
+    expect(caldavConnector.isDedicatedMirrorCalendar(`${HOME_URL}default/`)).toBe(false);
   });
 });
