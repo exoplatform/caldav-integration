@@ -254,6 +254,28 @@ public class CaldavServerServiceTest {
   }
 
   /**
+   * A row that disappears between the read and the write is reported as
+   * missing, not as a crash.
+   * <p>
+   * Another administrator deleting the registration in between is the
+   * plausible case. Storage answers that with null, and passing it on threw a
+   * NullPointerException out of a method that already declares the honest
+   * answer — so the caller saw a 500 where the contract promises a 404. The
+   * sibling updateServer carried this guard and this one did not.
+   */
+  @Test
+  public void shouldRefuseActivationOfVanishedServer() {
+    withUser(ADMIN_USER, true);
+    CaldavServer server = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server);
+    when(caldavServerStorage.updateServer(any())).thenReturn(null);
+
+    assertThrows(ObjectNotFoundException.class, () -> caldavServerService.setServerActive(7, false, ADMIN_USER));
+
+    verifyNoInteractions(agendaRemoteEventService);
+  }
+
+  /**
    * A regular user cannot flip the switch.
    */
   @Test

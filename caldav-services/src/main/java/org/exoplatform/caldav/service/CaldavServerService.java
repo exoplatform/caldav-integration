@@ -280,6 +280,14 @@ public class CaldavServerService {
     CaldavServer server = getServerById(serverId);
     server.setActive(active);
     CaldavServer updatedServer = caldavServerStorage.updateServer(server);
+    // The row can go between the read above and this write — another
+    // administrator deleting it, most plausibly. Storage answers that with
+    // null, and passing it on threw a NullPointerException out of an
+    // endpoint that already declares the honest answer: the registration is
+    // not there. Same guard as updateServer, which had it and this did not.
+    if (updatedServer == null) {
+      throw new ObjectNotFoundException("CalDAV server with id " + serverId + " doesn't exist");
+    }
     saveAgendaRemoteProvider(updatedServer);
     return updatedServer;
   }
