@@ -26,7 +26,7 @@
  * absence of a refusal.
  */
 jest.mock('tsdav', () => ({
-  createDAVClient: jest.fn(),
+  DAVClient: jest.fn(),
   DAVNamespaceShort: {
     DAV: 'd',
     CALDAV: 'c',
@@ -65,6 +65,7 @@ function stubClient(makeResults, listings) {
   let makeCall = 0;
   let fetchCall = 0;
   return {
+    login: jest.fn(() => Promise.resolve()),
     account: {homeUrl: HOME_URL, rootUrl: HOME_URL},
     makeCalendar: jest.fn(() => Promise.resolve(makeResults[Math.min(makeCall++, makeResults.length - 1)])),
     fetchCalendars: jest.fn(() => Promise.resolve(listings[Math.min(fetchCall++, listings.length - 1)])),
@@ -82,7 +83,7 @@ function stubClient(makeResults, listings) {
  */
 function givenServer(makeResults, listings) {
   const client = stubClient(makeResults, listings);
-  tsdav.createDAVClient.mockResolvedValue(client);
+  tsdav.DAVClient.mockImplementation(() => client);
   caldavConnectorService.getCaldavSetting.mockResolvedValue({
     username: 'john',
     password: 'secret',

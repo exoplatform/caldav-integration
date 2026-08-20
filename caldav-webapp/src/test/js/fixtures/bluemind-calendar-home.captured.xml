@@ -1,0 +1,17 @@
+# CAPTURED live on 2026-08-20 against BlueMind at https://caldav.example.invalid/dav/
+# by dev/golden-capture/capture-bluemind.sh: PROPFIND https://caldav.example.invalid/dav/principals/__uids__/9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/
+# Discovery: the calendar home. RFC 4791 puts ctag/sync-token on collections under here, never on the DAV root.
+# Authorization header not recorded; password and Basic credentials scrubbed.
+# HTTP status: 207
+HTTP/2 207 
+content-security-policy: connect-src 'self' ws: wss: https: blob:; default-src 'self' ws: wss: blob: 'unsafe-inline' 'unsafe-eval'; img-src * data: blob:
+content-type: application/xml; charset="utf-8"
+date: Thu, 20 Aug 2026 21:26:22 GMT
+dav: 1, access-control, calendar-access, calendar-schedule, calendar-auto-schedule, calendar-availability, inbox-availability, calendar-proxy, calendarserver-private-events, calendarserver-sharing, calendarserver-sharing-no-scheduling, calendar-query-extended, calendar-default-alarms, calendarserver-partstat-changes, extended-mkcol, calendarserver-principal-property-search, calendarserver-principal-search, calendarserver-home-sync, addressbook
+feature-policy: accelerometer 'none'; ambient-light-sensor 'none'; autoplay 'self'; battery 'none'; camera 'none'; display-capture 'none'; document-domain 'none'; encrypted-media 'none'; execution-while-not-rendered 'self'; execution-while-out-of-viewport 'self'; fullscreen 'self'; geolocation 'none'; gyroscope 'none'; layout-animations 'none'; layout-animations 'none'; layout-animations 'none'; legacy-image-formats 'none'; magnetometer 'none'; microphone 'none'; midi 'none'; navigation-override 'none'; oversized-images 'none'; payment 'none'; picture-in-picture 'none'; publickey-credentials 'none'; sync-xhr 'none'; usb 'none'; vr 'none'; wake-lock 'none'; xr-spatial-tracking 'none';
+server: nginx
+vary: Origin
+content-length: 592
+
+
+<?xml version="1.0" encoding="UTF-8"?><d:multistatus xmlns:d="DAV:" xmlns:aic="http://apple.com/ns/ical/" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cso="http://calendarserver.org/ns/" xmlns:me="http://me.com/_namespace/" xmlns:rd="urn:ietf:params:xml:ns:carddav"><d:response><d:href>/dav/principals/__uids__/9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/</d:href><d:propstat><d:status>HTTP/1.1 200 OK</d:status><d:prop><cal:calendar-home-set><d:href>/dav/calendars/__uids__/9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/</d:href></cal:calendar-home-set></d:prop></d:propstat></d:response></d:multistatus>

@@ -15,7 +15,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 jest.mock('tsdav', () => ({
-  createDAVClient: jest.fn(),
+  DAVClient: jest.fn(),
   DAVNamespaceShort: {
     DAV: 'd',
     CALDAV: 'c',
@@ -78,7 +78,10 @@ describe('relay space', () => {
 
   it('probes and discovers through the relay, with no Authorization header', async () => {
     global.fetch = jest.fn(() => Promise.resolve({status: 207, ok: true}));
-    tsdav.createDAVClient.mockResolvedValue({fetchCalendars: jest.fn(() => Promise.resolve([]))});
+    tsdav.DAVClient.mockImplementation(() => ({
+      login: jest.fn(() => Promise.resolve()),
+      fetchCalendars: jest.fn(() => Promise.resolve([])),
+    }));
     caldavConnectorService.getCaldavSetting.mockResolvedValue(SETTINGS);
 
     await caldavConnector.listCalendars();
@@ -88,7 +91,7 @@ describe('relay space', () => {
     expect(probeOptions.credentials).toBe('include');
     expect(Object.keys(probeOptions.headers).map(name => name.toLowerCase())).not.toContain('authorization');
 
-    const clientParams = tsdav.createDAVClient.mock.calls[0][0];
+    const clientParams = tsdav.DAVClient.mock.calls[0][0];
     expect(clientParams.serverUrl).toBe(`${RELAY_ROOT}/dav/cal/john/`);
     expect(clientParams.authMethod).toBe('Custom');
     await expect(clientParams.authFunction()).resolves.toEqual({});
@@ -97,7 +100,10 @@ describe('relay space', () => {
   it('keeps addressing the server directly when no declared server resolves', async () => {
     // The pre-registry deployment: no serverId, the password still served.
     global.fetch = jest.fn(() => Promise.resolve({status: 207, ok: true}));
-    tsdav.createDAVClient.mockResolvedValue({fetchCalendars: jest.fn(() => Promise.resolve([]))});
+    tsdav.DAVClient.mockImplementation(() => ({
+      login: jest.fn(() => Promise.resolve()),
+      fetchCalendars: jest.fn(() => Promise.resolve([])),
+    }));
     caldavConnectorService.getCaldavSetting.mockResolvedValue({
       username: 'john',
       password: 'secret',

@@ -214,12 +214,17 @@ const caldavConnector = {
     const clientCaldav = await createClient(settings);
     const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
     const serverUrl = relayServerUrl(settings);
-    // The account's own calendar home, as tsdav discovered it, before either
-    // fallback. An account with no calendar yet has nothing to derive a home
-    // from, and the configured URL is not a safe substitute: the first form the
-    // README documents carries no {username}, so it names a root that may be
-    // shared between accounts — a mirror calendar created there would not be
-    // the user's own.
+    // The account's own calendar home, as tsdav discovered it during login —
+    // present even for an account holding no calendar yet, which is exactly
+    // when it matters most: the fallbacks below have nothing better to offer
+    // then. The parent of the first listed calendar is the same collection on
+    // every server seen so far; the configured URL is a last resort and not a
+    // safe one: the first form the README documents carries no {username}, so
+    // it names a root that may be shared between accounts — a mirror calendar
+    // created there would not be the user's own, and on BlueMind an
+    // MKCALENDAR at that root does not even answer a refusal but a 504 from
+    // the gateway, which the code before this derivation was fixed read as
+    // "the server refuses to create calendars".
     const homeUrl = clientCaldav.account && clientCaldav.account.homeUrl
       || calendars.length && new URL('..', calendars[0].url).href
       || (serverUrl.endsWith('/') && serverUrl || `${serverUrl}/`);
@@ -1088,8 +1093,21 @@ function exceptionLines(event, isOccurrence, vTimeZone, timeZoneId) {
  * fail: it erased the record that anything was ever meant to sync, leaving a
  * later retry with nothing to retry from.
  *
+ * Built through the class-based tsdav DAVClient rather than the
+ * createDAVClient entry point, because login() stores the discovered account
+ * — principal, root and calendar homeUrl — on the instance, while
+ * createDAVClient runs the very same discovery and keeps the account inside a
+ * closure. Every reader of clientCaldav.account therefore saw undefined, and
+ * the mirror-calendar derivation that documents itself as using "the
+ * account's own calendar home" silently fell through to its fallbacks — down
+ * to the configured server URL, the DAV root on servers registered by their
+ * root, where MKCALENDAR does not answer a refusal but a gateway error
+ * (BlueMind's answers 504 there, and 201 under the home). The unit tests
+ * stubbed an `account` property on the mocked client, which is why they kept
+ * passing over a property the real library never exposed.
+ *
  * @param {Object} settings connector settings holding the URL and credentials
- * @returns {Promise<Object>} a connected tsdav client
+ * @returns {Promise<Object>} a logged-in tsdav client carrying its account
  */
 async function createClient(settings) {
   try {
@@ -1102,13 +1120,15 @@ async function createClient(settings) {
     const authHeaders = settings.password
       ? {authorization: `Basic ${btoa(`${settings.username}:${settings.password}`)}`}
       : {};
-    return await tsdav.createDAVClient({
+    const clientCaldav = new tsdav.DAVClient({
       serverUrl: relayServerUrl(settings),
       credentials: {},
       authMethod: 'Custom',
       authFunction: () => Promise.resolve(authHeaders),
       defaultAccountType: 'caldav',
     });
+    await clientCaldav.login();
+    return clientCaldav;
   } catch (e) {
     console.error('cannot connect to the CalDAV server, check the URL and credentials', e);
     throw caldavError('caldav.error.connection', e);

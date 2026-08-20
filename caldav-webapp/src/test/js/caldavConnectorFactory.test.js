@@ -42,7 +42,7 @@ describe('createCaldavConnector', () => {
     providerName: 'agenda.caldavCalendar.6',
     name: 'Bluemind',
     description: 'Team server',
-    serverUrl: 'https://webmail.demo3.livecollab.fr/dav/',
+    serverUrl: 'https://caldav.example.invalid/dav/',
     active: true,
     icon: 'fa-server',
     imageUrl: null,
@@ -150,7 +150,7 @@ describe('serverHost', () => {
    */
   it('keeps host and port, drops scheme and path', () => {
     expect(serverHost('http://localhost:8888/dav/cal/{username}/')).toBe('localhost:8888');
-    expect(serverHost('https://webmail.demo3.livecollab.fr/dav/')).toBe('webmail.demo3.livecollab.fr');
+    expect(serverHost('https://caldav.example.invalid/dav/')).toBe('caldav.example.invalid');
   });
 
   /**
