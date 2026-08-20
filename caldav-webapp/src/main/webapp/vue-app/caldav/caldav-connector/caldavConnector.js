@@ -1,7 +1,7 @@
 import * as caldavConnectorService from '../js/agendaCaldavService.js';
 import * as tsdav from 'tsdav';
 import ICAL from 'ical.js';
-export default {
+const caldavConnector = {
   name: 'agenda.caldavCalendar',
   description: 'agenda.caldavCalendar.description',
   avatar: '/caldav/skin/image/caldav.png',
@@ -12,6 +12,10 @@ export default {
   isSignedIn: true,
   pushing: false,
   rank: 40,
+  // A multi-instance connector: its rows are managed in the dedicated CalDAV
+  // servers section of the agenda administration, not in the generic
+  // connectors table (which keeps Google/Office365/Exchange only).
+  multiInstance: true,
   /**
    * Opens the settings drawer and resolves once the CalDAV server itself has
    * accepted the account. The drawer verifies the credentials against the
@@ -26,7 +30,18 @@ export default {
    */
   connect() {
     return new Promise((resolve, reject) => {
-      document.dispatchEvent(new CustomEvent('open-caldav-connector-settings-drawer'));
+      // The drawer must know WHICH declared server this connector fronts:
+      // the URL to probe the typed credentials against, and the registration
+      // id to store beside them. A legacy (property-configured) connector
+      // carries neither, and the drawer falls back to the resolved settings
+      // URL exactly as before.
+      document.dispatchEvent(new CustomEvent('open-caldav-connector-settings-drawer', {
+        detail: {
+          serverId: this.serverId || null,
+          serverUrl: this.serverUrl || null,
+          name: this.name,
+        },
+      }));
       document.addEventListener('test-connection', (settings) => {
         if (settings.detail) {
           resolve(settings.detail.username);
@@ -169,16 +184,35 @@ export default {
    * never renamed afterwards: the href is the identity of the collection, so
    * the user remains free to rename it from any of their own clients.
    *
-   * MKCALENDAR is not universally permitted. A refusal surfaces as an error
-   * flagged calendarCreationRefused, so the caller can fall back to letting
-   * the user pick an existing calendar at connect time rather than fail at
-   * first push.
+   * Success means the server lists the calendar, not that MKCALENDAR failed
+   * to complain: the collection is re-fetched after the request and only its
+   * presence saves the href and reports success. MKCALENDAR is atomic (RFC
+   * 4791), so a server rejecting any single property answers 207 and creates
+   * nothing — and a 207 is a 2xx, which the previous check read as success,
+   * telling the user a calendar existed that did not. When the rejected
+   * property can only be the colour or the description — decoration, not
+   * identity — the request is retried with the display name alone: a mirror
+   * calendar with the wrong colour is worth far more than no calendar.
+   *
+   * MKCALENDAR is not universally permitted. When the server refuses, the
+   * account's first calendar — the very one pushing targeted while no mirror
+   * href was stored — is adopted as the destination instead: its href is
+   * stored, so the settings can name the calendar genuinely receiving the
+   * copies and the push switch has a destination to latch on, and the
+   * outcome is reported with `adopted` so the caller explains it rather
+   * than announcing a created calendar. Left implicit, the destination
+   * resolved nothing: the settings had no name to show, refused to store the
+   * setting, and pushing never happened. Only an account holding no calendar
+   * at all still surfaces an error flagged calendarCreationRefused — the
+   * copies then genuinely have nowhere to go.
    *
    * @param {Object} calendarToCreate description of the wanted calendar
    * @param {String} calendarToCreate.name display name, from the platform branding
    * @param {String} calendarToCreate.color `#RRGGBB` colour, from the platform branding
    * @param {String} calendarToCreate.description explains the calendar in the user's own client
-   * @returns {Promise<Object>} `{id}` where id is the href of the created collection
+   * @returns {Promise<Object>} `{id}` where id is the href of the destination
+   *          collection; `{id, adopted, name}` when an existing calendar was
+   *          adopted because the server refused to create one
    */
   async createCalendar({name, color, description}) {
     const settings = await caldavConnectorService.getCaldavSetting();
@@ -208,41 +242,69 @@ export default {
       await caldavConnectorService.saveMirrorCalendarHref(existing.url);
       return {id: existing.url};
     }
-    const props = {
+    const minimalProps = {
       [`${tsdav.DAVNamespaceShort.DAV}:displayname`]: name,
     };
+    const props = {...minimalProps};
     if (description) {
       props[`${tsdav.DAVNamespaceShort.CALDAV}:calendar-description`] = description;
     }
     if (color) {
       props[`${tsdav.DAVNamespaceShort.CALDAV_APPLE}:calendar-color`] = color;
     }
-    const responses = await clientCaldav.makeCalendar({
+    let responses = await clientCaldav.makeCalendar({
       url,
       props,
       headersToExclude: ['If-None-Match'],
     });
-    const refusal = (responses || []).find(response => response && response.ok === false);
-    if (refusal) {
-      // 405 on MKCALENDAR means a collection already sits at that URL. Since
-      // the URL is derived from the name, that collection is the one being
-      // asked for: adopt it rather than report a failure the user cannot act
-      // on. Any other status is a genuine refusal.
-      if (refusal.status === 405) {
-        const created = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
-        const adopted = findMirrorCalendar(created, null, url, name);
-        if (adopted) {
-          await caldavConnectorService.saveMirrorCalendarHref(adopted.url);
-          return {id: adopted.url};
-        }
-      }
-      const error = new Error(`MKCALENDAR refused by the server with status ${refusal.status}`);
-      error.calendarCreationRefused = true;
-      error.status = refusal.status;
-      throw error;
+    let refusal = mkCalendarRefusal(responses);
+    // Whatever MKCALENDAR answered, only the server's own listing proves the
+    // calendar exists. This also adopts naturally on a 405, which means a
+    // collection already sits at that URL — and the URL being derived from
+    // the name, that collection is the one being asked for.
+    let mirror = await confirmMirrorCalendar(clientCaldav, url, name);
+    if (!mirror && (description || color)) {
+      // The full request could not be confirmed and it carried optional
+      // properties — the only ones a server may legitimately balk at. Ask
+      // again for the identity alone: MKCALENDAR being atomic, the first
+      // attempt created nothing, so this is not a duplicate.
+      responses = await clientCaldav.makeCalendar({
+        url,
+        props: minimalProps,
+        headersToExclude: ['If-None-Match'],
+      });
+      refusal = mkCalendarRefusal(responses) || refusal;
+      mirror = await confirmMirrorCalendar(clientCaldav, url, name);
     }
-    await caldavConnectorService.saveMirrorCalendarHref(url);
-    return {id: url};
+    if (mirror) {
+      await caldavConnectorService.saveMirrorCalendarHref(mirror.url);
+      return {id: mirror.url};
+    }
+    // Not on the server, even after the minimal attempt: the calendar was
+    // not created, whatever the responses claimed, and saying otherwise is
+    // the lie this check exists to prevent. Rather than leaving the
+    // destination implicit — with no stored href every push targeted the
+    // first calendar the account lists, but the settings could name no
+    // destination, so the copy switch never latched and nothing was ever
+    // pushed — that same first calendar is adopted openly: its href is
+    // stored and its name reported, so the user is told which calendar
+    // receives the copies and pushing actually starts. The copies written
+    // there are recognised on read-back by the UID agenda stored at push
+    // time and filtered from the display, so nothing shows twice.
+    const status = refusal && refusal.status;
+    const fallbackCalendar = calendars.length && calendars[0] || null;
+    if (fallbackCalendar) {
+      await caldavConnectorService.saveMirrorCalendarHref(fallbackCalendar.url);
+      return {id: fallbackCalendar.url, adopted: true, name: calendarName(fallbackCalendar)};
+    }
+    // Nothing to adopt either: the account holds no calendar at all, so the
+    // copies genuinely have nowhere to go.
+    const error = new Error(status
+      ? `MKCALENDAR refused by the server with status ${status}, and the account holds no calendar to adopt`
+      : 'MKCALENDAR reported no failure, but the server does not list the calendar, and the account holds no calendar to adopt');
+    error.calendarCreationRefused = true;
+    error.status = status;
+    throw error;
   },
   /**
    * Points the mirror at an existing calendar of the connected account
@@ -265,6 +327,23 @@ export default {
    */
   getMirrorCalendarId() {
     return caldavConnectorService.getCaldavSetting().then(settings => settings.mirrorCalendarHref || null);
+  },
+  /**
+   * Whether a mirror href designates a calendar eXo created to hold the
+   * copies, as opposed to an existing calendar of the user adopted when the
+   * server refused MKCALENDAR. The two must not be treated alike by UIs: a
+   * dedicated mirror holds nothing but copies of meetings the agenda already
+   * shows, so calendar lists leave it out — while an adopted calendar is one
+   * the user keeps for themselves, and hiding it would make a calendar they
+   * rely on quietly disappear. Judged on the collection path eXo controls,
+   * the same signal recoverMirrorCalendar trusts, so a rename in the user's
+   * own client never flips the answer.
+   *
+   * @param {String} href the mirror calendar href
+   * @returns {Boolean} true when the href is an eXo-created mirror collection
+   */
+  isDedicatedMirrorCalendar(href) {
+    return isMirrorCollection(href);
   },
   /**
    * The calendar every push and remote deletion must target: the stored
@@ -540,7 +619,7 @@ export default {
           },
         });
       }
-      ensureAccepted(response);
+      await ensureAccepted(response);
       return null;
     } catch (e) {
       console.error('Error deleting from CalDAV:', e);
@@ -624,7 +703,7 @@ export default {
           calendar, iCalString, filename
         });
       }
-      ensureAccepted(response);
+      await ensureAccepted(response);
       return {id: icalUID};
     } catch (e) {
       console.error('Error creating/updating CalDAV:', e, 'iCalString:', iCalString);
@@ -632,6 +711,64 @@ export default {
     }
   }
 };
+
+export default caldavConnector;
+
+
+/**
+ * Builds one agenda connector descriptor for one declared CalDAV server: the
+ * base descriptor above, closed over the server's provider name, registration
+ * id and URL. The provider name is the descriptor's identity — it is what
+ * agenda's enabled-check and connected-provider binding key on — so every
+ * declared server becomes a full connector with zero agenda backend change.
+ *
+ * @param {Object} server a declared server {id, providerName, name, description, serverUrl}
+ * @param {Number} index position of the server in the declared list, keeps ranks distinct
+ * @returns {Object} the connector descriptor to register under agenda/connectors
+ */
+export function createCaldavConnector(server, index) {
+  return Object.assign({}, caldavConnector, {
+    name: server.providerName,
+    description: `${server.providerName}.description`,
+    serverId: server.id,
+    serverUrl: server.serverUrl,
+    // The visual identity, in the admin's order of precedence: the uploaded
+    // image, else the font icon chosen in admin, else the packaged CalDAV
+    // default. `avatar` stays an image URL for every consumer that renders
+    // an <img> (toolbar badge, timeline); `icon`+`imageUrl` let the connect
+    // drawer render the font icon when that is what the admin configured, so
+    // the drawer and the admin list show the same identity.
+    avatar: server.imageUrl || caldavConnector.avatar,
+    icon: server.icon || null,
+    imageUrl: server.imageUrl || null,
+    rank: caldavConnector.rank + (index || 0),
+  });
+}
+
+/**
+ * The host a declared server points at, for the connect drawer's secondary
+ * line when the administrator typed no description: with several CalDAV
+ * servers sharing one icon, the host is the one piece of always-present data
+ * that genuinely tells two of them apart. The full URL would drag its path —
+ * often holding the raw `{username}` placeholder — into the UI; the host
+ * never does.
+ *
+ * @param {String} serverUrl the configured base URL of the server
+ * @returns {String} the host (with its port when one is set), or the trimmed
+ *          input when it does not parse as a URL, or an empty string
+ */
+export function serverHost(serverUrl) {
+  if (!serverUrl) {
+    return '';
+  }
+  try {
+    return new URL(serverUrl).host;
+  } catch (e) {
+    // not a parseable URL (relative path, bare host...): keep what identifies
+    // it best — everything up to the first slash after an optional scheme
+    return serverUrl.trim().replace(/^[a-z]+:\/\//i, '').split('/')[0];
+  }
+}
 
 /**
  * The whole iCalendar object for one event, ready to be pushed.
@@ -662,6 +799,7 @@ DTSTAMP:${dtStamp}
   ics += scheduleLines(event, vTimeZone, timeZoneId);
   ics += describeLines(event);
   ics += stampLines(event);
+  ics += organizerLines(event);
   // CONFIRMED for every event pushed, deliberately, rather than a mapping of
   // the agenda status: eXo spells a date poll TENTATIVE, which in RFC 5545
   // means "provisionally scheduled" — a poll pushed with its own word would
@@ -768,6 +906,88 @@ function stampLines(event) {
     ics += `LAST-MODIFIED:${lastModified}\n`;
   }
   return ics;
+}
+
+/**
+ * The scheduling identities of the copy: who called the meeting, and who is
+ * expected in it. Added for servers whose model treats an organizer as part
+ * of an event's identity — BlueMind tends to fail such a PUT server-side
+ * rather than answer a clean 4xx — and written truthfully rather than
+ * expediently: ORGANIZER is the eXo event's organizer, `event.creator`,
+ * never the connected CalDAV account. For a meeting the user merely
+ * accepted, naming the account owner would put a subtly false event in
+ * their calendar, and their own client could then offer to send invitations
+ * on their behalf for a meeting somebody else called.
+ *
+ * The organizer's address comes from the creator's profile as agenda already
+ * ships it with the event, and profile visibility can withhold it. An
+ * address is never invented — RFC 5545 makes the value a CAL-ADDRESS, and a
+ * fabricated one would be forwarded as a reply-to by any client acting on
+ * the copy — so when none is visible the properties are omitted entirely,
+ * ATTENDEE included: RFC 5545 section 3.8.4.1 defines ATTENDEE only in
+ * group-scheduled components, which the ORGANIZER property is what marks.
+ *
+ * Every ATTENDEE carries SCHEDULE-AGENT=CLIENT, and so does ORGANIZER when
+ * the pushing user is not the organizer (the parameter belongs on ORGANIZER
+ * precisely in an attendee's copy, RFC 6638 section 7.1): the copy mirrors
+ * scheduling that already happened in eXo, and without the parameter a
+ * scheduling-aware server would take the PUT as an instruction to run that
+ * scheduling itself — mailing invitations to every attendee, or a reply to
+ * the organizer.
+ *
+ * Attendees without a visible address — spaces, and users whose profile
+ * hides their email — are left off the copy for the same no-invented-address
+ * reason; the roster on the phone may therefore be shorter than the one in
+ * eXo, which the URL property already links to in full.
+ *
+ * @param {Object} event agenda event being pushed
+ * @returns {String} the ORGANIZER and ATTENDEE lines, or an empty string
+ */
+function organizerLines(event) {
+  const organizerEmail = event.creator?.profile?.email;
+  if (!organizerEmail) {
+    return '';
+  }
+  const currentUserIdentityId = window.eXo?.env?.portal?.userIdentityId;
+  const pusherIsOrganizer = !!currentUserIdentityId && String(event.creator.id) === String(currentUserIdentityId);
+  const organizerAgent = pusherIsOrganizer ? '' : ';SCHEDULE-AGENT=CLIENT';
+  let ics = `ORGANIZER${cnParam(event.creator.profile.fullname)}${organizerAgent}:mailto:${toUri(organizerEmail)}\n`;
+  (event.attendees || []).forEach(attendee => {
+    const profile = attendee?.identity?.profile;
+    if (!profile?.email) {
+      return;
+    }
+    ics += `ATTENDEE${cnParam(profile.fullname)};PARTSTAT=${partStat(attendee.response)};SCHEDULE-AGENT=CLIENT:mailto:${toUri(profile.email)}\n`;
+  });
+  return ics;
+}
+
+/**
+ * A CN parameter naming a calendar user, always as a quoted string so that a
+ * name holding a comma or a semicolon does not end the parameter (RFC 5545
+ * section 3.2). A double quote cannot appear inside a quoted string at all
+ * and is removed, as are line breaks, which would end the content line.
+ *
+ * @param {String} name display name of the calendar user, possibly absent
+ * @returns {String} the `;CN="..."` parameter, or an empty string
+ */
+function cnParam(name) {
+  const cleaned = typeof name === 'string' && name.replace(/["\r\n]/g, '').trim();
+  return cleaned && `;CN="${cleaned}"` || '';
+}
+
+/**
+ * The PARTSTAT token for an agenda attendee response. Agenda's own values are
+ * the RFC 5545 tokens already — NEEDS-ACTION, ACCEPTED, DECLINED, TENTATIVE —
+ * up to the underscore spelling the enum constant uses; anything else becomes
+ * NEEDS-ACTION, the RFC default, rather than an invalid token.
+ *
+ * @param {String} response the attendee's response as agenda holds it
+ * @returns {String} a valid PARTSTAT value
+ */
+function partStat(response) {
+  const token = String(response || '').toUpperCase().replace(/_/g, '-');
+  return ['ACCEPTED', 'DECLINED', 'TENTATIVE'].includes(token) && token || 'NEEDS-ACTION';
 }
 
 /**
@@ -907,16 +1127,44 @@ function caldavError(code, cause) {
  * otherwise count as a success while the server kept its own version.
  *
  * @param {Object} response fetch Response of a PUT or DELETE
- * @returns {void} nothing when the server accepted the write
+ * @returns {Promise} resolves when the server accepted the write
  * @throws {Error} caldav.error.conflict on 412, caldav.error.save otherwise
  */
-function ensureAccepted(response) {
+async function ensureAccepted(response) {
   if (response.status === 412) {
     throw caldavError('caldav.error.conflict', response);
   }
   if (!response.ok) {
-    throw caldavError('caldav.error.save', response);
+    throw await refusedByServer(response);
   }
+}
+
+/**
+ * Turns a refused request into an error that names itself: the status and the
+ * body the server answered with are read, logged, and carried on the error,
+ * instead of being discarded. The failure mode this ends: the connector
+ * reported `caldav.error.save` and threw away the one sentence in which the
+ * server said why — a BlueMind 500 then surfaced with nothing to diagnose it
+ * by, its body already unavailable by the time devtools was opened.
+ *
+ * Only the response is read, never the request: no credentials and no
+ * Authorization header can end up in the log.
+ *
+ * @param {Object} response fetch Response the server refused with
+ * @returns {Promise<Error>} the error to throw, carrying status and body
+ */
+async function refusedByServer(response) {
+  let body = '';
+  try {
+    body = await response.text();
+  } catch (e) {
+    body = `(the response body could not be read: ${e && e.message || e})`;
+  }
+  console.error('the CalDAV server refused the request:',
+    response.status, response.statusText || '', response.url || '', body);
+  const error = caldavError('caldav.error.save', response);
+  error.body = body;
+  return error;
 }
 
 /**
@@ -945,8 +1193,26 @@ async function fetchCalendarObject(calendar, filename, settings) {
   if (response.status === 404) {
     return null;
   }
+  // A server error on the existence probe is not an answer about the event,
+  // and it must not abort the push. BlueMind answers 500 — not 404 — for an
+  // .ics that is simply not there, so treating anything but 404 as fatal made
+  // every first push of an event fail before a single byte was written.
+  //
+  // Reporting "absent" here is safe rather than optimistic: the creating
+  // write keeps its If-None-Match: * precondition, so if the object did exist
+  // after all and only the read failed, the server answers 412 and the push
+  // surfaces as a conflict. The worst case is a refused write, never a
+  // silently overwritten one.
+  if (response.status >= 500) {
+    console.warn(
+      'the CalDAV server failed to say whether the event exists, treating it as new:',
+      response.status,
+      response.statusText,
+      url);
+    return null;
+  }
   if (!response.ok) {
-    throw caldavError('caldav.error.save', response);
+    throw await refusedByServer(response);
   }
   return {
     url: url,
@@ -1975,6 +2241,111 @@ function findMirrorCalendar(calendars, mirrorCalendarHref, url, name) {
   return mirrorCalendarHref && (calendars || []).find(calendar => isSameCollection(calendar.url, mirrorCalendarHref))
     || (calendars || []).find(calendar => isSameCollection(calendar.url, url))
     || (calendars || []).find(calendar => calendar.displayName && calendar.displayName === name);
+}
+
+/**
+ * The mirror calendar as the server itself lists it after an MKCALENDAR, or
+ * undefined when the listing does not carry it. This is the only statement
+ * of success `createCalendar` accepts: MKCALENDAR responses have been caught
+ * telling both possible lies — a 207 whose failed propstat means nothing was
+ * created still counts as 2xx, and an empty response array carries no
+ * refusal to find — so presence in a fresh listing is checked instead of
+ * absence of a failure.
+ *
+ * A listing that cannot be fetched is left to throw: the outcome is then
+ * genuinely unknown — the calendar may well exist — and claiming a refusal
+ * would be as untrue as claiming a success. The caller reports it as an
+ * error the user can retry, and the retry adopts whatever the first attempt
+ * did create.
+ *
+ * @param {Object} clientCaldav connected tsdav client
+ * @param {String} url the URL the mirror collection was requested at
+ * @param {String} name display name the mirror was requested with
+ * @returns {Promise<Object>} the listed mirror collection, or undefined
+ */
+async function confirmMirrorCalendar(clientCaldav, url, name) {
+  const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+  return findMirrorCalendar(calendars, null, url, name);
+}
+
+/**
+ * The refusal an MKCALENDAR answer carries, or null when the server plainly
+ * claimed success. Deliberately not `response.ok`: tsdav derives `ok` from
+ * the HTTP status, and 207 is a 2xx — yet MKCALENDAR is atomic (RFC 4791
+ * section 5.3.1), so a 207 reports at least one rejected property and a
+ * collection that was NOT created. The failed statuses live inside the
+ * multistatus body, at propstat level, which tsdav keeps only in `raw`; they
+ * are read from there. An empty or absent answer is a refusal too: it proves
+ * nothing, and what proves nothing must not pass for a success.
+ *
+ * @param {Array} responses what tsdav's makeCalendar resolved with
+ * @returns {Object} `{status}` describing the refusal, or null
+ */
+function mkCalendarRefusal(responses) {
+  const list = Array.isArray(responses) ? responses : responses && [responses] || [];
+  if (!list.length) {
+    return {status: null};
+  }
+  for (const response of list) {
+    if (!response || response.ok !== true) {
+      return {status: response && response.status};
+    }
+    const failed = failedStatusesIn(response.raw);
+    if (failed.length) {
+      // 424 Failed Dependency marks a property that failed only because
+      // another one did — the other one carries the actual reason
+      return {status: failed.find(code => code !== 424) || failed[0]};
+    }
+    if (response.status === 207) {
+      // a multistatus with no readable failure is still not the 201 a
+      // created collection answers with — never a claim of success
+      return {status: 207};
+    }
+  }
+  return null;
+}
+
+/**
+ * Every non-2xx HTTP status carried anywhere inside a parsed DAV response
+ * body. Walked recursively rather than addressed by path because servers
+ * shape MKCALENDAR failures differently — propstat elements under a
+ * DAV:multistatus, or under a CALDAV:mkcalendar-response — and tsdav parses
+ * whichever arrived into `raw` without normalising it.
+ *
+ * @param {Object} node parsed response body, or any node inside it
+ * @param {Array} found accumulator, for the recursion
+ * @returns {Array} the failed status codes found, possibly empty
+ */
+function failedStatusesIn(node, found = []) {
+  if (!node || typeof node !== 'object') {
+    return found;
+  }
+  Object.entries(node).forEach(([key, value]) => {
+    if (key === 'status') {
+      const code = httpStatusCode(value);
+      if (code && (code < 200 || code >= 300)) {
+        found.push(code);
+      }
+    } else if (typeof value === 'object') {
+      failedStatusesIn(value, found);
+    }
+  });
+  return found;
+}
+
+/**
+ * The numeric code of a DAV status element, which arrives as a status line
+ * ("HTTP/1.1 403 Forbidden") or occasionally as a bare number.
+ *
+ * @param {String|Number} status the status element's value
+ * @returns {Number} the HTTP status code, or null when there is none
+ */
+function httpStatusCode(status) {
+  if (typeof status === 'number') {
+    return status;
+  }
+  const match = /\b(\d{3})\b/.exec(typeof status === 'string' ? status : '');
+  return match ? Number.parseInt(match[1], 10) : null;
 }
 
 /**

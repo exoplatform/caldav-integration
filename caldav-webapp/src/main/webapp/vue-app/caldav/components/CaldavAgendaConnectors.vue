@@ -16,7 +16,10 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <v-app>
-    <caldav-settings-drawer ref="caldavSettingsDrawer" @display-alert="displayAlert" />
+    <caldav-settings-drawer
+      ref="caldavSettingsDrawer"
+      :server="server"
+      @display-alert="displayAlert" />
     <caldav-agenda-connectors-alert />
   </v-app>
 </template>
@@ -24,6 +27,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 
 export default {
+  props: {
+    /**
+     * The declared server the clicked connector fronts, or null for the
+     * legacy single-server connector.
+     */
+    server: {
+      type: Object,
+      default: () => null,
+    },
+  },
   mounted() {
     this.openCaldavDrawer();
   },

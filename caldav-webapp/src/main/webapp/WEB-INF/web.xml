@@ -1,11 +1,16 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 
+<!-- Aligned on email-connector's web.xml: servlet 3.1 WITHOUT
+     metadata-complete="true", because metadata-complete disables the
+     ServletContainerInitializer scanning SpringBootServletInitializer boots
+     through — with it, the Spring context of this WAR would silently never
+     start. The GateInServlet mapping is the other half of the same
+     alignment. -->
 <web-app
-        version="3.0"
-        metadata-complete="true"
-        xmlns="http://java.sun.com/xml/ns/javaee"
-        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-        xsi:schemaLocation="http://java.sun.com/xml/ns/javaee http://java.sun.com/xml/ns/javaee/web-app_3_0.xsd">
+  xmlns="http://xmlns.jcp.org/xml/ns/javaee"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://xmlns.jcp.org/xml/ns/javaee http://xmlns.jcp.org/xml/ns/javaee/web-app_3_1.xsd"
+  version="3.1">
 
   <display-name>caldav</display-name>
   <absolute-ordering />
@@ -17,11 +22,24 @@
   <filter>
     <filter-name>ResourceRequestFilter</filter-name>
     <filter-class>org.exoplatform.portal.application.ResourceRequestFilter</filter-class>
+    <async-supported>true</async-supported>
   </filter>
-
   <filter-mapping>
     <filter-name>ResourceRequestFilter</filter-name>
-    <url-pattern>/*</url-pattern>
+    <url-pattern>*.css</url-pattern>
+    <url-pattern>*.js</url-pattern>
+    <url-pattern>*.html</url-pattern>
+    <url-pattern>/skin/*</url-pattern>
+    <url-pattern>/images/*</url-pattern>
   </filter-mapping>
 
+  <servlet>
+    <servlet-name>GateInServlet</servlet-name>
+    <servlet-class>org.gatein.wci.api.GateInServlet</servlet-class>
+    <load-on-startup>0</load-on-startup>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>GateInServlet</servlet-name>
+    <url-pattern>/gateinservlet</url-pattern>
+  </servlet-mapping>
 </web-app>
