@@ -17,11 +17,21 @@
 import CaldavAgendaConnectors from './components/CaldavAgendaConnectors.vue';
 import CaldavAgendaConnectorsAlert from './components/CaldavAgendaConnectorsAlert.vue';
 import CaldavSettingsDrawer from './components/CaldavSettingsDrawer.vue';
+import CaldavAdminServersSection from './components/admin/CaldavAdminServersSection.vue';
+import CaldavAdminServerList from './components/admin/CaldavAdminServerList.vue';
+import CaldavAdminServerDrawer from './components/admin/CaldavAdminServerDrawer.vue';
+import CaldavAdminServerImageInput from './components/admin/CaldavAdminServerImageInput.vue';
+import CaldavServerIcon from './components/admin/CaldavServerIcon.vue';
 
 const components = {
   'caldav-settings-drawer': CaldavSettingsDrawer,
   'caldav-agenda-connectors': CaldavAgendaConnectors,
-  'caldav-agenda-connectors-alert': CaldavAgendaConnectorsAlert
+  'caldav-agenda-connectors-alert': CaldavAgendaConnectorsAlert,
+  'caldav-admin-servers-section': CaldavAdminServersSection,
+  'caldav-admin-server-list': CaldavAdminServerList,
+  'caldav-admin-server-drawer': CaldavAdminServerDrawer,
+  'caldav-admin-server-image-input': CaldavAdminServerImageInput,
+  'caldav-server-icon': CaldavServerIcon
 };
 
 for (const key in components) {

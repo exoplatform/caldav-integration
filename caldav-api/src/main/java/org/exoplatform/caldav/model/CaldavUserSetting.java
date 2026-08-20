@@ -38,4 +38,12 @@ public class CaldavUserSetting {
    * from any CalDAV client, which a display name would not.
    */
   private String  mirrorCalendarHref;
+
+  /**
+   * Identifier of the CalDAV server registration this account is connected
+   * to, when the deployment declares several servers. Null for accounts
+   * connected before registrations existed: those keep resolving their URL
+   * through the seed registration, then the legacy configuration property.
+   */
+  private Long    serverId;
 }
