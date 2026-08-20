@@ -391,8 +391,23 @@ const caldavConnector = {
     return calendars[0];
   },
   async retrieveEvents(settings, periodStartDate, periodEndDate) {
-    const start = caldavConnectorService.toRFC3339(periodStartDate, false, true);
-    const end = caldavConnectorService.toRFC3339(periodEndDate, false, true);
+    // The window bounds, made safe before any request. The agenda's first
+    // remote read can fire from its connector watcher before the calendar
+    // has emitted a period: Agenda.vue starts with {start: new Date(),
+    // end: null} and the event-form calendar with {} — so a bound here may
+    // be null. Passed through, tsdav rejects the time range with "invalid
+    // timeRange format, not in ISO8601" for every collection and the agenda
+    // shows no remote event at all (observed live against BlueMind through
+    // the relay, 2026-08-20; latent before, when BlueMind never got past
+    // the connection). No usable start means no window to ask any server
+    // about — nothing is read. A missing end means "from the start
+    // onwards", bounded to one year past the start — the same default the
+    // agenda timeline widget applies to its own open-ended period.
+    const start = timeRangeBound(periodStartDate);
+    const end = timeRangeBound(periodEndDate) || oneYearAfter(start);
+    if (!start || !end) {
+      return [];
+    }
     const clientCaldav = await createClient(settings);
     // Every calendar of the account, not just the first the server happens to
     // enumerate. Each event is tagged with the collection it came from, which
@@ -1133,6 +1148,40 @@ async function createClient(settings) {
     console.error('cannot connect to the CalDAV server, check the URL and credentials', e);
     throw caldavError('caldav.error.connection', e);
   }
+}
+
+/**
+ * One bound of the read window, as an RFC 3339 timestamp a CalDAV
+ * time-range filter accepts — or null when the value does not designate an
+ * instant. toRFC3339 answers null for an absent input, and formats an
+ * Invalid Date into a "NaN-NaN-NaN…" string; both would be sent to the
+ * server as-is and rejected by tsdav's own validation before any request,
+ * so a bound that does not parse back into a real date is reported as
+ * missing instead.
+ *
+ * @param {Date|String|Number} date one end of the requested period, possibly absent
+ * @returns {String} the RFC 3339 timestamp, or null when there is no usable instant
+ */
+function timeRangeBound(date) {
+  const bound = caldavConnectorService.toRFC3339(date, false, true);
+  return bound && !Number.isNaN(new Date(bound).getTime()) ? bound : null;
+}
+
+/**
+ * The default far end of an open-ended read window: one year past its
+ * start, matching what the agenda timeline widget applies to its own
+ * period when the end is not set.
+ *
+ * @param {String} start RFC 3339 timestamp of the window's start, or null
+ * @returns {String} the RFC 3339 timestamp one year later, or null without a start
+ */
+function oneYearAfter(start) {
+  if (!start) {
+    return null;
+  }
+  const end = new Date(start);
+  end.setFullYear(end.getFullYear() + 1);
+  return timeRangeBound(end);
 }
 
 /**
