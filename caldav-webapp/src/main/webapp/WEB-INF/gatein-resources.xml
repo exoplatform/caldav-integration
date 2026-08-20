@@ -22,5 +22,8 @@
       <depends>
         <module>commonVueComponents</module>
       </depends>
+      <depends>
+        <module>fontIcons</module>
+      </depends>
   </module>
 </gatein-resources>

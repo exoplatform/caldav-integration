@@ -26,4 +26,25 @@
     <key>org.exoplatform.caldav.service.CaldavConnectorService</key>
     <type>org.exoplatform.caldav.service.CaldavConnectorServiceImpl</type>
   </component>
+
+  <!-- FileService namespace the uploaded server images are written under.
+       Without it, writeFile NPEs on an unknown namespace: the FileService
+       only accepts writes into declared namespaces, and declaring one is a
+       kernel plugin — email-connector's EmailConnectorNameSpacePlugin is the
+       model this copies. -->
+  <external-component-plugins>
+    <target-component>org.exoplatform.commons.file.services.NameSpaceService</target-component>
+    <component-plugin>
+      <name>CaldavServerNameSpacePlugin</name>
+      <set-method>addNameSpacePlugin</set-method>
+      <type>org.exoplatform.commons.file.services.NameSpacePlugin</type>
+      <init-params>
+        <properties-param>
+          <name>fileNameSpace.params</name>
+          <property name="name" value="caldavServer" />
+          <property name="description" value="caldav server images" />
+        </properties-param>
+      </init-params>
+    </component-plugin>
+  </external-component-plugins>
 </configuration>

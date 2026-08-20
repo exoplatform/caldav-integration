@@ -33,6 +33,126 @@ export const createCaldavSetting = (caldavSettings) => {
   });
 };
 
+/**
+ * The declared CalDAV servers — the credential-free registry rows any
+ * authenticated user may read, since the browser itself needs the names and
+ * URLs to offer the connectors.
+ *
+ * @returns {Promise<Array>} every declared server
+ */
+export const getCaldavServers = () => {
+  return fetch('/caldav/rest/servers', {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    } else {
+      return resp.json();
+    }
+  });
+};
+
+/**
+ * Declares a new CalDAV server (administrators only).
+ *
+ * @param {Object} server the registration to create {name, description, serverUrl, active}
+ * @returns {Promise<Object>} the created registration, carrying its id and provider name
+ */
+export const createCaldavServer = (server) => {
+  return fetch('/caldav/rest/servers', {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify(server),
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    } else {
+      return resp.json();
+    }
+  });
+};
+
+/**
+ * Updates a declared CalDAV server (administrators only).
+ *
+ * @param {Object} server the registration to update, carrying its id
+ * @returns {Promise<Object>} the updated registration
+ */
+export const updateCaldavServer = (server) => {
+  return fetch(`/caldav/rest/servers/${server.id}`, {
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    credentials: 'include',
+    method: 'PUT',
+    body: JSON.stringify(server),
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    } else {
+      return resp.json();
+    }
+  });
+};
+
+/**
+ * Activates or deactivates a declared CalDAV server (administrators only).
+ *
+ * @param {Number} serverId technical identifier of the registration
+ * @param {Boolean} active whether users may connect to this server
+ * @returns {Promise<Object>} the updated registration
+ */
+export const setCaldavServerStatus = (serverId, active) => {
+  return fetch(`/caldav/rest/servers/${serverId}/status?active=${active}`, {
+    credentials: 'include',
+    method: 'PATCH',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    } else {
+      return resp.json();
+    }
+  });
+};
+
+/**
+ * Deletes a declared CalDAV server (administrators only). A 409 means
+ * connected accounts still reference it: the rejection carries `status` 409
+ * and `referenceCount` parsed from the server's message code
+ * (caldav.server.referenced:<count>), so the UI can explain rather than
+ * merely fail.
+ *
+ * @param {Number} serverId technical identifier of the registration
+ * @returns {Promise} resolves when deleted, rejects with {status, referenceCount}
+ */
+export const deleteCaldavServer = (serverId) => {
+  return fetch(`/caldav/rest/servers/${serverId}`, {
+    credentials: 'include',
+    method: 'DELETE',
+  }).then(resp => {
+    if (resp && resp.ok) {
+      return;
+    }
+    const error = new Error('Response code indicates a server error');
+    error.status = resp && resp.status;
+    if (error.status === 409) {
+      return resp.json().then(body => {
+        const message = body && body.message || '';
+        const count = message.split(':')[1];
+        error.referenceCount = count && parseInt(count) || null;
+        throw error;
+      }, () => {
+        throw error;
+      });
+    }
+    throw error;
+  });
+};
+
 export const getCaldavSetting = () => {
   return fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/v1/caldav`, {
     credentials: 'include',
@@ -115,9 +235,22 @@ export const probeCaldavAccount = (caldavUrl, username, password) => {
       throw caldavError('caldav.error.notCaldav', response.status);
     }
   }, () => {
-    // fetch itself rejected: nothing answered at all (connection refused,
-    // unknown host, network down) — distinct from a server that answered no.
-    throw caldavError('caldav.error.connection');
+    // fetch itself rejected. Two very different situations look identical
+    // here — the browser reports a blocked cross-origin request (a CalDAV
+    // server sending no CORS headers, like BlueMind) with the same opaque
+    // TypeError as a host that never answered. They are told apart with a
+    // second, no-cors GET: it needs no CORS permission, so if IT resolves the
+    // host is alive and the first failure was the browser refusing the
+    // cross-origin DAV request — something the administrator fixes by putting
+    // the server behind the portal's own origin, not by checking cables.
+    return fetch(caldavUrl.replace('{username}', username), {
+      method: 'GET',
+      mode: 'no-cors',
+    }).then(() => {
+      throw caldavError('caldav.error.cors');
+    }, () => {
+      throw caldavError('caldav.error.connection');
+    });
   });
 };
 
