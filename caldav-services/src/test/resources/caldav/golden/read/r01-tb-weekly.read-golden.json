@@ -1,0 +1,125 @@
+{
+  "provenance": {
+    "kind": "captured",
+    "capturedFrom": "caldavConnector.js @ cd78b8b, driven unmodified through dev/golden-capture/capture-goldens.mjs",
+    "server": "Stalwart v0.16 dev rig (docker stalwart-dev behind caldav-test-proxy nginx), http://localhost:8090/dav/",
+    "capturedOn": "2026-08-20",
+    "runtimeZone": "Europe/Paris",
+    "input": "caldav/golden/read/objects/r01-thunderbird-weekly-paris.ics",
+    "steps": [
+      "raw PUT of the object into a scratch collection",
+      "retrieveEvents(settings, '2026-10-01T00:00:00', '2026-11-30T23:59:59') with TZ=Europe/Paris",
+      "output filtered to the scratch collection; etag/url/calendarId/color dropped (run- and position-dependent); Date values as ISO instants; sorted by uid+start"
+    ]
+  },
+  "events": [
+    {
+      "uid": "r01-tb-weekly@example.test",
+      "id": "r01-tb-weekly@example.test",
+      "recurringEventId": "r01-tb-weekly@example.test",
+      "summary": "Point hebdo équipe — préparation du budget",
+      "location": "Salle A",
+      "description": "Revue des chiffres, préparation du budget 2027 ; merci d'apporter vos estimations consolidées avant la réunion.",
+      "allDay": false,
+      "start": "2026-10-05T07:00:00.000Z",
+      "end": "2026-10-05T08:00:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r01-tb-weekly@example.test",
+      "id": "r01-tb-weekly@example.test",
+      "recurringEventId": "r01-tb-weekly@example.test",
+      "summary": "Point hebdo équipe — préparation du budget",
+      "location": "Salle A",
+      "description": "Revue des chiffres, préparation du budget 2027 ; merci d'apporter vos estimations consolidées avant la réunion.",
+      "allDay": false,
+      "start": "2026-10-12T07:00:00.000Z",
+      "end": "2026-10-12T08:00:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r01-tb-weekly@example.test",
+      "id": "r01-tb-weekly@example.test",
+      "recurringEventId": "r01-tb-weekly@example.test",
+      "summary": "Point hebdo équipe — préparation du budget",
+      "location": "Salle A",
+      "description": "Revue des chiffres, préparation du budget 2027 ; merci d'apporter vos estimations consolidées avant la réunion.",
+      "allDay": false,
+      "start": "2026-10-19T07:00:00.000Z",
+      "end": "2026-10-19T08:00:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r01-tb-weekly@example.test",
+      "id": "r01-tb-weekly@example.test",
+      "recurringEventId": "r01-tb-weekly@example.test",
+      "summary": "Point hebdo équipe — préparation du budget",
+      "location": "Salle A",
+      "description": "Revue des chiffres, préparation du budget 2027 ; merci d'apporter vos estimations consolidées avant la réunion.",
+      "allDay": false,
+      "start": "2026-10-26T08:00:00.000Z",
+      "end": "2026-10-26T09:00:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r01-tb-weekly@example.test",
+      "id": "r01-tb-weekly@example.test",
+      "recurringEventId": "r01-tb-weekly@example.test",
+      "summary": "Point hebdo équipe — préparation du budget",
+      "location": "Salle A",
+      "description": "Revue des chiffres, préparation du budget 2027 ; merci d'apporter vos estimations consolidées avant la réunion.",
+      "allDay": false,
+      "start": "2026-11-02T08:00:00.000Z",
+      "end": "2026-11-02T09:00:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r01-tb-weekly@example.test",
+      "id": "r01-tb-weekly@example.test",
+      "recurringEventId": "r01-tb-weekly@example.test",
+      "summary": "Point hebdo équipe — préparation du budget",
+      "location": "Salle A",
+      "description": "Revue des chiffres, préparation du budget 2027 ; merci d'apporter vos estimations consolidées avant la réunion.",
+      "allDay": false,
+      "start": "2026-11-09T08:00:00.000Z",
+      "end": "2026-11-09T09:00:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r01-tb-weekly@example.test",
+      "id": "r01-tb-weekly@example.test",
+      "recurringEventId": "r01-tb-weekly@example.test",
+      "summary": "Point hebdo équipe — préparation du budget",
+      "location": "Salle A",
+      "description": "Revue des chiffres, préparation du budget 2027 ; merci d'apporter vos estimations consolidées avant la réunion.",
+      "allDay": false,
+      "start": "2026-11-16T08:00:00.000Z",
+      "end": "2026-11-16T09:00:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r01-tb-weekly@example.test",
+      "id": "r01-tb-weekly@example.test",
+      "recurringEventId": "r01-tb-weekly@example.test",
+      "summary": "Point hebdo équipe — préparation du budget",
+      "location": "Salle A",
+      "description": "Revue des chiffres, préparation du budget 2027 ; merci d'apporter vos estimations consolidées avant la réunion.",
+      "allDay": false,
+      "start": "2026-11-23T08:00:00.000Z",
+      "end": "2026-11-23T09:00:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r01-tb-weekly@example.test",
+      "id": "r01-tb-weekly@example.test",
+      "recurringEventId": "r01-tb-weekly@example.test",
+      "summary": "Point hebdo équipe — préparation du budget",
+      "location": "Salle A",
+      "description": "Revue des chiffres, préparation du budget 2027 ; merci d'apporter vos estimations consolidées avant la réunion.",
+      "allDay": false,
+      "start": "2026-11-30T08:00:00.000Z",
+      "end": "2026-11-30T09:00:00.000Z",
+      "type": "remoteEvent"
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CAPTURED live on 2026-08-20 against the Stalwart v0.16 dev rig
+  (docker stalwart-dev behind caldav-test-proxy, http://localhost:8090/dav/):
+  the CALDAV:calendar-query REPORT with a CALDAV:expand element — the request
+  shape tsdav fetchCalendarObjects({expand: true, timeRange}) sends, i.e. what
+  the browser connector reads events through today. The object queried is the
+  reconstructed caldav/golden/read/objects/r01-thunderbird-weekly-paris.ics
+  (TZID-anchored weekly series spanning the October DST transition).
+  HTTP status was 207. Load-bearing observation: Stalwart honours expand and
+  answers server-expanded calendar-data — one VEVENT per occurrence, times
+  rewritten to UTC, RRULE removed — so the browser read path parses the
+  server rendition, NOT the stored object. The read goldens pin that whole
+  behaviour; a server that ignores expand exercises the client-side
+  RecurExpansion branch instead (unproven for BlueMind, see the golden README).
+-->
+<D:multistatus xmlns:D="DAV:" xmlns:A="urn:ietf:params:xml:ns:caldav"><D:response><D:href>/dav/cal/alice%40stalwart.local/golden-probe-tmp/r01.ics</D:href><D:propstat><D:prop><D:getetag>&quot;1670527118&quot;</D:getetag><A:calendar-data><![CDATA[BEGIN:VCALENDAR
+PRODID:-//Mozilla.org/NONSGML Mozilla Calendar V1.1//EN
+VERSION:2.0
+BEGIN:VTIMEZONE
+TZID:Europe/Paris
+BEGIN:DAYLIGHT
+TZOFFSETFROM:+0100
+TZOFFSETTO:+0200
+TZNAME:CEST
+DTSTART:19700329T020000
+RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3
+END:DAYLIGHT
+BEGIN:STANDARD
+TZOFFSETFROM:+0200
+TZOFFSETTO:+0100
+TZNAME:CET
+DTSTART:19701025T030000
+RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+DTSTART:20261005T070000Z
+RECURRENCE-ID:20261005T070000Z
+DTEND:20261005T080000Z
+CREATED:20260901T091500Z
+LAST-MODIFIED:20260901T092012Z
+DTSTAMP:20260901T092012Z
+UID:r01-tb-weekly@example.test
+SUMMARY:Point hebdo équipe — préparation du budget
+DESCRIPTION:Revue des chiffres\, préparation du budget 2027 \; merci d'appo
+ rter vos estimations consolidées avant la réunion.
+LOCATION:Salle A
+TRANSP:OPAQUE
+X-MOZ-GENERATION:3
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20261012T070000Z
+RECURRENCE-ID:20261012T070000Z
+DTEND:20261012T080000Z
+CREATED:20260901T091500Z
+LAST-MODIFIED:20260901T092012Z
+DTSTAMP:20260901T092012Z
+UID:r01-tb-weekly@example.test
+SUMMARY:Point hebdo équipe — préparation du budget
+DESCRIPTION:Revue des chiffres\, préparation du budget 2027 \; merci d'appo
+ rter vos estimations consolidées avant la réunion.
+LOCATION:Salle A
+TRANSP:OPAQUE
+X-MOZ-GENERATION:3
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20261019T070000Z
+RECURRENCE-ID:20261019T070000Z
+DTEND:20261019T080000Z
+CREATED:20260901T091500Z
+LAST-MODIFIED:20260901T092012Z
+DTSTAMP:20260901T092012Z
+UID:r01-tb-weekly@example.test
+SUMMARY:Point hebdo équipe — préparation du budget
+DESCRIPTION:Revue des chiffres\, préparation du budget 2027 \; merci d'appo
+ rter vos estimations consolidées avant la réunion.
+LOCATION:Salle A
+TRANSP:OPAQUE
+X-MOZ-GENERATION:3
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20261026T080000Z
+RECURRENCE-ID:20261026T080000Z
+DTEND:20261026T090000Z
+CREATED:20260901T091500Z
+LAST-MODIFIED:20260901T092012Z
+DTSTAMP:20260901T092012Z
+UID:r01-tb-weekly@example.test
+SUMMARY:Point hebdo équipe — préparation du budget
+DESCRIPTION:Revue des chiffres\, préparation du budget 2027 \; merci d'appo
+ rter vos estimations consolidées avant la réunion.
+LOCATION:Salle A
+TRANSP:OPAQUE
+X-MOZ-GENERATION:3
+END:VEVENT
+END:VCALENDAR
+]]></A:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>

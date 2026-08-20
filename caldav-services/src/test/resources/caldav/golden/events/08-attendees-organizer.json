@@ -1,0 +1,66 @@
+{
+  "name": "08-attendees-organizer",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "Scheduling identities: ORGANIZER is the eXo organizer (not the pushing account) and carries SCHEDULE-AGENT=CLIENT because the pusher (identity 5) is not the organizer (identity 9); every ATTENDEE carries SCHEDULE-AGENT=CLIENT and a PARTSTAT mapped from the agenda response; a CN holding a comma is quoted; an attendee without a visible email is omitted entirely.",
+    "pins": "organizerLines/cnParam/partStat; the no-invented-CAL-ADDRESS rule"
+  },
+  "event": {
+    "id": 108,
+    "remoteId": "golden-08-attendees",
+    "summary": "Quarterly business review",
+    "start": "2026-09-24T12:00:00.000Z",
+    "end": "2026-09-24T13:30:00.000Z",
+    "allDay": false,
+    "timeZoneId": "Europe/Paris",
+    "creator": {
+      "id": "9",
+      "profile": {
+        "fullname": "Martin, Alice",
+        "email": "alice.martin@example.test"
+      }
+    },
+    "attendees": [
+      {
+        "identity": {
+          "id": "5",
+          "profile": {
+            "fullname": "John Doe",
+            "email": "john.doe@example.test"
+          }
+        },
+        "response": "ACCEPTED"
+      },
+      {
+        "identity": {
+          "id": "11",
+          "profile": {
+            "fullname": "Zoé Dupont",
+            "email": "zoe@example.test"
+          }
+        },
+        "response": "DECLINED"
+      },
+      {
+        "identity": {
+          "id": "12",
+          "profile": {
+            "fullname": "Marketing space"
+          }
+        },
+        "response": "NEEDS_ACTION"
+      },
+      {
+        "identity": {
+          "id": "13",
+          "profile": {
+            "fullname": "Sam Waverly",
+            "email": "sam@example.test"
+          }
+        },
+        "response": "TENTATIVE"
+      }
+    ]
+  }
+}

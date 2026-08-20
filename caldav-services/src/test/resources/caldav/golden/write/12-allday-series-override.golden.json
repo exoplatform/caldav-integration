@@ -1,0 +1,16 @@
+{
+  "provenance": {
+    "kind": "captured",
+    "capturedFrom": "caldavConnector.js @ cd78b8b, driven unmodified through dev/golden-capture/capture-goldens.mjs",
+    "server": "Stalwart v0.16 dev rig (docker stalwart-dev behind caldav-test-proxy nginx), http://localhost:8090/dav/",
+    "capturedOn": "2026-08-20",
+    "runtimeZone": "Europe/Paris",
+    "input": "caldav/golden/events/12-allday-series-override.json",
+    "steps": [
+      "saveEvent(event)"
+    ],
+    "invariant": "An all-day weekly series and an all-day modified occurrence: the master anchors on VALUE=DATE with no VTIMEZONE, and the override carries RECURRENCE-ID;VALUE=DATE — the all-day RECURRENCE-ID form, resolved to the calendar day in the event zone even though agenda identifies the occurrence by an instant."
+  },
+  "sent": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VEVENT\r\nSUMMARY:Daily log reminder\r\nUID:golden-12-allday-series\r\nDTSTAMP:20260820T191128Z\r\nDTSTART;VALUE=DATE:20260914\r\nDTEND;VALUE=DATE:20260915\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=112\r\nORGANIZER;CN=John Doe:mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nRRULE:FREQ=WEEKLY;BYDAY=MO,FR\r\nEND:VEVENT\r\nEND:VCALENDAR",
+  "ics": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VEVENT\r\nSUMMARY:Daily log reminder\r\nUID:golden-12-allday-series\r\nDTSTAMP:20260820T191128Z\r\nDTSTART;VALUE=DATE:20260914\r\nDTEND;VALUE=DATE:20260915\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=112\r\nORGANIZER;CN=\"John Doe\":mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nRRULE:FREQ=WEEKLY;BYDAY=MO,FR\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+}

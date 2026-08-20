@@ -1,0 +1,52 @@
+{
+  "name": "01-simple-timed",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "A single timed event is UTC-anchored: no VTIMEZONE, DTSTART/DTEND as instants with Z. A follow-up push of the same event goes through the read-merge-write path and must leave one master VEVENT, updated in place.",
+    "pins": "caldavConnector.js scheduleLines UTC branch; mergeIntoCalendarObject master replacement; normalizeIcs reconciling create and update into one document shape"
+  },
+  "event": {
+    "id": 101,
+    "remoteId": "golden-01-simple-timed",
+    "summary": "Weekly steering point",
+    "start": "2026-09-08T09:00:00.000Z",
+    "end": "2026-09-08T10:00:00.000Z",
+    "allDay": false,
+    "timeZoneId": "Europe/Paris",
+    "created": "2026-08-01T08:00:00.000Z",
+    "updated": "2026-08-02T09:30:00.000Z",
+    "creator": {
+      "id": "5",
+      "profile": {
+        "fullname": "John Doe",
+        "email": "john.doe@example.test"
+      }
+    }
+  },
+  "followUps": [
+    {
+      "suffix": "update",
+      "action": "save",
+      "event": {
+        "id": 101,
+        "remoteId": "golden-01-simple-timed",
+        "summary": "Weekly steering point (moved)",
+        "location": "Room 2B",
+        "start": "2026-09-08T10:00:00.000Z",
+        "end": "2026-09-08T11:00:00.000Z",
+        "allDay": false,
+        "timeZoneId": "Europe/Paris",
+        "created": "2026-08-01T08:00:00.000Z",
+        "updated": "2026-08-15T10:00:00.000Z",
+        "creator": {
+          "id": "5",
+          "profile": {
+            "fullname": "John Doe",
+            "email": "john.doe@example.test"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "name": "02-allday-single",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "A one-day all-day event: DTSTART;VALUE=DATE on the day, DTEND;VALUE=DATE on the NEXT day (RFC 5545 exclusive end). The input deliberately mixes shapes — start as a bare date string, end as an instant — the exact mix that once produced a zero-duration event.",
+    "pins": "toIcsEndDate +1 day at midday UTC; datePartsInZone resolving both value shapes through the event zone"
+  },
+  "event": {
+    "id": 102,
+    "remoteId": "golden-02-allday",
+    "summary": "Company holiday",
+    "start": "2026-09-10",
+    "end": "2026-09-10T00:00:00.000Z",
+    "allDay": true,
+    "timeZoneId": "Europe/Paris",
+    "creator": {
+      "id": "5",
+      "profile": {
+        "fullname": "John Doe",
+        "email": "john.doe@example.test"
+      }
+    }
+  }
+}

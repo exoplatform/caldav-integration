@@ -1,0 +1,16 @@
+{
+  "provenance": {
+    "kind": "captured",
+    "capturedFrom": "caldavConnector.js @ cd78b8b, driven unmodified through dev/golden-capture/capture-goldens.mjs",
+    "server": "Stalwart v0.16 dev rig (docker stalwart-dev behind caldav-test-proxy nginx), http://localhost:8090/dav/",
+    "capturedOn": "2026-08-20",
+    "runtimeZone": "Europe/Paris",
+    "input": "caldav/golden/events/10-conference-description.json",
+    "steps": [
+      "saveEvent(event)"
+    ],
+    "invariant": "Text handling: TEXT escaping of commas/semicolons in SUMMARY and LOCATION, HTML description reduced to plain text with paragraph breaks, non-ASCII throughout, a description long enough that the stored object must fold it; the conference URL appears BOTH inside DESCRIPTION and as a single-feature CONFERENCE;VALUE=URI;FEATURE=VIDEO property, with its commas and semicolons unescaped (URI, not TEXT); URL links back to the eXo event."
+  },
+  "sent": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VEVENT\r\nSUMMARY:Rétrospective\\; sprint 42\\, équipe cœur\r\nUID:golden-10-conference-desc\r\nDTSTAMP:20260820T191127Z\r\nDTSTART:20260917T140000Z\r\nDTEND:20260917T150000Z\r\nLOCATION:Salle « Turing »\\, 3e étage\\; bâtiment B\r\nDESCRIPTION:Ordre du jour :\\nVélocité & métriques\\nRétro — points d\r\n ’amélioration\\nMerci de préparer vos retours en amont \\; la séance es\r\n t limitée à 45 minutes\\, et nous voulons garder du temps pour les actions\r\n  concrètes décidées ensemble à la fin de la session.\\n\\nhttps://visio.e\r\n xample.test/room/42?pwd=abc\\,def\\;ghi\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=110\r\nCONFERENCE;FEATURE=VIDEO;VALUE=URI:https://visio.example.test/room/42?pwd=a\r\n bc,def;ghi\r\nORGANIZER;CN=John Doe:mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nEND:VEVENT\r\nEND:VCALENDAR",
+  "ics": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VEVENT\r\nSUMMARY:Rétrospective\\; sprint 42\\, équipe cœur\r\nUID:golden-10-conference-desc\r\nDTSTAMP:20260820T191127Z\r\nDTSTART:20260917T140000Z\r\nDTEND:20260917T150000Z\r\nLOCATION:Salle « Turing »\\, 3e étage\\; bâtiment B\r\nDESCRIPTION:Ordre du jour :\\nVélocité & métriques\\nRétro — points d\r\n ’amélioration\\nMerci de préparer vos retours en amont \\; la séance e\r\n st limitée à 45 minutes\\, et nous voulons garder du temps pour les actio\r\n ns concrètes décidées ensemble à la fin de la session.\\n\\nhttps://visi\r\n o.example.test/room/42?pwd=abc\\,def\\;ghi\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=110\r\nCONFERENCE;FEATURE=VIDEO;VALUE=URI:https://visio.example.test/room/42?pwd=ab\r\n c\\,def\\;ghi\r\nORGANIZER;CN=\"John Doe\":mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+}

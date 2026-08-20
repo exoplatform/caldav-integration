@@ -1,0 +1,113 @@
+{
+  "provenance": {
+    "kind": "captured",
+    "capturedFrom": "caldavConnector.js @ cd78b8b, driven unmodified through dev/golden-capture/capture-goldens.mjs",
+    "server": "Stalwart v0.16 dev rig (docker stalwart-dev behind caldav-test-proxy nginx), http://localhost:8090/dav/",
+    "capturedOn": "2026-08-20",
+    "runtimeZone": "Europe/Paris",
+    "input": "caldav/golden/write/06-dst-span.golden.json (round trip of the object the write capture stored, UID renamed)",
+    "steps": [
+      "raw PUT of the object into a scratch collection",
+      "retrieveEvents(settings, '2026-10-01T00:00:00', '2026-11-30T23:59:59') with TZ=Europe/Paris",
+      "output filtered to the scratch collection; etag/url/calendarId/color dropped (run- and position-dependent); Date values as ISO instants; sorted by uid+start"
+    ]
+  },
+  "events": [
+    {
+      "uid": "r05-roundtrip-dst-span",
+      "id": "r05-roundtrip-dst-span",
+      "recurringEventId": "r05-roundtrip-dst-span",
+      "summary": "Morning stand-up",
+      "location": null,
+      "description": null,
+      "allDay": false,
+      "start": "2026-10-12T07:00:00.000Z",
+      "end": "2026-10-12T07:15:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r05-roundtrip-dst-span",
+      "id": "r05-roundtrip-dst-span",
+      "recurringEventId": "r05-roundtrip-dst-span",
+      "summary": "Morning stand-up",
+      "location": null,
+      "description": null,
+      "allDay": false,
+      "start": "2026-10-19T07:00:00.000Z",
+      "end": "2026-10-19T07:15:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r05-roundtrip-dst-span",
+      "id": "r05-roundtrip-dst-span",
+      "recurringEventId": "r05-roundtrip-dst-span",
+      "summary": "Morning stand-up",
+      "location": null,
+      "description": null,
+      "allDay": false,
+      "start": "2026-10-26T08:00:00.000Z",
+      "end": "2026-10-26T08:15:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r05-roundtrip-dst-span",
+      "id": "r05-roundtrip-dst-span",
+      "recurringEventId": "r05-roundtrip-dst-span",
+      "summary": "Morning stand-up",
+      "location": null,
+      "description": null,
+      "allDay": false,
+      "start": "2026-11-02T08:00:00.000Z",
+      "end": "2026-11-02T08:15:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r05-roundtrip-dst-span",
+      "id": "r05-roundtrip-dst-span",
+      "recurringEventId": "r05-roundtrip-dst-span",
+      "summary": "Morning stand-up",
+      "location": null,
+      "description": null,
+      "allDay": false,
+      "start": "2026-11-09T08:00:00.000Z",
+      "end": "2026-11-09T08:15:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r05-roundtrip-dst-span",
+      "id": "r05-roundtrip-dst-span",
+      "recurringEventId": "r05-roundtrip-dst-span",
+      "summary": "Morning stand-up",
+      "location": null,
+      "description": null,
+      "allDay": false,
+      "start": "2026-11-16T08:00:00.000Z",
+      "end": "2026-11-16T08:15:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r05-roundtrip-dst-span",
+      "id": "r05-roundtrip-dst-span",
+      "recurringEventId": "r05-roundtrip-dst-span",
+      "summary": "Morning stand-up",
+      "location": null,
+      "description": null,
+      "allDay": false,
+      "start": "2026-11-23T08:00:00.000Z",
+      "end": "2026-11-23T08:15:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r05-roundtrip-dst-span",
+      "id": "r05-roundtrip-dst-span",
+      "recurringEventId": "r05-roundtrip-dst-span",
+      "summary": "Morning stand-up",
+      "location": null,
+      "description": null,
+      "allDay": false,
+      "start": "2026-11-30T08:00:00.000Z",
+      "end": "2026-11-30T08:15:00.000Z",
+      "type": "remoteEvent"
+    }
+  ]
+}

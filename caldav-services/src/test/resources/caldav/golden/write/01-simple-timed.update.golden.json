@@ -1,0 +1,16 @@
+{
+  "provenance": {
+    "kind": "captured",
+    "capturedFrom": "caldavConnector.js @ cd78b8b, driven unmodified through dev/golden-capture/capture-goldens.mjs",
+    "server": "Stalwart v0.16 dev rig (docker stalwart-dev behind caldav-test-proxy nginx), http://localhost:8090/dav/",
+    "capturedOn": "2026-08-20",
+    "runtimeZone": "Europe/Paris",
+    "input": "caldav/golden/events/01-simple-timed.json",
+    "steps": [
+      "state after follow-up \"update\" (save)"
+    ],
+    "invariant": "A single timed event is UTC-anchored: no VTIMEZONE, DTSTART/DTEND as instants with Z. A follow-up push of the same event goes through the read-merge-write path and must leave one master VEVENT, updated in place."
+  },
+  "sent": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VEVENT\r\nSUMMARY:Weekly steering point (moved)\r\nUID:golden-01-simple-timed\r\nDTSTAMP:20260820T191124Z\r\nDTSTART:20260908T100000Z\r\nDTEND:20260908T110000Z\r\nLOCATION:Room 2B\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=101\r\nCREATED:20260801T080000Z\r\nLAST-MODIFIED:20260815T100000Z\r\nORGANIZER;CN=John Doe:mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nEND:VEVENT\r\nEND:VCALENDAR",
+  "ics": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VEVENT\r\nSUMMARY:Weekly steering point (moved)\r\nUID:golden-01-simple-timed\r\nDTSTAMP:20260820T191124Z\r\nDTSTART:20260908T100000Z\r\nDTEND:20260908T110000Z\r\nLOCATION:Room 2B\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=101\r\nCREATED:20260801T080000Z\r\nLAST-MODIFIED:20260815T100000Z\r\nORGANIZER;CN=\"John Doe\":mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+}
