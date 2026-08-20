@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  RECONSTRUCTED, not a raw capture: the shape of the BlueMind MKCALENDAR
+  answer the browser connector documents at caldavConnector.js:2272-2306 —
+  a 207 whose failing propstat means NOTHING was created, yet whose HTTP
+  status counts as 2xx to a naive client. MKCALENDAR is atomic (RFC 4791
+  section 5.3.1): one rejected property means no collection. Verifying this
+  body against the live server needs credentials this session did not have;
+  PR0 (the golden-file harness) owes the raw authenticated capture.
+-->
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/dav/calendars/vevent/user-uid/exo-meetings/</D:href>
+    <D:propstat>
+      <D:prop><D:displayname/></D:prop>
+      <D:status>HTTP/1.1 403 Forbidden</D:status>
+    </D:propstat>
+    <D:propstat>
+      <D:prop><A:calendar-color xmlns:A="http://apple.com/ns/ical/"/></D:prop>
+      <D:status>HTTP/1.1 424 Failed Dependency</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>
