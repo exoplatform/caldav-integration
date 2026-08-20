@@ -72,7 +72,7 @@ capture() {
   local tmp_headers tmp_body status
   tmp_headers="$(mktemp)"
   tmp_body="$(mktemp)"
-  status=$(curl -sk -u "$LOGIN:$PASSWORD" -X "$method" -D "$tmp_headers" -o "$tmp_body" -w '%{http_code}' "$@" "$url" || echo 'unreachable')
+  status=$(curl -s --config <(printf 'user = "%s:%s"\n' "$LOGIN" "$PASSWORD") -X "$method" -D "$tmp_headers" -o "$tmp_body" -w '%{http_code}' "$@" "$url" || echo 'unreachable')
   {
     printf '# CAPTURED live on %s against BlueMind at %s\n' "$TODAY" "$(printf '%s' "$BASE_URL" | sed 's|https\?://\([^/]*\).*|\1|')"
     printf '# by dev/golden-capture/capture-bluemind.sh: %s %s\n' "$method" "$(printf '%s' "$url" | scrub)"
@@ -116,7 +116,7 @@ if [ "$CONFIRM" = 'y' ] || [ "$CONFIRM" = 'Y' ]; then
     '<?xml version="1.0" encoding="utf-8"?><C:mkcalendar xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:set><D:prop><D:displayname>eXo golden probe</D:displayname><C:calendar-description>Temporary probe collection, safe to delete</C:calendar-description></D:prop></D:set></C:mkcalendar>'
   if [ "$LAST_STATUS" = '201' ]; then
     echo '    The server actually created the collection; deleting the probe...'
-    curl -sk -u "$LOGIN:$PASSWORD" -X DELETE -o /dev/null -w '    DELETE answered %{http_code}\n' "$PROBE_URL"
+    curl -s --config <(printf 'user = "%s:%s"\n' "$LOGIN" "$PASSWORD") -X DELETE -o /dev/null -w '    DELETE answered %{http_code}\n' "$PROBE_URL"
   fi
 else
   echo '    Skipped on request; the reconstructed MKCALENDAR fixture of PR #38 stays the only record.'
