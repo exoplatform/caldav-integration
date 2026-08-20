@@ -121,8 +121,18 @@ public class CaldavRelayService {
    * them, so relaying them would be pure attack surface; the sync engine
    * that may need PROPPATCH later talks to servers directly, not through
    * this relay.
+   * <p>
+   * Public because it is the single source of truth two gates read: this
+   * service's own 405 refusal, and the webapp's Spring Security
+   * {@code StrictHttpFirewall}, whose allowed-method list is built as
+   * standard-HTTP ∪ this set (CaldavHttpFirewallConfiguration) — the
+   * firewall would otherwise reject every DAV verb as a 400 before the
+   * dispatcher ever saw it. Sharing the constant means a verb added here is
+   * automatically admitted by the firewall, and a verb only the firewall
+   * admits (the standard ones the admin REST needs) still meets this
+   * service's 405 on the relay path.
    */
-  private static final Set<String>  ALLOWED_METHODS              =
+  public static final Set<String>   ALLOWED_METHODS              =
                                                     Set.of("OPTIONS", "HEAD", "GET", "PROPFIND", "REPORT", "PUT", "DELETE",
                                                            "MKCALENDAR");
 
