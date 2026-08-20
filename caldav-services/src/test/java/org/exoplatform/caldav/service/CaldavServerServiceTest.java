@@ -18,7 +18,10 @@
  */
 package org.exoplatform.caldav.service;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -28,6 +31,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -41,10 +45,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
+import java.io.InputStream;
 import java.util.List;
 
 import org.exoplatform.caldav.model.CaldavServer;
@@ -53,6 +59,12 @@ import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.commons.file.model.FileItem;
+import org.exoplatform.commons.file.services.FileService;
+import org.exoplatform.container.ExoContainerContext;
+import org.exoplatform.container.PortalContainer;
+import org.exoplatform.container.RootContainer.PortalContainerInitTask;
+import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.security.Identity;
 
@@ -83,6 +95,12 @@ public class CaldavServerServiceTest {
 
   @Mock
   private SettingService           settingService;
+
+  @Mock
+  private FileService              fileService;
+
+  @Mock
+  private PortalContainer         portalContainer;
 
   @InjectMocks
   private CaldavServerService      caldavServerService;
@@ -464,6 +482,201 @@ public class CaldavServerServiceTest {
 
     when(caldavServerStorage.getServerByProviderName(CaldavServerService.CALDAV_PROVIDER_NAME)).thenReturn(null);
     assertNull(caldavServerService.resolveServerUrl(null));
+  }
+
+  /**
+   * The listing is handed through exactly as storage produced it — inactive
+   * rows included, because the admin table shows both states. A service that
+   * started filtering (say, hiding inactive rows) would silently empty the
+   * administration screen.
+   */
+  @Test
+  public void shouldListServersUnfiltered() {
+    List<CaldavServer> servers = List.of(server(1, "agenda.caldavCalendar", "Stalwart", null, SERVER_URL, true),
+                                         server(2, "agenda.caldavCalendar.2", "Bluemind", null, SERVER_URL, false));
+    when(caldavServerStorage.getServers()).thenReturn(servers);
+
+    assertEquals(servers, caldavServerService.getServers());
+  }
+
+  /**
+   * An administrator's update of an existing row is validated, stored, and
+   * bridged: the agenda remote provider is upserted under the row's UNCHANGED
+   * provider name, carrying the new activation — losing that upsert would
+   * leave users' connector lists reading a stale switch.
+   *
+   * @throws Exception never, the storage is mocked
+   */
+  @Test
+  public void shouldUpdateServerAndPropagateToAgenda() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer server = server(7, null, "Renamed", "New description", SERVER_URL, false);
+    CaldavServer updatedServer = server(7, "agenda.caldavCalendar.7", "Renamed", "New description", SERVER_URL, false);
+    when(caldavServerStorage.updateServer(server)).thenReturn(updatedServer);
+
+    CaldavServer result = caldavServerService.updateServer(server, ADMIN_USER);
+
+    assertEquals(updatedServer, result);
+    ArgumentCaptor<RemoteProvider> provider = ArgumentCaptor.forClass(RemoteProvider.class);
+    verify(agendaRemoteEventService).saveRemoteProvider(provider.capture());
+    assertEquals("agenda.caldavCalendar.7", provider.getValue().getName());
+    assertEquals(false, provider.getValue().isEnabled());
+  }
+
+  /**
+   * A user the ACL does not even know (no identity resolvable) cannot edit —
+   * the null identity must short-circuit BEFORE isAdministrator, which would
+   * throw on null.
+   */
+  @Test
+  public void shouldRefuseEditToUnknownIdentity() {
+    when(userAcl.getUserIdentity("ghost")).thenReturn(null);
+
+    assertFalse(caldavServerService.canEdit("ghost"));
+  }
+
+  /**
+   * References whose stored value is unreadable (a null setting value inside
+   * a non-null holder) are not counted as blocking a delete: only a value
+   * that actually equals the row's id blocks it. Counting unreadable values
+   * would freeze deletes forever on corrupt settings.
+   */
+  @Test
+  public void shouldNotCountUnreadableReferences() {
+    Context matching = Context.USER.id("11");
+    Context nullHolder = Context.USER.id("22");
+    Context nullValue = Context.USER.id("33");
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(),
+                                                                anyInt())).thenReturn(List.of(matching, nullHolder, nullValue));
+    doReturn(SettingValue.create("7")).when(settingService).get(eq(matching), any(), anyString());
+    doReturn(null).when(settingService).get(eq(nullHolder), any(), anyString());
+    doReturn(SettingValue.create((String) null)).when(settingService).get(eq(nullValue), any(), anyString());
+
+    assertEquals(1, caldavServerService.countServerReferences(7));
+  }
+
+  /**
+   * A row that never got an image answers a null stream — the REST layer's
+   * cue for 404 — without ever asking the file storage anything.
+   *
+   * @throws Exception never, the storage is mocked
+   */
+  @Test
+  public void shouldAnswerNoImageStreamWhenRowHoldsNone() throws Exception {
+    CaldavServer imageless = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(imageless);
+
+    assertNull(caldavServerService.getServerImageInputStream(7));
+
+    // a zero file id means "no image" exactly like null — the drawer sends 0
+    // where JSON dropped the null
+    imageless.setImageFileId(0L);
+
+    assertNull(caldavServerService.getServerImageInputStream(7));
+
+    verifyNoInteractions(fileService);
+  }
+
+  /**
+   * A row whose stored file has vanished from the file storage (or reads back
+   * empty) answers a null stream too, rather than a stream that would blow up
+   * on first read.
+   *
+   * @throws Exception never, the storage is mocked
+   */
+  @Test
+  public void shouldAnswerNoImageStreamWhenStoredFileVanished() throws Exception {
+    CaldavServer server = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
+    server.setImageFileId(55L);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server);
+    when(fileService.getFile(55L)).thenReturn(null);
+
+    assertNull(caldavServerService.getServerImageInputStream(7));
+
+    FileItem emptyFile = org.mockito.Mockito.mock(FileItem.class);
+    when(emptyFile.getAsByte()).thenReturn(null);
+    when(fileService.getFile(55L)).thenReturn(emptyFile);
+
+    assertNull(caldavServerService.getServerImageInputStream(7));
+  }
+
+  /**
+   * A stored image is served back byte for byte.
+   *
+   * @throws Exception never, the storage is mocked
+   */
+  @Test
+  public void shouldServeTheStoredImageBytes() throws Exception {
+    CaldavServer server = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
+    server.setImageFileId(55L);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server);
+    byte[] bytes = new byte[] { 1, 2, 3 };
+    FileItem file = org.mockito.Mockito.mock(FileItem.class);
+    when(file.getAsByte()).thenReturn(bytes);
+    when(fileService.getFile(55L)).thenReturn(file);
+
+    InputStream stream = caldavServerService.getServerImageInputStream(7);
+
+    assertArrayEquals(bytes, stream.readAllBytes());
+  }
+
+  /**
+   * Asking the image of a row that does not exist is the 404, not a null that
+   * the REST layer would misreport as "row exists but has no image".
+   */
+  @Test
+  public void shouldRefuseImageOfMissingServer() {
+    when(caldavServerStorage.getServerById(99)).thenReturn(null);
+
+    assertThrows(ObjectNotFoundException.class, () -> caldavServerService.getServerImageInputStream(99));
+  }
+
+  /**
+   * The bootstrap registers the seeding as a portal post-create task — the
+   * same deferral agenda's provider plugin uses — and that task runs the
+   * seeding inside a container request lifecycle, which it closes even when
+   * the seeding succeeds trivially (a registry already filled).
+   */
+  @Test
+  public void shouldDeferSeedingToPortalPostCreate() {
+    when(caldavServerStorage.countServers()).thenReturn(1L);
+    try (MockedStatic<PortalContainer> portalContainerStatic = mockStatic(PortalContainer.class);
+         MockedStatic<ExoContainerContext> containerContextStatic = mockStatic(ExoContainerContext.class);
+         MockedStatic<RequestLifeCycle> requestLifeCycleStatic = mockStatic(RequestLifeCycle.class)) {
+      caldavServerService.start();
+
+      ArgumentCaptor<PortalContainerInitTask> task = ArgumentCaptor.forClass(PortalContainerInitTask.class);
+      portalContainerStatic.verify(() -> PortalContainer.addInitTask(any(), task.capture()));
+
+      task.getValue().execute(null, portalContainer);
+
+      requestLifeCycleStatic.verify(() -> RequestLifeCycle.begin(portalContainer));
+      requestLifeCycleStatic.verify(RequestLifeCycle::end);
+      verify(caldavServerStorage).countServers();
+    }
+  }
+
+  /**
+   * A seeding that blows up must NOT fail the portal boot: the post-create
+   * task logs and swallows, and still closes the request lifecycle it opened.
+   * Letting the exception out would take the whole platform down over two
+   * default rows.
+   */
+  @Test
+  public void shouldSurviveASeedingFailureAtBoot() {
+    when(caldavServerStorage.countServers()).thenThrow(new IllegalStateException("database is down"));
+    try (MockedStatic<PortalContainer> portalContainerStatic = mockStatic(PortalContainer.class);
+         MockedStatic<ExoContainerContext> containerContextStatic = mockStatic(ExoContainerContext.class);
+         MockedStatic<RequestLifeCycle> requestLifeCycleStatic = mockStatic(RequestLifeCycle.class)) {
+      caldavServerService.start();
+
+      ArgumentCaptor<PortalContainerInitTask> task = ArgumentCaptor.forClass(PortalContainerInitTask.class);
+      portalContainerStatic.verify(() -> PortalContainer.addInitTask(any(), task.capture()));
+
+      assertDoesNotThrow(() -> task.getValue().execute(null, portalContainer));
+
+      requestLifeCycleStatic.verify(RequestLifeCycle::end);
+    }
   }
 
   /**

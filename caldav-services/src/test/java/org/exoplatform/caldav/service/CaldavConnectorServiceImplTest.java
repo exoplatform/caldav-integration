@@ -19,8 +19,11 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -29,10 +32,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.container.ExoContainerContext;
 
 /**
  * The mirror calendar href is the identity of the collection every pushed
@@ -146,6 +151,91 @@ public class CaldavConnectorServiceImplTest {
     CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
 
     assertEquals("https://legacy.example.org/", setting.getCaldavUrl());
+  }
+
+  /**
+   * A complete pair of credentials is stored for the user who gave it.
+   *
+   * @throws Exception never, the storage is mocked
+   */
+  @Test
+  public void shouldStoreCompleteCredentials() throws Exception {
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("root");
+    setting.setPassword("s3cret");
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(caldavConnectorStorage).createCaldavSetting(setting, USER_IDENTITY_ID);
+  }
+
+  /**
+   * A connection missing its username or its password is refused before
+   * anything reaches storage: half a credential stored is an account that can
+   * never authenticate but looks connected to every screen that checks.
+   */
+  @Test
+  public void shouldRefuseIncompleteCredentials() {
+    CaldavUserSetting passwordless = new CaldavUserSetting();
+    passwordless.setUsername("root");
+    assertThrows(IllegalAccessException.class, () -> caldavConnectorService.createCaldavSetting(passwordless,
+                                                                                                USER_IDENTITY_ID));
+
+    CaldavUserSetting nameless = new CaldavUserSetting();
+    nameless.setPassword("s3cret");
+    assertThrows(IllegalAccessException.class, () -> caldavConnectorService.createCaldavSetting(nameless, USER_IDENTITY_ID));
+
+    verifyNoInteractions(caldavConnectorStorage);
+  }
+
+  /**
+   * Disconnecting hands the deletion to storage for the same user.
+   */
+  @Test
+  public void shouldDeleteTheSettingOfTheUser() {
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
+
+    verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+  }
+
+  /**
+   * The server registry is resolved lazily through the kernel/Spring bridge
+   * and then REMEMBERED: resolving it on every read would pay the container
+   * lookup on every settings fetch.
+   */
+  @Test
+  public void shouldResolveTheRegistryOnceThroughTheBridge() {
+    CaldavServerService registry = mock(CaldavServerService.class);
+    try (MockedStatic<ExoContainerContext> containerContext = mockStatic(ExoContainerContext.class)) {
+      containerContext.when(() -> ExoContainerContext.getService(CaldavServerService.class)).thenReturn(registry);
+
+      assertSame(registry, caldavConnectorService.getCaldavServerService());
+      assertSame(registry, caldavConnectorService.getCaldavServerService());
+
+      containerContext.verify(() -> ExoContainerContext.getService(CaldavServerService.class));
+    }
+  }
+
+  /**
+   * A bridge that cannot resolve the registry (Spring context not up yet, or
+   * a test container without it) answers null instead of failing — and the
+   * settings read then keeps the legacy property-based URL in charge, which
+   * is exactly the pre-registry behaviour.
+   */
+  @Test
+  public void shouldKeepTheLegacyUrlWhenTheBridgeCannotResolve() {
+    CaldavConnectorServiceImpl service = serviceWithLegacyProperty("https://legacy.example.org/");
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(new CaldavUserSetting());
+    try (MockedStatic<ExoContainerContext> containerContext = mockStatic(ExoContainerContext.class)) {
+      containerContext.when(() -> ExoContainerContext.getService(CaldavServerService.class))
+                      .thenThrow(new IllegalStateException("no container"));
+
+      assertNull(service.getCaldavServerService());
+
+      CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
+
+      assertEquals("https://legacy.example.org/", setting.getCaldavUrl());
+    }
   }
 
   /**

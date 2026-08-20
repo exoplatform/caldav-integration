@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
@@ -222,6 +223,109 @@ public class CaldavServerRestTest {
     CaldavServer updated = caldavServerRest.updateServer(request, 7, body);
 
     assertEquals(7, updated.getId());
+  }
+
+  /**
+   * An accepted create answers the created registration, id and provider name
+   * filled by the service — what the admin drawer reads back into its table.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void shouldAnswerTheCreatedServer() throws Exception {
+    when(request.getRemoteUser()).thenReturn("root");
+    CaldavServer created = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
+    when(caldavServerService.createServer(any(), anyString())).thenReturn(created);
+
+    assertEquals(created, caldavServerRest.createServer(request, server(0, null, "Nextcloud", null, SERVER_URL, true)));
+  }
+
+  /**
+   * The update maps the whole contract: an accepted one answers the updated
+   * registration, a refused access is 403, an invalid input is 400 carrying
+   * the message code.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void shouldMapUpdateOutcomesOntoStatuses() throws Exception {
+    when(request.getRemoteUser()).thenReturn("mary");
+    CaldavServer body = server(0, null, "X", null, SERVER_URL, true);
+
+    when(caldavServerService.updateServer(any(), anyString())).thenThrow(new IllegalAccessException("not admin"));
+    ResponseStatusException accessRefusal = assertThrows(ResponseStatusException.class,
+                                                         () -> caldavServerRest.updateServer(request, 7, body));
+    assertEquals(HttpStatus.FORBIDDEN, accessRefusal.getStatusCode());
+
+    org.mockito.Mockito.reset(caldavServerService);
+    when(caldavServerService.updateServer(any(), anyString())).thenThrow(new IllegalArgumentException("caldav.server.nameMandatory"));
+    ResponseStatusException inputRefusal = assertThrows(ResponseStatusException.class,
+                                                        () -> caldavServerRest.updateServer(request, 7, body));
+    assertEquals(HttpStatus.BAD_REQUEST, inputRefusal.getStatusCode());
+    assertEquals("caldav.server.nameMandatory", inputRefusal.getReason());
+  }
+
+  /**
+   * An accepted activation switch answers the updated registration, and a
+   * refused one (not an administrator) is a 403.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void shouldFlipTheSwitchOrAnswer403() throws Exception {
+    when(request.getRemoteUser()).thenReturn("root");
+    CaldavServer deactivated = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, false);
+    when(caldavServerService.setServerActive(7, false, "root")).thenReturn(deactivated);
+
+    assertEquals(deactivated, caldavServerRest.setServerActive(request, 7, false));
+
+    org.mockito.Mockito.reset(caldavServerService);
+    when(request.getRemoteUser()).thenReturn("mary");
+    when(caldavServerService.setServerActive(anyLong(), anyBoolean(), anyString())).thenThrow(new IllegalAccessException("not admin"));
+    ResponseStatusException refusal = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavServerRest.setServerActive(request, 7, false));
+    assertEquals(HttpStatus.FORBIDDEN, refusal.getStatusCode());
+  }
+
+  /**
+   * The delete maps the whole contract: an accepted one answers plainly, a
+   * missing row is 404, a refused access is 403 (the 409 for a still
+   * referenced row has its own test).
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void shouldMapDeleteOutcomesOntoStatuses() throws Exception {
+    when(request.getRemoteUser()).thenReturn("root");
+
+    caldavServerRest.deleteServer(request, 7);
+    verify(caldavServerService).deleteServer(7, "root");
+
+    doThrow(new ObjectNotFoundException("missing")).when(caldavServerService).deleteServer(99, "root");
+    ResponseStatusException missingRefusal = assertThrows(ResponseStatusException.class,
+                                                          () -> caldavServerRest.deleteServer(request, 99));
+    assertEquals(HttpStatus.NOT_FOUND, missingRefusal.getStatusCode());
+
+    doThrow(new IllegalAccessException("not admin")).when(caldavServerService).deleteServer(8, "root");
+    ResponseStatusException accessRefusal = assertThrows(ResponseStatusException.class,
+                                                         () -> caldavServerRest.deleteServer(request, 8));
+    assertEquals(HttpStatus.FORBIDDEN, accessRefusal.getStatusCode());
+  }
+
+  /**
+   * Asking the image of a row that does not exist at all is a 404 too — the
+   * service's ObjectNotFoundException, not just its null-stream answer.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void shouldAnswer404OnImageOfMissingServer() throws Exception {
+    when(caldavServerService.getServerImageInputStream(99)).thenThrow(new ObjectNotFoundException("missing"));
+
+    ResponseStatusException refusal = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavServerRest.getServerImage(request, 99));
+
+    assertEquals(HttpStatus.NOT_FOUND, refusal.getStatusCode());
   }
 
   /**

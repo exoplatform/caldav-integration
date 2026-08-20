@@ -21,14 +21,21 @@ package org.exoplatform.caldav.storage;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.Date;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
+
+import org.mockito.ArgumentCaptor;
+import org.springframework.data.domain.Sort;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -211,6 +218,191 @@ public class CaldavServerStorageTest {
 
     when(caldavServerDAO.findById(99L)).thenReturn(Optional.empty());
     assertEquals(false, caldavServerStorage.deleteServer(99L));
+  }
+
+  /**
+   * The listing reads the rows ordered by id — seed first, since the seed
+   * holds the lowest id by construction — and maps every row to its DTO. An
+   * accidental unordered read would shuffle the seed away from the top of the
+   * admin table.
+   */
+  @Test
+  public void shouldListServersOrderedById() {
+    CaldavServerEntity seed = new CaldavServerEntity(1L, PREFIX, "Stalwart", null, "https://seed/", true, null, null);
+    CaldavServerEntity declared = new CaldavServerEntity(7L, PREFIX + ".7", "Nextcloud", null, "https://declared/", false, null,
+                                                         null);
+    ArgumentCaptor<Sort> sort = ArgumentCaptor.forClass(Sort.class);
+    when(caldavServerDAO.findAll(sort.capture())).thenReturn(List.of(seed, declared));
+
+    List<CaldavServer> servers = caldavServerStorage.getServers();
+
+    assertEquals(Sort.by("id"), sort.getValue());
+    assertEquals(2, servers.size());
+    assertEquals(PREFIX, servers.get(0).getProviderName());
+    assertEquals("Nextcloud", servers.get(1).getName());
+    assertEquals(false, servers.get(1).isActive());
+  }
+
+  /**
+   * A row reads back by id as its DTO, and a missing id answers null — the
+   * service turns that into the 404.
+   */
+  @Test
+  public void shouldReadOneServerByIdOrAnswerNull() {
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Nextcloud", "desc", "https://declared/", true,
+                                                         null, null);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+    when(caldavServerDAO.findById(99L)).thenReturn(Optional.empty());
+
+    CaldavServer server = caldavServerStorage.getServerById(7L);
+
+    assertEquals(7L, server.getId());
+    assertEquals(PREFIX + ".7", server.getProviderName());
+    assertEquals("desc", server.getDescription());
+    assertNull(caldavServerStorage.getServerById(99L));
+  }
+
+  /**
+   * The provider name resolves back to its row — the read the URL resolution
+   * uses to find the seed — and an unknown name answers null.
+   */
+  @Test
+  public void shouldReadOneServerByProviderNameOrAnswerNull() {
+    CaldavServerEntity seed = new CaldavServerEntity(1L, PREFIX, "Stalwart", null, "https://seed/", true, null, null);
+    when(caldavServerDAO.findByProviderName(PREFIX)).thenReturn(Optional.of(seed));
+    when(caldavServerDAO.findByProviderName("unknown")).thenReturn(Optional.empty());
+
+    CaldavServer server = caldavServerStorage.getServerByProviderName(PREFIX);
+
+    assertEquals("https://seed/", server.getServerUrl());
+    assertNull(caldavServerStorage.getServerByProviderName("unknown"));
+  }
+
+  /**
+   * The row count is the DAO's — it is what the seeding decision reads to
+   * know whether the registry is untouched.
+   */
+  @Test
+  public void shouldCountTheRegistrationRows() {
+    when(caldavServerDAO.count()).thenReturn(3L);
+
+    assertEquals(3L, caldavServerStorage.countServers());
+  }
+
+  /**
+   * A fresh upload arriving while the row already holds an image UPDATES the
+   * stored file in place (same file id, new bytes) instead of writing a
+   * second file and leaking the first — and the kept image is not deleted on
+   * the way.
+   *
+   * @throws Exception when the fake upload cannot be written
+   */
+  @Test
+  public void shouldUpdateTheStoredFileWhenReplacingTheImage() throws Exception {
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+    java.io.File upload = java.io.File.createTempFile("caldav-icon", ".png");
+    upload.deleteOnExit();
+    java.nio.file.Files.write(upload.toPath(), new byte[] { 4, 5, 6 });
+    UploadResource uploadResource = mock(UploadResource.class);
+    when(uploadResource.getStoreLocation()).thenReturn(upload.getAbsolutePath());
+    when(uploadService.getUploadResource("upload-2")).thenReturn(uploadResource);
+    FileItem updatedFile = mock(FileItem.class);
+    FileInfo updatedFileInfo = mock(FileInfo.class);
+    when(updatedFile.getFileInfo()).thenReturn(updatedFileInfo);
+    when(updatedFileInfo.getId()).thenReturn(55L);
+    ArgumentCaptor<FileItem> fileItem = ArgumentCaptor.forClass(FileItem.class);
+    when(fileService.updateFile(fileItem.capture())).thenReturn(updatedFile);
+    Date lastModified = new Date();
+    when(updatedFileInfo.getUpdatedDate()).thenReturn(lastModified);
+    when(fileService.getFileInfo(55L)).thenReturn(updatedFileInfo);
+
+    CaldavServer payload = server(7, null, "Old", null, "https://old/", true);
+    payload.setImageFileId(55L);
+    payload.setImageUploadId("upload-2");
+    CaldavServer updated = caldavServerStorage.updateServer(payload);
+
+    assertEquals(Long.valueOf(55L), fileItem.getValue().getFileInfo().getId());
+    assertEquals(Long.valueOf(55L), updated.getImageFileId());
+    // the image URL is versioned by the file's new modification date, so the
+    // browser cache cannot keep serving the replaced image
+    assertTrue(updated.getImageUrl().endsWith("?v=" + lastModified.getTime()));
+    verify(fileService, never()).writeFile(any());
+    verify(fileService, never()).deleteFile(org.mockito.ArgumentMatchers.anyLong());
+  }
+
+  /**
+   * Deleting a row that never had an image touches nothing in the file
+   * storage — a spurious deleteFile there would remove somebody else's file
+   * id 0 or crash the delete.
+   */
+  @Test
+  public void shouldDeleteAnImagelessRowWithoutTouchingFileStorage() {
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    assertEquals(true, caldavServerStorage.deleteServer(7L));
+
+    verify(fileService, never()).deleteFile(org.mockito.ArgumentMatchers.anyLong());
+    verify(caldavServerDAO).delete(existing);
+  }
+
+  /**
+   * A zero imageFileId means "no image" everywhere, exactly like null: the
+   * mapped DTO carries no image URL and the file storage is never asked —
+   * the drawer sends 0 where JSON dropped the null.
+   */
+  @Test
+  public void shouldTreatAZeroImageFileIdAsNoImage() {
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 0L);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    CaldavServer server = caldavServerStorage.getServerById(7L);
+
+    assertNull(server.getImageUrl());
+    verify(fileService, never()).getFileInfo(org.mockito.ArgumentMatchers.anyLong());
+  }
+
+  /**
+   * The drawer may report a dropped image as 0 instead of null — both mean
+   * the same removal: the stored file goes, and its reference with it.
+   */
+  @Test
+  public void shouldDropTheRemovedImageWhenReportedAsZero() {
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    CaldavServer payload = server(7, null, "Old", null, "https://old/", true);
+    payload.setImageFileId(0L);
+    CaldavServer updated = caldavServerStorage.updateServer(payload);
+
+    assertNull(updated.getImageFileId());
+    verify(fileService).deleteFile(55L);
+  }
+
+  /**
+   * An upload the file storage refuses to write leaves the row imageless
+   * rather than failing the whole create: the administrator keeps the server
+   * and retries the image.
+   *
+   * @throws Exception when the fake upload cannot be written
+   */
+  @Test
+  public void shouldCreateTheRowImagelessWhenStoringTheUploadFails() throws Exception {
+    java.io.File upload = java.io.File.createTempFile("caldav-icon", ".png");
+    upload.deleteOnExit();
+    java.nio.file.Files.write(upload.toPath(), new byte[] { 1, 2, 3 });
+    UploadResource uploadResource = mock(UploadResource.class);
+    when(uploadResource.getStoreLocation()).thenReturn(upload.getAbsolutePath());
+    when(uploadService.getUploadResource("upload-3")).thenReturn(uploadResource);
+    when(fileService.writeFile(any(FileItem.class))).thenReturn(null);
+
+    CaldavServer toCreate = server(0, null, "One", null, "https://one/", true);
+    toCreate.setImageUploadId("upload-3");
+    CaldavServer created = caldavServerStorage.createServer(toCreate, PREFIX);
+
+    assertNull(created.getImageFileId());
+    assertNull(created.getImageUrl());
   }
 
   /**
