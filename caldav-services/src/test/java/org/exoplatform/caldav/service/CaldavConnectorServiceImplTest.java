@@ -35,6 +35,7 @@ import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.container.ExoContainerContext;
@@ -119,7 +120,8 @@ public class CaldavConnectorServiceImplTest {
 
   /**
    * An account referencing a declared server speaks to THAT server's URL,
-   * not to the legacy property's.
+   * not to the legacy property's — and the DTO carries the resolved row's
+   * id, which is how the browser addresses the relay.
    */
   @Test
   public void shouldResolveTheReferencedServerUrl() {
@@ -129,11 +131,37 @@ public class CaldavConnectorServiceImplTest {
     CaldavUserSetting stored = new CaldavUserSetting();
     stored.setServerId(7L);
     when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(stored);
-    when(registry.resolveServerUrl(7L)).thenReturn("https://declared.example.org/cal/{username}/");
+    when(registry.resolveServer(7L)).thenReturn(new CaldavServer(7, "agenda.caldavCalendar.7", "Declared", null,
+                                                                 "https://declared.example.org/cal/{username}/", true, null,
+                                                                 null, null, null));
 
     CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
 
     assertEquals("https://declared.example.org/cal/{username}/", setting.getCaldavUrl());
+    assertEquals(7L, setting.getServerId());
+  }
+
+  /**
+   * A legacy account that stored no server reference still receives the id
+   * of the registration it resolves through (the seed): without an id the
+   * browser could not name a relay target, and the account would fall back
+   * to addressing the CalDAV server directly — the very thing the relay
+   * exists to end.
+   */
+  @Test
+  public void shouldCarryTheEffectiveServerIdForLegacyAccounts() {
+    CaldavConnectorServiceImpl service = serviceWithLegacyProperty(null);
+    CaldavServerService registry = mock(CaldavServerService.class);
+    service.setCaldavServerService(registry);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(new CaldavUserSetting());
+    when(registry.resolveServer(null)).thenReturn(new CaldavServer(1, "agenda.caldavCalendar", "Seed", null,
+                                                                   "https://seed.example.org/cal/{username}/", true, null,
+                                                                   null, null, null));
+
+    CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
+
+    assertEquals("https://seed.example.org/cal/{username}/", setting.getCaldavUrl());
+    assertEquals(1L, setting.getServerId());
   }
 
   /**
@@ -146,11 +174,34 @@ public class CaldavConnectorServiceImplTest {
     CaldavServerService registry = mock(CaldavServerService.class);
     service.setCaldavServerService(registry);
     when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(new CaldavUserSetting());
-    when(registry.resolveServerUrl(null)).thenReturn(null);
+    when(registry.resolveServer(null)).thenReturn(null);
 
     CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
 
     assertEquals("https://legacy.example.org/", setting.getCaldavUrl());
+    assertNull(setting.getServerId());
+  }
+
+  /**
+   * The password never leaves the platform: whatever the storage decodes,
+   * the setting the REST serializes carries none — the browser's only
+   * remaining signal is "credentials exist", which the username provides.
+   * This is the assertion that was structurally impossible while the
+   * browser built its own Basic header from this very field.
+   */
+  @Test
+  public void shouldNeverReturnThePassword() {
+    CaldavConnectorServiceImpl service = serviceWithLegacyProperty("https://legacy.example.org/");
+    service.setCaldavServerService(mock(CaldavServerService.class));
+    CaldavUserSetting stored = new CaldavUserSetting();
+    stored.setUsername("john");
+    stored.setPassword("s3cret");
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(stored);
+
+    CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
+
+    assertEquals("john", setting.getUsername());
+    assertNull(setting.getPassword());
   }
 
   /**
@@ -249,7 +300,9 @@ public class CaldavConnectorServiceImplTest {
     CaldavServerService registry = mock(CaldavServerService.class);
     service.setCaldavServerService(registry);
     when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(new CaldavUserSetting());
-    when(registry.resolveServerUrl(null)).thenReturn("https://seed.example.org/");
+    when(registry.resolveServer(null)).thenReturn(new CaldavServer(1, "agenda.caldavCalendar", "Seed", null,
+                                                                   "https://seed.example.org/", true, null, null, null,
+                                                                   null));
 
     CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
 

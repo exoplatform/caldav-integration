@@ -192,65 +192,49 @@ export const saveMirrorCalendarHref = (mirrorCalendarHref) => {
 };
 
 /**
- * Asks the CalDAV server itself whether it recognises the account, before
- * anything is stored or declared connected. The request is a plain PROPFIND
- * rather than a tsdav call on purpose: tsdav reacts to a 401 by falling back
- * to probing the server root and finally reports "cannot find principalUrl" —
- * a discovery error for what is simply a rejected password.
+ * Asks the CalDAV server whether it recognises the account, before anything
+ * is stored or declared connected — probed by the PLATFORM, not by this
+ * browser: the typed credentials travel once to the platform's own verify
+ * endpoint, which performs the Depth:0 PROPFIND server-side. That is what
+ * lets servers sending no CORS headers — BlueMind — connect without any
+ * front proxy, and it keeps every direct browser-to-CalDAV request out of
+ * the product.
  *
- * Three failures are told apart, each rejecting with an Error carrying its
- * own stable code:
+ * Three failures are told apart, each rejecting with an Error carrying the
+ * same stable code the historical browser probe produced:
  * - the server cannot be reached at all            -> caldav.error.connection
  * - the server answers but refuses the credentials -> caldav.error.credentials
  * - the URL reaches something that is not a CalDAV
  *   collection (404, 405, a web page...)           -> caldav.error.notCaldav
  *
- * @param {String} caldavUrl URL of the CalDAV server, holding a {username} placeholder
+ * @param {Number} serverId identifier of the declared server to verify
+ *          against, or null for the legacy resolution (the seed registration)
  * @param {String} username account to verify
  * @param {String} password password to verify
  * @returns {Promise} resolved when the server accepted the credentials,
  *          rejected with an Error carrying a `code` and, when the server
  *          answered, the HTTP `status` that produced it
  */
-export const probeCaldavAccount = (caldavUrl, username, password) => {
-  if (!caldavUrl || !username) {
+export const verifyCaldavAccount = (serverId, username, password) => {
+  if (!username) {
     return Promise.reject(caldavError('caldav.error.connection'));
   }
-  return fetch(caldavUrl.replace('{username}', username), {
-    method: 'PROPFIND',
+  return fetch('/caldav/rest/connection/verify', {
     headers: {
-      'Depth': '0',
-      'Content-Type': 'application/xml',
-      'Authorization': `Basic ${btoa(`${username}:${password}`)}`,
+      'Content-Type': 'application/json'
     },
-    body: '<?xml version="1.0"?><propfind xmlns="DAV:"><prop><resourcetype/></prop></propfind>',
-  }).then(response => {
-    if (response.status === 401 || response.status === 403) {
-      throw caldavError('caldav.error.credentials', response.status);
+    credentials: 'include',
+    method: 'POST',
+    body: JSON.stringify({serverId, username, password}),
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw caldavError('caldav.error.connection', resp && resp.status);
     }
-    // A CalDAV collection answers a PROPFIND with 207 Multi-Status. Anything
-    // else means the URL reaches something, but not a calendar: a wrong path
-    // (404), the server root (405), a web server serving a page (200)...
-    if (response.status !== 207) {
-      throw caldavError('caldav.error.notCaldav', response.status);
+    return resp.json();
+  }).then(outcome => {
+    if (!outcome || outcome.result !== 'ok') {
+      throw caldavError(outcome && outcome.result || 'caldav.error.connection', outcome && outcome.status);
     }
-  }, () => {
-    // fetch itself rejected. Two very different situations look identical
-    // here — the browser reports a blocked cross-origin request (a CalDAV
-    // server sending no CORS headers, like BlueMind) with the same opaque
-    // TypeError as a host that never answered. They are told apart with a
-    // second, no-cors GET: it needs no CORS permission, so if IT resolves the
-    // host is alive and the first failure was the browser refusing the
-    // cross-origin DAV request — something the administrator fixes by putting
-    // the server behind the portal's own origin, not by checking cables.
-    return fetch(caldavUrl.replace('{username}', username), {
-      method: 'GET',
-      mode: 'no-cors',
-    }).then(() => {
-      throw caldavError('caldav.error.cors');
-    }, () => {
-      throw caldavError('caldav.error.connection');
-    });
   });
 };
 
