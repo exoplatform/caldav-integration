@@ -189,6 +189,14 @@ public class CaldavSyncService {
       if (isAlreadyOurs(collection, known, settings)) {
         continue;
       }
+      if (!collection.holdsEvents()) {
+        // A CalDAV home holds more than calendars: BlueMind publishes the
+        // account's task list beside them, and it answers a PROPFIND for
+        // calendars just as a calendar would. Materialising it would give the
+        // user an eXo calendar that can never hold an event.
+        LOG.debug("Collection {} declares no VEVENT support and is not a calendar to materialise", collection.href());
+        continue;
+      }
       materialise(userIdentityId, username, serverId, collection);
     }
   }
@@ -237,7 +245,13 @@ public class CaldavSyncService {
   private void materialise(long userIdentityId, String username, long serverId, CalendarCollection collection) {
     Calendar calendar = new Calendar();
     calendar.setOwnerId(userIdentityId);
-    calendar.setTitle(StringUtils.defaultIfBlank(collection.displayName(), collection.href()));
+    // Agenda persists getName(); getTitle() is a display field it computes,
+    // and a calendar left with no name falls back to the owner's identity —
+    // which is how two materialised collections both came out called after
+    // their owner instead of after themselves.
+    String name = StringUtils.defaultIfBlank(collection.displayName(), collection.href());
+    calendar.setName(name);
+    calendar.setTitle(name);
     calendar.setColor(collection.color());
     Calendar created;
     try {
