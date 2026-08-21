@@ -350,6 +350,48 @@ public class CaldavPushServiceTest {
     verify(agendaRemoteEventService).findRemoteEvent(99L, USER);
   }
 
+  @Test
+  public void theMappingRecordsWhichExoEventItStandsFor() throws Exception {
+    // Left null, nothing could ever go from an eXo event back to its remote
+    // object — which is what deletion detection and mirror verification both
+    // start from. A live push wrote a NULL here before this was fixed, and no
+    // unit test noticed because none of them looked at the column.
+    givenAMirror();
+    givenAnAgendaEvent(104L, 0L);
+    when(agendaRemoteEventService.findRemoteEvent(104L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-104"));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"e\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    ObjectSync mapping = service.pushAgendaEvent(USER, 104L, null);
+
+    assertEquals(104L, mapping.getLocalEventId());
+  }
+
+  @Test
+  public void aPushThatDoesNotKnowTheEventIdKeepsTheOneAlreadyRecorded() {
+    // A sweep or a repair pushes without an agenda event in hand. Clearing
+    // the link it does not know about would quietly undo the first push's
+    // work.
+    givenAMirror();
+    ObjectSync known = mapped("\"etag-1\"");
+    known.setLocalEventId(104L);
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(known);
+    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString())).thenReturn(null);
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                           .thenReturn(new PutResult(204,
+                                                                                                                                     "\"etag-2\"",
+                                                                                                                                     null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    ObjectSync mapping = service.pushEvent(USER, event("evt-1"));
+
+    assertEquals(104L, mapping.getLocalEventId());
+  }
+
   /**
    * An agenda event the service can read.
    *

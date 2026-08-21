@@ -126,6 +126,21 @@ public class CaldavPushService {
    * @throws CaldavPushException when the write cannot be carried out
    */
   public ObjectSync pushEvent(long userIdentityId, IcsEvent event) {
+    return pushEvent(userIdentityId, event, null);
+  }
+
+  /**
+   * Writes one event into the user's mirror calendar, recording which eXo
+   * event the resulting object stands for.
+   *
+   * @param userIdentityId identity of the user whose account is written to
+   * @param event the event to copy, with identities already resolved
+   * @param localEventId the agenda event this object stands for, or null when
+   *          the caller has none — the read half fills it in later
+   * @return the mapping row as it now stands
+   * @throws CaldavPushException when the write cannot be carried out
+   */
+  public ObjectSync pushEvent(long userIdentityId, IcsEvent event, Long localEventId) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
     CalDavEndpoint endpoint = endpointOf(settings);
     MirrorTarget mirror = ensureMirror(userIdentityId, settings, endpoint);
@@ -145,6 +160,11 @@ public class CaldavPushService {
     ObjectSync mapping = known == null ? new ObjectSync() : known;
     mapping.setCalendarSyncId(pair.getId());
     mapping.setIcsUid(event.getUid());
+    // Never cleared once set: a later push that does not know the event id —
+    // a sweep, a repair — must not erase the link the first one established.
+    if (localEventId != null) {
+      mapping.setLocalEventId(localEventId);
+    }
     mapping.setRemoteHref(href);
     mapping.setEtag(result.etag());
     mapping.setPushedHash(hashOf(ics));
@@ -187,7 +207,9 @@ public class CaldavPushService {
     }
     long seriesId = event.getParentId() > 0 ? event.getParentId() : event.getId();
     String icsUid = adoptOrMintUid(seriesId, userIdentityId);
-    return pushEvent(userIdentityId, agendaEventIcsMapper.toIcsEvent(event, icsUid, eventUrl, userIdentityId));
+    return pushEvent(userIdentityId,
+                     agendaEventIcsMapper.toIcsEvent(event, icsUid, eventUrl, userIdentityId),
+                     event.getId());
   }
 
   /**
