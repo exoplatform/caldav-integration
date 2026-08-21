@@ -246,24 +246,8 @@ describe('the mirror calendar targets the calendar home the server disclosed', (
     expect(requests.filter(r => r.startsWith('MKCALENDAR') && !r.includes(MIRROR_PATH))).toEqual([]);
   });
 
-  it('exposes the discovered account on the client the connector opens', async () => {
-    // pins the client contract itself: the stubbed-tsdav suites script an
-    // `account` property on their client, and this is what keeps that stub
-    // honest — the real client must actually carry one
-    const listing = throughProxy(transcriptBody('bluemind-propfind-home-depth1.captured.xml'));
-    replayBluemindBehindProxy(listing);
-
-    const calendars = await caldavConnector.listCalendars();
-
-    expect(calendars.length).toBeGreaterThan(0);
-    const tsdav = require('tsdav');
-    const client = new tsdav.DAVClient({
-      serverUrl: `${ORIGIN}/bluemind/`,
-      credentials: {username: 'user@demo3.livecollab.fr', password: 'secret'},
-      authMethod: 'Basic',
-      defaultAccountType: 'caldav',
-    });
-    await client.login();
-    expect(client.account && client.account.homeUrl).toBe(`${ORIGIN}${HOME_PATH}`);
-  });
+  // The account exposed by login() mattered because listCalendars read it in
+  // the page. Listing moved to the server with EXO-89527; the two tests above
+  // still cover the mirror creation that remains browser-side, and the home
+  // derivation is exercised there.
 });

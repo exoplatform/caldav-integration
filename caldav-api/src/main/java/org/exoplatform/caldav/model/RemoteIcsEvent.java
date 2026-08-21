@@ -62,4 +62,10 @@ public class RemoteIcsEvent {
   /** When it ends; null for an all-day occurrence, which carries no time. */
   private Instant end;
 
+  /** The collection this occurrence came from, which is its calendar's identity. */
+  private String  calendarId;
+
+  /** The colour the calendar is shown in, published by the server or derived. */
+  private String  color;
+
 }
