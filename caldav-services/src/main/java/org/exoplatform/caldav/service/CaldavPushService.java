@@ -18,7 +18,6 @@ package org.exoplatform.caldav.service;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.time.ZoneOffset;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Date;
@@ -196,10 +195,17 @@ public class CaldavPushService {
   public ObjectSync pushAgendaEvent(long userIdentityId, long eventId, String eventUrl) {
     Event event;
     try {
-      // Read in UTC deliberately: the copy anchors its own wall clock on the
-      // event's own zone, which the mapper carries separately. Reading in a
-      // viewer's zone here would only give the mapper times to convert back.
-      event = agendaEventService.getEventById(eventId, ZoneOffset.UTC, userIdentityId);
+      // Read in the event's OWN zone, which is what a null argument asks
+      // agenda for. Not UTC, and not a viewer's zone.
+      //
+      // For a timed event any zone gives the same instant, so it looks like a
+      // free choice. It is not, because agenda treats an all-day event
+      // differently: it re-anchors the covered days at midnight in whatever
+      // zone is asked for. Ask for UTC and an all-day event of a user west of
+      // Greenwich comes back starting at 20:00 the previous day — and the
+      // copy is then written one day early, silently, for exactly the users
+      // whose zone made it happen.
+      event = agendaEventService.getEventById(eventId, null, userIdentityId);
     } catch (IllegalAccessException e) {
       throw new CaldavPushException(SAVE, "Event " + eventId + " is not visible to user " + userIdentityId, e);
     }
