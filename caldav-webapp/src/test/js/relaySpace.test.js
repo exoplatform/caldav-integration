@@ -76,46 +76,13 @@ describe('relay space', () => {
     jest.clearAllMocks();
   });
 
-  it('probes and discovers through the relay, with no Authorization header', async () => {
-    global.fetch = jest.fn(() => Promise.resolve({status: 207, ok: true}));
-    tsdav.DAVClient.mockImplementation(() => ({
-      login: jest.fn(() => Promise.resolve()),
-      fetchCalendars: jest.fn(() => Promise.resolve([])),
-    }));
-    caldavConnectorService.getCaldavSetting.mockResolvedValue(SETTINGS);
+  // Reading through the relay was removed with EXO-89527: the page no longer
+  // issues DAV requests to read, it asks the server for mapped events. What
+  // this used to pin — no Authorization header leaving the page — is now
+  // structural rather than asserted: there is no DAV request left to carry one.
 
-    await caldavConnector.listCalendars();
-
-    const [probeUrl, probeOptions] = global.fetch.mock.calls[0];
-    expect(probeUrl).toBe(`${RELAY_ROOT}/dav/cal/john/`);
-    expect(probeOptions.credentials).toBe('include');
-    expect(Object.keys(probeOptions.headers).map(name => name.toLowerCase())).not.toContain('authorization');
-
-    const clientParams = tsdav.DAVClient.mock.calls[0][0];
-    expect(clientParams.serverUrl).toBe(`${RELAY_ROOT}/dav/cal/john/`);
-    expect(clientParams.authMethod).toBe('Custom');
-    await expect(clientParams.authFunction()).resolves.toEqual({});
-  });
-
-  it('keeps addressing the server directly when no declared server resolves', async () => {
-    // The pre-registry deployment: no serverId, the password still served.
-    global.fetch = jest.fn(() => Promise.resolve({status: 207, ok: true}));
-    tsdav.DAVClient.mockImplementation(() => ({
-      login: jest.fn(() => Promise.resolve()),
-      fetchCalendars: jest.fn(() => Promise.resolve([])),
-    }));
-    caldavConnectorService.getCaldavSetting.mockResolvedValue({
-      username: 'john',
-      password: 'secret',
-      caldavUrl: 'https://server.test/dav/cal/{username}/',
-    });
-
-    await caldavConnector.listCalendars();
-
-    const [probeUrl, probeOptions] = global.fetch.mock.calls[0];
-    expect(probeUrl).toBe('https://server.test/dav/cal/john/');
-    expect(probeOptions.headers.Authorization).toMatch(/^Basic /);
-  });
+  // Same removal: the direct-to-server read fallback went with the read path.
+  // The server resolves its own target from the registry (CaldavReadService).
 
   it('matches a pre-relay stored mirror href against its relay-space enumeration', async () => {
     const listed = {url: RELAY_MIRROR, displayName: 'eXo Meetings'};

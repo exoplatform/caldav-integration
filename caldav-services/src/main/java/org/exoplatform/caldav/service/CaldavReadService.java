@@ -1,0 +1,239 @@
+/*
+ * Copyright (C) 2026 eXo Platform SAS.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.exoplatform.caldav.service;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import org.exoplatform.caldav.client.CalDavAuthenticationException;
+import org.exoplatform.caldav.client.CalDavClient;
+import org.exoplatform.caldav.client.CalDavEndpoint;
+import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.client.CalendarObject;
+import org.exoplatform.caldav.ics.IcsReader;
+import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.model.RemoteCalendar;
+import org.exoplatform.caldav.model.RemoteIcsEvent;
+import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.caldav.utils.CalendarPalette;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
+
+/**
+ * Reads the connected account's calendars server-side, so the page receives
+ * mapped events instead of downloading and parsing every iCalendar object in
+ * the main thread.
+ *
+ * <p>
+ * One REPORT per calendar per request, bounded by how many calendars the
+ * account holds — a handful. Not one per event: that is the shape this replaces.
+ */
+@Service
+public class CaldavReadService {
+
+  private static final Log       LOG = ExoLogger.getLogger(CaldavReadService.class);
+
+  @Autowired
+  private CalDavClient           calDavClient;
+
+  @Autowired
+  private CaldavConnectorStorage caldavConnectorStorage;
+
+  @Autowired
+  private IcsReader              icsReader;
+
+  /**
+   * The calendars of the connected account.
+   *
+   * @param userIdentityId identity of the user
+   * @return the calendars, each with a usable colour; empty when no account is
+   *         connected
+   */
+  public List<RemoteCalendar> listCalendars(long userIdentityId) {
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (!connected(settings)) {
+      return List.of();
+    }
+    CalDavEndpoint endpoint = endpointOf(settings);
+    List<CalendarCollection> collections = collectionsOf(endpoint, settings);
+    List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
+    List<RemoteCalendar> calendars = new ArrayList<>();
+    for (CalendarCollection collection : collections) {
+      calendars.add(new RemoteCalendar(collection.href(),
+                                       collection.displayName(),
+                                       CalendarPalette.colourOf(collection.color(),
+                                                                collection.href(),
+                                                                order.indexOf(collection.href()),
+                                                                order.size()),
+                                       !collection.writable()));
+    }
+    return calendars;
+  }
+
+  /**
+   * The events of the connected account over a window, one calendar at a time.
+   *
+   * <p>
+   * A calendar that fails degrades to no events <i>for that calendar</i>,
+   * exactly as the browser's Promise.allSettled did: one collection a server
+   * refuses, or one object it cannot serialise, must not blank the whole
+   * agenda. The failure is logged rather than raised, because the user's
+   * remaining calendars are still worth showing.
+   *
+   * @param userIdentityId identity of the user
+   * @param start beginning of the window
+   * @param end end of the window
+   * @return the occurrences, each tagged with the calendar it came from
+   */
+  public List<RemoteIcsEvent> readEvents(long userIdentityId, Instant start, Instant end) {
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (!connected(settings) || start == null || end == null || !start.isBefore(end)) {
+      return List.of();
+    }
+    CalDavEndpoint endpoint = endpointOf(settings);
+    List<CalendarCollection> collections = collectionsOf(endpoint, settings);
+    List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
+
+    List<RemoteIcsEvent> events = new ArrayList<>();
+    for (CalendarCollection collection : collections) {
+      String colour = CalendarPalette.colourOf(collection.color(),
+                                               collection.href(),
+                                               order.indexOf(collection.href()),
+                                               order.size());
+      events.addAll(readCalendar(endpoint, settings, collection, colour, start, end));
+    }
+    return events;
+  }
+
+  /**
+   * One calendar's occurrences, or none when reading it fails.
+   *
+   * @param endpoint the declared server
+   * @param settings the connected account
+   * @param collection the calendar to read
+   * @param colour the colour its events are shown in
+   * @param start beginning of the window
+   * @param end end of the window
+   * @return the occurrences, possibly empty
+   */
+  private List<RemoteIcsEvent> readCalendar(CalDavEndpoint endpoint,
+                                            CaldavUserSetting settings,
+                                            CalendarCollection collection,
+                                            String colour,
+                                            Instant start,
+                                            Instant end) {
+    List<RemoteIcsEvent> events = new ArrayList<>();
+    try {
+      List<CalendarObject> objects = calDavClient.calendarQuery(endpoint,
+                                                                collection.href(),
+                                                                start,
+                                                                end,
+                                                                settings.getUsername(),
+                                                                settings.getPassword());
+      for (CalendarObject object : objects) {
+        events.addAll(readObject(object, collection.href(), colour, start, end));
+      }
+    } catch (CalDavAuthenticationException e) {
+      // Worth its own line: every calendar of this account will fail the same
+      // way, and the cause is a stale password rather than a broken calendar.
+      LOG.warn("The stored CalDAV credentials were rejected while reading {}", collection.href(), e);
+    } catch (CalDavException e) {
+      LOG.warn("Calendar {} could not be read; its events are omitted from this answer", collection.href(), e);
+    }
+    return events;
+  }
+
+  /**
+   * One object's occurrences, or none when it cannot be parsed.
+   *
+   * <p>
+   * A single unreadable object must not cost the whole calendar. Some clients
+   * write objects no parser accepts, and losing one meeting is better than
+   * losing every meeting that shares its collection.
+   *
+   * @param object the calendar object as the server returned it
+   * @param calendarId the collection it came from
+   * @param colour the colour its events are shown in
+   * @param start beginning of the window
+   * @param end end of the window
+   * @return the occurrences, possibly empty
+   */
+  private List<RemoteIcsEvent> readObject(CalendarObject object,
+                                          String calendarId,
+                                          String colour,
+                                          Instant start,
+                                          Instant end) {
+    if (object == null || StringUtils.isBlank(object.calendarData())) {
+      return List.of();
+    }
+    try {
+      List<RemoteIcsEvent> occurrences = icsReader.read(object.calendarData(), start, end);
+      occurrences.forEach(occurrence -> {
+        occurrence.setCalendarId(calendarId);
+        occurrence.setColor(colour);
+      });
+      return occurrences;
+    } catch (RuntimeException e) {
+      LOG.warn("Object {} could not be read; it is omitted from this answer", object.href(), e);
+      return List.of();
+    }
+  }
+
+  /**
+   * The calendars of an account, or none when the server cannot be listed.
+   *
+   * @param endpoint the declared server
+   * @param settings the connected account
+   * @return the collections, possibly empty
+   */
+  private List<CalendarCollection> collectionsOf(CalDavEndpoint endpoint, CaldavUserSetting settings) {
+    try {
+      String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
+      return calDavClient.listCalendars(endpoint, home, settings.getUsername(), settings.getPassword());
+    } catch (CalDavException e) {
+      LOG.warn("The calendars of the connected account could not be listed", e);
+      return List.of();
+    }
+  }
+
+  /**
+   * Whether an account is usable.
+   *
+   * @param settings the stored account
+   * @return true when it carries credentials
+   */
+  private boolean connected(CaldavUserSetting settings) {
+    return settings != null && StringUtils.isNotBlank(settings.getUsername())
+        && StringUtils.isNotBlank(settings.getPassword());
+  }
+
+  /**
+   * The endpoint the account's server resolves to.
+   *
+   * @param settings the connected account
+   * @return the endpoint
+   */
+  private CalDavEndpoint endpointOf(CaldavUserSetting settings) {
+    return calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+  }
+}
