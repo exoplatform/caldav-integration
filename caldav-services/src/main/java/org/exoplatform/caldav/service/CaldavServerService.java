@@ -372,24 +372,39 @@ public class CaldavServerService {
   }
 
   /**
+   * Resolves the registration a user's account reads and pushes through: the
+   * row the account references when it references one and that row still
+   * exists, else the seed row, else null. This single resolution rule is
+   * shared by the URL resolution below and by the relay's authorization
+   * check — the relay refuses any target that is not the row this method
+   * answers for the user.
+   *
+   * @param serverId registration the user's account references, or null
+   * @return the resolved registration, or null when the registry answers
+   *         nothing
+   */
+  public CaldavServer resolveServer(Long serverId) {
+    if (serverId != null) {
+      CaldavServer server = caldavServerStorage.getServerById(serverId);
+      if (server != null) {
+        return server;
+      }
+    }
+    return caldavServerStorage.getServerByProviderName(CALDAV_PROVIDER_NAME);
+  }
+
+  /**
    * Resolves the CalDAV base URL a user's account reads and pushes through:
-   * the row the account references when it references one and that row still
-   * exists, else the seed row, else null — the caller then falls back to the
-   * legacy configuration property, which is today's behaviour for
-   * deployments that never touched the registry.
+   * the URL of the resolved registration, else null — the caller then falls
+   * back to the legacy configuration property, which is today's behaviour
+   * for deployments that never touched the registry.
    *
    * @param serverId registration the user's account references, or null
    * @return the resolved base URL, or null when the registry answers nothing
    */
   public String resolveServerUrl(Long serverId) {
-    if (serverId != null) {
-      CaldavServer server = caldavServerStorage.getServerById(serverId);
-      if (server != null) {
-        return server.getServerUrl();
-      }
-    }
-    CaldavServer seed = caldavServerStorage.getServerByProviderName(CALDAV_PROVIDER_NAME);
-    return seed == null ? null : seed.getServerUrl();
+    CaldavServer server = resolveServer(serverId);
+    return server == null ? null : server.getServerUrl();
   }
 
   /**

@@ -101,14 +101,17 @@ const caldavConnector = {
     // A rejected credential must surface as such. tsdav answers a 401 by
     // falling back to probing the server root, which then fails with "cannot
     // find principalUrl" — a message about discovery for what is simply a
-    // wrong password.
-    const probe = await fetch(settings.caldavUrl.replace('{username}', settings.username), {
+    // wrong password. Through the relay the stored credentials are injected
+    // server-side and their rejection arrives as a 403 carrying the
+    // caldav.error.credentials relay code — same outcome, no secret in the
+    // page.
+    const probe = await fetch(relayServerUrl(settings), {
       method: 'PROPFIND',
-      headers: {
+      headers: davHeaders(settings, {
         'Depth': '0',
         'Content-Type': 'application/xml',
-        'Authorization': `Basic ${btoa(`${settings.username}:${settings.password}`)}`,
-      },
+      }),
+      credentials: 'include',
       body: '<?xml version="1.0"?><propfind xmlns="DAV:"><prop><displayname/></prop></propfind>',
     }).catch(() => null);
     if (!probe) {
@@ -117,15 +120,7 @@ const caldavConnector = {
     if (probe.status === 401 || probe.status === 403) {
       throw caldavError('caldav.error.credentials', probe);
     }
-    const clientCaldav = await tsdav.createDAVClient({
-      serverUrl: settings.caldavUrl.replace('{username}', settings.username),
-      credentials: {
-        username: settings.username,
-        password: settings.password,
-      },
-      authMethod: 'Basic',
-      defaultAccountType: 'caldav',
-    });
+    const clientCaldav = await createClient(settings);
     const calendars = await clientCaldav.fetchCalendars({
       props: calendarProps(),
       projectedProps: {[PRIVILEGE_SET_PROP]: true},
@@ -218,7 +213,7 @@ const caldavConnector = {
     const settings = await caldavConnectorService.getCaldavSetting();
     const clientCaldav = await createClient(settings);
     const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
-    const serverUrl = settings.caldavUrl.replace('{username}', settings.username);
+    const serverUrl = relayServerUrl(settings);
     // The account's own calendar home, as tsdav discovered it, before either
     // fallback. An account with no calendar yet has nothing to derive a home
     // from, and the configured URL is not a safe substitute: the first form the
@@ -323,10 +318,17 @@ const caldavConnector = {
    * instance to keep it off calendar lists, since it only holds copies of
    * events eXo already displays.
    *
+   * The stored value is returned in relay space, the URL space every other
+   * id of this connector lives in: calendar ids come from tsdav, whose hrefs
+   * the relay rewrote, so a stored href predating the relay (rooted at the
+   * CalDAV server itself) would never compare equal to them by path. agenda
+   * compares these ids on decoded paths, which the mapping keeps stable.
+   *
    * @returns {Promise<String>} the href, or null when no mirror is configured
    */
   getMirrorCalendarId() {
-    return caldavConnectorService.getCaldavSetting().then(settings => settings.mirrorCalendarHref || null);
+    return caldavConnectorService.getCaldavSetting()
+      .then(settings => settings.mirrorCalendarHref && toRelayUrl(settings.mirrorCalendarHref, settings) || null);
   },
   /**
    * Whether a mirror href designates a calendar eXo created to hold the
@@ -365,8 +367,12 @@ const caldavConnector = {
       return this.getCalendar(clientCaldav);
     }
     const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
+    // The fallback href must be addressable: a stored href predating the
+    // relay is rooted at the CalDAV server itself, which the browser no
+    // longer reaches — mapped into relay space it targets the same
+    // collection through the platform.
     return calendars.find(calendar => isSameCollection(calendar.url, mirrorCalendarHref))
-      || {url: mirrorCalendarHref};
+      || {url: toRelayUrl(mirrorCalendarHref, settings)};
   },
   async getCalendar(clientCaldav){
     const calendars = await clientCaldav.fetchCalendars({
@@ -1087,13 +1093,20 @@ function exceptionLines(event, isOccurrence, vTimeZone, timeZoneId) {
  */
 async function createClient(settings) {
   try {
+    // Auth is 'Custom' with the relay in charge: the eXo session cookie —
+    // sent by the browser on this same-origin URL — is what authenticates
+    // the request, and the relay injects the stored CalDAV credentials
+    // server-side. The Basic header survives only for the legacy
+    // direct-to-server fallback, when no declared server resolves and the
+    // settings still carry a password.
+    const authHeaders = settings.password
+      ? {authorization: `Basic ${btoa(`${settings.username}:${settings.password}`)}`}
+      : {};
     return await tsdav.createDAVClient({
-      serverUrl: settings.caldavUrl.replace('{username}', settings.username),
-      credentials: {
-        username: settings.username,
-        password: settings.password,
-      },
-      authMethod: 'Basic',
+      serverUrl: relayServerUrl(settings),
+      credentials: {},
+      authMethod: 'Custom',
+      authFunction: () => Promise.resolve(authHeaders),
       defaultAccountType: 'caldav',
     });
   } catch (e) {
@@ -1186,9 +1199,8 @@ async function refusedByServer(response) {
 async function fetchCalendarObject(calendar, filename, settings) {
   const url = new URL(filename, calendar.url).href;
   const response = await fetch(url, {
-    headers: {
-      authorization: `Basic ${btoa(`${settings.username}:${settings.password}`)}`,
-    },
+    headers: davHeaders(settings, {}),
+    credentials: 'include',
   });
   if (response.status === 404) {
     return null;
@@ -2187,16 +2199,105 @@ function referenceYear(start) {
 
 
 /**
+ * The relay prefix a URL path may carry: the per-server namespace the
+ * platform relays DAV requests under. One pattern, shared by the helpers
+ * below, so "is this relay space?" has exactly one definition.
+ */
+const RELAY_PREFIX_PATTERN = /^\/caldav\/rest\/dav\/\d+/;
+
+/**
+ * The relay root of the connected account: where the platform forwards DAV
+ * requests to the declared server the account references, injecting the
+ * stored credentials server-side. Null when no declared server resolves —
+ * the pre-registry deployment — in which case the connector falls back to
+ * addressing the server directly, exactly as before the relay.
+ *
+ * @param {Object} settings connector settings carrying the effective serverId
+ * @returns {String} the absolute relay root URL, or null
+ */
+function relayRoot(settings) {
+  return settings && settings.serverId != null
+    ? `${window.location.origin}/caldav/rest/dav/${settings.serverId}`
+    : null;
+}
+
+/**
+ * A collection or object href, made addressable by this browser: an href
+ * already in relay space is kept, anything else — a stored href predating
+ * the relay, rooted at the CalDAV server itself, or a bare path — has its
+ * path folded under the account's relay root. Without a relay root the href
+ * is returned unchanged, for the legacy direct fallback.
+ *
+ * @param {String} href collection or object URL, path, or legacy absolute URL
+ * @param {Object} settings connector settings carrying the effective serverId
+ * @returns {String} the href to actually request
+ */
+function toRelayUrl(href, settings) {
+  const root = relayRoot(settings);
+  if (!root || !href) {
+    return href;
+  }
+  try {
+    const url = new URL(href, window.location.origin);
+    if (url.origin === window.location.origin && RELAY_PREFIX_PATTERN.test(url.pathname)) {
+      return url.href;
+    }
+    return `${root}${url.pathname}${url.search}`;
+  } catch (e) {
+    return href;
+  }
+}
+
+/**
+ * The base URL every DAV conversation of the account starts from: the
+ * resolved server URL with the username substituted, moved into relay space
+ * — or left direct when no declared server resolves. tsdav discovers
+ * everything else (principal, home, collections) from the hrefs the
+ * responses advertise, which the relay rewrites into the same space, so the
+ * whole URL universe of a session stays behind the platform origin.
+ *
+ * @param {Object} settings connector settings holding the URL and serverId
+ * @returns {String} the URL to open the DAV conversation at
+ */
+function relayServerUrl(settings) {
+  return toRelayUrl(settings.caldavUrl.replace('{username}', settings.username), settings);
+}
+
+/**
+ * The headers a connector-issued DAV request carries beside the
+ * request-specific ones: nothing auth-shaped when the relay is in charge —
+ * the eXo session cookie authenticates the request and the relay injects the
+ * stored CalDAV credentials — and the legacy Basic header only in the
+ * direct fallback, when the settings still carry a password.
+ *
+ * @param {Object} settings connector settings
+ * @param {Object} headers request-specific headers to extend
+ * @returns {Object} the headers to send
+ */
+function davHeaders(settings, headers) {
+  if (settings && settings.password) {
+    return {...headers, 'Authorization': `Basic ${btoa(`${settings.username}:${settings.password}`)}`};
+  }
+  return headers;
+}
+
+/**
  * The decoded path of a collection URL, without a trailing slash — the part
  * of an href that identifies the collection regardless of host or of how the
- * server percent-encodes it.
+ * server percent-encodes it. A relay prefix is stripped first: the same
+ * collection is one path when stored before the relay (rooted at the CalDAV
+ * server) and another when enumerated through it, and both must keep
+ * designating the same collection — otherwise every pre-relay account would
+ * lose its mirror on the day the relay ships.
  *
  * @param {String} url collection URL or href
- * @returns {String} its decoded, slash-trimmed path
+ * @returns {String} its decoded, slash-trimmed, relay-prefix-free path
  */
 function collectionPath(url) {
   try {
-    return decodeURIComponent(new URL(url, window.location.origin).pathname).replace(/\/+$/, '');
+    return decodeURIComponent(new URL(url, window.location.origin).pathname)
+      .replace(RELAY_PREFIX_PATTERN, '')
+      .replace(/\/+$/, '');
   } catch (e) {
     return url;
   }

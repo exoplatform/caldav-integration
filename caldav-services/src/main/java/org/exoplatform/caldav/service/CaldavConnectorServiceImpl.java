@@ -17,6 +17,7 @@
 package org.exoplatform.caldav.service;
 
 import org.apache.commons.lang3.StringUtils;
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.container.ExoContainerContext;
@@ -59,17 +60,34 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
    * account references, else the seed registration, else the legacy
    * {@code exo.agenda.caldav.connector.url} property — today's behaviour, kept
    * for deployments whose registry is empty.
+   * <p>
+   * Two relay-era guarantees are made here. The <b>password never leaves the
+   * platform</b>: it is blanked before the setting is returned, since the
+   * only consumer of this method is the settings REST the browser reads, and
+   * the browser no longer speaks to CalDAV servers itself — the relay
+   * injects the stored credentials server-side. And the <b>serverId is the
+   * effective one</b>: when the registry resolves a row (the referenced one,
+   * else the seed), its id is set on the DTO even for legacy accounts that
+   * stored none, because that id is how the browser addresses the relay.
    *
    * @param userIdentityId User identity getting the caldav user setting
-   * @return the setting of that user, its caldavUrl resolved, never null
+   * @return the setting of that user, its caldavUrl resolved, its password
+   *         blanked, never null
    */
   @Override
   public CaldavUserSetting getCaldavSetting(long userIdentityId) {
     CaldavUserSetting caldavUserSetting = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    // "Credentials exist" survives as the presence of the username; the
+    // secret itself has no reason to reach the page anymore.
+    caldavUserSetting.setPassword(null);
     String resolvedUrl = null;
     CaldavServerService serverRegistry = getCaldavServerService();
     if (serverRegistry != null) {
-      resolvedUrl = serverRegistry.resolveServerUrl(caldavUserSetting.getServerId());
+      CaldavServer resolvedServer = serverRegistry.resolveServer(caldavUserSetting.getServerId());
+      if (resolvedServer != null) {
+        resolvedUrl = resolvedServer.getServerUrl();
+        caldavUserSetting.setServerId(resolvedServer.getId());
+      }
     }
     caldavUserSetting.setCaldavUrl(StringUtils.isNotBlank(resolvedUrl) ? resolvedUrl : this.caldavUrl);
     return caldavUserSetting;
