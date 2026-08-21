@@ -35,6 +35,7 @@ import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.RemoteCalendar;
 import org.exoplatform.caldav.model.RemoteIcsEvent;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.caldav.utils.CalendarPalette;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -75,7 +76,7 @@ public class CaldavReadService {
       return List.of();
     }
     CalDavEndpoint endpoint = endpointOf(settings);
-    List<CalendarCollection> collections = collectionsOf(endpoint, settings);
+    List<CalendarCollection> collections = readableCollections(endpoint, settings);
     List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
     List<RemoteCalendar> calendars = new ArrayList<>();
     for (CalendarCollection collection : collections) {
@@ -111,7 +112,7 @@ public class CaldavReadService {
       return List.of();
     }
     CalDavEndpoint endpoint = endpointOf(settings);
-    List<CalendarCollection> collections = collectionsOf(endpoint, settings);
+    List<CalendarCollection> collections = readableCollections(endpoint, settings);
     List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
 
     List<RemoteIcsEvent> events = new ArrayList<>();
@@ -197,6 +198,53 @@ public class CaldavReadService {
       LOG.warn("Object {} could not be read; it is omitted from this answer", object.href(), e);
       return List.of();
     }
+  }
+
+  /**
+   * The account's calendars, without the one eXo writes its own copies into.
+   *
+   * <p>
+   * The mirror holds copies of events eXo already displays. Read back, every
+   * one of them returns as a remote event and is drawn <b>next to the eXo
+   * event it is a copy of</b> — the same meeting twice, at the same hour,
+   * which reads as a bug in the sync rather than as a display rule.
+   *
+   * <p>
+   * Excluded here rather than recognised later, on purpose. The front end used
+   * to filter it by comparing calendar ids against the stored href, and those
+   * two now live in different URL spaces: hrefs stored while the browser spoke
+   * through the relay are rooted at {@code /caldav/rest/dav/{id}}, while the
+   * server reports the collection's own path. A comparison that cannot match
+   * is worse than no comparison — it fails silently and shows duplicates.
+   * Not listing the collection at all leaves nothing to compare.
+   *
+   * <p>
+   * Matched two ways, because either can be the one that holds: the href
+   * recorded for this user, canonically, and the slug the collection path ends
+   * with. The second survives a disconnect, which forgets the setting.
+   *
+   * @param endpoint the declared server
+   * @param settings the connected account
+   * @return the collections whose events belong on the agenda
+   */
+  private List<CalendarCollection> readableCollections(CalDavEndpoint endpoint, CaldavUserSetting settings) {
+    String mirror = CaldavSyncStorage.canonicalHref(settings.getMirrorCalendarHref());
+    return collectionsOf(endpoint, settings).stream().filter(collection -> !isMirror(collection, mirror)).toList();
+  }
+
+  /**
+   * Whether a collection is the one eXo copies space events into.
+   *
+   * @param collection the collection to judge
+   * @param storedMirror the href recorded for this user, canonical
+   * @return true when it is the mirror
+   */
+  private boolean isMirror(CalendarCollection collection, String storedMirror) {
+    String href = CaldavSyncStorage.canonicalHref(collection.href());
+    if (href == null) {
+      return false;
+    }
+    return href.equals(storedMirror) || href.endsWith("/" + CaldavPushService.MIRROR_COLLECTION_SLUG);
   }
 
   /**
