@@ -37,9 +37,7 @@
   },
   "dependencies": {
     "buffer": "^6.0.3",
-    "ical.js": "^1.5.0",
-    "string_decoder": "^1.3.0",
-    "tsdav": "^2.2.0"
+    "string_decoder": "^1.3.0"
   },
   "jest": {
     "testEnvironment": "jsdom",
@@ -64,7 +62,7 @@
       ]
     },
     "transformIgnorePatterns": [
-      "/node_modules/(?!tsdav)"
+      "/node_modules/"
     ]
   }
 }
