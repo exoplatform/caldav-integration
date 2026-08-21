@@ -27,6 +27,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.service.AgendaEventService;
@@ -458,7 +459,13 @@ public class CaldavInboundService {
       if (occurrence == null) {
         return;
       }
-      agendaEventService.deleteEventById(occurrence.getId(), userIdentityId);
+      // Marked cancelled, not deleted. Deleting the exceptional occurrence
+      // removes the *exception*, not the date — the series then simply covers
+      // that day again, which is how a cancelled meeting came back on the
+      // first live run.
+      occurrence.setStatus(EventStatus.CANCELLED);
+      occurrence.setRecurrence(null);
+      agendaEventService.updateEvent(occurrence, List.of(), List.of(), List.of(), List.of(), null, false, userIdentityId);
     } catch (Exception e) { // NOSONAR agenda declares several checked exceptions here
       // A meeting the user cancelled elsewhere still showing here is wrong,
       // but it is a smaller wrong than losing the series over it.
