@@ -137,6 +137,13 @@ public class CaldavRelayService {
                                                            "MKCALENDAR");
 
   /**
+   * The Content-Type header name, in the lower-case form both allow-lists and
+   * the header lookups use: header names are case-insensitive, and the relay
+   * normalises them once on the way in so every comparison here is exact.
+   */
+  private static final String       CONTENT_TYPE_HEADER          = "content-type";
+
+  /**
    * Request headers forwarded to the upstream server: Depth scopes PROPFIND
    * and REPORT; Content-Type distinguishes the XML request bodies from
    * text/calendar PUTs; If-Match and If-None-Match carry the connector's
@@ -147,7 +154,7 @@ public class CaldavRelayService {
    * credentials and nothing of the user's eXo session or browser context.
    */
   private static final Set<String>  FORWARDED_REQUEST_HEADERS    =
-                                                              Set.of("depth", "content-type", "if-match", "if-none-match",
+                                                              Set.of("depth", CONTENT_TYPE_HEADER, "if-match", "if-none-match",
                                                                      "accept", "prefer");
 
   /**
@@ -161,7 +168,7 @@ public class CaldavRelayService {
    * the hop-by-hop family.
    */
   private static final Set<String>  FORWARDED_RESPONSE_HEADERS   =
-                                                               Set.of("content-type", "etag", "dav", "allow", "schedule-tag",
+                                                               Set.of(CONTENT_TYPE_HEADER, "etag", "dav", "allow", "schedule-tag",
                                                                       "preference-applied");
 
   /** Response headers passed back after being rewritten into relay space. */
@@ -480,7 +487,7 @@ public class CaldavRelayService {
           }
         }
       });
-      String contentType = headers.get("content-type");
+      String contentType = headers.get(CONTENT_TYPE_HEADER);
       if (contentType != null && contentType.toLowerCase(Locale.ENGLISH).contains("xml") && body.length > 0) {
         Charset charset = charsetOf(contentType);
         body = rewriteHrefs(new String(body, charset), upstreamBase, relayPrefix).getBytes(charset);

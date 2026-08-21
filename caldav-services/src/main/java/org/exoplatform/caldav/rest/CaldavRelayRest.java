@@ -80,6 +80,12 @@ public class CaldavRelayRest {
    * @param serverId technical identifier of the targeted registration
    * @return the upstream response, statuses passed through, hrefs rewritten
    */
+  // S3752: the mapping deliberately accepts any verb — PROPFIND, REPORT and
+  // MKCALENDAR have no RequestMethod constant to enumerate, and restricting
+  // the mapping to the standard verbs would disable the relay outright. The
+  // real allow-list is CaldavRelayService.ALLOWED_METHODS, enforced before
+  // anything is forwarded, and duplicated into the Spring Security firewall.
+  @SuppressWarnings("java:S3752")
   @RequestMapping("/dav/{serverId}/**")
   @Secured("users")
   @Operation(summary = "Relays a DAV request to a declared CalDAV server", method = "PROPFIND",
