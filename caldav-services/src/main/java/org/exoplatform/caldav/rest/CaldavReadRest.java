@@ -23,7 +23,9 @@ import java.util.List;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.annotation.Secured;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -37,6 +39,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import org.exoplatform.caldav.model.RemoteCalendar;
 import org.exoplatform.caldav.model.RemoteIcsEvent;
 import org.exoplatform.caldav.service.CaldavReadService;
+import org.exoplatform.caldav.service.CaldavSyncService;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.social.core.manager.IdentityManager;
 
@@ -55,6 +58,9 @@ public class CaldavReadRest {
 
   @Autowired
   private CaldavReadService caldavReadService;
+
+  @Autowired
+  private CaldavSyncService caldavSyncService;
 
   @Autowired
   private IdentityManager   identityManager;
@@ -79,7 +85,33 @@ public class CaldavReadRest {
                                      @Parameter(description = "End of the period, ISO instant", required = true)
                                      @RequestParam("end")
                                      String end) {
-    return caldavReadService.readEvents(currentUser(), instantOf(start, "start"), instantOf(end, "end"));
+    // The period is checked before anything else happens: a request that is
+    // about to be refused should not first make the platform talk to a
+    // calendar server.
+    Instant from = instantOf(start, "start");
+    Instant to = instantOf(end, "end");
+    // Opening the agenda is the trigger. Throttled, so three page loads in a
+    // minute are three page loads and not three reasons to talk to a calendar
+    // server — and it never throws, so a server being down cannot stop an
+    // agenda rendering the events it already has.
+    caldavSyncService.syncIfDue(currentUser(), CaldavConnectorUtils.getCurrentUser());
+    return caldavReadService.readEvents(currentUser(), from, to);
+  }
+
+  /**
+   * Synchronises the connected account now, whatever the throttle says.
+   *
+   * @return an empty 204
+   */
+  @PostMapping("/sync")
+  @Secured("users")
+  @Operation(summary = "Synchronises the connected CalDAV account now",
+      description = "Bypasses the throttle: a user pressing this has a reason the throttle cannot know — they just "
+          + "changed something on another device and want to see it.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Synchronisation ran") })
+  public ResponseEntity<Void> syncNow() {
+    caldavSyncService.syncNow(currentUser(), CaldavConnectorUtils.getCurrentUser());
+    return ResponseEntity.noContent().build();
   }
 
   /**
