@@ -233,6 +233,49 @@ public class CaldavReadServiceTest {
     assertTrue(service.readEvents(USER, FROM, TO).isEmpty());
   }
 
+  @Test
+  public void theMirrorIsNotAmongTheCalendarsRead() {
+    // Its events are copies of events eXo already shows. Read back, each one
+    // is drawn next to the original — the same meeting twice, at the same
+    // hour, which reads as a broken sync rather than as a display rule.
+    givenCalendars(calendar("/dav/calendars/john/personal/", "Personal"),
+                   calendar("/dav/calendars/john/exo-meetings/", "eXo Meetings"));
+
+    List<RemoteCalendar> calendars = service.listCalendars(USER);
+
+    assertEquals(1, calendars.size());
+    assertEquals("/dav/calendars/john/personal/", calendars.get(0).getId());
+  }
+
+  @Test
+  public void theMirrorIsNotReadEither() {
+    givenCalendars(calendar("/dav/calendars/john/exo-meetings/", "eXo Meetings"));
+
+    assertTrue(service.readEvents(USER, FROM, TO).isEmpty());
+    // Never even asked for: the copies are not events to display, and fetching
+    // them only to drop them costs a REPORT per read.
+    verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void aMirrorRecordedUnderAnotherNameIsStillExcluded() {
+    // An adopted mirror is an ordinary calendar the user already had, so its
+    // path carries no slug to recognise. The stored href is what identifies
+    // it — compared canonically, because the one saved while the browser spoke
+    // through the relay is rooted at /caldav/rest/dav/{id} and would never
+    // compare equal to the collection's own path.
+    CaldavUserSetting adopted = settings();
+    adopted.setMirrorCalendarHref("/caldav/rest/dav/7/dav/calendars/john/personal/");
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(adopted);
+    givenCalendars(calendar("/dav/calendars/john/personal/", "Personal"),
+                   calendar("/dav/calendars/john/work/", "Work"));
+
+    List<RemoteCalendar> calendars = service.listCalendars(USER);
+
+    assertEquals(1, calendars.size());
+    assertEquals("/dav/calendars/john/work/", calendars.get(0).getId());
+  }
+
   /**
    * The account's calendars, as the server lists them.
    *

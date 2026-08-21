@@ -55,6 +55,11 @@ import org.exoplatform.caldav.model.SyncOrigin;
 @Component
 public class CaldavSyncStorage {
 
+  /** The relay's own root, which hrefs stored by the browser carry. */
+  private static final java.util.regex.Pattern RELAY_PREFIX =
+                                                            java.util.regex.Pattern.compile("^/caldav/rest/dav/\\d+");
+
+
   @Autowired
   private CaldavCalendarSyncDAO calendarSyncDAO;
 
@@ -275,10 +280,28 @@ public class CaldavSyncStorage {
       if (StringUtils.isBlank(path)) {
         path = trimmed;
       }
-      return StringUtils.stripEnd(URLDecoder.decode(path, StandardCharsets.UTF_8), "/");
+      return withoutRelayPrefix(StringUtils.stripEnd(URLDecoder.decode(path, StandardCharsets.UTF_8), "/"));
     } catch (IllegalArgumentException e) {
-      return StringUtils.stripEnd(trimmed, "/");
+      return withoutRelayPrefix(StringUtils.stripEnd(trimmed, "/"));
     }
+  }
+
+  /**
+   * The same path with the relay's own prefix removed.
+   *
+   * <p>
+   * While the browser spoke CalDAV it addressed servers through
+   * {@code /caldav/rest/dav/{serverId}}, and hrefs stored then carry that
+   * prefix. The server addresses the collection directly. Both name the same
+   * collection, and a comparison that treats them as different does not fail
+   * loudly — it silently fails to recognise a calendar, which is how a mirror
+   * whose copies should be hidden ends up drawn next to the events it copies.
+   *
+   * @param path a canonical path, possibly rooted in relay space
+   * @return the collection's own path
+   */
+  private static String withoutRelayPrefix(String path) {
+    return RELAY_PREFIX.matcher(path).replaceFirst("");
   }
 
   /**
