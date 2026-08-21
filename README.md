@@ -23,6 +23,25 @@ or
 
 If exists, {username} will be replaced by the user username to call caldav API. 
 
+## Server-side DAV relay
+
+The browser never talks to a CalDAV server directly: every DAV request goes
+through the platform relay at `/caldav/rest/dav/{serverId}/**`, which forwards
+it to the declared server the id names — targets resolve only from the
+administrator registry, never from a client-supplied URL — and injects the
+connected user's stored credentials server-side. The password is therefore
+never sent to the page, CORS stops mattering (BlueMind sends no CORS headers),
+and each server gets its own path namespace, so two servers advertising
+`/dav/`-rooted hrefs cannot collide. Advertised hrefs and Location headers are
+rewritten under the per-server prefix by the relay itself.
+
+Relay tuning properties (defaults in parentheses):
+
+- `exo.agenda.caldav.relay.connectTimeoutSeconds` (10)
+- `exo.agenda.caldav.relay.requestTimeoutSeconds` (30)
+- `exo.agenda.caldav.relay.maxBodyBytes` (20971520) — cap applied to request
+  and response bodies alike.
+
 
 ## Validated providers
 The following providers was tested and validated with this caldav-integration addon

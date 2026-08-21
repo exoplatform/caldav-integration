@@ -178,33 +178,30 @@ export default {
     saveSettings() {
       if (!this.disableConnectButton) {
         this.saving = true;
-        // The server URL is deployment configuration, served by the settings
-        // REST whether or not an account is stored yet — which is what makes
-        // verify-then-store possible at all.
-        this.$agendaCaldavService.getCaldavSetting()
-          .then(settings => {
-            // The URL to verify against is the clicked server's own — several
-            // may now be declared — falling back to the resolved settings URL
-            // for the legacy connector, which is what it always probed.
-            const caldavUrl = this.server && this.server.serverUrl || settings.caldavUrl;
-            return this.$agendaCaldavService.probeCaldavAccount(caldavUrl, this.account, this.password)
-              .then(() => this.$agendaCaldavService.createCaldavSetting({
-                'username': this.account,
-                'password': this.password,
-                'serverId': this.server && this.server.serverId || null,
-              }))
-              .then(() => {
-                this.$emit('display-alert', this.$t('agenda.caldavCalendar.settings.connection.successMessage'));
-                document.dispatchEvent(new CustomEvent('test-connection', {
-                  detail: {
-                    username: this.account,
-                    password: this.password,
-                    caldavUrl: caldavUrl,
-                  },
-                }));
-                this.reset();
-                this.closeCaldavDrawer();
-              });
+        // The verification happens on the platform, which is the only party
+        // that reaches the CalDAV server now: the typed credentials travel
+        // once to the verify endpoint — naming the clicked server by its
+        // registration id, never by a URL — and are stored only on
+        // acceptance, so nothing half-connected is ever left behind.
+        const serverId = this.server && this.server.serverId || null;
+        this.$agendaCaldavService.verifyCaldavAccount(serverId, this.account, this.password)
+          .then(() => this.$agendaCaldavService.createCaldavSetting({
+            'username': this.account,
+            'password': this.password,
+            'serverId': serverId,
+          }))
+          .then(() => {
+            this.$emit('display-alert', this.$t('agenda.caldavCalendar.settings.connection.successMessage'));
+            // The payload deliberately carries the username alone: the
+            // pending connect() resolves with it, and no listener has any
+            // business receiving the password — the platform holds it now.
+            document.dispatchEvent(new CustomEvent('test-connection', {
+              detail: {
+                username: this.account,
+              },
+            }));
+            this.reset();
+            this.closeCaldavDrawer();
           })
           .catch(error => {
             // The drawer stays open, keeping what the user typed: a refusal

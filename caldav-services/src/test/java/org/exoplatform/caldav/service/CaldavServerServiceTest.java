@@ -485,6 +485,29 @@ public class CaldavServerServiceTest {
   }
 
   /**
+   * The row resolution the relay's authorization rides: same order as the
+   * URL resolution, but answering the whole registration — the relay needs
+   * its id and activation, not just its URL, to decide whether a target may
+   * receive the user's stored credentials.
+   */
+  @Test
+  public void shouldResolveTheServerRowInTheSameOrder() {
+    CaldavServer declared = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
+    CaldavServer seed = server(1, "agenda.caldavCalendar", "CalDAV", null, "https://seed.example.org/", true);
+
+    when(caldavServerStorage.getServerById(7)).thenReturn(declared);
+    assertEquals(declared, caldavServerService.resolveServer(7L));
+
+    when(caldavServerStorage.getServerById(99)).thenReturn(null);
+    when(caldavServerStorage.getServerByProviderName(CaldavServerService.CALDAV_PROVIDER_NAME)).thenReturn(seed);
+    assertEquals(seed, caldavServerService.resolveServer(99L));
+    assertEquals(seed, caldavServerService.resolveServer(null));
+
+    when(caldavServerStorage.getServerByProviderName(CaldavServerService.CALDAV_PROVIDER_NAME)).thenReturn(null);
+    assertNull(caldavServerService.resolveServer(null));
+  }
+
+  /**
    * The listing is handed through exactly as storage produced it — inactive
    * rows included, because the admin table shows both states. A service that
    * started filtering (say, hiding inactive rows) would silently empty the
