@@ -1,0 +1,238 @@
+/*
+ * Copyright (C) 2026 eXo Platform SAS.
+ *
+ * This is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation; either version 2.1 of
+ * the License, or (at your option) any later version.
+ *
+ * This software is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this software; if not, write to the Free
+ * Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
+ * 02110-1301 USA, or see the FSF site: http://www.fsf.org.
+ */
+package org.exoplatform.caldav.storage;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import java.util.Date;
+import java.util.List;
+import java.util.Optional;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import org.exoplatform.caldav.dao.CaldavCalendarSyncDAO;
+import org.exoplatform.caldav.dao.CaldavObjectSyncDAO;
+import org.exoplatform.caldav.entity.CaldavCalendarSyncEntity;
+import org.exoplatform.caldav.entity.CaldavObjectSyncEntity;
+import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
+import org.exoplatform.caldav.model.ObjectSync;
+import org.exoplatform.caldav.model.SyncOrigin;
+
+/**
+ * What this storage has to guarantee is narrow and load-bearing: an href is
+ * stored canonical, always, whoever wrote it. Every binding in the engine is
+ * recovered by comparing hrefs, so a single path that skips normalisation does
+ * not fail loudly — it silently fails to find a pair that exists, and the
+ * engine creates a duplicate collection instead. These tests pin the
+ * normalisation itself and the two write paths that must apply it.
+ */
+@ExtendWith(MockitoExtension.class)
+public class CaldavSyncStorageTest {
+
+  private static final long     USER   = 42L;
+
+  private static final long     SERVER = 7L;
+
+  @Mock
+  private CaldavCalendarSyncDAO calendarSyncDAO;
+
+  @Mock
+  private CaldavObjectSyncDAO   objectSyncDAO;
+
+  @InjectMocks
+  private CaldavSyncStorage     storage;
+
+  @Test
+  public void canonicalHrefDropsTheTrailingSlash() {
+    assertEquals("/dav/calendars/john/work", CaldavSyncStorage.canonicalHref("/dav/calendars/john/work/"));
+    assertEquals("/dav/calendars/john/work", CaldavSyncStorage.canonicalHref("/dav/calendars/john/work"));
+  }
+
+  @Test
+  public void canonicalHrefDecodesPercentEscapes() {
+    // The same collection, as a server writes it and as a client writes it.
+    assertEquals(CaldavSyncStorage.canonicalHref("/dav/calendars/john%40acme.com/work/"),
+                 CaldavSyncStorage.canonicalHref("/dav/calendars/john@acme.com/work"));
+  }
+
+  @Test
+  public void canonicalHrefKeepsOnlyThePath() {
+    // Reached through the relay or directly, it is one collection.
+    assertEquals("/dav/calendars/john/work",
+                 CaldavSyncStorage.canonicalHref("https://caldav.example.invalid/dav/calendars/john/work/"));
+  }
+
+  @Test
+  public void canonicalHrefLeavesAnUnparseableValueUsable() {
+    // Normalisation, not validation: refusing an odd href would lose the
+    // binding rather than protect it.
+    String odd = "not a url at all/";
+    assertEquals("not a url at all", CaldavSyncStorage.canonicalHref(odd));
+    assertNull(CaldavSyncStorage.canonicalHref(null));
+  }
+
+  @Test
+  public void savePairStoresTheHrefCanonical() {
+    when(calendarSyncDAO.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    storage.savePair(pair(null, "/cal/john/work", "uid-1", SyncOrigin.EXO));
+
+    ArgumentCaptor<CaldavCalendarSyncEntity> saved = ArgumentCaptor.forClass(CaldavCalendarSyncEntity.class);
+    verify(calendarSyncDAO).save(saved.capture());
+    assertEquals("/cal/john/work", saved.getValue().getRemoteHref());
+  }
+
+  @Test
+  public void savePairNormalisesWhatTheCallerDidNot() {
+    when(calendarSyncDAO.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    storage.savePair(pair(null, "https://caldav.example.invalid/cal/john%20doe/work/", "uid-2", SyncOrigin.REMOTE));
+
+    ArgumentCaptor<CaldavCalendarSyncEntity> saved = ArgumentCaptor.forClass(CaldavCalendarSyncEntity.class);
+    verify(calendarSyncDAO).save(saved.capture());
+    assertEquals("/cal/john doe/work", saved.getValue().getRemoteHref());
+  }
+
+  @Test
+  public void saveObjectNormalisesItsHrefToo() {
+    when(objectSyncDAO.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    ObjectSync object = new ObjectSync(null, 3L, 9L, "uid@acme", "/cal/john/work/uid%40acme.ics", null, null, new Date());
+    storage.saveObject(object);
+
+    ArgumentCaptor<CaldavObjectSyncEntity> saved = ArgumentCaptor.forClass(CaldavObjectSyncEntity.class);
+    verify(objectSyncDAO).save(saved.capture());
+    assertEquals("/cal/john/work/uid@acme.ics", saved.getValue().getRemoteHref());
+  }
+
+  @Test
+  public void getPairByRemoteHrefMatchesAcrossSpellings() {
+    CaldavCalendarSyncEntity stored = entity(1L, "/cal/john@acme.com/work", "uid-1", SyncOrigin.EXO);
+    when(calendarSyncDAO.findByUserIdentityIdAndServerId(USER, SERVER)).thenReturn(List.of(stored));
+
+    // The very lookup that, done on raw strings, would miss and make the
+    // engine create a second collection.
+    CalendarSync found = storage.getPairByRemoteHref(USER,
+                                                      SERVER,
+                                                      "https://caldav.example.invalid/cal/john%40acme.com/work/");
+
+    assertNotNull(found);
+    assertEquals(1L, found.getId());
+  }
+
+  @Test
+  public void getPairByRemoteHrefAnswersNullRatherThanGuessing() {
+    when(calendarSyncDAO.findByUserIdentityIdAndServerId(USER, SERVER)).thenReturn(List.of(entity(1L,
+                                                                                                  "/cal/john/work",
+                                                                                                  "uid-1",
+                                                                                                  SyncOrigin.EXO)));
+
+    assertNull(storage.getPairByRemoteHref(USER, SERVER, "/cal/john/private"));
+    assertNull(storage.getPairByRemoteHref(USER, SERVER, " "));
+  }
+
+  @Test
+  public void getPairByLocalCalendarReadsThroughTheAnchor() {
+    when(calendarSyncDAO.findByUserIdentityIdAndServerIdAndLocalCalendarSyncUid(USER, SERVER, "uid-1"))
+                                                                                                       .thenReturn(Optional.of(entity(5L,
+                                                                                                                                      "/cal/john/work",
+                                                                                                                                      "uid-1",
+                                                                                                                                      SyncOrigin.EXO)));
+
+    assertEquals(5L, storage.getPairByLocalCalendar(USER, SERVER, "uid-1").getId());
+    assertNull(storage.getPairByLocalCalendar(USER, SERVER, "absent"));
+  }
+
+  @Test
+  public void getPairsByOriginShowsDuplicatesRatherThanHidingThem() {
+    // The mirror pair should be single, but its anchor is null and no unique
+    // index covers NULL rows. Returning a list is what lets the service see
+    // that something went wrong instead of silently working on the first row.
+    when(calendarSyncDAO.findByUserIdentityIdAndServerIdAndOrigin(USER, SERVER, SyncOrigin.MIRROR))
+                                                                                                  .thenReturn(List.of(entity(1L,
+                                                                                                                             "/cal/john/exo-meetings",
+                                                                                                                             null,
+                                                                                                                             SyncOrigin.MIRROR),
+                                                                                                                      entity(2L,
+                                                                                                                             "/cal/john/exo-meetings-2",
+                                                                                                                             null,
+                                                                                                                             SyncOrigin.MIRROR)));
+
+    List<CalendarSync> mirrors = storage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR);
+
+    assertEquals(2, mirrors.size());
+  }
+
+  @Test
+  public void isEventMappedIsWhatMakesTheBackfillRepeatable() {
+    when(objectSyncDAO.existsByLocalEventId(11L)).thenReturn(true);
+
+    assertTrue(storage.isEventMapped(11L));
+    verify(objectSyncDAO).existsByLocalEventId(11L);
+  }
+
+  /**
+   * A pair DTO with the fields these tests care about and defaults elsewhere.
+   *
+   * @param id technical identifier, or null for a new pair
+   * @param href the remote collection href, in any spelling
+   * @param anchor agenda's calendar sync uid, or null for a mirror pair
+   * @param origin which side created the collection
+   * @return the pair
+   */
+  private CalendarSync pair(Long id, String href, String anchor, SyncOrigin origin) {
+    return new CalendarSync(id, USER, SERVER, anchor, href, origin, null, null, CalendarSyncStatus.ACTIVE, null, null, 0);
+  }
+
+  /**
+   * A pair entity already stored, therefore already canonical.
+   *
+   * @param id technical identifier
+   * @param href the canonical remote collection href
+   * @param anchor agenda's calendar sync uid, or null for a mirror pair
+   * @param origin which side created the collection
+   * @return the entity
+   */
+  private CaldavCalendarSyncEntity entity(long id, String href, String anchor, SyncOrigin origin) {
+    return new CaldavCalendarSyncEntity(id,
+                                        USER,
+                                        SERVER,
+                                        anchor,
+                                        href,
+                                        origin,
+                                        null,
+                                        null,
+                                        CalendarSyncStatus.ACTIVE,
+                                        null,
+                                        null,
+                                        0);
+  }
+}
