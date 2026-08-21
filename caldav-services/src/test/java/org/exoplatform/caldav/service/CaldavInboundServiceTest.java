@@ -25,9 +25,11 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
@@ -39,6 +41,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
@@ -99,12 +102,15 @@ public class CaldavInboundServiceTest {
   private CaldavInboundService   service;
 
   /**
-   * A connected account and an endpoint, for the tests that get that far.
+   * A connected account, an endpoint, and a slice wide enough that the tests
+   * below make one round trip — so what they assert stays about importing
+   * rather than about slicing.
    */
   @BeforeEach
   public void connectAnAccount() {
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    ReflectionTestUtils.setField(service, "sliceDays", 400L);
   }
 
   /**
@@ -323,6 +329,36 @@ public class CaldavInboundServiceTest {
   public void nothingToImportIntoIsNotAnError() {
     assertEquals(0, service.importInto(USER, null, calendar(), from(), to()));
     assertEquals(0, service.importInto(USER, pair(), null, from(), to()));
+  }
+
+  @Test
+  public void theWindowIsWalkedInSlicesRatherThanAskedForAtOnce() {
+    // Observed live: a year asked for in one calendar-query is one enormous
+    // response, and it timed out against a real calendar — losing the whole
+    // collection for it. Sliced, each round trip is small.
+    ReflectionTestUtils.setField(service, "sliceDays", 10L);
+    when(calDavClient.calendarQuery(any(), anyString(), any(), any(), anyString(), anyString())).thenReturn(List.of());
+
+    service.importInto(USER, pair(), calendar(), from(), from().plus(Duration.ofDays(30)));
+
+    verify(calDavClient, times(3)).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void oneSliceTheServerCannotAnswerDoesNotCostTheRestOfTheWindow() throws Exception {
+    // The failure that started this: one slow stretch of a calendar must not
+    // lose the days on either side of it.
+    ReflectionTestUtils.setField(service, "sliceDays", 10L);
+    when(calDavClient.calendarQuery(any(), anyString(), any(), any(), anyString(), anyString()))
+                                                                                               .thenThrow(new CalDavException("timed out"))
+                                                                                               .thenReturn(List.of(object("o1.ics",
+                                                                                                                          "etag-1",
+                                                                                                                          ics("uid-1@example.test",
+                                                                                                                              "Later"))))
+                                                                                               .thenReturn(List.of());
+    givenAgendaCreates(501L);
+
+    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), from().plus(Duration.ofDays(30))));
   }
 
   /**
