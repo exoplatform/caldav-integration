@@ -361,6 +361,117 @@ public class CaldavInboundServiceTest {
     assertEquals(1, service.importInto(USER, pair(), calendar(), from(), from().plus(Duration.ofDays(30))));
   }
 
+  @Test
+  public void aRemoteEditIsAppliedWhenItIsTheNewer() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-2", icsModifiedAt("uid-1@example.test", "Moved", "20261005T120000Z")));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
+
+    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    ArgumentCaptor<Event> saved = ArgumentCaptor.forClass(Event.class);
+    verify(agendaEventService).updateEvent(saved.capture(), any(), any(), any(), any(), any(), eq(false), eq(USER));
+    assertEquals("Moved", saved.getValue().getSummary());
+    // The same event, not a new one beside it.
+    assertEquals(501L, saved.getValue().getId());
+  }
+
+  @Test
+  public void aLocalEditMoreRecentThanTheRemoteOneIsNotOverwritten() throws Exception {
+    // The edit is not lost — the outbound half carries it. What matters here
+    // is that the remote copy does not silently win.
+    givenServerObjects(object("o1.ics", "etag-2", icsModifiedAt("uid-1@example.test", "Stale", "20261005T090000Z")));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T12:00:00Z"));
+
+    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    verify(agendaEventService, never()).updateEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong());
+  }
+
+  @Test
+  public void aRefusedRemoteEditDoesNotRecordTheEtag() throws Exception {
+    // Recording it would make the next run believe the two sides agree, and
+    // the remote edit would be lost rather than reconsidered.
+    givenServerObjects(object("o1.ics", "etag-2", icsModifiedAt("uid-1@example.test", "Stale", "20261005T090000Z")));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T12:00:00Z"));
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  @Test
+  public void theServerWinsWhenTheTwoSidesChangedAtTheSameMoment() throws Exception {
+    // The tie is unresolvable and one side has to be named in advance: a rule
+    // nobody can predict is worse than one that occasionally loses the wrong
+    // edit. Remote is the side the user's other clients write to.
+    givenServerObjects(object("o1.ics", "etag-2", icsModifiedAt("uid-1@example.test", "Remote", "20261005T090000Z")));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
+
+    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+  }
+
+  @Test
+  public void anObjectThatNeverSaysWhenItChangedIsStillApplied() throws Exception {
+    // Refusing a change because the server said nothing about its age would
+    // freeze the event here for good.
+    givenServerObjects(object("o1.ics", "etag-2", ics("uid-1@example.test", "No timestamp")));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T12:00:00Z"));
+
+    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+  }
+
+  @Test
+  public void aMappingWhoseEventIsGoneIsDroppedSoTheObjectComesBack() throws Exception {
+    // Otherwise a row describing an event nobody has skips the object for
+    // ever, and the user is left with a calendar quietly missing a meeting.
+    givenServerObjects(object("o1.ics", "etag-2", ics("uid-1@example.test", "Back again")));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(null);
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    verify(caldavSyncStorage).deleteObject(1L);
+  }
+
+  /**
+   * @param uid the object's uid
+   * @param summary its summary
+   * @param lastModified its LAST-MODIFIED stamp
+   * @return a single-event calendar object carrying that stamp
+   */
+  private String icsModifiedAt(String uid, String summary, String lastModified) {
+    return """
+        BEGIN:VCALENDAR
+        VERSION:2.0
+        PRODID:-//test//EN
+        BEGIN:VEVENT
+        DTSTAMP:20261001T080000Z
+        LAST-MODIFIED:%s
+        UID:%s
+        DTSTART:20261012T090000Z
+        DTEND:20261012T100000Z
+        SUMMARY:%s
+        END:VEVENT
+        END:VCALENDAR
+        """.formatted(lastModified, uid, summary);
+  }
+
+  /**
+   * @param updated when agenda last saw it change
+   * @return an event agenda would answer with
+   */
+  private Event eventUpdatedAt(String updated) {
+    Event event = new Event();
+    event.setId(501L);
+    event.setUpdated(java.time.ZonedDateTime.parse(updated));
+    return event;
+  }
+
   /**
    * @param objects what the server answers
    */
