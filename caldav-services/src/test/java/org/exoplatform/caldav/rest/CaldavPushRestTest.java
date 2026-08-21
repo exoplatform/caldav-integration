@@ -19,6 +19,8 @@
 package org.exoplatform.caldav.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -33,7 +35,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
+import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.ObjectSync;
+import org.exoplatform.caldav.service.CaldavDeletionService;
 import org.exoplatform.caldav.service.CaldavPushException;
 import org.exoplatform.caldav.service.CaldavPushService;
 import org.exoplatform.caldav.service.MirrorTarget;
@@ -68,6 +72,9 @@ public class CaldavPushRestTest {
 
   @Mock
   private CaldavPushService      caldavPushService;
+
+  @Mock
+  private CaldavDeletionService  caldavDeletionService;
 
   @Mock
   private IdentityManager        identityManager;
@@ -217,6 +224,128 @@ public class CaldavPushRestTest {
     verify(caldavPushService, org.mockito.Mockito.never()).excludeOccurrence(org.mockito.ArgumentMatchers.anyLong(),
                                                                              org.mockito.ArgumentMatchers.anyString(),
                                                                              org.mockito.ArgumentMatchers.any());
+  }
+
+  // The calendar-deletion endpoints. The dialog they answer stands between a
+  // user and the one irreversible action in this connector, so what is pinned
+  // here is that the plan reaches it whole and that a refusal reaches it at
+  // all.
+
+  /**
+   * The plan is worked out for the caller's own account, and travels back
+   * whole. The dialog renders one sentence or the other from
+   * {@code propagates} and names the server from {@code server}; a field
+   * dropped here would have it promise the wrong thing about an irreversible
+   * deletion.
+   */
+  @Test
+  public void shouldDescribeADeletionForTheCallerRatherThanForAnyoneTheRequestNames() {
+    withCurrentUser();
+    CalendarDeletionPlan plan = new CalendarDeletionPlan(true, true, "https://webmail.example.test/dav/");
+    when(caldavDeletionService.describeDeletion(42L, 11L)).thenReturn(plan);
+
+    CalendarDeletionPlan described = caldavPushRest.deletionPlan(11L);
+
+    assertSame(plan, described);
+    verify(caldavDeletionService).describeDeletion(42L, 11L);
+  }
+
+  /**
+   * A calendar this connector does not mirror answers a plan claiming nothing,
+   * not a 404: the dialog asks about every calendar agenda deletes, and a
+   * failure status would break the deletion of calendars the connector has no
+   * stake in.
+   */
+  @Test
+  public void shouldAnswerAPlanClaimingNothingRatherThanAFailureForAnUnmirroredCalendar() {
+    withCurrentUser();
+    when(caldavDeletionService.describeDeletion(42L, 11L)).thenReturn(new CalendarDeletionPlan(false, false, null));
+
+    CalendarDeletionPlan described = caldavPushRest.deletionPlan(11L);
+
+    assertFalse(described.claimed());
+    assertNull(described.server());
+  }
+
+  /**
+   * Removing the remote collection answers 204 with no body: agenda deletes
+   * the calendar itself once this returns, and reads the status alone to
+   * decide it may.
+   */
+  @Test
+  public void shouldAnswerARemoteCalendarDeletionWithNoContent() {
+    withCurrentUser();
+
+    ResponseEntity<Void> response = caldavPushRest.deleteRemoteCounterpart(11L);
+
+    assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
+    verify(caldavDeletionService).deleteRemoteCounterpart(42L, 11L);
+  }
+
+  /**
+   * A refusal is never turned into a 204. The rejection is what stops agenda
+   * deleting locally, and swallowing it here would strand a collection on the
+   * server after the record that knew about it is gone.
+   */
+  @Test
+  public void shouldLetARefusedRemoteDeletionThroughRatherThanReportingSuccess() {
+    withCurrentUser();
+    org.mockito.Mockito.doThrow(new CaldavPushException(CaldavDeletionService.NOTHING_DELETED, "still listed"))
+                       .when(caldavDeletionService)
+                       .deleteRemoteCounterpart(42L, 11L);
+
+    CaldavPushException refusal =
+                                org.junit.jupiter.api.Assertions.assertThrows(CaldavPushException.class,
+                                                                             () -> caldavPushRest.deleteRemoteCounterpart(11L));
+
+    assertEquals(CaldavDeletionService.NOTHING_DELETED, refusal.getCode());
+  }
+
+  /**
+   * A deletion that did not happen is the calendar server refusing, so it
+   * answers 502 and carries its own code — the browser matches on it to say
+   * "nothing was deleted, on either side" rather than the generic failure.
+   */
+  @Test
+  public void shouldReportADeletionThatDidNotHappenAsABadGateway() {
+    ResponseEntity<String> response =
+                                    caldavPushRest.onPushFailure(new CaldavPushException(CaldavDeletionService.NOTHING_DELETED,
+                                                                                         "still listed afterwards"));
+
+    assertEquals(HttpStatus.BAD_GATEWAY, HttpStatus.valueOf(response.getStatusCode().value()));
+    assertEquals(CaldavDeletionService.NOTHING_DELETED, response.getBody());
+  }
+
+  /**
+   * Choosing to keep the remote calendar answers 204 too, and is a real call
+   * rather than a no-op: without recording it, the next sweep materialises the
+   * remote calendar straight back and undoes the deletion in front of the
+   * user.
+   */
+  @Test
+  public void shouldRecordAKeptRemoteCalendarForTheCaller() {
+    withCurrentUser();
+
+    ResponseEntity<Void> response = caldavPushRest.keepRemoteCounterpart(11L);
+
+    assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
+    verify(caldavDeletionService).keepRemoteCounterpart(42L, 11L);
+  }
+
+  /**
+   * Neither deletion endpoint deletes anything remotely of its own accord: the
+   * one that keeps the collection must never reach the push service, or the
+   * escape hatch from the atomic rule would destroy exactly what the user
+   * asked to spare.
+   */
+  @Test
+  public void shouldKeepTheDeletionEndpointsAwayFromThePushService() {
+    withCurrentUser();
+
+    caldavPushRest.keepRemoteCounterpart(11L);
+    caldavPushRest.deletionPlan(11L);
+
+    org.mockito.Mockito.verifyNoInteractions(caldavPushService);
   }
 
   /**
