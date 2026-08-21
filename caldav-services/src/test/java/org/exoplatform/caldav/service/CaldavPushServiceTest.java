@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -790,6 +791,30 @@ public class CaldavPushServiceTest {
     verify(caldavSyncStorage).getPairsByOrigin(USER, 0L, SyncOrigin.MIRROR);
   }
 
+  @Test
+  public void theEventIsReadInItsOwnZoneAndNoOther() throws Exception {
+    // For a timed event any zone yields the same instant, which makes this
+    // look like a free choice. It is not: agenda re-anchors an all-day event's
+    // covered days at midnight in whatever zone is asked for, so reading in
+    // UTC moves an all-day event of a user west of Greenwich to 20:00 the
+    // previous day — and the copy is written one day early, silently, for
+    // exactly the users whose zone caused it.
+    givenAMirror();
+    givenAnAgendaEvent(105L, 0L);
+    when(agendaRemoteEventService.findRemoteEvent(105L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-105"));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"e\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 105L, null);
+
+    // null is how agenda is asked for the event's own zone.
+    verify(agendaEventService).getEventById(105L, null, USER);
+  }
+
   /**
    * An agenda event the service can read.
    *
@@ -801,7 +826,7 @@ public class CaldavPushServiceTest {
     Event event = new Event();
     event.setId(eventId);
     event.setParentId(parentId);
-    when(agendaEventService.getEventById(eq(eventId), any(), eq(USER))).thenReturn(event);
+    when(agendaEventService.getEventById(eq(eventId), isNull(), eq(USER))).thenReturn(event);
   }
 
   /**
