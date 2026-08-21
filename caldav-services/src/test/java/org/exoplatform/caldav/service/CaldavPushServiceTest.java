@@ -44,6 +44,10 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.model.RemoteEvent;
+import org.exoplatform.agenda.service.AgendaEventService;
+import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -102,6 +106,15 @@ public class CaldavPushServiceTest {
 
   @Mock
   private IcsMerger                  icsMerger;
+
+  @Mock
+  private AgendaEventService         agendaEventService;
+
+  @Mock
+  private AgendaEventIcsMapper       agendaEventIcsMapper;
+
+  @Mock
+  private AgendaRemoteEventService   agendaRemoteEventService;
 
   @Mock
   private CalDavEndpoint             endpoint;
@@ -270,6 +283,85 @@ public class CaldavPushServiceTest {
 
     // The end state the caller asked for is the end state that holds.
     verify(calDavClient, never()).deleteObject(any(), anyString(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void anEventAgendaAlreadyPushedKeepsItsIdentifier() throws Exception {
+    // Migrated users are exactly the ones with events already on the server,
+    // so minting a fresh UID here would give every one of them a duplicate.
+    givenAMirror();
+    givenAnAgendaEvent(101L, 0L);
+    RemoteEvent known = new RemoteEvent();
+    known.setRemoteId("uuid-written-by-the-browser");
+    when(agendaRemoteEventService.findRemoteEvent(101L, USER)).thenReturn(known);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uuid-written-by-the-browser"));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"e\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 101L, "https://exo.test/event/101");
+
+    ArgumentCaptor<String> uid = ArgumentCaptor.forClass(String.class);
+    verify(agendaEventIcsMapper).toIcsEvent(any(), uid.capture(), any(), anyLong());
+    assertEquals("uuid-written-by-the-browser", uid.getValue());
+    verify(agendaRemoteEventService, never()).saveRemoteEvent(anyLong(), any(), anyLong());
+  }
+
+  @Test
+  public void aFirstPushRecordsItsIdentifierBeforeWriting() throws Exception {
+    givenAMirror();
+    givenAnAgendaEvent(102L, 0L);
+    when(agendaRemoteEventService.findRemoteEvent(102L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("minted"));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"e\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 102L, "https://exo.test/event/102");
+
+    // Recorded before the write: an interrupted push leaves an identifier
+    // pointing at an object that may not exist, which the next push
+    // reconciles. The reverse leaves an object nothing points at.
+    verify(agendaRemoteEventService).saveRemoteEvent(eq(102L), any(), eq(USER));
+  }
+
+  @Test
+  public void anOccurrenceSharesItsSeriesIdentifier() throws Exception {
+    givenAMirror();
+    givenAnAgendaEvent(103L, 99L);
+    RemoteEvent known = new RemoteEvent();
+    known.setRemoteId("series-uid");
+    when(agendaRemoteEventService.findRemoteEvent(99L, USER)).thenReturn(known);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("series-uid"));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"e\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 103L, null);
+
+    // A series and its overrides live in one object, so they share one UID —
+    // an override under its own UID would appear as a second meeting.
+    verify(agendaRemoteEventService).findRemoteEvent(99L, USER);
+  }
+
+  /**
+   * An agenda event the service can read.
+   *
+   * @param eventId the event
+   * @param parentId its series, or 0 when it is not an occurrence
+   * @throws Exception when the stub cannot be set
+   */
+  private void givenAnAgendaEvent(long eventId, long parentId) throws Exception {
+    Event event = new Event();
+    event.setId(eventId);
+    event.setParentId(parentId);
+    when(agendaEventService.getEventById(eq(eventId), any(), eq(USER))).thenReturn(event);
   }
 
   /**
