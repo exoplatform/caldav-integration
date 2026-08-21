@@ -1,0 +1,34 @@
+{
+  "name": "13-merge-prune-foreign",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "Merging into an object another client also writes: the server already holds the series with two foreign overrides (X-MOZ properties, a Thunderbird-style VTIMEZONE). Pushing the master with an EXDATE on the first override's occurrence must prune THAT override (its occurrence is deleted, and an override contradicting an EXDATE keeps the deleted occurrence visible), keep the other override untouched, and keep the object's existing VTIMEZONE rather than doubling the TZID.",
+    "pins": "mergeIntoCalendarObject EXDATE-contradiction pruning + foreign-override preservation + VTIMEZONE dedup"
+  },
+  "seedObjectFile": "seed-13-foreign-object.ics",
+  "event": {
+    "id": 113,
+    "remoteId": "golden-13-merge",
+    "summary": "Cross-client planning",
+    "start": "2026-09-01T07:00:00.000Z",
+    "end": "2026-09-01T08:00:00.000Z",
+    "allDay": false,
+    "timeZoneId": "Europe/Paris",
+    "recurrence": {
+      "rrule": "FREQ=WEEKLY;BYDAY=TU",
+      "exceptions": [
+        {
+          "date": "2026-09-15T07:00:00.000Z"
+        }
+      ]
+    },
+    "creator": {
+      "id": "5",
+      "profile": {
+        "fullname": "John Doe",
+        "email": "john.doe@example.test"
+      }
+    }
+  }
+}

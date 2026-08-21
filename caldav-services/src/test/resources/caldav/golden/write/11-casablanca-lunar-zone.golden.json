@@ -1,0 +1,16 @@
+{
+  "provenance": {
+    "kind": "captured",
+    "capturedFrom": "caldavConnector.js @ cd78b8b, driven unmodified through dev/golden-capture/capture-goldens.mjs",
+    "server": "Stalwart v0.16 dev rig (docker stalwart-dev behind caldav-test-proxy nginx), http://localhost:8090/dav/",
+    "capturedOn": "2026-08-20",
+    "runtimeZone": "Europe/Paris",
+    "input": "caldav/golden/events/11-casablanca-lunar-zone.json",
+    "steps": [
+      "saveEvent(event)"
+    ],
+    "invariant": "A lunar-rule zone: Africa/Casablanca suspends DST for Ramadan, and the Intl derivation reads the reference year (start year - 1 = 2025), sees exactly two transitions, and projects them as YEARLY rules — the documented approximation limit of buildVTimeZone. The golden pins TODAY'S behaviour; ical4j's registry describes this zone differently and MORE correctly, so PR3 is expected to diverge here — that divergence must be surfaced by the comparator and then waived explicitly, not slip through."
+  },
+  "sent": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VTIMEZONE\r\nTZID:Africa/Casablanca\r\nBEGIN:STANDARD\r\nDTSTART:20250223T030000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0000\r\nRRULE:FREQ=YEARLY;BYMONTH=2;BYDAY=-1SU\r\nEND:STANDARD\r\nBEGIN:DAYLIGHT\r\nDTSTART:20250406T020000\r\nTZOFFSETFROM:+0000\r\nTZOFFSETTO:+0100\r\nRRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=1SU\r\nEND:DAYLIGHT\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nSUMMARY:Casablanca weekly\r\nUID:golden-11-casablanca\r\nDTSTAMP:20260820T191127Z\r\nDTSTART;TZID=Africa/Casablanca:20260904T100000\r\nDTEND;TZID=Africa/Casablanca:20260904T110000\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=111\r\nORGANIZER;CN=John Doe:mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nRRULE:FREQ=WEEKLY;BYDAY=FR\r\nEXDATE;TZID=Africa/Casablanca:20260918T100000\r\nEND:VEVENT\r\nEND:VCALENDAR",
+  "ics": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VTIMEZONE\r\nTZID:Africa/Casablanca\r\nBEGIN:STANDARD\r\nDTSTART:20250223T030000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0000\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=2\r\nEND:STANDARD\r\nBEGIN:DAYLIGHT\r\nDTSTART:20250406T020000\r\nTZOFFSETFROM:+0000\r\nTZOFFSETTO:+0100\r\nRRULE:FREQ=YEARLY;BYDAY=1SU;BYMONTH=4\r\nEND:DAYLIGHT\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nSUMMARY:Casablanca weekly\r\nUID:golden-11-casablanca\r\nDTSTAMP:20260820T191127Z\r\nDTSTART;TZID=Africa/Casablanca:20260904T100000\r\nDTEND;TZID=Africa/Casablanca:20260904T110000\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=111\r\nORGANIZER;CN=\"John Doe\":mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nRRULE:FREQ=WEEKLY;BYDAY=FR\r\nEXDATE;TZID=Africa/Casablanca:20260918T100000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+}

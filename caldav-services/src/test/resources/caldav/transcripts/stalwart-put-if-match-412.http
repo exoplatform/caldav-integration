@@ -1,0 +1,13 @@
+# CAPTURED live on 2026-08-20 against the Stalwart v0.16 dev rig
+# (http://localhost:8090/dav/) by dev/golden-capture/capture-goldens.mjs: a PUT of a
+# valid calendar object with a deliberately stale If-Match ("golden-stale-etag") on an
+# existing object. The 412 is the conflict signal the connector's ensureAccepted maps
+# to caldav.error.conflict, and the signal the server-side engine's conditional writes
+# (plan §4.3) rely on. Authorization header not recorded.
+HTTP/1.1 412 Precondition Failed
+connection: keep-alive
+content-length: 0
+date: Thu, 20 Aug 2026 19:11:29 GMT
+server: nginx/1.31.2
+
+

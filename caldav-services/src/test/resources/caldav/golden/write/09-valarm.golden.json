@@ -1,0 +1,16 @@
+{
+  "provenance": {
+    "kind": "captured",
+    "capturedFrom": "caldavConnector.js @ cd78b8b, driven unmodified through dev/golden-capture/capture-goldens.mjs",
+    "server": "Stalwart v0.16 dev rig (docker stalwart-dev behind caldav-test-proxy nginx), http://localhost:8090/dav/",
+    "capturedOn": "2026-08-20",
+    "runtimeZone": "Europe/Paris",
+    "input": "caldav/golden/events/09-valarm.json",
+    "steps": [
+      "saveEvent(event)"
+    ],
+    "invariant": "Reminders become VALARMs: one DISPLAY alarm per reminder, TRIGGER as negative minutes before the start, units converted (a 1-day reminder is -PT1440M)."
+  },
+  "sent": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VEVENT\r\nSUMMARY:Board meeting\r\nUID:golden-09-valarm\r\nDTSTAMP:20260820T191127Z\r\nDTSTART:20260930T080000Z\r\nDTEND:20260930T090000Z\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=109\r\nORGANIZER;CN=John Doe:mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Board meeting\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Board meeting\r\nTRIGGER:-PT1440M\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR",
+  "ics": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VEVENT\r\nSUMMARY:Board meeting\r\nUID:golden-09-valarm\r\nDTSTAMP:20260820T191127Z\r\nDTSTART:20260930T080000Z\r\nDTEND:20260930T090000Z\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=109\r\nORGANIZER;CN=\"John Doe\":mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Board meeting\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Board meeting\r\nTRIGGER:-PT1440M\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+}

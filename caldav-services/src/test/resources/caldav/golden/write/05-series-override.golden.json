@@ -1,0 +1,16 @@
+{
+  "provenance": {
+    "kind": "captured",
+    "capturedFrom": "caldavConnector.js @ cd78b8b, driven unmodified through dev/golden-capture/capture-goldens.mjs",
+    "server": "Stalwart v0.16 dev rig (docker stalwart-dev behind caldav-test-proxy nginx), http://localhost:8090/dav/",
+    "capturedOn": "2026-08-20",
+    "runtimeZone": "Europe/Paris",
+    "input": "caldav/golden/events/05-series-override.json",
+    "steps": [
+      "saveEvent(event)"
+    ],
+    "invariant": "A modified occurrence: the override VEVENT is spliced into the object next to the master (never replacing it), carries exactly one RECURRENCE-ID, and that RECURRENCE-ID uses the same TZID wall-clock form the master DTSTART uses."
+  },
+  "sent": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VTIMEZONE\r\nTZID:Europe/Paris\r\nBEGIN:DAYLIGHT\r\nDTSTART:20250330T020000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0200\r\nRRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU\r\nEND:DAYLIGHT\r\nBEGIN:STANDARD\r\nDTSTART:20251026T030000\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\nRRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nSUMMARY:Design review\r\nUID:golden-05-override\r\nDTSTAMP:20260820T191125Z\r\nDTSTART;TZID=Europe/Paris:20260902T150000\r\nDTEND;TZID=Europe/Paris:20260902T160000\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=105\r\nORGANIZER;CN=John Doe:mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nRRULE:FREQ=WEEKLY;BYDAY=WE\r\nEND:VEVENT\r\nEND:VCALENDAR",
+  "ics": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VTIMEZONE\r\nTZID:Europe/Paris\r\nBEGIN:DAYLIGHT\r\nDTSTART:20250330T020000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0200\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3\r\nEND:DAYLIGHT\r\nBEGIN:STANDARD\r\nDTSTART:20251026T030000\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nSUMMARY:Design review\r\nUID:golden-05-override\r\nDTSTAMP:20260820T191125Z\r\nDTSTART;TZID=Europe/Paris:20260902T150000\r\nDTEND;TZID=Europe/Paris:20260902T160000\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=105\r\nORGANIZER;CN=\"John Doe\":mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nRRULE:FREQ=WEEKLY;BYDAY=WE\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+}

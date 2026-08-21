@@ -1,0 +1,55 @@
+{
+  "name": "05-series-override",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "A modified occurrence: the override VEVENT is spliced into the object next to the master (never replacing it), carries exactly one RECURRENCE-ID, and that RECURRENCE-ID uses the same TZID wall-clock form the master DTSTART uses.",
+    "pins": "mergeIntoCalendarObject occurrence splice; recurrenceLines timed-TZID RECURRENCE-ID form; the series-erased-by-occurrence-push regression"
+  },
+  "event": {
+    "id": 105,
+    "remoteId": "golden-05-override",
+    "summary": "Design review",
+    "start": "2026-09-02T13:00:00.000Z",
+    "end": "2026-09-02T14:00:00.000Z",
+    "allDay": false,
+    "timeZoneId": "Europe/Paris",
+    "recurrence": {
+      "rrule": "FREQ=WEEKLY;BYDAY=WE"
+    },
+    "creator": {
+      "id": "5",
+      "profile": {
+        "fullname": "John Doe",
+        "email": "john.doe@example.test"
+      }
+    }
+  },
+  "followUps": [
+    {
+      "suffix": "override",
+      "action": "save",
+      "event": {
+        "summary": "Design review (moved to 17:00)",
+        "start": "2026-09-16T15:00:00.000Z",
+        "end": "2026-09-16T16:00:00.000Z",
+        "allDay": false,
+        "timeZoneId": "Europe/Paris",
+        "occurrence": {
+          "id": "2026-09-16T13:00:00.000Z"
+        },
+        "parent": {
+          "id": 105,
+          "remoteId": "golden-05-override"
+        },
+        "creator": {
+          "id": "5",
+          "profile": {
+            "fullname": "John Doe",
+            "email": "john.doe@example.test"
+          }
+        }
+      }
+    }
+  ]
+}

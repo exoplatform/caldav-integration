@@ -1,0 +1,25 @@
+{
+  "name": "03-allday-multiday",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "A multi-day all-day event in a zone far east of Greenwich: the covered days must be read in the event zone (UTC truncation moves the day), and the exclusive DTEND lands on the day after the last covered day.",
+    "pins": "datePartsInZone east-of-Greenwich correctness; toIcsEndDate midday-UTC arithmetic across the span"
+  },
+  "event": {
+    "id": 103,
+    "remoteId": "golden-03-allday-multiday",
+    "summary": "Offsite week",
+    "start": "2026-11-02",
+    "end": "2026-11-04T00:00:00.000Z",
+    "allDay": true,
+    "timeZoneId": "Australia/Sydney",
+    "creator": {
+      "id": "5",
+      "profile": {
+        "fullname": "John Doe",
+        "email": "john.doe@example.test"
+      }
+    }
+  }
+}

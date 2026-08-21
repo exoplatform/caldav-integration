@@ -1,0 +1,34 @@
+{
+  "name": "11-casablanca-lunar-zone",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "A lunar-rule zone: Africa/Casablanca suspends DST for Ramadan, and the Intl derivation reads the reference year (start year - 1 = 2025), sees exactly two transitions, and projects them as YEARLY rules — the documented approximation limit of buildVTimeZone. The golden pins TODAY'S behaviour; ical4j's registry describes this zone differently and MORE correctly, so PR3 is expected to diverge here — that divergence must be surfaced by the comparator and then waived explicitly, not slip through.",
+    "pins": "buildVTimeZone two-transition acceptance of a lunar zone; the plan's known-limits note (caldavConnector.js:1953-1977)"
+  },
+  "expectedDivergenceInPr3": "VTIMEZONE rules for Africa/Casablanca; occurrence instants may differ around Ramadan 2027",
+  "event": {
+    "id": 111,
+    "remoteId": "golden-11-casablanca",
+    "summary": "Casablanca weekly",
+    "start": "2026-09-04T09:00:00.000Z",
+    "end": "2026-09-04T10:00:00.000Z",
+    "allDay": false,
+    "timeZoneId": "Africa/Casablanca",
+    "recurrence": {
+      "rrule": "FREQ=WEEKLY;BYDAY=FR",
+      "exceptions": [
+        {
+          "date": "2026-09-18T09:00:00.000Z"
+        }
+      ]
+    },
+    "creator": {
+      "id": "5",
+      "profile": {
+        "fullname": "John Doe",
+        "email": "john.doe@example.test"
+      }
+    }
+  }
+}

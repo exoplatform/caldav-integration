@@ -1,0 +1,16 @@
+{
+  "provenance": {
+    "kind": "captured",
+    "capturedFrom": "caldavConnector.js @ cd78b8b, driven unmodified through dev/golden-capture/capture-goldens.mjs",
+    "server": "Stalwart v0.16 dev rig (docker stalwart-dev behind caldav-test-proxy nginx), http://localhost:8090/dav/",
+    "capturedOn": "2026-08-20",
+    "runtimeZone": "Europe/Paris",
+    "input": "caldav/golden/events/06-dst-span.json",
+    "steps": [
+      "saveEvent(event)"
+    ],
+    "invariant": "A weekly series spanning the Europe/Paris October DST transition: every occurrence stays at the 09:00 wall clock, so the UTC instant shifts from 07:00Z to 08:00Z on the first occurrence after 2026-10-25. This is the drift-an-hour class EXO-89402 is open on."
+  },
+  "sent": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VTIMEZONE\r\nTZID:Europe/Paris\r\nBEGIN:DAYLIGHT\r\nDTSTART:20250330T020000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0200\r\nRRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU\r\nEND:DAYLIGHT\r\nBEGIN:STANDARD\r\nDTSTART:20251026T030000\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\nRRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nSUMMARY:Morning stand-up\r\nUID:golden-06-dst-span\r\nDTSTAMP:20260820T191126Z\r\nDTSTART;TZID=Europe/Paris:20261012T090000\r\nDTEND;TZID=Europe/Paris:20261012T091500\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=106\r\nORGANIZER;CN=John Doe:mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nRRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=8\r\nEND:VEVENT\r\nEND:VCALENDAR",
+  "ics": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VTIMEZONE\r\nTZID:Europe/Paris\r\nBEGIN:DAYLIGHT\r\nDTSTART:20250330T020000\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0200\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3\r\nEND:DAYLIGHT\r\nBEGIN:STANDARD\r\nDTSTART:20251026T030000\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nSUMMARY:Morning stand-up\r\nUID:golden-06-dst-span\r\nDTSTAMP:20260820T191126Z\r\nDTSTART;TZID=Europe/Paris:20261012T090000\r\nDTEND;TZID=Europe/Paris:20261012T091500\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=106\r\nORGANIZER;CN=\"John Doe\":mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nRRULE:FREQ=WEEKLY;COUNT=8;BYDAY=MO\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+}

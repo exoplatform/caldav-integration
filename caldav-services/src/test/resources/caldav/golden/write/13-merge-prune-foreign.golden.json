@@ -1,0 +1,17 @@
+{
+  "provenance": {
+    "kind": "captured",
+    "capturedFrom": "caldavConnector.js @ cd78b8b, driven unmodified through dev/golden-capture/capture-goldens.mjs",
+    "server": "Stalwart v0.16 dev rig (docker stalwart-dev behind caldav-test-proxy nginx), http://localhost:8090/dav/",
+    "capturedOn": "2026-08-20",
+    "runtimeZone": "Europe/Paris",
+    "input": "caldav/golden/events/13-merge-prune-foreign.json",
+    "steps": [
+      "raw PUT of seed-13-foreign-object.ics (reconstructed foreign object)",
+      "saveEvent(event)"
+    ],
+    "invariant": "Merging into an object another client also writes: the server already holds the series with two foreign overrides (X-MOZ properties, a Thunderbird-style VTIMEZONE). Pushing the master with an EXDATE on the first override's occurrence must prune THAT override (its occurrence is deleted, and an override contradicting an EXDATE keeps the deleted occurrence visible), keep the other override untouched, and keep the object's existing VTIMEZONE rather than doubling the TZID."
+  },
+  "sent": "BEGIN:VCALENDAR\r\nPRODID:-//Mozilla.org/NONSGML Mozilla Calendar V1.1//EN\r\nVERSION:2.0\r\nBEGIN:VTIMEZONE\r\nTZID:Europe/Paris\r\nBEGIN:DAYLIGHT\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0200\r\nTZNAME:CEST\r\nDTSTART:19700329T020000\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3\r\nEND:DAYLIGHT\r\nBEGIN:STANDARD\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\nTZNAME:CET\r\nDTSTART:19701025T030000\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nUID:golden-13-merge\r\nRECURRENCE-ID;TZID=Europe/Paris:20260922T090000\r\nDTSTART;TZID=Europe/Paris:20260922T140000\r\nDTEND;TZID=Europe/Paris:20260922T150000\r\nSUMMARY:Cross-client planning (moved on desktop)\r\nX-MOZ-GENERATION:5\r\nDTSTAMP:20260820T100000Z\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nSUMMARY:Cross-client planning\r\nUID:golden-13-merge\r\nDTSTAMP:20260820T191128Z\r\nDTSTART;TZID=Europe/Paris:20260901T090000\r\nDTEND;TZID=Europe/Paris:20260901T100000\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=113\r\nORGANIZER;CN=John Doe:mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nRRULE:FREQ=WEEKLY;BYDAY=TU\r\nEXDATE;TZID=Europe/Paris:20260915T090000\r\nEND:VEVENT\r\nEND:VCALENDAR",
+  "ics": "BEGIN:VCALENDAR\r\nPRODID:-//Mozilla.org/NONSGML Mozilla Calendar V1.1//EN\r\nVERSION:2.0\r\nBEGIN:VTIMEZONE\r\nTZID:Europe/Paris\r\nBEGIN:DAYLIGHT\r\nTZOFFSETFROM:+0100\r\nTZOFFSETTO:+0200\r\nTZNAME:CEST\r\nDTSTART:19700329T020000\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3\r\nEND:DAYLIGHT\r\nBEGIN:STANDARD\r\nTZOFFSETFROM:+0200\r\nTZOFFSETTO:+0100\r\nTZNAME:CET\r\nDTSTART:19701025T030000\r\nRRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\nBEGIN:VEVENT\r\nUID:golden-13-merge\r\nRECURRENCE-ID;TZID=Europe/Paris:20260922T090000\r\nDTSTART;TZID=Europe/Paris:20260922T140000\r\nDTEND;TZID=Europe/Paris:20260922T150000\r\nSUMMARY:Cross-client planning (moved on desktop)\r\nX-MOZ-GENERATION:5\r\nDTSTAMP:20260820T100000Z\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nSUMMARY:Cross-client planning\r\nUID:golden-13-merge\r\nDTSTAMP:20260820T191128Z\r\nDTSTART;TZID=Europe/Paris:20260901T090000\r\nDTEND;TZID=Europe/Paris:20260901T100000\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=113\r\nORGANIZER;CN=\"John Doe\":mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nRRULE:FREQ=WEEKLY;BYDAY=TU\r\nEXDATE;TZID=Europe/Paris:20260915T090000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+}

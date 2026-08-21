@@ -1,0 +1,16 @@
+{
+  "provenance": {
+    "kind": "captured",
+    "capturedFrom": "caldavConnector.js @ cd78b8b, driven unmodified through dev/golden-capture/capture-goldens.mjs",
+    "server": "Stalwart v0.16 dev rig (docker stalwart-dev behind caldav-test-proxy nginx), http://localhost:8090/dav/",
+    "capturedOn": "2026-08-20",
+    "runtimeZone": "Europe/Paris",
+    "input": "caldav/golden/events/14-unknown-zone-utc-fallback.json",
+    "steps": [
+      "saveEvent(event)"
+    ],
+    "invariant": "The declined-VTIMEZONE fallback: when no VTIMEZONE can be produced for the zone, a recurring series falls back to UTC anchoring — DTSTART/DTEND/EXDATE all in the Z form, no dangling TZID. Synthetic input (agenda always sends valid IANA ids); it pins the fallback contract itself."
+  },
+  "sent": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VEVENT\r\nSUMMARY:Series with unresolvable zone\r\nUID:golden-14-unknown-zone\r\nDTSTAMP:20260820T191129Z\r\nDTSTART:20260903T090000Z\r\nDTEND:20260903T100000Z\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=114\r\nORGANIZER;CN=John Doe:mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nRRULE:FREQ=WEEKLY;BYDAY=TH;COUNT=4\r\nEXDATE:20260910T090000Z\r\nEND:VEVENT\r\nEND:VCALENDAR",
+  "ics": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Exo Platform//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nBEGIN:VEVENT\r\nSUMMARY:Series with unresolvable zone\r\nUID:golden-14-unknown-zone\r\nDTSTAMP:20260820T191129Z\r\nDTSTART:20260903T090000Z\r\nDTEND:20260903T100000Z\r\nURL:https://exo.example.test/portal/dw/agenda?eventId=114\r\nORGANIZER;CN=\"John Doe\":mailto:john.doe@example.test\r\nSTATUS:CONFIRMED\r\nTRANSP:OPAQUE\r\nRRULE:FREQ=WEEKLY;COUNT=4;BYDAY=TH\r\nEXDATE:20260910T090000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+}
