@@ -173,8 +173,12 @@ describe('createCalendar reports what the server did', () => {
 
     await expect(caldavConnector.createCalendar(REQUEST)).resolves.toEqual({id: MIRROR_URL});
     expect(client.makeCalendar).toHaveBeenCalledTimes(2);
-    // the retry asks for the identity alone — no colour, no description
-    expect(Object.keys(client.makeCalendar.mock.calls[1][0].props)).toEqual(['d:displayname']);
+    // the retry drops the optional extras alone — no colour, no description.
+    // The component set is NOT optional and must survive this retry: without
+    // it BlueMind answers 201 while creating nothing, so stripping it here
+    // would turn the recovery attempt into a guaranteed silent failure.
+    expect(Object.keys(client.makeCalendar.mock.calls[1][0].props))
+      .toEqual(['d:displayname', 'c:supported-calendar-component-set']);
     expect(caldavConnectorService.saveMirrorCalendarHref).toHaveBeenCalledWith(MIRROR_URL);
   });
 

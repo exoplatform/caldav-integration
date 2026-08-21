@@ -244,6 +244,22 @@ const caldavConnector = {
     }
     const minimalProps = {
       [`${tsdav.DAVNamespaceShort.DAV}:displayname`]: name,
+      // Part of the MINIMAL set on purpose, not an optional extra: BlueMind
+      // derives the collection's kind from the <comp> elements of this
+      // property, and a request without it makes that derivation fail
+      // internally — the failure is swallowed and the server still answers
+      // 201 while creating NOTHING (proven live 2026-08-20: displayname-only
+      // body → 201 and the collection absent from the next listing; the same
+      // body plus this property → 201 and the collection listed). Kept in
+      // minimalProps so it survives the displayname-only retry below —
+      // stripped there, the retry would reproduce the silent non-creation
+      // this property exists to prevent. The nested compact structure is
+      // what xml-js serialises into <c:comp name="VEVENT"/>; a flat string
+      // value would emit text content instead of the element BlueMind's
+      // parser looks for, and reproduce the bug silently.
+      [`${tsdav.DAVNamespaceShort.CALDAV}:supported-calendar-component-set`]: {
+        [`${tsdav.DAVNamespaceShort.CALDAV}:comp`]: {_attributes: {name: 'VEVENT'}},
+      },
     };
     const props = {...minimalProps};
     if (description) {
