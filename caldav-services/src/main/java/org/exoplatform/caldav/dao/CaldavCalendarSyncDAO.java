@@ -23,6 +23,7 @@ import java.util.Optional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.repository.query.Param;
 import org.springframework.data.jpa.repository.Query;
 
 import org.exoplatform.caldav.entity.CaldavCalendarSyncEntity;
@@ -99,7 +100,9 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
    */
   @Query("SELECT p FROM CaldavCalendarSyncEntity p WHERE p.status = :status"
       + " AND (p.lastSyncEnd IS NULL OR p.lastSyncEnd < :before)")
-  Page<CaldavCalendarSyncEntity> findDue(CalendarSyncStatus status, Date before, Pageable pageable);
+  Page<CaldavCalendarSyncEntity> findDue(@Param("status") CalendarSyncStatus status,
+                                         @Param("before") Date before,
+                                         Pageable pageable);
 
   /**
    * Every pair on one server, paginated. Used when a registration is
