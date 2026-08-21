@@ -24,6 +24,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -44,6 +45,7 @@ import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.service.AgendaEventService;
@@ -514,10 +516,17 @@ public class CaldavInboundServiceTest {
     service.importInto(USER, pair(), calendar(), from(), to());
 
     ArgumentCaptor<Event> amended = ArgumentCaptor.forClass(Event.class);
-    verify(agendaEventService).updateEvent(amended.capture(), any(), any(), any(), any(), any(), eq(false), eq(USER));
-    assertEquals(777L, amended.getValue().getId());
-    assertEquals(501L, amended.getValue().getParentId());
-    assertEquals("Weekly standup (moved)", amended.getValue().getSummary());
+    verify(agendaEventService, atLeastOnce()).updateEvent(amended.capture(),
+                                                          any(),
+                                                          any(),
+                                                          any(),
+                                                          any(),
+                                                          any(),
+                                                          eq(false),
+                                                          eq(USER));
+    Event moved = amended.getAllValues().stream().filter(e -> e.getId() == 777L).findFirst().orElseThrow();
+    assertEquals(501L, moved.getParentId());
+    assertEquals("Weekly standup (moved)", moved.getSummary());
   }
 
   @Test
@@ -533,15 +542,24 @@ public class CaldavInboundServiceTest {
     service.importInto(USER, pair(), calendar(), from(), to());
 
     ArgumentCaptor<Event> amended = ArgumentCaptor.forClass(Event.class);
-    verify(agendaEventService).updateEvent(amended.capture(), any(), any(), any(), any(), any(), anyBoolean(), anyLong());
-    assertNull(amended.getValue().getRecurrence());
+    verify(agendaEventService, atLeastOnce()).updateEvent(amended.capture(),
+                                                          any(),
+                                                          any(),
+                                                          any(),
+                                                          any(),
+                                                          any(),
+                                                          anyBoolean(),
+                                                          anyLong());
+    Event moved = amended.getAllValues().stream().filter(e -> e.getId() == 777L).findFirst().orElseThrow();
+    assertNull(moved.getRecurrence());
   }
 
   @Test
-  public void anExcludedDateCancelsThatOccurrence() throws Exception {
-    // Agenda has no "excluded" flag: a cancelled occurrence is an exceptional
-    // occurrence that has been deleted, so the date is materialised first and
-    // removed second.
+  public void anExcludedDateCancelsThatOccurrenceRatherThanDeletingIt() throws Exception {
+    // Observed live: deleting the exceptional occurrence removes the
+    // *exception*, not the date — the series then covers that day again and
+    // the cancelled meeting comes back. Agenda's way to empty one date is an
+    // exceptional occurrence marked CANCELLED.
     givenServerObjects(object("o1.ics", "etag-1", SERIES));
     givenAgendaCreates(501L);
     Event moved = new Event();
@@ -552,7 +570,21 @@ public class CaldavInboundServiceTest {
 
     service.importInto(USER, pair(), calendar(), from(), to());
 
-    verify(agendaEventService).deleteEventById(888L, USER);
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+    ArgumentCaptor<Event> saved = ArgumentCaptor.forClass(Event.class);
+    verify(agendaEventService, times(2)).updateEvent(saved.capture(),
+                                                     any(),
+                                                     any(),
+                                                     any(),
+                                                     any(),
+                                                     any(),
+                                                     anyBoolean(),
+                                                     anyLong());
+    Event emptied = saved.getAllValues().stream().filter(e -> e.getId() == 888L).findFirst().orElseThrow();
+    assertEquals(EventStatus.CANCELLED, emptied.getStatus());
+    // A cancelled occurrence carrying the series rule would be a second
+    // series, and agenda warns about exactly that shape.
+    assertNull(emptied.getRecurrence());
   }
 
   @Test
