@@ -26,7 +26,7 @@
  * absence of a refusal.
  */
 jest.mock('tsdav', () => ({
-  createDAVClient: jest.fn(),
+  DAVClient: jest.fn(),
   DAVNamespaceShort: {
     DAV: 'd',
     CALDAV: 'c',
@@ -65,6 +65,7 @@ function stubClient(makeResults, listings) {
   let makeCall = 0;
   let fetchCall = 0;
   return {
+    login: jest.fn(() => Promise.resolve()),
     account: {homeUrl: HOME_URL, rootUrl: HOME_URL},
     makeCalendar: jest.fn(() => Promise.resolve(makeResults[Math.min(makeCall++, makeResults.length - 1)])),
     fetchCalendars: jest.fn(() => Promise.resolve(listings[Math.min(fetchCall++, listings.length - 1)])),
@@ -82,7 +83,7 @@ function stubClient(makeResults, listings) {
  */
 function givenServer(makeResults, listings) {
   const client = stubClient(makeResults, listings);
-  tsdav.createDAVClient.mockResolvedValue(client);
+  tsdav.DAVClient.mockImplementation(() => client);
   caldavConnectorService.getCaldavSetting.mockResolvedValue({
     username: 'john',
     password: 'secret',
@@ -172,8 +173,12 @@ describe('createCalendar reports what the server did', () => {
 
     await expect(caldavConnector.createCalendar(REQUEST)).resolves.toEqual({id: MIRROR_URL});
     expect(client.makeCalendar).toHaveBeenCalledTimes(2);
-    // the retry asks for the identity alone — no colour, no description
-    expect(Object.keys(client.makeCalendar.mock.calls[1][0].props)).toEqual(['d:displayname']);
+    // the retry drops the optional extras alone — no colour, no description.
+    // The component set is NOT optional and must survive this retry: without
+    // it BlueMind answers 201 while creating nothing, so stripping it here
+    // would turn the recovery attempt into a guaranteed silent failure.
+    expect(Object.keys(client.makeCalendar.mock.calls[1][0].props))
+      .toEqual(['d:displayname', 'c:supported-calendar-component-set']);
     expect(caldavConnectorService.saveMirrorCalendarHref).toHaveBeenCalledWith(MIRROR_URL);
   });
 

@@ -1,0 +1,17 @@
+# CAPTURED live on 2026-08-20 against BlueMind at https://caldav.example.invalid/dav/
+# by dev/golden-capture/capture-bluemind.sh: PROPFIND https://caldav.example.invalid/dav/
+# Discovery: the principal URL of the authenticated account. Everything below hangs off this, which is why probing /dav/ directly answered nothing.
+# Authorization header not recorded; password and Basic credentials scrubbed.
+# HTTP status: 207
+HTTP/2 207 
+content-security-policy: connect-src 'self' ws: wss: https: blob:; default-src 'self' ws: wss: blob: 'unsafe-inline' 'unsafe-eval'; img-src * data: blob:
+content-type: application/xml; charset="utf-8"
+date: Thu, 20 Aug 2026 21:26:21 GMT
+dav: 1, access-control, calendar-access, calendar-schedule, calendar-auto-schedule, calendar-availability, inbox-availability, calendar-proxy, calendarserver-private-events, calendarserver-sharing, calendarserver-sharing-no-scheduling, calendar-query-extended, calendar-default-alarms, calendarserver-partstat-changes, extended-mkcol, calendarserver-principal-property-search, calendarserver-principal-search, calendarserver-home-sync, addressbook
+feature-policy: accelerometer 'none'; ambient-light-sensor 'none'; autoplay 'self'; battery 'none'; camera 'none'; display-capture 'none'; document-domain 'none'; encrypted-media 'none'; execution-while-not-rendered 'self'; execution-while-out-of-viewport 'self'; fullscreen 'self'; geolocation 'none'; gyroscope 'none'; layout-animations 'none'; layout-animations 'none'; layout-animations 'none'; legacy-image-formats 'none'; magnetometer 'none'; microphone 'none'; midi 'none'; navigation-override 'none'; oversized-images 'none'; payment 'none'; picture-in-picture 'none'; publickey-credentials 'none'; sync-xhr 'none'; usb 'none'; vr 'none'; wake-lock 'none'; xr-spatial-tracking 'none';
+server: nginx
+vary: Origin
+content-length: 542
+
+
+<?xml version="1.0" encoding="UTF-8"?><d:multistatus xmlns:d="DAV:" xmlns:aic="http://apple.com/ns/ical/" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cso="http://calendarserver.org/ns/" xmlns:me="http://me.com/_namespace/" xmlns:rd="urn:ietf:params:xml:ns:carddav"><d:response><d:href>/dav/</d:href><d:propstat><d:status>HTTP/1.1 200 OK</d:status><d:prop><d:current-user-principal><d:href>/dav/principals/__uids__/9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/</d:href></d:current-user-principal></d:prop></d:propstat></d:response></d:multistatus>
