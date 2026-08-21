@@ -1,0 +1,77 @@
+{
+  "provenance": {
+    "kind": "captured",
+    "capturedFrom": "caldavConnector.js @ cd78b8b, driven unmodified through dev/golden-capture/capture-goldens.mjs",
+    "server": "Stalwart v0.16 dev rig (docker stalwart-dev behind caldav-test-proxy nginx), http://localhost:8090/dav/",
+    "capturedOn": "2026-08-20",
+    "runtimeZone": "Europe/Paris",
+    "input": "caldav/golden/read/objects/r03-override-first-ordering.ics",
+    "steps": [
+      "raw PUT of the object into a scratch collection",
+      "retrieveEvents(settings, '2026-10-01T00:00:00', '2026-11-30T23:59:59') with TZ=Europe/Paris",
+      "output filtered to the scratch collection; etag/url/calendarId/color dropped (run- and position-dependent); Date values as ISO instants; sorted by uid+start"
+    ]
+  },
+  "events": [
+    {
+      "uid": "r03-override-first@example.test",
+      "id": "r03-override-first@example.test",
+      "recurringEventId": "r03-override-first@example.test",
+      "summary": "Weekly review",
+      "location": null,
+      "description": null,
+      "allDay": false,
+      "start": "2026-10-07T12:00:00.000Z",
+      "end": "2026-10-07T13:00:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r03-override-first@example.test",
+      "id": "r03-override-first@example.test",
+      "recurringEventId": "r03-override-first@example.test",
+      "summary": "Weekly review (moved)",
+      "location": null,
+      "description": null,
+      "allDay": false,
+      "start": "2026-10-14T14:00:00.000Z",
+      "end": "2026-10-14T15:00:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r03-override-first@example.test",
+      "id": "r03-override-first@example.test",
+      "recurringEventId": "r03-override-first@example.test",
+      "summary": "Weekly review",
+      "location": null,
+      "description": null,
+      "allDay": false,
+      "start": "2026-10-21T12:00:00.000Z",
+      "end": "2026-10-21T13:00:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r03-override-first@example.test",
+      "id": "r03-override-first@example.test",
+      "recurringEventId": "r03-override-first@example.test",
+      "summary": "Weekly review",
+      "location": null,
+      "description": null,
+      "allDay": false,
+      "start": "2026-10-28T13:00:00.000Z",
+      "end": "2026-10-28T14:00:00.000Z",
+      "type": "remoteEvent"
+    },
+    {
+      "uid": "r03-override-first@example.test",
+      "id": "r03-override-first@example.test",
+      "recurringEventId": "r03-override-first@example.test",
+      "summary": "Weekly review",
+      "location": null,
+      "description": null,
+      "allDay": false,
+      "start": "2026-11-04T13:00:00.000Z",
+      "end": "2026-11-04T14:00:00.000Z",
+      "type": "remoteEvent"
+    }
+  ]
+}

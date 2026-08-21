@@ -1,0 +1,50 @@
+{
+  "name": "07-exdate",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "EXDATE forms: exclusions on the master, written in the same TZID wall-clock form its DTSTART uses. The follow-up deletes one more occurrence through removeEvent, which must rewrite the object — override removed, EXDATE added — never DELETE the whole object.",
+    "pins": "exceptionLines TZID form; excludeOccurrence/occurrenceToTime rewrite; the occurrence-delete-removed-the-series regression"
+  },
+  "event": {
+    "id": 107,
+    "remoteId": "golden-07-exdate",
+    "summary": "Ops daily",
+    "start": "2026-09-01T06:30:00.000Z",
+    "end": "2026-09-01T06:45:00.000Z",
+    "allDay": false,
+    "timeZoneId": "Europe/Paris",
+    "recurrence": {
+      "rrule": "FREQ=WEEKLY;BYDAY=TU,TH",
+      "exceptions": [
+        {
+          "date": "2026-09-10T06:30:00.000Z"
+        }
+      ]
+    },
+    "creator": {
+      "id": "5",
+      "profile": {
+        "fullname": "John Doe",
+        "email": "john.doe@example.test"
+      }
+    }
+  },
+  "followUps": [
+    {
+      "suffix": "occurrence-delete",
+      "action": "removeOccurrence",
+      "event": {
+        "allDay": false,
+        "timeZoneId": "Europe/Paris",
+        "occurrence": {
+          "id": "2026-09-22T06:30:00.000Z"
+        },
+        "parent": {
+          "id": 107,
+          "remoteId": "golden-07-exdate"
+        }
+      }
+    }
+  ]
+}
