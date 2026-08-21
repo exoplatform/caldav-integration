@@ -21,6 +21,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,8 +34,10 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
+import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.service.CaldavPushException;
+import org.exoplatform.caldav.service.CaldavDeletionService;
 import org.exoplatform.caldav.service.CaldavPushService;
 import org.exoplatform.caldav.service.MirrorTarget;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
@@ -60,7 +63,10 @@ import org.exoplatform.social.core.manager.IdentityManager;
 public class CaldavPushRest {
 
   @Autowired
-  private CaldavPushService caldavPushService;
+  private CaldavPushService     caldavPushService;
+
+  @Autowired
+  private CaldavDeletionService caldavDeletionService;
 
   @Autowired
   private IdentityManager   identityManager;
@@ -168,6 +174,69 @@ public class CaldavPushRest {
       @ApiResponse(responseCode = "502", description = "No destination could be established") })
   public MirrorTarget mirror() {
     return caldavPushService.ensureMirror(currentUser());
+  }
+
+  /**
+   * What deleting an eXo calendar would also do remotely.
+   *
+   * @param calendarId the eXo calendar in question
+   * @return the plan, claiming nothing when no binding exists
+   */
+  @GetMapping("/push/calendars/{calendarId}/deletion-plan")
+  @Secured("users")
+  @Operation(summary = "Describes what deleting an eXo calendar would do remotely",
+      description = "The page cannot work this out: it knows neither whether eXo created the remote collection "
+          + "nor which server holds it, and both decide what the confirmation must warn about.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The plan") })
+  public CalendarDeletionPlan deletionPlan(@Parameter(description = "Technical identifier of the eXo calendar",
+                                                      required = true)
+                                           @PathVariable("calendarId")
+                                           long calendarId) {
+    return caldavDeletionService.describeDeletion(currentUser(), calendarId);
+  }
+
+  /**
+   * Removes the remote collection an eXo calendar is mirrored as, before
+   * agenda removes the calendar itself.
+   *
+   * @param calendarId the eXo calendar being deleted
+   * @return an empty 204
+   */
+  @DeleteMapping("/push/calendars/{calendarId}/remote")
+  @Secured("users")
+  @Operation(summary = "Removes the remote collection of an eXo calendar",
+      description = "Remote first: a refusal here stops the deletion before agenda has touched anything. Deleting "
+          + "locally first can strand a collection on a server after the record that knew about it is gone.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "The remote collection is gone"),
+      @ApiResponse(responseCode = "403", description = "Stored CalDAV credentials rejected upstream"),
+      @ApiResponse(responseCode = "502", description = "Nothing was deleted, in eXo or on the server") })
+  public ResponseEntity<Void> deleteRemoteCounterpart(@Parameter(description = "Technical identifier of the eXo calendar",
+                                                                 required = true)
+                                                      @PathVariable("calendarId")
+                                                      long calendarId) {
+    caldavDeletionService.deleteRemoteCounterpart(currentUser(), calendarId);
+    return ResponseEntity.noContent().build();
+  }
+
+  /**
+   * Records that the user chose to keep the remote calendar while deleting the
+   * eXo one.
+   *
+   * @param calendarId the eXo calendar being deleted
+   * @return an empty 204
+   */
+  @PostMapping("/push/calendars/{calendarId}/keep-remote")
+  @Secured("users")
+  @Operation(summary = "Keeps the remote calendar while the eXo one is deleted",
+      description = "The escape hatch from the atomic rule: divergence between the two sides is only ever chosen, "
+          + "named and recorded — never a side effect of a failed deletion.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Recorded") })
+  public ResponseEntity<Void> keepRemoteCounterpart(@Parameter(description = "Technical identifier of the eXo calendar",
+                                                               required = true)
+                                                    @PathVariable("calendarId")
+                                                    long calendarId) {
+    caldavDeletionService.keepRemoteCounterpart(currentUser(), calendarId);
+    return ResponseEntity.noContent().build();
   }
 
   /**
