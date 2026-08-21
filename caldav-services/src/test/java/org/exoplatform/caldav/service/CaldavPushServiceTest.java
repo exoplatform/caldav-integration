@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -790,6 +791,104 @@ public class CaldavPushServiceTest {
     verify(caldavSyncStorage).getPairsByOrigin(USER, 0L, SyncOrigin.MIRROR);
   }
 
+  @Test
+  public void theEventIsReadInItsOwnZoneAndNoOther() throws Exception {
+    // For a timed event any zone yields the same instant, which makes this
+    // look like a free choice. It is not: agenda re-anchors an all-day event's
+    // covered days at midnight in whatever zone is asked for, so reading in
+    // UTC moves an all-day event of a user west of Greenwich to 20:00 the
+    // previous day — and the copy is written one day early, silently, for
+    // exactly the users whose zone caused it.
+    givenAMirror();
+    givenAnAgendaEvent(105L, 0L);
+    when(agendaRemoteEventService.findRemoteEvent(105L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-105"));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"e\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 105L, null);
+
+    // null is how agenda is asked for the event's own zone.
+    verify(agendaEventService).getEventById(105L, null, USER);
+  }
+
+  @Test
+  public void excludingAnOccurrenceRewritesTheObjectInsteadOfDeletingIt() {
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    ObjectSync known = mapped("\"etag-1\"");
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("series-uid"))).thenReturn(known);
+    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+                                                                                .thenReturn(new CalendarObject(known.getRemoteHref(),
+                                                                                                               "\"etag-1\"",
+                                                                                                               "BEGIN:VCALENDAR"));
+    when(icsMerger.excludeOccurrence(anyString(), any())).thenReturn("REWRITTEN");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                           .thenReturn(new PutResult(204,
+                                                                                                                                     "\"etag-2\"",
+                                                                                                                                     null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.excludeOccurrence(USER, "series-uid", Instant.parse("2026-09-15T07:00:00Z"));
+
+    // Every component of a series lives in one object: deleting it would
+    // cancel every meeting of the series to cancel one.
+    verify(calDavClient).updateObject(any(), anyString(), eq("REWRITTEN"), eq("\"etag-1\""), anyString(), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void anObjectLeftEmptyByAnExclusionIsDeleted() {
+    // Writing back a VCALENDAR with no VEVENT is accepted by some servers and
+    // then served to clients that choke on it.
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("series-uid"))).thenReturn(mapped("\"etag-1\""));
+    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+                                                                                .thenReturn(new CalendarObject("/h",
+                                                                                                               "\"etag-1\"",
+                                                                                                               "BEGIN:VCALENDAR"));
+    when(icsMerger.excludeOccurrence(anyString(), any())).thenReturn(null);
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.excludeOccurrence(USER, "series-uid", Instant.parse("2026-09-15T07:00:00Z"));
+
+    verify(calDavClient).deleteObject(any(), anyString(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void aSeriesChangedElsewhereSurfacesAsAConflict() {
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("series-uid"))).thenReturn(mapped("\"etag-1\""));
+    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+                                                                                .thenReturn(new CalendarObject("/h",
+                                                                                                               "\"etag-1\"",
+                                                                                                               "BEGIN:VCALENDAR"));
+    when(icsMerger.excludeOccurrence(anyString(), any())).thenReturn("REWRITTEN");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                           .thenReturn(new PutResult(412,
+                                                                                                                                     null,
+                                                                                                                                     null));
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class,
+                                               () -> service.excludeOccurrence(USER,
+                                                                               "series-uid",
+                                                                               Instant.parse("2026-09-15T07:00:00Z")));
+
+    assertEquals(CaldavPushService.CONFLICT, failure.getCode());
+  }
+
+  @Test
+  public void excludingFromASeriesThatWasNeverPushedDoesNothing() {
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("unknown"))).thenReturn(null);
+
+    service.excludeOccurrence(USER, "unknown", Instant.parse("2026-09-15T07:00:00Z"));
+
+    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+  }
+
   /**
    * An agenda event the service can read.
    *
@@ -801,7 +900,7 @@ public class CaldavPushServiceTest {
     Event event = new Event();
     event.setId(eventId);
     event.setParentId(parentId);
-    when(agendaEventService.getEventById(eq(eventId), any(), eq(USER))).thenReturn(event);
+    when(agendaEventService.getEventById(eq(eventId), isNull(), eq(USER))).thenReturn(event);
   }
 
   /**
