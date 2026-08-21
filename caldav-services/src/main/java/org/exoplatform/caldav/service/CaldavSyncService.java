@@ -231,7 +231,37 @@ public class CaldavSyncService {
         || href.endsWith("/" + CaldavPushService.MIRROR_COLLECTION_SLUG)) {
       return true;
     }
+    if (isExoCreated(href)) {
+      return true;
+    }
     return known.stream().anyMatch(pair -> href.equals(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())));
+  }
+
+  /**
+   * Whether eXo is the one that created this collection, judged from its path
+   * alone.
+   *
+   * <p>
+   * The pair check below cannot answer this on its own: pairs are read for
+   * <em>one</em> user, while a CalDAV account can be shared by several. Two
+   * eXo users connected to the same account see each other's pushed
+   * collections as ordinary remote ones, each materialises the other's, each
+   * then pushes the result as a new collection — and the pair of them
+   * multiply calendars without either behaving incorrectly. Observed live:
+   * one user's <code>exo-cal-946eec40…</code> came back as another user's
+   * calendar 23.
+   *
+   * <p>
+   * The path is the reliable signal because eXo mints it: a collection under
+   * the outbound prefix was created by eXo, whichever user asked for it, and
+   * is never something to import.
+   *
+   * @param href the collection path, canonical
+   * @return true when the path is one eXo derives
+   */
+  private boolean isExoCreated(String href) {
+    String slug = StringUtils.substringAfterLast(StringUtils.stripEnd(href, "/"), "/");
+    return StringUtils.startsWith(slug, CaldavOutboundService.COLLECTION_PREFIX);
   }
 
   /**

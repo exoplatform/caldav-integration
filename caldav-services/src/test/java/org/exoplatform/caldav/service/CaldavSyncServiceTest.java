@@ -135,6 +135,21 @@ public class CaldavSyncServiceTest {
   }
 
   @Test
+  public void aCollectionAnotherExoUserPushedIsNeverMaterialised() throws Exception {
+    // The pair check cannot catch this one: pairs are read for one user, and a
+    // CalDAV account can be shared. Two eXo users on the same account would
+    // each materialise the other's pushed collections, push the results back
+    // as new ones, and multiply calendars without either behaving wrongly.
+    // Observed live before this guard existed.
+    givenServerCalendars(collection("/dav/calendars/john/exo-cal-946eec40-e9bd-4cd1-89f2-bddfed786d75/", "Someone else's"));
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  @Test
   public void theMirrorIsNeverMaterialised() throws Exception {
     // Its contents are copies of events eXo already shows.
     givenServerCalendars(collection("/dav/calendars/john/exo-meetings/", "eXo Meetings"));
