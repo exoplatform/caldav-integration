@@ -30,6 +30,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.model.Calendar;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -108,6 +110,9 @@ public class CaldavSyncService {
   private CaldavInboundService        caldavInboundService;
 
   @Autowired
+  private IdentityManager             identityManager;
+
+  @Autowired
   private AgendaCalendarService       agendaCalendarService;
 
   /**
@@ -143,6 +148,37 @@ public class CaldavSyncService {
    */
   public void syncNow(long userIdentityId, String username) {
     sync(userIdentityId, username);
+  }
+
+  /**
+   * Synchronises because a calendar has just been created.
+   *
+   * <p>
+   * The engine needs the owner's login to satisfy agenda's ACL, and a listener
+   * has only their identity — resolving it is this method's reason to exist,
+   * and it keeps the listener the glue it is meant to be.
+   *
+   * <p>
+   * Nothing happens for a user with no connected account, which is most of
+   * them: a calendar created by someone who never set up CalDAV must not cost
+   * an identity lookup and a wasted pass.
+   *
+   * @param userIdentityId identity of the calendar's owner
+   */
+  public void syncAfterCalendarCreated(long userIdentityId) {
+    if (!connected(caldavConnectorStorage.getCaldavSetting(userIdentityId))) {
+      return;
+    }
+    Identity identity = identityManager.getIdentity(String.valueOf(userIdentityId));
+    if (identity == null || StringUtils.isBlank(identity.getRemoteId())) {
+      LOG.debug("Calendar owner {} has no resolvable login; the next sync will carry the calendar", userIdentityId);
+      return;
+    }
+    // syncNow rather than syncIfDue: the point is that the user does not wait.
+    // The concurrency guard keeps this harmless when the calendar was itself
+    // created by a sync that is still running — that pass returns immediately
+    // rather than recursing into itself.
+    syncNow(userIdentityId, identity.getRemoteId());
   }
 
   /**
