@@ -1,0 +1,360 @@
+/*
+ * Copyright (C) 2026 eXo Platform SAS.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.exoplatform.caldav.storage;
+
+import java.net.URI;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.util.Date;
+import java.util.List;
+
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
+
+import org.exoplatform.caldav.dao.CaldavCalendarSyncDAO;
+import org.exoplatform.caldav.dao.CaldavObjectSyncDAO;
+import org.exoplatform.caldav.entity.CaldavCalendarSyncEntity;
+import org.exoplatform.caldav.entity.CaldavObjectSyncEntity;
+import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
+import org.exoplatform.caldav.model.ObjectSync;
+import org.exoplatform.caldav.model.SyncOrigin;
+
+/**
+ * Maps calendar pairs and their object mappings between their JPA entities and
+ * the service-layer DTOs, and is the single place hrefs are made canonical.
+ *
+ * <p>
+ * No business logic: what a pair means, when it may be created, whether a
+ * deletion propagates — all of that belongs to the service. What lives here is
+ * the mechanical part the service should not have to remember, above all that
+ * an href is stored decoded and without its trailing slash. A binding that
+ * compared raw hrefs would lose its pair the first time a server answered a
+ * differently-escaped one, and that is not a decision, it is an invariant.
+ */
+@Component
+public class CaldavSyncStorage {
+
+  @Autowired
+  private CaldavCalendarSyncDAO calendarSyncDAO;
+
+  @Autowired
+  private CaldavObjectSyncDAO   objectSyncDAO;
+
+  /**
+   * Every pair a user holds on one server.
+   *
+   * @param userIdentityId identity of the user
+   * @param serverId declared server registration
+   * @return the user's pairs on that server
+   */
+  public List<CalendarSync> getPairs(long userIdentityId, long serverId) {
+    return calendarSyncDAO.findByUserIdentityIdAndServerId(userIdentityId, serverId).stream().map(this::fromEntity).toList();
+  }
+
+  /**
+   * The pair bound to one local calendar.
+   *
+   * @param userIdentityId identity of the user
+   * @param serverId declared server registration
+   * @param localCalendarSyncUid agenda's immutable calendar anchor
+   * @return the pair, or null when the calendar is not bound
+   */
+  public CalendarSync getPairByLocalCalendar(long userIdentityId, long serverId, String localCalendarSyncUid) {
+    return calendarSyncDAO.findByUserIdentityIdAndServerIdAndLocalCalendarSyncUid(userIdentityId,
+                                                                                  serverId,
+                                                                                  localCalendarSyncUid)
+                          .map(this::fromEntity)
+                          .orElse(null);
+  }
+
+  /**
+   * The pair bound to one remote collection, matched on the canonical path.
+   *
+   * <p>
+   * Resolved in memory over the user's own pairs rather than by a query: the
+   * href column is too long to index on MySQL under utf8mb4, and a person's
+   * pairs are few. Querying it would have meant either a scan or a schema
+   * contortion, for a set that fits in a handful of rows.
+   *
+   * @param userIdentityId identity of the user
+   * @param serverId declared server registration
+   * @param remoteHref the collection href, in any spelling
+   * @return the pair, or null when the collection is not bound
+   */
+  public CalendarSync getPairByRemoteHref(long userIdentityId, long serverId, String remoteHref) {
+    String canonical = canonicalHref(remoteHref);
+    if (StringUtils.isBlank(canonical)) {
+      return null;
+    }
+    return calendarSyncDAO.findByUserIdentityIdAndServerId(userIdentityId, serverId)
+                          .stream()
+                          .filter(entity -> canonical.equals(entity.getRemoteHref()))
+                          .findFirst()
+                          .map(this::fromEntity)
+                          .orElse(null);
+  }
+
+  /**
+   * The pairs of one origin a user holds on a server. A list even for
+   * {@link SyncOrigin#MIRROR}, which should be single: the database cannot
+   * enforce that uniqueness, so the caller is given what is actually there
+   * rather than the first of several.
+   *
+   * @param userIdentityId identity of the user
+   * @param serverId declared server registration
+   * @param origin which side created the collection
+   * @return the matching pairs
+   */
+  public List<CalendarSync> getPairsByOrigin(long userIdentityId, long serverId, SyncOrigin origin) {
+    return calendarSyncDAO.findByUserIdentityIdAndServerIdAndOrigin(userIdentityId, serverId, origin)
+                          .stream()
+                          .map(this::fromEntity)
+                          .toList();
+  }
+
+  /**
+   * One page of pairs in a given state whose last synchronisation ended before
+   * a cutoff, or has never ended.
+   *
+   * @param status the state to select
+   * @param before pairs last synchronised strictly before this instant
+   * @param offset page offset, in pages
+   * @param limit page size
+   * @return one page of due pairs, oldest synchronisation first
+   */
+  public Page<CalendarSync> getDuePairs(CalendarSyncStatus status, Date before, int offset, int limit) {
+    Pageable pageable = PageRequest.of(offset, limit, Sort.by(Sort.Direction.ASC, "lastSyncEnd"));
+    return calendarSyncDAO.findDue(status, before, pageable).map(this::fromEntity);
+  }
+
+  /**
+   * Creates or updates a pair, canonicalising its href on the way in.
+   *
+   * @param pair the pair to persist
+   * @return the persisted pair, carrying its identifier
+   */
+  @Transactional
+  public CalendarSync savePair(CalendarSync pair) {
+    CaldavCalendarSyncEntity entity = toEntity(pair);
+    return fromEntity(calendarSyncDAO.save(entity));
+  }
+
+  /**
+   * Removes a pair and, by the foreign key, its object mappings.
+   *
+   * @param id technical identifier of the pair
+   */
+  @Transactional
+  public void deletePair(long id) {
+    calendarSyncDAO.deleteById(id);
+  }
+
+  /**
+   * The mapping for one iCalendar object inside a pair.
+   *
+   * @param calendarSyncId the pair
+   * @param icsUid the iCalendar UID
+   * @return the mapping, or null when the object is unknown
+   */
+  public ObjectSync getObjectByUid(long calendarSyncId, String icsUid) {
+    return objectSyncDAO.findByCalendarSyncIdAndIcsUid(calendarSyncId, icsUid).map(this::fromEntity).orElse(null);
+  }
+
+  /**
+   * The mapping for one eXo event inside a pair.
+   *
+   * @param calendarSyncId the pair
+   * @param localEventId the eXo event
+   * @return the mapping, or null when the event has never been pushed
+   */
+  public ObjectSync getObjectByEvent(long calendarSyncId, long localEventId) {
+    return objectSyncDAO.findByCalendarSyncIdAndLocalEventId(calendarSyncId, localEventId).map(this::fromEntity).orElse(null);
+  }
+
+  /**
+   * One page of a pair's object mappings.
+   *
+   * @param calendarSyncId the pair
+   * @param offset page offset, in pages
+   * @param limit page size
+   * @return one page of mappings, by identifier
+   */
+  public Page<ObjectSync> getObjects(long calendarSyncId, int offset, int limit) {
+    Pageable pageable = PageRequest.of(offset, limit, Sort.by(Sort.Direction.ASC, "id"));
+    return objectSyncDAO.findByCalendarSyncId(calendarSyncId, pageable).map(this::fromEntity);
+  }
+
+  /**
+   * How many objects a pair maps.
+   *
+   * @param calendarSyncId the pair
+   * @return the mapping count
+   */
+  public long countObjects(long calendarSyncId) {
+    return objectSyncDAO.countByCalendarSyncId(calendarSyncId);
+  }
+
+  /**
+   * Whether an eXo event is already mapped. The question the backfill asks
+   * before creating a row, and the reason re-running it creates nothing.
+   *
+   * @param localEventId the eXo event
+   * @return true when a mapping exists
+   */
+  public boolean isEventMapped(long localEventId) {
+    return objectSyncDAO.existsByLocalEventId(localEventId);
+  }
+
+  /**
+   * Creates or updates an object mapping, canonicalising its href on the way
+   * in.
+   *
+   * @param object the mapping to persist
+   * @return the persisted mapping, carrying its identifier
+   */
+  @Transactional
+  public ObjectSync saveObject(ObjectSync object) {
+    return fromEntity(objectSyncDAO.save(toEntity(object)));
+  }
+
+  /**
+   * Drops every object mapping of a pair, leaving the pair itself in place.
+   *
+   * @param calendarSyncId the pair
+   * @return how many mappings were removed
+   */
+  @Transactional
+  public int deleteObjects(long calendarSyncId) {
+    return objectSyncDAO.deleteByCalendarSyncId(calendarSyncId);
+  }
+
+  /**
+   * An href reduced to what identifies the resource: its percent-decoded path,
+   * without a trailing slash.
+   *
+   * <p>
+   * The Java counterpart of the browser connector's collectionPath. The same
+   * collection is written {@code %40} by one server and {@code @} by a client,
+   * reported with and without a trailing slash, and reached through more than
+   * one host — none of which makes it a different collection. An href that
+   * cannot be parsed is returned trimmed rather than rejected: this is a
+   * normalisation, not a validation, and refusing to store an odd href would
+   * lose the binding rather than protect it.
+   *
+   * @param href a collection or object href, absolute or relative
+   * @return the canonical path, or the trimmed input when it cannot be parsed
+   */
+  public static String canonicalHref(String href) {
+    if (StringUtils.isBlank(href)) {
+      return href;
+    }
+    String trimmed = href.trim();
+    try {
+      String path = URI.create(trimmed).getPath();
+      if (StringUtils.isBlank(path)) {
+        path = trimmed;
+      }
+      return StringUtils.stripEnd(URLDecoder.decode(path, StandardCharsets.UTF_8), "/");
+    } catch (IllegalArgumentException e) {
+      return StringUtils.stripEnd(trimmed, "/");
+    }
+  }
+
+  /**
+   * Maps a pair entity onto its DTO.
+   *
+   * @param entity the persisted pair
+   * @return the pair as the service layer handles it
+   */
+  private CalendarSync fromEntity(CaldavCalendarSyncEntity entity) {
+    return new CalendarSync(entity.getId(),
+                            entity.getUserIdentityId(),
+                            entity.getServerId(),
+                            entity.getLocalCalendarSyncUid(),
+                            entity.getRemoteHref(),
+                            entity.getOrigin(),
+                            entity.getSyncToken(),
+                            entity.getCtag(),
+                            entity.getStatus(),
+                            entity.getLastSyncStart(),
+                            entity.getLastSyncEnd(),
+                            entity.getConsecutiveFailures());
+  }
+
+  /**
+   * Maps a pair DTO onto its entity, canonicalising the href.
+   *
+   * @param pair the pair to persist
+   * @return the entity to save
+   */
+  private CaldavCalendarSyncEntity toEntity(CalendarSync pair) {
+    return new CaldavCalendarSyncEntity(pair.getId(),
+                                        pair.getUserIdentityId(),
+                                        pair.getServerId(),
+                                        pair.getLocalCalendarSyncUid(),
+                                        canonicalHref(pair.getRemoteHref()),
+                                        pair.getOrigin(),
+                                        pair.getSyncToken(),
+                                        pair.getCtag(),
+                                        pair.getStatus(),
+                                        pair.getLastSyncStart(),
+                                        pair.getLastSyncEnd(),
+                                        pair.getConsecutiveFailures());
+  }
+
+  /**
+   * Maps an object entity onto its DTO.
+   *
+   * @param entity the persisted mapping
+   * @return the mapping as the service layer handles it
+   */
+  private ObjectSync fromEntity(CaldavObjectSyncEntity entity) {
+    return new ObjectSync(entity.getId(),
+                          entity.getCalendarSyncId(),
+                          entity.getLocalEventId(),
+                          entity.getIcsUid(),
+                          entity.getRemoteHref(),
+                          entity.getEtag(),
+                          entity.getPushedHash(),
+                          entity.getLastSync());
+  }
+
+  /**
+   * Maps an object DTO onto its entity, canonicalising the href.
+   *
+   * @param object the mapping to persist
+   * @return the entity to save
+   */
+  private CaldavObjectSyncEntity toEntity(ObjectSync object) {
+    return new CaldavObjectSyncEntity(object.getId(),
+                                      object.getCalendarSyncId(),
+                                      object.getLocalEventId(),
+                                      object.getIcsUid(),
+                                      canonicalHref(object.getRemoteHref()),
+                                      object.getEtag(),
+                                      object.getPushedHash(),
+                                      object.getLastSync());
+  }
+
+}
