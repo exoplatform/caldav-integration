@@ -49,6 +49,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaEventService;
+import org.exoplatform.agenda.model.Calendar;
+import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
@@ -118,6 +120,9 @@ public class CaldavPushServiceTest {
 
   @Mock
   private AgendaRemoteEventService   agendaRemoteEventService;
+
+  @Mock
+  private AgendaCalendarService      agendaCalendarService;
 
   @Mock
   private CalDavEndpoint             endpoint;
@@ -889,6 +894,115 @@ public class CaldavPushServiceTest {
     verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
   }
 
+  @Test
+  public void anEventOfTheUserOwnCalendarGoesIntoThatCalendarCollection() throws Exception {
+    // Where an event goes is decided from the calendar it lives in. A personal
+    // event filed among space copies would mix two calendars in one
+    // collection, with nothing recording which came from where.
+    givenAnAgendaEvent(110L, 0L);
+    givenPersonalCalendar(7L, "cal-anchor");
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(boundPersonalPair());
+    when(agendaRemoteEventService.findRemoteEvent(110L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-110"));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"e\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    ObjectSync mapping = service.pushAgendaEvent(USER, 110L, null);
+
+    assertEquals(9L, mapping.getCalendarSyncId());
+    // The mirror is never established for a personal event: doing so would
+    // create a collection the user did not ask for.
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void aPersonalCalendarWithNoUsableCollectionSendsNothingToTheMirror() throws Exception {
+    // Outbound simply stays unavailable for that calendar. Diverting the event
+    // into the mirror as a consolation is exactly the mixing PR7 refuses.
+    givenAMirror();
+    givenAnAgendaEvent(111L, 0L);
+    givenPersonalCalendar(8L, "cal-anchor");
+    CalendarSync refused = boundPersonalPair();
+    refused.setStatus(CalendarSyncStatus.REMOTE_CREATE_REFUSED);
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(refused);
+    when(agendaRemoteEventService.findRemoteEvent(111L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-111"));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"e\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    ObjectSync mapping = service.pushAgendaEvent(USER, 111L, null);
+
+    // It fell back to the mirror pair, which is the space destination.
+    assertEquals(1L, mapping.getCalendarSyncId());
+  }
+
+  @Test
+  public void aSpaceEventStillGoesToTheMirror() throws Exception {
+    givenAMirror();
+    givenAnAgendaEvent(112L, 0L);
+    // Owned by a space, not by this user.
+    givenSpaceCalendar(9L);
+    when(agendaRemoteEventService.findRemoteEvent(112L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-112"));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"e\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    assertEquals(1L, service.pushAgendaEvent(USER, 112L, null).getCalendarSyncId());
+    verify(caldavSyncStorage, never()).getPairByLocalCalendar(anyLong(), anyLong(), anyString());
+  }
+
+  /**
+   * A calendar of this user's own, carrying an anchor.
+   *
+   * @param calendarId the calendar the event lives in
+   * @param anchor its immutable sync uid
+   */
+  private void givenPersonalCalendar(long calendarId, String anchor) {
+    Calendar calendar = new Calendar();
+    calendar.setId(calendarId);
+    calendar.setOwnerId(USER);
+    calendar.setSyncUid(anchor);
+    when(agendaCalendarService.getCalendarById(calendarId)).thenReturn(calendar);
+  }
+
+  /**
+   * A calendar owned by a space rather than by this user.
+   *
+   * @param calendarId the calendar the event lives in
+   */
+  private void givenSpaceCalendar(long calendarId) {
+    Calendar calendar = new Calendar();
+    calendar.setId(calendarId);
+    calendar.setOwnerId(999L);
+    when(agendaCalendarService.getCalendarById(calendarId)).thenReturn(calendar);
+  }
+
+  /**
+   * A personal calendar already bound to its own collection.
+   *
+   * @return the pair
+   */
+  private CalendarSync boundPersonalPair() {
+    CalendarSync pair = new CalendarSync();
+    pair.setId(9L);
+    pair.setUserIdentityId(USER);
+    pair.setServerId(SERVER);
+    pair.setLocalCalendarSyncUid("cal-anchor");
+    pair.setRemoteHref("/dav/calendars/john/exo-cal-cal-anchor");
+    pair.setOrigin(SyncOrigin.EXO);
+    pair.setStatus(CalendarSyncStatus.ACTIVE);
+    return pair;
+  }
+
   /**
    * An agenda event the service can read.
    *
@@ -900,6 +1014,7 @@ public class CaldavPushServiceTest {
     Event event = new Event();
     event.setId(eventId);
     event.setParentId(parentId);
+    event.setCalendarId(eventId >= 110L ? eventId - 103L : 0L);
     when(agendaEventService.getEventById(eq(eventId), isNull(), eq(USER))).thenReturn(event);
   }
 
