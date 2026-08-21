@@ -125,6 +125,64 @@ public class CaldavOutboundServiceTest {
   }
 
   @Test
+  public void theCollectionIsCreatedUnderTheCalendarsOwnName() {
+    // What the user reads in their own client. Naming it after the sync uid
+    // put "eXo c434ba2a-3f58-…" in front of them, which tells them nothing
+    // about which of their calendars it is.
+    givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
+    givenServerCalendars(List.of(), List.of(collection(WANTED)));
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+                                                                                                  .thenReturn(new MkCalendarResult(201,
+                                                                                                                                   List.of()));
+
+    service.bindPersonalCalendars(USER, LOGIN);
+
+    ArgumentCaptor<String> displayName = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).mkCalendar(any(), anyString(), displayName.capture(), any(), anyString(), anyString());
+    assertEquals("Work", displayName.getValue());
+  }
+
+  @Test
+  public void theCalendarsOwnNameBeatsTheTitleAgendaComputes() {
+    // Observed against a live server: a collection came back called
+    // "benjamin mestrallet" rather than the calendar's name, because
+    // getTitle() is computed and resolves to the owner for a personal
+    // calendar. Preferring it names every collection after the user.
+    Calendar named = calendar(1L, USER, ANCHOR, "benjamin mestrallet");
+    named.setName("Holidays");
+    givenPersonalCalendars(named);
+    givenServerCalendars(List.of(), List.of(collection(WANTED)));
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+                                                                                                  .thenReturn(new MkCalendarResult(201,
+                                                                                                                                   List.of()));
+
+    service.bindPersonalCalendars(USER, LOGIN);
+
+    ArgumentCaptor<String> displayName = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).mkCalendar(any(), anyString(), displayName.capture(), any(), anyString(), anyString());
+    assertEquals("Holidays", displayName.getValue());
+  }
+
+  @Test
+  public void aCalendarWithNothingToBeCalledFallsBackToItsAnchor() {
+    // A nameless calendar still has to be called something on the far side,
+    // and the uid is the only thing left that identifies it.
+    Calendar nameless = calendar(1L, USER, ANCHOR, null);
+    nameless.setName(null);
+    givenPersonalCalendars(nameless);
+    givenServerCalendars(List.of(), List.of(collection(WANTED)));
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+                                                                                                  .thenReturn(new MkCalendarResult(201,
+                                                                                                                                   List.of()));
+
+    service.bindPersonalCalendars(USER, LOGIN);
+
+    ArgumentCaptor<String> displayName = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).mkCalendar(any(), anyString(), displayName.capture(), any(), anyString(), anyString());
+    assertEquals("eXo " + ANCHOR, displayName.getValue());
+  }
+
+  @Test
   public void everyCollectionCreatedHereIsMarkedAsExoOwn() {
     // ORIGIN=EXO is what tells the inbound sweep to leave the collection
     // alone. Without it each one is materialised back as a second eXo
