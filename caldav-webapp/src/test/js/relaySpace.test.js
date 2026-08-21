@@ -14,21 +14,12 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-jest.mock('tsdav', () => ({
-  DAVClient: jest.fn(),
-  DAVNamespaceShort: {
-    DAV: 'd',
-    CALDAV: 'c',
-    CALDAV_APPLE: 'ca',
-  },
-}));
 jest.mock('../../main/webapp/vue-app/caldav/js/agendaCaldavService.js', () => ({
   getCaldavSetting: jest.fn(),
   saveMirrorCalendarHref: jest.fn(),
   USER_TIMEZONE_ID: 'Europe/Paris',
 }));
 
-import * as tsdav from 'tsdav';
 import * as caldavConnectorService from '../../main/webapp/vue-app/caldav/js/agendaCaldavService.js';
 import caldavConnector from '../../main/webapp/vue-app/caldav/caldav-connector/caldavConnector.js';
 
@@ -50,6 +41,9 @@ import caldavConnector from '../../main/webapp/vue-app/caldav/caldav-connector/c
  *   `listCalendars` answers, because agenda compares the two by decoded path
  *   to keep the dedicated mirror off calendar lists.
  */
+// Choosing the push destination moved to the server with EXO-89527, together
+// with the DAV traffic it decided. What is left of this suite is the part the
+// page still owns: recognising the dedicated mirror, and answering its id.
 describe('relay space', () => {
 
   /** The declared server the account references. */
@@ -84,22 +78,7 @@ describe('relay space', () => {
   // Same removal: the direct-to-server read fallback went with the read path.
   // The server resolves its own target from the registry (CaldavReadService).
 
-  it('matches a pre-relay stored mirror href against its relay-space enumeration', async () => {
-    const listed = {url: RELAY_MIRROR, displayName: 'eXo Meetings'};
-    const client = {fetchCalendars: jest.fn(() => Promise.resolve([listed]))};
 
-    const destination = await caldavConnector.getDestinationCalendar(client, SETTINGS);
-
-    expect(destination).toBe(listed);
-  });
-
-  it('folds an unlisted stored href into relay space rather than targeting the CalDAV origin', async () => {
-    const client = {fetchCalendars: jest.fn(() => Promise.resolve([]))};
-
-    const destination = await caldavConnector.getDestinationCalendar(client, SETTINGS);
-
-    expect(destination.url).toBe(RELAY_MIRROR);
-  });
 
   it('answers getMirrorCalendarId in the same space as the calendar ids', async () => {
     caldavConnectorService.getCaldavSetting.mockResolvedValue(SETTINGS);
