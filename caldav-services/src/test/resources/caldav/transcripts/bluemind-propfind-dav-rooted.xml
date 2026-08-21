@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  RECONSTRUCTED, not a raw capture: the BlueMind href shape — path-only,
+  server-absolute, rooted at /dav/ whatever path the registered URL carries
+  (verified live through the relay work; the raw authenticated PROPFIND
+  capture is PR0's to record). Property values are representative.
+-->
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:CS="http://calendarserver.org/ns/">
+  <D:response>
+    <D:href>/dav/calendars/vevent/6C452330-6F16-4B76-A6C2-6B24E1E0C4F1/</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:displayname>Mon agenda</D:displayname>
+        <D:resourcetype><D:collection/><C:calendar/></D:resourcetype>
+        <CS:getctag>"bm-42"</CS:getctag>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+    <D:propstat>
+      <D:prop><D:sync-token/><D:current-user-privilege-set/></D:prop>
+      <D:status>HTTP/1.1 404 Not Found</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>
