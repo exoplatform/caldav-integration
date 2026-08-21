@@ -47,6 +47,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.service.CaldavServerService;
 
 /**
@@ -523,6 +525,78 @@ END:VCALENDAR</A:calendar-data></D:prop>
 
     assertThrows(CalDavException.class,
                  () -> client.deleteObject(endpoint, BASE_PATH + "default/a.ics", null, USER, PASSWORD));
+  }
+
+  @Test
+  void aCollectionDeletionAddressesThePairOwnCollection() throws Exception {
+    givenStatusAnswers(204, "");
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    assertEquals(204, client.deleteCollection(endpoint, exoPair("cal-1", BASE_PATH + "exo-cal-cal-1"), USER, PASSWORD));
+
+    // The trailing slash matters: a collection is a collection, and some
+    // servers answer a 301 to the slashed form rather than deleting.
+    assertTrue(sent.get(0).uri().toString().endsWith("/exo-cal-cal-1/"),
+               () -> "expected the collection URL, got " + sent.get(0).uri());
+    assertEquals("DELETE", sent.get(0).method());
+  }
+
+  @Test
+  void aCollectionAlreadyGoneIsAFactNotAFault() throws Exception {
+    givenStatusAnswers(410, "");
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    // Absent is absent — which is what makes a repeated deletion idempotent
+    // rather than an error somebody has to interpret.
+    assertEquals(410, client.deleteCollection(endpoint, exoPair("cal-1", BASE_PATH + "exo-cal-cal-1"), USER, PASSWORD));
+  }
+
+  @Test
+  void aCollectionDeletionRefusedByTheServerThrows() throws Exception {
+    givenStatusAnswers(500, "");
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    assertThrows(CalDavException.class,
+                 () -> client.deleteCollection(endpoint, exoPair("cal-1", BASE_PATH + "exo-cal-cal-1"), USER, PASSWORD));
+  }
+
+  @Test
+  void rejectedCredentialsOnACollectionDeletionKeepTheirOwnType() throws Exception {
+    // A 401 here must not be read as "the server refuses this deletion": the
+    // caller's answer to a stale password is not the answer to a refusal.
+    givenStatusAnswers(401, "");
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    assertThrows(CalDavAuthenticationException.class,
+                 () -> client.deleteCollection(endpoint, exoPair("cal-1", BASE_PATH + "exo-cal-cal-1"), USER, PASSWORD));
+  }
+
+  @Test
+  void aCollectionEXoDidNotCreateIsNeverAddressedAtAll() throws Exception {
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+    CalendarSync foreign = exoPair("cal-1", BASE_PATH + "exo-cal-cal-1");
+    foreign.setOrigin(SyncOrigin.REMOTE);
+
+    assertThrows(IllegalArgumentException.class, () -> client.deleteCollection(endpoint, foreign, USER, PASSWORD));
+
+    // Not merely refused: no socket was opened, because the guard runs before
+    // the request exists.
+    assertTrue(sent.isEmpty(), "the guard must run before anything is sent");
+  }
+
+  /**
+   * A binding authorising the deletion of one collection eXo created.
+   *
+   * @param anchor the calendar's sync uid
+   * @param href where its collection lives
+   * @return the pair
+   */
+  private CalendarSync exoPair(String anchor, String href) {
+    CalendarSync pair = new CalendarSync();
+    pair.setOrigin(SyncOrigin.EXO);
+    pair.setLocalCalendarSyncUid(anchor);
+    pair.setRemoteHref(href);
+    return pair;
   }
 
   // ---- transport disciplines ---------------------------------------------
