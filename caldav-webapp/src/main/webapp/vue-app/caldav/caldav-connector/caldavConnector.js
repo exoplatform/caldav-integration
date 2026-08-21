@@ -607,10 +607,18 @@ const caldavConnector = {
     });
     return listEvent;
   },
-  pushEvent(event,) {
-    return caldavConnectorService.getCaldavSetting().then((settings)=> {
-      return this.saveEvent(event, settings);
-    });
+  pushEvent(event) {
+    // The write now happens on the server. What used to be built here — the
+    // iCalendar object, the destination, the conditional write — is decided
+    // where the credentials already live, so the page never handles them and
+    // the outcome becomes something a test can assert. What the page keeps is
+    // rendering the failure, which is why the codes below are unchanged.
+    const link = eventUrl(event);
+    const query = link && `?eventUrl=${encodeURIComponent(link)}` || '';
+    return fetch(`${window.location.origin}/caldav/rest/push/events/${event.id}${query}`, {
+      method: 'POST',
+      credentials: 'include',
+    }).then(pushOutcome);
   },
   /**
    * Removes an agenda event from the remote calendar.
@@ -628,9 +636,21 @@ const caldavConnector = {
    * @returns {Promise} resolves null once the remote calendar reflects it
    */
   deleteEvent(event) {
-    return caldavConnectorService.getCaldavSetting().then((settings)=> {
-      return this.removeEvent(event, settings);
-    });
+    // A whole event is removed server-side. Excluding a single occurrence is
+    // NOT yet: it rewrites the stored object, and that rewrite has no
+    // server-side counterpart until EXO-89526's exclusion work lands. Routing
+    // it to an endpoint that cannot do it would delete the whole series
+    // instead of one instance, so it keeps the path that works.
+    if (event.occurrence) {
+      return caldavConnectorService.getCaldavSetting().then(settings => this.removeEvent(event, settings));
+    }
+    if (!event.remoteId) {
+      return Promise.resolve(null);
+    }
+    return fetch(`${window.location.origin}/caldav/rest/push/events/${encodeURIComponent(event.remoteId)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    }).then(pushOutcome);
   },
   /**
    * Applies a deletion to the calendar object backing the event.
@@ -692,6 +712,13 @@ const caldavConnector = {
    * @param {Object} settings connector settings holding credentials and mirror href
    * @returns {Promise<Object>} `{id}` where id is the ICS UID of the pushed copy
    */
+  // NOTHING CALLS THIS ANY MORE. pushEvent now posts to the server, which
+  // builds the object with the Java engine (EXO-89524). The builder below and
+  // everything it uses is kept only until PR6 removes tsdav from this file
+  // wholesale — deleting it here would have mixed a large removal into a
+  // behaviour change and made both harder to review. Its jest tests still
+  // pass, and are now guarding code the product does not execute: that is a
+  // fact worth knowing when reading a green suite, not a reason to keep it.
   async saveEvent(event, settings) {
     const clientCaldav = await createClient(settings);
     //get the mirror calendar, the only collection eXo writes to
@@ -1214,6 +1241,28 @@ function oneYearAfter(start) {
   const end = new Date(start);
   end.setFullYear(end.getFullYear() + 1);
   return timeRangeBound(end);
+}
+
+/**
+ * Reads a server-side write outcome.
+ *
+ * The body of a refusal is the connector's own code — caldav.error.credentials,
+ * conflict, save, noCalendar, calendarCreationRefused — kept identical across
+ * the move so that every message the page already renders keeps working. A
+ * status alone would not do: the same 409 covers "your account is not
+ * connected" and "someone else edited this meeting", and those are different
+ * things to tell a user.
+ *
+ * @param {Response} response the server's answer
+ * @returns {Promise} resolves the outcome, or rejects with a coded error
+ */
+function pushOutcome(response) {
+  if (response.ok) {
+    return response.status === 204 ? Promise.resolve(null) : response.json().catch(() => null);
+  }
+  return response.text().catch(() => '').then(code => {
+    throw caldavError(code && code.trim() || 'caldav.error.save', {status: response.status});
+  });
 }
 
 /**
