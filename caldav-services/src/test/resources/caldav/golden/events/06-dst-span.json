@@ -1,0 +1,28 @@
+{
+  "name": "06-dst-span",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "A weekly series spanning the Europe/Paris October DST transition: every occurrence stays at the 09:00 wall clock, so the UTC instant shifts from 07:00Z to 08:00Z on the first occurrence after 2026-10-25. This is the drift-an-hour class EXO-89402 is open on.",
+    "pins": "TZID anchoring across a transition; the read-back golden derived from this object pins the expansion too"
+  },
+  "event": {
+    "id": 106,
+    "remoteId": "golden-06-dst-span",
+    "summary": "Morning stand-up",
+    "start": "2026-10-12T07:00:00.000Z",
+    "end": "2026-10-12T07:15:00.000Z",
+    "allDay": false,
+    "timeZoneId": "Europe/Paris",
+    "recurrence": {
+      "rrule": "FREQ=WEEKLY;BYDAY=MO;COUNT=8"
+    },
+    "creator": {
+      "id": "5",
+      "profile": {
+        "fullname": "John Doe",
+        "email": "john.doe@example.test"
+      }
+    }
+  }
+}

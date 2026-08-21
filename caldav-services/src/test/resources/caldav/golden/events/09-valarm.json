@@ -1,0 +1,35 @@
+{
+  "name": "09-valarm",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "Reminders become VALARMs: one DISPLAY alarm per reminder, TRIGGER as negative minutes before the start, units converted (a 1-day reminder is -PT1440M).",
+    "pins": "buildAlarms/reminderMinutes"
+  },
+  "event": {
+    "id": 109,
+    "remoteId": "golden-09-valarm",
+    "summary": "Board meeting",
+    "start": "2026-09-30T08:00:00.000Z",
+    "end": "2026-09-30T09:00:00.000Z",
+    "allDay": false,
+    "timeZoneId": "Europe/Paris",
+    "creator": {
+      "id": "5",
+      "profile": {
+        "fullname": "John Doe",
+        "email": "john.doe@example.test"
+      }
+    },
+    "reminders": [
+      {
+        "before": 10,
+        "beforePeriodType": "MINUTE"
+      },
+      {
+        "before": 1,
+        "beforePeriodType": "DAY"
+      }
+    ]
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "name": "12-allday-series-override",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "An all-day weekly series and an all-day modified occurrence: the master anchors on VALUE=DATE with no VTIMEZONE, and the override carries RECURRENCE-ID;VALUE=DATE — the all-day RECURRENCE-ID form, resolved to the calendar day in the event zone even though agenda identifies the occurrence by an instant.",
+    "pins": "recurrenceLines all-day RECURRENCE-ID form; the doubled/missing RECURRENCE-ID regression"
+  },
+  "event": {
+    "id": 112,
+    "remoteId": "golden-12-allday-series",
+    "summary": "Daily log reminder",
+    "start": "2026-09-14",
+    "end": "2026-09-14T00:00:00.000Z",
+    "allDay": true,
+    "timeZoneId": "Europe/Paris",
+    "recurrence": {
+      "rrule": "FREQ=WEEKLY;BYDAY=MO,FR"
+    },
+    "creator": {
+      "id": "5",
+      "profile": {
+        "fullname": "John Doe",
+        "email": "john.doe@example.test"
+      }
+    }
+  },
+  "followUps": [
+    {
+      "suffix": "override",
+      "action": "save",
+      "event": {
+        "summary": "Daily log reminder (exceptional)",
+        "start": "2026-09-21",
+        "end": "2026-09-21T00:00:00.000Z",
+        "allDay": true,
+        "timeZoneId": "Europe/Paris",
+        "occurrence": {
+          "id": "2026-09-21T00:00:00.000Z"
+        },
+        "parent": {
+          "id": 112,
+          "remoteId": "golden-12-allday-series"
+        },
+        "creator": {
+          "id": "5",
+          "profile": {
+            "fullname": "John Doe",
+            "email": "john.doe@example.test"
+          }
+        }
+      }
+    }
+  ]
+}

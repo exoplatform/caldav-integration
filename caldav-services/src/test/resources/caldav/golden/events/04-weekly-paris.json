@@ -1,0 +1,30 @@
+{
+  "name": "04-weekly-paris",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "A timed weekly series is TZID-anchored with a VTIMEZONE carried in the same object: DTSTART;TZID=Europe/Paris at the 09:00 wall clock, and the Intl-derived two-rule VTIMEZONE (DAYLIGHT + STANDARD, ordinal-weekday RRULEs). This is the component PR3 replaces with the ical4j registry.",
+    "pins": "saveEvent TZID anchoring for recurring events; buildVTimeZone/zoneSubcomponent derivation; non-ASCII SUMMARY surviving escaping and folding"
+  },
+  "event": {
+    "id": 104,
+    "remoteId": "golden-04-weekly-paris",
+    "summary": "Équipe hebdo — sync",
+    "start": "2026-09-07T07:00:00.000Z",
+    "end": "2026-09-07T08:00:00.000Z",
+    "allDay": false,
+    "timeZoneId": "Europe/Paris",
+    "created": "2026-08-01T08:00:00.000Z",
+    "updated": "2026-08-01T08:00:00.000Z",
+    "recurrence": {
+      "rrule": "FREQ=WEEKLY;BYDAY=MO"
+    },
+    "creator": {
+      "id": "5",
+      "profile": {
+        "fullname": "John Doe",
+        "email": "john.doe@example.test"
+      }
+    }
+  }
+}

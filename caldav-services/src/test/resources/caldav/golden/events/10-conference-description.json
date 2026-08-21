@@ -1,0 +1,35 @@
+{
+  "name": "10-conference-description",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "Text handling: TEXT escaping of commas/semicolons in SUMMARY and LOCATION, HTML description reduced to plain text with paragraph breaks, non-ASCII throughout, a description long enough that the stored object must fold it; the conference URL appears BOTH inside DESCRIPTION and as a single-feature CONFERENCE;VALUE=URI;FEATURE=VIDEO property, with its commas and semicolons unescaped (URI, not TEXT); URL links back to the eXo event.",
+    "pins": "escapeText/htmlToText/describeLines/toUri; normalizeIcs folding"
+  },
+  "event": {
+    "id": 110,
+    "remoteId": "golden-10-conference-desc",
+    "summary": "Rétrospective; sprint 42, équipe cœur",
+    "location": "Salle « Turing », 3e étage; bâtiment B",
+    "description": "<p>Ordre du jour&nbsp;:</p><ul><li>Vélocité &amp; métriques</li><li>Rétro — points d’amélioration</li></ul><p>Merci de préparer vos retours en amont ; la séance est limitée à 45 minutes, et nous voulons garder du temps pour les actions concrètes décidées ensemble à la fin de la session.</p>",
+    "start": "2026-09-17T14:00:00.000Z",
+    "end": "2026-09-17T15:00:00.000Z",
+    "allDay": false,
+    "timeZoneId": "Europe/Paris",
+    "creator": {
+      "id": "5",
+      "profile": {
+        "fullname": "John Doe",
+        "email": "john.doe@example.test"
+      }
+    },
+    "conferences": [
+      {
+        "url": "https://visio.example.test/room/42?pwd=abc,def;ghi"
+      },
+      {
+        "url": "https://ignored.example.test/second"
+      }
+    ]
+  }
+}

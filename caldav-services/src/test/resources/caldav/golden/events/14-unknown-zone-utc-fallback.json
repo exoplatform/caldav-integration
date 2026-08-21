@@ -1,0 +1,33 @@
+{
+  "name": "14-unknown-zone-utc-fallback",
+  "_provenance": {
+    "kind": "authored driver input",
+    "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
+    "invariant": "The declined-VTIMEZONE fallback: when no VTIMEZONE can be produced for the zone, a recurring series falls back to UTC anchoring — DTSTART/DTEND/EXDATE all in the Z form, no dangling TZID. Synthetic input (agenda always sends valid IANA ids); it pins the fallback contract itself.",
+    "pins": "resolveVTimeZone catch path; scheduleLines/exceptionLines UTC branches for a recurring event"
+  },
+  "event": {
+    "id": 114,
+    "remoteId": "golden-14-unknown-zone",
+    "summary": "Series with unresolvable zone",
+    "start": "2026-09-03T09:00:00.000Z",
+    "end": "2026-09-03T10:00:00.000Z",
+    "allDay": false,
+    "timeZoneId": "Not/AZone",
+    "recurrence": {
+      "rrule": "FREQ=WEEKLY;BYDAY=TH;COUNT=4",
+      "exceptions": [
+        {
+          "date": "2026-09-10T09:00:00.000Z"
+        }
+      ]
+    },
+    "creator": {
+      "id": "5",
+      "profile": {
+        "fullname": "John Doe",
+        "email": "john.doe@example.test"
+      }
+    }
+  }
+}
