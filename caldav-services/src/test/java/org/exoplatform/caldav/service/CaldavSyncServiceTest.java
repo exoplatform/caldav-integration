@@ -31,6 +31,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -261,6 +262,75 @@ public class CaldavSyncServiceTest {
     created.setId(99L);
     created.setSyncUid(anchor);
     when(agendaCalendarService.createCalendar(any(), eq(LOGIN))).thenReturn(created);
+  }
+
+  @Test
+  public void aTaskListIsNotACalendarAndIsNeverMaterialised() throws Exception {
+    // A CalDAV home holds more than calendars. BlueMind publishes the
+    // account's task list beside them, and it answers a PROPFIND for calendars
+    // exactly as a calendar does — so the only thing separating the two is the
+    // component set it declares. Materialising it hands the user an eXo
+    // calendar that can never hold an event.
+    givenServerCalendars(collectionOf("/dav/calendars/john/todolist:default/", "Mes taches", Set.of("VTODO")));
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  @Test
+  public void aCollectionDeclaringNoComponentSetIsStillACalendar() throws Exception {
+    // RFC 4791 makes the property optional, and its absence means every
+    // component is supported. Reading "undeclared" as "holds no events" would
+    // silently drop the calendars of every server that omits it.
+    givenServerCalendars(collectionOf("/dav/calendars/john/private/", "Private", Set.of()));
+    givenNoKnownPairs();
+    givenAgendaCreates("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService).createCalendar(any(), eq(LOGIN));
+  }
+
+  @Test
+  public void aCollectionDeclaringEventsAmongOthersIsACalendar() throws Exception {
+    // A collection may hold several component types. Requiring VEVENT alone
+    // would exclude an ordinary calendar that also accepts todos.
+    givenServerCalendars(collectionOf("/dav/calendars/john/mixed/", "Mixed", Set.of("VEVENT", "VTODO")));
+    givenNoKnownPairs();
+    givenAgendaCreates("anchor-2");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService).createCalendar(any(), eq(LOGIN));
+  }
+
+  @Test
+  public void aMaterialisedCalendarIsNamedAfterTheCollection() throws Exception {
+    // Agenda persists getName(); getTitle() is a display field it computes,
+    // and a calendar left nameless falls back to its owner's identity. Setting
+    // the title alone is why two materialised collections both came out named
+    // after their owner instead of after themselves.
+    givenServerCalendars(collectionOf("/dav/calendars/john/private/", "Holidays", Set.of("VEVENT")));
+    givenNoKnownPairs();
+    givenAgendaCreates("anchor-3");
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<Calendar> created = ArgumentCaptor.forClass(Calendar.class);
+    verify(agendaCalendarService).createCalendar(created.capture(), eq(LOGIN));
+    assertEquals("Holidays", created.getValue().getName());
+  }
+
+  /**
+   * @param href the collection path
+   * @param name its display name
+   * @param components the component types it declares
+   * @return a listed collection
+   */
+  private CalendarCollection collectionOf(String href, String name, Set<String> components) {
+    return new CalendarCollection(href, name, "ctag-1", "token-1", null, true, components);
   }
 
   /**

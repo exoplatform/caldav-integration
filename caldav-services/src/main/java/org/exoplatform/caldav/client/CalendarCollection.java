@@ -32,10 +32,51 @@ package org.exoplatform.caldav.client;
  * @param writable whether the current user's privilege set carries write —
  *          false as well when the server answered no privilege set at all
  */
+import java.util.Set;
+
 public record CalendarCollection(String href,
                                  String displayName,
                                  String ctag,
                                  String syncToken,
                                  String color,
-                                 boolean writable) {
+                                 boolean writable,
+                                 Set<String> components) {
+
+  /**
+   * A collection whose server declared no component set.
+   * <p>
+   * The six-argument form every caller used before the set was read: an
+   * undeclared set is an empty one, which {@link #holdsEvents()} reads as
+   * "the server did not say" — the RFC 4791 default of supporting everything.
+   *
+   * @param href the collection path
+   * @param displayName the name the server gives it
+   * @param ctag the collection change tag
+   * @param syncToken the RFC 6578 sync token
+   * @param color the colour the server carries
+   * @param writable whether the caller may write to it
+   */
+  public CalendarCollection(String href,
+                            String displayName,
+                            String ctag,
+                            String syncToken,
+                            String color,
+                            boolean writable) {
+    this(href, displayName, ctag, syncToken, color, writable, Set.of());
+  }
+
+  /**
+   * Whether this collection holds events at all.
+   * <p>
+   * RFC 4791 §5.2.3 makes {@code supported-calendar-component-set} optional,
+   * and a collection that omits it supports every component. An empty set is
+   * therefore a server that did not say, not a server that said "nothing" —
+   * both answer true. Only an explicit set without VEVENT answers false, which
+   * is what keeps a task list from becoming a calendar.
+   *
+   * @return true unless the server explicitly excluded events
+   */
+  public boolean holdsEvents() {
+    return components == null || components.isEmpty() || components.contains("VEVENT");
+  }
 }
