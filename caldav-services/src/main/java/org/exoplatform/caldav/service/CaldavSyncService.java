@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -78,6 +79,19 @@ public class CaldavSyncService {
   @Value("${exo.agenda.caldav.sync.throttleMinutes:15}")
   private long                        throttleMinutes;
 
+  /**
+   * How far back events are imported. A calendar with ten years of history
+   * behind it would otherwise cost a full download on a page load.
+   */
+  @Value("${exo.agenda.caldav.sync.pastDays:60}")
+  private long                        pastDays;
+
+  /**
+   * How far ahead events are imported.
+   */
+  @Value("${exo.agenda.caldav.sync.futureDays:365}")
+  private long                        futureDays;
+
   @Autowired
   private CalDavClient                calDavClient;
 
@@ -89,6 +103,9 @@ public class CaldavSyncService {
 
   @Autowired
   private CaldavOutboundService       caldavOutboundService;
+
+  @Autowired
+  private CaldavInboundService        caldavInboundService;
 
   @Autowired
   private AgendaCalendarService       agendaCalendarService;
@@ -154,6 +171,7 @@ public class CaldavSyncService {
     try {
       caldavOutboundService.bindPersonalCalendars(userIdentityId, username);
       materialiseRemoteCalendars(userIdentityId, username, settings);
+      importRemoteEvents(userIdentityId, username, settings);
       lastSync.put(userIdentityId, Instant.now());
     } catch (RuntimeException e) {
       // A sync that fails is not an error the caller can act on — the page it
@@ -163,6 +181,79 @@ public class CaldavSyncService {
     } finally {
       syncing.remove(userIdentityId);
     }
+  }
+
+  /**
+   * Brings the events of every materialised collection into the calendar
+   * standing for it.
+   *
+   * <p>
+   * Only bindings eXo did <em>not</em> create are read. A collection eXo
+   * pushed holds copies of events agenda already has, and importing them back
+   * would show every one of the user's own meetings twice.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login, which agenda's ACL reads
+   * @param settings the connected account
+   */
+  private void importRemoteEvents(long userIdentityId, String username, CaldavUserSetting settings) {
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    List<CalendarSync> pairs = caldavSyncStorage.getPairsByOrigin(userIdentityId, serverId, SyncOrigin.REMOTE);
+    if (pairs.isEmpty()) {
+      return;
+    }
+    Map<String, Calendar> byAnchor = calendarsByAnchor(userIdentityId, username);
+    Instant now = Instant.now();
+    Instant from = now.minus(Duration.ofDays(pastDays));
+    Instant to = now.plus(Duration.ofDays(futureDays));
+    for (CalendarSync pair : pairs) {
+      if (pair.getStatus() != CalendarSyncStatus.ACTIVE) {
+        // A paused or tombstoned binding is not one to read from. A tombstone
+        // in particular means the user deleted the calendar in eXo, and
+        // filling it back up is precisely what they asked not to happen.
+        continue;
+      }
+      Calendar calendar = byAnchor.get(pair.getLocalCalendarSyncUid());
+      if (calendar == null) {
+        // The eXo calendar is gone while its binding survives. Recreating it
+        // here would undo a deletion; the binding is left for the pass that
+        // knows what to do with an orphan.
+        LOG.debug("Binding {} has no eXo calendar behind it and is skipped", pair.getId());
+        continue;
+      }
+      try {
+        caldavInboundService.importInto(userIdentityId, pair, calendar, from, to);
+      } catch (RuntimeException e) {
+        // One collection must not cost the others. The next run tries again.
+        LOG.warn("The events of collection {} could not be imported", pair.getRemoteHref(), e);
+      }
+    }
+  }
+
+  /**
+   * The user's calendars, keyed by the anchor a binding records.
+   *
+   * <p>
+   * Agenda exposes no lookup by sync uid, so the calendars are listed once per
+   * run and matched in memory rather than once per binding.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login
+   * @return the calendars by anchor, empty when they cannot be read
+   */
+  private Map<String, Calendar> calendarsByAnchor(long userIdentityId, String username) {
+    Map<String, Calendar> byAnchor = new HashMap<>();
+    try {
+      for (Calendar calendar : agendaCalendarService.getCalendars(0, Integer.MAX_VALUE, username)) {
+        if (calendar.getOwnerId() == userIdentityId && !calendar.isDeleted()
+            && StringUtils.isNotBlank(calendar.getSyncUid())) {
+          byAnchor.put(calendar.getSyncUid(), calendar);
+        }
+      }
+    } catch (Exception e) { // NOSONAR agenda declares a bare Exception here
+      LOG.warn("The calendars of user {} could not be read; nothing is imported this round", userIdentityId, e);
+    }
+    return byAnchor;
   }
 
   /**
