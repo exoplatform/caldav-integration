@@ -17,6 +17,7 @@
 package org.exoplatform.caldav.ics;
 
 import java.io.StringReader;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -25,6 +26,7 @@ import org.springframework.stereotype.Component;
 import net.fortuna.ical4j.data.CalendarBuilder;
 import net.fortuna.ical4j.model.Calendar;
 import net.fortuna.ical4j.model.Date;
+import net.fortuna.ical4j.model.DateTime;
 import net.fortuna.ical4j.model.DateList;
 import net.fortuna.ical4j.model.component.VEvent;
 import net.fortuna.ical4j.model.component.VTimeZone;
@@ -210,5 +212,148 @@ public class IcsMerger {
     } catch (Exception e) {
       throw new IcsParseException("The calendar object could not be read as iCalendar", e);
     }
+  }
+
+  /**
+   * Rewrites a calendar object so that it no longer produces one occurrence.
+   *
+   * <p>
+   * Not a deletion of the object: RFC 4791 puts every component of a series in
+   * one object, so removing it would remove the whole series. The override
+   * carrying that instance is dropped, and the master gains an EXDATE for it —
+   * <b>in the value type the master's own DTSTART uses</b>, because RFC 5545
+   * matches instances by identical value. An EXDATE written as a date-time
+   * against a date-valued series matches no instance at all, and the deleted
+   * occurrence simply reappears.
+   *
+   * <p>
+   * Answering null rather than an object means nothing is left: the caller
+   * deletes the object instead of writing back a VCALENDAR with no VEVENT in
+   * it, which some servers accept and then serve to clients that choke on it.
+   *
+   * @param existing the calendar object as fetched from the server
+   * @param occurrence the instance to exclude
+   * @return the object to write back, or null when nothing remains of it
+   * @throws IcsParseException when the document is not readable iCalendar
+   */
+  public String excludeOccurrence(String existing, Instant occurrence) {
+    Calendar target = parse(existing);
+    VEvent master = null;
+    for (Object component : target.getComponents(net.fortuna.ical4j.model.Component.VEVENT)) {
+      VEvent event = (VEvent) component;
+      if (event.getProperty(net.fortuna.ical4j.model.Property.RECURRENCE_ID) == null) {
+        master = master == null ? event : master;
+      }
+    }
+    // No master, only overrides: the series lives elsewhere and this object
+    // holds detached instances. Removing the matching one is still the right
+    // answer, and if it was the only one the object has nothing left in it.
+    Date excluded = master == null ? utc(occurrence) : sameShapeAs(master, occurrence);
+
+    // A master with no repetition rule produces no occurrences to exclude.
+    // Reaching here means the caller believes in a series the object does not
+    // have — a race, or a rule removed remotely. The object is returned
+    // untouched rather than given an EXDATE: RFC 5545 defines EXDATE against a
+    // recurrence set, and a lenient client handed one on a single event may
+    // hide the meeting entirely. Changing nothing beats hiding something.
+    if (master != null && master.getProperty(net.fortuna.ical4j.model.Property.RRULE) == null) {
+      return existing;
+    }
+
+    List<VEvent> overrides = new ArrayList<>();
+    for (Object component : target.getComponents(net.fortuna.ical4j.model.Component.VEVENT)) {
+      VEvent event = (VEvent) component;
+      Date instance = instanceOf(event);
+      if (isSameInstance(instance, excluded)) {
+        overrides.add(event);
+      }
+    }
+    overrides.forEach(event -> target.getComponents().remove(event));
+
+    if (target.getComponents(net.fortuna.ical4j.model.Component.VEVENT).isEmpty()) {
+      return null;
+    }
+    if (master != null && !alreadyExcluded(master, excluded)) {
+      master.getProperties().add(exDateFor(master, excluded));
+    }
+    return target.toString();
+  }
+
+  /**
+   * An instant as a UTC date-time, for an object that carries no master to
+   * take its shape from.
+   *
+   * @param occurrence the instance
+   * @return the value
+   */
+  private Date utc(Instant occurrence) {
+    DateTime dateTime = new DateTime(java.util.Date.from(occurrence));
+    dateTime.setUtc(true);
+    return dateTime;
+  }
+
+  /**
+   * The instant expressed the way the master's DTSTART is: a date for an
+   * all-day series, a date-time anchored on the same zone otherwise.
+   *
+   * @param master the series
+   * @param occurrence the instance to express
+   * @return the value to compare and to exclude by
+   */
+  private Date sameShapeAs(VEvent master, Instant occurrence) {
+    Date start = master.getStartDate() == null ? null : master.getStartDate().getDate();
+    if (start != null && !(start instanceof DateTime)) {
+      java.time.LocalDate day = occurrence.atZone(java.time.ZoneOffset.UTC).toLocalDate();
+      try {
+        return new Date(day.format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd")));
+      } catch (java.text.ParseException e) {
+        throw new IcsParseException("An occurrence identifier failed to format as a date: " + occurrence, e);
+      }
+    }
+    DateTime dateTime = new DateTime(java.util.Date.from(occurrence));
+    if (start instanceof DateTime startTime && startTime.getTimeZone() != null) {
+      dateTime.setTimeZone(startTime.getTimeZone());
+    } else {
+      dateTime.setUtc(true);
+    }
+    return dateTime;
+  }
+
+  /**
+   * Whether the master already excludes this instance.
+   *
+   * @param master the series
+   * @param excluded the instance
+   * @return true when an EXDATE already names it
+   */
+  private boolean alreadyExcluded(VEvent master, Date excluded) {
+    return exceptionDates(master).stream().anyMatch(date -> isSameInstance(date, excluded));
+  }
+
+  /**
+   * An EXDATE carrying one instance, in the master's own form.
+   *
+   * @param master the series
+   * @param excluded the instance to exclude
+   * @return the property to add
+   */
+  private ExDate exDateFor(VEvent master, Date excluded) {
+    net.fortuna.ical4j.model.ParameterList parameters = new net.fortuna.ical4j.model.ParameterList();
+    if (!(excluded instanceof DateTime)) {
+      DateList dates = new DateList(net.fortuna.ical4j.model.parameter.Value.DATE);
+      dates.add(excluded);
+      parameters.add(net.fortuna.ical4j.model.parameter.Value.DATE);
+      return new ExDate(parameters, dates);
+    }
+    DateTime dateTime = (DateTime) excluded;
+    DateList dates = new DateList(net.fortuna.ical4j.model.parameter.Value.DATE_TIME);
+    if (dateTime.getTimeZone() != null) {
+      dates.setTimeZone(dateTime.getTimeZone());
+      parameters.add(new net.fortuna.ical4j.model.parameter.TzId(dateTime.getTimeZone().getID()));
+    } else {
+      dates.setUtc(true);
+    }
+    dates.add(dateTime);
+    return new ExDate(parameters, dates);
   }
 }
