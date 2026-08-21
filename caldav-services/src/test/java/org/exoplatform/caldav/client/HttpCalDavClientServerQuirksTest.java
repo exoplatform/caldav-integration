@@ -79,14 +79,14 @@ import org.exoplatform.caldav.service.CaldavServerService;
 @ExtendWith(MockitoExtension.class)
 public class HttpCalDavClientServerQuirksTest {
 
-  private static final String SERVER_URL    = "https://webmail.demo3.livecollab.fr/dav/";
+  private static final String SERVER_URL    = "https://caldav.example.invalid/dav/";
 
   private static final String USER          = "someone@demo3.livecollab.fr";
 
   private static final String PASSWORD      = "not-the-real-one";
 
   private static final String BLUEMIND_HOME =
-                                            "/dav/calendars/__uids__/751E6D1A-7FDB-49B2-B668-B569E9A5A42D/";
+                                            "/dav/calendars/__uids__/9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/";
 
   @Mock
   private CaldavServerService caldavServerService;
