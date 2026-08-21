@@ -30,8 +30,10 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.RemoteEvent;
+import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
@@ -116,6 +118,9 @@ public class CaldavPushService {
   @Autowired
   private AgendaRemoteEventService agendaRemoteEventService;
 
+  @Autowired
+  private AgendaCalendarService  agendaCalendarService;
+
   /**
    * Writes one event into the user's mirror calendar, creating the collection
    * and the mapping row if this is the first time.
@@ -144,12 +149,67 @@ public class CaldavPushService {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
     CalDavEndpoint endpoint = endpointOf(settings);
     MirrorTarget mirror = ensureMirror(userIdentityId, settings, endpoint);
-    CalendarSync pair = mirrorPair(userIdentityId, settings, mirror);
+    return writeInto(userIdentityId, mirrorPair(userIdentityId, settings, mirror), event, localEventId);
+  }
+
+  /**
+   * The collection bound to the event's own calendar, when the event belongs
+   * to one of this user's personal calendars and that calendar has one.
+   *
+   * <p>
+   * Answers null in three cases, and they are not the same thing. The event
+   * belongs to a space, so the mirror is where it goes. Or the calendar is the
+   * user's but carries no anchor, so nothing stable identifies it. Or the
+   * server refused to create its collection — and then the event is <b>not</b>
+   * diverted into the mirror as a consolation: a personal event filed among
+   * space copies is exactly the mixing PR7 refuses to do, and outbound simply
+   * stays unavailable for that calendar until the server allows it.
+   *
+   * @param event the agenda event being pushed
+   * @param userIdentityId identity of the user
+   * @return the bound collection, or null when there is none to write into
+   */
+  private CalendarSync personalPairFor(Event event, long userIdentityId) {
+    Calendar calendar = agendaCalendarService.getCalendarById(event.getCalendarId());
+    if (calendar == null || calendar.getOwnerId() != userIdentityId || StringUtils.isBlank(calendar.getSyncUid())) {
+      return null;
+    }
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    long serverId = settings == null || settings.getServerId() == null ? 0L : settings.getServerId();
+    CalendarSync pair = caldavSyncStorage.getPairByLocalCalendar(userIdentityId, serverId, calendar.getSyncUid());
+    if (pair == null || pair.getStatus() != CalendarSyncStatus.ACTIVE) {
+      LOG.debug("Personal calendar {} has no usable collection; its events are not copied out", calendar.getSyncUid());
+      return null;
+    }
+    return pair;
+  }
+
+  /**
+   * Writes one event into a collection this user is already bound to.
+   *
+   * <p>
+   * The same write for the space mirror and for a personal calendar: which
+   * collection an event belongs in is the caller's decision, and everything
+   * that follows — the conditional write, the merge, the mapping row — is the
+   * same regardless. Keeping one path means a defect fixed for one is fixed
+   * for both, which was not true while the browser held two of them.
+   *
+   * @param userIdentityId identity of the user whose account is written to
+   * @param pair the collection to write into
+   * @param event the event to copy, with identities already resolved
+   * @param localEventId the agenda event this object stands for, or null
+   * @return the mapping row as it now stands
+   * @throws CaldavPushException when the write cannot be carried out
+   */
+  public ObjectSync writeInto(long userIdentityId, CalendarSync pair, IcsEvent event, Long localEventId) {
+    CaldavUserSetting settings = connectedSettings(userIdentityId);
+    CalDavEndpoint endpoint = endpointOf(settings);
 
     String ics = icsWriter.write(event);
     ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), event.getUid());
     String href = known != null && StringUtils.isNotBlank(known.getRemoteHref()) ? known.getRemoteHref()
-                                                                                : objectHref(mirror.href(), event.getUid());
+                                                                                : objectHref(pair.getRemoteHref(),
+                                                                                             event.getUid());
     PutResult result = write(endpoint, settings, href, ics, known);
     if (result.preconditionFailed()) {
       // Someone else wrote the object between our read and our write. Never
@@ -214,9 +274,18 @@ public class CaldavPushService {
     }
     long seriesId = event.getParentId() > 0 ? event.getParentId() : event.getId();
     String icsUid = adoptOrMintUid(seriesId, userIdentityId);
-    return pushEvent(userIdentityId,
-                     agendaEventIcsMapper.toIcsEvent(event, icsUid, eventUrl, userIdentityId),
-                     event.getId());
+    IcsEvent icsEvent = agendaEventIcsMapper.toIcsEvent(event, icsUid, eventUrl, userIdentityId);
+
+    // Where an event goes is decided from the calendar it lives in, not from
+    // the caller. An event of one of the user's own calendars belongs in that
+    // calendar's own collection; anything else — a space event the user
+    // attends — belongs in the mirror, which exists precisely because a space
+    // calendar has no counterpart on a personal account.
+    CalendarSync personal = personalPairFor(event, userIdentityId);
+    if (personal != null) {
+      return writeInto(userIdentityId, personal, icsEvent, event.getId());
+    }
+    return pushEvent(userIdentityId, icsEvent, event.getId());
   }
 
   /**
