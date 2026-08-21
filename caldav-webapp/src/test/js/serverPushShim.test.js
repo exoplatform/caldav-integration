@@ -14,10 +14,6 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-jest.mock('tsdav', () => ({
-  DAVClient: jest.fn(),
-  DAVNamespaceShort: {DAV: 'd', CALDAV: 'c', CALDAV_APPLE: 'ca'},
-}));
 jest.mock('../../main/webapp/vue-app/caldav/js/agendaCaldavService.js', () => ({
   getCaldavSetting: jest.fn(),
   saveMirrorCalendarHref: jest.fn(),
