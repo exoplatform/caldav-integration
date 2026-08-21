@@ -1,5 +1,5 @@
-# CAPTURED live on 2026-08-20 against BlueMind at https://webmail.demo3.livecollab.fr/dav/
-# by dev/golden-capture/capture-bluemind.sh: MKCALENDAR https://webmail.demo3.livecollab.fr/dav/calendars/__uids__/751E6D1A-7FDB-49B2-B668-B569E9A5A42D/exo-golden-probe-1787261183/
+# CAPTURED live on 2026-08-20 against BlueMind at https://caldav.example.invalid/dav/
+# by dev/golden-capture/capture-bluemind.sh: MKCALENDAR https://caldav.example.invalid/dav/calendars/__uids__/9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/exo-golden-probe-1787261183/
 # The MKCALENDAR answer shape under the calendar home: 201 — ALWAYS, even for a body that creates nothing. Without supported-calendar-component-set the kind derivation fails internally, the failure is swallowed, and this very 201 still goes out; only the next Depth:1 listing tells creation from silence.
 # Authorization header not recorded; password and Basic credentials scrubbed.
 # HTTP status: 201

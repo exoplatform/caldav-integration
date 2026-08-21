@@ -93,7 +93,7 @@ public class CaldavServerService {
    * redirects). Note that BlueMind sends no CORS headers, so connecting from
    * the browser needs the portal to front it on its own origin.
    */
-  public static final String       DEFAULT_BLUEMIND_URL          = "https://webmail.demo3.livecollab.fr/dav/";
+  public static final String       DEFAULT_BLUEMIND_URL          = "https://caldav.example.invalid/dav/";
 
   private static final String      SERVER_MANDATORY_MESSAGE      = "caldav.server.mandatory";
 
