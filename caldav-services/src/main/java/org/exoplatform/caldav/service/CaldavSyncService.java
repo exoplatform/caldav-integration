@@ -224,7 +224,11 @@ public class CaldavSyncService {
    */
   private boolean isAlreadyOurs(CalendarCollection collection, List<CalendarSync> known, CaldavUserSetting settings) {
     String href = CaldavSyncStorage.canonicalHref(collection.href());
-    if (href == null) {
+    if (StringUtils.isBlank(href)) {
+      // A collection with no path is nothing we can bind to, name, or find
+      // again. Blank rather than null on purpose: a server answering an empty
+      // <d:href/> would otherwise match no pair, fail the eXo-created test,
+      // and be materialised as a calendar whose name is the blank path too.
       return true;
     }
     if (href.equals(CaldavSyncStorage.canonicalHref(settings.getMirrorCalendarHref()))
