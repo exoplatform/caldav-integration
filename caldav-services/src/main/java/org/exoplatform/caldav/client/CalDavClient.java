@@ -20,6 +20,9 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
+import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.SyncOrigin;
+
 /**
  * The CalDAV protocol, and nothing else: it fetches, it does not decide. No
  * business rule, no storage, no notion of what an event means locally — the
@@ -345,4 +348,34 @@ public interface CalDavClient {
                               String color,
                               String username,
                               String password);
+
+  /**
+   * Removes a whole collection, and everything in it.
+   *
+   * <p>
+   * The only irreversible outward-facing call in this client, and the one that
+   * deletes data eXo may not have authored — a user's own events, added from
+   * their phone, live in the collection too and go with it.
+   *
+   * <p>
+   * It takes the <b>pair</b> rather than an href on purpose. An href parameter
+   * would let any caller name any collection, and the guard would then live in
+   * whoever remembered to write it. Taking the binding means the invariant is
+   * checked where the request is built: the collection must belong to an
+   * {@link SyncOrigin#EXO} pair, and its last path segment must be the one
+   * eXo derives from that pair's own calendar anchor. A collection eXo did not
+   * create cannot be addressed by this method at all.
+   *
+   * @param endpoint the declared server
+   * @param pair the binding whose collection is to be removed
+   * @param username the account's username
+   * @param password the account's password
+   * @return the HTTP status; 404 and 410 mean it was already gone
+   * @throws IllegalArgumentException when the pair does not authorise the
+   *           deletion — never a runtime refusal to be caught and worked
+   *           around, but a programming error surfaced at the call site
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server refuses or cannot be reached
+   */
+  int deleteCollection(CalDavEndpoint endpoint, CalendarSync pair, String username, String password);
 }

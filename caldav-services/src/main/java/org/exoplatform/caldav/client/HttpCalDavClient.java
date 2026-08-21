@@ -53,6 +53,8 @@ import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
 
+import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -1279,5 +1281,64 @@ public class HttpCalDavClient implements CalDavClient {
     String header(String name) {
       return StringUtils.trimToNull(response.headers().firstValue(name).orElse(null));
     }
+  }
+
+  /** The prefix eXo derives every personal collection's path from. */
+  private static final String                COLLECTION_PREFIX = "exo-cal-";
+
+  @Override
+  public int deleteCollection(CalDavEndpoint endpoint, CalendarSync pair, String username, String password) {
+    String href = authorisedTarget(pair);
+    HttpRequest request = HttpRequest.newBuilder(target(endpoint, href))
+                                     .timeout(requestTimeout())
+                                     .header(AUTHORIZATION_HEADER, basicAuth(username, password))
+                                     .DELETE()
+                                     .build();
+    DavResponse response = exchange(request);
+    int status = response.status();
+    checkAuthStatus(status, false, request);
+    // 200/204 deleted; 404/410 already gone — absent is absent, which is what
+    // makes a repeated deletion idempotent rather than an error to explain.
+    if (status != 200 && status != 204 && status != 404 && status != 410) {
+      throw refusal(status, request);
+    }
+    return status;
+  }
+
+  /**
+   * The collection a pair authorises deleting, or a refusal.
+   *
+   * <p>
+   * Both conditions have to hold, and they guard different mistakes. ORIGIN
+   * says eXo created this collection, so removing it destroys nothing the user
+   * built elsewhere. The path check says <i>this</i> pair's collection and not
+   * some other one: a pair whose href drifted — a bad migration, a hand-edited
+   * row, a bug in binding — would otherwise aim a deletion at whatever it now
+   * points to.
+   *
+   * <p>
+   * An IllegalArgumentException rather than a checked refusal, deliberately.
+   * There is no correct way for a caller to recover from asking to delete a
+   * collection it may not delete; the only correct outcome is that the request
+   * was never built.
+   *
+   * @param pair the binding offered as authorisation
+   * @return the collection href to address
+   */
+  private String authorisedTarget(CalendarSync pair) {
+    if (pair == null || pair.getOrigin() != SyncOrigin.EXO) {
+      throw new IllegalArgumentException("Only a collection eXo created may be deleted; this pair is "
+          + (pair == null ? "absent" : String.valueOf(pair.getOrigin())));
+    }
+    if (StringUtils.isBlank(pair.getLocalCalendarSyncUid())) {
+      throw new IllegalArgumentException("A pair with no calendar anchor authorises no deletion");
+    }
+    String href = StringUtils.stripEnd(StringUtils.trimToEmpty(pair.getRemoteHref()), "/");
+    String expected = COLLECTION_PREFIX + pair.getLocalCalendarSyncUid();
+    if (!href.endsWith("/" + expected)) {
+      throw new IllegalArgumentException("The pair's collection " + href + " is not the one eXo derives for calendar "
+          + pair.getLocalCalendarSyncUid());
+    }
+    return href + "/";
   }
 }
