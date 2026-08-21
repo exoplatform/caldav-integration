@@ -92,4 +92,166 @@
     </addColumn>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-4" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The calendar-pair sequence, created in the same breath as its table for
+      the reason 1.0.0-0 records.
+    </comment>
+    <createSequence sequenceName="SEQ_CALDAV_CALENDAR_SYNC_ID" startValue="1"/>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-5">
+    <comment>
+      One row per binding between an eXo calendar and a remote collection, for
+      one user on one declared server. Carries the identity of the pair and the
+      state of their last exchange — never calendar content.
+
+      LOCAL_CALENDAR_SYNC_UID is agenda's immutable per-calendar anchor, not the
+      calendar's technical id: an id is a database identity a restore or a
+      migration may renumber, while the sync uid is minted once and never
+      changes. It is null for the MIRROR pair alone, which has no local calendar.
+
+      REMOTE_HREF is stored canonical — percent-decoded, no trailing slash — so
+      that two spellings of one collection compare equal. A binding that
+      compared raw hrefs would lose its pair the first time a server answered a
+      differently-escaped one.
+
+      No unique constraint on REMOTE_HREF: at NVARCHAR(1000) it exceeds MySQL's
+      index key length under utf8mb4 (4 bytes per character against a 3072-byte
+      limit). Uniqueness is carried by the calendar anchor instead, in 1.0.0-6.
+    </comment>
+    <createTable tableName="CALDAV_CALENDAR_SYNC">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_CALDAV_CALENDAR_SYNC"/>
+      </column>
+      <column name="USER_IDENTITY_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SERVER_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="LOCAL_CALENDAR_SYNC_UID" type="NVARCHAR(36)"/>
+      <column name="REMOTE_HREF" type="NVARCHAR(1000)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="ORIGIN" type="NVARCHAR(20)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SYNC_TOKEN" type="NVARCHAR(1000)"/>
+      <column name="CTAG" type="NVARCHAR(250)"/>
+      <column name="STATUS" type="NVARCHAR(30)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="LAST_SYNC_START" type="TIMESTAMP"/>
+      <column name="LAST_SYNC_END" type="TIMESTAMP"/>
+      <column name="CONSECUTIVE_FAILURES" type="INT" defaultValueNumeric="0">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+    <modifySql dbms="mysql">
+      <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
+    </modifySql>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-6">
+    <comment>
+      One pair per local calendar, per server, per user. Own changeset with no
+      modifySql, per 1.0.0-2.
+
+      Standard SQL leaves rows with a NULL anchor outside this constraint, so it
+      does not by itself stop a second MIRROR pair — that one is guarded in the
+      service, which is also where the decision to create it is made. The index
+      is here for the case the database can actually enforce, and for the lookup
+      the engine performs on every sync.
+    </comment>
+    <createIndex tableName="CALDAV_CALENDAR_SYNC" indexName="UQ_CALDAV_CALENDAR_SYNC_LOCAL" unique="true">
+      <column name="USER_IDENTITY_ID"/>
+      <column name="SERVER_ID"/>
+      <column name="LOCAL_CALENDAR_SYNC_UID"/>
+    </createIndex>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-7">
+    <comment>
+      The background sweep selects pairs by state — what is active and due, what
+      is paused, what needs attention — across every user at once. Without this
+      index that is a full scan of the table on every run.
+    </comment>
+    <createIndex tableName="CALDAV_CALENDAR_SYNC" indexName="IDX_CALDAV_CALENDAR_SYNC_STATUS">
+      <column name="STATUS"/>
+      <column name="LAST_SYNC_END"/>
+    </createIndex>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-8" dbms="oracle,postgresql,hsqldb">
+    <comment>The object-mapping sequence, with its table, per 1.0.0-0.</comment>
+    <createSequence sequenceName="SEQ_CALDAV_OBJECT_SYNC_ID" startValue="1"/>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-9">
+    <comment>
+      One row per calendar object inside a pair: the eXo event, the iCalendar
+      UID both sides agree on, where it sits remotely, the server's ETag and a
+      hash of what eXo last pushed.
+
+      These four columns are what let the engine verify and detect deletions
+      without keeping a second copy of the calendar. They answer the only three
+      questions it asks — is our copy still there, has anyone else changed it,
+      and would what we are about to push differ from what is already stored.
+
+      LOCAL_EVENT_ID is nullable: an object can exist remotely before it has
+      been materialised locally.
+    </comment>
+    <createTable tableName="CALDAV_OBJECT_SYNC">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_CALDAV_OBJECT_SYNC"/>
+      </column>
+      <column name="CALENDAR_SYNC_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="LOCAL_EVENT_ID" type="BIGINT"/>
+      <column name="ICS_UID" type="NVARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="REMOTE_HREF" type="NVARCHAR(1000)"/>
+      <column name="ETAG" type="NVARCHAR(250)"/>
+      <column name="PUSHED_HASH" type="NVARCHAR(64)"/>
+      <column name="LAST_SYNC" type="TIMESTAMP"/>
+    </createTable>
+    <modifySql dbms="mysql">
+      <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
+    </modifySql>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-10">
+    <comment>
+      One object row per iCalendar UID within a pair. This is the constraint
+      that makes the backfill idempotent by construction rather than by
+      convention: re-running it cannot produce a second row for an event that
+      already has one.
+
+      BIGINT plus NVARCHAR(250) is 1008 bytes under utf8mb4, inside MySQL's
+      3072-byte index key limit — which is why the UID rather than the href
+      carries uniqueness here too.
+    </comment>
+    <createIndex tableName="CALDAV_OBJECT_SYNC" indexName="UQ_CALDAV_OBJECT_SYNC_UID" unique="true">
+      <column name="CALENDAR_SYNC_ID"/>
+      <column name="ICS_UID"/>
+    </createIndex>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-11">
+    <comment>
+      Objects belong to their pair: unbinding a calendar must not leave object
+      rows pointing at a pair that no longer exists. Own changeset, no
+      modifySql, for the reason 1.0.0-3 records about ALTER TABLE.
+    </comment>
+    <addForeignKeyConstraint baseTableName="CALDAV_OBJECT_SYNC"
+                             baseColumnNames="CALENDAR_SYNC_ID"
+                             constraintName="FK_CALDAV_OBJECT_SYNC_CALENDAR"
+                             referencedTableName="CALDAV_CALENDAR_SYNC"
+                             referencedColumnNames="ID"
+                             onDelete="CASCADE"/>
+  </changeSet>
+
 </databaseChangeLog>
