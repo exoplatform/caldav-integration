@@ -183,6 +183,32 @@ public class CaldavOutboundServiceTest {
   }
 
   @Test
+  public void aCalendarMaterialisedFromARemoteCollectionIsNeverPushedBackOut() {
+    // Observed live: the outbound pass saw a materialised calendar as an
+    // ordinary personal one, re-bound it, and record() relabelled its
+    // collection ORIGIN=EXO. Two harms from that one lie — the inbound pass
+    // then skips the collection so its events stop arriving, and eXo believes
+    // it may delete a calendar it never created.
+    Calendar materialised = calendar(1L, USER, ANCHOR, "FRANCOIS");
+    givenPersonalCalendars(materialised);
+    CalendarSync remote = new CalendarSync();
+    remote.setId(9L);
+    remote.setUserIdentityId(USER);
+    remote.setServerId(SERVER);
+    remote.setLocalCalendarSyncUid(ANCHOR);
+    remote.setRemoteHref("/dav/calendars/john/7985AD30-3998-4662-9220-7C1EE899CB72");
+    remote.setOrigin(SyncOrigin.REMOTE);
+    remote.setStatus(CalendarSyncStatus.ACTIVE);
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(remote);
+
+    List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
+
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
+    assertEquals(SyncOrigin.REMOTE, pairs.get(0).getOrigin());
+  }
+
+  @Test
   public void everyCollectionCreatedHereIsMarkedAsExoOwn() {
     // ORIGIN=EXO is what tells the inbound sweep to leave the collection
     // alone. Without it each one is materialised back as a second eXo
