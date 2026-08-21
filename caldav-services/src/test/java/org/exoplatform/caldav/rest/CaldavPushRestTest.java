@@ -189,6 +189,37 @@ public class CaldavPushRestTest {
   }
 
   /**
+   * Excluding one occurrence names the series by its iCalendar UID and the
+   * instance by an instant, and answers with no body.
+   */
+  @Test
+  public void shouldExcludeOneOccurrenceForTheCaller() {
+    withCurrentUser();
+
+    ResponseEntity<Void> response = caldavPushRest.excludeOccurrence("series-uid", "2026-09-15T07:00:00Z");
+
+    assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
+    verify(caldavPushService).excludeOccurrence(42L, "series-uid", java.time.Instant.parse("2026-09-15T07:00:00Z"));
+  }
+
+  /**
+   * An instance identifier that is not an instant is refused, never guessed at.
+   */
+  @Test
+  public void shouldRefuseAnOccurrenceThatIsNotAnInstant() {
+    // Excluding the wrong occurrence cancels a meeting nobody meant to cancel,
+    // and the object is rewritten in place — there is nothing to undo it with.
+    org.springframework.web.server.ResponseStatusException refusal =
+        org.junit.jupiter.api.Assertions.assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                                                      () -> caldavPushRest.excludeOccurrence("series-uid", "next week"));
+
+    assertEquals(HttpStatus.BAD_REQUEST, refusal.getStatusCode());
+    verify(caldavPushService, org.mockito.Mockito.never()).excludeOccurrence(org.mockito.ArgumentMatchers.anyLong(),
+                                                                             org.mockito.ArgumentMatchers.anyString(),
+                                                                             org.mockito.ArgumentMatchers.any());
+  }
+
+  /**
    * Makes the authenticated caller resolvable to a social identity.
    */
   private void withCurrentUser() {
