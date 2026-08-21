@@ -255,6 +255,20 @@ public class CaldavSyncStorage {
   }
 
   /**
+   * Forgets one object mapping.
+   *
+   * <p>
+   * What a mapping with nothing behind it gets: dropping it is how the object
+   * becomes importable again, rather than being skipped for ever by a row
+   * that describes an event no longer there.
+   *
+   * @param id the mapping's identifier
+   */
+  public void deleteObject(long id) {
+    objectSyncDAO.deleteById(id);
+  }
+
+  /**
    * An href reduced to what identifies the resource: its percent-decoded path,
    * without a trailing slash.
    *

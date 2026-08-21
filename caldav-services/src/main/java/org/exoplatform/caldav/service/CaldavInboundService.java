@@ -209,12 +209,7 @@ public class CaldavInboundService {
       return false;
     }
     if (known != null) {
-      // Updating an event already imported belongs with the conflict rules —
-      // deciding which side wins needs both sides' modification times, which
-      // this pass does not gather. Left rather than guessed at, so a remote
-      // edit does not silently overwrite a local one.
-      LOG.debug("Object {} changed since it was imported; left for the conflict pass", object.href());
-      return false;
+      return update(userIdentityId, pair, calendar, object, master, known);
     }
     return create(userIdentityId, pair, calendar, object, master);
   }
@@ -270,6 +265,99 @@ public class CaldavInboundService {
     mapping.setLastSync(new Date());
     caldavSyncStorage.saveObject(mapping);
     return true;
+  }
+
+  /**
+   * Applies a remote change to an event already imported.
+   *
+   * <p>
+   * The rule is the newest wins, and the tie goes to the server. Not because
+   * the server is more trustworthy, but because the tie is unresolvable and
+   * one side has to be named in advance: a rule nobody can predict is worse
+   * than a rule that occasionally loses the wrong edit. Remote is the side
+   * the user's other clients write to, so it is the side more likely to hold
+   * what they meant.
+   *
+   * <p>
+   * A local event edited more recently is left alone. It is not lost — the
+   * outbound push carries it — and the etag is deliberately <em>not</em>
+   * recorded, so the next run reconsiders instead of believing the two sides
+   * agree.
+   *
+   * @param userIdentityId identity of the user
+   * @param pair the binding being read
+   * @param calendar the eXo calendar standing for it
+   * @param object the object as the server sent it
+   * @param master the parsed master event
+   * @param known the mapping recorded when it was imported
+   * @return true when the event was updated
+   */
+  private boolean update(long userIdentityId,
+                         CalendarSync pair,
+                         Calendar calendar,
+                         CalendarObject object,
+                         IcsEvent master,
+                         ObjectSync known) {
+    if (known.getLocalEventId() == null) {
+      // A mapping with no event behind it: the import was interrupted between
+      // creating the event and recording it, or the event has since been
+      // deleted. Either way there is nothing to update, and the mapping is
+      // dropped so the object is imported afresh.
+      LOG.debug("Mapping {} has no event behind it; it is dropped so the object can be imported again", known.getId());
+      caldavSyncStorage.deleteObject(known.getId());
+      return false;
+    }
+    Event local = agendaEventService.getEventById(known.getLocalEventId());
+    if (local == null) {
+      LOG.debug("Event {} is gone; its mapping is dropped so the object can be imported again", known.getLocalEventId());
+      caldavSyncStorage.deleteObject(known.getId());
+      return false;
+    }
+    if (isLocalNewer(local, master)) {
+      // Left for the outbound half, and the etag is not recorded: the next run
+      // must look again rather than assume the two sides agree.
+      LOG.debug("Event {} was edited here more recently than on the server; the remote change is not applied",
+                local.getId());
+      return false;
+    }
+    Event updated = icsEventMapper.toEvent(master, calendar.getId());
+    updated.setId(local.getId());
+    updated.setParentId(local.getParentId());
+    updated.setCreatorId(local.getCreatorId());
+    try {
+      // sendInvitation false, for the same reason as on creation: these people
+      // were invited by whoever organised the meeting, and telling them again
+      // because eXo noticed an edit would send real mail about something that
+      // already happened.
+      agendaEventService.updateEvent(updated, List.of(), List.of(), List.of(), List.of(), null, false, userIdentityId);
+    } catch (Exception e) { // NOSONAR agenda declares several checked exceptions here
+      LOG.warn("The event of object {} could not be updated in calendar {}", object.href(), calendar.getId(), e);
+      return false;
+    }
+    known.setEtag(object.etag());
+    known.setRemoteHref(object.href());
+    known.setLastSync(new Date());
+    caldavSyncStorage.saveObject(known);
+    return true;
+  }
+
+  /**
+   * Whether the eXo copy has been edited more recently than the remote one.
+   *
+   * <p>
+   * An object that carries no LAST-MODIFIED answers false — the server said
+   * nothing about when it changed, and refusing its change on that silence
+   * would freeze the event here for good.
+   *
+   * @param local the event as agenda holds it
+   * @param master the parsed remote event
+   * @return true when the local copy is strictly newer
+   */
+  private boolean isLocalNewer(Event local, IcsEvent master) {
+    if (master.getUpdated() == null || local.getUpdated() == null) {
+      return false;
+    }
+    return local.getUpdated().toInstant().isAfter(master.getUpdated());
   }
 
   /**
