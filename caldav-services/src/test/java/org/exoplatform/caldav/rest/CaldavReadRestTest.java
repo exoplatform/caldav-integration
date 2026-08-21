@@ -41,6 +41,7 @@ import org.springframework.web.server.ResponseStatusException;
 import org.exoplatform.caldav.model.RemoteCalendar;
 import org.exoplatform.caldav.model.RemoteIcsEvent;
 import org.exoplatform.caldav.service.CaldavReadService;
+import org.exoplatform.caldav.service.CaldavSyncService;
 import org.exoplatform.services.security.ConversationState;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvider;
@@ -68,6 +69,9 @@ public class CaldavReadRestTest {
 
   @Mock
   private CaldavReadService      caldavReadService;
+
+  @Mock
+  private CaldavSyncService      caldavSyncService;
 
   @Mock
   private IdentityManager        identityManager;
@@ -113,6 +117,17 @@ public class CaldavReadRestTest {
   /**
    * A start that is not an instant is a bad request, not a default.
    */
+  /**
+   * A refused period costs nothing: the platform does not talk to a calendar
+   * server for a request it is about to reject.
+   */
+  @Test
+  public void shouldNotSynchroniseForARequestItIsAboutToRefuse() {
+    assertThrows(ResponseStatusException.class, () -> caldavReadRest.events("last tuesday", "2026-11-30T00:00:00Z"));
+
+    verify(caldavSyncService, never()).syncIfDue(anyLongValue(), org.mockito.ArgumentMatchers.anyString());
+  }
+
   @Test
   public void shouldRefuseAPeriodWhoseStartIsNotAnInstant() {
     ResponseStatusException refusal = assertThrows(ResponseStatusException.class,
