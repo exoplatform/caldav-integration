@@ -97,6 +97,27 @@ public class HttpCalDavClient implements CalDavClient {
   /** calendar-color is an Apple extension, in its own namespace too. */
   private static final String         APPLE_NS                  = "http://apple.com/ns/ical/";
 
+  /** Element wrapping one resource inside a multistatus body. */
+  private static final String         RESPONSE_ELEMENT          = "response";
+
+  /** Element carrying an HTTP status line, at response or propstat level. */
+  private static final String         STATUS_ELEMENT            = "status";
+
+  /** Element carrying the RFC 6578 synchronisation token. */
+  private static final String         SYNC_TOKEN_ELEMENT        = "sync-token";
+
+  /** Collection-level change tag: a cheap "did anything move here" probe. */
+  private static final String         GETCTAG_PROPERTY          = "getctag";
+
+  /** Per-object entity tag, the conditional-write discipline rests on it. */
+  private static final String         GETETAG_PROPERTY          = "getetag";
+
+  /** Request header scoping how deep PROPFIND and REPORT descend. */
+  private static final String         DEPTH_HEADER              = "Depth";
+
+  /** Request header carrying the Basic credentials of the calendar account. */
+  private static final String         AUTHORIZATION_HEADER      = "Authorization";
+
   /** Deployment property naming the connect timeout, in seconds. */
   private static final String         CONNECT_TIMEOUT_PROPERTY  = "exo.agenda.caldav.client.connectTimeoutSeconds";
 
@@ -247,7 +268,7 @@ public class HttpCalDavClient implements CalDavClient {
   public List<CalendarCollection> listCalendars(CalDavEndpoint endpoint, String homeHref, String username, String password) {
     Element multistatus = propfind(endpoint, homeHref, PROPFIND_COLLECTION, "1", username, password);
     List<CalendarCollection> calendars = new ArrayList<>();
-    for (Element response : childElements(multistatus, DAV_NS, "response")) {
+    for (Element response : childElements(multistatus, DAV_NS, RESPONSE_ELEMENT)) {
       CalendarCollection calendar = toCalendar(endpoint, response);
       if (calendar != null) {
         calendars.add(calendar);
@@ -265,7 +286,7 @@ public class HttpCalDavClient implements CalDavClient {
   @Override
   public String getCtag(CalDavEndpoint endpoint, String href, String username, String password) {
     Element response = firstResponse(propfind(endpoint, href, PROPFIND_COLLECTION, "0", username, password));
-    return response == null ? null : grantedText(response, CALENDARSERVER_NS, "getctag");
+    return response == null ? null : grantedText(response, CALENDARSERVER_NS, GETCTAG_PROPERTY);
   }
 
   @Override
@@ -275,9 +296,9 @@ public class HttpCalDavClient implements CalDavClient {
                                                String password) {
     Element multistatus = propfind(endpoint, collectionHref, PROPFIND_ETAGS, "1", username, password);
     Map<String, String> etags = new LinkedHashMap<>();
-    for (Element response : childElements(multistatus, DAV_NS, "response")) {
+    for (Element response : childElements(multistatus, DAV_NS, RESPONSE_ELEMENT)) {
       String href = responsePath(endpoint, response);
-      String etag = grantedText(response, DAV_NS, "getetag");
+      String etag = grantedText(response, DAV_NS, GETETAG_PROPERTY);
       // The collection itself comes back in a Depth:1 listing and carries no
       // etag; so does any other member that is not a calendar object. Both
       // are skipped by that one rule rather than by guessing from the path.
@@ -351,7 +372,7 @@ public class HttpCalDavClient implements CalDavClient {
           <d:sync-level>1</d:sync-level>
           <d:prop><d:getetag/></d:prop>
         </d:sync-collection>""".formatted(escape(StringUtils.defaultString(syncToken)));
-    HttpRequest request = request(endpoint, collectionHref, "REPORT", body, username, password).header("Depth", "0").build();
+    HttpRequest request = request(endpoint, collectionHref, "REPORT", body, username, password).header(DEPTH_HEADER, "0").build();
     DavResponse response = exchange(request);
     // Token invalidation is the routine tier-1 downgrade, answered before the
     // generic status policy so a 403 carrying the valid-sync-token
@@ -364,7 +385,7 @@ public class HttpCalDavClient implements CalDavClient {
     Element multistatus = parse(response.body(), request.uri());
     List<CalendarObject> changed = new ArrayList<>();
     List<String> deleted = new ArrayList<>();
-    for (Element item : childElements(multistatus, DAV_NS, "response")) {
+    for (Element item : childElements(multistatus, DAV_NS, RESPONSE_ELEMENT)) {
       String href = responsePath(endpoint, item);
       if (StringUtils.isBlank(href)) {
         continue;
@@ -373,14 +394,14 @@ public class HttpCalDavClient implements CalDavClient {
       if (itemStatus == 404) {
         deleted.add(href);
       } else {
-        String etag = grantedText(item, DAV_NS, "getetag");
+        String etag = grantedText(item, DAV_NS, GETETAG_PROPERTY);
         if (StringUtils.isNotBlank(etag)) {
           changed.add(new CalendarObject(href, etag, null));
         }
       }
     }
     String newToken = null;
-    List<Element> tokens = childElements(multistatus, DAV_NS, "sync-token");
+    List<Element> tokens = childElements(multistatus, DAV_NS, SYNC_TOKEN_ELEMENT);
     if (!tokens.isEmpty()) {
       newToken = StringUtils.trimToNull(tokens.get(0).getTextContent());
     }
@@ -392,10 +413,12 @@ public class HttpCalDavClient implements CalDavClient {
                                               String collectionHref,
                                               String username,
                                               String password) {
-    HttpRequest request = request(endpoint, collectionHref, "PROPFIND", PROPFIND_CAPABILITIES, username, password)
-                                                                                                                 .header("Depth",
-                                                                                                                         "0")
-                                                                                                                 .build();
+    HttpRequest request = request(endpoint,
+                                  collectionHref,
+                                  "PROPFIND",
+                                  PROPFIND_CAPABILITIES,
+                                  username,
+                                  password).header(DEPTH_HEADER, "0").build();
     DavResponse response = exchange(request);
     checkReadStatus(response, request);
     Element multistatus = parse(response.body(), request.uri());
@@ -414,8 +437,8 @@ public class HttpCalDavClient implements CalDavClient {
           queryAdvertised = !descendants(reportSet, CALDAV_NS, "calendar-query").isEmpty();
           syncAdvertised = !descendants(reportSet, DAV_NS, "sync-collection").isEmpty();
         }
-        hasCtag = hasCtag || !descendants(prop, CALENDARSERVER_NS, "getctag").isEmpty();
-        hasSyncToken = hasSyncToken || StringUtils.isNotBlank(textOf(prop, DAV_NS, "sync-token"));
+        hasCtag = hasCtag || !descendants(prop, CALENDARSERVER_NS, GETCTAG_PROPERTY).isEmpty();
+        hasSyncToken = hasSyncToken || StringUtils.isNotBlank(textOf(prop, DAV_NS, SYNC_TOKEN_ELEMENT));
       }
     }
     return new ServerCapabilities(syncAdvertised && hasSyncToken,
@@ -429,7 +452,7 @@ public class HttpCalDavClient implements CalDavClient {
   public CalendarObject fetchObject(CalDavEndpoint endpoint, String href, String username, String password) {
     HttpRequest request = HttpRequest.newBuilder(target(endpoint, href))
                                      .timeout(requestTimeout())
-                                     .header("Authorization", basicAuth(username, password))
+                                     .header(AUTHORIZATION_HEADER, basicAuth(username, password))
                                      .GET()
                                      .build();
     DavResponse response = exchange(request);
@@ -489,7 +512,7 @@ public class HttpCalDavClient implements CalDavClient {
   public int deleteObject(CalDavEndpoint endpoint, String href, String ifMatch, String username, String password) {
     HttpRequest.Builder builder = HttpRequest.newBuilder(target(endpoint, href))
                                              .timeout(requestTimeout())
-                                             .header("Authorization", basicAuth(username, password))
+                                             .header(AUTHORIZATION_HEADER, basicAuth(username, password))
                                              .DELETE();
     if (StringUtils.isNotBlank(ifMatch)) {
       builder.header("If-Match", ifMatch);
@@ -573,7 +596,7 @@ public class HttpCalDavClient implements CalDavClient {
                                      // because its Content-Type belongs to PROPFIND/REPORT bodies,
                                      // and a server told an .ics is application/xml may refuse it.
                                      .header("Content-Type", "text/calendar; charset=utf-8")
-                                     .header("Authorization", basicAuth(username, password))
+                                     .header(AUTHORIZATION_HEADER, basicAuth(username, password))
                                      .header(preconditionHeader, preconditionValue)
                                      .method("PUT", BodyPublishers.ofString(icsData, StandardCharsets.UTF_8))
                                      .build();
@@ -633,8 +656,8 @@ public class HttpCalDavClient implements CalDavClient {
     }
     return new CalendarCollection(responsePath(endpoint, response),
                                   grantedText(response, DAV_NS, "displayname"),
-                                  grantedText(response, CALENDARSERVER_NS, "getctag"),
-                                  grantedText(response, DAV_NS, "sync-token"),
+                                  grantedText(response, CALENDARSERVER_NS, GETCTAG_PROPERTY),
+                                  grantedText(response, DAV_NS, SYNC_TOKEN_ELEMENT),
                                   grantedText(response, APPLE_NS, "calendar-color"),
                                   writable);
   }
@@ -649,11 +672,11 @@ public class HttpCalDavClient implements CalDavClient {
    */
   private List<CalendarObject> readObjects(CalDavEndpoint endpoint, Element multistatus) {
     List<CalendarObject> objects = new ArrayList<>();
-    for (Element response : childElements(multistatus, DAV_NS, "response")) {
+    for (Element response : childElements(multistatus, DAV_NS, RESPONSE_ELEMENT)) {
       String href = responsePath(endpoint, response);
       String data = grantedText(response, CALDAV_NS, "calendar-data");
       if (StringUtils.isNotBlank(href) && StringUtils.isNotBlank(data)) {
-        objects.add(new CalendarObject(href, grantedText(response, DAV_NS, "getetag"), data));
+        objects.add(new CalendarObject(href, grantedText(response, DAV_NS, GETETAG_PROPERTY), data));
       }
     }
     return objects;
@@ -671,7 +694,7 @@ public class HttpCalDavClient implements CalDavClient {
    * @return the multistatus element
    */
   private Element propfind(CalDavEndpoint endpoint, String href, String body, String depth, String username, String password) {
-    HttpRequest request = request(endpoint, href, "PROPFIND", body, username, password).header("Depth", depth).build();
+    HttpRequest request = request(endpoint, href, "PROPFIND", body, username, password).header(DEPTH_HEADER, depth).build();
     DavResponse response = exchange(request);
     checkReadStatus(response, request);
     return parse(response.body(), request.uri());
@@ -689,7 +712,7 @@ public class HttpCalDavClient implements CalDavClient {
    * @return the multistatus element
    */
   private Element report(CalDavEndpoint endpoint, String href, String body, String depth, String username, String password) {
-    HttpRequest request = request(endpoint, href, "REPORT", body, username, password).header("Depth", depth).build();
+    HttpRequest request = request(endpoint, href, "REPORT", body, username, password).header(DEPTH_HEADER, depth).build();
     DavResponse response = exchange(request);
     checkReadStatus(response, request);
     return parse(response.body(), request.uri());
@@ -715,7 +738,7 @@ public class HttpCalDavClient implements CalDavClient {
     return HttpRequest.newBuilder(target(endpoint, href))
                       .timeout(requestTimeout())
                       .header("Content-Type", "application/xml; charset=utf-8")
-                      .header("Authorization", basicAuth(username, password))
+                      .header(AUTHORIZATION_HEADER, basicAuth(username, password))
                       .method(method, BodyPublishers.ofString(body, StandardCharsets.UTF_8));
   }
 
@@ -864,7 +887,7 @@ public class HttpCalDavClient implements CalDavClient {
       // A BOM or leading whitespace before the declaration is a shape real
       // servers do emit, and the parser refuses it; neither changes what the
       // document says.
-      String document = StringUtils.stripStart(xml, "﻿ \t\r\n");
+      String document = StringUtils.stripStart(xml, "\uFEFF \t\r\n");
       return builder.parse(new ByteArrayInputStream(document.getBytes(StandardCharsets.UTF_8))).getDocumentElement();
     } catch (ParserConfigurationException | SAXException | IOException e) {
       throw new CalDavException("The calendar server answered something that is not CalDAV XML, from " + uri, e);
@@ -894,7 +917,7 @@ public class HttpCalDavClient implements CalDavClient {
       return failed;
     }
     for (Element propstat : descendants(root, DAV_NS, "propstat")) {
-      int status = statusCodeOf(textOf(propstat, DAV_NS, "status"));
+      int status = statusCodeOf(textOf(propstat, DAV_NS, STATUS_ELEMENT));
       if (status > 0 && (status < 200 || status >= 300)) {
         failed.add(status);
       }
@@ -917,7 +940,7 @@ public class HttpCalDavClient implements CalDavClient {
   private List<Element> grantedProps(Element response) {
     List<Element> granted = new ArrayList<>();
     for (Element propstat : childElements(response, DAV_NS, "propstat")) {
-      int status = statusCodeOf(textOf(propstat, DAV_NS, "status"));
+      int status = statusCodeOf(textOf(propstat, DAV_NS, STATUS_ELEMENT));
       if (status >= 200 && status < 300) {
         granted.addAll(childElements(propstat, DAV_NS, "prop"));
       }
@@ -952,7 +975,7 @@ public class HttpCalDavClient implements CalDavClient {
    * @return the status code, or 0 when the response carries none directly
    */
   private int directStatusOf(Element response) {
-    List<Element> statuses = childElements(response, DAV_NS, "status");
+    List<Element> statuses = childElements(response, DAV_NS, STATUS_ELEMENT);
     return statuses.isEmpty() ? 0 : statusCodeOf(StringUtils.trimToNull(statuses.get(0).getTextContent()));
   }
 
@@ -1080,7 +1103,7 @@ public class HttpCalDavClient implements CalDavClient {
    * @return the first response, or null
    */
   private Element firstResponse(Element multistatus) {
-    List<Element> responses = childElements(multistatus, DAV_NS, "response");
+    List<Element> responses = childElements(multistatus, DAV_NS, RESPONSE_ELEMENT);
     return responses.isEmpty() ? null : responses.get(0);
   }
 
