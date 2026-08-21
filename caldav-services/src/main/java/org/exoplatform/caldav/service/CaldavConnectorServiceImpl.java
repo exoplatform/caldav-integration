@@ -39,6 +39,12 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
    */
   private CaldavServerService    caldavServerService;
 
+  /**
+   * The sync engine, resolved lazily for the same reason as the registry
+   * above: this class is a kernel component and the engine is a Spring bean.
+   */
+  private CaldavSyncService      caldavSyncService;
+
   public CaldavConnectorServiceImpl(CaldavConnectorStorage caldavConnectorStorage) {
     String caldavUrl = System.getProperty("exo.agenda.caldav.connector.url");
     this.caldavConnectorStorage = caldavConnectorStorage;
@@ -49,6 +55,13 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   public void createCaldavSetting(CaldavUserSetting caldavUserSetting, long userIdentityId) throws IllegalAccessException {
     if (StringUtils.isNotBlank(caldavUserSetting.getPassword()) && StringUtils.isNotBlank(caldavUserSetting.getUsername())) {
       caldavConnectorStorage.createCaldavSetting(caldavUserSetting, userIdentityId);
+      // Someone who has just entered their credentials is owed their calendars
+      // now, not in a quarter of an hour — and a throttle stamped by a previous
+      // account's run has nothing to say about this one.
+      CaldavSyncService syncService = getCaldavSyncService();
+      if (syncService != null) {
+        syncService.forgetThrottle(userIdentityId);
+      }
     } else {
       throw new IllegalAccessException("username or password not be null");
     }
@@ -110,6 +123,40 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
       }
     }
     return caldavServerService;
+  }
+
+  /**
+   * Resolves the sync engine lazily through the kernel/Spring bridge, and
+   * remembers it. An engine that cannot be resolved — the Spring context not
+   * up yet, or a test container without it — simply leaves the throttle
+   * alone, which costs a first sync its promptness and nothing else.
+   *
+   * @return the engine, or null when the bridge cannot provide it
+   */
+  protected CaldavSyncService getCaldavSyncService() {
+    if (caldavSyncService == null) {
+      try {
+        caldavSyncService = ExoContainerContext.getService(CaldavSyncService.class);
+      } catch (Exception | LinkageError e) {
+        // LinkageError deliberately, not only Exception: resolving a bean
+        // through the bridge loads a class graph, and a container assembled
+        // without part of it fails with NoClassDefFoundError rather than an
+        // exception — seen in a unit context here. Forgetting a throttle is a
+        // convenience; it must never be what stops someone connecting their
+        // account.
+        LOG.debug("CalDAV sync engine not resolvable; the throttle is left as it is", e);
+      }
+    }
+    return caldavSyncService;
+  }
+
+  /**
+   * Hands the engine to tests, which have no container to resolve it from.
+   *
+   * @param caldavSyncService the engine to use
+   */
+  protected void setCaldavSyncService(CaldavSyncService caldavSyncService) {
+    this.caldavSyncService = caldavSyncService;
   }
 
   /**
