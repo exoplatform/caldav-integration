@@ -18,6 +18,7 @@
  */
 package org.exoplatform.caldav.service;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -248,7 +249,12 @@ public class CaldavSyncServiceTest {
     // being down is not a reason to fail rendering an agenda.
     when(caldavOutboundService.bindPersonalCalendars(USER, LOGIN)).thenThrow(new IllegalStateException("down"));
 
-    service.syncNow(USER, LOGIN);
+    assertDoesNotThrow(() -> service.syncNow(USER, LOGIN));
+
+    // And the failure was reached rather than avoided: without this the test
+    // would pass just as well if the sync never got as far as the call that
+    // throws, which would prove nothing about swallowing it.
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
   }
 
   @Test

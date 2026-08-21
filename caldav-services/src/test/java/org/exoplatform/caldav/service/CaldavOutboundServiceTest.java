@@ -125,7 +125,7 @@ public class CaldavOutboundServiceTest {
   }
 
   @Test
-  public void theCollectionIsCreatedUnderTheCalendarsOwnName() throws Exception {
+  public void theCollectionIsCreatedUnderTheCalendarsOwnName() {
     // What the user reads in their own client. Naming it after the sync uid
     // put "eXo c434ba2a-3f58-…" in front of them, which tells them nothing
     // about which of their calendars it is.
@@ -143,7 +143,7 @@ public class CaldavOutboundServiceTest {
   }
 
   @Test
-  public void theCalendarsOwnNameBeatsTheTitleAgendaComputes() throws Exception {
+  public void theCalendarsOwnNameBeatsTheTitleAgendaComputes() {
     // Observed against a live server: a collection came back called
     // "benjamin mestrallet" rather than the calendar's name, because
     // getTitle() is computed and resolves to the owner for a personal
@@ -164,7 +164,7 @@ public class CaldavOutboundServiceTest {
   }
 
   @Test
-  public void aCalendarWithNothingToBeCalledFallsBackToItsAnchor() throws Exception {
+  public void aCalendarWithNothingToBeCalledFallsBackToItsAnchor() {
     // A nameless calendar still has to be called something on the far side,
     // and the uid is the only thing left that identifies it.
     Calendar nameless = calendar(1L, USER, ANCHOR, null);

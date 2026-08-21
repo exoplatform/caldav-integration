@@ -191,13 +191,13 @@ const caldavConnector = {
    * @returns {Promise<Object>} resolves {claims, warning}
    */
   describeCalendarDeletion(calendar) {
-    if (!calendar || !calendar.id) {
+    if (!calendar?.id) {
       return Promise.resolve({claims: false, warning: ''});
     }
     return fetch(`${window.location.origin}/caldav/rest/push/calendars/${calendar.id}/deletion-plan`, {
       credentials: 'include',
     }).then(readOutcome).then(plan => {
-      if (!plan || !plan.claimed) {
+      if (!plan?.claimed) {
         return {claims: false, warning: ''};
       }
       deletionPlans.set(String(calendar.id), plan);
@@ -216,8 +216,8 @@ const caldavConnector = {
    * @returns {Promise} resolves once the remote side is dealt with
    */
   deleteCalendar(calendar) {
-    const plan = calendar && deletionPlans.get(String(calendar.id));
-    if (!plan || !plan.claimed) {
+    const plan = calendar?.id && deletionPlans.get(String(calendar.id));
+    if (!plan?.claimed) {
       return Promise.resolve();
     }
     // Either way the server is told: a propagating deletion removes the
@@ -425,7 +425,7 @@ function deletionWarning(plan) {
   const key = plan.propagates
     ? 'agenda.caldavCalendar.calendarDelete.propagates'
     : 'agenda.caldavCalendar.calendarDelete.keepsRemote';
-  const bundle = window.eXo && eXo.env && eXo.env.portal && eXo.env.portal.i18n || {};
+  const bundle = window.eXo?.env?.portal?.i18n || {};
   const server = serverHost(plan.server) || plan.server || '';
   return (bundle[key] || '').replace('{0}', server);
 }

@@ -115,9 +115,6 @@ public class CaldavReadRestTest {
   }
 
   /**
-   * A start that is not an instant is a bad request, not a default.
-   */
-  /**
    * A refused period costs nothing: the platform does not talk to a calendar
    * server for a request it is about to reject.
    */
@@ -128,6 +125,9 @@ public class CaldavReadRestTest {
     verify(caldavSyncService, never()).syncIfDue(anyLongValue(), org.mockito.ArgumentMatchers.anyString());
   }
 
+  /**
+   * A start that is not an instant is a bad request, not a default.
+   */
   @Test
   public void shouldRefuseAPeriodWhoseStartIsNotAnInstant() {
     ResponseStatusException refusal = assertThrows(ResponseStatusException.class,
