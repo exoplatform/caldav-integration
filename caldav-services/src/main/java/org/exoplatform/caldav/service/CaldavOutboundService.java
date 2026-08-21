@@ -176,7 +176,7 @@ public class CaldavOutboundService {
       // show the user.
       return pair;
     }
-    return create(userIdentityId, settings, endpoint, home, serverId, anchor, wanted, pair);
+    return create(userIdentityId, settings, endpoint, home, serverId, calendar, wanted, pair);
   }
 
   /**
@@ -194,7 +194,7 @@ public class CaldavOutboundService {
    * @param endpoint the declared server
    * @param home the account's calendar home
    * @param serverId the declared server registration
-   * @param anchor agenda's calendar sync uid
+   * @param calendar the eXo calendar being bound
    * @param wanted where the collection should live
    * @param pair the existing pair, or null
    * @return the pair, active or refused
@@ -204,13 +204,14 @@ public class CaldavOutboundService {
                               CalDavEndpoint endpoint,
                               String home,
                               long serverId,
-                              String anchor,
+                              Calendar calendar,
                               String wanted,
                               CalendarSync pair) {
+    String anchor = calendar.getSyncUid();
     try {
       MkCalendarResult creation = calDavClient.mkCalendar(endpoint,
                                                           wanted,
-                                                          displayNameOf(anchor),
+                                                          displayNameOf(calendar),
                                                           null,
                                                           settings.getUsername(),
                                                           settings.getPassword());
@@ -293,14 +294,24 @@ public class CaldavOutboundService {
   }
 
   /**
-   * The name the collection presents itself under before eXo propagates the
-   * calendar's own title.
+   * The name the collection presents itself under in the user's own client.
    *
-   * @param anchor agenda's calendar sync uid
-   * @return a display name
+   * @param calendar the eXo calendar being bound
+   * @return the calendar's own name, or a uid-derived last resort
    */
-  private String displayNameOf(String anchor) {
-    return "eXo " + anchor;
+  private String displayNameOf(Calendar calendar) {
+    // What the user reads in their own client. The uid was never a name: a
+    // collection called "eXo c434ba2a-3f58-…" tells its owner nothing about
+    // which of their calendars it is.
+    //
+    // getName() first, and the order is the whole point. getTitle() is the
+    // display field agenda computes, and for a personal calendar it resolves
+    // to the *owner's* identity — so preferring it names every one of a
+    // user's collections after the user, which is just the old uid problem
+    // wearing a friendlier face. The computed title is still the right last
+    // resort for a calendar that genuinely has no name of its own, such as
+    // the system one.
+    return StringUtils.firstNonBlank(calendar.getName(), calendar.getTitle(), "eXo " + calendar.getSyncUid());
   }
 
   /**

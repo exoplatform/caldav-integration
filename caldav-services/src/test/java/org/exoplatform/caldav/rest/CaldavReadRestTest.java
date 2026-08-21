@@ -41,6 +41,7 @@ import org.springframework.web.server.ResponseStatusException;
 import org.exoplatform.caldav.model.RemoteCalendar;
 import org.exoplatform.caldav.model.RemoteIcsEvent;
 import org.exoplatform.caldav.service.CaldavReadService;
+import org.exoplatform.caldav.service.CaldavSyncService;
 import org.exoplatform.services.security.ConversationState;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvider;
@@ -68,6 +69,9 @@ public class CaldavReadRestTest {
 
   @Mock
   private CaldavReadService      caldavReadService;
+
+  @Mock
+  private CaldavSyncService      caldavSyncService;
 
   @Mock
   private IdentityManager        identityManager;
@@ -111,6 +115,17 @@ public class CaldavReadRestTest {
   }
 
   /**
+   * A refused period costs nothing: the platform does not talk to a calendar
+   * server for a request it is about to reject.
+   */
+  @Test
+  public void shouldNotSynchroniseForARequestItIsAboutToRefuse() {
+    assertThrows(ResponseStatusException.class, () -> caldavReadRest.events("last tuesday", "2026-11-30T00:00:00Z"));
+
+    verify(caldavSyncService, never()).syncIfDue(anyLongValue(), org.mockito.ArgumentMatchers.anyString());
+  }
+
+  /**
    * A start that is not an instant is a bad request, not a default.
    */
   @Test
@@ -145,6 +160,39 @@ public class CaldavReadRestTest {
   @Test
   public void shouldRefuseAnAbsentBound() {
     assertThrows(ResponseStatusException.class, () -> caldavReadRest.events(null, "2026-11-30T00:00:00Z"));
+  }
+
+  /**
+   * Opening the agenda is what triggers a synchronisation, and the throttled
+   * form is the only one it may use: a page load must not become a reason to
+   * talk to a calendar server every time.
+   */
+  @Test
+  public void shouldSynchroniseTheCallerAccountWhenTheAgendaIsOpened() {
+    withCurrentUser();
+    when(caldavReadService.readEvents(42L,
+                                      Instant.parse("2026-10-01T00:00:00Z"),
+                                      Instant.parse("2026-11-30T00:00:00Z"))).thenReturn(List.of());
+
+    caldavReadRest.events("2026-10-01T00:00:00Z", "2026-11-30T00:00:00Z");
+
+    verify(caldavSyncService).syncIfDue(42L, USER_NAME);
+  }
+
+  /**
+   * The button bypasses the throttle: a user pressing it has a reason the
+   * throttle cannot know — they just changed something on another device.
+   * Answering them with a stale agenda because a page load happened to run a
+   * sync a minute ago is exactly what the button is for.
+   */
+  @Test
+  public void shouldSynchroniseNowWhateverTheThrottleSays() {
+    withCurrentUser();
+
+    assertEquals(HttpStatus.NO_CONTENT, caldavReadRest.syncNow().getStatusCode());
+
+    verify(caldavSyncService).syncNow(42L, USER_NAME);
+    verify(caldavSyncService, never()).syncIfDue(anyLongValue(), org.mockito.ArgumentMatchers.anyString());
   }
 
   /**

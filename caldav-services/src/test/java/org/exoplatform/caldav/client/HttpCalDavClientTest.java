@@ -273,6 +273,87 @@ public class HttpCalDavClientTest {
   }
 
   @Test
+  void listCalendarsAsksWhichComponentsEachCollectionHolds() throws Exception {
+    // Nothing else on the wire separates a calendar from the task list a
+    // CalDAV home publishes beside it, so the property has to be requested —
+    // a server answers what it was asked for and nothing more.
+    givenAnswers(emptyMultistatus());
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    client.listCalendars(endpoint, BASE_PATH, USER, PASSWORD);
+
+    String body = bodyOf(sent.get(0));
+    assertTrue(body.contains("supported-calendar-component-set"), body);
+  }
+
+  @Test
+  void listCalendarsReadsEveryDeclaredComponentAndUpperCasesIt() throws Exception {
+    // Servers disagree on the case they write, and a set compared against
+    // "VEVENT" would read a server writing "vevent" as declaring no events at
+    // all — turning that server's every calendar into a task list.
+    givenAnswers(componentSetAnswer("""
+        <A:supported-calendar-component-set>
+          <A:comp name="vevent"/>
+          <A:comp name=" VTodo "/>
+        </A:supported-calendar-component-set>"""));
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    CalendarCollection calendar = client.listCalendars(endpoint, BASE_PATH, USER, PASSWORD).get(0);
+
+    assertEquals(java.util.Set.of("VEVENT", "VTODO"), calendar.components());
+    assertTrue(calendar.holdsEvents());
+  }
+
+  @Test
+  void aCollectionDeclaringOnlyTodosIsListedButHoldsNoEvents() throws Exception {
+    // Still listed: the filtering is the sync's decision to make, and a client
+    // that hid the collection here would leave the sync unable to say why.
+    givenAnswers(componentSetAnswer("""
+        <A:supported-calendar-component-set>
+          <A:comp name="VTODO"/>
+        </A:supported-calendar-component-set>"""));
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    CalendarCollection calendar = client.listCalendars(endpoint, BASE_PATH, USER, PASSWORD).get(0);
+
+    assertEquals(java.util.Set.of("VTODO"), calendar.components());
+    assertFalse(calendar.holdsEvents());
+  }
+
+  @Test
+  void aCollectionThatDeclaresNoComponentSetComesBackWithAnEmptyOne() throws Exception {
+    // RFC 4791 makes the property optional, and the empty set is how the
+    // absence travels — read further on as "the server did not say" rather
+    // than as "the server said nothing is supported".
+    givenAnswers(componentSetAnswer(""));
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    CalendarCollection calendar = client.listCalendars(endpoint, BASE_PATH, USER, PASSWORD).get(0);
+
+    assertTrue(calendar.components().isEmpty());
+    assertTrue(calendar.holdsEvents());
+  }
+
+  @Test
+  void aCompWithoutAUsableNameIsIgnoredRatherThanRecordedBlank() throws Exception {
+    // A blank entry would make an otherwise-undeclared set non-empty, which
+    // reads as an explicit refusal of events — the collection would vanish
+    // from the user's agenda because of one malformed element.
+    givenAnswers(componentSetAnswer("""
+        <A:supported-calendar-component-set>
+          <A:comp/>
+          <A:comp name=""/>
+          <A:comp name="   "/>
+        </A:supported-calendar-component-set>"""));
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    CalendarCollection calendar = client.listCalendars(endpoint, BASE_PATH, USER, PASSWORD).get(0);
+
+    assertTrue(calendar.components().isEmpty());
+    assertTrue(calendar.holdsEvents());
+  }
+
+  @Test
   void listResourceEtagsSkipsTheCollectionAndAnythingWithoutAVersion() throws Exception {
     givenAnswers("""
         <?xml version="1.0" encoding="UTF-8"?>
@@ -748,6 +829,27 @@ END:VCALENDAR</A:calendar-data></D:prop>
             %s
           </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
         </D:multistatus>""".formatted(href, displayName, ctag == null ? "" : "<C:getctag>" + ctag + "</C:getctag>");
+  }
+
+  /**
+   * A Depth:1 listing of one calendar collection carrying the given component
+   * set verbatim, so a test can hand the parser exactly the element a server
+   * would have written — including one it wrote badly.
+   *
+   * @param componentSet the supported-calendar-component-set element, or an
+   *          empty string to answer without the property at all
+   * @return the multistatus body
+   */
+  private String componentSetAnswer(String componentSet) {
+    return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <D:multistatus xmlns:D="DAV:" xmlns:A="urn:ietf:params:xml:ns:caldav">
+          <D:response><D:href>%sdefault/</D:href><D:propstat><D:prop>
+            <D:displayname>Default</D:displayname>
+            <D:resourcetype><D:collection/><A:calendar/></D:resourcetype>
+            %s
+          </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+        </D:multistatus>""".formatted(BASE_PATH, componentSet);
   }
 
   /**
