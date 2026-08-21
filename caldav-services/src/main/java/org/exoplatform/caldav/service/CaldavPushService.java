@@ -17,7 +17,7 @@
 package org.exoplatform.caldav.service;
 
 import java.nio.charset.StandardCharsets;
-import java.time.ZoneOffset;
+import java.time.Instant;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Date;
@@ -195,10 +195,17 @@ public class CaldavPushService {
   public ObjectSync pushAgendaEvent(long userIdentityId, long eventId, String eventUrl) {
     Event event;
     try {
-      // Read in UTC deliberately: the copy anchors its own wall clock on the
-      // event's own zone, which the mapper carries separately. Reading in a
-      // viewer's zone here would only give the mapper times to convert back.
-      event = agendaEventService.getEventById(eventId, ZoneOffset.UTC, userIdentityId);
+      // Read in the event's OWN zone, which is what a null argument asks
+      // agenda for. Not UTC, and not a viewer's zone.
+      //
+      // For a timed event any zone gives the same instant, so it looks like a
+      // free choice. It is not, because agenda treats an all-day event
+      // differently: it re-anchors the covered days at midnight in whatever
+      // zone is asked for. Ask for UTC and an all-day event of a user west of
+      // Greenwich comes back starting at 20:00 the previous day — and the
+      // copy is then written one day early, silently, for exactly the users
+      // whose zone made it happen.
+      event = agendaEventService.getEventById(eventId, null, userIdentityId);
     } catch (IllegalAccessException e) {
       throw new CaldavPushException(SAVE, "Event " + eventId + " is not visible to user " + userIdentityId, e);
     }
@@ -281,6 +288,75 @@ public class CaldavPushService {
       throw new CaldavPushException(SAVE, "The calendar object could not be removed", e);
     }
     caldavSyncStorage.saveObject(cleared(known));
+  }
+
+  /**
+   * Removes one occurrence from a series without removing the series.
+   *
+   * <p>
+   * RFC 4791 puts every component of a series in one object, so a deletion here
+   * is a rewrite: the override carrying that instance is dropped and the master
+   * gains an EXDATE for it. Deleting the object instead would cancel every
+   * meeting of the series to cancel one.
+   *
+   * <p>
+   * The rewrite is conditional on the ETag last seen, so a series someone else
+   * changed in the meantime surfaces as a conflict rather than being
+   * overwritten with a stale copy.
+   *
+   * @param userIdentityId identity of the user
+   * @param icsUid the iCalendar UID of the series
+   * @param occurrence the instance to exclude
+   * @throws CaldavPushException when the rewrite cannot be carried out
+   */
+  public void excludeOccurrence(long userIdentityId, String icsUid, Instant occurrence) {
+    CaldavUserSetting settings = connectedSettings(userIdentityId);
+    CalendarSync pair = existingMirrorPair(userIdentityId, settings);
+    if (pair == null) {
+      return;
+    }
+    ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), icsUid);
+    if (known == null || StringUtils.isBlank(known.getRemoteHref())) {
+      return;
+    }
+    CalDavEndpoint endpoint = endpointOf(settings);
+    try {
+      CalendarObject existing = calDavClient.fetchObject(endpoint,
+                                                         known.getRemoteHref(),
+                                                         settings.getUsername(),
+                                                         settings.getPassword());
+      if (existing == null || StringUtils.isBlank(existing.calendarData())) {
+        return;
+      }
+      String rewritten = icsMerger.excludeOccurrence(existing.calendarData(), occurrence);
+      if (rewritten == null) {
+        // Nothing left in the object: the last instance was the one excluded.
+        calDavClient.deleteObject(endpoint,
+                                  known.getRemoteHref(),
+                                  known.getEtag(),
+                                  settings.getUsername(),
+                                  settings.getPassword());
+        caldavSyncStorage.saveObject(cleared(known));
+        return;
+      }
+      PutResult result = calDavClient.updateObject(endpoint,
+                                                   known.getRemoteHref(),
+                                                   rewritten,
+                                                   known.getEtag(),
+                                                   settings.getUsername(),
+                                                   settings.getPassword());
+      if (result.preconditionFailed()) {
+        throw new CaldavPushException(CONFLICT, "The series at " + known.getRemoteHref() + " changed since it was read");
+      }
+      known.setEtag(result.etag());
+      known.setPushedHash(hashOf(rewritten));
+      known.setLastSync(new Date());
+      caldavSyncStorage.saveObject(known);
+    } catch (CalDavAuthenticationException e) {
+      throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
+    } catch (CalDavException e) {
+      throw new CaldavPushException(SAVE, "The occurrence could not be excluded", e);
+    }
   }
 
   /**
