@@ -17,6 +17,7 @@
 package org.exoplatform.caldav.service;
 
 import java.nio.charset.StandardCharsets;
+import java.time.ZoneOffset;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Date;
@@ -28,6 +29,8 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -101,6 +104,12 @@ public class CaldavPushService {
   @Autowired
   private IcsMerger              icsMerger;
 
+  @Autowired
+  private AgendaEventService     agendaEventService;
+
+  @Autowired
+  private AgendaEventIcsMapper   agendaEventIcsMapper;
+
   /**
    * Writes one event into the user's mirror calendar, creating the collection
    * and the mapping row if this is the first time.
@@ -135,6 +144,46 @@ public class CaldavPushService {
     mapping.setPushedHash(hashOf(ics));
     mapping.setLastSync(new Date());
     return caldavSyncStorage.saveObject(mapping);
+  }
+
+  /**
+   * Copies one agenda event into the user's mirror calendar.
+   *
+   * <p>
+   * The entry point the browser now calls instead of building iCalendar
+   * itself: it hands over an event id, and every decision that used to happen
+   * in the page — which identities are addressable, what the object looks
+   * like, where it goes, whether the write is conditional — happens here.
+   *
+   * <p>
+   * The event is read through agenda's own service, so its ACL applies: a user
+   * who may not see an event cannot have it copied into their calendar by
+   * asking for its id.
+   *
+   * @param userIdentityId identity of the user whose account is written to
+   * @param eventId the agenda event to copy
+   * @param eventUrl absolute link back to the event in eXo
+   * @return the mapping row as it now stands
+   * @throws CaldavPushException when the event cannot be read or written
+   */
+  public ObjectSync pushAgendaEvent(long userIdentityId, long eventId, String eventUrl) {
+    Event event;
+    try {
+      // Read in UTC deliberately: the copy anchors its own wall clock on the
+      // event's own zone, which the mapper carries separately. Reading in a
+      // viewer's zone here would only give the mapper times to convert back.
+      event = agendaEventService.getEventById(eventId, ZoneOffset.UTC, userIdentityId);
+    } catch (IllegalAccessException e) {
+      throw new CaldavPushException(SAVE, "Event " + eventId + " is not visible to user " + userIdentityId, e);
+    }
+    if (event == null) {
+      throw new CaldavPushException(SAVE, "Event " + eventId + " does not exist");
+    }
+    // The UID is agenda's own remote identifier when the event already has
+    // one, so an event pushed before this migration keeps its object instead
+    // of gaining a second copy under a new name.
+    String icsUid = "exo-event-" + (event.getParentId() > 0 ? event.getParentId() : event.getId());
+    return pushEvent(userIdentityId, agendaEventIcsMapper.toIcsEvent(event, icsUid, eventUrl, userIdentityId));
   }
 
   /**
