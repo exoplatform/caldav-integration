@@ -33,6 +33,8 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Set;
+import java.util.HashSet;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -172,13 +174,14 @@ public class HttpCalDavClient implements CalDavClient {
    */
   private static final String         PROPFIND_COLLECTION       = """
       <?xml version="1.0" encoding="utf-8"?>
-      <d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/" xmlns:a="http://apple.com/ns/ical/">
+      <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/" xmlns:a="http://apple.com/ns/ical/">
         <d:prop>
           <d:displayname/>
           <d:resourcetype/>
           <cs:getctag/>
           <d:sync-token/>
           <d:supported-report-set/>
+          <c:supported-calendar-component-set/>
           <d:current-user-privilege-set/>
           <a:calendar-color/>
         </d:prop>
@@ -661,7 +664,35 @@ public class HttpCalDavClient implements CalDavClient {
                                   grantedText(response, CALENDARSERVER_NS, GETCTAG_PROPERTY),
                                   grantedText(response, DAV_NS, SYNC_TOKEN_ELEMENT),
                                   grantedText(response, APPLE_NS, "calendar-color"),
-                                  writable);
+                                  writable,
+                                  supportedComponents(response));
+  }
+
+  /**
+   * The component types a collection declares it holds.
+   * <p>
+   * Read from {@code supported-calendar-component-set}, whose {@code comp}
+   * children name the types. An absent property yields an empty set, which
+   * {@link CalendarCollection#holdsEvents()} reads as "the server did not say"
+   * rather than "nothing" — the distinction RFC 4791 draws and the one that
+   * decides whether a task list is mistaken for a calendar.
+   *
+   * @param response one multistatus response element
+   * @return the declared component names, upper-cased; empty when undeclared
+   */
+  private Set<String> supportedComponents(Element response) {
+    Set<String> components = new HashSet<>();
+    for (Element prop : grantedProps(response)) {
+      for (Element set : descendants(prop, CALDAV_NS, "supported-calendar-component-set")) {
+        for (Element comp : descendants(set, CALDAV_NS, "comp")) {
+          String name = comp.getAttribute("name");
+          if (StringUtils.isNotBlank(name)) {
+            components.add(name.trim().toUpperCase());
+          }
+        }
+      }
+    }
+    return components;
   }
 
   /**
