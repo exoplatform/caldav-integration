@@ -146,6 +146,21 @@ public class CaldavSyncService {
   }
 
   /**
+   * Forgets when this user last synchronised.
+   *
+   * <p>
+   * What connecting an account calls. Someone who has just entered their
+   * credentials is owed their calendars now, not in a quarter of an hour —
+   * and a throttle stamped by the previous account's run has nothing to say
+   * about the new one.
+   *
+   * @param userIdentityId identity of the user
+   */
+  public void forgetThrottle(long userIdentityId) {
+    lastSync.remove(userIdentityId);
+  }
+
+  /**
    * One synchronisation pass, outward then inward.
    *
    * <p>
@@ -215,10 +230,17 @@ public class CaldavSyncService {
       }
       Calendar calendar = byAnchor.get(pair.getLocalCalendarSyncUid());
       if (calendar == null) {
-        // The eXo calendar is gone while its binding survives. Recreating it
-        // here would undo a deletion; the binding is left for the pass that
-        // knows what to do with an orphan.
-        LOG.debug("Binding {} has no eXo calendar behind it and is skipped", pair.getId());
+        // An ACTIVE binding whose eXo calendar is gone describes nothing, and
+        // leaving it costs the user the collection for good: materialisation
+        // skips a collection that already has a binding, so the calendar can
+        // never come back and nothing says why. Deliberate deletions are not
+        // affected — those are tombstones, and this loop only reaches ACTIVE
+        // ones. Dropping the binding lets the next pass materialise the
+        // collection again.
+        LOG.info("Binding {} has no eXo calendar behind it; it is dropped so the collection can be materialised again",
+                 pair.getId());
+        caldavSyncStorage.deleteObjects(pair.getId());
+        caldavSyncStorage.deletePair(pair.getId());
         continue;
       }
       try {
