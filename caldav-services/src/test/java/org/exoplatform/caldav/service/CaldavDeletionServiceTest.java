@@ -260,6 +260,91 @@ public class CaldavDeletionServiceTest {
     verify(caldavSyncStorage, never()).savePair(any());
   }
 
+  @Test
+  public void aCalendarThatWasNeverBoundIsSimplyDeletedInExo() throws Exception {
+    // No binding, nothing to propagate. The connector must not become a
+    // reason a plain local deletion fails.
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(null);
+
+    service.deleteCalendar(USER, LOGIN, CALENDAR);
+
+    verify(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
+    verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  @Test
+  public void aCalendarCarryingNoAnchorIsDeletedWithoutLookingForABinding() throws Exception {
+    Calendar unanchored = calendar();
+    unanchored.setSyncUid(null);
+    when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(unanchored);
+
+    service.deleteCalendar(USER, LOGIN, CALENDAR);
+
+    verify(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
+    verify(caldavSyncStorage, never()).getPairByLocalCalendar(anyLong(), anyLong(), anyString());
+  }
+
+  @Test
+  public void aFailureToDeleteInExoIsReportedRatherThanSwallowed() throws Exception {
+    // The remote collection is already gone at this point. Reporting success
+    // would leave eXo showing a calendar whose events no longer exist
+    // anywhere.
+    givenBoundCalendar();
+    givenCollectionGoneAfterDelete();
+    org.mockito.Mockito.doThrow(new IllegalStateException("locked"))
+                       .when(agendaCalendarService)
+                       .deleteCalendarById(CALENDAR, LOGIN);
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class,
+                                               () -> service.deleteCalendar(USER, LOGIN, CALENDAR));
+
+    assertEquals(CaldavDeletionService.NOTHING_DELETED, failure.getCode());
+  }
+
+  @Test
+  public void anAccountWhoseCredentialsAreGoneFallsBackToADeleteInExoOnly() throws Exception {
+    // A known limitation, asserted rather than hidden. The binding is looked
+    // up by (user, server, anchor), and without settings there is no server id
+    // to look it up under — so a calendar that WAS bound reads as unbound and
+    // its collection is left standing on the server.
+    //
+    // Acceptable because it is the safe direction: nothing remote is destroyed
+    // on the strength of a lookup that could not be made. But it does mean a
+    // user who disconnects and then deletes a calendar leaves a collection
+    // behind with no tombstone recording it, which the settings cannot then
+    // surface. Worth closing when the settings surface lands (PR11).
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
+
+    service.deleteCalendar(USER, LOGIN, CALENDAR);
+
+    verify(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
+    verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void keepingTheRemoteCalendarOfSomethingExoNeverCreatedIsJustALocalDelete() throws Exception {
+    // The explicit fallback on a REMOTE pair is not an orphan — eXo never
+    // owned that collection — so the tombstone says locally deleted, not
+    // orphaned.
+    givenBoundCalendar(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
+
+    service.deleteCalendarLocallyOnly(USER, LOGIN, CALENDAR);
+
+    ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(saved.capture());
+    assertEquals(CalendarSyncStatus.LOCALLY_DELETED, saved.getValue().getStatus());
+  }
+
+  @Test
+  public void freezingAnAccountWithNoBindingsDoesNothing() {
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of());
+
+    service.freezeOnDisconnect(USER, SERVER);
+
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
   /**
    * A calendar bound to a collection eXo created.
    */
