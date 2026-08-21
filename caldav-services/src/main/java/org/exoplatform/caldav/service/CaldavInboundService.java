@@ -16,12 +16,14 @@
  */
 package org.exoplatform.caldav.service;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.model.Calendar;
@@ -75,6 +77,13 @@ public class CaldavInboundService {
   private IcsEventMapper         icsEventMapper;
 
   /**
+   * How many days one calendar-query asks for. Small enough that a busy
+   * calendar answers inside the client's request timeout.
+   */
+  @Value("${exo.agenda.caldav.sync.sliceDays:30}")
+  private long                   sliceDays;
+
+  /**
    * Imports the objects of one bound collection over a window.
    *
    * <p>
@@ -98,9 +107,46 @@ public class CaldavInboundService {
     if (settings == null) {
       return 0;
     }
+    CalDavEndpoint endpoint = calDavClient.endpoint(pair.getServerId(), settings.getUsername());
+    int touched = 0;
+    // The window is walked in slices rather than asked for at once. A
+    // calendar-query returns the full ICS of everything it covers, so a year
+    // asked for in one REPORT is one enormous response — observed live as a
+    // request timeout against a real calendar, with the whole collection lost
+    // for it. Sliced, each round trip is small, a slow calendar still makes
+    // progress, and one slice that fails costs only its own days.
+    for (Instant sliceStart = from; sliceStart.isBefore(to);) {
+      Instant sliceEnd = sliceStart.plus(Duration.ofDays(sliceDays));
+      if (sliceEnd.isAfter(to)) {
+        sliceEnd = to;
+      }
+      touched += importSlice(userIdentityId, pair, calendar, settings, endpoint, sliceStart, sliceEnd);
+      sliceStart = sliceEnd;
+    }
+    return touched;
+  }
+
+  /**
+   * Imports one slice of the window.
+   *
+   * @param userIdentityId identity of the user
+   * @param pair the binding being read
+   * @param calendar the eXo calendar standing for it
+   * @param settings the connected account
+   * @param endpoint the declared server
+   * @param from beginning of the slice
+   * @param to end of the slice
+   * @return how many events this slice created
+   */
+  private int importSlice(long userIdentityId,
+                          CalendarSync pair,
+                          Calendar calendar,
+                          CaldavUserSetting settings,
+                          CalDavEndpoint endpoint,
+                          Instant from,
+                          Instant to) {
     List<CalendarObject> objects;
     try {
-      CalDavEndpoint endpoint = calDavClient.endpoint(pair.getServerId(), settings.getUsername());
       objects = calDavClient.calendarQuery(endpoint,
                                            pair.getRemoteHref(),
                                            from,
@@ -108,10 +154,14 @@ public class CaldavInboundService {
                                            settings.getUsername(),
                                            settings.getPassword());
     } catch (CalDavException e) {
-      // One collection a server refuses must not stop the others. The calendar
-      // keeps whatever it already holds rather than being emptied on a bad
-      // round trip.
-      LOG.warn("The objects of collection {} could not be read; it is left as it is", pair.getRemoteHref(), e);
+      // One slice a server cannot answer must not cost the rest of the window,
+      // and one collection must not cost the others. The calendar keeps what
+      // it already holds rather than being emptied on a bad round trip.
+      LOG.warn("The objects of collection {} between {} and {} could not be read; those days are left as they are",
+               pair.getRemoteHref(),
+               from,
+               to,
+               e);
       return 0;
     }
     int touched = 0;
