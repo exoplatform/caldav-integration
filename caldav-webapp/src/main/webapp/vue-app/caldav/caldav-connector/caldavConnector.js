@@ -1,4 +1,11 @@
 import * as caldavConnectorService from '../js/agendaCaldavService.js';
+/**
+ * What deleting each calendar would do, kept from the moment agenda asks until
+ * the deletion it precedes. Not a cache of remote state: it holds one answer
+ * for the length of one confirmation.
+ */
+const deletionPlans = new Map();
+
 const caldavConnector = {
   name: 'agenda.caldavCalendar',
   description: 'agenda.caldavCalendar.description',
@@ -167,6 +174,61 @@ const caldavConnector = {
   async setMirrorCalendar(calendarId) {
     await caldavConnectorService.saveMirrorCalendarHref(calendarId);
     return {id: calendarId};
+  },
+  /**
+   * What deleting an eXo calendar would also do on this connector's side.
+   *
+   * Asked before the confirmation dialog opens, so the sentence it returns is
+   * read before the user confirms rather than after. Two different warnings,
+   * because two different things happen: a collection eXo created is deleted
+   * with the calendar — and everything in it goes, including events other
+   * devices added, which is the part a user cannot guess and cannot undo — while
+   * a calendar the user made in their own client is left untouched, and saying
+   * so is worth as much, since otherwise they assume the worst and keep a
+   * calendar they meant to remove from eXo.
+   *
+   * @param {Object} calendar the eXo calendar about to be deleted
+   * @returns {Promise<Object>} resolves {claims, warning}
+   */
+  describeCalendarDeletion(calendar) {
+    if (!calendar || !calendar.id) {
+      return Promise.resolve({claims: false, warning: ''});
+    }
+    return fetch(`${window.location.origin}/caldav/rest/push/calendars/${calendar.id}/deletion-plan`, {
+      credentials: 'include',
+    }).then(readOutcome).then(plan => {
+      if (!plan || !plan.claimed) {
+        return {claims: false, warning: ''};
+      }
+      deletionPlans.set(String(calendar.id), plan);
+      return {claims: true, warning: deletionWarning(plan)};
+    });
+  },
+  /**
+   * Removes the remote counterpart before agenda removes the calendar.
+   *
+   * Rejects to abort the whole deletion, which is what puts the failable step
+   * first: a server that refuses or cannot be reached leaves both sides exactly
+   * as they were, rather than leaving a collection stranded after the record
+   * that knew about it is gone.
+   *
+   * @param {Object} calendar the eXo calendar being deleted
+   * @returns {Promise} resolves once the remote side is dealt with
+   */
+  deleteCalendar(calendar) {
+    const plan = calendar && deletionPlans.get(String(calendar.id));
+    if (!plan || !plan.claimed) {
+      return Promise.resolve();
+    }
+    // Either way the server is told: a propagating deletion removes the
+    // collection, a non-propagating one records that the user kept it. The
+    // second matters as much — without it the next sweep would materialise the
+    // remote calendar straight back and undo the deletion in front of them.
+    return fetch(`${window.location.origin}/caldav/rest/push/calendars/${calendar.id}${
+      plan.propagates && '/remote' || '/keep-remote'}`, {
+      method: plan.propagates && 'DELETE' || 'POST',
+      credentials: 'include',
+    }).then(pushOutcome).then(() => deletionPlans.delete(String(calendar.id)));
   },
   /**
    * The stored href of the mirror calendar, so UIs can single it out — for
@@ -351,6 +413,21 @@ function readOutcome(response) {
     return Promise.resolve([]);
   }
   return response.json().catch(() => []);
+}
+
+/**
+ * The sentence shown before a deletion is confirmed.
+ *
+ * @param {Object} plan what the server said deleting this calendar would do
+ * @returns {String} the warning, already in the user's language
+ */
+function deletionWarning(plan) {
+  const key = plan.propagates
+    ? 'agenda.caldavCalendar.calendarDelete.propagates'
+    : 'agenda.caldavCalendar.calendarDelete.keepsRemote';
+  const bundle = window.eXo && eXo.env && eXo.env.portal && eXo.env.portal.i18n || {};
+  const server = serverHost(plan.server) || plan.server || '';
+  return (bundle[key] || '').replace('{0}', server);
 }
 
 /**
