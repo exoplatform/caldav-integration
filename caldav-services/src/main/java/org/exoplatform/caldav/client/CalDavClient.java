@@ -318,9 +318,13 @@ public interface CalDavClient {
 
   /**
    * Asks the server to create a calendar collection, display name and
-   * optional colour set atomically. The answer is a claim, never a fact:
-   * see {@link MkCalendarResult} for why the one statement of success a
-   * caller may trust is the collection's presence in its own fresh listing.
+   * optional colour set atomically. The request always declares
+   * {@code supported-calendar-component-set} with {@code VEVENT}: BlueMind
+   * derives the created collection's kind from it, and without it answers
+   * 201 while creating nothing (proven live 2026-08-20). The answer is a
+   * claim, never a fact — see {@link MkCalendarResult} for why the one
+   * statement of success a caller may trust is the collection's presence in
+   * its own fresh listing.
    *
    * @param endpoint the declared server
    * @param href the collection's server-absolute path to create at
@@ -328,9 +332,9 @@ public interface CalDavClient {
    * @param color the Apple calendar-color to set, or null to set none
    * @param username the account to authenticate as
    * @param password that account's password
-   * @return the raw outcome, refusals included — BlueMind refuses
-   *         MKCALENDAR outright and that refusal is an answer the caller
-   *         maps to its degraded states, not an error
+   * @return the raw outcome, refusals included — a server declining
+   *         MKCALENDAR gives an answer the caller maps to its degraded
+   *         states, not an error
    * @throws CalDavAuthenticationException when the credentials are refused
    *           (401/407 — a 403 here is the refusal, not an auth failure)
    * @throws CalDavException when the server cannot be reached

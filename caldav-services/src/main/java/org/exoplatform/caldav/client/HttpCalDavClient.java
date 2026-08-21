@@ -516,7 +516,18 @@ public class HttpCalDavClient implements CalDavClient {
                                      String color,
                                      String username,
                                      String password) {
+    // The component set is never optional: BlueMind derives the created
+    // collection's KIND from the <c:comp> elements, and a request without
+    // them fails that derivation internally, swallows the failure and still
+    // answers 201 — claiming a creation that never happened (proven live
+    // 2026-08-20: displayname-only body → 201 and the collection absent
+    // from the next Depth:1 listing; the same body plus this property →
+    // 201 and the collection listed). VEVENT alone on purpose: the mirror
+    // carries meeting copies only, and BlueMind maps VTODO to a different
+    // container kind (its accounts hold a separate todolist: collection),
+    // so declaring both would leave the kind derivation ambiguous.
     StringBuilder props = new StringBuilder("<d:displayname>").append(escape(displayName)).append("</d:displayname>");
+    props.append("<c:supported-calendar-component-set><c:comp name=\"VEVENT\"/></c:supported-calendar-component-set>");
     if (StringUtils.isNotBlank(color)) {
       props.append("<a:calendar-color>").append(escape(color)).append("</a:calendar-color>");
     }

@@ -35,6 +35,7 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -58,6 +59,16 @@ import org.exoplatform.caldav.service.CaldavServerService;
  * <li>{@code bluemind-403-refused-auth.http} — captured live from the
  * BlueMind demo (2026-08-20), unauthenticated and with wrong credentials
  * alike: <b>403</b>, text/html, no WWW-Authenticate.</li>
+ * <li>{@code bluemind-mkcalendar-201-nothing-created.http} and
+ * {@code bluemind-propfind-home-depth1.xml} — captured live from the
+ * BlueMind demo (2026-08-20), authenticated: the MKCALENDAR 201 a request
+ * without {@code supported-calendar-component-set} gets over a creation
+ * that never happened, and the Depth:1 home listing proving the claimed
+ * collection absent.</li>
+ * <li>{@code bluemind-propfind-home-depth1-with-mirror.xml} — DERIVED from
+ * that live listing: the same capture plus the collection an MKCALENDAR
+ * declaring the component set had just created, as observed live in the
+ * browser the same day.</li>
  * <li>{@code bluemind-mkcalendar-207-failing-propstat.xml} and
  * {@code bluemind-propfind-dav-rooted.xml} — RECONSTRUCTED from the browser
  * connector's documented transcripts (caldavConnector.js:2272-2306 and the
@@ -68,11 +79,14 @@ import org.exoplatform.caldav.service.CaldavServerService;
 @ExtendWith(MockitoExtension.class)
 public class HttpCalDavClientServerQuirksTest {
 
-  private static final String SERVER_URL = "https://webmail.demo3.livecollab.fr/dav/";
+  private static final String SERVER_URL    = "https://webmail.demo3.livecollab.fr/dav/";
 
-  private static final String USER       = "someone@demo3.livecollab.fr";
+  private static final String USER          = "someone@demo3.livecollab.fr";
 
-  private static final String PASSWORD   = "not-the-real-one";
+  private static final String PASSWORD      = "not-the-real-one";
+
+  private static final String BLUEMIND_HOME =
+                                            "/dav/calendars/__uids__/751E6D1A-7FDB-49B2-B668-B569E9A5A42D/";
 
   @Mock
   private CaldavServerService caldavServerService;
@@ -83,10 +97,13 @@ public class HttpCalDavClientServerQuirksTest {
 
   private CalDavEndpoint      endpoint;
 
+  private List<HttpRequest>   sent;
+
   @BeforeEach
   void setUp() {
     transport = mock(HttpClient.class);
     client = new HttpCalDavClient(transport, caldavServerService);
+    sent = new ArrayList<>();
     lenient().when(caldavServerService.resolveServerUrl(1L)).thenReturn(SERVER_URL);
     endpoint = client.endpoint(1L, USER);
   }
@@ -138,13 +155,67 @@ public class HttpCalDavClientServerQuirksTest {
   }
 
   @Test
-  void blueMindRefusingMkCalendarIsAnAnswerNotAnException() throws Exception {
+  void aGenuineMkCalendarRefusalIsAnAnswerNotAnException() throws Exception {
+    // A server genuinely declining MKCALENDAR (405 here) is an answer the
+    // caller maps to its inbound-only degradation. This is NOT the BlueMind
+    // behaviour, despite what three rounds of debugging concluded: BlueMind
+    // never refuses an MKCALENDAR under the calendar home — see the two
+    // tests below for what it really does — so refused() never fires there.
     givenAnswer(405, Map.of(), "");
 
     MkCalendarResult result = client.mkCalendar(endpoint, "/dav/calendars/vevent/x/exo-cal-1/", "eXo", null, USER, PASSWORD);
 
     assertTrue(result.refused(), "the caller maps this to its inbound-only degradation, it is not an error");
     assertFalse(result.provenCreated());
+  }
+
+  @Test
+  void blueMindAnswers201OverACreationThatNeverHappened() throws Exception {
+    // The trap, proven live 2026-08-20: an MKCALENDAR body without
+    // supported-calendar-component-set makes BlueMind's kind derivation
+    // fail internally; the failure is swallowed and 201 goes out anyway —
+    // the capture replayed here — while the Depth:1 home listing, also
+    // captured live, shows the claimed collection absent. This is why
+    // provenCreated() is documented as a claim: a naive client reading the
+    // 201 concludes "created", pushes into the void, and every later
+    // attempt reads as the server "refusing" calendar creation.
+    givenSequence(new int[] { 201, 207 },
+                  new String[] { fixture("bluemind-mkcalendar-201-nothing-created.http"),
+                      fixture("bluemind-propfind-home-depth1.xml") });
+
+    MkCalendarResult result = client.mkCalendar(endpoint, BLUEMIND_HOME + "exo-meetings/", "eXo Meetings", null, USER,
+                                                PASSWORD);
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, BLUEMIND_HOME, USER, PASSWORD);
+
+    assertTrue(result.provenCreated(), "the server's claim — everything a client trusting the status ever sees");
+    assertFalse(result.refused(), "BlueMind never refuses: the failure hides behind a 201, not a 4xx");
+    assertTrue(calendars.stream().noneMatch(calendar -> calendar.href().endsWith("/exo-meetings/")),
+               "the listing is the fact: nothing was created, whatever the 201 claimed — read back, always");
+  }
+
+  @Test
+  void blueMindCreationIsRealOnceTheComponentSetIsDeclaredAndTheListingConfirmsIt() throws Exception {
+    // The contract, observed live the same day: the same MKCALENDAR plus
+    // <c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set>
+    // answers the same 201 — and this time the collection appears in the
+    // next listing. The body assertion is on the XML actually sent, so this
+    // test fails the moment the component set is dropped from the client:
+    // the 201s would keep coming, the creations would silently stop.
+    givenSequence(new int[] { 201, 207 },
+                  new String[] { fixture("bluemind-mkcalendar-201-nothing-created.http"),
+                      fixture("bluemind-propfind-home-depth1-with-mirror.xml") });
+
+    MkCalendarResult result = client.mkCalendar(endpoint, BLUEMIND_HOME + "exo-meetings/", "eXo Meetings", null, USER,
+                                                PASSWORD);
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, BLUEMIND_HOME, USER, PASSWORD);
+
+    assertTrue(result.provenCreated());
+    String body = bodyOf(sent.get(0));
+    assertTrue(body.contains("<c:supported-calendar-component-set><c:comp name=\"VEVENT\"/></c:supported-calendar-component-set>"),
+               "the component set must ride EVERY MKCALENDAR, as a nested element — without it BlueMind answers"
+                   + " 201 while creating nothing, the bug that read as a refusal three times over: " + body);
+    assertTrue(calendars.stream().anyMatch(calendar -> calendar.href().endsWith("/exo-meetings/")),
+               "with the component set declared, the creation is one the listing confirms");
   }
 
   @Test
@@ -263,6 +334,94 @@ public class HttpCalDavClientServerQuirksTest {
     Map<String, List<String>> headerMap = new java.util.HashMap<>();
     headers.forEach((headerName, value) -> headerMap.put(headerName, List.of(value)));
     lenient().when(response.headers()).thenReturn(HttpHeaders.of(headerMap, (a, b) -> true));
-    when(transport.send(any(HttpRequest.class), any())).thenAnswer(invocation -> response);
+    when(transport.send(any(HttpRequest.class), any())).thenAnswer(invocation -> {
+      sent.add(invocation.getArgument(0));
+      return response;
+    });
+  }
+
+  /**
+   * Queues one answer per call, in order — for the replays where a write's
+   * answer and the read-back's answer must differ, the very distinction the
+   * confirm-by-listing discipline exists for. The last pair keeps serving
+   * once the sequence is exhausted.
+   *
+   * @param statuses the HTTP statuses to answer, one per call
+   * @param bodies the bodies to answer, parallel to statuses
+   * @throws Exception never — the mock declares it
+   */
+  @SuppressWarnings("unchecked")
+  private void givenSequence(int[] statuses, String[] bodies) throws Exception {
+    java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+    when(transport.send(any(HttpRequest.class), any())).thenAnswer(invocation -> {
+      sent.add(invocation.getArgument(0));
+      int index = Math.min(calls.getAndIncrement(), statuses.length - 1);
+      HttpResponse<InputStream> response = mock(HttpResponse.class);
+      lenient().when(response.statusCode()).thenReturn(statuses[index]);
+      lenient().when(response.body())
+               .thenReturn(new ByteArrayInputStream(bodies[index].getBytes(StandardCharsets.UTF_8)));
+      lenient().when(response.headers())
+               .thenReturn(HttpHeaders.of(Map.of("Content-Type", List.of("application/xml; charset=\"utf-8\"")),
+                                          (a, b) -> true));
+      return response;
+    });
+  }
+
+  /**
+   * The body of a sent request, read back from its publisher — the only way
+   * to assert on the XML the client actually put on the wire, which is the
+   * whole point where a mock accepting any body is what hid the missing
+   * component set three times.
+   *
+   * @param request the recorded request
+   * @return the body text
+   */
+  private String bodyOf(HttpRequest request) {
+    java.util.concurrent.Flow.Publisher<java.nio.ByteBuffer> publisher = request.bodyPublisher().orElseThrow();
+    StringBuilder body = new StringBuilder();
+    java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+    publisher.subscribe(new java.util.concurrent.Flow.Subscriber<java.nio.ByteBuffer>() {
+      /**
+       * Asks for the whole body at once.
+       *
+       * @param subscription the flow subscription
+       */
+      @Override
+      public void onSubscribe(java.util.concurrent.Flow.Subscription subscription) {
+        subscription.request(Long.MAX_VALUE);
+      }
+
+      /**
+       * Appends one chunk.
+       *
+       * @param item the body chunk
+       */
+      @Override
+      public void onNext(java.nio.ByteBuffer item) {
+        body.append(StandardCharsets.UTF_8.decode(item));
+      }
+
+      /**
+       * Ends the read on failure.
+       *
+       * @param throwable the failure
+       */
+      @Override
+      public void onError(Throwable throwable) {
+        done.countDown();
+      }
+
+      /** Ends the read. */
+      @Override
+      public void onComplete() {
+        done.countDown();
+      }
+    });
+    try {
+      done.await();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+    return body.toString();
   }
 }
