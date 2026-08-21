@@ -24,13 +24,16 @@ import java.util.Date;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaEventService;
+import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -110,6 +113,9 @@ public class CaldavPushService {
   @Autowired
   private AgendaEventIcsMapper   agendaEventIcsMapper;
 
+  @Autowired
+  private AgendaRemoteEventService agendaRemoteEventService;
+
   /**
    * Writes one event into the user's mirror calendar, creating the collection
    * and the mapping row if this is the first time.
@@ -179,11 +185,45 @@ public class CaldavPushService {
     if (event == null) {
       throw new CaldavPushException(SAVE, "Event " + eventId + " does not exist");
     }
-    // The UID is agenda's own remote identifier when the event already has
-    // one, so an event pushed before this migration keeps its object instead
-    // of gaining a second copy under a new name.
-    String icsUid = "exo-event-" + (event.getParentId() > 0 ? event.getParentId() : event.getId());
+    long seriesId = event.getParentId() > 0 ? event.getParentId() : event.getId();
+    String icsUid = adoptOrMintUid(seriesId, userIdentityId);
     return pushEvent(userIdentityId, agendaEventIcsMapper.toIcsEvent(event, icsUid, eventUrl, userIdentityId));
+  }
+
+  /**
+   * The iCalendar UID this event's object is written under: the one agenda
+   * already recorded, or a new one recorded now.
+   *
+   * <p>
+   * This is where events pushed before the migration are adopted rather than
+   * duplicated. The browser stored a remote identifier on every event it
+   * pushed, and that identifier is the UID of the object sitting on the
+   * server. Minting a fresh one here would write a second object for every
+   * event a migrated user already has — and since migrated users are exactly
+   * the ones with events on the server, that is not an edge case but their
+   * normal first run.
+   *
+   * @param seriesId the agenda event, or its parent for an occurrence — a
+   *          series and its overrides share one UID
+   * @param userIdentityId identity of the user
+   * @return the UID to write under
+   */
+  private String adoptOrMintUid(long seriesId, long userIdentityId) {
+    RemoteEvent known = agendaRemoteEventService.findRemoteEvent(seriesId, userIdentityId);
+    if (known != null && StringUtils.isNotBlank(known.getRemoteId())) {
+      return known.getRemoteId();
+    }
+    String minted = UUID.randomUUID().toString();
+    RemoteEvent remoteEvent = new RemoteEvent();
+    remoteEvent.setEventId(seriesId);
+    remoteEvent.setIdentityId(userIdentityId);
+    remoteEvent.setRemoteId(minted);
+    // Recorded before the write, not after: an interrupted push leaves an
+    // identifier pointing at an object that may or may not exist, which the
+    // next push reconciles. Recording it afterwards would leave a written
+    // object nothing points at, which nothing ever reconciles.
+    agendaRemoteEventService.saveRemoteEvent(seriesId, remoteEvent, userIdentityId);
+    return minted;
   }
 
   /**
