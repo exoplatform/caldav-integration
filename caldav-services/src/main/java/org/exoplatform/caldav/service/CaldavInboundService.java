@@ -18,6 +18,7 @@ package org.exoplatform.caldav.service;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZonedDateTime;
 import java.util.Date;
 import java.util.List;
 
@@ -195,12 +196,6 @@ public class CaldavInboundService {
       LOG.debug("Object {} carries only overrides and is left for the occurrence pass", object.href());
       return false;
     }
-    if (parsed.size() > 1) {
-      // The overrides travel with their master and are applied by the
-      // occurrence pass; importing them here would duplicate days the series
-      // already covers.
-      LOG.debug("Object {} carries {} overrides, left for the occurrence pass", object.href(), parsed.size() - 1);
-    }
     ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), master.getUid());
     if (known != null && StringUtils.isNotBlank(known.getEtag()) && known.getEtag().equals(object.etag())) {
       // The server says nothing changed. Re-writing the event would bump its
@@ -209,9 +204,9 @@ public class CaldavInboundService {
       return false;
     }
     if (known != null) {
-      return update(userIdentityId, pair, calendar, object, master, known);
+      return update(userIdentityId, pair, calendar, object, master, known, parsed);
     }
-    return create(userIdentityId, pair, calendar, object, master);
+    return create(userIdentityId, pair, calendar, object, master, parsed);
   }
 
   /**
@@ -228,7 +223,8 @@ public class CaldavInboundService {
                          CalendarSync pair,
                          Calendar calendar,
                          CalendarObject object,
-                         IcsEvent master) {
+                         IcsEvent master,
+                         List<IcsEvent> parsed) {
     Event event = icsEventMapper.toEvent(master, calendar.getId());
     Event created;
     try {
@@ -264,6 +260,7 @@ public class CaldavInboundService {
     mapping.setEtag(object.etag());
     mapping.setLastSync(new Date());
     caldavSyncStorage.saveObject(mapping);
+    applyOccurrences(userIdentityId, calendar, created.getId(), master, parsed);
     return true;
   }
 
@@ -297,7 +294,8 @@ public class CaldavInboundService {
                          Calendar calendar,
                          CalendarObject object,
                          IcsEvent master,
-                         ObjectSync known) {
+                         ObjectSync known,
+                         List<IcsEvent> parsed) {
     if (known.getLocalEventId() == null) {
       // A mapping with no event behind it: the import was interrupted between
       // creating the event and recording it, or the event has since been
@@ -338,6 +336,7 @@ public class CaldavInboundService {
     known.setRemoteHref(object.href());
     known.setLastSync(new Date());
     caldavSyncStorage.saveObject(known);
+    applyOccurrences(userIdentityId, calendar, local.getId(), master, parsed);
     return true;
   }
 
@@ -358,6 +357,113 @@ public class CaldavInboundService {
       return false;
     }
     return local.getUpdated().toInstant().isAfter(master.getUpdated());
+  }
+
+  /**
+   * Applies what the object says about individual occurrences of a series.
+   *
+   * <p>
+   * Two things travel with a master and mean nothing without it: an override
+   * amends one occurrence, an excluded date cancels one. Agenda expresses both
+   * through the same door — an <em>exceptional occurrence</em>, which is the
+   * series' shape for one date made editable on its own. So an override
+   * becomes one that is then updated, and an exclusion becomes one that is
+   * then deleted.
+   *
+   * <p>
+   * A series with nothing to say about its occurrences costs nothing here,
+   * which is almost every series.
+   *
+   * @param userIdentityId identity of the user
+   * @param calendar the eXo calendar standing for the collection
+   * @param masterEventId the series in agenda
+   * @param master the parsed master
+   * @param parsed every event the object carried, master first
+   */
+  private void applyOccurrences(long userIdentityId,
+                                Calendar calendar,
+                                long masterEventId,
+                                IcsEvent master,
+                                List<IcsEvent> parsed) {
+    for (IcsEvent override : parsed) {
+      if (StringUtils.isBlank(override.getOccurrenceId())) {
+        continue;
+      }
+      amendOccurrence(userIdentityId, calendar, masterEventId, override);
+    }
+    if (master.getExceptionDates() == null) {
+      return;
+    }
+    for (String excluded : master.getExceptionDates()) {
+      cancelOccurrence(userIdentityId, masterEventId, excluded, master.getTimeZoneId());
+    }
+  }
+
+  /**
+   * Applies one override to the occurrence it amends.
+   *
+   * @param userIdentityId identity of the user
+   * @param calendar the eXo calendar standing for the collection
+   * @param masterEventId the series in agenda
+   * @param override the parsed override
+   */
+  private void amendOccurrence(long userIdentityId, Calendar calendar, long masterEventId, IcsEvent override) {
+    ZonedDateTime occurrenceId = icsEventMapper.occurrenceOf(override);
+    if (occurrenceId == null) {
+      LOG.debug("An override of series {} names an occurrence that cannot be read; it is skipped", masterEventId);
+      return;
+    }
+    try {
+      Event occurrence = agendaEventService.saveEventExceptionalOccurrence(masterEventId, occurrenceId);
+      if (occurrence == null) {
+        return;
+      }
+      Event amended = icsEventMapper.toEvent(override, calendar.getId());
+      amended.setId(occurrence.getId());
+      amended.setParentId(masterEventId);
+      // An override amends one date; it never carries the series' rule, and
+      // handing agenda one here would turn a single amended meeting into a
+      // second series running beside the first.
+      amended.setRecurrence(null);
+      amended.setOccurrence(occurrence.getOccurrence());
+      agendaEventService.updateEvent(amended, List.of(), List.of(), List.of(), List.of(), null, false, userIdentityId);
+    } catch (Exception e) { // NOSONAR agenda declares several checked exceptions here
+      // One occurrence that will not take must not cost the series, which is
+      // already in place and correct for every other date.
+      LOG.warn("Occurrence {} of series {} could not be amended", occurrenceId, masterEventId, e);
+    }
+  }
+
+  /**
+   * Cancels the occurrence an excluded date names.
+   *
+   * <p>
+   * Agenda has no "this date is excluded" flag: a cancelled occurrence is an
+   * exceptional occurrence that has been deleted. So the date is materialised
+   * first and removed second — which reads oddly and is what the model asks
+   * for.
+   *
+   * @param userIdentityId identity of the user
+   * @param masterEventId the series in agenda
+   * @param excluded the raw excluded date
+   * @param zoneId the zone the series is anchored on
+   */
+  private void cancelOccurrence(long userIdentityId, long masterEventId, String excluded, String zoneId) {
+    ZonedDateTime occurrenceId = icsEventMapper.occurrenceOf(excluded, zoneId);
+    if (occurrenceId == null) {
+      return;
+    }
+    try {
+      Event occurrence = agendaEventService.saveEventExceptionalOccurrence(masterEventId, occurrenceId);
+      if (occurrence == null) {
+        return;
+      }
+      agendaEventService.deleteEventById(occurrence.getId(), userIdentityId);
+    } catch (Exception e) { // NOSONAR agenda declares several checked exceptions here
+      // A meeting the user cancelled elsewhere still showing here is wrong,
+      // but it is a smaller wrong than losing the series over it.
+      LOG.warn("Occurrence {} of series {} could not be cancelled", occurrenceId, masterEventId, e);
+    }
   }
 
   /**

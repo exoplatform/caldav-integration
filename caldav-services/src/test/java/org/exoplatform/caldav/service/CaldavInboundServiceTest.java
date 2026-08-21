@@ -18,6 +18,7 @@ package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -76,6 +77,34 @@ public class CaldavInboundServiceTest {
   private static final String    LOGIN    = "john";
 
   private static final String    HREF     = "/dav/calendars/john/private/";
+
+  /**
+   * A weekly series with one occurrence moved and one cancelled — the same
+   * shape written into the live test rig.
+   */
+  private static final String    SERIES   = """
+      BEGIN:VCALENDAR
+      VERSION:2.0
+      PRODID:-//test//EN
+      BEGIN:VEVENT
+      UID:uid-1@example.test
+      DTSTAMP:20260821T200000Z
+      SUMMARY:Weekly standup
+      DTSTART:20260907T090000Z
+      DTEND:20260907T093000Z
+      RRULE:FREQ=WEEKLY;COUNT=6
+      EXDATE:20260921T090000Z
+      END:VEVENT
+      BEGIN:VEVENT
+      UID:uid-1@example.test
+      RECURRENCE-ID:20260914T090000Z
+      DTSTAMP:20260821T200000Z
+      SUMMARY:Weekly standup (moved)
+      DTSTART:20260914T140000Z
+      DTEND:20260914T143000Z
+      END:VEVENT
+      END:VCALENDAR
+      """;
 
   @Mock
   private CalDavClient           calDavClient;
@@ -470,6 +499,82 @@ public class CaldavInboundServiceTest {
     event.setId(501L);
     event.setUpdated(java.time.ZonedDateTime.parse(updated));
     return event;
+  }
+
+  @Test
+  public void anOverrideAmendsTheOccurrenceItNamesRatherThanBecomingAMeetingOfItsOwn() throws Exception {
+    // Creating it beside the series would show the amendment as a separate
+    // meeting on a day the series already covers.
+    givenServerObjects(object("o1.ics", "etag-1", SERIES));
+    givenAgendaCreates(501L);
+    Event occurrence = new Event();
+    occurrence.setId(777L);
+    when(agendaEventService.saveEventExceptionalOccurrence(eq(501L), any())).thenReturn(occurrence);
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    ArgumentCaptor<Event> amended = ArgumentCaptor.forClass(Event.class);
+    verify(agendaEventService).updateEvent(amended.capture(), any(), any(), any(), any(), any(), eq(false), eq(USER));
+    assertEquals(777L, amended.getValue().getId());
+    assertEquals(501L, amended.getValue().getParentId());
+    assertEquals("Weekly standup (moved)", amended.getValue().getSummary());
+  }
+
+  @Test
+  public void anAmendedOccurrenceNeverCarriesTheSeriesRule() throws Exception {
+    // Handing agenda a rule on an override would turn one amended meeting
+    // into a second series running beside the first.
+    givenServerObjects(object("o1.ics", "etag-1", SERIES));
+    givenAgendaCreates(501L);
+    Event occurrence = new Event();
+    occurrence.setId(777L);
+    when(agendaEventService.saveEventExceptionalOccurrence(eq(501L), any())).thenReturn(occurrence);
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    ArgumentCaptor<Event> amended = ArgumentCaptor.forClass(Event.class);
+    verify(agendaEventService).updateEvent(amended.capture(), any(), any(), any(), any(), any(), anyBoolean(), anyLong());
+    assertNull(amended.getValue().getRecurrence());
+  }
+
+  @Test
+  public void anExcludedDateCancelsThatOccurrence() throws Exception {
+    // Agenda has no "excluded" flag: a cancelled occurrence is an exceptional
+    // occurrence that has been deleted, so the date is materialised first and
+    // removed second.
+    givenServerObjects(object("o1.ics", "etag-1", SERIES));
+    givenAgendaCreates(501L);
+    Event moved = new Event();
+    moved.setId(777L);
+    Event cancelled = new Event();
+    cancelled.setId(888L);
+    when(agendaEventService.saveEventExceptionalOccurrence(eq(501L), any())).thenReturn(moved).thenReturn(cancelled);
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    verify(agendaEventService).deleteEventById(888L, USER);
+  }
+
+  @Test
+  public void oneOccurrenceThatWillNotTakeDoesNotCostTheSeries() throws Exception {
+    // The series is already in place and correct for every other date.
+    givenServerObjects(object("o1.ics", "etag-1", SERIES));
+    givenAgendaCreates(501L);
+    when(agendaEventService.saveEventExceptionalOccurrence(eq(501L), any())).thenThrow(new IllegalStateException("no"));
+
+    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    verify(caldavSyncStorage).saveObject(any());
+  }
+
+  @Test
+  public void aSeriesWithNothingToSayAboutItsOccurrencesCostsNothing() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Plain")));
+    givenAgendaCreates(501L);
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    verify(agendaEventService, never()).saveEventExceptionalOccurrence(anyLong(), any());
   }
 
   /**

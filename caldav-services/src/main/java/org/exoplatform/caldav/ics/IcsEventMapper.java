@@ -220,6 +220,38 @@ public class IcsEventMapper {
   }
 
   /**
+   * A raw RFC 5545 date or date-time as the occurrence agenda names.
+   *
+   * <p>
+   * EXDATE values arrive as the object spelled them — with a zone, in UTC, or
+   * as a bare date for an all-day series — so they are read the same way a
+   * RECURRENCE-ID is, and anchored on the event's own zone.
+   *
+   * @param value the raw value
+   * @param zoneId the zone the event is anchored on
+   * @return the occurrence identifier, or null when the value cannot be read
+   */
+  public ZonedDateTime occurrenceOf(String value, String zoneId) {
+    if (StringUtils.isBlank(value)) {
+      return null;
+    }
+    ZoneId zone = zoneOf(zoneId);
+    String trimmed = value.trim();
+    try {
+      return new net.fortuna.ical4j.model.DateTime(trimmed).toInstant().atZone(zone);
+    } catch (Exception e) {
+      // A bare date: an all-day series excludes a day, not an instant.
+      try {
+        return java.time.LocalDate.parse(trimmed, java.time.format.DateTimeFormatter.BASIC_ISO_DATE)
+                                  .atStartOfDay(zone);
+      } catch (Exception ignored) {
+        LOG.debug("An excluded date that could not be read is ignored: {}", value);
+        return null;
+      }
+    }
+  }
+
+  /**
    * The occurrence an override amends, in the event's own zone.
    *
    * @param source the parsed override
