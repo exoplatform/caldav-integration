@@ -151,6 +151,19 @@ public class CaldavSyncServiceTest {
   }
 
   @Test
+  public void aCollectionWithNoPathIsNeverMaterialised() throws Exception {
+    // Server-controlled content becoming platform data: a collection with a
+    // blank path can be neither bound to, named, nor found again, and would
+    // arrive as a calendar whose name is the blank path.
+    givenServerCalendars(collection("   ", "Nameless"));
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  @Test
   public void theMirrorIsNeverMaterialised() throws Exception {
     // Its contents are copies of events eXo already shows.
     givenServerCalendars(collection("/dav/calendars/john/exo-meetings/", "eXo Meetings"));
