@@ -31,7 +31,7 @@
  * discarded — which is what left that 500 blind.
  */
 jest.mock('tsdav', () => ({
-  createDAVClient: jest.fn(),
+  DAVClient: jest.fn(),
   DAVNamespaceShort: {
     DAV: 'd',
     CALDAV: 'c',
@@ -56,6 +56,20 @@ const SETTINGS = {
   mirrorCalendarHref: MIRROR_URL,
 };
 const CURRENT_USER_IDENTITY_ID = '5';
+
+/**
+ * Installs a tsdav DAVClient constructor mock resolving to the given client
+ * stub, with the login() the connector awaits before any request.
+ *
+ * @param {Object} clientStub the tsdav-client methods a test scripts
+ * @returns {Object} the full client stub, for call assertions
+ */
+function mockConnectedClient(clientStub) {
+  const client = {login: jest.fn(() => Promise.resolve()), ...clientStub};
+  tsdav.DAVClient.mockImplementation(() => client);
+  return client;
+}
+
 
 /** The user connected to eXo, as agenda's identity entities spell them. */
 const ME = {id: CURRENT_USER_IDENTITY_ID, profile: {fullname: 'John Doe', email: 'john@example.test'}};
@@ -95,7 +109,7 @@ function eventBy(creator, attendees) {
  */
 function stubPush(writeResponse) {
   const created = [];
-  tsdav.createDAVClient.mockResolvedValue({
+  mockConnectedClient({
     fetchCalendars: jest.fn(() => Promise.resolve([{url: MIRROR_URL}])),
     createCalendarObject: jest.fn(args => {
       created.push(args);
@@ -215,7 +229,7 @@ describe('a refused write names itself', () => {
   it('logs and carries the status and body of a failed DELETE', async () => {
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => null);
     try {
-      tsdav.createDAVClient.mockResolvedValue({
+      mockConnectedClient({
         fetchCalendars: jest.fn(() => Promise.resolve([{url: MIRROR_URL}])),
         deleteCalendarObject: jest.fn(() => Promise.resolve({
           ok: false,

@@ -214,12 +214,17 @@ const caldavConnector = {
     const clientCaldav = await createClient(settings);
     const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
     const serverUrl = relayServerUrl(settings);
-    // The account's own calendar home, as tsdav discovered it, before either
-    // fallback. An account with no calendar yet has nothing to derive a home
-    // from, and the configured URL is not a safe substitute: the first form the
-    // README documents carries no {username}, so it names a root that may be
-    // shared between accounts — a mirror calendar created there would not be
-    // the user's own.
+    // The account's own calendar home, as tsdav discovered it during login —
+    // present even for an account holding no calendar yet, which is exactly
+    // when it matters most: the fallbacks below have nothing better to offer
+    // then. The parent of the first listed calendar is the same collection on
+    // every server seen so far; the configured URL is a last resort and not a
+    // safe one: the first form the README documents carries no {username}, so
+    // it names a root that may be shared between accounts — a mirror calendar
+    // created there would not be the user's own, and on BlueMind an
+    // MKCALENDAR at that root does not even answer a refusal but a 504 from
+    // the gateway, which the code before this derivation was fixed read as
+    // "the server refuses to create calendars".
     const homeUrl = clientCaldav.account && clientCaldav.account.homeUrl
       || calendars.length && new URL('..', calendars[0].url).href
       || (serverUrl.endsWith('/') && serverUrl || `${serverUrl}/`);
@@ -239,6 +244,22 @@ const caldavConnector = {
     }
     const minimalProps = {
       [`${tsdav.DAVNamespaceShort.DAV}:displayname`]: name,
+      // Part of the MINIMAL set on purpose, not an optional extra: BlueMind
+      // derives the collection's kind from the <comp> elements of this
+      // property, and a request without it makes that derivation fail
+      // internally — the failure is swallowed and the server still answers
+      // 201 while creating NOTHING (proven live 2026-08-20: displayname-only
+      // body → 201 and the collection absent from the next listing; the same
+      // body plus this property → 201 and the collection listed). Kept in
+      // minimalProps so it survives the displayname-only retry below —
+      // stripped there, the retry would reproduce the silent non-creation
+      // this property exists to prevent. The nested compact structure is
+      // what xml-js serialises into <c:comp name="VEVENT"/>; a flat string
+      // value would emit text content instead of the element BlueMind's
+      // parser looks for, and reproduce the bug silently.
+      [`${tsdav.DAVNamespaceShort.CALDAV}:supported-calendar-component-set`]: {
+        [`${tsdav.DAVNamespaceShort.CALDAV}:comp`]: {_attributes: {name: 'VEVENT'}},
+      },
     };
     const props = {...minimalProps};
     if (description) {
@@ -386,8 +407,23 @@ const caldavConnector = {
     return calendars[0];
   },
   async retrieveEvents(settings, periodStartDate, periodEndDate) {
-    const start = caldavConnectorService.toRFC3339(periodStartDate, false, true);
-    const end = caldavConnectorService.toRFC3339(periodEndDate, false, true);
+    // The window bounds, made safe before any request. The agenda's first
+    // remote read can fire from its connector watcher before the calendar
+    // has emitted a period: Agenda.vue starts with {start: new Date(),
+    // end: null} and the event-form calendar with {} — so a bound here may
+    // be null. Passed through, tsdav rejects the time range with "invalid
+    // timeRange format, not in ISO8601" for every collection and the agenda
+    // shows no remote event at all (observed live against BlueMind through
+    // the relay, 2026-08-20; latent before, when BlueMind never got past
+    // the connection). No usable start means no window to ask any server
+    // about — nothing is read. A missing end means "from the start
+    // onwards", bounded to one year past the start — the same default the
+    // agenda timeline widget applies to its own open-ended period.
+    const start = timeRangeBound(periodStartDate);
+    const end = timeRangeBound(periodEndDate) || oneYearAfter(start);
+    if (!start || !end) {
+      return [];
+    }
     const clientCaldav = await createClient(settings);
     // Every calendar of the account, not just the first the server happens to
     // enumerate. Each event is tagged with the collection it came from, which
@@ -1088,8 +1124,21 @@ function exceptionLines(event, isOccurrence, vTimeZone, timeZoneId) {
  * fail: it erased the record that anything was ever meant to sync, leaving a
  * later retry with nothing to retry from.
  *
+ * Built through the class-based tsdav DAVClient rather than the
+ * createDAVClient entry point, because login() stores the discovered account
+ * — principal, root and calendar homeUrl — on the instance, while
+ * createDAVClient runs the very same discovery and keeps the account inside a
+ * closure. Every reader of clientCaldav.account therefore saw undefined, and
+ * the mirror-calendar derivation that documents itself as using "the
+ * account's own calendar home" silently fell through to its fallbacks — down
+ * to the configured server URL, the DAV root on servers registered by their
+ * root, where MKCALENDAR does not answer a refusal but a gateway error
+ * (BlueMind's answers 504 there, and 201 under the home). The unit tests
+ * stubbed an `account` property on the mocked client, which is why they kept
+ * passing over a property the real library never exposed.
+ *
  * @param {Object} settings connector settings holding the URL and credentials
- * @returns {Promise<Object>} a connected tsdav client
+ * @returns {Promise<Object>} a logged-in tsdav client carrying its account
  */
 async function createClient(settings) {
   try {
@@ -1102,17 +1151,53 @@ async function createClient(settings) {
     const authHeaders = settings.password
       ? {authorization: `Basic ${btoa(`${settings.username}:${settings.password}`)}`}
       : {};
-    return await tsdav.createDAVClient({
+    const clientCaldav = new tsdav.DAVClient({
       serverUrl: relayServerUrl(settings),
       credentials: {},
       authMethod: 'Custom',
       authFunction: () => Promise.resolve(authHeaders),
       defaultAccountType: 'caldav',
     });
+    await clientCaldav.login();
+    return clientCaldav;
   } catch (e) {
     console.error('cannot connect to the CalDAV server, check the URL and credentials', e);
     throw caldavError('caldav.error.connection', e);
   }
+}
+
+/**
+ * One bound of the read window, as an RFC 3339 timestamp a CalDAV
+ * time-range filter accepts — or null when the value does not designate an
+ * instant. toRFC3339 answers null for an absent input, and formats an
+ * Invalid Date into a "NaN-NaN-NaN…" string; both would be sent to the
+ * server as-is and rejected by tsdav's own validation before any request,
+ * so a bound that does not parse back into a real date is reported as
+ * missing instead.
+ *
+ * @param {Date|String|Number} date one end of the requested period, possibly absent
+ * @returns {String} the RFC 3339 timestamp, or null when there is no usable instant
+ */
+function timeRangeBound(date) {
+  const bound = caldavConnectorService.toRFC3339(date, false, true);
+  return bound && !Number.isNaN(new Date(bound).getTime()) ? bound : null;
+}
+
+/**
+ * The default far end of an open-ended read window: one year past its
+ * start, matching what the agenda timeline widget applies to its own
+ * period when the end is not set.
+ *
+ * @param {String} start RFC 3339 timestamp of the window's start, or null
+ * @returns {String} the RFC 3339 timestamp one year later, or null without a start
+ */
+function oneYearAfter(start) {
+  if (!start) {
+    return null;
+  }
+  const end = new Date(start);
+  end.setFullYear(end.getFullYear() + 1);
+  return timeRangeBound(end);
 }
 
 /**
