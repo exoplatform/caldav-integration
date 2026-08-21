@@ -47,6 +47,7 @@ import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
+import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
@@ -336,6 +337,208 @@ public class CaldavSyncServiceTest {
     ArgumentCaptor<Calendar> created = ArgumentCaptor.forClass(Calendar.class);
     verify(agendaCalendarService).createCalendar(created.capture(), eq(LOGIN));
     assertEquals("Holidays", created.getValue().getName());
+  }
+
+  @Test
+  public void aMaterialisedCalendarKeepsTheColourItHadOnTheServer() throws Exception {
+    // The user recognises their calendars by colour before they read their
+    // names. Materialising one in a colour the platform picked would show them
+    // the same calendar twice over in two different colours.
+    givenServerCalendars(new CalendarCollection("/dav/calendars/john/private/",
+                                                "Holidays",
+                                                "ctag-1",
+                                                "token-1",
+                                                "#0088FF",
+                                                true,
+                                                Set.of("VEVENT")));
+    givenNoKnownPairs();
+    givenAgendaCreates("anchor-4");
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<Calendar> created = ArgumentCaptor.forClass(Calendar.class);
+    verify(agendaCalendarService).createCalendar(created.capture(), eq(LOGIN));
+    assertEquals("#0088FF", created.getValue().getColor());
+  }
+
+  @Test
+  public void theMaterialisedPairRecordsWhereItCameFromAndHowFreshItIs() throws Exception {
+    // The ctag and the sync token are what let the next pass ask the server
+    // "anything new?" instead of reading the whole collection back; ACTIVE is
+    // what separates a live binding from a tombstone.
+    givenServerCalendars(collectionOf("/dav/calendars/john/private/", "Private", Set.of("VEVENT")));
+    givenNoKnownPairs();
+    givenAgendaCreates("anchor-5");
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(saved.capture());
+    assertEquals("/dav/calendars/john/private/", saved.getValue().getRemoteHref());
+    assertEquals("ctag-1", saved.getValue().getCtag());
+    assertEquals("token-1", saved.getValue().getSyncToken());
+    assertEquals(CalendarSyncStatus.ACTIVE, saved.getValue().getStatus());
+  }
+
+  @Test
+  public void aCollectionTheServerNamedNothingIsNamedAfterItsPath() throws Exception {
+    // A calendar left with no name at all falls back to its owner's identity
+    // in agenda, so the path — ugly but unique — beats letting that happen.
+    givenServerCalendars(collectionOf("/dav/calendars/john/private/", "  ", Set.of("VEVENT")));
+    givenNoKnownPairs();
+    givenAgendaCreates("anchor-6");
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<Calendar> created = ArgumentCaptor.forClass(Calendar.class);
+    verify(agendaCalendarService).createCalendar(created.capture(), eq(LOGIN));
+    assertEquals("/dav/calendars/john/private/", created.getValue().getName());
+  }
+
+  @Test
+  public void aCollectionWithNoPathAtAllIsSkippedRatherThanBoundToNothing() throws Exception {
+    // A pair keyed on a null href binds nothing and can never be matched
+    // again, so the next pass would materialise the collection all over.
+    givenServerCalendars(collectionOf(null, "Nameless", Set.of("VEVENT")));
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  @Test
+  public void aCollectionTheUserDesignatedAsTheMirrorIsNeverMaterialised() throws Exception {
+    // The mirror is not always the collection eXo minted: a user may point it
+    // at one of their own, whose path carries none of eXo's markers. The
+    // recorded href is then the only thing identifying it, and materialising
+    // it would show every pushed meeting a second time.
+    CaldavUserSetting designated = settings();
+    designated.setMirrorCalendarHref("/dav/calendars/john/my-own-mirror/");
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(designated);
+    givenServerCalendars(collectionOf("/dav/calendars/john/my-own-mirror/", "Meetings", Set.of("VEVENT")));
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  @Test
+  public void aCalendarAgendaRefusesToCreateLeavesNoPairBehind() throws Exception {
+    // A pair pointing at a calendar that was never created is worse than no
+    // pair: the collection then counts as accounted for, and the user never
+    // gets it — quietly, on every later sync.
+    givenServerCalendars(collectionOf("/dav/calendars/john/private/", "Private", Set.of("VEVENT")));
+    givenNoKnownPairs();
+    when(agendaCalendarService.createCalendar(any(), eq(LOGIN))).thenThrow(new IllegalAccessException("refused"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  @Test
+  public void anAccountWhoseCalendarsCannotBeListedMaterialisesNothingAndDoesNotFail() {
+    // The outward half already ran and its work stands; a listing that failed
+    // says nothing about what the account holds, and inventing calendars from
+    // an empty answer would delete-by-omission on the next pass.
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenThrow(new CalDavException("unreachable"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  @Test
+  public void aSyncAlreadyRunningForTheUserIsNotStartedAgainBeneathItself() {
+    // Two page loads a second apart would otherwise both create the same
+    // calendar, and the second would find the first's collection listed and
+    // bind a duplicate to it. Re-entering from inside the running pass is the
+    // same race, made deterministic.
+    when(caldavOutboundService.bindPersonalCalendars(USER, LOGIN)).thenAnswer(invocation -> {
+      service.syncNow(USER, LOGIN);
+      return List.of();
+    });
+    givenServerCalendars();
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavOutboundService, times(1)).bindPersonalCalendars(USER, LOGIN);
+  }
+
+  @Test
+  public void aSuccessfulSyncBuysTheServerItsQuietPeriod() {
+    // The stamp is written at the end of a pass that worked, which is what
+    // makes the next page load cost nothing.
+    givenServerCalendars();
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+    service.syncIfDue(USER, LOGIN);
+
+    verify(caldavOutboundService, times(1)).bindPersonalCalendars(USER, LOGIN);
+  }
+
+  @Test
+  public void aSyncThatHasGoneStaleIsDueAgain() {
+    // The other side of the throttle, and the one a test that only ever runs
+    // in a few milliseconds never reaches by itself: a stamp older than the
+    // window must not keep the account frozen. A throttle that never expired
+    // would look identical for fifteen minutes and then never sync again.
+    ReflectionTestUtils.setField(service, "throttleMinutes", 0L);
+    givenServerCalendars();
+    givenNoKnownPairs();
+
+    service.syncIfDue(USER, LOGIN);
+    service.syncIfDue(USER, LOGIN);
+
+    verify(caldavOutboundService, times(2)).bindPersonalCalendars(USER, LOGIN);
+  }
+
+  @Test
+  public void anAccountWithNoPasswordSyncsNothing() {
+    // Half an account is not an account: asking the server with a blank
+    // password earns a credential refusal on every page load.
+    CaldavUserSetting halfConnected = settings();
+    halfConnected.setPassword("  ");
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(halfConnected);
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavOutboundService, never()).bindPersonalCalendars(anyLong(), anyString());
+  }
+
+  @Test
+  public void anAccountWithNoUsernameSyncsNothing() {
+    CaldavUserSetting halfConnected = settings();
+    halfConnected.setUsername(null);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(halfConnected);
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavOutboundService, never()).bindPersonalCalendars(anyLong(), anyString());
+  }
+
+  @Test
+  public void anAccountConnectedBeforeServersWereDeclaredStillPairs() throws Exception {
+    // Accounts predate the server registry, and theirs is null. Reading it
+    // straight into a primitive would throw and cost those users the whole
+    // inward sync rather than one column's worth of it.
+    CaldavUserSetting undeclared = settings();
+    undeclared.setServerId(null);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(undeclared);
+    when(caldavSyncStorage.getPairs(USER, 0L)).thenReturn(List.of());
+    givenServerCalendars(collectionOf("/dav/calendars/john/private/", "Private", Set.of("VEVENT")));
+    givenAgendaCreates("anchor-7");
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(saved.capture());
+    assertEquals(0L, saved.getValue().getServerId());
   }
 
   /**
