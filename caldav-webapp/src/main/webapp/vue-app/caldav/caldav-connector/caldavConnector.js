@@ -63,9 +63,18 @@ const caldavConnector = {
     });
   },
   getEvents(periodStartDate, periodEndDate) {
-    return caldavConnectorService.getCaldavSetting().then((settings)=> {
-      return this.retrieveEvents(settings, periodStartDate, periodEndDate);
-    });
+    // One request, answered with events already mapped. What this replaces is
+    // one REPORT per calendar issued from the page, then every iCalendar
+    // object parsed in the main thread — with the account's password in that
+    // page to make the requests at all.
+    const start = isoInstant(periodStartDate);
+    const end = isoInstant(periodEndDate);
+    if (!start || !end) {
+      return Promise.resolve([]);
+    }
+    return fetch(`${window.location.origin}/caldav/rest/events?start=${start}&end=${end}`, {
+      credentials: 'include',
+    }).then(readOutcome).then(events => (events || []).map(event => ({...event, type: 'remoteEvent', id: event.uid})));
   },
   canListCalendars: true,
   /**
@@ -80,7 +89,9 @@ const caldavConnector = {
    * @returns {Promise<Array>} one entry per calendar of the connected account
    */
   listCalendars() {
-    return caldavConnectorService.getCaldavSetting().then(settings => this.retrieveCalendars(settings));
+    return fetch(`${window.location.origin}/caldav/rest/calendars`, {credentials: 'include'})
+      .then(readOutcome)
+      .then(calendars => calendars || []);
   },
   /**
    * Reads the calendar collections of an account and maps them to the
@@ -1225,6 +1236,41 @@ function oneYearAfter(start) {
   const end = new Date(start);
   end.setFullYear(end.getFullYear() + 1);
   return timeRangeBound(end);
+}
+
+/**
+ * One end of a read window as an ISO instant, or null when it does not name
+ * one.
+ *
+ * Refused rather than defaulted: a window nobody asked for answers with the
+ * wrong events, which a user reads as missing meetings rather than as a
+ * failure.
+ *
+ * @param {String|Date|Number} value the period bound agenda supplied
+ * @returns {String} the ISO instant, or null
+ */
+function isoInstant(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+/**
+ * Reads a server-side read outcome.
+ *
+ * A read that fails answers with nothing rather than rejecting: the agenda
+ * shows several connectors at once, and one of them failing must not take the
+ * whole month down. The server already degraded per calendar for the same
+ * reason; this is the last step of the same rule.
+ *
+ * @param {Response} response the server's answer
+ * @returns {Promise} resolves the payload, or an empty result
+ */
+function readOutcome(response) {
+  if (!response.ok) {
+    console.error('cannot read the remote calendars', response.status);
+    return Promise.resolve([]);
+  }
+  return response.json().catch(() => []);
 }
 
 /**
