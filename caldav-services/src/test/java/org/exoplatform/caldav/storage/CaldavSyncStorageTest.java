@@ -100,6 +100,18 @@ public class CaldavSyncStorageTest {
   }
 
   @Test
+  public void canonicalHrefStripsTheRelayRoot() {
+    // The browser addressed servers through /caldav/rest/dav/{id} and stored
+    // hrefs carrying that prefix; the server addresses the collection itself.
+    // Both name one collection, and treating them as two does not fail loudly
+    // — it silently fails to recognise a calendar.
+    assertEquals("/dav/calendars/john/work",
+                 CaldavSyncStorage.canonicalHref("/caldav/rest/dav/7/dav/calendars/john/work/"));
+    assertEquals(CaldavSyncStorage.canonicalHref("/dav/calendars/john/work"),
+                 CaldavSyncStorage.canonicalHref("https://exo.test/caldav/rest/dav/12/dav/calendars/john/work/"));
+  }
+
+  @Test
   public void savePairStoresTheHrefCanonical() {
     when(calendarSyncDAO.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
