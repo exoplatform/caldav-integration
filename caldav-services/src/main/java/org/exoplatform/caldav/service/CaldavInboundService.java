@@ -148,7 +148,7 @@ public class CaldavInboundService {
     List<CalendarObject> objects;
     try {
       objects = calDavClient.calendarQuery(endpoint,
-                                           pair.getRemoteHref(),
+                                           collectionUrl(pair),
                                            from,
                                            to,
                                            settings.getUsername(),
@@ -270,6 +270,24 @@ public class CaldavInboundService {
     mapping.setLastSync(new Date());
     caldavSyncStorage.saveObject(mapping);
     return true;
+  }
+
+  /**
+   * The binding's collection as a path a request can be sent to.
+   *
+   * <p>
+   * A pair's stored href is a <em>canonical</em> form: the storage strips the
+   * trailing slash and decodes the path so two spellings of one collection
+   * compare equal. That is right for comparison and wrong for addressing — a
+   * form built to test equality is not a URL. The trailing slash is put back
+   * here, which is how every other path in this add-on addresses a collection
+   * and how the server itself spells it in a listing.
+   *
+   * @param pair the binding being read
+   * @return the collection path to request
+   */
+  private String collectionUrl(CalendarSync pair) {
+    return StringUtils.appendIfMissing(pair.getRemoteHref(), "/");
   }
 
   /**
