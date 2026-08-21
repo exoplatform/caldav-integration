@@ -185,6 +185,11 @@ public class CaldavSyncService {
     }
     try {
       caldavOutboundService.bindPersonalCalendars(userIdentityId, username);
+      // Before materialising, not after: a binding with nothing behind it is
+      // exactly what makes materialisation skip a collection, so healing it
+      // afterwards leaves the user waiting a whole throttle window for a
+      // calendar that could have come back in this same pass.
+      pruneOrphanBindings(userIdentityId, username, settings);
       materialiseRemoteCalendars(userIdentityId, username, settings);
       importRemoteEvents(userIdentityId, username, settings);
       lastSync.put(userIdentityId, Instant.now());
@@ -195,6 +200,46 @@ public class CaldavSyncService {
       LOG.warn("Synchronising the CalDAV calendars of user {} failed", userIdentityId, e);
     } finally {
       syncing.remove(userIdentityId);
+    }
+  }
+
+  /**
+   * Drops bindings that have no eXo calendar behind them any more.
+   *
+   * <p>
+   * Such a binding describes nothing, and keeping it costs the user the
+   * collection for good: materialisation skips a collection that already has
+   * one, so the calendar can never come back and nothing on screen says why.
+   *
+   * <p>
+   * Only ACTIVE bindings are considered. A tombstone is a deliberate deletion
+   * and its whole purpose is to keep the collection out — pruning those would
+   * bring back exactly what the user asked to be rid of.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login
+   * @param settings the connected account
+   */
+  private void pruneOrphanBindings(long userIdentityId, String username, CaldavUserSetting settings) {
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    List<CalendarSync> pairs = caldavSyncStorage.getPairsByOrigin(userIdentityId, serverId, SyncOrigin.REMOTE);
+    if (pairs.isEmpty()) {
+      return;
+    }
+    Map<String, Calendar> byAnchor = calendarsByAnchor(userIdentityId, username);
+    if (byAnchor.isEmpty()) {
+      // The calendars could not be read at all. Every binding would look like
+      // an orphan, and pruning them would throw away bindings whose calendars
+      // are perfectly well — the worst possible reading of a read failure.
+      return;
+    }
+    for (CalendarSync pair : pairs) {
+      if (pair.getStatus() == CalendarSyncStatus.ACTIVE && !byAnchor.containsKey(pair.getLocalCalendarSyncUid())) {
+        LOG.info("Binding {} has no eXo calendar behind it; it is dropped so the collection can be materialised again",
+                 pair.getId());
+        caldavSyncStorage.deleteObjects(pair.getId());
+        caldavSyncStorage.deletePair(pair.getId());
+      }
     }
   }
 
@@ -230,17 +275,7 @@ public class CaldavSyncService {
       }
       Calendar calendar = byAnchor.get(pair.getLocalCalendarSyncUid());
       if (calendar == null) {
-        // An ACTIVE binding whose eXo calendar is gone describes nothing, and
-        // leaving it costs the user the collection for good: materialisation
-        // skips a collection that already has a binding, so the calendar can
-        // never come back and nothing says why. Deliberate deletions are not
-        // affected — those are tombstones, and this loop only reaches ACTIVE
-        // ones. Dropping the binding lets the next pass materialise the
-        // collection again.
-        LOG.info("Binding {} has no eXo calendar behind it; it is dropped so the collection can be materialised again",
-                 pair.getId());
-        caldavSyncStorage.deleteObjects(pair.getId());
-        caldavSyncStorage.deletePair(pair.getId());
+        // Pruned earlier in this pass, or created between the two steps.
         continue;
       }
       try {

@@ -279,6 +279,59 @@ public class CaldavSyncServiceTest {
   }
 
   @Test
+  public void aBindingWithNoCalendarBehindItIsPrunedBeforeMaterialising() throws Exception {
+    // Order is the whole point. Such a binding is exactly what makes
+    // materialisation skip a collection, so healing it afterwards leaves the
+    // user waiting a whole throttle window for a calendar that could have
+    // come back in this same pass.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync orphan = remotePair("/dav/calendars/john/private/", "anchor-gone");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of());
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(orphan));
+    givenUserCalendars(calendarWithAnchor(77L, "another-anchor"));
+    givenAgendaCreates("anchor-new");
+
+    service.syncNow(USER, LOGIN);
+
+    InOrder order = inOrder(caldavSyncStorage, agendaCalendarService);
+    order.verify(caldavSyncStorage).deletePair(orphan.getId());
+    order.verify(agendaCalendarService).createCalendar(any(), eq(LOGIN));
+  }
+
+  @Test
+  public void aTombstoneIsNeverPruned() throws Exception {
+    // Its whole purpose is to keep the collection out. Pruning it would bring
+    // back exactly what the user asked to be rid of.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync tombstone = remotePair("/dav/calendars/john/private/", "anchor-gone");
+    tombstone.setStatus(CalendarSyncStatus.LOCALLY_DELETED);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(tombstone));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(tombstone));
+    givenUserCalendars(calendarWithAnchor(77L, "another-anchor"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  @Test
+  public void calendarsThatCannotBeReadPruneNothing() throws Exception {
+    // Every binding would look like an orphan. Pruning them would throw away
+    // bindings whose calendars are perfectly well — the worst possible
+    // reading of a read failure.
+    givenServerCalendars();
+    CalendarSync bound = remotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
+    when(agendaCalendarService.getCalendars(eq(0), anyInt(), eq(LOGIN))).thenThrow(new IllegalStateException("down"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+  }
+
+  @Test
   public void theMirrorIsNeverMaterialised() throws Exception {
     // Its contents are copies of events eXo already shows.
     givenServerCalendars(collection("/dav/calendars/john/exo-meetings/", "eXo Meetings"));
