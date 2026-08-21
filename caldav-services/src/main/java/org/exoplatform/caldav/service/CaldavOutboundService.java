@@ -155,6 +155,19 @@ public class CaldavOutboundService {
     }
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
     CalendarSync pair = caldavSyncStorage.getPairByLocalCalendar(userIdentityId, serverId, anchor);
+    if (pair != null && pair.getOrigin() == SyncOrigin.REMOTE) {
+      // This calendar exists *because* a collection was materialised into it.
+      // Pushing it back out would give the user's own calendar a second
+      // collection on their own server, and — because recording a binding
+      // marks it ORIGIN=EXO — would relabel their collection as one eXo
+      // created. Two harms follow from that single lie: the inbound pass
+      // skips the collection, so its events never arrive again; and eXo
+      // believes it may delete a calendar it never made. The structural guard
+      // on the DELETE path refuses that today, but it should not be the only
+      // thing standing in the way.
+      LOG.debug("Calendar {} was materialised from a remote collection and is not pushed back out", calendar.getId());
+      return pair;
+    }
     String wanted = collectionHref(home, anchor);
 
     // The path carries the anchor, so a binding is recoverable from the server
