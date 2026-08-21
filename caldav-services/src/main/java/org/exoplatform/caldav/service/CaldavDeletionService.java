@@ -29,6 +29,7 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
@@ -83,22 +84,32 @@ public class CaldavDeletionService {
    * that answers success while doing nothing, and a deletion that reports done
    * while the collection still stands would take the local calendar with it.
    *
+   * <p>
+   * The local half is <b>not</b> done here. Agenda owns the calendar and
+   * deletes it itself, once this returns without throwing — which is exactly
+   * what makes the ordering work: the failable step runs first, and a refusal
+   * here stops agenda before it has touched anything.
+   *
    * @param userIdentityId identity of the user
-   * @param username the user's login, which agenda's ACL reads
-   * @param calendarId the eXo calendar to delete
+   * @param calendarId the eXo calendar being deleted
    * @throws CaldavPushException when the remote deletion could not be carried
    *           out; nothing has been deleted on either side
    */
-  public void deleteCalendar(long userIdentityId, String username, long calendarId) {
+  public void deleteRemoteCounterpart(long userIdentityId, long calendarId) {
     Calendar calendar = agendaCalendarService.getCalendarById(calendarId);
     CalendarSync pair = pairOf(userIdentityId, calendar);
 
-    if (pair == null || pair.getOrigin() != SyncOrigin.EXO) {
+    if (pair == null) {
+      // Never bound, nothing to propagate. The connector must not become a
+      // reason a plain local deletion fails.
+      return;
+    }
+    if (pair.getOrigin() != SyncOrigin.EXO) {
       // Nothing eXo created out there. A REMOTE pair's collection is the
       // user's own, made in their own client, and a deletion in eXo is a
       // decision about eXo — the tombstone is what stops the next sync from
       // materialising it straight back.
-      deleteLocally(userIdentityId, username, calendarId, pair, CalendarSyncStatus.LOCALLY_DELETED);
+      tombstone(pair, CalendarSyncStatus.LOCALLY_DELETED, calendarId);
       return;
     }
 
@@ -124,7 +135,11 @@ public class CaldavDeletionService {
                                         + "on the server",
                                     e);
     }
-    deleteLocally(userIdentityId, username, calendarId, pair, null);
+    // Both sides are done with: the binding has nothing left to describe, and
+    // its object mappings go with it. Agenda removes the calendar itself,
+    // after this returns — the order the whole design rests on.
+    caldavSyncStorage.deleteObjects(pair.getId());
+    caldavSyncStorage.deletePair(pair.getId());
   }
 
   /**
@@ -139,15 +154,45 @@ public class CaldavDeletionService {
    * that a collection of eXo's making is still out there.
    *
    * @param userIdentityId identity of the user
-   * @param username the user's login
-   * @param calendarId the eXo calendar to delete
+   * @param calendarId the eXo calendar being deleted
    */
-  public void deleteCalendarLocallyOnly(long userIdentityId, String username, long calendarId) {
+  public void keepRemoteCounterpart(long userIdentityId, long calendarId) {
     Calendar calendar = agendaCalendarService.getCalendarById(calendarId);
     CalendarSync pair = pairOf(userIdentityId, calendar);
-    CalendarSyncStatus tombstone = pair != null && pair.getOrigin() == SyncOrigin.EXO ? CalendarSyncStatus.EXO_ORPHANED
-                                                                                     : CalendarSyncStatus.LOCALLY_DELETED;
-    deleteLocally(userIdentityId, username, calendarId, pair, tombstone);
+    if (pair == null) {
+      return;
+    }
+    CalendarSyncStatus state = pair.getOrigin() == SyncOrigin.EXO ? CalendarSyncStatus.EXO_ORPHANED
+                                                                 : CalendarSyncStatus.LOCALLY_DELETED;
+    tombstone(pair, state, calendarId);
+  }
+
+  /**
+   * What deleting this calendar would also do, so the page can say it before
+   * the user confirms.
+   *
+   * <p>
+   * The page cannot work this out for itself: it does not know whether eXo
+   * created the remote collection, nor which server holds it. Both decide what
+   * the confirmation must warn about — and whether it must warn at all.
+   *
+   * @param userIdentityId identity of the user
+   * @param calendarId the eXo calendar in question
+   * @return what is bound to it, or a plan claiming nothing
+   */
+  public CalendarDeletionPlan describeDeletion(long userIdentityId, long calendarId) {
+    Calendar calendar = agendaCalendarService.getCalendarById(calendarId);
+    CalendarSync pair = pairOf(userIdentityId, calendar);
+    if (pair == null || pair.getStatus() == CalendarSyncStatus.LOCALLY_DELETED
+        || pair.getStatus() == CalendarSyncStatus.EXO_ORPHANED) {
+      return new CalendarDeletionPlan(false, false, null);
+    }
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    String server = settings == null ? null : settings.getCaldavUrl();
+    // Only an EXO collection is eXo's to delete. A REMOTE one is the user's
+    // own, made in their own client, and saying otherwise in a dialog would
+    // be a promise to destroy something we will not touch.
+    return new CalendarDeletionPlan(true, pair.getOrigin() == SyncOrigin.EXO, server);
   }
 
   /**
@@ -203,45 +248,23 @@ public class CaldavDeletionService {
   }
 
   /**
-   * Deletes the calendar in eXo, and either drops the binding or leaves it as
-   * a tombstone.
+   * Keeps the binding as a record of a deletion that only happened on one
+   * side.
    *
-   * @param userIdentityId identity of the user
-   * @param username the user's login
-   * @param calendarId the eXo calendar to delete
-   * @param pair the binding, or null when there is none
-   * @param tombstone the state to keep the pair in, or null to drop it
+   * <p>
+   * Never dropped, on purpose. Without it the next sweep sees a remote
+   * collection eXo has no calendar for and materialises it straight back,
+   * undoing the deletion in front of the user.
+   *
+   * @param pair the binding to keep
+   * @param state what the tombstone records
+   * @param calendarId the calendar being deleted, for the log
    */
-  private void deleteLocally(long userIdentityId,
-                             String username,
-                             long calendarId,
-                             CalendarSync pair,
-                             CalendarSyncStatus tombstone) {
-    try {
-      // Agenda's own contract, unchanged: the events of a deleted calendar
-      // move to the user's default calendar. Nothing local is lost here, which
-      // is what makes the remote side the only irreversible half.
-      agendaCalendarService.deleteCalendarById(calendarId, username);
-    } catch (Exception e) { // NOSONAR agenda declares checked exceptions here
-      throw new CaldavPushException(NOTHING_DELETED, "The calendar could not be deleted in eXo", e);
-    }
-    if (pair == null) {
-      return;
-    }
-    if (tombstone == null) {
-      // Both sides are gone: the binding has nothing left to describe, and its
-      // object mappings go with it.
-      caldavSyncStorage.deleteObjects(pair.getId());
-      caldavSyncStorage.deletePair(pair.getId());
-      return;
-    }
-    // Kept on purpose. Without it the next sync would see a remote collection
-    // eXo has no calendar for and materialise it straight back, undoing the
-    // deletion in front of the user.
-    pair.setStatus(tombstone);
+  private void tombstone(CalendarSync pair, CalendarSyncStatus state, long calendarId) {
+    pair.setStatus(state);
     pair.setLastSyncEnd(new Date());
     caldavSyncStorage.savePair(pair);
-    LOG.info("Calendar {} deleted in eXo only; its binding is kept as {}", calendarId, tombstone);
+    LOG.info("Calendar {} is being deleted in eXo only; its binding is kept as {}", calendarId, state);
   }
 
   /**

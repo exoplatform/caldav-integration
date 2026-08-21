@@ -114,11 +114,17 @@ public class CaldavDeletionServiceTest {
     givenBoundCalendar();
     givenCollectionGoneAfterDelete();
 
-    service.deleteCalendar(USER, LOGIN, CALENDAR);
+    service.deleteRemoteCounterpart(USER, CALENDAR);
 
-    InOrder order = inOrder(calDavClient, agendaCalendarService);
+    // Agenda deletes the calendar itself, after this returns without throwing.
+    // What has to be true first is that the collection is gone AND the binding
+    // that described it has been dropped — in that order, so a failure between
+    // the two leaves a binding pointing at nothing rather than nothing
+    // pointing at a collection.
+    InOrder order = inOrder(calDavClient, caldavSyncStorage);
     order.verify(calDavClient).deleteCollection(any(), any(), anyString(), anyString());
-    order.verify(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
+    order.verify(caldavSyncStorage).deletePair(3L);
+    verify(agendaCalendarService, never()).deleteCalendarById(anyLong(), anyString());
   }
 
   @Test
@@ -128,7 +134,7 @@ public class CaldavDeletionServiceTest {
     givenBoundCalendar();
     givenCollectionGoneAfterDelete();
 
-    service.deleteCalendar(USER, LOGIN, CALENDAR);
+    service.deleteRemoteCounterpart(USER, CALENDAR);
 
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
@@ -144,7 +150,7 @@ public class CaldavDeletionServiceTest {
     when(calDavClient.listCalendars(any(), anyString(), anyString(), anyString())).thenReturn(List.of(collection(HREF)));
 
     CaldavPushException failure = assertThrows(CaldavPushException.class,
-                                               () -> service.deleteCalendar(USER, LOGIN, CALENDAR));
+                                               () -> service.deleteRemoteCounterpart(USER, CALENDAR));
 
     assertEquals(CaldavDeletionService.NOTHING_DELETED, failure.getCode());
     verify(agendaCalendarService, never()).deleteCalendarById(anyLong(), anyString());
@@ -157,7 +163,7 @@ public class CaldavDeletionServiceTest {
                                                                                .thenThrow(new CalDavException("unreachable"));
 
     CaldavPushException failure = assertThrows(CaldavPushException.class,
-                                               () -> service.deleteCalendar(USER, LOGIN, CALENDAR));
+                                               () -> service.deleteRemoteCounterpart(USER, CALENDAR));
 
     assertEquals(CaldavDeletionService.NOTHING_DELETED, failure.getCode());
     verify(agendaCalendarService, never()).deleteCalendarById(anyLong(), anyString());
@@ -172,7 +178,7 @@ public class CaldavDeletionServiceTest {
     when(calDavClient.deleteCollection(any(), any(), anyString(), anyString()))
                                                                                .thenThrow(new CalDavException("unreachable"));
 
-    assertThrows(CaldavPushException.class, () -> service.deleteCalendar(USER, LOGIN, CALENDAR));
+    assertThrows(CaldavPushException.class, () -> service.deleteRemoteCounterpart(USER, CALENDAR));
 
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage, org.mockito.Mockito.times(2)).savePair(saved.capture());
@@ -185,10 +191,9 @@ public class CaldavDeletionServiceTest {
     // Deleting it in eXo is a decision about eXo.
     givenBoundCalendar(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
 
-    service.deleteCalendar(USER, LOGIN, CALENDAR);
+    service.deleteRemoteCounterpart(USER, CALENDAR);
 
     verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
-    verify(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
   }
 
   @Test
@@ -198,7 +203,7 @@ public class CaldavDeletionServiceTest {
     // the user.
     givenBoundCalendar(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
 
-    service.deleteCalendar(USER, LOGIN, CALENDAR);
+    service.deleteRemoteCounterpart(USER, CALENDAR);
 
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
@@ -213,7 +218,7 @@ public class CaldavDeletionServiceTest {
     // failed deletion.
     givenBoundCalendar();
 
-    service.deleteCalendarLocallyOnly(USER, LOGIN, CALENDAR);
+    service.keepRemoteCounterpart(USER, CALENDAR);
 
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
@@ -226,7 +231,7 @@ public class CaldavDeletionServiceTest {
     givenBoundCalendar();
     givenCollectionGoneAfterDelete();
 
-    service.deleteCalendar(USER, LOGIN, CALENDAR);
+    service.deleteRemoteCounterpart(USER, CALENDAR);
 
     // Both sides are gone; the binding has nothing left to describe.
     verify(caldavSyncStorage).deleteObjects(3L);
@@ -266,9 +271,8 @@ public class CaldavDeletionServiceTest {
     // reason a plain local deletion fails.
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(null);
 
-    service.deleteCalendar(USER, LOGIN, CALENDAR);
+    service.deleteRemoteCounterpart(USER, CALENDAR);
 
-    verify(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
     verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
     verify(caldavSyncStorage, never()).savePair(any());
   }
@@ -279,28 +283,11 @@ public class CaldavDeletionServiceTest {
     unanchored.setSyncUid(null);
     when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(unanchored);
 
-    service.deleteCalendar(USER, LOGIN, CALENDAR);
+    service.deleteRemoteCounterpart(USER, CALENDAR);
 
-    verify(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
     verify(caldavSyncStorage, never()).getPairByLocalCalendar(anyLong(), anyLong(), anyString());
   }
 
-  @Test
-  public void aFailureToDeleteInExoIsReportedRatherThanSwallowed() throws Exception {
-    // The remote collection is already gone at this point. Reporting success
-    // would leave eXo showing a calendar whose events no longer exist
-    // anywhere.
-    givenBoundCalendar();
-    givenCollectionGoneAfterDelete();
-    org.mockito.Mockito.doThrow(new IllegalStateException("locked"))
-                       .when(agendaCalendarService)
-                       .deleteCalendarById(CALENDAR, LOGIN);
-
-    CaldavPushException failure = assertThrows(CaldavPushException.class,
-                                               () -> service.deleteCalendar(USER, LOGIN, CALENDAR));
-
-    assertEquals(CaldavDeletionService.NOTHING_DELETED, failure.getCode());
-  }
 
   @Test
   public void anAccountWhoseCredentialsAreGoneFallsBackToADeleteInExoOnly() throws Exception {
@@ -310,16 +297,17 @@ public class CaldavDeletionServiceTest {
     // its collection is left standing on the server.
     //
     // Acceptable because it is the safe direction: nothing remote is destroyed
-    // on the strength of a lookup that could not be made. But it does mean a
-    // user who disconnects and then deletes a calendar leaves a collection
-    // behind with no tombstone recording it, which the settings cannot then
-    // surface. Worth closing when the settings surface lands (PR11).
+    // on the strength of a lookup that could not be made, and agenda still
+    // deletes the calendar. But it does mean a user who disconnects and then
+    // deletes a calendar leaves a collection behind with no tombstone
+    // recording it, which the settings cannot then surface. Worth closing when
+    // the settings surface lands (PR11).
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
 
-    service.deleteCalendar(USER, LOGIN, CALENDAR);
+    service.deleteRemoteCounterpart(USER, CALENDAR);
 
-    verify(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
     verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
   }
 
   @Test
@@ -329,7 +317,7 @@ public class CaldavDeletionServiceTest {
     // orphaned.
     givenBoundCalendar(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
 
-    service.deleteCalendarLocallyOnly(USER, LOGIN, CALENDAR);
+    service.keepRemoteCounterpart(USER, CALENDAR);
 
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
