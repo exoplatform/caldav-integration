@@ -303,7 +303,15 @@ public class CaldavOutboundService {
     // What the user reads in their own client. The uid was never a name: a
     // collection called "eXo c434ba2a-3f58-…" tells its owner nothing about
     // which of their calendars it is.
-    return StringUtils.firstNonBlank(calendar.getTitle(), calendar.getName(), "eXo " + calendar.getSyncUid());
+    //
+    // getName() first, and the order is the whole point. getTitle() is the
+    // display field agenda computes, and for a personal calendar it resolves
+    // to the *owner's* identity — so preferring it names every one of a
+    // user's collections after the user, which is just the old uid problem
+    // wearing a friendlier face. The computed title is still the right last
+    // resort for a calendar that genuinely has no name of its own, such as
+    // the system one.
+    return StringUtils.firstNonBlank(calendar.getName(), calendar.getTitle(), "eXo " + calendar.getSyncUid());
   }
 
   /**

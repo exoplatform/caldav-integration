@@ -143,6 +143,27 @@ public class CaldavOutboundServiceTest {
   }
 
   @Test
+  public void theCalendarsOwnNameBeatsTheTitleAgendaComputes() throws Exception {
+    // Observed against a live server: a collection came back called
+    // "benjamin mestrallet" rather than the calendar's name, because
+    // getTitle() is computed and resolves to the owner for a personal
+    // calendar. Preferring it names every collection after the user.
+    Calendar named = calendar(1L, USER, ANCHOR, "benjamin mestrallet");
+    named.setName("Holidays");
+    givenPersonalCalendars(named);
+    givenServerCalendars(List.of(), List.of(collection(WANTED)));
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+                                                                                                  .thenReturn(new MkCalendarResult(201,
+                                                                                                                                   List.of()));
+
+    service.bindPersonalCalendars(USER, LOGIN);
+
+    ArgumentCaptor<String> displayName = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).mkCalendar(any(), anyString(), displayName.capture(), any(), anyString(), anyString());
+    assertEquals("Holidays", displayName.getValue());
+  }
+
+  @Test
   public void aCalendarWithNothingToBeCalledFallsBackToItsAnchor() throws Exception {
     // A nameless calendar still has to be called something on the far side,
     // and the uid is the only thing left that identifies it.
