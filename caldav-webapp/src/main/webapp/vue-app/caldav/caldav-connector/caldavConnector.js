@@ -236,118 +236,28 @@ const caldavConnector = {
    *          collection; `{id, adopted, name}` when an existing calendar was
    *          adopted because the server refused to create one
    */
-  async createCalendar({name, color, description}) {
-    const settings = await caldavConnectorService.getCaldavSetting();
-    const clientCaldav = await createClient(settings);
-    const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
-    const serverUrl = relayServerUrl(settings);
-    // The account's own calendar home, as tsdav discovered it during login —
-    // present even for an account holding no calendar yet, which is exactly
-    // when it matters most: the fallbacks below have nothing better to offer
-    // then. The parent of the first listed calendar is the same collection on
-    // every server seen so far; the configured URL is a last resort and not a
-    // safe one: the first form the README documents carries no {username}, so
-    // it names a root that may be shared between accounts — a mirror calendar
-    // created there would not be the user's own, and on BlueMind an
-    // MKCALENDAR at that root does not even answer a refusal but a 504 from
-    // the gateway, which the code before this derivation was fixed read as
-    // "the server refuses to create calendars".
-    const homeUrl = clientCaldav.account && clientCaldav.account.homeUrl
-      || calendars.length && new URL('..', calendars[0].url).href
-      || (serverUrl.endsWith('/') && serverUrl || `${serverUrl}/`);
-    // The path is derived from the name alone, with nothing random in it, so
-    // that asking twice for the same calendar means asking for the same
-    // collection. A random suffix made every request a different one, and a
-    // user who disconnected and reconnected — which forgets the stored href —
-    // collected a new calendar on the server each time.
-    const url = new URL(`${MIRROR_COLLECTION_SLUG}/`, homeUrl).href;
-    const existing = findMirrorCalendar(calendars, settings.mirrorCalendarHref, url, name);
-    if (existing) {
-      // Re-storing matters: after a reconnect the setting is empty even though
-      // the collection is still there, and without this the mirror would stay
-      // unconfigured until the next push guessed a destination.
-      await caldavConnectorService.saveMirrorCalendarHref(existing.url);
-      return {id: existing.url};
-    }
-    const minimalProps = {
-      [`${tsdav.DAVNamespaceShort.DAV}:displayname`]: name,
-      // Part of the MINIMAL set on purpose, not an optional extra: BlueMind
-      // derives the collection's kind from the <comp> elements of this
-      // property, and a request without it makes that derivation fail
-      // internally — the failure is swallowed and the server still answers
-      // 201 while creating NOTHING (proven live 2026-08-20: displayname-only
-      // body → 201 and the collection absent from the next listing; the same
-      // body plus this property → 201 and the collection listed). Kept in
-      // minimalProps so it survives the displayname-only retry below —
-      // stripped there, the retry would reproduce the silent non-creation
-      // this property exists to prevent. The nested compact structure is
-      // what xml-js serialises into <c:comp name="VEVENT"/>; a flat string
-      // value would emit text content instead of the element BlueMind's
-      // parser looks for, and reproduce the bug silently.
-      [`${tsdav.DAVNamespaceShort.CALDAV}:supported-calendar-component-set`]: {
-        [`${tsdav.DAVNamespaceShort.CALDAV}:comp`]: {_attributes: {name: 'VEVENT'}},
-      },
-    };
-    const props = {...minimalProps};
-    if (description) {
-      props[`${tsdav.DAVNamespaceShort.CALDAV}:calendar-description`] = description;
-    }
-    if (color) {
-      props[`${tsdav.DAVNamespaceShort.CALDAV_APPLE}:calendar-color`] = color;
-    }
-    let responses = await clientCaldav.makeCalendar({
-      url,
-      props,
-      headersToExclude: ['If-None-Match'],
+  createCalendar() {
+    // The whole lifecycle now runs on the server: derive the path from the
+    // slug, create, confirm by reading the calendar home back — never by the
+    // MKCALENDAR status, since at least one server answers 201 while creating
+    // nothing — and adopt an existing calendar when the server genuinely
+    // refuses.
+    //
+    // The name, colour and description this used to take are gone: they were
+    // the platform's own branding, which the server reads for itself. A page
+    // that passed them could disagree with a page that did not.
+    return fetch(`${window.location.origin}/caldav/rest/push/mirror`, {
+      method: 'POST',
+      credentials: 'include',
+    }).then(pushOutcome).then(target => {
+      if (!target || !target.href) {
+        throw caldavError('calendarCreationRefused', null);
+      }
+      // The drawer reads {id, adopted, name} and says which calendar actually
+      // receives the copies; keeping that shape is what lets it keep telling
+      // the truth about an adoption.
+      return {id: target.href, adopted: target.adopted, name: target.name};
     });
-    let refusal = mkCalendarRefusal(responses);
-    // Whatever MKCALENDAR answered, only the server's own listing proves the
-    // calendar exists. This also adopts naturally on a 405, which means a
-    // collection already sits at that URL — and the URL being derived from
-    // the name, that collection is the one being asked for.
-    let mirror = await confirmMirrorCalendar(clientCaldav, url, name);
-    if (!mirror && (description || color)) {
-      // The full request could not be confirmed and it carried optional
-      // properties — the only ones a server may legitimately balk at. Ask
-      // again for the identity alone: MKCALENDAR being atomic, the first
-      // attempt created nothing, so this is not a duplicate.
-      responses = await clientCaldav.makeCalendar({
-        url,
-        props: minimalProps,
-        headersToExclude: ['If-None-Match'],
-      });
-      refusal = mkCalendarRefusal(responses) || refusal;
-      mirror = await confirmMirrorCalendar(clientCaldav, url, name);
-    }
-    if (mirror) {
-      await caldavConnectorService.saveMirrorCalendarHref(mirror.url);
-      return {id: mirror.url};
-    }
-    // Not on the server, even after the minimal attempt: the calendar was
-    // not created, whatever the responses claimed, and saying otherwise is
-    // the lie this check exists to prevent. Rather than leaving the
-    // destination implicit — with no stored href every push targeted the
-    // first calendar the account lists, but the settings could name no
-    // destination, so the copy switch never latched and nothing was ever
-    // pushed — that same first calendar is adopted openly: its href is
-    // stored and its name reported, so the user is told which calendar
-    // receives the copies and pushing actually starts. The copies written
-    // there are recognised on read-back by the UID agenda stored at push
-    // time and filtered from the display, so nothing shows twice.
-    const status = refusal && refusal.status;
-    const fallbackCalendar = calendars.length && calendars[0] || null;
-    if (fallbackCalendar) {
-      await caldavConnectorService.saveMirrorCalendarHref(fallbackCalendar.url);
-      return {id: fallbackCalendar.url, adopted: true, name: calendarName(fallbackCalendar)};
-    }
-    // Nothing to adopt either: the account holds no calendar at all, so the
-    // copies genuinely have nowhere to go.
-    const error = new Error(status
-      ? `MKCALENDAR refused by the server with status ${status}, and the account holds no calendar to adopt`
-      : 'MKCALENDAR reported no failure, but the server does not list the calendar, and the account holds no calendar to adopt');
-    error.calendarCreationRefused = true;
-    error.status = status;
-    throw error;
   },
   /**
    * Points the mirror at an existing calendar of the connected account
@@ -653,12 +563,24 @@ const caldavConnector = {
     // it to an endpoint that cannot do it would delete the whole series
     // instead of one instance, so it keeps the path that works.
     if (event.occurrence) {
-      return caldavConnectorService.getCaldavSetting().then(settings => this.removeEvent(event, settings));
+      const uid = event.parent && event.parent.remoteId;
+      const instance = isoInstant(event.occurrence.id);
+      if (!uid || !instance) {
+        return Promise.resolve(null);
+      }
+      // A rewrite on the server, not a delete: every component of a series
+      // lives in one calendar object, so removing the object would cancel
+      // every meeting of the series to cancel one.
+      return fetch(`${window.location.origin}/caldav/rest/push/objects/${encodeURIComponent(uid)}`
+                   + `/occurrences/${encodeURIComponent(instance)}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      }).then(pushOutcome);
     }
     if (!event.remoteId) {
       return Promise.resolve(null);
     }
-    return fetch(`${window.location.origin}/caldav/rest/push/events/${encodeURIComponent(event.remoteId)}`, {
+    return fetch(`${window.location.origin}/caldav/rest/push/objects/${encodeURIComponent(event.remoteId)}`, {
       method: 'DELETE',
       credentials: 'include',
     }).then(pushOutcome);
@@ -2510,139 +2432,6 @@ function collectionPath(url) {
  */
 function isSameCollection(url, href) {
   return !!url && !!href && collectionPath(url) === collectionPath(href);
-}
-
-/**
- * The mirror calendar among those the server enumerates, so that asking for
- * it twice never produces a second one.
- *
- * Three signals, in decreasing order of confidence:
- * the stored href, which is the identity of the collection and the only one
- * that survives a rename; the URL the connector would create, which survives
- * a disconnect (the setting does not) since it is derived from the name; and
- * the display name itself, which is what recovers a collection created when
- * storing its href failed.
- *
- * Name matching is a last resort on purpose: it is the only signal that can
- * adopt a calendar the connector did not create, and it stops matching as
- * soon as the user renames it — which is the right outcome, since the stored
- * href takes over from the first successful configuration.
- *
- * @param {Array} calendars collections the server enumerates
- * @param {String} mirrorCalendarHref stored mirror href, if any
- * @param {String} url the URL this connector creates for that name
- * @param {String} name display name asked for
- * @returns {Object} the matching collection, or undefined when there is none
- */
-function findMirrorCalendar(calendars, mirrorCalendarHref, url, name) {
-  return mirrorCalendarHref && (calendars || []).find(calendar => isSameCollection(calendar.url, mirrorCalendarHref))
-    || (calendars || []).find(calendar => isSameCollection(calendar.url, url))
-    || (calendars || []).find(calendar => calendar.displayName && calendar.displayName === name);
-}
-
-/**
- * The mirror calendar as the server itself lists it after an MKCALENDAR, or
- * undefined when the listing does not carry it. This is the only statement
- * of success `createCalendar` accepts: MKCALENDAR responses have been caught
- * telling both possible lies — a 207 whose failed propstat means nothing was
- * created still counts as 2xx, and an empty response array carries no
- * refusal to find — so presence in a fresh listing is checked instead of
- * absence of a failure.
- *
- * A listing that cannot be fetched is left to throw: the outcome is then
- * genuinely unknown — the calendar may well exist — and claiming a refusal
- * would be as untrue as claiming a success. The caller reports it as an
- * error the user can retry, and the retry adopts whatever the first attempt
- * did create.
- *
- * @param {Object} clientCaldav connected tsdav client
- * @param {String} url the URL the mirror collection was requested at
- * @param {String} name display name the mirror was requested with
- * @returns {Promise<Object>} the listed mirror collection, or undefined
- */
-async function confirmMirrorCalendar(clientCaldav, url, name) {
-  const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
-  return findMirrorCalendar(calendars, null, url, name);
-}
-
-/**
- * The refusal an MKCALENDAR answer carries, or null when the server plainly
- * claimed success. Deliberately not `response.ok`: tsdav derives `ok` from
- * the HTTP status, and 207 is a 2xx — yet MKCALENDAR is atomic (RFC 4791
- * section 5.3.1), so a 207 reports at least one rejected property and a
- * collection that was NOT created. The failed statuses live inside the
- * multistatus body, at propstat level, which tsdav keeps only in `raw`; they
- * are read from there. An empty or absent answer is a refusal too: it proves
- * nothing, and what proves nothing must not pass for a success.
- *
- * @param {Array} responses what tsdav's makeCalendar resolved with
- * @returns {Object} `{status}` describing the refusal, or null
- */
-function mkCalendarRefusal(responses) {
-  const list = Array.isArray(responses) ? responses : responses && [responses] || [];
-  if (!list.length) {
-    return {status: null};
-  }
-  for (const response of list) {
-    if (!response || response.ok !== true) {
-      return {status: response && response.status};
-    }
-    const failed = failedStatusesIn(response.raw);
-    if (failed.length) {
-      // 424 Failed Dependency marks a property that failed only because
-      // another one did — the other one carries the actual reason
-      return {status: failed.find(code => code !== 424) || failed[0]};
-    }
-    if (response.status === 207) {
-      // a multistatus with no readable failure is still not the 201 a
-      // created collection answers with — never a claim of success
-      return {status: 207};
-    }
-  }
-  return null;
-}
-
-/**
- * Every non-2xx HTTP status carried anywhere inside a parsed DAV response
- * body. Walked recursively rather than addressed by path because servers
- * shape MKCALENDAR failures differently — propstat elements under a
- * DAV:multistatus, or under a CALDAV:mkcalendar-response — and tsdav parses
- * whichever arrived into `raw` without normalising it.
- *
- * @param {Object} node parsed response body, or any node inside it
- * @param {Array} found accumulator, for the recursion
- * @returns {Array} the failed status codes found, possibly empty
- */
-function failedStatusesIn(node, found = []) {
-  if (!node || typeof node !== 'object') {
-    return found;
-  }
-  Object.entries(node).forEach(([key, value]) => {
-    if (key === 'status') {
-      const code = httpStatusCode(value);
-      if (code && (code < 200 || code >= 300)) {
-        found.push(code);
-      }
-    } else if (typeof value === 'object') {
-      failedStatusesIn(value, found);
-    }
-  });
-  return found;
-}
-
-/**
- * The numeric code of a DAV status element, which arrives as a status line
- * ("HTTP/1.1 403 Forbidden") or occasionally as a bare number.
- *
- * @param {String|Number} status the status element's value
- * @returns {Number} the HTTP status code, or null when there is none
- */
-function httpStatusCode(status) {
-  if (typeof status === 'number') {
-    return status;
-  }
-  const match = /\b(\d{3})\b/.exec(typeof status === 'string' ? status : '');
-  return match ? Number.parseInt(match[1], 10) : null;
 }
 
 /**

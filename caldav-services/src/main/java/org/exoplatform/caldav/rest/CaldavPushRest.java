@@ -53,7 +53,10 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * renamed code would degrade each of them into the generic message.
  */
 @RestController
-@Tag(name = "/caldav/rest/push", description = "Writes eXo events into the connected user's remote calendar")
+@Tag(name = "/caldav/rest/push",
+     description = "Writes eXo events into the connected user's remote calendar. Two vocabularies, kept apart in "
+         + "the paths on purpose: /push/events takes an eXo event identifier, /push/objects takes the iCalendar "
+         + "UID of the calendar object that event was written as.")
 public class CaldavPushRest {
 
   @Autowired
@@ -93,7 +96,7 @@ public class CaldavPushRest {
    * @param icsUid the iCalendar UID of the object to remove
    * @return an empty 204
    */
-  @DeleteMapping("/push/events/{icsUid}")
+  @DeleteMapping("/push/objects/{icsUid}")
   @Secured("users")
   @Operation(summary = "Removes a copied event from the remote calendar",
       description = "A deletion whose object is already gone succeeds: the end state the caller asked for holds.")
@@ -105,6 +108,49 @@ public class CaldavPushRest {
                                      String icsUid) {
     caldavPushService.deleteEvent(currentUser(), icsUid);
     return ResponseEntity.noContent().build();
+  }
+
+  /**
+   * Removes one occurrence from a series, leaving the series in place.
+   *
+   * @param icsUid the iCalendar UID of the series
+   * @param occurrence the instance to exclude, an ISO instant
+   * @return an empty 204
+   */
+  @DeleteMapping("/push/objects/{icsUid}/occurrences/{occurrence}")
+  @Secured("users")
+  @Operation(summary = "Removes one occurrence of a series",
+      description = "A rewrite, not a deletion: every component of a series lives in one calendar object, so "
+          + "deleting the object would cancel every meeting of the series to cancel one.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Occurrence excluded"),
+      @ApiResponse(responseCode = "403", description = "Stored CalDAV credentials rejected upstream"),
+      @ApiResponse(responseCode = "409", description = "The series changed since it was read"),
+      @ApiResponse(responseCode = "502", description = "The calendar server could not be reached") })
+  public ResponseEntity<Void> excludeOccurrence(@Parameter(description = "iCalendar UID of the series", required = true)
+                                                @PathVariable("icsUid")
+                                                String icsUid,
+                                                @Parameter(description = "The instance to exclude, ISO instant",
+                                                    required = true)
+                                                @PathVariable("occurrence")
+                                                String occurrence) {
+    caldavPushService.excludeOccurrence(currentUser(), icsUid, instantOf(occurrence));
+    return ResponseEntity.noContent().build();
+  }
+
+  /**
+   * The instance identifier, refused rather than guessed at when it is not an
+   * instant — excluding the wrong occurrence cancels a meeting nobody meant to.
+   *
+   * @param value the parameter as received
+   * @return the instant
+   */
+  private java.time.Instant instantOf(String value) {
+    try {
+      return java.time.Instant.parse(value);
+    } catch (java.time.format.DateTimeParseException | NullPointerException e) {
+      throw new org.springframework.web.server.ResponseStatusException(HttpStatus.BAD_REQUEST,
+                                                                      "caldav.error.occurrence");
+    }
   }
 
   /**

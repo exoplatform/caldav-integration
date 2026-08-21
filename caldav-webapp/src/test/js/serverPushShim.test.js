@@ -80,23 +80,36 @@ describe('the browser write path is a shim', () => {
     await caldavConnector.deleteEvent({id: 101, remoteId: 'uid-101'});
 
     const [url, options] = global.fetch.mock.calls[0];
-    expect(url).toContain('/caldav/rest/push/events/uid-101');
+    expect(url).toContain('/caldav/rest/push/objects/uid-101');
     expect(options.method).toBe('DELETE');
   });
 
-  it('leaves an occurrence exclusion on the path that can still do it', async () => {
-    // Excluding one instance rewrites the stored object, and that rewrite has
-    // no server-side counterpart yet. Routing it to the delete endpoint would
-    // remove the whole series instead of one occurrence — a silent, expensive
-    // wrong answer, so it keeps the browser path until the server can do it.
+  it('excludes one occurrence without touching the rest of the series', async () => {
+    // A rewrite on the server, not a delete: every component of a series lives
+    // in one calendar object, so removing the object would cancel every
+    // meeting of the series to cancel one. The path says objects rather than
+    // events because the identifier is the iCalendar UID, not an eXo id.
+    global.fetch = jest.fn(() => Promise.resolve({ok: true, status: 204}));
+
+    await caldavConnector.deleteEvent({
+      id: 102,
+      occurrence: {id: '2026-09-15T07:00:00.000Z'},
+      parent: {remoteId: 'series-uid'},
+    });
+
+    const [url, options] = global.fetch.mock.calls[0];
+    expect(url).toContain('/caldav/rest/push/objects/series-uid/occurrences/');
+    expect(decodeURIComponent(url)).toContain('2026-09-15T07:00:00.000Z');
+    expect(options.method).toBe('DELETE');
+  });
+
+  it('does nothing for an occurrence whose series was never pushed', async () => {
     global.fetch = jest.fn();
-    const settings = require('../../main/webapp/vue-app/caldav/js/agendaCaldavService.js');
-    settings.getCaldavSetting.mockResolvedValue({username: 'john', password: 'secret'});
 
-    await caldavConnector.deleteEvent({id: 101, occurrence: {id: '2026-09-10T06:30:00Z'}, parent: {remoteId: 'uid-101'}})
-                         .catch(() => null);
+    await expect(caldavConnector.deleteEvent({id: 102, occurrence: {id: '2026-09-15T07:00:00.000Z'}, parent: {}}))
+      .resolves.toBeNull();
 
-    expect(global.fetch).not.toHaveBeenCalledWith(expect.stringContaining('/push/events'), expect.anything());
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('does nothing for an event that was never pushed', async () => {
