@@ -19,7 +19,10 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -28,6 +31,7 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
@@ -48,6 +52,7 @@ import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
@@ -78,6 +83,9 @@ public class CaldavDeletionServiceTest {
   private static final String        ANCHOR   = "cal-anchor";
 
   private static final String        HREF     = "/dav/calendars/john/exo-cal-cal-anchor";
+
+  /** The account's server, named in the warning so the user knows which one. */
+  private static final String        URL      = "https://webmail.example.test/dav/";
 
   @Mock
   private CalDavClient               calDavClient;
@@ -333,6 +341,206 @@ public class CaldavDeletionServiceTest {
     verify(caldavSyncStorage, never()).savePair(any());
   }
 
+  // What the confirmation dialog is told before the user commits to any of
+  // the above. The sentence itself no assertion can judge; that the right
+  // facts reach it, and that asking costs nothing, is what these pin.
+
+  /**
+   * A calendar nothing is bound to gives the dialog nothing to warn about, so
+   * the user is asked the plain agenda question rather than a CalDAV one about
+   * a server that holds none of their events.
+   */
+  @Test
+  public void aCalendarWithNoBindingAtAllHasNothingToWarnAbout() {
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(null);
+
+    CalendarDeletionPlan plan = service.describeDeletion(USER, CALENDAR);
+
+    assertEquals(new CalendarDeletionPlan(false, false, null), plan);
+  }
+
+  /**
+   * A collection eXo created goes with the calendar, and the dialog has to say
+   * so: everything in it goes too, including events other devices added that
+   * eXo never authored and cannot restore.
+   */
+  @Test
+  public void aCollectionExoCreatedIsAnnouncedAsGoingWithTheCalendar() {
+    givenBoundCalendar();
+
+    CalendarDeletionPlan plan = service.describeDeletion(USER, CALENDAR);
+
+    assertTrue(plan.claimed());
+    assertTrue(plan.propagates());
+    // The server is named: a user with two accounts must know which one this
+    // deletion reaches.
+    assertEquals(URL, plan.server());
+  }
+
+  /**
+   * A calendar the user made in their own client is left standing, and the
+   * dialog says that too — a warning promising to destroy something eXo will
+   * not touch is worse than no warning.
+   */
+  @Test
+  public void aCalendarTheUserMadeElsewhereIsAnnouncedAsStayingWhereItIs() {
+    givenBoundCalendar(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
+
+    CalendarDeletionPlan plan = service.describeDeletion(USER, CALENDAR);
+
+    // Still claimed — there IS a remote calendar, and the user is told what
+    // becomes of it — but nothing propagates.
+    assertTrue(plan.claimed());
+    assertFalse(plan.propagates());
+    assertEquals(URL, plan.server());
+  }
+
+  /**
+   * A binding already tombstoned as locally deleted describes a calendar that
+   * is on its way out of eXo already; there is nothing left to warn a second
+   * confirmation about.
+   */
+  @Test
+  public void aBindingAlreadyTombstonedAsLocallyDeletedClaimsNothing() {
+    givenBoundCalendar(SyncOrigin.REMOTE, CalendarSyncStatus.LOCALLY_DELETED);
+
+    assertEquals(new CalendarDeletionPlan(false, false, null), service.describeDeletion(USER, CALENDAR));
+  }
+
+  /**
+   * Same for a collection the user already chose to keep: the divergence has
+   * been recorded once and consented to, and warning about it again would
+   * offer to delete a collection this pair no longer speaks for.
+   */
+  @Test
+  public void aBindingAlreadyTombstonedAsOrphanedClaimsNothing() {
+    givenBoundCalendar(SyncOrigin.EXO, CalendarSyncStatus.EXO_ORPHANED);
+
+    assertEquals(new CalendarDeletionPlan(false, false, null), service.describeDeletion(USER, CALENDAR));
+  }
+
+  /**
+   * Only the two tombstone states silence the warning. A pair merely paused —
+   * the state a disconnected account leaves behind — still has a live
+   * collection on the server, and a dialog that fell silent about it would let
+   * the user delete it believing nothing remote was involved.
+   */
+  @Test
+  public void aBindingMerelyPausedStillHasACollectionToWarnAbout() {
+    givenBoundCalendar(SyncOrigin.EXO, CalendarSyncStatus.PAUSED);
+
+    CalendarDeletionPlan plan = service.describeDeletion(USER, CALENDAR);
+
+    assertTrue(plan.claimed());
+    assertTrue(plan.propagates());
+  }
+
+  /**
+   * A calendar carrying no anchor was never bound, and is not looked up: the
+   * anchor is the only thing a binding is found by, and searching without one
+   * would match on whatever a null key happens to find.
+   */
+  @Test
+  public void aCalendarCarryingNoAnchorClaimsNothingWithoutLookingForABinding() {
+    Calendar unanchored = calendar();
+    unanchored.setSyncUid(null);
+    when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(unanchored);
+
+    assertEquals(new CalendarDeletionPlan(false, false, null), service.describeDeletion(USER, CALENDAR));
+    verify(caldavSyncStorage, never()).getPairByLocalCalendar(anyLong(), anyLong(), anyString());
+  }
+
+  /**
+   * A calendar agenda no longer has claims nothing rather than failing: the
+   * dialog asks before agenda deletes, but nothing stops it asking about a
+   * calendar that vanished in between, and a failure there would block a
+   * deletion the connector has no stake in.
+   */
+  @Test
+  public void aCalendarAgendaNoLongerHasClaimsNothing() {
+    when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(null);
+
+    assertEquals(new CalendarDeletionPlan(false, false, null), service.describeDeletion(USER, CALENDAR));
+  }
+
+  /**
+   * With the account gone there is no server id to look a binding up under, so
+   * the plan claims nothing — the same known limitation
+   * {@link #anAccountWhoseCredentialsAreGoneFallsBackToADeleteInExoOnly()}
+   * documents, seen from the dialog's side. Safe in the direction that
+   * matters: a user is never warned that confirming destroys a collection eXo
+   * has since become unable to reach.
+   */
+  @Test
+  public void anAccountWhoseCredentialsAreGoneClaimsNothing() {
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
+
+    assertEquals(new CalendarDeletionPlan(false, false, null), service.describeDeletion(USER, CALENDAR));
+  }
+
+  /**
+   * The defensive half of the same case: should a binding still be found with
+   * no account behind it, the plan is returned without a server name rather
+   * than failing on one. A dialog that threw here would block the deletion
+   * outright.
+   */
+  @Test
+  public void aBindingFoundWithNoAccountBehindItIsClaimedWithoutNamingAServer() {
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, 0L, ANCHOR)).thenReturn(pair(SyncOrigin.EXO,
+                                                                                     CalendarSyncStatus.ACTIVE));
+
+    CalendarDeletionPlan plan = service.describeDeletion(USER, CALENDAR);
+
+    assertTrue(plan.claimed());
+    assertNull(plan.server());
+  }
+
+  /**
+   * The binding is looked up under the caller's own identity, so a calendar id
+   * naming somebody else's calendar finds nothing to claim — the request
+   * carries no way to ask about another account's collections.
+   */
+  @Test
+  public void theBindingIsLookedUpUnderTheCallerSOwnIdentity() {
+    givenBoundCalendar();
+
+    service.describeDeletion(USER, CALENDAR);
+
+    verify(caldavSyncStorage).getPairByLocalCalendar(USER, SERVER, ANCHOR);
+  }
+
+  /**
+   * Asking costs nothing on the wire. The dialog opens on this answer, so a
+   * round trip to the calendar server would make an unreachable server stall
+   * or fail a deletion it has no say in — and every fact the warning needs is
+   * already held locally.
+   */
+  @Test
+  public void theWarningIsWorkedOutWithoutEverContactingTheServer() {
+    givenBoundCalendar();
+
+    service.describeDeletion(USER, CALENDAR);
+
+    verifyNoInteractions(calDavClient);
+  }
+
+  /**
+   * Describing a deletion changes nothing. The user has not confirmed yet, and
+   * a question that moved the pair towards deletion would take a calendar out
+   * of sync on the strength of a dialog somebody opened and closed again.
+   */
+  @Test
+  public void describingADeletionDoesNotTouchTheBinding() {
+    givenBoundCalendar();
+
+    service.describeDeletion(USER, CALENDAR);
+
+    verify(caldavSyncStorage, never()).savePair(any());
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+    verify(caldavSyncStorage, never()).deleteObjects(anyLong());
+  }
+
   /**
    * A calendar bound to a collection eXo created.
    */
@@ -401,6 +609,7 @@ public class CaldavDeletionServiceTest {
     setting.setUsername(LOGIN);
     setting.setPassword("secret");
     setting.setServerId(SERVER);
+    setting.setCaldavUrl(URL);
     return setting;
   }
 }
