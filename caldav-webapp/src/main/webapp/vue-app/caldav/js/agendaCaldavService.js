@@ -478,3 +478,24 @@ export const saveSyncTuning = tuning => {
     return resp.json();
   });
 };
+
+/**
+ * The calendars whose synchronisation needs the user's attention.
+ *
+ * Only the states where something they might do would change the outcome: a
+ * calendar that is synchronising is not news, and one they hid has its own
+ * listing.
+ *
+ * @returns {Promise<Array>} the states, empty when everything is well
+ */
+export const getCalendarSyncStates = () => {
+  return fetch(`${window.location.origin}/caldav/rest/calendar-states`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
