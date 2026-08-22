@@ -130,7 +130,7 @@ public class CaldavConnectorRest implements ResourceContainer {
   public Response deleteCaldavSetting() {
     long identityId = CaldavConnectorUtils.getCurrentUserIdentityId(identityManager);
     try {
-      caldavConnectorService.deleteCaldavSetting(identityId);
+      caldavConnectorService.deleteCaldavSetting(identityId, CaldavConnectorUtils.getCurrentUser());
       return Response.ok().build();
     } catch (Exception e) {
       LOG.error("Error when deleting caldav user setting for user with id '{}'", identityId, e);
