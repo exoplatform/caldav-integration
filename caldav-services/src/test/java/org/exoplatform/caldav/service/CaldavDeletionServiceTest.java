@@ -32,6 +32,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -55,6 +57,8 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.CalendarSync;
@@ -102,6 +106,12 @@ public class CaldavDeletionServiceTest {
 
   @Mock
   private AgendaCalendarService      agendaCalendarService;
+
+  @Mock
+  private CaldavServerService        caldavServerService;
+
+  @Mock
+  private CaldavSyncService          caldavSyncService;
 
   @Mock
   private CalDavEndpoint             endpoint;
@@ -614,7 +624,7 @@ public class CaldavDeletionServiceTest {
     theirs.setUserIdentityId(USER + 1);
     when(caldavSyncStorage.getPair(9L)).thenReturn(theirs);
 
-    assertThrows(IllegalAccessException.class, () -> service.showAgain(USER, 9L));
+    assertThrows(IllegalAccessException.class, () -> service.showAgain(USER, 9L, LOGIN));
 
     verify(caldavSyncStorage, never()).deletePair(anyLong());
   }
@@ -623,7 +633,7 @@ public class CaldavDeletionServiceTest {
   public void anIdThatNamesNoTombstoneIsNotFound() throws Exception {
     when(caldavSyncStorage.getPair(9L)).thenReturn(null);
 
-    assertThrows(ObjectNotFoundException.class, () -> service.showAgain(USER, 9L));
+    assertThrows(ObjectNotFoundException.class, () -> service.showAgain(USER, 9L, LOGIN));
   }
 
   @Test
@@ -634,7 +644,7 @@ public class CaldavDeletionServiceTest {
     live.setStatus(CalendarSyncStatus.ACTIVE);
     when(caldavSyncStorage.getPair(9L)).thenReturn(live);
 
-    assertThrows(ObjectNotFoundException.class, () -> service.showAgain(USER, 9L));
+    assertThrows(ObjectNotFoundException.class, () -> service.showAgain(USER, 9L, LOGIN));
 
     verify(caldavSyncStorage, never()).deletePair(anyLong());
   }
@@ -643,7 +653,7 @@ public class CaldavDeletionServiceTest {
   public void showingACalendarAgainDropsItsBindingSoItIsMaterialisedAfresh() throws Exception {
     when(caldavSyncStorage.getPair(9L)).thenReturn(tombstone());
 
-    service.showAgain(USER, 9L);
+    service.showAgain(USER, 9L, LOGIN);
 
     verify(caldavSyncStorage).deleteObjects(9L);
     verify(caldavSyncStorage).deletePair(9L);
@@ -726,6 +736,69 @@ public class CaldavDeletionServiceTest {
   /**
    * @return a connected account
    */
+  @Test
+  public void theWarningNamesTheServerTheUserPicked() throws Exception {
+    // The dialog used to read "the matching calendar on  will not be touched",
+    // with a blank where the name belongs: it was taken from the stored URL,
+    // which only ever holds a value for an account attached the legacy way,
+    // before servers were declared.
+    CaldavServer server = new CaldavServer();
+    server.setProviderName("BlueMind");
+    when(caldavServerService.getServerById(SERVER)).thenReturn(server);
+    CalendarSync pair = pair(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
+    when(caldavSyncStorage.getPairByLocalCalendar(eq(USER), eq(SERVER), anyString())).thenReturn(pair);
+
+    CalendarDeletionPlan plan = service.describeDeletion(USER, CALENDAR);
+
+    assertEquals("BlueMind", plan.server());
+  }
+
+  @Test
+  public void aRegistrationThatIsGoneFallsBackToTheStoredUrl() throws Exception {
+    // A declared server removed while an account still points at it. The URL
+    // is a poorer name, not a reason to say nothing.
+    CaldavUserSetting legacy = settings();
+    legacy.setCaldavUrl("https://dav.example.org/");
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(legacy);
+    when(caldavServerService.getServerById(SERVER)).thenThrow(new ObjectNotFoundException("gone"));
+    CalendarSync pair = pair(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
+    when(caldavSyncStorage.getPairByLocalCalendar(eq(USER), eq(SERVER), anyString())).thenReturn(pair);
+
+    CalendarDeletionPlan plan = service.describeDeletion(USER, CALENDAR);
+
+    assertEquals("https://dav.example.org/", plan.server());
+  }
+
+  @Test
+  public void unHidingSynchronisesSoTheCalendarComesBackAtOnce() throws Exception {
+    // Lifting the tombstone alone leaves the collection unbound, and unbound
+    // is precisely what the Remote section lists — so the user who pressed
+    // "Show again" watched their calendar reappear under the heading for
+    // calendars eXo is NOT showing, and stay there until the throttle expired.
+    CalendarSync tombstone = pair(SyncOrigin.REMOTE, CalendarSyncStatus.LOCALLY_DELETED);
+    tombstone.setUserIdentityId(USER);
+    when(caldavSyncStorage.getPair(9L)).thenReturn(tombstone);
+
+    service.showAgain(USER, 9L, LOGIN);
+
+    verify(caldavSyncService).syncNow(USER, LOGIN);
+  }
+
+  @Test
+  public void aFailedSynchronisationDoesNotUndoTheUnHiding() throws Exception {
+    // The tombstone is lifted either way and the next run will materialise
+    // the collection. Reporting the sync failure here would tell the user the
+    // un-hiding did not happen, which is false.
+    CalendarSync tombstone = pair(SyncOrigin.REMOTE, CalendarSyncStatus.LOCALLY_DELETED);
+    tombstone.setUserIdentityId(USER);
+    when(caldavSyncStorage.getPair(9L)).thenReturn(tombstone);
+    doThrow(new IllegalStateException("server down")).when(caldavSyncService).syncNow(USER, LOGIN);
+
+    assertDoesNotThrow(() -> service.showAgain(USER, 9L, LOGIN));
+
+    verify(caldavSyncStorage).deletePair(9L);
+  }
+
   private CaldavUserSetting settings() {
     CaldavUserSetting setting = new CaldavUserSetting();
     setting.setUsername(LOGIN);
