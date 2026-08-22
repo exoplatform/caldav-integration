@@ -298,9 +298,9 @@ public class CaldavPushRest {
   @DeleteMapping("/hidden-calendars/{pairId}")
   @Secured("users")
   @Operation(summary = "Shows a hidden calendar again",
-      description = "Lifts the tombstone so the next synchronisation materialises the collection afresh. It comes "
-          + "back as a new calendar, not as the deleted one restored — its events went to the user's default "
-          + "calendar when it was deleted, and they stay there.")
+      description = "Lifts the tombstone and synchronises, so the collection is materialised again straight "
+          + "away rather than surfacing as an unbound remote calendar until the next run. It comes back as a "
+          + "new calendar, not as the deleted one restored.")
   @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Lifted"),
       @ApiResponse(responseCode = "403", description = "Not this user's calendar"),
       @ApiResponse(responseCode = "404", description = "No such hidden calendar") })
@@ -309,7 +309,7 @@ public class CaldavPushRest {
                                                 @PathVariable("pairId")
                                                 long pairId) {
     try {
-      caldavDeletionService.showAgain(currentUser(), pairId);
+      caldavDeletionService.showAgain(currentUser(), pairId, CaldavConnectorUtils.getCurrentUser());
       return ResponseEntity.noContent().build();
     } catch (ObjectNotFoundException e) {
       // Not an incident: a stale drawer offering something already lifted.
