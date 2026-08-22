@@ -21,10 +21,13 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Date;
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -116,6 +119,76 @@ public class CaldavSyncService {
 
   @Autowired
   private AgendaCalendarService       agendaCalendarService;
+
+  /**
+   * Synchronises the accounts that have gone longest without one.
+   *
+   * <p>
+   * Called by the sweep so that an agenda opened afterwards finds the work
+   * already done, rather than waiting on a server outside the platform before
+   * it can list anything.
+   *
+   * <p>
+   * Bounded on purpose: one run takes a page of the stalest bindings and
+   * stops. A sweep that tries to cover every account in one pass is one that
+   * eventually cannot finish, and the accounts it never reached are exactly
+   * the ones that needed it.
+   *
+   * <p>
+   * Bindings are grouped by account before anything is synchronised —
+   * synchronisation is per account, not per collection, and an account with
+   * five stale calendars must cost one pass rather than five.
+   *
+   * @param staleMinutes how long since a successful sync makes a binding due
+   * @param batchSize how many stale bindings one run looks at
+   * @return how many accounts were synchronised
+   */
+  public int sweepDueAccounts(long staleMinutes, int batchSize) {
+    Date before = Date.from(Instant.now().minus(Duration.ofMinutes(staleMinutes)));
+    List<CalendarSync> due = caldavSyncStorage.getDuePairs(CalendarSyncStatus.ACTIVE, before, 0, batchSize)
+                                              .getContent();
+    if (due.isEmpty()) {
+      return 0;
+    }
+    Set<Long> accounts = due.stream().map(CalendarSync::getUserIdentityId).collect(Collectors.toCollection(LinkedHashSet::new));
+    int swept = 0;
+    for (Long userIdentityId : accounts) {
+      String username = loginOf(userIdentityId);
+      if (username == null) {
+        continue;
+      }
+      try {
+        // syncNow, not syncIfDue: these bindings were selected precisely
+        // because they are stale, and the throttle would refuse the very
+        // accounts the sweep exists to reach. The per-user guard still makes
+        // this return at once when the owner's own page load is already
+        // synchronising them.
+        syncNow(userIdentityId, username);
+        swept++;
+      } catch (RuntimeException e) {
+        // One account must not cost the rest of the page. It stays stale and
+        // comes back at the top of the next run.
+        LOG.warn("The CalDAV account of user {} could not be swept", userIdentityId, e);
+      }
+    }
+    return swept;
+  }
+
+  /**
+   * The login of an identity, which agenda's ACL needs and a binding does not
+   * carry.
+   *
+   * @param userIdentityId identity of the user
+   * @return the login, or null when it cannot be resolved
+   */
+  private String loginOf(long userIdentityId) {
+    Identity identity = identityManager.getIdentity(String.valueOf(userIdentityId));
+    if (identity == null || StringUtils.isBlank(identity.getRemoteId())) {
+      LOG.debug("Identity {} has no resolvable login; its account is left for the next run", userIdentityId);
+      return null;
+    }
+    return identity.getRemoteId();
+  }
 
   /**
    * When the connected account was last synchronised through to the end.
