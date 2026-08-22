@@ -18,6 +18,9 @@ package org.exoplatform.caldav.service;
 
 import java.util.Date;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,10 +30,13 @@ import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
+import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.caldav.model.HiddenCalendar;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -217,6 +223,107 @@ public class CaldavDeletionService {
       pair.setStatus(CalendarSyncStatus.PAUSED);
       caldavSyncStorage.savePair(pair);
     }
+  }
+
+  /**
+   * The calendars this user has hidden on this account.
+   *
+   * <p>
+   * A tombstone is what makes a deletion stick: it keeps a collection from
+   * being materialised again, and since the shim stopped serving bound
+   * collections it keeps it off the screen entirely. That is what the user
+   * asked for — and it leaves them with no way back, which is why this exists.
+   *
+   * <p>
+   * The name comes from the server, read now rather than stored: a calendar
+   * renamed in the user's own client since they hid it should be offered back
+   * under the name they would recognise today. A collection the server no
+   * longer has is left out — offering to show something that is gone would be
+   * a promise nothing can keep.
+   *
+   * @param userIdentityId identity of the user
+   * @return what can be shown again, empty when nothing is hidden
+   */
+  public List<HiddenCalendar> listHidden(long userIdentityId) {
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (settings == null || StringUtils.isBlank(settings.getUsername())) {
+      return List.of();
+    }
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    List<CalendarSync> tombstones = caldavSyncStorage.getPairs(userIdentityId, serverId)
+                                                     .stream()
+                                                     .filter(pair -> pair.getStatus() == CalendarSyncStatus.LOCALLY_DELETED)
+                                                     .toList();
+    if (tombstones.isEmpty()) {
+      // The common answer, and it costs no round trip: a section that is not
+      // shown must not make the drawer wait on a server to find that out.
+      return List.of();
+    }
+    Map<String, String> namesByHref = collectionNames(settings);
+    List<HiddenCalendar> hidden = new ArrayList<>();
+    for (CalendarSync tombstone : tombstones) {
+      String name = namesByHref.get(CaldavSyncStorage.canonicalHref(tombstone.getRemoteHref()));
+      if (StringUtils.isNotBlank(name)) {
+        hidden.add(new HiddenCalendar(tombstone.getId(), name));
+      }
+    }
+    return hidden;
+  }
+
+  /**
+   * Shows a hidden calendar again.
+   *
+   * <p>
+   * Dropping the tombstone is all it takes: the next sync finds a collection
+   * with no binding and materialises it afresh. Deliberately a new calendar
+   * rather than a resurrection — the one the user deleted is gone, and
+   * pretending otherwise would promise back events that agenda moved to their
+   * default calendar at deletion time.
+   *
+   * @param userIdentityId identity of the user
+   * @param pairId the tombstone to lift
+   * @throws IllegalAccessException when the tombstone is not this user's
+   * @throws ObjectNotFoundException when there is no such tombstone
+   */
+  public void showAgain(long userIdentityId, long pairId) throws IllegalAccessException, ObjectNotFoundException {
+    CalendarSync pair = caldavSyncStorage.getPair(pairId);
+    if (pair == null || pair.getStatus() != CalendarSyncStatus.LOCALLY_DELETED) {
+      throw new ObjectNotFoundException("No hidden calendar with id " + pairId);
+    }
+    if (pair.getUserIdentityId() != userIdentityId) {
+      // The binding carries whose it is, and that is the only thing standing
+      // between one user and another user's calendars.
+      throw new IllegalAccessException("Binding " + pairId + " does not belong to user " + userIdentityId);
+    }
+    caldavSyncStorage.deleteObjects(pairId);
+    caldavSyncStorage.deletePair(pairId);
+    LOG.info("Tombstone {} lifted; the collection will be materialised again at the next sync", pairId);
+  }
+
+  /**
+   * The account's collections, by canonical path.
+   *
+   * @param settings the connected account
+   * @return their display names, empty when the server cannot be listed
+   */
+  private Map<String, String> collectionNames(CaldavUserSetting settings) {
+    Map<String, String> names = new HashMap<>();
+    try {
+      CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+      String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
+      for (CalendarCollection collection : calDavClient.listCalendars(endpoint,
+                                                                     home,
+                                                                     settings.getUsername(),
+                                                                     settings.getPassword())) {
+        names.put(CaldavSyncStorage.canonicalHref(collection.href()),
+                  StringUtils.defaultIfBlank(collection.displayName(), collection.href()));
+      }
+    } catch (CalDavException e) {
+      // Nothing offered rather than a list of paths the user never chose to
+      // see. They can try again when the server answers.
+      LOG.debug("The account's collections could not be listed; nothing is offered to show again", e);
+    }
+    return names;
   }
 
   /**
