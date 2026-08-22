@@ -109,6 +109,27 @@ const caldavConnector = {
   },
 
   /**
+   * What unlinking this account costs, in the user's language.
+   *
+   * <p>
+   * Agenda shows it and confirms before disconnecting. Only this add-on knows
+   * that unlinking removes the calendars eXo mirrored from the account — a
+   * connector that has nothing to remove declares no warning and is unlinked
+   * without a dialog, which is right for it.
+   *
+   * @returns {Promise<String>} the sentence, empty when the labels cannot be
+   *          read rather than a raw key in a confirmation
+   */
+  disconnectWarning() {
+    return labels().then(bundle => {
+      // The host rather than the provider name: the provider name is the key
+      // agenda binds this connector under, and a raw key in a confirmation is
+      // worse than no name at all.
+      const server = serverHost(this.serverUrl) || '';
+      return ((bundle && bundle['agenda.caldavCalendar.disconnect.warning']) || '').replace(/\{0\}/g, server);
+    });
+  },
+  /**
    * Synchronises the connected account now, whatever the throttle says.
    *
    * Declaring this method is what makes agenda offer a "Sync now" action on

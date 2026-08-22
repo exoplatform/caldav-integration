@@ -45,6 +45,11 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
    */
   private CaldavSyncService      caldavSyncService;
 
+  /**
+   * The deletion engine, resolved lazily for the same reason as the two above.
+   */
+  private CaldavDeletionService  caldavDeletionService;
+
   public CaldavConnectorServiceImpl(CaldavConnectorStorage caldavConnectorStorage) {
     String caldavUrl = System.getProperty("exo.agenda.caldav.connector.url");
     this.caldavConnectorStorage = caldavConnectorStorage;
@@ -151,6 +156,38 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   }
 
   /**
+   * The deletion engine, resolved through the bridge on first use.
+   *
+   * <p>
+   * Null when it cannot be resolved, and disconnecting then removes the
+   * settings and nothing else — the previous behaviour. Leaving a mirror
+   * calendar behind is a poor outcome; refusing to disconnect because of it
+   * would be a worse one.
+   *
+   * @return the engine, or null when the bridge cannot provide it
+   */
+  protected CaldavDeletionService getCaldavDeletionService() {
+    if (caldavDeletionService == null) {
+      try {
+        caldavDeletionService = ExoContainerContext.getService(CaldavDeletionService.class);
+      } catch (Exception | LinkageError e) {
+        LOG.debug("CalDAV deletion engine not resolvable; disconnecting removes the settings only", e);
+      }
+    }
+    return caldavDeletionService;
+  }
+
+  /**
+   * Hands the deletion engine to tests, which have no container to resolve it
+   * from.
+   *
+   * @param caldavDeletionService the engine to use
+   */
+  protected void setCaldavDeletionService(CaldavDeletionService caldavDeletionService) {
+    this.caldavDeletionService = caldavDeletionService;
+  }
+
+  /**
    * Hands the engine to tests, which have no container to resolve it from.
    *
    * @param caldavSyncService the engine to use
@@ -170,6 +207,32 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
 
   @Override
   public void deleteCaldavSetting(long userIdentityId) {
+    deleteCaldavSetting(userIdentityId, null);
+  }
+
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  public void deleteCaldavSetting(long userIdentityId, String username) {
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (settings != null && StringUtils.isNotBlank(username)) {
+      // Before the settings go, while the account can still be identified.
+      // Without the login there is no ACL to delete a calendar under, so the
+      // bindings are left as they are rather than half-processed.
+      long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+      try {
+        CaldavDeletionService deletionService = getCaldavDeletionService();
+        if (deletionService != null) {
+          deletionService.freezeOnDisconnect(userIdentityId, serverId, username);
+        }
+      } catch (RuntimeException e) {
+        // Disconnecting must succeed. A user asking to unlink their account
+        // and being told it failed, because a calendar could not be tidied
+        // away, would be left connected to an account they no longer want.
+        LOG.warn("The calendars of user {} could not be tidied on disconnect", userIdentityId, e);
+      }
+    }
     caldavConnectorStorage.deleteCaldavSetting(userIdentityId);
   }
 
