@@ -35,10 +35,7 @@ describe('deleting a calendar eXo mirrors', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    window.eXo = {env: {portal: {i18n: {
-      'agenda.caldavCalendar.calendarDelete.propagates': 'also on {0}, deleted there too',
-      'agenda.caldavCalendar.calendarDelete.keepsRemote': 'the calendar on {0} is not touched',
-    }}}};
+    window.eXo = {env: {portal: {language: 'en'}}};
   });
 
   it('warns that the remote calendar and its events go too', async () => {
@@ -287,7 +284,25 @@ describe('deleting a calendar eXo mirrors', () => {
    *
    * @param {Object} plan the deletion plan to answer with
    */
+  /**
+   * Answers the deletion plan, and the label bundle the connector reads its
+   * sentence from.
+   *
+   * The bundle is served by the platform's i18n endpoint, not carried on a
+   * page global — an earlier version of these tests faked a global nothing
+   * populates, so they passed while the dialog showed nothing at all.
+   */
   function givenPlan(plan) {
-    global.fetch = jest.fn(() => Promise.resolve({ok: true, status: 200, json: () => Promise.resolve(plan)}));
+    global.fetch = jest.fn(url => {
+      if (String(url).includes('/i18n/bundle/')) {
+        return Promise.resolve({ok: true, status: 200, json: () => Promise.resolve(BUNDLE)});
+      }
+      return Promise.resolve({ok: true, status: 200, json: () => Promise.resolve(plan)});
+    });
   }
+
+  const BUNDLE = {
+    'agenda.caldavCalendar.calendarDelete.propagates': 'also on {0}, deleted there too',
+    'agenda.caldavCalendar.calendarDelete.keepsRemote': 'the calendar on {0} is not touched',
+  };
 });
