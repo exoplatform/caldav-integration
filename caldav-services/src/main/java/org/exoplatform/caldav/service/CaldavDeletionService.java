@@ -231,8 +231,12 @@ public class CaldavDeletionService {
     if (settings.getServerId() != null && settings.getServerId() > 0) {
       try {
         CaldavServer server = caldavServerService.getServerById(settings.getServerId());
-        if (server != null && StringUtils.isNotBlank(server.getProviderName())) {
-          return server.getProviderName();
+        // getName, not getProviderName: the provider name is the key agenda
+        // binds the connector under — "agenda.caldavCalendar.6" — and putting
+        // it in a sentence shows the user a raw key. getName is the display
+        // name the administrator typed.
+        if (server != null && StringUtils.isNotBlank(server.getName())) {
+          return server.getName();
         }
       } catch (ObjectNotFoundException e) {
         // A registration removed while an account still points at it. The URL
