@@ -49,12 +49,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <div class="text-subtitle mb-2">
             {{ $t(`caldav.admin.sync.${field.key}.help`) }}
           </div>
+          <!--
+            Narrow on purpose. Stretched to the drawer these read as text
+            inputs waiting for a sentence, and the unit ended up an inch away
+            from the number it qualifies. Two or three digits and a word need
+            about this much.
+          -->
           <v-text-field
             v-model.number="tuning[field.key]"
             :suffix="$t(`caldav.admin.sync.unit.${field.unit}`)"
             :disabled="saving"
             type="number"
-            class="input-block-level ignore-vuetify-classes pa-0"
+            class="ignore-vuetify-classes pa-0 caldav-sync-field"
+            style="max-width: 11rem"
             outlined
             dense
             hide-details />
