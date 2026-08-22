@@ -28,7 +28,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       leave open on a page nobody came here to read.
     -->
     <div class="d-flex align-center mb-4">
-      <div class="flex-grow-1">
+      <!--
+        text-start explicitly: in this skin the align-center helper also sets
+        text-align, so a row laid out with it silently centres its own text.
+      -->
+      <div class="flex-grow-1 text-start">
         <div>{{ $t('caldav.admin.sync.title') }}</div>
         <div class="text-subtitle">{{ tuningSummary }}</div>
       </div>
