@@ -320,6 +320,18 @@ public class CaldavReadServiceTest {
   }
 
   @Test
+  public void aCollectionExoMadeAndNoLongerTracksIsNotOffered() {
+    // eXo pushes a calendar out under a path it derives. If the binding is
+    // then lost — a database restored or reset while the account keeps what
+    // was pushed to it — the collection is still there, and the sync refuses
+    // to materialise its own creations. Listing it offered the user something
+    // that could never become a calendar.
+    givenCalendars(calendar("/dav/cal/john/exo-cal-3b4fca2c-8563-4ff4-8a7c-26cc731aec68/", "Work"));
+
+    assertTrue(service.listCalendars(USER).isEmpty());
+  }
+
+  @Test
   public void aCollectionDeclaringNoComponentSetIsStillACalendar() {
     // RFC 4791 5.2.3 makes the property optional, and its absence means every
     // component is supported. Reading silence as "no events" would empty the
