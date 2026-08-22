@@ -49,7 +49,6 @@ import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
@@ -111,6 +110,9 @@ public class CaldavSyncServiceTest {
   private IdentityManager            identityManager;
 
   @Mock
+  private CaldavTuningService        caldavTuningService;
+
+  @Mock
   private CalDavEndpoint             endpoint;
 
   @InjectMocks
@@ -118,7 +120,12 @@ public class CaldavSyncServiceTest {
 
   @BeforeEach
   public void connectAnAccount() {
-    ReflectionTestUtils.setField(service, "throttleMinutes", 15L);
+    // The engine reads its tuning where it uses it rather than capturing it at
+    // bean creation, which is what lets an administrator change it without a
+    // restart — so the test stubs the reader, not a field.
+    lenient().when(caldavTuningService.getThrottleMinutes()).thenReturn(15L);
+    lenient().when(caldavTuningService.getPastDays()).thenReturn(60L);
+    lenient().when(caldavTuningService.getFutureDays()).thenReturn(365L);
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     lenient().when(calDavClient.discoverCalendarHome(any(), anyString(), anyString())).thenReturn(HOME);
@@ -687,7 +694,7 @@ public class CaldavSyncServiceTest {
     // in a few milliseconds never reaches by itself: a stamp older than the
     // window must not keep the account frozen. A throttle that never expired
     // would look identical for fifteen minutes and then never sync again.
-    ReflectionTestUtils.setField(service, "throttleMinutes", 0L);
+    when(caldavTuningService.getThrottleMinutes()).thenReturn(0L);
     givenServerCalendars();
     givenNoKnownPairs();
 

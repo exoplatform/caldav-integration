@@ -83,22 +83,13 @@ public class CaldavSyncService {
   private final Map<Long, Boolean>    syncing    = new ConcurrentHashMap<>();
 
   /** How long a sync stays fresh; deployment-tunable. */
-  @Value("${exo.agenda.caldav.sync.throttleMinutes:15}")
-  private long                        throttleMinutes;
-
   /**
    * How far back events are imported. A calendar with ten years of history
    * behind it would otherwise cost a full download on a page load.
    */
-  @Value("${exo.agenda.caldav.sync.pastDays:60}")
-  private long                        pastDays;
-
   /**
    * How far ahead events are imported.
    */
-  @Value("${exo.agenda.caldav.sync.futureDays:365}")
-  private long                        futureDays;
-
   @Autowired
   private CalDavClient                calDavClient;
 
@@ -116,6 +107,9 @@ public class CaldavSyncService {
 
   @Autowired
   private IdentityManager             identityManager;
+
+  @Autowired
+  private CaldavTuningService         caldavTuningService;
 
   @Autowired
   private AgendaCalendarService       agendaCalendarService;
@@ -236,7 +230,7 @@ public class CaldavSyncService {
    */
   public void syncIfDue(long userIdentityId, String username) {
     Instant last = lastSync.get(userIdentityId);
-    if (last != null && last.isAfter(Instant.now().minus(Duration.ofMinutes(throttleMinutes)))) {
+    if (last != null && last.isAfter(Instant.now().minus(Duration.ofMinutes(caldavTuningService.getThrottleMinutes())))) {
       return;
     }
     sync(userIdentityId, username);
@@ -417,8 +411,8 @@ public class CaldavSyncService {
     // at a day boundary, the window is the same all day, which is exactly
     // what makes "nothing changed" mean "nothing to read".
     Instant today = Instant.now().truncatedTo(ChronoUnit.DAYS);
-    Instant from = today.minus(Duration.ofDays(pastDays));
-    Instant to = today.plus(Duration.ofDays(futureDays + 1L));
+    Instant from = today.minus(Duration.ofDays(caldavTuningService.getPastDays()));
+    Instant to = today.plus(Duration.ofDays(caldavTuningService.getFutureDays() + 1L));
     for (CalendarSync pair : pairs) {
       if (pair.getStatus() != CalendarSyncStatus.ACTIVE) {
         // A paused or tombstoned binding is not one to read from. A tombstone
