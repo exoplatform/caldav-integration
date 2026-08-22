@@ -174,6 +174,31 @@ public class CaldavPushRest {
    *
    * @return the destination, and whether an existing calendar was adopted
    */
+  /**
+   * The calendar the copies are currently written into, if one is set.
+   *
+   * <p>
+   * Its own endpoint because the listing that serves the Remote section
+   * deliberately hides this collection — it holds nothing but copies of events
+   * the agenda already shows. Resolving the destination's name through that
+   * listing therefore always came back empty, which the settings screen read
+   * as "no destination" and used to switch the copy setting back off in front
+   * of the user who had just chosen one.
+   *
+   * @return the destination and its current name, or 204 when none is set
+   */
+  @GetMapping("/push/mirror")
+  @Secured("users")
+  @Operation(summary = "The calendar copies are currently written into",
+      description = "Reads it; never creates one. The name is read from the server on each call, so a calendar "
+          + "renamed in the user's own client reads correctly here.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The destination"),
+      @ApiResponse(responseCode = "204", description = "No destination is set") })
+  public ResponseEntity<MirrorTarget> currentMirror() {
+    MirrorTarget mirror = caldavPushService.currentMirror(currentUser());
+    return mirror == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(mirror);
+  }
+
   @PostMapping("/push/mirror")
   @Secured("users")
   @Operation(summary = "Establishes the calendar copies are written into",

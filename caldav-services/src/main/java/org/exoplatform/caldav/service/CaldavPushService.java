@@ -440,6 +440,43 @@ public class CaldavPushService {
    * one, and a user who disconnected and reconnected collected a new calendar
    * on the server each time.
    *
+   * <p>
+   * This reads it; it never creates one. Nothing configured is an answer, not
+   * a reason to make a calendar on someone's account — the settings screen
+   * asks this question on every render.
+   *
+   * <p>
+   * The name comes from the server on each call rather than from anything
+   * stored: the user may have renamed the calendar in their own client, and
+   * the screen showing a stale name is how a destination stops being
+   * recognisable as the one it names.
+   *
+   * @param userIdentityId identity of the user
+   * @return the destination and its current name, or null when none is set or
+   *         the one recorded is no longer there
+   */
+  public MirrorTarget currentMirror(long userIdentityId) {
+    CaldavUserSetting settings = connectedSettings(userIdentityId);
+    if (StringUtils.isBlank(settings.getMirrorCalendarHref())) {
+      return null;
+    }
+    CalDavEndpoint endpoint = endpointOf(settings);
+    String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
+    List<CalendarCollection> calendars = calDavClient.listCalendars(endpoint,
+                                                                   home,
+                                                                   settings.getUsername(),
+                                                                   settings.getPassword());
+    return findMirror(calendars, settings.getMirrorCalendarHref(), collectionHref(home, MIRROR_COLLECTION_SLUG))
+                                                                                                               .map(collection -> new MirrorTarget(collection.href(),
+                                                                                                                                                   false,
+                                                                                                                                                   collection.displayName()))
+                                                                                                               .orElse(null);
+  }
+
+  /**
+   * Establishes the calendar the copies are written into, creating it when it
+   * is not there.
+   *
    * @param userIdentityId identity of the user
    * @return where the copies go, and whether an existing calendar was adopted
    * @throws CaldavPushException when no destination can be established

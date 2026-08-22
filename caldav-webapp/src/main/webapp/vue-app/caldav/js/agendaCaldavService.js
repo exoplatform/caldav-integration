@@ -409,3 +409,26 @@ export const lastSynchronised = () => {
     return resp.json().then(millis => millis && new Date(millis) || null);
   });
 };
+
+/**
+ * The calendar the copies are currently written into, with the name the server
+ * gives it now.
+ *
+ * Its own call rather than a scan of the calendar listing: that listing hides
+ * this collection on purpose — it holds nothing but copies of events the
+ * agenda already shows — so looking the destination up in it always came back
+ * empty, and the settings screen read that as "no destination".
+ *
+ * @returns {Promise<Object>} {href, name}, or null when none is set
+ */
+export const currentMirrorCalendar = () => {
+  return fetch(`${window.location.origin}/caldav/rest/push/mirror`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.status === 204 ? null : resp.json();
+  });
+};

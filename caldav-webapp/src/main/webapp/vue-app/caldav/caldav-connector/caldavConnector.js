@@ -129,6 +129,21 @@ const caldavConnector = {
     return caldavConnectorService.lastSynchronised();
   },
 
+  /**
+   * The calendar the copies go to, and the name the server gives it now.
+   *
+   * Declaring this lets agenda resolve the destination without scanning the
+   * calendar listing — which deliberately hides this very collection, so the
+   * scan always came back empty and the settings screen concluded there was
+   * no destination at all.
+   *
+   * @returns {Promise<Object>} {id, name}, or null when none is set
+   */
+  getMirrorCalendar() {
+    return caldavConnectorService.currentMirrorCalendar()
+      .then(mirror => mirror && {id: mirror.href, name: mirror.name} || null);
+  },
+
   canCreateCalendar: true,
   /**
    * Creates, on the connected CalDAV server, the dedicated calendar that will
