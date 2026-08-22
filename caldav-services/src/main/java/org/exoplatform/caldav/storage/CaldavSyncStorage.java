@@ -160,6 +160,21 @@ public class CaldavSyncStorage {
    * @return the persisted pair, carrying its identifier
    */
   @Transactional
+  /**
+   * One binding by its identifier, whoever it belongs to.
+   *
+   * <p>
+   * Returns it without checking ownership on purpose: the check belongs to the
+   * caller that knows who is asking, and hiding it here would make a service
+   * look safe while the storage quietly decided for it.
+   *
+   * @param id the binding's identifier
+   * @return the binding, or null when there is none
+   */
+  public CalendarSync getPair(long id) {
+    return calendarSyncDAO.findById(id).map(this::fromEntity).orElse(null);
+  }
+
   public CalendarSync savePair(CalendarSync pair) {
     CaldavCalendarSyncEntity entity = toEntity(pair);
     return fromEntity(calendarSyncDAO.save(entity));
