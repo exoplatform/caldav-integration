@@ -743,7 +743,8 @@ public class CaldavDeletionServiceTest {
     // which only ever holds a value for an account attached the legacy way,
     // before servers were declared.
     CaldavServer server = new CaldavServer();
-    server.setProviderName("BlueMind");
+    server.setName("BlueMind");
+    server.setProviderName("agenda.caldavCalendar.6");
     when(caldavServerService.getServerById(SERVER)).thenReturn(server);
     CalendarSync pair = pair(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
     when(caldavSyncStorage.getPairByLocalCalendar(eq(USER), eq(SERVER), anyString())).thenReturn(pair);
