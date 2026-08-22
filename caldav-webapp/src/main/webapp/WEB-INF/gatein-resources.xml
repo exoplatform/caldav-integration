@@ -11,7 +11,7 @@
     <supported-locale>de</supported-locale>
     <supported-locale>el</supported-locale>
     <supported-locale>en</supported-locale>
-    <supported-locale>es_ES</supported-locale>
+    <supported-locale>es-ES</supported-locale>
     <supported-locale>et</supported-locale>
     <supported-locale>fa</supported-locale>
     <supported-locale>fi</supported-locale>
@@ -28,20 +28,20 @@
     <supported-locale>nl</supported-locale>
     <supported-locale>no</supported-locale>
     <supported-locale>pl</supported-locale>
-    <supported-locale>pt_BR</supported-locale>
-    <supported-locale>pt_PT</supported-locale>
+    <supported-locale>pt-BR</supported-locale>
+    <supported-locale>pt-PT</supported-locale>
     <supported-locale>ro</supported-locale>
     <supported-locale>ru</supported-locale>
     <supported-locale>sk</supported-locale>
     <supported-locale>sl</supported-locale>
     <supported-locale>sq</supported-locale>
-    <supported-locale>sv_SE</supported-locale>
+    <supported-locale>sv-SE</supported-locale>
     <supported-locale>th</supported-locale>
     <supported-locale>tr</supported-locale>
     <supported-locale>uk</supported-locale>
     <supported-locale>vi</supported-locale>
-    <supported-locale>zh_CN</supported-locale>
-    <supported-locale>zh_TW</supported-locale>
+    <supported-locale>zh-CN</supported-locale>
+    <supported-locale>zh-TW</supported-locale>
      <script>
        <minify>false</minify>
        <path>/js/caldav.bundle.js</path>
