@@ -77,13 +77,6 @@ i18nPromise.finally(() => {
     rank: 20,
     vueComponent: Vue.options.components['caldav-admin-servers-section'],
   });
-  // Below the servers, because tuning is what you reach for once the servers
-  // are declared — and there is nothing to tune on an instance with none.
-  extensionRegistry.registerExtension('agenda-admin-settings', 'sections', {
-    id: 'caldavSyncTuning',
-    rank: 21,
-    vueComponent: Vue.options.components['caldav-admin-sync-section'],
-  });
   document.dispatchEvent(new CustomEvent('agenda-admin-sections-refresh'));
 
   // The user-settings row, ranked to land between the connected account and
