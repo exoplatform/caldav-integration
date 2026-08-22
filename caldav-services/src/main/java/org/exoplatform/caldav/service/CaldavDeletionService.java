@@ -479,12 +479,16 @@ public class CaldavDeletionService {
     if (pairs.isEmpty()) {
       return List.of();
     }
-    Map<String, String> byAnchor = calendarNamesByAnchor(userIdentityId, username);
+    Map<String, Calendar> byAnchor = calendarsByAnchorForStates(userIdentityId, username);
     List<CalendarSyncState> states = new ArrayList<>();
     Map<String, String> remoteNames = null;
     for (CalendarSync pair : pairs) {
+      Calendar calendar = byAnchor.get(pair.getLocalCalendarSyncUid());
       CalendarSyncState state = new CalendarSyncState(pair.getId(),
-                                                      byAnchor.get(pair.getLocalCalendarSyncUid()),
+                                                      calendar == null ? 0L : calendar.getId(),
+                                                      calendar == null ? null
+                                                                       : StringUtils.firstNonBlank(calendar.getName(),
+                                                                                                   calendar.getTitle()),
                                                       pair.getStatus(),
                                                       pair.getLastSyncEnd() == null ? null
                                                                                     : pair.getLastSyncEnd().getTime());
@@ -499,6 +503,7 @@ public class CaldavDeletionService {
           remoteNames = collectionNames(settings);
         }
         state = new CalendarSyncState(state.id(),
+                                      state.calendarId(),
                                       remoteNames.get(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())),
                                       state.status(),
                                       state.lastSyncEnd());
@@ -511,25 +516,25 @@ public class CaldavDeletionService {
   }
 
   /**
-   * The names of a user's calendars, keyed by the anchor a binding records.
+   * A user's calendars, keyed by the anchor a binding records.
    *
    * @param userIdentityId identity of the user
    * @param username the user's login
-   * @return the names by anchor, empty when they cannot be read
+   * @return the calendars by anchor, empty when they cannot be read
    */
-  private Map<String, String> calendarNamesByAnchor(long userIdentityId, String username) {
-    Map<String, String> names = new HashMap<>();
+  private Map<String, Calendar> calendarsByAnchorForStates(long userIdentityId, String username) {
+    Map<String, Calendar> byAnchor = new HashMap<>();
     try {
       for (Calendar calendar : agendaCalendarService.getCalendars(0, Integer.MAX_VALUE, username)) {
         if (calendar.getOwnerId() == userIdentityId && !calendar.isDeleted()
             && StringUtils.isNotBlank(calendar.getSyncUid())) {
-          names.put(calendar.getSyncUid(), StringUtils.firstNonBlank(calendar.getName(), calendar.getTitle()));
+          byAnchor.put(calendar.getSyncUid(), calendar);
         }
       }
     } catch (Exception e) { // NOSONAR agenda declares a bare Exception here
       LOG.warn("The calendars of user {} could not be read; their states are named from the server", userIdentityId, e);
     }
-    return names;
+    return byAnchor;
   }
 
   /**
