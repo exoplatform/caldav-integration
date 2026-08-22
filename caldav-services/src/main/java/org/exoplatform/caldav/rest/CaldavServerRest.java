@@ -38,7 +38,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.CaldavSyncTuning;
 import org.exoplatform.caldav.service.CaldavServerService;
+import org.exoplatform.caldav.service.CaldavTuningService;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -65,6 +67,58 @@ public class CaldavServerRest {
 
   @Autowired
   private CaldavServerService caldavServerService;
+
+  @Autowired
+  private CaldavTuningService caldavTuningService;
+
+  /**
+   * How often and how widely eXo synchronises CalDAV accounts.
+   *
+   * <p>
+   * Readable by any authenticated user because nothing here is secret and the
+   * administration screen renders before it knows who is looking; writing is
+   * another matter.
+   *
+   * @return the tuning in force
+   */
+  @GetMapping("/tuning")
+  @Secured("users")
+  @Operation(summary = "Reads the CalDAV synchronisation tuning", method = "GET",
+      description = "Each value is what an administrator saved, else what the deployment set as a property, else "
+          + "the coded default.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled") })
+  public CaldavSyncTuning getTuning() {
+    return caldavTuningService.getTuning();
+  }
+
+  /**
+   * Records how often and how widely eXo synchronises.
+   *
+   * <p>
+   * Takes effect on the next synchronisation, not on the next restart: the
+   * engine reads these where it uses them rather than capturing them when its
+   * beans are built.
+   *
+   * @param tuning the values to store
+   * @return the tuning now in force
+   */
+  @PutMapping("/tuning")
+  @Secured("administrators")
+  @Operation(summary = "Records the CalDAV synchronisation tuning", method = "PUT",
+      description = "Takes effect on the next synchronisation. A window wider than ten years is refused: it turns "
+          + "the first page load of the day into a full download of a decade of history.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public CaldavSyncTuning saveTuning(@RequestBody
+                                     CaldavSyncTuning tuning) {
+    try {
+      caldavTuningService.saveTuning(tuning);
+      return caldavTuningService.getTuning();
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
 
   /**
    * Lists every declared CalDAV server, active or not — the admin section
