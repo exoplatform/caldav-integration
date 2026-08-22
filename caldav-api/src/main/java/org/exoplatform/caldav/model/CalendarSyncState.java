@@ -27,13 +27,17 @@ package org.exoplatform.caldav.model;
  * the states that call for an action are surfaced and the rest is not.
  *
  * @param id the binding, which is what an action refers to
+ * @param calendarId the eXo calendar this is about, so the calendar list can
+ *          mark the row itself rather than leaving the notice on a settings
+ *          page nobody in trouble thinks to open. Zero when there is no eXo
+ *          calendar — a collection the server refused to create has none
  * @param name what the calendar is called, read from the server so a rename
  *          in the user's own client shows here
  * @param status the engine's own state for this binding
  * @param lastSyncEnd when it last finished, in epoch milliseconds, or null
  *          when it never has
  */
-public record CalendarSyncState(long id, String name, CalendarSyncStatus status, Long lastSyncEnd) {
+public record CalendarSyncState(long id, long calendarId, String name, CalendarSyncStatus status, Long lastSyncEnd) {
 
   /**
    * Whether this state is one the user should be told about.

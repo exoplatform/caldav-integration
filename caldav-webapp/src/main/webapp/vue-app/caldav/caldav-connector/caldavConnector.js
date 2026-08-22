@@ -181,6 +181,34 @@ const caldavConnector = {
       .then(mirror => mirror && {id: mirror.href, name: mirror.name} || null);
   },
 
+  /**
+   * The calendars of this account that are not synchronising normally, keyed
+   * by the eXo calendar they stand for.
+   *
+   * Declaring this lets agenda mark the calendar itself in its own list —
+   * which is where someone notices, since a calendar that stopped
+   * synchronising sits there looking exactly like the ones that did not. A
+   * connector that has nothing to report declares none and no row is marked.
+   *
+   * @returns {Promise<Object>} {calendarId: {status, message}}, empty when all
+   *          is well
+   */
+  calendarProblems() {
+    return Promise.all([caldavConnectorService.getCalendarSyncStates(), labels()])
+      .then(([states, bundle]) => {
+        const problems = {};
+        (states || []).filter(state => state.calendarId > 0).forEach(state => {
+          const key = `caldav.calendarStates.explain.${state.status}`;
+          problems[state.calendarId] = {
+            status: state.status,
+            message: (bundle && bundle[key]) || (bundle && bundle['caldav.calendarStates.explain.unknown']) || '',
+          };
+        });
+        return problems;
+      })
+      .catch(() => ({}));
+  },
+
   canCreateCalendar: true,
   /**
    * Creates, on the connected CalDAV server, the dedicated calendar that will
