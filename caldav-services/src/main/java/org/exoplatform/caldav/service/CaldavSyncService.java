@@ -40,6 +40,7 @@ import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
+import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -80,6 +81,20 @@ public class CaldavSyncService {
    * Users a sync is running for, so two page loads a second apart do not run
    * two syncs against the same account at once.
    */
+  /**
+   * How many times in a row one collection may fail before eXo stops reading
+   * it. Enough to ride out a server having a bad minute, few enough that a
+   * genuine breakage stops costing every page load.
+   *
+   * <p>
+   * The count itself lives on the binding — the column has been there since
+   * the schema landed and nothing had ever written to it — so it survives a
+   * restart. That is the right bias here and the opposite of the throttle's:
+   * a collection that has failed four times running has not been repaired by
+   * the server being restarted.
+   */
+  private static final int            MAX_CONSECUTIVE_FAILURES = 5;
+
   private final Map<Long, Boolean>    syncing    = new ConcurrentHashMap<>();
 
   /** How long a sync stays fresh; deployment-tunable. */
@@ -341,6 +356,15 @@ public class CaldavSyncService {
         LOG.warn("The copies pushed for user {} could not be verified this round", userIdentityId, e);
       }
       lastSync.put(userIdentityId, Instant.now());
+    } catch (CalDavAuthenticationException e) {
+      // Immediately, and before anything else is tried: a stale password
+      // retried on every page load is a login attempt every few minutes
+      // against a server that may well be counting them, and locking the
+      // account is a worse outcome than not synchronising.
+      LOG.warn("The CalDAV account of user {} refused its stored credentials; synchronisation is paused",
+               userIdentityId,
+               e);
+      pauseAll(userIdentityId, settings);
     } catch (RuntimeException e) {
       // A sync that fails is not an error the caller can act on — the page it
       // was triggered from has its own events to show. It is logged and the
@@ -414,6 +438,13 @@ public class CaldavSyncService {
       return;
     }
     Map<String, Calendar> byAnchor = calendarsByAnchor(userIdentityId, username);
+    // A listing that failed is null and tells us nothing. An empty one that
+    // succeeded tells us almost as little: a server briefly answering with
+    // nothing is far likelier than a user deleting every calendar they have,
+    // and concluding the second would mark the whole account gone in one
+    // pass. So a collection is only called gone against a listing that
+    // actually holds something.
+    boolean listed = collections != null && !collections.isEmpty();
     Map<String, String> ctags = ctagsByHref(collections);
     // Anchored to the start of the day, not to the instant. A window hanging
     // off "now" slides forward on every pass, so a collection whose ctag has
@@ -437,6 +468,16 @@ public class CaldavSyncService {
         continue;
       }
       String ctag = ctags.get(CaldavSyncStorage.canonicalHref(pair.getRemoteHref()));
+      if (listed && ctag == null && !holdsHref(collections, pair.getRemoteHref())) {
+        // The collection is not in a listing that succeeded: the user deleted
+        // their own calendar on the account. Marked rather than deleted here —
+        // what eXo already holds is theirs, and the binding is what lets the
+        // calendar come back if the collection does.
+        LOG.info("Collection {} is no longer on the account; its calendar stops receiving events", pair.getRemoteHref());
+        pair.setStatus(CalendarSyncStatus.REMOTE_GONE);
+        caldavSyncStorage.savePair(pair);
+        continue;
+      }
       if (nothingToRead(pair, ctag, today)) {
         // The collection has not changed since it was last read, and the
         // window has not moved since either. eXo did reach the account — the
@@ -465,11 +506,83 @@ public class CaldavSyncService {
           pair.setCtag(ctag);
         }
         caldavSyncStorage.savePair(pair);
+        if (pair.getConsecutiveFailures() > 0) {
+          pair.setConsecutiveFailures(0);
+        }
       } catch (RuntimeException e) {
-        // One collection must not cost the others. The next run tries again.
+        // One collection must not cost the others. The next run tries again —
+        // but not for ever: a collection failing every time is not going to
+        // start working because it was asked once more, and each attempt
+        // costs the user's page load.
         LOG.warn("The events of collection {} could not be imported", pair.getRemoteHref(), e);
+        pair.setConsecutiveFailures(pair.getConsecutiveFailures() + 1);
+        if (pair.getConsecutiveFailures() >= MAX_CONSECUTIVE_FAILURES) {
+          LOG.warn("Collection {} has failed {} times in a row; its synchronisation is paused",
+                   pair.getRemoteHref(),
+                   pair.getConsecutiveFailures());
+          pair.setStatus(CalendarSyncStatus.PAUSED);
+          pair.setConsecutiveFailures(0);
+        }
+        caldavSyncStorage.savePair(pair);
       }
     }
+  }
+
+  /**
+   * Suspends every binding of an account.
+   *
+   * <p>
+   * A refused credential is not a property of one calendar, so pausing one
+   * would leave the others retrying the same rejected password.
+   *
+   * @param userIdentityId identity of the user
+   * @param settings the connected account
+   */
+  private void pauseAll(long userIdentityId, CaldavUserSetting settings) {
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    for (CalendarSync pair : caldavSyncStorage.getPairs(userIdentityId, serverId)) {
+      if (pair.getStatus() == CalendarSyncStatus.ACTIVE) {
+        pair.setStatus(CalendarSyncStatus.PAUSED);
+        caldavSyncStorage.savePair(pair);
+      }
+    }
+  }
+
+  /**
+   * Puts a binding back to work when its collection turns up again.
+   *
+   * <p>
+   * Without this a collection marked gone stays gone for good: materialisation
+   * skips a collection that already has a binding, so nothing would ever
+   * notice it had come back — a calendar deleted and restored on the user's
+   * own client would simply never fill again.
+   *
+   * @param known the bindings of this account
+   * @param collection the collection the server just listed
+   */
+  private void reviveIfMarkedGone(List<CalendarSync> known, CalendarCollection collection) {
+    String href = CaldavSyncStorage.canonicalHref(collection.href());
+    for (CalendarSync pair : known) {
+      if (pair.getStatus() == CalendarSyncStatus.REMOTE_GONE
+          && StringUtils.equals(href, CaldavSyncStorage.canonicalHref(pair.getRemoteHref()))) {
+        LOG.info("Collection {} is back on the account; its calendar receives events again", collection.href());
+        pair.setStatus(CalendarSyncStatus.ACTIVE);
+        caldavSyncStorage.savePair(pair);
+      }
+    }
+  }
+
+  /**
+   * Whether a listing holds a path.
+   *
+   * @param collections what the account listed
+   * @param href the path a binding records
+   * @return true when the server still holds it
+   */
+  private boolean holdsHref(List<CalendarCollection> collections, String href) {
+    String canonical = CaldavSyncStorage.canonicalHref(href);
+    return collections != null
+        && collections.stream().anyMatch(c -> StringUtils.equals(canonical, CaldavSyncStorage.canonicalHref(c.href())));
   }
 
   /**
@@ -510,6 +623,9 @@ public class CaldavSyncService {
    */
   private Map<String, String> ctagsByHref(List<CalendarCollection> collections) {
     Map<String, String> ctags = new HashMap<>();
+    if (collections == null) {
+      return ctags;
+    }
     for (CalendarCollection collection : collections) {
       if (StringUtils.isNotBlank(collection.ctag())) {
         ctags.put(CaldavSyncStorage.canonicalHref(collection.href()), collection.ctag());
@@ -561,13 +677,23 @@ public class CaldavSyncService {
     try {
       String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
       collections = calDavClient.listCalendars(endpoint, home, settings.getUsername(), settings.getPassword());
+    } catch (CalDavAuthenticationException e) {
+      // Not swallowed with the rest: a refused credential is not "this round
+      // did not work", it is an account that must stop being retried, and the
+      // decision belongs to the caller that can pause every binding at once.
+      throw e;
     } catch (CalDavException e) {
+      // null, not an empty list: an account whose listing failed and an
+      // account with no calendars look identical otherwise, and the second
+      // conclusion — "every collection is gone" — would mark the user's whole
+      // set as vanished the moment their server had a bad minute.
       LOG.warn("The account's calendars could not be listed; nothing is materialised this round", e);
-      return List.of();
+      return null;
     }
     List<CalendarSync> known = caldavSyncStorage.getPairs(userIdentityId, serverId);
     for (CalendarCollection collection : collections) {
       if (isAlreadyOurs(collection, known, settings)) {
+        reviveIfMarkedGone(known, collection);
         continue;
       }
       if (!collection.holdsEvents()) {
