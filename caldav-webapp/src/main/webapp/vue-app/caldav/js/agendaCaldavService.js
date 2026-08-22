@@ -432,3 +432,49 @@ export const currentMirrorCalendar = () => {
     return resp.status === 204 ? null : resp.json();
   });
 };
+
+/**
+ * How often and how widely eXo synchronises CalDAV accounts.
+ *
+ * @returns {Promise<Object>} the tuning in force
+ */
+export const getSyncTuning = () => {
+  return fetch(`${window.location.origin}/caldav/rest/servers/tuning`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
+ * Records how often and how widely eXo synchronises. Administrators only.
+ *
+ * A refused value comes back as a 400 whose body is the message code the
+ * screen shows, so the reason reaches the administrator instead of a generic
+ * failure.
+ *
+ * @param {Object} tuning the values to store
+ * @returns {Promise<Object>} the tuning now in force
+ */
+export const saveSyncTuning = tuning => {
+  return fetch(`${window.location.origin}/caldav/rest/servers/tuning`, {
+    credentials: 'include',
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(tuning),
+  }).then(resp => {
+    if (resp && resp.status === 400) {
+      return resp.text().then(body => {
+        throw new Error(body || 'caldav.tuning.saveFailed');
+      });
+    }
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
