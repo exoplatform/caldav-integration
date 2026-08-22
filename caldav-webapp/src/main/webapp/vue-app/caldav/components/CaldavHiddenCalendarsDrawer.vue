@@ -19,7 +19,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     id="caldavHiddenCalendarsDrawer"
     ref="caldavHiddenCalendarsDrawer"
     :right="!$vuetify.rtl"
-    disable-pull-to-refresh>
+    disable-pull-to-refresh
+    @closed="opened = false">
     <template slot="title">
       {{ $t('caldav.hiddenCalendars.drawer.title') }}
     </template>
@@ -78,8 +79,19 @@ export default {
       default: () => [],
     },
   },
+  watch: {
+    calendars(current) {
+      // Nothing left to offer: the drawer has said all it can, and leaving an
+      // empty panel open makes the user close it themselves to find out
+      // whether anything happened.
+      if (this.opened && !current.length) {
+        this.$refs.caldavHiddenCalendarsDrawer.close();
+      }
+    },
+  },
   data: () => ({
     restoring: null,
+    opened: false,
   }),
   created() {
     this.$root.$on('open-caldav-hidden-calendars-drawer', this.open);
@@ -94,6 +106,7 @@ export default {
      * @returns {void}
      */
     open() {
+      this.opened = true;
       this.$refs.caldavHiddenCalendarsDrawer.open();
     },
     /**
@@ -118,6 +131,14 @@ export default {
           this.$root.$emit('alert-message',
             this.$t('caldav.hiddenCalendars.showAgainSuccess', {0: calendar.name}),
             'success');
+          // The calendar is already back by the time this resolves — the
+          // server synchronises before answering — so everything showing
+          // calendars has to be told. Without this the only visible change
+          // was inside this drawer, and the user had to reload the page to
+          // see the calendar they had just asked for.
+          document.dispatchEvent(new CustomEvent('agenda-refresh-personal-calendars'));
+          this.$root.$emit('agenda-refresh-personal-calendars');
+          this.$root.$emit('agenda-refresh');
           this.$emit('changed');
         })
         .catch(error => {
