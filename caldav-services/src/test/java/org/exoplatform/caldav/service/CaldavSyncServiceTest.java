@@ -58,6 +58,7 @@ import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
+import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -931,6 +932,120 @@ public class CaldavSyncServiceTest {
     Identity identity = new Identity(String.valueOf(USER));
     identity.setRemoteId(LOGIN);
     lenient().when(identityManager.getIdentity(anyString())).thenReturn(identity);
+  }
+
+  /**
+   * A refused password stops the account rather than being retried.
+   */
+  @Test
+  public void aRefusedPasswordPausesTheAccountAtOnce() {
+    // Retried on every page load it is a login attempt every few minutes
+    // against a server that may well be counting them. Locking the account is
+    // a worse outcome than not synchronising.
+    CalendarSync bound = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+                                                                           .thenThrow(new CalDavAuthenticationException("401"));
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(CalendarSyncStatus.PAUSED, bound.getStatus());
+  }
+
+  /**
+   * A collection the account no longer lists stops receiving events.
+   */
+  @Test
+  public void aCollectionTheAccountNoLongerHoldsIsMarkedGone() throws Exception {
+    givenServerCalendars(collection("/dav/calendars/john/other/", "Other"));
+    givenAgendaCreates("other-anchor");
+    CalendarSync bound = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(CalendarSyncStatus.REMOTE_GONE, bound.getStatus());
+    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  /**
+   * An empty listing is not taken as every calendar having been deleted.
+   */
+  @Test
+  public void anEmptyListingDoesNotMarkEverythingGone() {
+    // A server briefly answering with nothing is far likelier than a user
+    // deleting every calendar they have, and the second conclusion would mark
+    // the whole account gone in a single pass.
+    givenServerCalendars();
+    CalendarSync bound = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(CalendarSyncStatus.ACTIVE, bound.getStatus());
+  }
+
+  /**
+   * A collection that comes back starts receiving events again.
+   */
+  @Test
+  public void aCollectionThatComesBackIsRevived() {
+    // Materialisation skips a collection that already has a binding, so
+    // without this a calendar deleted and restored on the user's own client
+    // would never fill again.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync gone = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    gone.setStatus(CalendarSyncStatus.REMOTE_GONE);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(gone));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(gone));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(CalendarSyncStatus.ACTIVE, gone.getStatus());
+  }
+
+  /**
+   * A collection failing every time is eventually left alone.
+   */
+  @Test
+  public void aCollectionThatKeepsFailingIsPaused() {
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync bound = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    bound.setConsecutiveFailures(4);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
+    givenAgendaHasCalendar("anchor-1");
+    doThrow(new IllegalStateException("boom")).when(caldavInboundService)
+                                              .importInto(anyLong(), any(), any(), any(), any());
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(CalendarSyncStatus.PAUSED, bound.getStatus());
+  }
+
+  /**
+   * One success clears what earlier failures had counted.
+   */
+  @Test
+  public void oneSuccessForgivesTheFailuresBeforeIt() {
+    // Otherwise a collection that fails now and then would reach the limit
+    // eventually, however well it works in between.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync bound = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    bound.setConsecutiveFailures(4);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(0, bound.getConsecutiveFailures());
+    assertEquals(CalendarSyncStatus.ACTIVE, bound.getStatus());
   }
 
   /**

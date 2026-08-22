@@ -891,6 +891,7 @@ public class CaldavDeletionServiceTest {
 
     assertEquals(1, states.size());
     assertEquals("Family", states.get(0).name());
+    assertEquals(CALENDAR, states.get(0).calendarId());
     assertEquals(CalendarSyncStatus.PAUSED, states.get(0).status());
   }
 
