@@ -237,17 +237,27 @@ public class IcsEventMapper {
     }
     ZoneId zone = zoneOf(zoneId);
     String trimmed = value.trim();
-    try {
-      return new net.fortuna.ical4j.model.DateTime(trimmed).toInstant().atZone(zone);
-    } catch (Exception e) {
-      // A bare date: an all-day series excludes a day, not an instant.
+    // A bare date first, and by its shape rather than by whether the instant
+    // parser refuses it: an all-day series excludes a DAY, and ical4j's
+    // DateTime accepts "20261012" happily — as midnight in whatever zone the
+    // JVM runs in. On a server east of UTC that shifted the exclusion onto the
+    // day before, so the occurrence the user deleted stayed and its neighbour
+    // vanished. It also made the behaviour depend on which test had run first,
+    // which is how it was found.
+    if (trimmed.length() == 8 && trimmed.chars().allMatch(Character::isDigit)) {
       try {
         return java.time.LocalDate.parse(trimmed, java.time.format.DateTimeFormatter.BASIC_ISO_DATE)
                                   .atStartOfDay(zone);
-      } catch (Exception ignored) {
+      } catch (Exception e) {
         LOG.debug("An excluded date that could not be read is ignored: {}", value);
         return null;
       }
+    }
+    try {
+      return new net.fortuna.ical4j.model.DateTime(trimmed).toInstant().atZone(zone);
+    } catch (Exception e) {
+      LOG.debug("An excluded date that could not be read is ignored: {}", value);
+      return null;
     }
   }
 

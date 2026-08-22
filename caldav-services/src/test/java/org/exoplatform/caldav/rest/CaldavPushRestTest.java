@@ -18,10 +18,15 @@
  */
 package org.exoplatform.caldav.rest;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -39,7 +44,14 @@ import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.service.CaldavDeletionService;
 import org.exoplatform.caldav.service.CaldavPushException;
+import java.util.List;
+
+import org.springframework.web.server.ResponseStatusException;
+
 import org.exoplatform.caldav.service.CaldavPushService;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.caldav.service.CaldavDeletionService;
+import org.exoplatform.caldav.model.HiddenCalendar;
 import org.exoplatform.caldav.service.MirrorTarget;
 import org.exoplatform.services.security.ConversationState;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -366,4 +378,94 @@ public class CaldavPushRestTest {
   private HttpStatus statusOf(String code) {
     return HttpStatus.valueOf(caldavPushRest.onPushFailure(new CaldavPushException(code, "failed")).getStatusCode().value());
   }
+
+  /**
+   * Un-hiding names the caller and their login, and answers 204.
+   */
+  @Test
+  public void unHidingNamesTheCallerAndTheirLogin() {
+    // The login is what lets the service delete and recreate calendars under
+    // agenda's ACL. The binding id comes from the path; whose it is does not.
+    withCurrentUser();
+
+    ResponseEntity<Void> response = caldavPushRest.showCalendarAgain(9L);
+
+    assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
+    assertDoesNotThrow(() -> verify(caldavDeletionService).showAgain(42L, 9L, USER_NAME));
+  }
+
+  /**
+   * A binding that is not this user's is a 403, never a silent success.
+   */
+  @Test
+  public void aBindingThatIsNotYoursIsForbidden() {
+    // The binding carries whose it is, and that is the only thing standing
+    // between one user and another user's calendars.
+    withCurrentUser();
+    assertDoesNotThrow(() -> doThrow(new IllegalAccessException("not yours")).when(caldavDeletionService)
+                                                                            .showAgain(anyLong(), anyLong(), anyString()));
+
+    ResponseStatusException refused = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavPushRest.showCalendarAgain(9L));
+
+    assertEquals(HttpStatus.FORBIDDEN, refused.getStatusCode());
+  }
+
+  /**
+   * A tombstone already lifted is a 404 and not an incident.
+   */
+  @Test
+  public void aTombstoneAlreadyLiftedIsNotFound() {
+    // A stale drawer offering something someone already brought back. Worth a
+    // status, not worth a log at error level.
+    withCurrentUser();
+    assertDoesNotThrow(() -> doThrow(new ObjectNotFoundException("gone")).when(caldavDeletionService)
+                                                                        .showAgain(anyLong(), anyLong(), anyString()));
+
+    ResponseStatusException refused = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavPushRest.showCalendarAgain(9L));
+
+    assertEquals(HttpStatus.NOT_FOUND, refused.getStatusCode());
+  }
+
+  /**
+   * The hidden calendars are handed through as the service listed them.
+   */
+  @Test
+  public void theHiddenCalendarsAreHandedThrough() {
+    withCurrentUser();
+    List<HiddenCalendar> hidden = List.of(new HiddenCalendar(9L, "Family"));
+    when(caldavDeletionService.listHidden(42L)).thenReturn(hidden);
+
+    assertEquals(hidden, caldavPushRest.hiddenCalendars());
+  }
+
+  /**
+   * No destination set answers 204 rather than an empty object.
+   */
+  @Test
+  public void noDestinationAnswersNoContent() {
+    // An empty body with a 200 would read as "there is one, and it has no
+    // name", which is what the settings screen would then display.
+    withCurrentUser();
+    when(caldavPushService.currentMirror(42L)).thenReturn(null);
+
+    assertEquals(HttpStatus.NO_CONTENT, caldavPushRest.currentMirror().getStatusCode());
+  }
+
+  /**
+   * A destination is answered with its current name.
+   */
+  @Test
+  public void aDestinationIsAnsweredWithItsName() {
+    withCurrentUser();
+    MirrorTarget mirror = new MirrorTarget("/dav/root/exo-meetings/", false, "eXo Meetings");
+    when(caldavPushService.currentMirror(42L)).thenReturn(mirror);
+
+    ResponseEntity<MirrorTarget> response = caldavPushRest.currentMirror();
+
+    assertEquals(HttpStatus.OK, response.getStatusCode());
+    assertEquals(mirror, response.getBody());
+  }
+
 }
