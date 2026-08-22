@@ -35,6 +35,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Date;
 import java.util.List;
 import java.util.Set;
@@ -841,6 +843,107 @@ public class CaldavSyncServiceTest {
     } catch (Exception e) {
       throw new IllegalStateException(e);
     }
+  }
+
+  /**
+   * A collection whose ctag has not moved is not read again.
+   */
+  @Test
+  public void anUnchangedCollectionIsNotReadAgain() {
+    // The whole point: an account with a handful of calendars and a year-wide
+    // window pays for the full walk on every agenda open, most of it for
+    // nothing.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    pair.setCtag("ctag-1");
+    pair.setLastSyncEnd(new Date());
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  /**
+   * A collection whose ctag moved is read.
+   */
+  @Test
+  public void aChangedCollectionIsRead() {
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    pair.setCtag("ctag-0");
+    pair.setLastSyncEnd(new Date());
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  /**
+   * A server publishing no ctag is read in full rather than assumed quiet.
+   */
+  @Test
+  public void aCollectionWithoutACtagIsAlwaysRead() {
+    // Silence is not "nothing changed". Reading it as such would stop
+    // importing entirely from any server that does not publish the property.
+    givenServerCalendars(new CalendarCollection("/dav/calendars/john/private/", "Private", null, null, null, true));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    pair.setLastSyncEnd(new Date());
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  /**
+   * A matching ctag read before today is not enough to skip.
+   */
+  @Test
+  public void aCollectionLastReadBeforeTodayIsReadAgain() {
+    // The window is cut at a day boundary and reaches a fixed number of days
+    // forward. Yesterday's read covered a range that stops one day short of
+    // today's, so an event in that last day would never be imported however
+    // quiet the collection has been.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    pair.setCtag("ctag-1");
+    pair.setLastSyncEnd(Date.from(Instant.now().minus(Duration.ofDays(2))));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  /**
+   * The ctag is recorded only once the import went through.
+   */
+  @Test
+  public void aFailedImportDoesNotRecordTheCtag() {
+    // Recording it on the way in would make one failed collection look
+    // unchanged for ever: the next pass would compare the same ctag, find it
+    // equal, and never retry what it missed.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+    doThrow(new IllegalStateException("server down")).when(caldavInboundService)
+                                                     .importInto(anyLong(), any(), any(), any(), any());
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(null, pair.getCtag());
   }
 
   /**

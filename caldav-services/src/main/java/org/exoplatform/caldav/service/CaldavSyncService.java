@@ -18,6 +18,7 @@ package org.exoplatform.caldav.service;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Date;
 import java.util.List;
 import java.util.HashMap;
@@ -259,8 +260,8 @@ public class CaldavSyncService {
       // afterwards leaves the user waiting a whole throttle window for a
       // calendar that could have come back in this same pass.
       pruneOrphanBindings(userIdentityId, username, settings);
-      materialiseRemoteCalendars(userIdentityId, username, settings);
-      importRemoteEvents(userIdentityId, username, settings);
+      List<CalendarCollection> collections = materialiseRemoteCalendars(userIdentityId, username, settings);
+      importRemoteEvents(userIdentityId, username, settings, collections);
       lastSync.put(userIdentityId, Instant.now());
     } catch (RuntimeException e) {
       // A sync that fails is not an error the caller can act on — the page it
@@ -325,16 +326,26 @@ public class CaldavSyncService {
    * @param username the user's login, which agenda's ACL reads
    * @param settings the connected account
    */
-  private void importRemoteEvents(long userIdentityId, String username, CaldavUserSetting settings) {
+  private void importRemoteEvents(long userIdentityId,
+                                  String username,
+                                  CaldavUserSetting settings,
+                                  List<CalendarCollection> collections) {
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
     List<CalendarSync> pairs = caldavSyncStorage.getPairsByOrigin(userIdentityId, serverId, SyncOrigin.REMOTE);
     if (pairs.isEmpty()) {
       return;
     }
     Map<String, Calendar> byAnchor = calendarsByAnchor(userIdentityId, username);
-    Instant now = Instant.now();
-    Instant from = now.minus(Duration.ofDays(pastDays));
-    Instant to = now.plus(Duration.ofDays(futureDays));
+    Map<String, String> ctags = ctagsByHref(collections);
+    // Anchored to the start of the day, not to the instant. A window hanging
+    // off "now" slides forward on every pass, so a collection whose ctag has
+    // not moved could still hold an event in a day that has only just come
+    // into range — and skipping it on the ctag alone would never read it. Cut
+    // at a day boundary, the window is the same all day, which is exactly
+    // what makes "nothing changed" mean "nothing to read".
+    Instant today = Instant.now().truncatedTo(ChronoUnit.DAYS);
+    Instant from = today.minus(Duration.ofDays(pastDays));
+    Instant to = today.plus(Duration.ofDays(futureDays + 1L));
     for (CalendarSync pair : pairs) {
       if (pair.getStatus() != CalendarSyncStatus.ACTIVE) {
         // A paused or tombstoned binding is not one to read from. A tombstone
@@ -345,6 +356,15 @@ public class CaldavSyncService {
       Calendar calendar = byAnchor.get(pair.getLocalCalendarSyncUid());
       if (calendar == null) {
         // Pruned earlier in this pass, or created between the two steps.
+        continue;
+      }
+      String ctag = ctags.get(CaldavSyncStorage.canonicalHref(pair.getRemoteHref()));
+      if (nothingToRead(pair, ctag, today)) {
+        // The collection has not changed since it was last read, and the
+        // window has not moved since either. eXo did reach the account — the
+        // ctag came from it — so the account counts as synchronised now.
+        pair.setLastSyncEnd(new Date());
+        caldavSyncStorage.savePair(pair);
         continue;
       }
       try {
@@ -359,12 +379,65 @@ public class CaldavSyncService {
         // field is to say when eXo last got through to the account, and a
         // collection that failed did not.
         pair.setLastSyncEnd(new Date());
+        // Recorded only now, after the import went through. Storing it on the
+        // way in would make one failed collection look unchanged for ever:
+        // the next pass would compare the same ctag, find it equal, and never
+        // retry what it missed.
+        if (StringUtils.isNotBlank(ctag)) {
+          pair.setCtag(ctag);
+        }
         caldavSyncStorage.savePair(pair);
       } catch (RuntimeException e) {
         // One collection must not cost the others. The next run tries again.
         LOG.warn("The events of collection {} could not be imported", pair.getRemoteHref(), e);
       }
     }
+  }
+
+  /**
+   * Whether a collection can be skipped this pass.
+   *
+   * <p>
+   * Three things must hold, and each is a way this optimisation can silently
+   * stop importing if it is dropped:
+   *
+   * <ul>
+   * <li>the server published a ctag — one that publishes none says nothing
+   * about whether it changed, and must be read in full rather than assumed
+   * quiet;</li>
+   * <li>it matches the one stored when this collection was last read through
+   * to the end;</li>
+   * <li>that read happened with today's window. The window is cut at a day
+   * boundary, so this is the same as asking whether it happened today; a read
+   * from yesterday covered a range that no longer reaches as far forward.</li>
+   * </ul>
+   *
+   * @param pair the binding
+   * @param ctag the collection's ctag as the server reports it now
+   * @param today the start of the day the current window is cut from
+   * @return true when there is nothing this pass could read
+   */
+  private boolean nothingToRead(CalendarSync pair, String ctag, Instant today) {
+    return StringUtils.isNotBlank(ctag)
+        && ctag.equals(pair.getCtag())
+        && pair.getLastSyncEnd() != null
+        && !pair.getLastSyncEnd().toInstant().isBefore(today);
+  }
+
+  /**
+   * The ctag of each collection, by the canonical form of its path.
+   *
+   * @param collections what the account's home listed, possibly empty
+   * @return the ctags, keyed the way a binding records its href
+   */
+  private Map<String, String> ctagsByHref(List<CalendarCollection> collections) {
+    Map<String, String> ctags = new HashMap<>();
+    for (CalendarCollection collection : collections) {
+      if (StringUtils.isNotBlank(collection.ctag())) {
+        ctags.put(CaldavSyncStorage.canonicalHref(collection.href()), collection.ctag());
+      }
+    }
+    return ctags;
   }
 
   /**
@@ -401,7 +474,9 @@ public class CaldavSyncService {
    * @param username the user's login
    * @param settings the connected account
    */
-  private void materialiseRemoteCalendars(long userIdentityId, String username, CaldavUserSetting settings) {
+  private List<CalendarCollection> materialiseRemoteCalendars(long userIdentityId,
+                                                              String username,
+                                                              CaldavUserSetting settings) {
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
     CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
     List<CalendarCollection> collections;
@@ -410,7 +485,7 @@ public class CaldavSyncService {
       collections = calDavClient.listCalendars(endpoint, home, settings.getUsername(), settings.getPassword());
     } catch (CalDavException e) {
       LOG.warn("The account's calendars could not be listed; nothing is materialised this round", e);
-      return;
+      return List.of();
     }
     List<CalendarSync> known = caldavSyncStorage.getPairs(userIdentityId, serverId);
     for (CalendarCollection collection : collections) {
@@ -427,6 +502,10 @@ public class CaldavSyncService {
       }
       materialise(userIdentityId, username, serverId, collection);
     }
+    // Handed on rather than listed a second time: the import needs each
+    // collection's ctag to decide whether it has anything to read, and one
+    // PROPFIND already carries them all.
+    return collections;
   }
 
   /**
