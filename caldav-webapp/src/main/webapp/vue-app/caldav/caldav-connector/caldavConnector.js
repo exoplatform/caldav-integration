@@ -17,6 +17,15 @@ const caldavConnector = {
   isSignedIn: true,
   pushing: false,
   rank: 40,
+  /**
+   * The code this connector rejects with when the server refused the stored
+   * credentials. Agenda reads it to tell "your password no longer works" —
+   * which the user can fix — apart from a server that is simply unreachable.
+   *
+   * Declared here rather than known by agenda: the code belongs to this
+   * add-on's vocabulary, and a shared component cannot hold one connector's.
+   */
+  credentialsErrorCode: 'caldav.error.credentials',
   // A multi-instance connector: its rows are managed in the dedicated CalDAV
   // servers section of the agenda administration, not in the generic
   // connectors table (which keeps Google/Office365/Exchange only).
@@ -113,6 +122,27 @@ const caldavConnector = {
     return fetch(`${window.location.origin}/caldav/rest/calendars`, {credentials: 'include'})
       .then(readOutcome)
       .then(calendars => calendars || []);
+  },
+
+  /**
+   * Synchronises the connected account now, whatever the throttle says.
+   *
+   * Declaring this method is what makes agenda offer a "Sync now" action on
+   * this connector's row; a connector without it shows none.
+   *
+   * @returns {Promise} resolves once the synchronisation has run
+   */
+  sync() {
+    return caldavConnectorService.syncNow();
+  },
+  /**
+   * When this account last finished synchronising, so the row can say whether
+   * pressing Sync now is worth it.
+   *
+   * @returns {Promise<Date>} the instant, or null when nothing has yet
+   */
+  lastSynchronised() {
+    return caldavConnectorService.lastSynchronised();
   },
 
   canCreateCalendar: true,

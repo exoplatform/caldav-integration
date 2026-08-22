@@ -22,6 +22,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.lang3.StringUtils;
@@ -114,6 +115,38 @@ public class CaldavSyncService {
 
   @Autowired
   private AgendaCalendarService       agendaCalendarService;
+
+  /**
+   * When the connected account was last synchronised through to the end.
+   *
+   * <p>
+   * Read from the bindings rather than from the in-memory throttle: the
+   * throttle is a courtesy to the server and is emptied by a restart, so a
+   * user opening their settings after one would be told they had never
+   * synchronised. {@code lastSyncEnd} is written where the work finished and
+   * survives.
+   *
+   * <p>
+   * The latest across bindings, not the earliest: what the user wants to know
+   * is when eXo last spoke to their account. A binding that has been failing
+   * on its own is a different question, and one this line would only muddle.
+   *
+   * @param userIdentityId whose account
+   * @return the instant, or null when nothing has ever synchronised
+   */
+  public Date lastSyncEnd(long userIdentityId) {
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (settings == null || StringUtils.isBlank(settings.getUsername())) {
+      return null;
+    }
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    return caldavSyncStorage.getPairs(userIdentityId, serverId)
+                            .stream()
+                            .map(CalendarSync::getLastSyncEnd)
+                            .filter(Objects::nonNull)
+                            .max(Date::compareTo)
+                            .orElse(null);
+  }
 
   /**
    * Synchronises a user's calendars if they have not been synchronised
@@ -316,6 +349,17 @@ public class CaldavSyncService {
       }
       try {
         caldavInboundService.importInto(userIdentityId, pair, calendar, from, to);
+        // Stamped on the way out, and only on the way out: until this line
+        // the field was written when a binding was CREATED, so an account
+        // whose calendars were all already bound kept reporting the day it
+        // was connected however often it synchronised. A user pressing "Sync
+        // now" and watching the time not move reads it as a broken button.
+        //
+        // Deliberately not stamped when the import threw: the point of the
+        // field is to say when eXo last got through to the account, and a
+        // collection that failed did not.
+        pair.setLastSyncEnd(new Date());
+        caldavSyncStorage.savePair(pair);
       } catch (RuntimeException e) {
         // One collection must not cost the others. The next run tries again.
         LOG.warn("The events of collection {} could not be imported", pair.getRemoteHref(), e);
