@@ -17,7 +17,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <template>
   <v-list-item v-if="hidden.length">
     <v-list-item-content>
-      <v-list-item-title class="text-header">
+      <!-- text-color, matching the E-mail and calendar rows of this page -->
+      <v-list-item-title class="text-color">
         {{ $t('caldav.hiddenCalendars.title') }}
       </v-list-item-title>
       <!--
@@ -26,7 +27,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         its neighbours reads as belonging to another list.
       -->
       <v-list-item-subtitle>
-        <span class="text-subtitle">
+        <span>
           {{ $t('caldav.hiddenCalendars.subtitle', {0: hidden.length}) }}
         </span>
       </v-list-item-subtitle>
