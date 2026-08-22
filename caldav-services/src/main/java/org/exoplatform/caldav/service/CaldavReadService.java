@@ -85,6 +85,15 @@ public class CaldavReadService {
     List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
     List<RemoteCalendar> calendars = new ArrayList<>();
     for (CalendarCollection collection : collections) {
+      if (!collection.holdsEvents()) {
+        // The same refusal materialisation makes, for the same reason: a
+        // CalDAV home publishes the account's task list beside its calendars,
+        // and it answers a PROPFIND exactly as a calendar would. Listing it
+        // here while refusing to materialise it left the Remote section alive
+        // for a collection that can never hold an event — the one thing that
+        // section exists to show.
+        continue;
+      }
       calendars.add(new RemoteCalendar(collection.href(),
                                        collection.displayName(),
                                        CalendarPalette.colourOf(collection.color(),

@@ -328,3 +328,84 @@ export function toDate(date) {
     return new Date(date);
   }
 }
+
+/**
+ * The calendars the user deleted in eXo while choosing to keep them on the
+ * server. Each carries the binding to lift and the name the server gives the
+ * collection today — never a stored name, which would go stale the moment the
+ * user renamed it in their own client.
+ *
+ * @returns {Promise<Array>} the hidden calendars, empty when there are none
+ */
+export const getHiddenCalendars = () => {
+  return fetch(`${window.location.origin}/caldav/rest/hidden-calendars`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
+ * Shows a hidden calendar again, by the id of the binding that hides it.
+ *
+ * The id rather than the collection path: a path travelling through a browser
+ * is something a caller could change, and what it would then name is another
+ * collection on the same account.
+ *
+ * @param {Number} pairId the binding to lift
+ * @returns {Promise} resolves once the calendar will come back on the next sync
+ */
+export const showCalendarAgain = pairId => {
+  return fetch(`${window.location.origin}/caldav/rest/hidden-calendars/${pairId}`, {
+    credentials: 'include',
+    method: 'DELETE',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+  });
+};
+
+/**
+ * Synchronises the connected account now, whatever the throttle says.
+ *
+ * @returns {Promise} resolves once the synchronisation has run
+ */
+export const syncNow = () => {
+  return fetch(`${window.location.origin}/caldav/rest/sync`, {
+    credentials: 'include',
+    method: 'POST',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+  });
+};
+
+/**
+ * When the connected account last finished synchronising.
+ *
+ * A 204 means it never has — an account connected a moment ago, or one whose
+ * every attempt has failed — and resolves to null rather than to a date the
+ * caller would have to recognise as meaningless.
+ *
+ * @returns {Promise<Date>} the instant, or null when nothing has synchronised
+ */
+export const lastSynchronised = () => {
+  return fetch(`${window.location.origin}/caldav/rest/sync/state`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    if (resp.status === 204) {
+      return null;
+    }
+    return resp.json().then(millis => millis && new Date(millis) || null);
+  });
+};
