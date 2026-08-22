@@ -154,4 +154,118 @@ public class CaldavTuningServiceTest {
 
     verify(settingService, never()).set(any(), any(), any(), any());
   }
+
+  @Test
+  public void everyValueIsReadTogether() {
+    // The screen asks for all five at once, and each has to come back with
+    // its own resolution — a getter left reading the wrong key would show a
+    // plausible number from another setting.
+    doReturn(SettingValue.create("5")).when(settingService)
+                                      .get(eq(Context.GLOBAL), eq(CaldavTuningService.TUNING_SCOPE), eq("throttleMinutes"));
+    doReturn(SettingValue.create("30")).when(settingService)
+                                       .get(eq(Context.GLOBAL), eq(CaldavTuningService.TUNING_SCOPE), eq("pastDays"));
+    doReturn(SettingValue.create("90")).when(settingService)
+                                       .get(eq(Context.GLOBAL), eq(CaldavTuningService.TUNING_SCOPE), eq("futureDays"));
+    doReturn(SettingValue.create("45")).when(settingService)
+                                       .get(eq(Context.GLOBAL), eq(CaldavTuningService.TUNING_SCOPE), eq("sweepStaleMinutes"));
+    doReturn(SettingValue.create("20")).when(settingService)
+                                       .get(eq(Context.GLOBAL), eq(CaldavTuningService.TUNING_SCOPE), eq("sweepBatchSize"));
+
+    CaldavSyncTuning tuning = service.getTuning();
+
+    assertEquals(5L, tuning.throttleMinutes());
+    assertEquals(30L, tuning.pastDays());
+    assertEquals(90L, tuning.futureDays());
+    assertEquals(45L, tuning.sweepStaleMinutes());
+    assertEquals(20, tuning.sweepBatchSize());
+  }
+
+  @Test
+  public void theSweepValuesFallBackToTheirProperties() {
+    assertEquals(30L, service.getSweepStaleMinutes());
+    assertEquals(50, service.getSweepBatchSize());
+  }
+
+  @Test
+  public void nothingSentIsRefused() {
+    // A body that did not deserialize, rather than a body asking for nothing.
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> service.saveTuning(null));
+
+    assertEquals("caldav.tuning.mandatory", refused.getMessage());
+  }
+
+  @Test
+  public void aThrottleOfMoreThanADayIsRefused() {
+    // Beyond a day the setting stops meaning "do not hammer the server" and
+    // starts meaning "do not synchronise", which is not what it is for.
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.saveTuning(new CaldavSyncTuning(2000L,
+                                                                                                  60L,
+                                                                                                  365L,
+                                                                                                  30L,
+                                                                                                  50)));
+
+    assertEquals("caldav.tuning.throttleOutOfRange", refused.getMessage());
+  }
+
+  @Test
+  public void aThrottleOfZeroIsAllowed() {
+    // Zero is a deployment saying "read on every open". Expensive, and a
+    // legitimate choice on a small instance with a fast server.
+    service.saveTuning(new CaldavSyncTuning(0L, 60L, 365L, 30L, 50));
+
+    verify(settingService).set(eq(Context.GLOBAL), eq(CaldavTuningService.TUNING_SCOPE), eq("throttleMinutes"), any());
+  }
+
+  @Test
+  public void readingTooFarIntoThePastIsRefused() {
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.saveTuning(new CaldavSyncTuning(15L,
+                                                                                                  40000L,
+                                                                                                  365L,
+                                                                                                  30L,
+                                                                                                  50)));
+
+    assertEquals("caldav.tuning.pastDaysOutOfRange", refused.getMessage());
+  }
+
+  @Test
+  public void aBackgroundRefreshOfMoreThanAWeekIsRefused() {
+    // Past a week the sweep stops being a background refresh and becomes
+    // something that will not have run before the user looks again.
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.saveTuning(new CaldavSyncTuning(15L,
+                                                                                                  60L,
+                                                                                                  365L,
+                                                                                                  20000L,
+                                                                                                  50)));
+
+    assertEquals("caldav.tuning.sweepStaleOutOfRange", refused.getMessage());
+  }
+
+  @Test
+  public void aBackgroundRunOfNothingIsRefused() {
+    // A page of zero is a sweep that runs on schedule and does nothing, which
+    // reads as a broken sweep rather than as a disabled one. Turning it off
+    // is the cron's job.
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.saveTuning(new CaldavSyncTuning(15L,
+                                                                                                  60L,
+                                                                                                  365L,
+                                                                                                  30L,
+                                                                                                  0)));
+
+    assertEquals("caldav.tuning.sweepBatchOutOfRange", refused.getMessage());
+  }
+
+  @Test
+  public void aSettingWithNoValueInsideItFallsBack() {
+    // SettingService can hand back a wrapper whose value is null. Reading that
+    // as zero would silently set the window to nothing.
+    doReturn(SettingValue.create("")).when(settingService)
+                                     .get(eq(Context.GLOBAL), eq(CaldavTuningService.TUNING_SCOPE), eq("futureDays"));
+
+    assertEquals(365L, service.getFutureDays());
+  }
+
 }
