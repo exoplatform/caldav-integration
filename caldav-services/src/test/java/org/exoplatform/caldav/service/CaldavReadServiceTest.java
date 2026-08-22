@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
@@ -50,7 +51,9 @@ import org.exoplatform.caldav.ics.IcsReader;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.RemoteCalendar;
 import org.exoplatform.caldav.model.RemoteIcsEvent;
+import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.caldav.storage.CaldavSyncStorage;
 
 /**
  * The read half, and above all what it does when part of it fails.
@@ -86,6 +89,9 @@ public class CaldavReadServiceTest {
   private IcsReader                  icsReader;
 
   @Mock
+  private CaldavSyncStorage          caldavSyncStorage;
+
+  @Mock
   private CalDavEndpoint             endpoint;
 
   @InjectMocks
@@ -96,6 +102,9 @@ public class CaldavReadServiceTest {
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, "john")).thenReturn(endpoint);
     lenient().when(calDavClient.discoverCalendarHome(any(), anyString(), anyString())).thenReturn(HOME);
+    // Nothing bound by default: these tests are about what the shim serves,
+    // not about what eXo has taken over.
+    lenient().when(caldavSyncStorage.getPairs(anyLong(), anyLong())).thenReturn(List.of());
   }
 
   @Test
@@ -255,6 +264,66 @@ public class CaldavReadServiceTest {
     // Never even asked for: the copies are not events to display, and fetching
     // them only to drop them costs a REPORT per read.
     verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void aCollectionExoAlreadyHoldsIsNoLongerServedHere() {
+    // The shim being retired, one collection at a time. Its events live in an
+    // eXo calendar now, so serving them here as well shows the user every
+    // meeting twice — once under Remote and once under their own calendar.
+    givenCalendars(calendar("/dav/calendars/john/work/", "Work"));
+    givenBoundCollections("/dav/calendars/john/work");
+
+    assertTrue(service.readEvents(USER, FROM, TO).isEmpty());
+    assertTrue(service.listCalendars(USER).isEmpty());
+    // Not fetched only to be dropped: a retired collection costs no REPORT.
+    verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void aCollectionWithNoBindingIsStillServed() {
+    // The safety net. A materialisation that has not happened yet, or one that
+    // failed, must leave the user seeing their events rather than silently
+    // losing them between the two halves.
+    givenCalendars(calendar("/dav/calendars/john/work/", "Work"));
+
+    assertEquals(1, service.listCalendars(USER).size());
+  }
+
+  @Test
+  public void aTombstonedCollectionStaysHidden() {
+    // The user deleted the eXo calendar, and the dialog that asked them
+    // promised eXo would "simply stop showing it". Putting the collection back
+    // under Remote would break that promise in the plainest way.
+    givenCalendars(calendar("/dav/calendars/john/private/", "Private"));
+    givenBoundCollections("/dav/calendars/john/private");
+
+    assertTrue(service.listCalendars(USER).isEmpty());
+  }
+
+  @Test
+  public void oneBoundCollectionDoesNotHideTheOthers() {
+    givenCalendars(calendar("/dav/calendars/john/work/", "Work"),
+                   calendar("/dav/calendars/john/family/", "Family"));
+    givenBoundCollections("/dav/calendars/john/work");
+
+    assertEquals(1, service.listCalendars(USER).size());
+    assertEquals("Family", service.listCalendars(USER).get(0).getName());
+  }
+
+  /**
+   * @param hrefs the collections eXo already accounts for
+   */
+  private void givenBoundCollections(String... hrefs) {
+    List<CalendarSync> pairs = new java.util.ArrayList<>();
+    for (String href : hrefs) {
+      CalendarSync pair = new CalendarSync();
+      pair.setUserIdentityId(USER);
+      pair.setServerId(SERVER);
+      pair.setRemoteHref(href);
+      pairs.add(pair);
+    }
+    when(caldavSyncStorage.getPairs(anyLong(), anyLong())).thenReturn(pairs);
   }
 
   @Test
