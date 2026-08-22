@@ -88,6 +88,14 @@ i18nPromise.finally(() => {
     rank: 30,
     vueComponent: Vue.options.components['caldav-hidden-calendars-section'],
   });
+  // Just above the hidden calendars, and for the same reason it sits where it
+  // does: a calendar that cannot synchronise is a problem with the account
+  // the row above it describes, and the user reads down from there.
+  extensionRegistry.registerExtension('agenda-user-settings', 'sections', {
+    id: 'caldavCalendarStates',
+    rank: 29,
+    vueComponent: Vue.options.components['caldav-calendar-states-section'],
+  });
   document.dispatchEvent(new CustomEvent('agenda-user-sections-refresh'));
 });
 
