@@ -64,6 +64,9 @@ public class CaldavConnectorServiceImplTest {
   @Mock
   private CaldavConnectorStorage         caldavConnectorStorage;
 
+  @Mock
+  private CaldavDeletionService          caldavDeletionService;
+
   @InjectMocks
   private CaldavConnectorServiceImpl     caldavConnectorService;
 
@@ -338,5 +341,109 @@ public class CaldavConnectorServiceImplTest {
     assertEquals("https://seed.example.org/", setting.getCaldavUrl());
   }
 
+
+
+  /**
+   * Disconnecting with a login tidies what eXo built, then forgets the
+   * account.
+   */
+  @Test
+  public void disconnectingTidiesBeforeItForgets() {
+    // In this order and no other: once the settings are gone the account
+    // cannot be identified any more, and the bindings would have nothing to
+    // be resolved against.
+    caldavConnectorService.setCaldavDeletionService(caldavDeletionService);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(settingsOnServer(7L));
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID, "john");
+
+    InOrder inOrder = inOrder(caldavDeletionService, caldavConnectorStorage);
+    inOrder.verify(caldavDeletionService).freezeOnDisconnect(USER_IDENTITY_ID, 7L, "john");
+    inOrder.verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+  }
+
+  /**
+   * Without a login, nothing is tidied and the account still goes.
+   */
+  @Test
+  public void disconnectingWithoutALoginStillDisconnects() {
+    // There is no ACL to delete a calendar under, so the bindings are left as
+    // they are rather than half-processed — but the user asked to unlink, and
+    // that must happen.
+    caldavConnectorService.setCaldavDeletionService(caldavDeletionService);
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
+
+    verify(caldavDeletionService, never()).freezeOnDisconnect(anyLong(), anyLong(), anyString());
+    verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+  }
+
+  /**
+   * An account that is not connected has nothing to tidy.
+   */
+  @Test
+  public void disconnectingAnAccountThatIsNotThereTidiesNothing() {
+    caldavConnectorService.setCaldavDeletionService(caldavDeletionService);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(null);
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID, "john");
+
+    verify(caldavDeletionService, never()).freezeOnDisconnect(anyLong(), anyLong(), anyString());
+    verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+  }
+
+  /**
+   * A failure while tidying does not keep the user connected.
+   */
+  @Test
+  public void aFailureWhileTidyingStillDisconnects() {
+    // Someone asking to unlink an account must not be left connected to one
+    // they no longer want because a calendar could not be cleared away.
+    caldavConnectorService.setCaldavDeletionService(caldavDeletionService);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(settingsOnServer(7L));
+    doThrow(new IllegalStateException("boom")).when(caldavDeletionService)
+                                              .freezeOnDisconnect(USER_IDENTITY_ID, 7L, "john");
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID, "john");
+
+    verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+  }
+
+  /**
+   * An account attached the legacy way, before servers were declared, is
+   * tidied under server zero rather than skipped.
+   */
+  @Test
+  public void anAccountWithNoDeclaredServerIsStillTidied() {
+    caldavConnectorService.setCaldavDeletionService(caldavDeletionService);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(settingsOnServer(null));
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID, "john");
+
+    verify(caldavDeletionService).freezeOnDisconnect(USER_IDENTITY_ID, 0L, "john");
+  }
+
+  /**
+   * The deletion engine handed in is the one used, and remembered.
+   */
+  @Test
+  public void theDeletionEngineHandedInIsTheOneUsed() {
+    caldavConnectorService.setCaldavDeletionService(caldavDeletionService);
+
+    assertEquals(caldavDeletionService, caldavConnectorService.getCaldavDeletionService());
+  }
+
+  /**
+   * @param serverId the declared server the account references, null for a
+   *          legacy attachment
+   * @return a connected account
+   */
+  private CaldavUserSetting settingsOnServer(Long serverId) {
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+    setting.setServerId(serverId);
+    return setting;
+  }
 
 }
