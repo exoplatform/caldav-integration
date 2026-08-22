@@ -302,6 +302,34 @@ public class CaldavReadServiceTest {
   }
 
   @Test
+  public void aTaskListIsNotOfferedAsARemoteCalendar() {
+    // A CalDAV home publishes the account's task list beside its calendars,
+    // and it answers a PROPFIND exactly as a calendar would. Materialisation
+    // has always refused it; this listing did not, so the Remote section
+    // stayed alive on an account whose only unbound collection was a task
+    // list — a section showing something that can never hold an event.
+    givenCalendars(new CalendarCollection("/dav/calendars/john/tasks/",
+                                          "Mes taches",
+                                          null,
+                                          null,
+                                          null,
+                                          true,
+                                          java.util.Set.of("VTODO")));
+
+    assertTrue(service.listCalendars(USER).isEmpty());
+  }
+
+  @Test
+  public void aCollectionDeclaringNoComponentSetIsStillACalendar() {
+    // RFC 4791 5.2.3 makes the property optional, and its absence means every
+    // component is supported. Reading silence as "no events" would empty the
+    // Remote section on every server that does not publish it.
+    givenCalendars(calendar("/dav/calendars/john/private/", "Private"));
+
+    assertEquals(1, service.listCalendars(USER).size());
+  }
+
+  @Test
   public void oneBoundCollectionDoesNotHideTheOthers() {
     givenCalendars(calendar("/dav/calendars/john/work/", "Work"),
                    calendar("/dav/calendars/john/family/", "Family"));
