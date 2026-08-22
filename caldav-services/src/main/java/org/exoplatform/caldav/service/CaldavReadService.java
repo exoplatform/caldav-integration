@@ -85,6 +85,14 @@ public class CaldavReadService {
     List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
     List<RemoteCalendar> calendars = new ArrayList<>();
     for (CalendarCollection collection : collections) {
+      if (isExoCreated(collection.href())) {
+        // A collection eXo made, that eXo no longer has a binding for. It
+        // cannot be materialised — the sync refuses its own creations — so
+        // offering it here is offering something that can never become a
+        // calendar. They appear after a database is restored or reset while
+        // the account keeps what was pushed to it.
+        continue;
+      }
       if (!collection.holdsEvents()) {
         // The same refusal materialisation makes, for the same reason: a
         // CalDAV home publishes the account's task list beside its calendars,
@@ -276,6 +284,21 @@ public class CaldavReadService {
    * @param settings the connected account
    * @return the canonical paths eXo already holds, empty when none
    */
+  /**
+   * Whether a collection is one eXo created on the account.
+   *
+   * <p>
+   * Read from the path, which eXo derives, rather than from a binding: the
+   * point is precisely to recognise the ones no binding accounts for any more.
+   *
+   * @param href the collection path
+   * @return true when eXo made it
+   */
+  private boolean isExoCreated(String href) {
+    String slug = StringUtils.substringAfterLast(StringUtils.stripEnd(href, "/"), "/");
+    return StringUtils.startsWith(slug, CaldavOutboundService.COLLECTION_PREFIX);
+  }
+
   private Set<String> boundCollections(long userIdentityId, CaldavUserSetting settings) {
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
     return caldavSyncStorage.getPairs(userIdentityId, serverId)

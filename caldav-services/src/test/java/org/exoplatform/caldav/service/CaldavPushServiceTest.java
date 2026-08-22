@@ -139,6 +139,49 @@ public class CaldavPushServiceTest {
   }
 
   @Test
+  public void theCurrentMirrorIsReadWithItsNameFromTheServer() {
+    // The settings screen asks this on every render. It used to look the
+    // destination up in the calendar listing, which hides this very collection
+    // on purpose — so the answer was always "no destination", the switch went
+    // back off in front of the user who had just chosen one, and the name
+    // never appeared.
+    CaldavUserSetting stored = settings();
+    stored.setMirrorCalendarHref(MIRROR);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(stored);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+                                                                                                           "Mes reunions eXo")));
+
+    MirrorTarget target = service.currentMirror(USER);
+
+    assertEquals(MIRROR, target.href());
+    // The name comes from the server, not from anything stored: a user who
+    // renamed the calendar in their own client must see the name they gave it.
+    assertEquals("Mes reunions eXo", target.name());
+  }
+
+  @Test
+  public void readingTheCurrentMirrorNeverCreatesOne() {
+    // A read on every render must not make a calendar on someone's account.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+
+    assertNull(service.currentMirror(USER));
+
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void aMirrorRecordedButGoneReadsAsNone() {
+    // Deleted from the user's own client. Saying "no destination" is right;
+    // naming a calendar that is not there would be worse than saying nothing.
+    CaldavUserSetting stored = settings();
+    stored.setMirrorCalendarHref("/dav/cal/john/gone/");
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(stored);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of());
+
+    assertNull(service.currentMirror(USER));
+  }
+
+  @Test
   public void anExistingMirrorIsReusedRatherThanRecreated() {
     when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
                                                                                                             "eXo Meetings")));
