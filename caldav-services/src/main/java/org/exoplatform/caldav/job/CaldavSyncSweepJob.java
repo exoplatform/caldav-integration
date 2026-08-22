@@ -17,11 +17,11 @@
 package org.exoplatform.caldav.job;
 
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import org.exoplatform.caldav.service.CaldavSyncService;
+import org.exoplatform.caldav.service.CaldavTuningService;
 import org.exoplatform.commons.api.persistence.ExoTransactional;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -54,22 +54,8 @@ public class CaldavSyncSweepJob {
   @Autowired
   private CaldavSyncService caldavSyncService;
 
-  /**
-   * How long since a successful synchronisation makes a binding worth
-   * sweeping. Deliberately longer than the on-access throttle: a binding
-   * younger than that would have been refused by the throttle anyway, and
-   * sweeping it would only race the owner's own page load.
-   */
-  @Value("${exo.agenda.caldav.sync.sweep.staleMinutes:30}")
-  private long              staleMinutes;
-
-  /**
-   * How many stale bindings one run looks at. Bindings, not accounts: several
-   * of one account collapse into a single pass, so a run covers at least this
-   * many bindings and at most this many accounts.
-   */
-  @Value("${exo.agenda.caldav.sync.sweep.batchSize:50}")
-  private int               batchSize;
+  @Autowired
+  private CaldavTuningService caldavTuningService;
 
   /**
    * Synchronises the accounts that have gone longest without one.
@@ -78,7 +64,11 @@ public class CaldavSyncSweepJob {
   @ExoTransactional
   public void sweep() {
     long start = System.currentTimeMillis();
-    int swept = caldavSyncService.sweepDueAccounts(staleMinutes, batchSize);
+    // Read at each run, not captured in a field: an administrator changing
+    // these from the administration screen must see the next run behave
+    // differently, not the next restart.
+    int swept = caldavSyncService.sweepDueAccounts(caldavTuningService.getSweepStaleMinutes(),
+                                                   caldavTuningService.getSweepBatchSize());
     if (swept > 0) {
       LOG.info("Swept {} CalDAV account(s) in {} ms", swept, System.currentTimeMillis() - start);
     }
