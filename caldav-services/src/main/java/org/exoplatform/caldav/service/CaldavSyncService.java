@@ -596,6 +596,15 @@ public class CaldavSyncService {
       }
       try {
         caldavInboundService.importInto(userIdentityId, pair, calendar, from, to);
+        // And the other direction of reading back: what the account no longer
+        // holds. The import carries additions and edits, but an object that
+        // has been deleted is simply absent from what the server returns, so
+        // without this the event stayed in eXo for good — the calendar on the
+        // user's phone and the one eXo shows them drifting apart silently.
+        //
+        // After the import, not before: an object deleted and recreated in the
+        // same window should end the pass present, not removed.
+        caldavInboundService.removeVanishedObjects(userIdentityId, pair);
         // Stamped on the way out, and only on the way out: until this line
         // the field was written when a binding was CREATED, so an account
         // whose calendars were all already bound kept reporting the day it
