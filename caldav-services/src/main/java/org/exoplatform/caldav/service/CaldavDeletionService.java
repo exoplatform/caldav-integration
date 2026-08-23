@@ -249,6 +249,42 @@ public class CaldavDeletionService {
   }
 
   /**
+   * Puts back to work every binding a disconnect froze.
+   *
+   * <p>
+   * Disconnecting pauses the bindings of the calendars eXo pushed out, so that
+   * reconnecting the same account finds its collections again instead of
+   * creating a second set beside them. Reconnecting is the other half of that
+   * bargain: the account is usable again, so its bindings are too.
+   *
+   * <p>
+   * Left paused they are repaired only incidentally — by the next sweep
+   * re-ensuring each collection, a second or so later. In the meantime the
+   * account is connected and the user's own calendars report themselves as
+   * failing, which a UI reading the states has every reason to believe and
+   * show.
+   *
+   * <p>
+   * A pause set because credentials were refused is thawed here as well, and
+   * deliberately: someone who has just entered a password is asking for
+   * precisely that retry.
+   *
+   * @param userIdentityId identity of the user
+   * @param serverId the declared server registration
+   */
+  public void thawOnConnect(long userIdentityId, long serverId) {
+    for (CalendarSync pair : caldavSyncStorage.getPairs(userIdentityId, serverId)) {
+      // Only a pause. A tombstone is a deletion the user made, and a binding
+      // marked gone is a claim about the server that only the server's own
+      // listing may withdraw.
+      if (pair.getStatus() == CalendarSyncStatus.PAUSED) {
+        pair.setStatus(CalendarSyncStatus.ACTIVE);
+        caldavSyncStorage.savePair(pair);
+      }
+    }
+  }
+
+  /**
    * Freezes every binding of a user, which is what disconnecting an account
    * does.
    *

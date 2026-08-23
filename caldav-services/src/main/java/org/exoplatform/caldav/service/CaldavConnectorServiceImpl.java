@@ -60,6 +60,23 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   public void createCaldavSetting(CaldavUserSetting caldavUserSetting, long userIdentityId) throws IllegalAccessException {
     if (StringUtils.isNotBlank(caldavUserSetting.getPassword()) && StringUtils.isNotBlank(caldavUserSetting.getUsername())) {
       caldavConnectorStorage.createCaldavSetting(caldavUserSetting, userIdentityId);
+      // Disconnecting froze the bindings of the calendars eXo pushed out, so
+      // that reconnecting would find its collections again. Reconnecting is
+      // what thaws them: until it does, the account is connected while the
+      // user's own calendars still report themselves as failing.
+      try {
+        CaldavDeletionService deletionService = getCaldavDeletionService();
+        if (deletionService != null) {
+          CaldavUserSetting stored = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+          Long serverId = stored == null ? caldavUserSetting.getServerId() : stored.getServerId();
+          deletionService.thawOnConnect(userIdentityId, serverId == null ? 0L : serverId);
+        }
+      } catch (RuntimeException e) {
+        // Connecting must succeed. A user who has just given valid credentials
+        // and is told it failed, because a stale pause could not be lifted,
+        // is worse off than one whose calendars take a sweep to catch up.
+        LOG.warn("The frozen calendars of user {} could not be resumed on connect", userIdentityId, e);
+      }
       // Someone who has just entered their credentials is owed their calendars
       // now, not in a quarter of an hour — and a throttle stamped by a previous
       // account's run has nothing to say about this one.
