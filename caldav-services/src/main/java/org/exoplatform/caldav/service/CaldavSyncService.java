@@ -925,9 +925,22 @@ public class CaldavSyncService {
     // calendar it never created.
     pair.setOrigin(SyncOrigin.REMOTE);
     pair.setStatus(CalendarSyncStatus.ACTIVE);
-    pair.setCtag(collection.ctag());
-    pair.setSyncToken(collection.syncToken());
-    pair.setLastSyncEnd(new Date());
+    // Deliberately no ctag, no sync token and no sync time. All three are
+    // claims about what has been read out of this collection, and nothing has
+    // been read out of it yet — its events are imported further down this very
+    // pass.
+    //
+    // Recording them here made a brand-new binding look completely up to date
+    // the instant it was created, and the import step skips a collection whose
+    // ctag still matches and whose last sync is from today. So a calendar
+    // materialised with events already in it came in empty, and stayed empty
+    // for the rest of the day: every later pass compared the same ctag and
+    // agreed there was nothing to read. Only a change made on the server —
+    // moving the ctag — ever broke it out, which made the ordinary first
+    // connect the one case that failed.
+    //
+    // A binding with no last sync also reads as due (findDue treats a null as
+    // due), which is exactly what an unread collection should be.
     caldavSyncStorage.savePair(pair);
     LOG.info("Materialised remote calendar {} as eXo calendar {}", collection.href(), created.getId());
   }
