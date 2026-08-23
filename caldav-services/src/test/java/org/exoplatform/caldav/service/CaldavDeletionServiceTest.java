@@ -976,6 +976,37 @@ public class CaldavDeletionServiceTest {
     when(calDavClient.listCalendars(any(), anyString(), anyString(), anyString())).thenThrow(new IllegalStateException("down"));
   }
 
+
+  @Test
+  public void reconnectingLiftsThePauseADisconnectPutOn() {
+    // The whole point of pausing rather than dropping. Left paused, the
+    // binding is thawed only incidentally by the next sweep re-ensuring its
+    // collection — and until then a connected account reports the user's own
+    // calendar as failing.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.EXO, CalendarSyncStatus.PAUSED)));
+
+    service.thawOnConnect(USER, SERVER);
+
+    ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(saved.capture());
+    assertEquals(CalendarSyncStatus.ACTIVE, saved.getValue().getStatus());
+  }
+
+  @Test
+  public void reconnectingDoesNotReopenATombstoneOrAGoneCollection() {
+    // A tombstone is a deletion the user made; a binding marked gone is a
+    // claim about the server that only the server's own listing may withdraw.
+    // Reviving either here would resurrect a calendar nobody asked for.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.EXO,
+                                                                          CalendarSyncStatus.LOCALLY_DELETED),
+                                                                     pair(SyncOrigin.REMOTE,
+                                                                          CalendarSyncStatus.REMOTE_GONE)));
+
+    service.thawOnConnect(USER, SERVER);
+
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
   private CaldavUserSetting settings() {
     CaldavUserSetting setting = new CaldavUserSetting();
     setting.setUsername(LOGIN);
