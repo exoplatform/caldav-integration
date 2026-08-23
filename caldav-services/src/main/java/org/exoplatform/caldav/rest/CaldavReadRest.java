@@ -111,7 +111,7 @@ public class CaldavReadRest {
           + "changed something on another device and want to see it.")
   @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Synchronisation ran") })
   public ResponseEntity<Void> syncNow() {
-    caldavSyncService.syncNow(currentUser(), CaldavConnectorUtils.getCurrentUser());
+    caldavSyncService.syncNowAndWait(currentUser(), CaldavConnectorUtils.getCurrentUser());
     return ResponseEntity.noContent().build();
   }
 
