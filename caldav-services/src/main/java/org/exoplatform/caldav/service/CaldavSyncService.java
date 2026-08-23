@@ -484,7 +484,18 @@ public class CaldavSyncService {
         continue;
       }
       String ctag = ctags.get(CaldavSyncStorage.canonicalHref(pair.getRemoteHref()));
-      if (listed && ctag == null && !holdsHref(collections, pair.getRemoteHref())) {
+      // Only for a collection eXo materialised. "It is no longer on the
+      // account" is a statement about the user's own calendar disappearing
+      // from their server, and it earns the warning the settings then show.
+      // A collection eXo created is a different thing: it is absent from the
+      // listing whenever the server reports it under a name other than the
+      // one it was created at — which BlueMind does — and marking it gone
+      // flagged the user's own calendars as broken until a later pass revived
+      // them. This check was written for materialised bindings and only ever
+      // saw them until the import widened to carry every calendar the user
+      // has on their devices.
+      if (pair.getOrigin() == SyncOrigin.REMOTE
+          && listed && ctag == null && !holdsHref(collections, pair.getRemoteHref())) {
         // The collection is not in a listing that succeeded: the user deleted
         // their own calendar on the account. Marked rather than deleted here —
         // what eXo already holds is theirs, and the binding is what lets the
