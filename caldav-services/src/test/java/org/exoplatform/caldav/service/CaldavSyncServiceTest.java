@@ -43,6 +43,13 @@ import java.util.Date;
 import java.util.List;
 import java.util.Set;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -1269,6 +1276,45 @@ public class CaldavSyncServiceTest {
     CalendarSync pair = new CalendarSync();
     pair.setLastSyncEnd(lastSyncEnd);
     return pair;
+  }
+
+
+  @Test
+  public void aCallerToldTheSyncRanWaitsForThePassActuallyRunningIt() throws Exception {
+    // The whole reason connecting looked unstable. A second caller used to be
+    // handed an immediate "done" while the first pass was still materialising
+    // collections, so the display it refreshed on the strength of that answer
+    // showed calendars eXo had not finished taking in yet — and kept showing
+    // them until the page was reloaded.
+    CountDownLatch passStarted = new CountDownLatch(1);
+    CountDownLatch releasePass = new CountDownLatch(1);
+    when(caldavOutboundService.bindPersonalCalendars(USER, LOGIN)).thenAnswer(invocation -> {
+      passStarted.countDown();
+      releasePass.await(5, TimeUnit.SECONDS);
+      return null;
+    });
+    ExecutorService pool = Executors.newSingleThreadExecutor();
+    try {
+      Future<?> first = pool.submit(() -> service.syncNow(USER, LOGIN));
+      assertTrue(passStarted.await(5, TimeUnit.SECONDS), "the first pass never started");
+
+      AtomicBoolean returned = new AtomicBoolean(false);
+      Thread waiter = new Thread(() -> {
+        service.syncNowAndWait(USER, LOGIN);
+        returned.set(true);
+      });
+      waiter.start();
+      Thread.sleep(300);
+      assertFalse(returned.get(), "the caller was told the sync had run while the pass was still running");
+
+      releasePass.countDown();
+      waiter.join(5000);
+      first.get(5, TimeUnit.SECONDS);
+      assertTrue(returned.get(), "the caller was never released when the pass finished");
+    } finally {
+      releasePass.countDown();
+      pool.shutdownNow();
+    }
   }
 
   private CaldavUserSetting settings() {
