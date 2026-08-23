@@ -262,6 +262,14 @@ public class CaldavMirrorVerificationService {
    * that makes the copy useful on the user's other devices — when it is, what
    * it is called, where it is — comes from the event itself.
    *
+   * <p>
+   * The write is unconditional, and has to be. A guarded write carries the
+   * etag this connector last recorded, and the server refuses it when the
+   * object has moved on — which is the definition of the case being repaired
+   * here. Guarded, every repair failed with a conflict and the pass reported
+   * "1 altered, 0 re-pushed" forever. The overwrite is safe because the
+   * comparison that led here has already read both copies.
+   *
    * @param userIdentityId identity of the user
    * @param object the mapping row to repair
    * @param verdict why it is being repaired
@@ -270,15 +278,31 @@ public class CaldavMirrorVerificationService {
   private boolean repair(long userIdentityId, ObjectSync object, Verdict verdict) {
     if (object.getLocalEventId() == null || object.getLocalEventId() <= 0) {
       // A copy whose eXo event is not recorded cannot be rebuilt from
-      // anything. Deleting it would be a guess about data the user may want.
+      // anything. What happens next depends on which side is still there.
+      if (verdict == Verdict.MISSING && object.getId() > 0) {
+        // Neither side is: the object has been deleted from the server and no
+        // eXo event stands behind it, so the row describes nothing at all.
+        // Keeping it was not caution — it made the row unrepairable *and*
+        // permanent, reported missing on every pass, which is what kept a
+        // live account's calendar flagged as needing attention with a count
+        // that never moved.
+        LOG.info("The mapping at {} stands for no event and for nothing on the server; it is dropped",
+                 object.getRemoteHref());
+        caldavSyncStorage.deleteObject(object.getId());
+        return false;
+      }
+      // The object is still on the server, only changed. Dropping the row
+      // would lose the only link to it, and that would be a guess about data
+      // the user may want.
       LOG.debug("The copy at {} stands for no known event and cannot be repaired", object.getRemoteHref());
       return false;
     }
     try {
-      caldavPushService.pushAgendaEvent(userIdentityId, object.getLocalEventId(), null);
+      ObjectSync written = caldavPushService.rewriteAgendaEvent(userIdentityId, object.getLocalEventId());
       LOG.info("The copy of event {} was {} on the server and has been written again",
                object.getLocalEventId(),
                verdict == Verdict.MISSING ? "deleted" : "rewritten");
+      dropIfSuperseded(object, written);
       return true;
     } catch (RuntimeException e) {
       // The event may have been deleted in eXo since, or the account may be
@@ -287,6 +311,31 @@ public class CaldavMirrorVerificationService {
       LOG.warn("The copy of event {} could not be written again", object.getLocalEventId(), e);
       return false;
     }
+  }
+
+  /**
+   * Forgets a mapping row the repair did not write to.
+   *
+   * <p>
+   * A push writes to the href recorded against the event's iCalendar UID, and
+   * one UID has one row. So when a row is reported missing and the repair
+   * comes back having written somewhere else, this row is not the copy — it
+   * is a second row left over for a copy that has since moved, and the object
+   * it names is gone for good. Kept, it is reported missing on every pass
+   * forever: the calendar never stops "needing attention", and the count
+   * never reaches zero however many times the repair succeeds.
+   *
+   * @param object the row that was repaired
+   * @param written the row the push actually wrote, or null
+   */
+  private void dropIfSuperseded(ObjectSync object, ObjectSync written) {
+    if (written == null || object.getId() <= 0 || written.getId() == object.getId()) {
+      return;
+    }
+    LOG.info("The mapping at {} stood for a copy now written to {}; the stale one is dropped",
+             object.getRemoteHref(),
+             written.getRemoteHref());
+    caldavSyncStorage.deleteObject(object.getId());
   }
 
   /**
