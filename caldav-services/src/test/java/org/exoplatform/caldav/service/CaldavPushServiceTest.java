@@ -338,6 +338,38 @@ public class CaldavPushServiceTest {
   }
 
   @Test
+  public void theMintedIdentifierIsRecordedInAFormAgendaWillKeep() throws Exception {
+    // The identifier is only useful if it survives the push that minted it.
+    // agenda stores the mapping between an eXo event and its remote object
+    // only when the record names a provider — given neither a provider id nor
+    // a provider name, saveRemoteEvent reads the call as "delete this
+    // mapping" and throws the identifier away.
+    //
+    // This connector left both unset, so every push minted a fresh identifier
+    // and wrote a fresh object: editing an event duplicated it on the server
+    // and orphaned the original, and deleting it searched for an identifier
+    // the server had never seen. The provider is registered by this add-on in
+    // caldav-configuration.xml, so naming it is all that is needed — and
+    // asserting the name here is what stops it being dropped again.
+    givenAMirror();
+    givenAnAgendaEvent(130L, 0L);
+    when(agendaRemoteEventService.findRemoteEvent(130L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-130"));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"e\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 130L, null);
+
+    ArgumentCaptor<RemoteEvent> recorded = ArgumentCaptor.forClass(RemoteEvent.class);
+    verify(agendaRemoteEventService).saveRemoteEvent(eq(130L), recorded.capture(), eq(USER));
+    assertEquals("agenda.caldavCalendar", recorded.getValue().getRemoteProviderName());
+    assertNotNull(recorded.getValue().getRemoteId());
+  }
+
+  @Test
   public void anEventAgendaAlreadyPushedKeepsItsIdentifier() throws Exception {
     // Migrated users are exactly the ones with events already on the server,
     // so minting a fresh UID here would give every one of them a duplicate.
