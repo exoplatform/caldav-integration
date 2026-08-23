@@ -172,10 +172,22 @@ describe('deleting a calendar eXo mirrors', () => {
     // back to claims:false here would delete a mirrored calendar with no
     // warning at all, which is the one outcome this whole feature exists to
     // prevent.
-    window.eXo.env.portal.i18n = {};
-    givenPlan({claimed: true, propagates: true, server: 'https://s.test/dav/'});
+    //
+    // The bundle is starved at the endpoint the connector actually reads.
+    // This used to empty window.eXo.env.portal.i18n, a page global that is
+    // never populated at all — so the test passed while proving nothing, and
+    // went on passing after the labels moved to the i18n endpoint.
+    //
+    // A fresh copy of the module, because the labels are fetched once and
+    // remembered for the life of the page — which is what we want in a
+    // browser and what makes an earlier test's bundle leak into this one.
+    givenPlanWithoutBundle({claimed: true, propagates: true, server: 'https://s.test/dav/'});
+    let starved;
+    jest.isolateModules(() => {
+      starved = require('../../main/webapp/vue-app/caldav/caldav-connector/caldavConnector.js').default;
+    });
 
-    const description = await caldavConnector.describeCalendarDeletion({id: 24});
+    const description = await starved.describeCalendarDeletion({id: 24});
 
     expect(description.claims).toBe(true);
     expect(description.warning).toBe('');
@@ -296,6 +308,20 @@ describe('deleting a calendar eXo mirrors', () => {
     global.fetch = jest.fn(url => {
       if (String(url).includes('/i18n/bundle/')) {
         return Promise.resolve({ok: true, status: 200, json: () => Promise.resolve(BUNDLE)});
+      }
+      return Promise.resolve({ok: true, status: 200, json: () => Promise.resolve(plan)});
+    });
+  }
+
+  /**
+   * Answers the deletion plan, but no labels: the sentence cannot be built.
+   *
+   * @param {Object} plan what the server says deleting would do
+   */
+  function givenPlanWithoutBundle(plan) {
+    global.fetch = jest.fn(url => {
+      if (String(url).includes('/i18n/bundle/')) {
+        return Promise.resolve({ok: false, status: 404, json: () => Promise.reject(new Error('no bundle'))});
       }
       return Promise.resolve({ok: true, status: 200, json: () => Promise.resolve(plan)});
     });
