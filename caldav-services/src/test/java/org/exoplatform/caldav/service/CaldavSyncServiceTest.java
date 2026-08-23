@@ -19,6 +19,7 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -32,6 +33,7 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -217,6 +219,31 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  @Test
+  public void aCalendarExoCreatedIsNotDeclaredGoneWhenTheListingOmitsIt() throws Exception {
+    // "No longer on the account" is a statement about the user's own calendar
+    // disappearing from their server, and it earns a warning in the settings.
+    // A collection eXo created is absent from the listing for a duller reason
+    // — the server reporting it under a name other than the one it was
+    // created at, which BlueMind does — and calling that gone flagged the
+    // user's own calendars as broken until a later pass revived them.
+    //
+    // The check only ever saw materialised bindings until the import widened
+    // to carry every calendar the user has on their devices. Its sibling
+    // above, aCollectionTheAccountNoLongerHoldsIsMarkedGone, is the control:
+    // the same omission on a materialised binding must still be marked.
+    givenServerCalendars(collection("/dav/calendars/john/other/", "Other"));
+    givenAgendaCreates("other-anchor");
+    CalendarSync mine = exoPair("/dav/calendars/john/exo-cal-renamed-by-the-server/");
+    mine.setLocalCalendarSyncUid("anchor-mine");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mine));
+    givenAgendaHasCalendar("anchor-mine");
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(CalendarSyncStatus.ACTIVE, mine.getStatus());
   }
 
   @Test
