@@ -19,6 +19,7 @@ package org.exoplatform.caldav.service;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
@@ -27,9 +28,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.model.EventAttendee;
+import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -71,6 +75,9 @@ public class CaldavInboundService {
 
   @Autowired
   private AgendaEventService     agendaEventService;
+
+  @Autowired
+  private AgendaEventAttendeeService agendaEventAttendeeService;
 
   @Autowired
   private IcsParser              icsParser;
@@ -211,6 +218,65 @@ public class CaldavInboundService {
   }
 
   /**
+   * The attendee standing for the user whose calendar this is.
+   *
+   * <p>
+   * An event with no attendee is not merely missing a detail: agenda's default
+   * view — "my events" — filters on the attendee table with an inner join, so
+   * an event nobody attends is invisible in the very calendar it was imported
+   * into. It shows only once the user thinks to switch the filter to every
+   * event, which reads as "the import did nothing".
+   *
+   * <p>
+   * Every event agenda's own form creates carries its author as an attendee;
+   * an imported one has to as well. The response is ACCEPTED rather than
+   * NEEDS_ACTION because the user is not being invited to anything — this is
+   * their own calendar, read from their own account, and asking them to answer
+   * an invitation they already accepted elsewhere would be noise.
+   *
+   * @param userIdentityId identity of the user
+   * @return the attendee to record on an imported event
+   */
+  private EventAttendee selfAttendee(long userIdentityId) {
+    EventAttendee attendee = new EventAttendee();
+    attendee.setIdentityId(userIdentityId);
+    attendee.setResponse(EventAttendeeResponse.ACCEPTED);
+    return attendee;
+  }
+
+  /**
+   * The attendees to hand agenda when updating an event it already holds.
+   *
+   * <p>
+   * agenda reads this list as the whole truth about who attends: whoever it
+   * omits is deleted. An empty list is therefore not "leave the attendees
+   * alone" but "remove them all" — so every remote edit used to strip the
+   * event bare, including of anyone the user had added on this side. The
+   * attendees are read back and returned as they stand instead.
+   *
+   * <p>
+   * The owner is added when missing, which repairs events imported before
+   * selfAttendee existed: they were created with no attendee at all, and would
+   * otherwise stay invisible until re-imported from scratch.
+   *
+   * @param eventId the event agenda already holds
+   * @param userIdentityId identity of the user
+   * @return the attendees the event should keep
+   */
+  private List<EventAttendee> keptAttendees(long eventId, long userIdentityId) {
+    List<EventAttendee> attendees = new ArrayList<>();
+    try {
+      attendees.addAll(agendaEventAttendeeService.getEventAttendees(eventId).getEventAttendees());
+    } catch (Exception e) { // NOSONAR the attendees are a detail; the edit itself matters more
+      LOG.debug("Attendees of event {} could not be read; the owner alone is kept", eventId, e);
+    }
+    if (attendees.stream().noneMatch(attendee -> attendee.getIdentityId() == userIdentityId)) {
+      attendees.add(selfAttendee(userIdentityId));
+    }
+    return attendees;
+  }
+
+  /**
    * Creates the agenda event for an object seen for the first time.
    *
    * @param userIdentityId identity of the user
@@ -235,12 +301,14 @@ public class CaldavInboundService {
       // has just noticed the event would send real mail to real people for
       // something that happened days ago.
       //
-      // Attendees are not mapped at all in this pass. Binding a server-
-      // provided address to an eXo identity is a trust-boundary decision —
-      // an ATTENDEE line is content, and content must not name a platform
-      // user — and it deserves its own review rather than riding along here.
+      // The ATTENDEE lines the object carries are still not mapped. Binding a
+      // server-provided address to an eXo identity is a trust-boundary
+      // decision — an ATTENDEE line is content, and content must not name a
+      // platform user — and it deserves its own review rather than riding
+      // along here. The one attendee recorded is the calendar's own owner,
+      // whose identity the caller already holds; see selfAttendee.
       created = agendaEventService.createEvent(event,
-                                               List.of(),
+                                               List.of(selfAttendee(userIdentityId)),
                                                List.of(),
                                                List.of(),
                                                List.of(),
@@ -328,7 +396,14 @@ public class CaldavInboundService {
       // were invited by whoever organised the meeting, and telling them again
       // because eXo noticed an edit would send real mail about something that
       // already happened.
-      agendaEventService.updateEvent(updated, List.of(), List.of(), List.of(), List.of(), null, false, userIdentityId);
+      agendaEventService.updateEvent(updated,
+                                     keptAttendees(local.getId(), userIdentityId),
+                                     List.of(),
+                                     List.of(),
+                                     List.of(),
+                                     null,
+                                     false,
+                                     userIdentityId);
     } catch (Exception e) { // NOSONAR agenda declares several checked exceptions here
       LOG.warn("The event of object {} could not be updated in calendar {}", object.href(), calendar.getId(), e);
       return false;
@@ -427,7 +502,14 @@ public class CaldavInboundService {
       // second series running beside the first.
       amended.setRecurrence(null);
       amended.setOccurrence(occurrence.getOccurrence());
-      agendaEventService.updateEvent(amended, List.of(), List.of(), List.of(), List.of(), null, false, userIdentityId);
+      agendaEventService.updateEvent(amended,
+                                     keptAttendees(occurrence.getId(), userIdentityId),
+                                     List.of(),
+                                     List.of(),
+                                     List.of(),
+                                     null,
+                                     false,
+                                     userIdentityId);
     } catch (Exception e) { // NOSONAR agenda declares several checked exceptions here
       // One occurrence that will not take must not cost the series, which is
       // already in place and correct for every other date.
@@ -465,7 +547,14 @@ public class CaldavInboundService {
       // first live run.
       occurrence.setStatus(EventStatus.CANCELLED);
       occurrence.setRecurrence(null);
-      agendaEventService.updateEvent(occurrence, List.of(), List.of(), List.of(), List.of(), null, false, userIdentityId);
+      agendaEventService.updateEvent(occurrence,
+                                     keptAttendees(occurrence.getId(), userIdentityId),
+                                     List.of(),
+                                     List.of(),
+                                     List.of(),
+                                     null,
+                                     false,
+                                     userIdentityId);
     } catch (Exception e) { // NOSONAR agenda declares several checked exceptions here
       // A meeting the user cancelled elsewhere still showing here is wrong,
       // but it is a smaller wrong than losing the series over it.
