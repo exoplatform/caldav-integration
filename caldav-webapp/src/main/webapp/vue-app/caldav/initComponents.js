@@ -17,7 +17,12 @@
 import CaldavAgendaConnectors from './components/CaldavAgendaConnectors.vue';
 import CaldavAgendaConnectorsAlert from './components/CaldavAgendaConnectorsAlert.vue';
 import CaldavSettingsDrawer from './components/CaldavSettingsDrawer.vue';
+import CaldavHiddenCalendarsSection from './components/CaldavHiddenCalendarsSection.vue';
+import CaldavHiddenCalendarsDrawer from './components/CaldavHiddenCalendarsDrawer.vue';
+import CaldavCalendarStatesSection from './components/CaldavCalendarStatesSection.vue';
+import CaldavCalendarStatesDrawer from './components/CaldavCalendarStatesDrawer.vue';
 import CaldavAdminServersSection from './components/admin/CaldavAdminServersSection.vue';
+import CaldavAdminSyncDrawer from './components/admin/CaldavAdminSyncDrawer.vue';
 import CaldavAdminServerList from './components/admin/CaldavAdminServerList.vue';
 import CaldavAdminServerDrawer from './components/admin/CaldavAdminServerDrawer.vue';
 import CaldavAdminServerImageInput from './components/admin/CaldavAdminServerImageInput.vue';
@@ -27,7 +32,12 @@ const components = {
   'caldav-settings-drawer': CaldavSettingsDrawer,
   'caldav-agenda-connectors': CaldavAgendaConnectors,
   'caldav-agenda-connectors-alert': CaldavAgendaConnectorsAlert,
+  'caldav-hidden-calendars-section': CaldavHiddenCalendarsSection,
+  'caldav-hidden-calendars-drawer': CaldavHiddenCalendarsDrawer,
+  'caldav-calendar-states-section': CaldavCalendarStatesSection,
+  'caldav-calendar-states-drawer': CaldavCalendarStatesDrawer,
   'caldav-admin-servers-section': CaldavAdminServersSection,
+  'caldav-admin-sync-drawer': CaldavAdminSyncDrawer,
   'caldav-admin-server-list': CaldavAdminServerList,
   'caldav-admin-server-drawer': CaldavAdminServerDrawer,
   'caldav-admin-server-image-input': CaldavAdminServerImageInput,

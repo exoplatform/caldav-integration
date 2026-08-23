@@ -45,6 +45,11 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
    */
   private CaldavSyncService      caldavSyncService;
 
+  /**
+   * The deletion engine, resolved lazily for the same reason as the two above.
+   */
+  private CaldavDeletionService  caldavDeletionService;
+
   public CaldavConnectorServiceImpl(CaldavConnectorStorage caldavConnectorStorage) {
     String caldavUrl = System.getProperty("exo.agenda.caldav.connector.url");
     this.caldavConnectorStorage = caldavConnectorStorage;
@@ -55,6 +60,23 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   public void createCaldavSetting(CaldavUserSetting caldavUserSetting, long userIdentityId) throws IllegalAccessException {
     if (StringUtils.isNotBlank(caldavUserSetting.getPassword()) && StringUtils.isNotBlank(caldavUserSetting.getUsername())) {
       caldavConnectorStorage.createCaldavSetting(caldavUserSetting, userIdentityId);
+      // Disconnecting froze the bindings of the calendars eXo pushed out, so
+      // that reconnecting would find its collections again. Reconnecting is
+      // what thaws them: until it does, the account is connected while the
+      // user's own calendars still report themselves as failing.
+      try {
+        CaldavDeletionService deletionService = getCaldavDeletionService();
+        if (deletionService != null) {
+          CaldavUserSetting stored = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+          Long serverId = stored == null ? caldavUserSetting.getServerId() : stored.getServerId();
+          deletionService.thawOnConnect(userIdentityId, serverId == null ? 0L : serverId);
+        }
+      } catch (RuntimeException e) {
+        // Connecting must succeed. A user who has just given valid credentials
+        // and is told it failed, because a stale pause could not be lifted,
+        // is worse off than one whose calendars take a sweep to catch up.
+        LOG.warn("The frozen calendars of user {} could not be resumed on connect", userIdentityId, e);
+      }
       // Someone who has just entered their credentials is owed their calendars
       // now, not in a quarter of an hour — and a throttle stamped by a previous
       // account's run has nothing to say about this one.
@@ -151,6 +173,38 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   }
 
   /**
+   * The deletion engine, resolved through the bridge on first use.
+   *
+   * <p>
+   * Null when it cannot be resolved, and disconnecting then removes the
+   * settings and nothing else — the previous behaviour. Leaving a mirror
+   * calendar behind is a poor outcome; refusing to disconnect because of it
+   * would be a worse one.
+   *
+   * @return the engine, or null when the bridge cannot provide it
+   */
+  protected CaldavDeletionService getCaldavDeletionService() {
+    if (caldavDeletionService == null) {
+      try {
+        caldavDeletionService = ExoContainerContext.getService(CaldavDeletionService.class);
+      } catch (Exception | LinkageError e) {
+        LOG.debug("CalDAV deletion engine not resolvable; disconnecting removes the settings only", e);
+      }
+    }
+    return caldavDeletionService;
+  }
+
+  /**
+   * Hands the deletion engine to tests, which have no container to resolve it
+   * from.
+   *
+   * @param caldavDeletionService the engine to use
+   */
+  protected void setCaldavDeletionService(CaldavDeletionService caldavDeletionService) {
+    this.caldavDeletionService = caldavDeletionService;
+  }
+
+  /**
    * Hands the engine to tests, which have no container to resolve it from.
    *
    * @param caldavSyncService the engine to use
@@ -170,6 +224,32 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
 
   @Override
   public void deleteCaldavSetting(long userIdentityId) {
+    deleteCaldavSetting(userIdentityId, null);
+  }
+
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  public void deleteCaldavSetting(long userIdentityId, String username) {
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (settings != null && StringUtils.isNotBlank(username)) {
+      // Before the settings go, while the account can still be identified.
+      // Without the login there is no ACL to delete a calendar under, so the
+      // bindings are left as they are rather than half-processed.
+      long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+      try {
+        CaldavDeletionService deletionService = getCaldavDeletionService();
+        if (deletionService != null) {
+          deletionService.freezeOnDisconnect(userIdentityId, serverId, username);
+        }
+      } catch (RuntimeException e) {
+        // Disconnecting must succeed. A user asking to unlink their account
+        // and being told it failed, because a calendar could not be tidied
+        // away, would be left connected to an account they no longer want.
+        LOG.warn("The calendars of user {} could not be tidied on disconnect", userIdentityId, e);
+      }
+    }
     caldavConnectorStorage.deleteCaldavSetting(userIdentityId);
   }
 

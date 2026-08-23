@@ -328,3 +328,174 @@ export function toDate(date) {
     return new Date(date);
   }
 }
+
+/**
+ * The calendars the user deleted in eXo while choosing to keep them on the
+ * server. Each carries the binding to lift and the name the server gives the
+ * collection today — never a stored name, which would go stale the moment the
+ * user renamed it in their own client.
+ *
+ * @returns {Promise<Array>} the hidden calendars, empty when there are none
+ */
+export const getHiddenCalendars = () => {
+  return fetch(`${window.location.origin}/caldav/rest/hidden-calendars`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
+ * Shows a hidden calendar again, by the id of the binding that hides it.
+ *
+ * The id rather than the collection path: a path travelling through a browser
+ * is something a caller could change, and what it would then name is another
+ * collection on the same account.
+ *
+ * @param {Number} pairId the binding to lift
+ * @returns {Promise} resolves once the calendar will come back on the next sync
+ */
+export const showCalendarAgain = pairId => {
+  return fetch(`${window.location.origin}/caldav/rest/hidden-calendars/${pairId}`, {
+    credentials: 'include',
+    method: 'DELETE',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+  });
+};
+
+/**
+ * Synchronises the connected account now, whatever the throttle says.
+ *
+ * @returns {Promise} resolves once the synchronisation has run
+ */
+export const syncNow = () => {
+  return fetch(`${window.location.origin}/caldav/rest/sync`, {
+    credentials: 'include',
+    method: 'POST',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+  });
+};
+
+/**
+ * When the connected account last finished synchronising.
+ *
+ * A 204 means it never has — an account connected a moment ago, or one whose
+ * every attempt has failed — and resolves to null rather than to a date the
+ * caller would have to recognise as meaningless.
+ *
+ * @returns {Promise<Date>} the instant, or null when nothing has synchronised
+ */
+export const lastSynchronised = () => {
+  return fetch(`${window.location.origin}/caldav/rest/sync/state`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    if (resp.status === 204) {
+      return null;
+    }
+    return resp.json().then(millis => millis && new Date(millis) || null);
+  });
+};
+
+/**
+ * The calendar the copies are currently written into, with the name the server
+ * gives it now.
+ *
+ * Its own call rather than a scan of the calendar listing: that listing hides
+ * this collection on purpose — it holds nothing but copies of events the
+ * agenda already shows — so looking the destination up in it always came back
+ * empty, and the settings screen read that as "no destination".
+ *
+ * @returns {Promise<Object>} {href, name}, or null when none is set
+ */
+export const currentMirrorCalendar = () => {
+  return fetch(`${window.location.origin}/caldav/rest/push/mirror`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.status === 204 ? null : resp.json();
+  });
+};
+
+/**
+ * How often and how widely eXo synchronises CalDAV accounts.
+ *
+ * @returns {Promise<Object>} the tuning in force
+ */
+export const getSyncTuning = () => {
+  return fetch(`${window.location.origin}/caldav/rest/servers/tuning`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
+ * Records how often and how widely eXo synchronises. Administrators only.
+ *
+ * A refused value comes back as a 400 whose body is the message code the
+ * screen shows, so the reason reaches the administrator instead of a generic
+ * failure.
+ *
+ * @param {Object} tuning the values to store
+ * @returns {Promise<Object>} the tuning now in force
+ */
+export const saveSyncTuning = tuning => {
+  return fetch(`${window.location.origin}/caldav/rest/servers/tuning`, {
+    credentials: 'include',
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(tuning),
+  }).then(resp => {
+    if (resp && resp.status === 400) {
+      return resp.text().then(body => {
+        throw new Error(body || 'caldav.tuning.saveFailed');
+      });
+    }
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
+ * The calendars whose synchronisation needs the user's attention.
+ *
+ * Only the states where something they might do would change the outcome: a
+ * calendar that is synchronising is not news, and one they hid has its own
+ * listing.
+ *
+ * @returns {Promise<Array>} the states, empty when everything is well
+ */
+export const getCalendarSyncStates = () => {
+  return fetch(`${window.location.origin}/caldav/rest/calendar-states`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};

@@ -13,10 +13,25 @@ const caldavConnector = {
   isOauth: false,
   canConnect: true,
   canPush: true,
+  // Says that this connector holds a collection of its own for the user's
+  // personal calendars, so agenda may offer it their events too and not only
+  // the space meetings it copies into the mirror. A connector that fetches
+  // remotely without materialising anything — Google, Office 365, Exchange —
+  // declares nothing here and keeps exactly the behaviour it had.
+  pushesOwnCalendars: true,
   initialized: true,
   isSignedIn: true,
   pushing: false,
   rank: 40,
+  /**
+   * The code this connector rejects with when the server refused the stored
+   * credentials. Agenda reads it to tell "your password no longer works" —
+   * which the user can fix — apart from a server that is simply unreachable.
+   *
+   * Declared here rather than known by agenda: the code belongs to this
+   * add-on's vocabulary, and a shared component cannot hold one connector's.
+   */
+  credentialsErrorCode: 'caldav.error.credentials',
   // A multi-instance connector: its rows are managed in the dedicated CalDAV
   // servers section of the agenda administration, not in the generic
   // connectors table (which keeps Google/Office365/Exchange only).
@@ -97,6 +112,91 @@ const caldavConnector = {
     return fetch(`${window.location.origin}/caldav/rest/calendars`, {credentials: 'include'})
       .then(readOutcome)
       .then(calendars => calendars || []);
+  },
+
+  /**
+   * What unlinking this account costs, in the user's language.
+   *
+   * <p>
+   * Agenda shows it and confirms before disconnecting. Only this add-on knows
+   * that unlinking removes the calendars eXo mirrored from the account — a
+   * connector that has nothing to remove declares no warning and is unlinked
+   * without a dialog, which is right for it.
+   *
+   * @returns {Promise<String>} the sentence, empty when the labels cannot be
+   *          read rather than a raw key in a confirmation
+   */
+  disconnectWarning() {
+    return labels().then(bundle => {
+      // The host rather than the provider name: the provider name is the key
+      // agenda binds this connector under, and a raw key in a confirmation is
+      // worse than no name at all.
+      const server = serverHost(this.serverUrl) || '';
+      return ((bundle && bundle['agenda.caldavCalendar.disconnect.warning']) || '').replace(/\{0\}/g, server);
+    });
+  },
+  /**
+   * Synchronises the connected account now, whatever the throttle says.
+   *
+   * Declaring this method is what makes agenda offer a "Sync now" action on
+   * this connector's row; a connector without it shows none.
+   *
+   * @returns {Promise} resolves once the synchronisation has run
+   */
+  sync() {
+    return caldavConnectorService.syncNow();
+  },
+  /**
+   * When this account last finished synchronising, so the row can say whether
+   * pressing Sync now is worth it.
+   *
+   * @returns {Promise<Date>} the instant, or null when nothing has yet
+   */
+  lastSynchronised() {
+    return caldavConnectorService.lastSynchronised();
+  },
+
+  /**
+   * The calendar the copies go to, and the name the server gives it now.
+   *
+   * Declaring this lets agenda resolve the destination without scanning the
+   * calendar listing — which deliberately hides this very collection, so the
+   * scan always came back empty and the settings screen concluded there was
+   * no destination at all.
+   *
+   * @returns {Promise<Object>} {id, name}, or null when none is set
+   */
+  getMirrorCalendar() {
+    return caldavConnectorService.currentMirrorCalendar()
+      .then(mirror => mirror && {id: mirror.href, name: mirror.name} || null);
+  },
+
+  /**
+   * The calendars of this account that are not synchronising normally, keyed
+   * by the eXo calendar they stand for.
+   *
+   * Declaring this lets agenda mark the calendar itself in its own list —
+   * which is where someone notices, since a calendar that stopped
+   * synchronising sits there looking exactly like the ones that did not. A
+   * connector that has nothing to report declares none and no row is marked.
+   *
+   * @returns {Promise<Object>} {calendarId: {status, message}}, empty when all
+   *          is well
+   */
+  calendarProblems() {
+    return Promise.all([caldavConnectorService.getCalendarSyncStates(), labels()])
+      .then(([states, bundle]) => {
+        const problems = {};
+        (states || []).filter(state => state.calendarId > 0).forEach(state => {
+          const key = `caldav.calendarStates.explain.${state.status}`;
+          problems[state.calendarId] = {
+            status: state.status,
+            message: (bundle && bundle[key]) || (bundle && bundle['caldav.calendarStates.explain.unknown']) || '',
+          };
+        });
+        return problems;
+      })
+      .catch(() => ({}));
   },
 
   canCreateCalendar: true,
@@ -274,7 +374,7 @@ const caldavConnector = {
     return fetch(`${window.location.origin}/caldav/rest/push/events/${event.id}${query}`, {
       method: 'POST',
       credentials: 'include',
-    }).then(pushOutcome);
+    }).then(pushOutcome).then(identifiedByUid);
   },
   /**
    * Removes an agenda event from the remote calendar.
@@ -470,6 +570,32 @@ let labelsPromise = null;
  * @param {Response} response the server's answer
  * @returns {Promise} resolves the outcome, or rejects with a coded error
  */
+/**
+ * Presents a written mapping as agenda expects a pushed event to look.
+ *
+ * agenda records `connectorEvent.id` as the event's remote identifier, and
+ * every later push, edit and deletion addresses the object by it. What this
+ * connector answers with is the mapping row, whose `id` is its own database
+ * key — so handed over unchanged, agenda stored a row id where the iCalendar
+ * UID belongs, and overwrote the correct identifier the server had just
+ * recorded.
+ *
+ * The damage compounded rather than merely confusing: the next push adopted
+ * the stored row id as the UID and wrote a second object under it, leaving the
+ * first behind with the old content, and a deletion then addressed an object
+ * the server had never had. Those numerically-named objects — 265.ics, 272.ics
+ * — are all this line.
+ *
+ * @param {Object} mapping the mapping row the push answered with, or null
+ * @returns {Object} the same mapping, identified by its iCalendar UID
+ */
+function identifiedByUid(mapping) {
+  if (!mapping || !mapping.icsUid) {
+    return mapping;
+  }
+  return Object.assign({}, mapping, {id: mapping.icsUid});
+}
+
 function pushOutcome(response) {
   if (response.ok) {
     return response.status === 204 ? Promise.resolve(null) : response.json().catch(() => null);

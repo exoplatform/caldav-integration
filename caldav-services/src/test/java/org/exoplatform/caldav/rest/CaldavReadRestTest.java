@@ -191,7 +191,11 @@ public class CaldavReadRestTest {
 
     assertEquals(HttpStatus.NO_CONTENT, caldavReadRest.syncNow().getStatusCode());
 
-    verify(caldavSyncService).syncNow(42L, USER_NAME);
+    // The waiting entry, not the fire-and-forget one. The endpoint documents
+    // itself as synchronising now, and the browser refreshes its panels on
+    // the strength of that answer — so it must not come back while a pass is
+    // still taking collections in.
+    verify(caldavSyncService).syncNowAndWait(42L, USER_NAME);
     verify(caldavSyncService, never()).syncIfDue(anyLongValue(), org.mockito.ArgumentMatchers.anyString());
   }
 

@@ -165,14 +165,17 @@ public class IcsWriter {
    */
   private void addSchedule(VEvent vEvent, IcsEvent event, TimeZone timeZone) {
     if (event.isAllDay()) {
+      // The VALUE=DATE parameter is NOT added by hand: an ical4j Date already
+      // makes the property carry it, and adding it too wrote it twice —
+      // "VALUE=DATE;VALUE=DATE", which is malformed and which a strict server
+      // may reject, with nothing to show for it but an event that did not
+      // arrive.
       DtStart start = new DtStart(icsDate(event.getStart(), event.getTimeZoneId()));
-      start.getParameters().add(Value.DATE);
       // RFC 5545 makes an all-day DTEND exclusive: a one-day event ends on the
       // day after it. Agenda holds the last day the event covers, so a day is
       // added here — its absence is why an all-day event pushed to CalDAV came
       // out a day short.
       DtEnd end = new DtEnd(icsDate(localDate(event.getEnd(), event.getTimeZoneId()).plusDays(1)));
-      end.getParameters().add(Value.DATE);
       vEvent.getProperties().add(start);
       vEvent.getProperties().add(end);
     } else if (timeZone != null) {
@@ -321,9 +324,7 @@ public class IcsWriter {
     if (occurrence) {
       Instant instant = IcsText.parseInstant(event.getOccurrenceId());
       if (event.isAllDay()) {
-        RecurrenceId recurrenceId = new RecurrenceId(icsDate(instant, event.getTimeZoneId()));
-        recurrenceId.getParameters().add(Value.DATE);
-        vEvent.getProperties().add(recurrenceId);
+        vEvent.getProperties().add(new RecurrenceId(icsDate(instant, event.getTimeZoneId())));
       } else if (timeZone != null) {
         vEvent.getProperties().add(new RecurrenceId(zonedDateTime(instant, timeZone)));
       } else {
@@ -368,9 +369,7 @@ public class IcsWriter {
       if (!exception.contains("T")) {
         DateList dates = new DateList(Value.DATE);
         dates.add(icsDate(LocalDate.parse(exception.substring(0, DATE_LENGTH))));
-        ExDate exDate = new ExDate(dates);
-        exDate.getParameters().add(Value.DATE);
-        vEvent.getProperties().add(exDate);
+        vEvent.getProperties().add(new ExDate(dates));
       } else {
         Instant instant = IcsText.parseInstant(exception);
         DateList dates = new DateList(Value.DATE_TIME);

@@ -193,6 +193,68 @@ describe('deleting a calendar eXo mirrors', () => {
     expect(description.warning).toBe('');
   });
 
+  // What is said before the whole account is unlinked.
+
+  it('names the server when warning about disconnecting the account', async () => {
+    givenPlan({});
+
+    const warning = await caldavConnector.disconnectWarning.call({serverUrl: 'https://webmail.example.test/dav/'});
+
+    expect(warning).toContain('webmail.example.test');
+  });
+
+  it('answers with nothing when the sentence cannot be rendered', async () => {
+    // Pinned because of what the caller must do with it, not for its own
+    // sake. This resolves empty on any locale the sentence has not reached
+    // yet — Crowdin lags the _en source by design — and on a platform serving
+    // a stale bundle, which is neither rare nor visible.
+    //
+    // The drawer used to read an empty answer as "nothing to confirm" and
+    // disconnect on the single click. One missing translation then silently
+    // removed every calendar the account had materialised. It now falls back
+    // to agenda's own generic sentence and always asks: the explanation is
+    // what a missing string may cost, never the confirmation.
+    givenPlanWithoutBundle({});
+    let starved;
+    jest.isolateModules(() => {
+      starved = require('../../main/webapp/vue-app/caldav/caldav-connector/caldavConnector.js').default;
+    });
+
+    const warning = await starved.disconnectWarning.call({serverUrl: 'https://webmail.example.test/dav/'});
+
+    expect(warning).toBe('');
+  });
+
+  // What a push hands back to agenda.
+
+  it('identifies a pushed event by its iCalendar UID, not by the mapping row', async () => {
+    // agenda stores connectorEvent.id as the event's remote identifier and
+    // addresses every later push, edit and deletion by it. Answering with the
+    // mapping's own database key put a row id where the UID belongs — and the
+    // next push then adopted that row id as the UID and wrote a second object
+    // under it, leaving the first behind with the old content.
+    global.fetch = jest.fn(() => Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({id: 269, icsUid: 'evt-uuid-1', remoteHref: '/dav/cal/u/c/evt-uuid-1.ics'}),
+    }));
+
+    const pushed = await caldavConnector.pushEvent({id: 388});
+
+    expect(pushed.id).toBe('evt-uuid-1');
+    // The mapping's own key is still there for anyone who wants it.
+    expect(pushed.icsUid).toBe('evt-uuid-1');
+    expect(pushed.remoteHref).toContain('evt-uuid-1.ics');
+  });
+
+  it('passes an empty push straight through', async () => {
+    // 204: the event's calendar has no collection to copy into. There is no
+    // identifier to report and nothing for agenda to record.
+    global.fetch = jest.fn(() => Promise.resolve({ok: true, status: 204}));
+
+    expect(await caldavConnector.pushEvent({id: 389})).toBeNull();
+  });
+
   // How the server is named in the sentence.
 
   it('names the server by its host when its address is not a full url', async () => {
@@ -330,5 +392,6 @@ describe('deleting a calendar eXo mirrors', () => {
   const BUNDLE = {
     'agenda.caldavCalendar.calendarDelete.propagates': 'also on {0}, deleted there too',
     'agenda.caldavCalendar.calendarDelete.keepsRemote': 'the calendar on {0} is not touched',
+    'agenda.caldavCalendar.disconnect.warning': 'the calendars from {0} will be removed',
   };
 });
