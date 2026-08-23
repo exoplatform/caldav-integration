@@ -87,7 +87,8 @@ public class CaldavPushRest {
    *
    * @param eventId the agenda event to copy
    * @param eventUrl absolute link back to the event in eXo
-   * @return the resulting mapping
+   * @return the resulting mapping, or an empty 204 when the event's calendar
+   *         has no collection to copy into
    */
   @PostMapping("/push/events/{eventId}")
   @Secured("users")
@@ -95,16 +96,22 @@ public class CaldavPushRest {
       description = "Reads the event through agenda's own service, so its ACL applies, then writes it "
           + "server-side with the stored CalDAV credentials. The browser never sees them.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Event copied"),
+      @ApiResponse(responseCode = "204", description = "The event's calendar has no collection to copy into"),
       @ApiResponse(responseCode = "403", description = "Stored CalDAV credentials rejected upstream"),
       @ApiResponse(responseCode = "409", description = "No connected account, or the object changed concurrently"),
       @ApiResponse(responseCode = "502", description = "The calendar server refused or could not be reached") })
-  public ObjectSync push(@Parameter(description = "Technical identifier of the agenda event", required = true)
-                         @PathVariable("eventId")
-                         long eventId,
-                         @Parameter(description = "Absolute link back to the event in eXo")
-                         @RequestParam(value = "eventUrl", required = false)
-                         String eventUrl) {
-    return caldavPushService.pushAgendaEvent(currentUser(), eventId, eventUrl);
+  public ResponseEntity<ObjectSync> push(@Parameter(description = "Technical identifier of the agenda event",
+                                                    required = true)
+                                         @PathVariable("eventId")
+                                         long eventId,
+                                         @Parameter(description = "Absolute link back to the event in eXo")
+                                         @RequestParam(value = "eventUrl", required = false)
+                                         String eventUrl) {
+    ObjectSync written = caldavPushService.pushAgendaEvent(currentUser(), eventId, eventUrl);
+    // 204, not an empty 200: the caller asked for a copy and there is no
+    // collection to make one in. Nothing failed, and nothing happened, and
+    // those are different answers.
+    return written == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(written);
   }
 
   /**
