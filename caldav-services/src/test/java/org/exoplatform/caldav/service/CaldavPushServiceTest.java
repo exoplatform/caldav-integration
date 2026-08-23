@@ -1085,8 +1085,13 @@ public class CaldavPushServiceTest {
   @Test
   public void aPersonalCalendarWithNoUsableCollectionSendsNothingToTheMirror() throws Exception {
     // Outbound simply stays unavailable for that calendar. Diverting the event
-    // into the mirror as a consolation is exactly the mixing PR7 refuses.
-    givenAMirror();
+    // into the mirror as a consolation is exactly the mixing this refuses.
+    //
+    // This test asserted the opposite of its own name until the personal
+    // calendars began pushing for real: it pinned the fall-through to the
+    // mirror, which is what the code did, while the name and the service's
+    // own javadoc both said that must never happen. Nobody noticed because
+    // nothing reached this path — the browser never offered a personal event.
     givenAnAgendaEvent(111L, 0L);
     givenPersonalCalendar(8L, "cal-anchor");
     CalendarSync refused = boundPersonalPair();
@@ -1094,16 +1099,55 @@ public class CaldavPushServiceTest {
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(refused);
     when(agendaRemoteEventService.findRemoteEvent(111L, USER)).thenReturn(null);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-111"));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
-                                                                                          .thenReturn(new PutResult(201,
-                                                                                                                    "\"e\"",
-                                                                                                                    null));
-    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
     ObjectSync mapping = service.pushAgendaEvent(USER, 111L, null);
 
-    // It fell back to the mirror pair, which is the space destination.
-    assertEquals(1L, mapping.getCalendarSyncId());
+    // Nothing was copied, and nothing was written anywhere.
+    assertNull(mapping);
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    // Not even established: falling back to the mirror would have created a
+    // collection the user never asked for, to hold an event that is not a
+    // space meeting.
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void aCopyInAPersonalCollectionCanBeRemovedFromIt() throws Exception {
+    // The other half of writing there. A removal that looked only in the
+    // mirror found nothing, succeeded quietly, and left the object on the
+    // server for ever — in the one collection the user actually reads.
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    when(caldavSyncStorage.getObjectByUid(1L, "uid-113")).thenReturn(null);
+    CalendarSync personal = boundPersonalPair();
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(personal));
+    ObjectSync inPersonal = mapped("\"etag-1\"");
+    inPersonal.setCalendarSyncId(9L);
+    inPersonal.setRemoteHref(MIRROR + "in-personal.ics");
+    when(caldavSyncStorage.getObjectByUid(9L, "uid-113")).thenReturn(inPersonal);
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.deleteEvent(USER, "uid-113");
+
+    verify(calDavClient).deleteObject(any(), eq(MIRROR + "in-personal.ics"), anyString(), anyString(), anyString());
+  }
+
+  @Test
+  public void aCopyInTheMirrorIsStillRemovedWithoutSearchingFurther() throws Exception {
+    // The common case stays one lookup: the mirror holds most copies, and
+    // walking every pair for them would cost a query per calendar.
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    ObjectSync inMirror = mapped("\"etag-1\"");
+    // Read before the call: a successful removal clears the href on this very
+    // object, so asking for it afterwards asks for null.
+    String href = inMirror.getRemoteHref();
+    when(caldavSyncStorage.getObjectByUid(1L, "uid-114")).thenReturn(inMirror);
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.deleteEvent(USER, "uid-114");
+
+    verify(calDavClient).deleteObject(any(), eq(href), anyString(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).getPairs(anyLong(), anyLong());
   }
 
   @Test

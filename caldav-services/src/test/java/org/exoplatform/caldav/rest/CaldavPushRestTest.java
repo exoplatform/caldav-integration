@@ -123,10 +123,28 @@ public class CaldavPushRestTest {
     ObjectSync mapping = new ObjectSync();
     when(caldavPushService.pushAgendaEvent(42L, 101L, "https://exo.test/event/101")).thenReturn(mapping);
 
-    ObjectSync pushed = caldavPushRest.push(101L, "https://exo.test/event/101");
+    ResponseEntity<ObjectSync> pushed = caldavPushRest.push(101L, "https://exo.test/event/101");
 
-    assertSame(mapping, pushed);
+    assertEquals(HttpStatus.OK, pushed.getStatusCode());
+    assertSame(mapping, pushed.getBody());
     verify(caldavPushService).pushAgendaEvent(42L, 101L, "https://exo.test/event/101");
+  }
+
+  /**
+   * An event whose calendar has no collection to copy into answers 204, not an
+   * empty 200. Nothing failed and nothing happened, and the caller has to be
+   * able to tell those apart — a 200 with no body reads as a copy that was
+   * made and then lost on the way back.
+   */
+  @Test
+  public void shouldAnswerNoContentWhenThereIsNowhereToCopyInto() {
+    withCurrentUser();
+    when(caldavPushService.pushAgendaEvent(42L, 102L, null)).thenReturn(null);
+
+    ResponseEntity<ObjectSync> pushed = caldavPushRest.push(102L, null);
+
+    assertEquals(HttpStatus.NO_CONTENT, pushed.getStatusCode());
+    assertNull(pushed.getBody());
   }
 
   /**
