@@ -201,7 +201,7 @@ const caldavConnector = {
         return {claims: false, warning: ''};
       }
       deletionPlans.set(String(calendar.id), plan);
-      return {claims: true, warning: deletionWarning(plan)};
+      return labels().then(bundle => ({claims: true, warning: deletionWarning(plan, bundle)}));
     });
   },
   /**
@@ -419,16 +419,43 @@ function readOutcome(response) {
  * The sentence shown before a deletion is confirmed.
  *
  * @param {Object} plan what the server said deleting this calendar would do
+ * @param {Object} bundle the add-on's labels in the user's language
  * @returns {String} the warning, already in the user's language
  */
-function deletionWarning(plan) {
+function deletionWarning(plan, bundle) {
   const key = plan.propagates
     ? 'agenda.caldavCalendar.calendarDelete.propagates'
     : 'agenda.caldavCalendar.calendarDelete.keepsRemote';
-  const bundle = window.eXo?.env?.portal?.i18n || {};
   const server = serverHost(plan.server) || plan.server || '';
-  return (bundle[key] || '').replace('{0}', server);
+  return ((bundle && bundle[key]) || '').replace('{0}', server);
 }
+
+/**
+ * The add-on's labels, fetched once and remembered.
+ *
+ * <p>
+ * Read from the bundle endpoint rather than from a page global. This runs
+ * inside agenda's apps, whose i18n instance carries agenda's bundle and not
+ * ours, and the global it used to read is never populated at all — so the
+ * warning resolved to an empty string every time, and the dialog asked the
+ * user to confirm something it then failed to explain.
+ *
+ * @returns {Promise<Object>} the labels, or an empty object when unreadable
+ */
+function labels() {
+  if (!labelsPromise) {
+    const lang = (window.eXo && eXo.env && eXo.env.portal && eXo.env.portal.language) || 'en';
+    const url = `${window.location.origin}/portal/rest/i18n/bundle/locale.portlet.Caldav-${lang}.json`;
+    labelsPromise = fetch(url, {credentials: 'include'})
+      .then(resp => resp && resp.ok && resp.json() || {})
+      // A missing bundle must not stop a deletion being confirmed: the dialog
+      // still asks, it simply asks with less to say.
+      .catch(() => ({}));
+  }
+  return labelsPromise;
+}
+
+let labelsPromise = null;
 
 /**
  * Reads a server-side write outcome.

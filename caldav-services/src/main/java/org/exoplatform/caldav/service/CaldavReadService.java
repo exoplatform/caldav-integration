@@ -19,6 +19,8 @@ package org.exoplatform.caldav.service;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -63,6 +65,9 @@ public class CaldavReadService {
   @Autowired
   private IcsReader              icsReader;
 
+  @Autowired
+  private CaldavSyncStorage      caldavSyncStorage;
+
   /**
    * The calendars of the connected account.
    *
@@ -76,7 +81,7 @@ public class CaldavReadService {
       return List.of();
     }
     CalDavEndpoint endpoint = endpointOf(settings);
-    List<CalendarCollection> collections = readableCollections(endpoint, settings);
+    List<CalendarCollection> collections = readableCollections(userIdentityId, endpoint, settings);
     List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
     List<RemoteCalendar> calendars = new ArrayList<>();
     for (CalendarCollection collection : collections) {
@@ -112,7 +117,7 @@ public class CaldavReadService {
       return List.of();
     }
     CalDavEndpoint endpoint = endpointOf(settings);
-    List<CalendarCollection> collections = readableCollections(endpoint, settings);
+    List<CalendarCollection> collections = readableCollections(userIdentityId, endpoint, settings);
     List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
 
     List<RemoteIcsEvent> events = new ArrayList<>();
@@ -227,9 +232,48 @@ public class CaldavReadService {
    * @param settings the connected account
    * @return the collections whose events belong on the agenda
    */
-  private List<CalendarCollection> readableCollections(CalDavEndpoint endpoint, CaldavUserSetting settings) {
+  private List<CalendarCollection> readableCollections(long userIdentityId,
+                                                       CalDavEndpoint endpoint,
+                                                       CaldavUserSetting settings) {
     String mirror = CaldavSyncStorage.canonicalHref(settings.getMirrorCalendarHref());
-    return collectionsOf(endpoint, settings).stream().filter(collection -> !isMirror(collection, mirror)).toList();
+    Set<String> bound = boundCollections(userIdentityId, settings);
+    return collectionsOf(endpoint, settings).stream()
+                                            .filter(collection -> !isMirror(collection, mirror))
+                                            .filter(collection -> !bound.contains(CaldavSyncStorage.canonicalHref(collection.href())))
+                                            .toList();
+  }
+
+  /**
+   * The collections eXo already accounts for, and so no longer shows here.
+   *
+   * <p>
+   * This is the shim being retired, one collection at a time. A bound
+   * collection's events are in an eXo calendar now — materialised from it, or
+   * pushed to it — so serving them here as well would show the user every
+   * meeting twice, once under Remote and once under their own calendar.
+   *
+   * <p>
+   * A binding of <em>any</em> state counts, tombstones included. A tombstone
+   * means the user deleted the eXo calendar, and the dialog that asked them
+   * promised eXo would "simply stop showing it" — putting the collection back
+   * under Remote would break that promise in the plainest way.
+   *
+   * <p>
+   * A collection with no binding at all keeps being served: a materialisation
+   * that has not happened yet, or one that failed, must leave the user seeing
+   * their events rather than silently losing them.
+   *
+   * @param userIdentityId identity of the user
+   * @param settings the connected account
+   * @return the canonical paths eXo already holds, empty when none
+   */
+  private Set<String> boundCollections(long userIdentityId, CaldavUserSetting settings) {
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    return caldavSyncStorage.getPairs(userIdentityId, serverId)
+                            .stream()
+                            .map(pair -> CaldavSyncStorage.canonicalHref(pair.getRemoteHref()))
+                            .filter(StringUtils::isNotBlank)
+                            .collect(Collectors.toSet());
   }
 
   /**

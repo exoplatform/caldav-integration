@@ -21,6 +21,7 @@ package org.exoplatform.caldav.service;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -89,6 +90,9 @@ public class CaldavSyncServiceTest {
 
   @Mock
   private CaldavOutboundService      caldavOutboundService;
+
+  @Mock
+  private CaldavInboundService       caldavInboundService;
 
   @Mock
   private AgendaCalendarService      agendaCalendarService;
@@ -162,6 +166,169 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  @Test
+  public void theEventsOfAMaterialisedCollectionAreImported() throws Exception {
+    givenServerCalendars();
+    CalendarSync bound = remotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
+    givenUserCalendars(calendarWithAnchor(77L, "anchor-1"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService).importInto(eq(USER), eq(bound), any(), any(), any());
+  }
+
+  @Test
+  public void aCollectionExoPushedIsNeverReadBackIn() throws Exception {
+    // It holds copies of events agenda already has. Importing them would show
+    // every one of the user's own meetings twice — the object-level twin of
+    // the calendar-level loop.
+    givenServerCalendars();
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of());
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of());
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  @Test
+  public void aCalendarDeletedInExoIsNotFilledBackUp() throws Exception {
+    // The tombstone says the user deleted it. Reading its collection and
+    // recreating the events is precisely what they asked not to happen.
+    givenServerCalendars();
+    CalendarSync tombstone = remotePair("/dav/calendars/john/private/", "anchor-1");
+    tombstone.setStatus(CalendarSyncStatus.LOCALLY_DELETED);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(tombstone));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(tombstone));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  @Test
+  public void aBindingWhoseCalendarIsGoneIsSkippedRatherThanRecreated() throws Exception {
+    // Recreating the calendar here would undo a deletion.
+    givenServerCalendars();
+    CalendarSync orphan = remotePair("/dav/calendars/john/private/", "anchor-missing");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(orphan));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(orphan));
+    givenUserCalendars(calendarWithAnchor(77L, "another-anchor"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  @Test
+  public void oneCollectionThatFailsToImportDoesNotCostTheOthers() throws Exception {
+    givenServerCalendars();
+    CalendarSync first = remotePair("/dav/calendars/john/a/", "anchor-1");
+    CalendarSync second = remotePair("/dav/calendars/john/b/", "anchor-2");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(first, second));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(first, second));
+    givenUserCalendars(calendarWithAnchor(77L, "anchor-1"), calendarWithAnchor(78L, "anchor-2"));
+    when(caldavInboundService.importInto(anyLong(), eq(first), any(), any(), any()))
+                                                                                    .thenThrow(new IllegalStateException("down"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService).importInto(eq(USER), eq(second), any(), any(), any());
+  }
+
+  /**
+   * @param href the collection this pair is bound to
+   * @param anchor the eXo calendar's sync uid
+   * @return a binding the user's own client created
+   */
+  private CalendarSync remotePair(String href, String anchor) {
+    CalendarSync pair = new CalendarSync();
+    pair.setId(2L);
+    pair.setUserIdentityId(USER);
+    pair.setServerId(SERVER);
+    pair.setRemoteHref(href);
+    pair.setLocalCalendarSyncUid(anchor);
+    pair.setOrigin(SyncOrigin.REMOTE);
+    pair.setStatus(CalendarSyncStatus.ACTIVE);
+    return pair;
+  }
+
+  /**
+   * @param id the calendar identifier
+   * @param anchor its sync uid
+   * @return a calendar the user owns
+   */
+  private Calendar calendarWithAnchor(long id, String anchor) {
+    Calendar calendar = new Calendar();
+    calendar.setId(id);
+    calendar.setOwnerId(USER);
+    calendar.setSyncUid(anchor);
+    return calendar;
+  }
+
+  /**
+   * @param calendars what agenda answers for this user
+   * @throws Exception when the stub cannot be set
+   */
+  private void givenUserCalendars(Calendar... calendars) throws Exception {
+    when(agendaCalendarService.getCalendars(eq(0), anyInt(), eq(LOGIN))).thenReturn(List.of(calendars));
+  }
+
+  @Test
+  public void aBindingWithNoCalendarBehindItIsPrunedBeforeMaterialising() throws Exception {
+    // Order is the whole point. Such a binding is exactly what makes
+    // materialisation skip a collection, so healing it afterwards leaves the
+    // user waiting a whole throttle window for a calendar that could have
+    // come back in this same pass.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync orphan = remotePair("/dav/calendars/john/private/", "anchor-gone");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of());
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(orphan));
+    givenUserCalendars(calendarWithAnchor(77L, "another-anchor"));
+    givenAgendaCreates("anchor-new");
+
+    service.syncNow(USER, LOGIN);
+
+    InOrder order = inOrder(caldavSyncStorage, agendaCalendarService);
+    order.verify(caldavSyncStorage).deletePair(orphan.getId());
+    order.verify(agendaCalendarService).createCalendar(any(), eq(LOGIN));
+  }
+
+  @Test
+  public void aTombstoneIsNeverPruned() throws Exception {
+    // Its whole purpose is to keep the collection out. Pruning it would bring
+    // back exactly what the user asked to be rid of.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync tombstone = remotePair("/dav/calendars/john/private/", "anchor-gone");
+    tombstone.setStatus(CalendarSyncStatus.LOCALLY_DELETED);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(tombstone));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(tombstone));
+    givenUserCalendars(calendarWithAnchor(77L, "another-anchor"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  @Test
+  public void calendarsThatCannotBeReadPruneNothing() throws Exception {
+    // Every binding would look like an orphan. Pruning them would throw away
+    // bindings whose calendars are perfectly well — the worst possible
+    // reading of a read failure.
+    givenServerCalendars();
+    CalendarSync bound = remotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
+    when(agendaCalendarService.getCalendars(eq(0), anyInt(), eq(LOGIN))).thenThrow(new IllegalStateException("down"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
   }
 
   @Test

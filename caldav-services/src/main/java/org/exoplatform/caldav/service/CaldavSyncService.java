@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -29,6 +30,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.model.Calendar;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -78,6 +81,19 @@ public class CaldavSyncService {
   @Value("${exo.agenda.caldav.sync.throttleMinutes:15}")
   private long                        throttleMinutes;
 
+  /**
+   * How far back events are imported. A calendar with ten years of history
+   * behind it would otherwise cost a full download on a page load.
+   */
+  @Value("${exo.agenda.caldav.sync.pastDays:60}")
+  private long                        pastDays;
+
+  /**
+   * How far ahead events are imported.
+   */
+  @Value("${exo.agenda.caldav.sync.futureDays:365}")
+  private long                        futureDays;
+
   @Autowired
   private CalDavClient                calDavClient;
 
@@ -89,6 +105,12 @@ public class CaldavSyncService {
 
   @Autowired
   private CaldavOutboundService       caldavOutboundService;
+
+  @Autowired
+  private CaldavInboundService        caldavInboundService;
+
+  @Autowired
+  private IdentityManager             identityManager;
 
   @Autowired
   private AgendaCalendarService       agendaCalendarService;
@@ -129,6 +151,52 @@ public class CaldavSyncService {
   }
 
   /**
+   * Synchronises because a calendar has just been created.
+   *
+   * <p>
+   * The engine needs the owner's login to satisfy agenda's ACL, and a listener
+   * has only their identity — resolving it is this method's reason to exist,
+   * and it keeps the listener the glue it is meant to be.
+   *
+   * <p>
+   * Nothing happens for a user with no connected account, which is most of
+   * them: a calendar created by someone who never set up CalDAV must not cost
+   * an identity lookup and a wasted pass.
+   *
+   * @param userIdentityId identity of the calendar's owner
+   */
+  public void syncAfterCalendarCreated(long userIdentityId) {
+    if (!connected(caldavConnectorStorage.getCaldavSetting(userIdentityId))) {
+      return;
+    }
+    Identity identity = identityManager.getIdentity(String.valueOf(userIdentityId));
+    if (identity == null || StringUtils.isBlank(identity.getRemoteId())) {
+      LOG.debug("Calendar owner {} has no resolvable login; the next sync will carry the calendar", userIdentityId);
+      return;
+    }
+    // syncNow rather than syncIfDue: the point is that the user does not wait.
+    // The concurrency guard keeps this harmless when the calendar was itself
+    // created by a sync that is still running — that pass returns immediately
+    // rather than recursing into itself.
+    syncNow(userIdentityId, identity.getRemoteId());
+  }
+
+  /**
+   * Forgets when this user last synchronised.
+   *
+   * <p>
+   * What connecting an account calls. Someone who has just entered their
+   * credentials is owed their calendars now, not in a quarter of an hour —
+   * and a throttle stamped by the previous account's run has nothing to say
+   * about the new one.
+   *
+   * @param userIdentityId identity of the user
+   */
+  public void forgetThrottle(long userIdentityId) {
+    lastSync.remove(userIdentityId);
+  }
+
+  /**
    * One synchronisation pass, outward then inward.
    *
    * <p>
@@ -153,7 +221,13 @@ public class CaldavSyncService {
     }
     try {
       caldavOutboundService.bindPersonalCalendars(userIdentityId, username);
+      // Before materialising, not after: a binding with nothing behind it is
+      // exactly what makes materialisation skip a collection, so healing it
+      // afterwards leaves the user waiting a whole throttle window for a
+      // calendar that could have come back in this same pass.
+      pruneOrphanBindings(userIdentityId, username, settings);
       materialiseRemoteCalendars(userIdentityId, username, settings);
+      importRemoteEvents(userIdentityId, username, settings);
       lastSync.put(userIdentityId, Instant.now());
     } catch (RuntimeException e) {
       // A sync that fails is not an error the caller can act on — the page it
@@ -163,6 +237,116 @@ public class CaldavSyncService {
     } finally {
       syncing.remove(userIdentityId);
     }
+  }
+
+  /**
+   * Drops bindings that have no eXo calendar behind them any more.
+   *
+   * <p>
+   * Such a binding describes nothing, and keeping it costs the user the
+   * collection for good: materialisation skips a collection that already has
+   * one, so the calendar can never come back and nothing on screen says why.
+   *
+   * <p>
+   * Only ACTIVE bindings are considered. A tombstone is a deliberate deletion
+   * and its whole purpose is to keep the collection out — pruning those would
+   * bring back exactly what the user asked to be rid of.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login
+   * @param settings the connected account
+   */
+  private void pruneOrphanBindings(long userIdentityId, String username, CaldavUserSetting settings) {
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    List<CalendarSync> pairs = caldavSyncStorage.getPairsByOrigin(userIdentityId, serverId, SyncOrigin.REMOTE);
+    if (pairs.isEmpty()) {
+      return;
+    }
+    Map<String, Calendar> byAnchor = calendarsByAnchor(userIdentityId, username);
+    if (byAnchor.isEmpty()) {
+      // The calendars could not be read at all. Every binding would look like
+      // an orphan, and pruning them would throw away bindings whose calendars
+      // are perfectly well — the worst possible reading of a read failure.
+      return;
+    }
+    for (CalendarSync pair : pairs) {
+      if (pair.getStatus() == CalendarSyncStatus.ACTIVE && !byAnchor.containsKey(pair.getLocalCalendarSyncUid())) {
+        LOG.info("Binding {} has no eXo calendar behind it; it is dropped so the collection can be materialised again",
+                 pair.getId());
+        caldavSyncStorage.deleteObjects(pair.getId());
+        caldavSyncStorage.deletePair(pair.getId());
+      }
+    }
+  }
+
+  /**
+   * Brings the events of every materialised collection into the calendar
+   * standing for it.
+   *
+   * <p>
+   * Only bindings eXo did <em>not</em> create are read. A collection eXo
+   * pushed holds copies of events agenda already has, and importing them back
+   * would show every one of the user's own meetings twice.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login, which agenda's ACL reads
+   * @param settings the connected account
+   */
+  private void importRemoteEvents(long userIdentityId, String username, CaldavUserSetting settings) {
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    List<CalendarSync> pairs = caldavSyncStorage.getPairsByOrigin(userIdentityId, serverId, SyncOrigin.REMOTE);
+    if (pairs.isEmpty()) {
+      return;
+    }
+    Map<String, Calendar> byAnchor = calendarsByAnchor(userIdentityId, username);
+    Instant now = Instant.now();
+    Instant from = now.minus(Duration.ofDays(pastDays));
+    Instant to = now.plus(Duration.ofDays(futureDays));
+    for (CalendarSync pair : pairs) {
+      if (pair.getStatus() != CalendarSyncStatus.ACTIVE) {
+        // A paused or tombstoned binding is not one to read from. A tombstone
+        // in particular means the user deleted the calendar in eXo, and
+        // filling it back up is precisely what they asked not to happen.
+        continue;
+      }
+      Calendar calendar = byAnchor.get(pair.getLocalCalendarSyncUid());
+      if (calendar == null) {
+        // Pruned earlier in this pass, or created between the two steps.
+        continue;
+      }
+      try {
+        caldavInboundService.importInto(userIdentityId, pair, calendar, from, to);
+      } catch (RuntimeException e) {
+        // One collection must not cost the others. The next run tries again.
+        LOG.warn("The events of collection {} could not be imported", pair.getRemoteHref(), e);
+      }
+    }
+  }
+
+  /**
+   * The user's calendars, keyed by the anchor a binding records.
+   *
+   * <p>
+   * Agenda exposes no lookup by sync uid, so the calendars are listed once per
+   * run and matched in memory rather than once per binding.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login
+   * @return the calendars by anchor, empty when they cannot be read
+   */
+  private Map<String, Calendar> calendarsByAnchor(long userIdentityId, String username) {
+    Map<String, Calendar> byAnchor = new HashMap<>();
+    try {
+      for (Calendar calendar : agendaCalendarService.getCalendars(0, Integer.MAX_VALUE, username)) {
+        if (calendar.getOwnerId() == userIdentityId && !calendar.isDeleted()
+            && StringUtils.isNotBlank(calendar.getSyncUid())) {
+          byAnchor.put(calendar.getSyncUid(), calendar);
+        }
+      }
+    } catch (Exception e) { // NOSONAR agenda declares a bare Exception here
+      LOG.warn("The calendars of user {} could not be read; nothing is imported this round", userIdentityId, e);
+    }
+    return byAnchor;
   }
 
   /**
