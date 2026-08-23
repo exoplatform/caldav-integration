@@ -33,6 +33,7 @@ import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
+import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.client.CalDavClient;
@@ -61,6 +62,14 @@ import org.exoplatform.services.log.Log;
  */
 @Service
 public class CaldavInboundService {
+
+  /**
+   * The name this add-on registers itself under as an agenda remote provider,
+   * in caldav-configuration.xml. Agenda resolves the provider by name when it
+   * stores what an event is called on the server, and a record naming none is
+   * read as an instruction to delete the mapping rather than keep it.
+   */
+  private static final String    CONNECTOR_NAME = "agenda.caldavCalendar";
 
   private static final Log       LOG = ExoLogger.getLogger(CaldavInboundService.class);
 
@@ -218,6 +227,36 @@ public class CaldavInboundService {
   }
 
   /**
+   * What this event is called on the server, recorded against it.
+   *
+   * <p>
+   * An imported event used to be created with no remote identity at all, and
+   * for as long as nothing pushed from a materialised calendar that cost
+   * nothing. Now that such a calendar synchronises both ways, it costs a
+   * duplicate every time: asked to write the event back, the push looks for
+   * the identifier this event is known by, finds none, mints a fresh one and
+   * writes a <em>second</em> object — leaving the one it was imported from
+   * untouched. Rename an imported meeting in eXo and it appears twice on the
+   * account it came from.
+   *
+   * <p>
+   * The UID is the server's own, taken from the object being imported, so a
+   * later push addresses the object this event came from rather than a new
+   * one beside it.
+   *
+   * @param master the parsed remote event
+   * @return the remote identity to record with the event
+   */
+  private RemoteEvent remoteIdentity(IcsEvent master) {
+    RemoteEvent remoteEvent = new RemoteEvent();
+    remoteEvent.setRemoteId(master.getUid());
+    // Named, or agenda reads the record as an instruction to delete the
+    // mapping rather than store it.
+    remoteEvent.setRemoteProviderName(CONNECTOR_NAME);
+    return remoteEvent;
+  }
+
+  /**
    * The attendee standing for the user whose calendar this is.
    *
    * <p>
@@ -312,7 +351,7 @@ public class CaldavInboundService {
                                                List.of(),
                                                List.of(),
                                                List.of(),
-                                               null,
+                                               remoteIdentity(master),
                                                false,
                                                userIdentityId);
     } catch (Exception e) { // NOSONAR agenda declares several checked exceptions here

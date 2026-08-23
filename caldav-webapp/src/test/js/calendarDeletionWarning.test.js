@@ -225,6 +225,36 @@ describe('deleting a calendar eXo mirrors', () => {
     expect(warning).toBe('');
   });
 
+  // What a push hands back to agenda.
+
+  it('identifies a pushed event by its iCalendar UID, not by the mapping row', async () => {
+    // agenda stores connectorEvent.id as the event's remote identifier and
+    // addresses every later push, edit and deletion by it. Answering with the
+    // mapping's own database key put a row id where the UID belongs — and the
+    // next push then adopted that row id as the UID and wrote a second object
+    // under it, leaving the first behind with the old content.
+    global.fetch = jest.fn(() => Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({id: 269, icsUid: 'evt-uuid-1', remoteHref: '/dav/cal/u/c/evt-uuid-1.ics'}),
+    }));
+
+    const pushed = await caldavConnector.pushEvent({id: 388});
+
+    expect(pushed.id).toBe('evt-uuid-1');
+    // The mapping's own key is still there for anyone who wants it.
+    expect(pushed.icsUid).toBe('evt-uuid-1');
+    expect(pushed.remoteHref).toContain('evt-uuid-1.ics');
+  });
+
+  it('passes an empty push straight through', async () => {
+    // 204: the event's calendar has no collection to copy into. There is no
+    // identifier to report and nothing for agenda to record.
+    global.fetch = jest.fn(() => Promise.resolve({ok: true, status: 204}));
+
+    expect(await caldavConnector.pushEvent({id: 389})).toBeNull();
+  });
+
   // How the server is named in the sentence.
 
   it('names the server by its host when its address is not a full url', async () => {

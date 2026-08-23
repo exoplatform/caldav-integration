@@ -26,7 +26,11 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
@@ -95,7 +99,28 @@ public class CaldavSyncService {
    */
   private static final int            MAX_CONSECUTIVE_FAILURES = 5;
 
-  private final Map<Long, Boolean>    syncing    = new ConcurrentHashMap<>();
+  /**
+   * How long a caller that asked to be told when the sync had run will wait
+   * for a pass already in flight. Generous enough to cover a first pass over
+   * a real account, short enough that an HTTP thread is never held hostage by
+   * one that has wedged.
+   */
+  private static final long           IN_FLIGHT_WAIT_SECONDS   = 20L;
+
+  /**
+   * The pass running for a user, so two page loads a second apart do not run
+   * two syncs against the same account at once — and so a caller who was
+   * promised the sync had run can wait for the one that is actually doing it.
+   *
+   * @param done completes when the pass leaves its body, however it leaves it
+   * @param threadId the thread running the pass, so a pass that re-enters
+   *          itself through a listener is recognised and never waits on its
+   *          own completion
+   */
+  private record SyncPass(CompletableFuture<Void> done, long threadId) {
+  }
+
+  private final Map<Long, SyncPass>   syncing    = new ConcurrentHashMap<>();
 
   /** How long a sync stays fresh; deployment-tunable. */
   /**
@@ -251,7 +276,7 @@ public class CaldavSyncService {
     if (last != null && last.isAfter(Instant.now().minus(Duration.ofMinutes(caldavTuningService.getThrottleMinutes())))) {
       return;
     }
-    sync(userIdentityId, username);
+    sync(userIdentityId, username, false);
   }
 
   /**
@@ -266,7 +291,32 @@ public class CaldavSyncService {
    * @param username the user's login
    */
   public void syncNow(long userIdentityId, String username) {
-    sync(userIdentityId, username);
+    sync(userIdentityId, username, false);
+  }
+
+  /**
+   * Synchronises now and does not return until it has.
+   *
+   * <p>
+   * The difference from {@link #syncNow(long, String)} is what happens when a
+   * pass is already running for this user. Returning then — as every caller
+   * used to — reports a synchronisation that has not happened yet, and a
+   * caller that refreshes its display on the strength of that reads the
+   * account mid-pass: collections not yet materialised still count as remote,
+   * so they are shown under the heading for calendars eXo is not holding, and
+   * stay there until the page is reloaded. Waiting for the pass in flight
+   * makes the answer true when it is given.
+   *
+   * <p>
+   * Bounded, and never waits on itself: a pass that re-enters through a
+   * listener is recognised by its thread and returns immediately, as it
+   * always did.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login
+   */
+  public void syncNowAndWait(long userIdentityId, String username) {
+    sync(userIdentityId, username, true);
   }
 
   /**
@@ -327,7 +377,7 @@ public class CaldavSyncService {
    * @param userIdentityId identity of the user
    * @param username the user's login
    */
-  private void sync(long userIdentityId, String username) {
+  private void sync(long userIdentityId, String username, boolean awaitPassInFlight) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (!connected(settings)) {
       return;
@@ -335,7 +385,16 @@ public class CaldavSyncService {
     // One sync per user at a time. Two page loads a second apart would
     // otherwise both create the same calendar, and the second would find the
     // first's collection listed and bind a duplicate to it.
-    if (syncing.putIfAbsent(userIdentityId, Boolean.TRUE) != null) {
+    SyncPass pass = new SyncPass(new CompletableFuture<>(), Thread.currentThread().threadId());
+    SyncPass running = syncing.putIfAbsent(userIdentityId, pass);
+    if (running != null) {
+      // Only a caller that was promised the sync had run waits, and never for
+      // a pass it is itself inside: a calendar created by a sync notifies a
+      // listener that syncs, and waiting there would be waiting on this very
+      // thread to finish what it is in the middle of.
+      if (awaitPassInFlight && running.threadId() != Thread.currentThread().threadId()) {
+        awaitPass(userIdentityId, running);
+      }
       return;
     }
     try {
@@ -372,6 +431,28 @@ public class CaldavSyncService {
       LOG.warn("Synchronising the CalDAV calendars of user {} failed", userIdentityId, e);
     } finally {
       syncing.remove(userIdentityId);
+      // Whatever the pass did, anyone waiting on it is waiting for it to be
+      // over, not for it to have succeeded.
+      pass.done().complete(null);
+    }
+  }
+
+  /**
+   * Waits for a pass already running, for a bounded time.
+   *
+   * @param userIdentityId identity of the user, for the log only
+   * @param running the pass to wait for
+   */
+  private void awaitPass(long userIdentityId, SyncPass running) {
+    try {
+      running.done().get(IN_FLIGHT_WAIT_SECONDS, TimeUnit.SECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (TimeoutException | ExecutionException e) {
+      // Not an error the caller can act on: the pass is still running and
+      // will finish on its own. The caller reads a slightly older account
+      // than it hoped for, which is exactly where it stood before it waited.
+      LOG.debug("The synchronisation already running for user {} outlasted the wait", userIdentityId, e);
     }
   }
 
@@ -433,7 +514,23 @@ public class CaldavSyncService {
                                   CaldavUserSetting settings,
                                   List<CalendarCollection> collections) {
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
-    List<CalendarSync> pairs = caldavSyncStorage.getPairsByOrigin(userIdentityId, serverId, SyncOrigin.REMOTE);
+    // Everything except the mirror, and the exception is the point. A calendar
+    // reads back if the user has it on their devices as a calendar of their
+    // own — whether eXo materialised it from the account or created it there
+    // makes no difference to them: they see it, they edit it on a phone, and
+    // the change belongs here. Only the mirror stays one-way, because it is
+    // not the user's calendar at all but eXo's projection of meetings they
+    // accepted elsewhere; reading it back would let a copy overwrite the event
+    // it is a copy of.
+    //
+    // This selected REMOTE alone, which made the direction depend on who
+    // created the collection — bookkeeping invisible to the user, since both
+    // kinds sit under Personal and look identical. An event edited on a phone
+    // in an eXo-created calendar simply never came home.
+    List<CalendarSync> pairs = caldavSyncStorage.getPairs(userIdentityId, serverId)
+                                                .stream()
+                                                .filter(pair -> pair.getOrigin() != SyncOrigin.MIRROR)
+                                                .toList();
     if (pairs.isEmpty()) {
       return;
     }
@@ -468,7 +565,18 @@ public class CaldavSyncService {
         continue;
       }
       String ctag = ctags.get(CaldavSyncStorage.canonicalHref(pair.getRemoteHref()));
-      if (listed && ctag == null && !holdsHref(collections, pair.getRemoteHref())) {
+      // Only for a collection eXo materialised. "It is no longer on the
+      // account" is a statement about the user's own calendar disappearing
+      // from their server, and it earns the warning the settings then show.
+      // A collection eXo created is a different thing: it is absent from the
+      // listing whenever the server reports it under a name other than the
+      // one it was created at — which BlueMind does — and marking it gone
+      // flagged the user's own calendars as broken until a later pass revived
+      // them. This check was written for materialised bindings and only ever
+      // saw them until the import widened to carry every calendar the user
+      // has on their devices.
+      if (pair.getOrigin() == SyncOrigin.REMOTE
+          && listed && ctag == null && !holdsHref(collections, pair.getRemoteHref())) {
         // The collection is not in a listing that succeeded: the user deleted
         // their own calendar on the account. Marked rather than deleted here —
         // what eXo already holds is theirs, and the binding is what lets the
@@ -817,9 +925,22 @@ public class CaldavSyncService {
     // calendar it never created.
     pair.setOrigin(SyncOrigin.REMOTE);
     pair.setStatus(CalendarSyncStatus.ACTIVE);
-    pair.setCtag(collection.ctag());
-    pair.setSyncToken(collection.syncToken());
-    pair.setLastSyncEnd(new Date());
+    // Deliberately no ctag, no sync token and no sync time. All three are
+    // claims about what has been read out of this collection, and nothing has
+    // been read out of it yet — its events are imported further down this very
+    // pass.
+    //
+    // Recording them here made a brand-new binding look completely up to date
+    // the instant it was created, and the import step skips a collection whose
+    // ctag still matches and whose last sync is from today. So a calendar
+    // materialised with events already in it came in empty, and stayed empty
+    // for the rest of the day: every later pass compared the same ctag and
+    // agreed there was nothing to read. Only a change made on the server —
+    // moving the ctag — ever broke it out, which made the ordinary first
+    // connect the one case that failed.
+    //
+    // A binding with no last sync also reads as due (findDue treats a null as
+    // due), which is exactly what an unread collection should be.
     caldavSyncStorage.savePair(pair);
     LOG.info("Materialised remote calendar {} as eXo calendar {}", collection.href(), created.getId());
   }

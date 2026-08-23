@@ -23,6 +23,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Date;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -91,6 +92,14 @@ public class CaldavPushService {
 
   /** The server would not create a collection and no calendar could be adopted. */
   public static final String     CREATION_REFUSED       = "calendarCreationRefused";
+
+  /**
+   * The name this add-on registers itself under as an agenda remote provider,
+   * in caldav-configuration.xml. It has to match that declaration exactly:
+   * agenda resolves the provider by name when it stores the mapping between
+   * an eXo event and the object written for it.
+   */
+  private static final String    CONNECTOR_NAME = "agenda.caldavCalendar";
 
   private static final Log       LOG                    = ExoLogger.getLogger(CaldavPushService.class);
 
@@ -168,25 +177,79 @@ public class CaldavPushService {
   }
 
   /**
-   * The collection bound to the event's own calendar, when the event belongs
-   * to one of this user's personal calendars and that calendar has one.
+   * The mapping row for an iCalendar UID, in whichever collection holds it.
    *
    * <p>
-   * Answers null in three cases, and they are not the same thing. The event
-   * belongs to a space, so the mirror is where it goes. Or the calendar is the
-   * user's but carries no anchor, so nothing stable identifies it. Or the
-   * server refused to create its collection — and then the event is <b>not</b>
-   * diverted into the mirror as a consolation: a personal event filed among
-   * space copies is exactly the mixing PR7 refuses to do, and outbound simply
-   * stays unavailable for that calendar until the server allows it.
+   * The mirror is searched first because most copies live there, but a
+   * personal calendar's collection holds its own, and one UID belongs to at
+   * most one of them.
+   *
+   * @param userIdentityId identity of the user
+   * @param settings the connected account
+   * @param icsUid the iCalendar UID looked for
+   * @return the mapping row, or null when no collection holds it
+   */
+  private ObjectSync objectAnywhere(long userIdentityId, CaldavUserSetting settings, String icsUid) {
+    CalendarSync mirror = existingMirrorPair(userIdentityId, settings);
+    if (mirror != null) {
+      ObjectSync inMirror = caldavSyncStorage.getObjectByUid(mirror.getId(), icsUid);
+      if (inMirror != null) {
+        return inMirror;
+      }
+    }
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    for (CalendarSync pair : caldavSyncStorage.getPairs(userIdentityId, serverId)) {
+      // Objects.equals, not ==: these identifiers are Long, so == compares
+      // references and answers false for every value a real database issues.
+      // Written as ==, the mirror is simply searched a second time — harmless
+      // today, and the same mistake that cost a deletion elsewhere.
+      if (mirror != null && Objects.equals(pair.getId(), mirror.getId())) {
+        continue;
+      }
+      ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), icsUid);
+      if (known != null) {
+        return known;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The event's calendar, when it is one of this user's own.
+   *
+   * <p>
+   * The question the routing turns on. An event of the user's own calendar is
+   * theirs, and belongs in that calendar's collection or nowhere; anything
+   * else — a space meeting they attend — belongs in the mirror, which exists
+   * precisely because a space calendar has no counterpart on a personal
+   * account.
    *
    * @param event the agenda event being pushed
    * @param userIdentityId identity of the user
+   * @return the calendar when the user owns it, null otherwise
+   */
+  private Calendar ownCalendarOf(Event event, long userIdentityId) {
+    Calendar calendar = agendaCalendarService.getCalendarById(event.getCalendarId());
+    return calendar != null && calendar.getOwnerId() == userIdentityId ? calendar : null;
+  }
+
+  /**
+   * The collection bound to one of this user's own calendars.
+   *
+   * <p>
+   * Answers null in two cases, and neither sends the event to the mirror —
+   * that decision belongs to the caller now, which is what makes the refusal
+   * enforceable rather than merely documented. Either the calendar carries no
+   * anchor, so nothing stable identifies it; or the server refused to create
+   * its collection, and outbound stays unavailable for that calendar until it
+   * allows one.
+   *
+   * @param calendar one of the user's own calendars, already loaded
+   * @param userIdentityId identity of the user
    * @return the bound collection, or null when there is none to write into
    */
-  private CalendarSync personalPairFor(Event event, long userIdentityId) {
-    Calendar calendar = agendaCalendarService.getCalendarById(event.getCalendarId());
-    if (calendar == null || calendar.getOwnerId() != userIdentityId || StringUtils.isBlank(calendar.getSyncUid())) {
+  private CalendarSync personalPairFor(Calendar calendar, long userIdentityId) {
+    if (StringUtils.isBlank(calendar.getSyncUid())) {
       return null;
     }
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
@@ -354,8 +417,20 @@ public class CaldavPushService {
     // calendar's own collection; anything else — a space event the user
     // attends — belongs in the mirror, which exists precisely because a space
     // calendar has no counterpart on a personal account.
-    CalendarSync personal = personalPairFor(event, userIdentityId);
-    if (personal != null) {
+    Calendar own = ownCalendarOf(event, userIdentityId);
+    if (own != null) {
+      CalendarSync personal = personalPairFor(own, userIdentityId);
+      if (personal == null) {
+        // Nothing to write into, and the mirror is not a consolation. A
+        // personal event filed among the copies of space meetings is exactly
+        // the mixing this refuses to do; outbound stays unavailable for this
+        // calendar until it has a collection of its own. Answering null says
+        // "nothing was pushed" without pretending it failed.
+        LOG.debug("Calendar {} has no usable collection; event {} is not copied out",
+                  event.getCalendarId(),
+                  event.getId());
+        return null;
+      }
       return writeInto(userIdentityId, personal, icsEvent, event.getId(), overwrite);
     }
     return pushEvent(userIdentityId, icsEvent, event.getId(), overwrite);
@@ -389,6 +464,16 @@ public class CaldavPushService {
     remoteEvent.setEventId(seriesId);
     remoteEvent.setIdentityId(userIdentityId);
     remoteEvent.setRemoteId(minted);
+    // Naming the provider is what makes agenda keep this row. Without it —
+    // and this connector left it unset — saveRemoteEvent reads the record as
+    // an instruction to DELETE the mapping rather than store it, so the
+    // identifier minted here was thrown away the moment it was handed over.
+    // Every later push then found nothing, minted a fresh identifier, and
+    // wrote a second object: an edit duplicated the meeting and orphaned the
+    // original, and a delete looked for an identifier the server had never
+    // seen. The provider itself already exists — this add-on registers it as
+    // a RemoteProviderDefinitionPlugin — so naming it is all that was missing.
+    remoteEvent.setRemoteProviderName(CONNECTOR_NAME);
     // Recorded before the write, not after: an interrupted push leaves an
     // identifier pointing at an object that may or may not exist, which the
     // next push reconciles. Recording it afterwards would leave a written
@@ -398,7 +483,15 @@ public class CaldavPushService {
   }
 
   /**
-   * Removes one event's object from the mirror calendar.
+   * Removes one event's object from wherever this connector wrote it.
+   *
+   * <p>
+   * Every collection the user has, not only the mirror. An event of one of
+   * their own calendars is written into that calendar's collection, so a
+   * removal that looked only in the mirror would find nothing and quietly
+   * succeed — leaving the object on the server for ever, in the one place the
+   * user is most likely to notice it. A copy is written in one place and has
+   * to be removable from that same place.
    *
    * <p>
    * A deletion whose object is already gone is a success, not a failure: the
@@ -410,11 +503,7 @@ public class CaldavPushService {
    */
   public void deleteEvent(long userIdentityId, String icsUid) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
-    CalendarSync pair = existingMirrorPair(userIdentityId, settings);
-    if (pair == null) {
-      return;
-    }
-    ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), icsUid);
+    ObjectSync known = objectAnywhere(userIdentityId, settings, icsUid);
     if (known == null || StringUtils.isBlank(known.getRemoteHref())) {
       return;
     }
