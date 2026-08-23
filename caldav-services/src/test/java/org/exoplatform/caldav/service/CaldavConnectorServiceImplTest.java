@@ -242,6 +242,26 @@ public class CaldavConnectorServiceImplTest {
   }
 
   @Test
+  public void connectingAnAccountResumesTheCalendarsDisconnectingFroze() throws Exception {
+    // Disconnecting pauses the bindings of the calendars eXo pushed out, so
+    // that reconnecting finds its collections again. Nothing else lifts that
+    // pause deliberately: without this the account is connected while the
+    // user's own calendars still report themselves as failing, until a sweep
+    // happens to re-ensure each collection.
+    caldavConnectorService.setCaldavDeletionService(caldavDeletionService);
+    CaldavUserSetting stored = new CaldavUserSetting();
+    stored.setServerId(9L);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(stored);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(caldavDeletionService).thawOnConnect(USER_IDENTITY_ID, 9L);
+  }
+
+  @Test
   public void shouldStoreCompleteCredentials() throws Exception {
     CaldavUserSetting setting = new CaldavUserSetting();
     setting.setUsername("root");
