@@ -146,10 +146,25 @@ public class CaldavPushService {
    * @throws CaldavPushException when the write cannot be carried out
    */
   public ObjectSync pushEvent(long userIdentityId, IcsEvent event, Long localEventId) {
+    return pushEvent(userIdentityId, event, localEventId, false);
+  }
+
+  /**
+   * Writes one event into the user's mirror calendar, overwriting a drifted
+   * copy or not.
+   *
+   * @param userIdentityId identity of the user whose account is written to
+   * @param event the event to copy, with identities already resolved
+   * @param localEventId the agenda event this object stands for, or null
+   * @param overwrite true to write without the conditional guard
+   * @return the mapping row as it now stands
+   * @throws CaldavPushException when the write cannot be carried out
+   */
+  private ObjectSync pushEvent(long userIdentityId, IcsEvent event, Long localEventId, boolean overwrite) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
     CalDavEndpoint endpoint = endpointOf(settings);
     MirrorTarget mirror = ensureMirror(userIdentityId, settings, endpoint);
-    return writeInto(userIdentityId, mirrorPair(userIdentityId, settings, mirror), event, localEventId);
+    return writeInto(userIdentityId, mirrorPair(userIdentityId, settings, mirror), event, localEventId, overwrite);
   }
 
   /**
@@ -202,6 +217,26 @@ public class CaldavPushService {
    * @throws CaldavPushException when the write cannot be carried out
    */
   public ObjectSync writeInto(long userIdentityId, CalendarSync pair, IcsEvent event, Long localEventId) {
+    return writeInto(userIdentityId, pair, event, localEventId, false);
+  }
+
+  /**
+   * Writes one event into a collection, overwriting a drifted copy or not.
+   *
+   * @param userIdentityId identity of the user whose account is written to
+   * @param pair the collection to write into
+   * @param event the event to copy, with identities already resolved
+   * @param localEventId the agenda event this object stands for, or null
+   * @param overwrite true to write without the conditional guard, which only
+   *          a repair may ask for
+   * @return the mapping row as it now stands
+   * @throws CaldavPushException when the write cannot be carried out
+   */
+  private ObjectSync writeInto(long userIdentityId,
+                               CalendarSync pair,
+                               IcsEvent event,
+                               Long localEventId,
+                               boolean overwrite) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
     CalDavEndpoint endpoint = endpointOf(settings);
 
@@ -210,7 +245,7 @@ public class CaldavPushService {
     String href = known != null && StringUtils.isNotBlank(known.getRemoteHref()) ? known.getRemoteHref()
                                                                                 : objectHref(pair.getRemoteHref(),
                                                                                              event.getUid());
-    PutResult result = write(endpoint, settings, href, ics, known);
+    PutResult result = write(endpoint, settings, href, ics, known, overwrite);
     if (result.preconditionFailed()) {
       // Someone else wrote the object between our read and our write. Never
       // retried blindly: the whole point of the conditional write is that the
@@ -253,6 +288,44 @@ public class CaldavPushService {
    * @throws CaldavPushException when the event cannot be read or written
    */
   public ObjectSync pushAgendaEvent(long userIdentityId, long eventId, String eventUrl) {
+    return pushAgendaEvent(userIdentityId, eventId, eventUrl, false);
+  }
+
+  /**
+   * Writes the copy of an agenda event again, over whatever now stands in its
+   * place on the server.
+   *
+   * <p>
+   * The entry point for repairs, and the only one that writes unconditionally.
+   * A conditional write cannot repair anything: the condition is the stored
+   * etag, and an object needs repairing exactly when the server's etag has
+   * moved away from it — so the guarded path refuses every repair it is asked
+   * to make. What makes the overwrite legitimate is that the caller has
+   * already read the object, compared it against the eXo event, and decided
+   * which copy wins.
+   *
+   * @param userIdentityId identity of the user whose account is written to
+   * @param eventId the agenda event whose copy is rebuilt
+   * @return the mapping row as it now stands
+   * @throws CaldavPushException when the event cannot be read or written
+   */
+  public ObjectSync rewriteAgendaEvent(long userIdentityId, long eventId) {
+    return pushAgendaEvent(userIdentityId, eventId, null, true);
+  }
+
+  /**
+   * Copies one agenda event into the user's account, overwriting a drifted
+   * copy or not.
+   *
+   * @param userIdentityId identity of the user whose account is written to
+   * @param eventId the agenda event to copy
+   * @param eventUrl absolute link back to the event in eXo
+   * @param overwrite true to write without the conditional guard, which only
+   *          a repair may ask for
+   * @return the mapping row as it now stands
+   * @throws CaldavPushException when the event cannot be read or written
+   */
+  private ObjectSync pushAgendaEvent(long userIdentityId, long eventId, String eventUrl, boolean overwrite) {
     Event event;
     try {
       // Read in the event's OWN zone, which is what a null argument asks
@@ -283,9 +356,9 @@ public class CaldavPushService {
     // calendar has no counterpart on a personal account.
     CalendarSync personal = personalPairFor(event, userIdentityId);
     if (personal != null) {
-      return writeInto(userIdentityId, personal, icsEvent, event.getId());
+      return writeInto(userIdentityId, personal, icsEvent, event.getId(), overwrite);
     }
-    return pushEvent(userIdentityId, icsEvent, event.getId());
+    return pushEvent(userIdentityId, icsEvent, event.getId(), overwrite);
   }
 
   /**
@@ -657,14 +730,36 @@ public class CaldavPushService {
                           CaldavUserSetting settings,
                           String href,
                           String ics,
-                          ObjectSync known) {
+                          ObjectSync known,
+                          boolean overwrite) {
     try {
       if (known == null || StringUtils.isBlank(known.getEtag())) {
+        if (overwrite) {
+          // A repair with nothing recorded against this UID. The create-only
+          // write below would send If-None-Match: * and be refused, because
+          // the object it is trying to create is usually already there —
+          // under a href this connector has lost track of. That is precisely
+          // the state a repair exists to leave: forcing the write puts the
+          // object back under the href being repaired and re-establishes the
+          // mapping, where the create refused for ever.
+          return calDavClient.overwriteObject(endpoint, href, ics, settings.getUsername(), settings.getPassword());
+        }
         return calDavClient.putObject(endpoint, href, ics, settings.getUsername(), settings.getPassword());
       }
       CalendarObject existing = calDavClient.fetchObject(endpoint, href, settings.getUsername(), settings.getPassword());
       String merged = existing == null || StringUtils.isBlank(existing.calendarData()) ? ics
                                                                               : icsMerger.merge(existing.calendarData(), ics, false);
+      if (overwrite) {
+        // No precondition at all — and it has to be neither of the two the
+        // client otherwise sends. The guard protects against clobbering a
+        // change nobody has looked at, and a repair is the one case where
+        // somebody has: verification read this object, compared it, and
+        // decided the eXo copy is the one to keep. An If-Match would refuse
+        // the write precisely when the object has drifted, which is the only
+        // time a repair is attempted; an If-None-Match would refuse it
+        // because the object exists, which it always does here.
+        return calDavClient.overwriteObject(endpoint, href, merged, settings.getUsername(), settings.getPassword());
+      }
       return calDavClient.updateObject(endpoint,
                                        href,
                                        merged,

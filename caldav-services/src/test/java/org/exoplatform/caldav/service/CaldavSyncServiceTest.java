@@ -113,6 +113,9 @@ public class CaldavSyncServiceTest {
   private CaldavTuningService        caldavTuningService;
 
   @Mock
+  private CaldavMirrorVerificationService caldavMirrorVerificationService;
+
+  @Mock
   private CalDavEndpoint             endpoint;
 
   @InjectMocks

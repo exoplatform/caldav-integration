@@ -112,6 +112,9 @@ public class CaldavSyncService {
   private CaldavTuningService         caldavTuningService;
 
   @Autowired
+  private CaldavMirrorVerificationService caldavMirrorVerificationService;
+
+  @Autowired
   private AgendaCalendarService       agendaCalendarService;
 
   /**
@@ -329,6 +332,14 @@ public class CaldavSyncService {
       pruneOrphanBindings(userIdentityId, username, settings);
       List<CalendarCollection> collections = materialiseRemoteCalendars(userIdentityId, username, settings);
       importRemoteEvents(userIdentityId, username, settings, collections);
+      // Last, and never allowed to fail the pass: the copies eXo pushed are
+      // its own projection of what agenda already holds, so a check on them
+      // that throws must not cost the user the calendars they came for.
+      try {
+        caldavMirrorVerificationService.verify(userIdentityId);
+      } catch (RuntimeException e) {
+        LOG.warn("The copies pushed for user {} could not be verified this round", userIdentityId, e);
+      }
       lastSync.put(userIdentityId, Instant.now());
     } catch (RuntimeException e) {
       // A sync that fails is not an error the caller can act on — the page it
