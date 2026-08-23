@@ -499,6 +499,15 @@ public class HttpCalDavClient implements CalDavClient {
   }
 
   @Override
+  public PutResult overwriteObject(CalDavEndpoint endpoint,
+                                   String href,
+                                   String icsData,
+                                   String username,
+                                   String password) {
+    return put(endpoint, href, icsData, null, null, username, password);
+  }
+
+  @Override
   public PutResult updateObject(CalDavEndpoint endpoint,
                                 String href,
                                 String icsData,
@@ -596,16 +605,18 @@ public class HttpCalDavClient implements CalDavClient {
                         String preconditionValue,
                         String username,
                         String password) {
-    HttpRequest request = HttpRequest.newBuilder(target(endpoint, href))
+    HttpRequest.Builder builder = HttpRequest.newBuilder(target(endpoint, href))
                                      .timeout(requestTimeout())
                                      // An iCalendar object, not DAV XML: request() is not reused
                                      // because its Content-Type belongs to PROPFIND/REPORT bodies,
                                      // and a server told an .ics is application/xml may refuse it.
                                      .header("Content-Type", "text/calendar; charset=utf-8")
                                      .header(AUTHORIZATION_HEADER, basicAuth(username, password))
-                                     .header(preconditionHeader, preconditionValue)
-                                     .method("PUT", BodyPublishers.ofString(icsData, StandardCharsets.UTF_8))
-                                     .build();
+                                     .method("PUT", BodyPublishers.ofString(icsData, StandardCharsets.UTF_8));
+    if (StringUtils.isNotBlank(preconditionHeader)) {
+      builder.header(preconditionHeader, preconditionValue);
+    }
+    HttpRequest request = builder.build();
     DavResponse response = exchange(request);
     int status = response.status();
     checkAuthStatus(status, false, request);

@@ -444,6 +444,127 @@ public class CaldavPushServiceTest {
   }
 
   /**
+   * A repair writes over the drifted copy instead of asking the server's
+   * permission first.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void aRepairWritesWithoutTheConditionalGuard() throws Exception {
+    // The guarded write carries the etag this connector last recorded, and
+    // the server refuses it when the object has moved on — which is the
+    // definition of the case being repaired. Guarded, no repair could ever
+    // succeed: every pass reported "altered: 1, re-pushed: 0".
+    givenAMirror();
+    givenAnAgendaEvent(120L, 0L);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("evt-1"));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(mapped("\"etag-1\""));
+    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+                                                                               .thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
+                                                                                                              "\"etag-9\"",
+                                                                                                              "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"));
+    when(icsMerger.merge(anyString(), anyString(), anyBoolean())).thenReturn("MERGED");
+    when(calDavClient.overwriteObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                 .thenReturn(new PutResult(204,
+                                                                                                                           "\"etag-10\"",
+                                                                                                                           null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.rewriteAgendaEvent(USER, 120L);
+
+    verify(calDavClient).overwriteObject(any(), anyString(), eq("MERGED"), anyString(), anyString());
+    // Neither of the guarded writes: If-Match is refused when the object has
+    // drifted, and If-None-Match — which putObject sends — is refused because
+    // the object exists. Both refuse exactly the case being repaired.
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * A repair with no mapping recorded still overwrites rather than trying to
+   * create.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void aRepairWithNothingRecordedStillOverwrites() throws Exception {
+    // The case a live account was stuck in: the row named an href the server
+    // no longer had, its UID matched no row, so the push had nothing to go
+    // on and fell to the create-only path — which the server refused, because
+    // the object was there all along under the href being repaired. Refused
+    // every pass, for ever.
+    givenAMirror();
+    givenAnAgendaEvent(122L, 0L);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("evt-1"));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(null);
+    when(calDavClient.overwriteObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                .thenReturn(new PutResult(204,
+                                                                                                                          "\"etag-11\"",
+                                                                                                                          null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.rewriteAgendaEvent(USER, 122L);
+
+    verify(calDavClient).overwriteObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * A first push with nothing recorded still insists on creating.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void aFirstPushWithNothingRecordedStillInsistsOnCreating() throws Exception {
+    // If-None-Match: * is what stops a first push from silently overwriting
+    // an object somebody else put at that href. Only a repair may drop it.
+    givenAMirror();
+    givenAnAgendaEvent(123L, 0L);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("evt-1"));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(null);
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"etag-12\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 123L, null);
+
+    verify(calDavClient).putObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * An ordinary push still asks first.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void anOrdinaryPushStillCarriesTheConditionalGuard() throws Exception {
+    // The overwrite is the repair's privilege alone. A normal push that found
+    // the object changed underneath it must still stop rather than clobber an
+    // edit nobody has looked at.
+    givenAMirror();
+    givenAnAgendaEvent(121L, 0L);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("evt-1"));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(mapped("\"etag-1\""));
+    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+                                                                               .thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
+                                                                                                              "\"etag-9\"",
+                                                                                                              "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"));
+    when(icsMerger.merge(anyString(), anyString(), anyBoolean())).thenReturn("MERGED");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(204,
+                                                                                                                                    "\"etag-10\"",
+                                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 121L, null);
+
+    verify(calDavClient).updateObject(any(), anyString(), eq("MERGED"), eq("\"etag-1\""), anyString(), anyString());
+  }
+
+  /**
    * An event the caller may not see is never copied into their calendar.
    * Reading it through agenda's own service is what applies its ACL, so a
    * refusal has to stay a refusal: swallowed here, anyone could file a

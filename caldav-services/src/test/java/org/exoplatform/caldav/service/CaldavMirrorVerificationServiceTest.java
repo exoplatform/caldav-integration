@@ -117,7 +117,7 @@ public class CaldavMirrorVerificationServiceTest {
 
     assertEquals(1, result.missing());
     assertEquals(1, result.repaired());
-    verify(caldavPushService).pushAgendaEvent(USER, 5L, null);
+    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
   }
 
   @Test
@@ -161,6 +161,87 @@ public class CaldavMirrorVerificationServiceTest {
 
     assertEquals(1, result.altered());
     assertEquals(1, result.repaired());
+    // Through the unconditional entry point, and it matters which: the
+    // guarded one carries the etag recorded before the server rewrote the
+    // object, so it is refused every time — which is how this pass came to
+    // report "altered: 1, re-pushed: 0" on a live account while this test,
+    // mocking the push service, stayed green.
+    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong(), any());
+  }
+
+  @Test
+  public void aRowWithNoEventAndNoObjectIsDropped() {
+    // Gone from the server and standing for no eXo event: the row describes
+    // nothing on either side, so there is nothing to protect by keeping it —
+    // only a missing count that never reaches zero.
+    givenServerHolds(Map.of());
+    ObjectSync orphan = mapping(HREF, "\"etag-1\"", hash(ICS), null);
+    orphan.setId(77L);
+    givenMappings(orphan);
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(1, result.missing());
+    assertEquals(0, result.repaired());
+    verify(caldavSyncStorage).deleteObject(77L);
+  }
+
+  @Test
+  public void aRowWithNoEventWhoseObjectIsOnlyChangedIsKept() {
+    // The object is still there. The row is the only link to it, so dropping
+    // it would lose a copy the user may well want.
+    givenServerHolds(Map.of(HREF, "\"etag-2\""));
+    ObjectSync orphan = mapping(HREF, "\"etag-1\"", hash(ICS), null);
+    orphan.setId(77L);
+    givenMappings(orphan);
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                                            .thenReturn(new CalendarObject(HREF,
+                                                                                                           "\"etag-2\"",
+                                                                                                           "BEGIN:VCALENDAR\r\nSUMMARY:mangled\r\nEND:VCALENDAR\r\n"));
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(1, result.altered());
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
+  }
+
+  @Test
+  public void aRowTheRepairWrotePastIsDroppedRatherThanReportedForEver() {
+    // Two rows can carry the same event when a copy moved: the push writes to
+    // the href recorded for the event's UID, so the other row names an object
+    // nobody will ever write again. Kept, every pass reports it missing and
+    // the calendar never stops "needing attention" however often the repair
+    // succeeds — which is exactly what a live account did.
+    givenServerHolds(Map.of());
+    ObjectSync stale = mapping(HREF, "\"etag-1\"", hash(ICS), 5L);
+    stale.setId(77L);
+    givenMappings(stale);
+    ObjectSync elsewhere = mapping(MIRROR + "moved.ics", "\"etag-3\"", hash(ICS), 5L);
+    elsewhere.setId(78L);
+    when(caldavPushService.rewriteAgendaEvent(USER, 5L)).thenReturn(elsewhere);
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(1, result.repaired());
+    verify(caldavSyncStorage).deleteObject(77L);
+  }
+
+  @Test
+  public void aRowTheRepairWroteBackIntoIsKept() {
+    // The ordinary case: the repair wrote to this very row. Dropping it would
+    // throw away the mapping the push had just refreshed.
+    givenServerHolds(Map.of());
+    ObjectSync row = mapping(HREF, "\"etag-1\"", hash(ICS), 5L);
+    row.setId(77L);
+    givenMappings(row);
+    ObjectSync same = mapping(HREF, "\"etag-2\"", hash(ICS), 5L);
+    same.setId(77L);
+    when(caldavPushService.rewriteAgendaEvent(USER, 5L)).thenReturn(same);
+
+    service.verify(USER);
+
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
   }
 
   @Test
@@ -176,7 +257,7 @@ public class CaldavMirrorVerificationServiceTest {
                                                                                                            ICS));
 
     assertEquals(0, service.verify(USER).altered());
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong(), any());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
   }
 
   @Test
@@ -199,7 +280,7 @@ public class CaldavMirrorVerificationServiceTest {
     when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString())).thenThrow(new IllegalStateException("down"));
 
     assertEquals(0, service.verify(USER).altered());
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong(), any());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
   }
 
   @Test
@@ -228,7 +309,7 @@ public class CaldavMirrorVerificationServiceTest {
 
     assertEquals(0, fourth.repaired());
     assertEquals(1, fourth.abandoned());
-    verify(caldavPushService, times(3)).pushAgendaEvent(USER, 5L, null);
+    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
   }
 
   @Test
@@ -257,7 +338,7 @@ public class CaldavMirrorVerificationServiceTest {
 
     assertEquals(1, result.missing());
     assertEquals(0, result.repaired());
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong(), any());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
   }
 
   @Test
