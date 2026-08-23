@@ -433,7 +433,23 @@ public class CaldavSyncService {
                                   CaldavUserSetting settings,
                                   List<CalendarCollection> collections) {
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
-    List<CalendarSync> pairs = caldavSyncStorage.getPairsByOrigin(userIdentityId, serverId, SyncOrigin.REMOTE);
+    // Everything except the mirror, and the exception is the point. A calendar
+    // reads back if the user has it on their devices as a calendar of their
+    // own — whether eXo materialised it from the account or created it there
+    // makes no difference to them: they see it, they edit it on a phone, and
+    // the change belongs here. Only the mirror stays one-way, because it is
+    // not the user's calendar at all but eXo's projection of meetings they
+    // accepted elsewhere; reading it back would let a copy overwrite the event
+    // it is a copy of.
+    //
+    // This selected REMOTE alone, which made the direction depend on who
+    // created the collection — bookkeeping invisible to the user, since both
+    // kinds sit under Personal and look identical. An event edited on a phone
+    // in an eXo-created calendar simply never came home.
+    List<CalendarSync> pairs = caldavSyncStorage.getPairs(userIdentityId, serverId)
+                                                .stream()
+                                                .filter(pair -> pair.getOrigin() != SyncOrigin.MIRROR)
+                                                .toList();
     if (pairs.isEmpty()) {
       return;
     }
