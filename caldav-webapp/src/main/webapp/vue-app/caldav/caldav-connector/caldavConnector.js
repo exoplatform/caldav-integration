@@ -374,7 +374,7 @@ const caldavConnector = {
     return fetch(`${window.location.origin}/caldav/rest/push/events/${event.id}${query}`, {
       method: 'POST',
       credentials: 'include',
-    }).then(pushOutcome);
+    }).then(pushOutcome).then(identifiedByUid);
   },
   /**
    * Removes an agenda event from the remote calendar.
@@ -570,6 +570,32 @@ let labelsPromise = null;
  * @param {Response} response the server's answer
  * @returns {Promise} resolves the outcome, or rejects with a coded error
  */
+/**
+ * Presents a written mapping as agenda expects a pushed event to look.
+ *
+ * agenda records `connectorEvent.id` as the event's remote identifier, and
+ * every later push, edit and deletion addresses the object by it. What this
+ * connector answers with is the mapping row, whose `id` is its own database
+ * key — so handed over unchanged, agenda stored a row id where the iCalendar
+ * UID belongs, and overwrote the correct identifier the server had just
+ * recorded.
+ *
+ * The damage compounded rather than merely confusing: the next push adopted
+ * the stored row id as the UID and wrote a second object under it, leaving the
+ * first behind with the old content, and a deletion then addressed an object
+ * the server had never had. Those numerically-named objects — 265.ics, 272.ics
+ * — are all this line.
+ *
+ * @param {Object} mapping the mapping row the push answered with, or null
+ * @returns {Object} the same mapping, identified by its iCalendar UID
+ */
+function identifiedByUid(mapping) {
+  if (!mapping || !mapping.icsUid) {
+    return mapping;
+  }
+  return Object.assign({}, mapping, {id: mapping.icsUid});
+}
+
 function pushOutcome(response) {
   if (response.ok) {
     return response.status === 204 ? Promise.resolve(null) : response.json().catch(() => null);
