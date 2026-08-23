@@ -23,6 +23,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Date;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -190,7 +191,11 @@ public class CaldavPushService {
     }
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
     for (CalendarSync pair : caldavSyncStorage.getPairs(userIdentityId, serverId)) {
-      if (mirror != null && pair.getId() == mirror.getId()) {
+      // Objects.equals, not ==: these identifiers are Long, so == compares
+      // references and answers false for every value a real database issues.
+      // Written as ==, the mirror is simply searched a second time — harmless
+      // today, and the same mistake that cost a deletion elsewhere.
+      if (mirror != null && Objects.equals(pair.getId(), mirror.getId())) {
         continue;
       }
       ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), icsUid);

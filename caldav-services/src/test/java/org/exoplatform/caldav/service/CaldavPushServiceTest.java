@@ -32,6 +32,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -1113,27 +1114,50 @@ public class CaldavPushServiceTest {
   }
 
   @Test
-  public void aCopyInAPersonalCollectionCanBeRemovedFromIt() throws Exception {
+  public void aCopyInAPersonalCollectionCanBeRemovedFromIt() {
     // The other half of writing there. A removal that looked only in the
     // mirror found nothing, succeeded quietly, and left the object on the
     // server for ever — in the one collection the user actually reads.
-    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
-    when(caldavSyncStorage.getObjectByUid(1L, "uid-113")).thenReturn(null);
+    // The mirror's identifier is deliberately past 127. getPairs returns every
+    // pair including the mirror, so the walk has to skip the one it already
+    // searched — and these identifiers are Long, so a skip written with ==
+    // compares references and only appears to work while the value is small
+    // enough for Java to have cached it. Anything a real database issues is
+    // past the cache, which is what makes the assertion below meaningful.
+    CalendarSync mirror = pair();
+    mirror.setId(5001L);
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(mirror));
+    when(caldavSyncStorage.getObjectByUid(5001L, "uid-113")).thenReturn(null);
     CalendarSync personal = boundPersonalPair();
-    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(personal));
+    personal.setId(5002L);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pairOf(5001L), personal));
     ObjectSync inPersonal = mapped("\"etag-1\"");
-    inPersonal.setCalendarSyncId(9L);
+    inPersonal.setCalendarSyncId(5002L);
     inPersonal.setRemoteHref(MIRROR + "in-personal.ics");
-    when(caldavSyncStorage.getObjectByUid(9L, "uid-113")).thenReturn(inPersonal);
+    when(caldavSyncStorage.getObjectByUid(5002L, "uid-113")).thenReturn(inPersonal);
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
     service.deleteEvent(USER, "uid-113");
 
     verify(calDavClient).deleteObject(any(), eq(MIRROR + "in-personal.ics"), anyString(), anyString(), anyString());
+    // Once, not twice: the mirror was searched before the walk began.
+    verify(caldavSyncStorage, times(1)).getObjectByUid(5001L, "uid-113");
+  }
+
+  /**
+   * The mirror pair under a chosen identifier.
+   *
+   * @param id the identifier it carries
+   * @return the pair
+   */
+  private CalendarSync pairOf(long id) {
+    CalendarSync pair = pair();
+    pair.setId(id);
+    return pair;
   }
 
   @Test
-  public void aCopyInTheMirrorIsStillRemovedWithoutSearchingFurther() throws Exception {
+  public void aCopyInTheMirrorIsStillRemovedWithoutSearchingFurther() {
     // The common case stays one lookup: the mirror holds most copies, and
     // walking every pair for them would cost a query per calendar.
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
