@@ -215,29 +215,52 @@ public class CaldavMirrorVerificationServiceTest {
     // succeeds — which is exactly what a live account did.
     givenServerHolds(Map.of());
     ObjectSync stale = mapping(HREF, "\"etag-1\"", hash(ICS), 5L);
-    stale.setId(77L);
+    stale.setId(9002L);
     givenMappings(stale);
     ObjectSync elsewhere = mapping(MIRROR + "moved.ics", "\"etag-3\"", hash(ICS), 5L);
-    elsewhere.setId(78L);
+    elsewhere.setId(9003L);
     when(caldavPushService.rewriteAgendaEvent(USER, 5L)).thenReturn(elsewhere);
 
     MirrorVerification result = service.verify(USER);
 
     assertEquals(1, result.repaired());
-    verify(caldavSyncStorage).deleteObject(77L);
+    verify(caldavSyncStorage).deleteObject(9002L);
   }
 
   @Test
   public void aRowTheRepairWroteBackIntoIsKept() {
     // The ordinary case: the repair wrote to this very row. Dropping it would
     // throw away the mapping the push had just refreshed.
+    //
+    // The identifier is deliberately larger than 127. These are Long, so a
+    // comparison written with == answers on references, and every value
+    // inside the boxing cache answers true by accident — which is exactly how
+    // an earlier version of this test passed against code that deleted the
+    // row. Anything a real database hands out is past the cache.
     givenServerHolds(Map.of());
     ObjectSync row = mapping(HREF, "\"etag-1\"", hash(ICS), 5L);
-    row.setId(77L);
+    row.setId(9001L);
     givenMappings(row);
     ObjectSync same = mapping(HREF, "\"etag-2\"", hash(ICS), 5L);
-    same.setId(77L);
+    same.setId(9001L);
     when(caldavPushService.rewriteAgendaEvent(USER, 5L)).thenReturn(same);
+
+    service.verify(USER);
+
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
+  }
+
+  @Test
+  public void aRowCarryingNoIdentifierIsLeftAlone() {
+    // A row that was never persisted has a null identifier, and unboxing one
+    // to compare it against zero throws where the pass should simply move on.
+    givenServerHolds(Map.of());
+    ObjectSync row = mapping(HREF, "\"etag-1\"", hash(ICS), 5L);
+    row.setId(null);
+    givenMappings(row);
+    ObjectSync elsewhere = mapping(MIRROR + "moved.ics", "\"etag-3\"", hash(ICS), 5L);
+    elsewhere.setId(4242L);
+    when(caldavPushService.rewriteAgendaEvent(USER, 5L)).thenReturn(elsewhere);
 
     service.verify(USER);
 
