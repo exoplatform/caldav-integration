@@ -44,6 +44,7 @@ import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
+import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.MkCalendarResult;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -180,6 +181,100 @@ public class CaldavOutboundServiceTest {
     ArgumentCaptor<String> displayName = ArgumentCaptor.forClass(String.class);
     verify(calDavClient).mkCalendar(any(), anyString(), displayName.capture(), any(), anyString(), anyString());
     assertEquals("eXo " + ANCHOR, displayName.getValue());
+  }
+
+  @Test
+  public void aCalendarMaterialisedFromARemoteCollectionIsNeverPushedBackOut() {
+    // Observed live: the outbound pass saw a materialised calendar as an
+    // ordinary personal one, re-bound it, and record() relabelled its
+    // collection ORIGIN=EXO. Two harms from that one lie — the inbound pass
+    // then skips the collection so its events stop arriving, and eXo believes
+    // it may delete a calendar it never created.
+    Calendar materialised = calendar(1L, USER, ANCHOR, "FRANCOIS");
+    givenPersonalCalendars(materialised);
+    CalendarSync remote = new CalendarSync();
+    remote.setId(9L);
+    remote.setUserIdentityId(USER);
+    remote.setServerId(SERVER);
+    remote.setLocalCalendarSyncUid(ANCHOR);
+    remote.setRemoteHref("/dav/calendars/john/7985AD30-3998-4662-9220-7C1EE899CB72");
+    remote.setOrigin(SyncOrigin.REMOTE);
+    remote.setStatus(CalendarSyncStatus.ACTIVE);
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(remote);
+
+    List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
+
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
+    assertEquals(SyncOrigin.REMOTE, pairs.get(0).getOrigin());
+  }
+
+  @Test
+  public void aListingThatOmitsAKnownCollectionIsNotProofItIsGone() {
+    // Observed live: a collection vanished from an account's home for a
+    // quarter of an hour and came back. The answer to "it is not there" is to
+    // create it, and on a server that keeps both the user ends up with two
+    // calendars where they had one.
+    givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
+    givenServerCalendars(List.of(), List.of());
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(activePair());
+    when(calDavClient.readCalendar(any(), anyString(), anyString(), anyString()))
+                                                                                .thenReturn(collection(WANTED));
+
+    List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
+
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    assertEquals(CalendarSyncStatus.ACTIVE, pairs.get(0).getStatus());
+  }
+
+  @Test
+  public void aCollectionThatIsGenuinelyGoneIsCreatedAgain() {
+    // The guard must not become a reason never to recreate anything.
+    givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
+    givenServerCalendars(List.of(), List.of(collection(WANTED)));
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(activePair());
+    when(calDavClient.readCalendar(any(), anyString(), anyString(), anyString())).thenReturn(null);
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+                                                                                                  .thenReturn(new MkCalendarResult(201,
+                                                                                                                                   List.of()));
+
+    service.bindPersonalCalendars(USER, LOGIN);
+
+    verify(calDavClient).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void aServerThatCannotBeAskedIsNotTakenAsAYes() {
+    // An unreachable server is not evidence either way, and reading it as
+    // "still there" would leave a binding pointing at something nobody has
+    // confirmed.
+    givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
+    givenServerCalendars(List.of(), List.of(collection(WANTED)));
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(activePair());
+    when(calDavClient.readCalendar(any(), anyString(), anyString(), anyString()))
+                                                                                .thenThrow(new CalDavException("down"));
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+                                                                                                  .thenReturn(new MkCalendarResult(201,
+                                                                                                                                   List.of()));
+
+    service.bindPersonalCalendars(USER, LOGIN);
+
+    verify(calDavClient).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  /**
+   * @return an active binding at the derived path
+   */
+  private CalendarSync activePair() {
+    CalendarSync pair = new CalendarSync();
+    pair.setId(3L);
+    pair.setUserIdentityId(USER);
+    pair.setServerId(SERVER);
+    pair.setLocalCalendarSyncUid(ANCHOR);
+    pair.setRemoteHref(WANTED);
+    pair.setOrigin(SyncOrigin.EXO);
+    pair.setStatus(CalendarSyncStatus.ACTIVE);
+    return pair;
   }
 
   @Test

@@ -18,6 +18,8 @@
  */
 package org.exoplatform.caldav.service;
 
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -47,6 +49,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.caldav.model.HiddenCalendar;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
@@ -599,6 +603,124 @@ public class CaldavDeletionServiceTest {
     calendar.setOwnerId(USER);
     calendar.setSyncUid(ANCHOR);
     return calendar;
+  }
+
+  @Test
+  public void aCalendarHiddenByAnotherUserIsNeverShownBack() throws Exception {
+    // The binding carries whose it is, and that is the only thing standing
+    // between one user and another user's calendars. An id travels through a
+    // browser; ownership is checked here, not there.
+    CalendarSync theirs = tombstone();
+    theirs.setUserIdentityId(USER + 1);
+    when(caldavSyncStorage.getPair(9L)).thenReturn(theirs);
+
+    assertThrows(IllegalAccessException.class, () -> service.showAgain(USER, 9L));
+
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+  }
+
+  @Test
+  public void anIdThatNamesNoTombstoneIsNotFound() throws Exception {
+    when(caldavSyncStorage.getPair(9L)).thenReturn(null);
+
+    assertThrows(ObjectNotFoundException.class, () -> service.showAgain(USER, 9L));
+  }
+
+  @Test
+  public void anActiveBindingIsNotSomethingToShowBack() throws Exception {
+    // Only a tombstone is hidden. Lifting a live binding would drop the
+    // record of a calendar that is on screen and working.
+    CalendarSync live = tombstone();
+    live.setStatus(CalendarSyncStatus.ACTIVE);
+    when(caldavSyncStorage.getPair(9L)).thenReturn(live);
+
+    assertThrows(ObjectNotFoundException.class, () -> service.showAgain(USER, 9L));
+
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+  }
+
+  @Test
+  public void showingACalendarAgainDropsItsBindingSoItIsMaterialisedAfresh() throws Exception {
+    when(caldavSyncStorage.getPair(9L)).thenReturn(tombstone());
+
+    service.showAgain(USER, 9L);
+
+    verify(caldavSyncStorage).deleteObjects(9L);
+    verify(caldavSyncStorage).deletePair(9L);
+  }
+
+  @Test
+  public void nothingHiddenCostsNoRoundTrip() {
+    // The common answer. A section that will not be shown must not make the
+    // drawer wait on a server to discover it has nothing to say.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(activeBinding()));
+
+    assertTrue(service.listHidden(USER).isEmpty());
+
+    verifyNoInteractions(calDavClient);
+  }
+
+  @Test
+  public void aHiddenCalendarIsOfferedUnderItsNameOnTheServerToday() {
+    // Read now rather than stored: a calendar renamed in the user's own client
+    // since they hid it should come back under the name they would recognise.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(tombstone()));
+    givenServerCollections("/dav/calendars/john/private/", "Renamed since");
+
+    List<HiddenCalendar> hidden = service.listHidden(USER);
+
+    assertEquals(1, hidden.size());
+    assertEquals("Renamed since", hidden.get(0).name());
+    assertEquals(9L, hidden.get(0).id());
+  }
+
+  @Test
+  public void aCollectionTheServerNoLongerHasIsNotOffered() {
+    // Offering to show something that is gone would be a promise nothing can
+    // keep.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(tombstone()));
+    givenServerCollections("/dav/calendars/john/other/", "Something else");
+
+    assertTrue(service.listHidden(USER).isEmpty());
+  }
+
+  /**
+   * @param href a collection the server holds
+   * @param name its display name
+   */
+  private void givenServerCollections(String href, String name) {
+    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString())).thenReturn("/dav/calendars/john/");
+    when(calDavClient.listCalendars(any(), anyString(), anyString(), anyString()))
+                                                                                 .thenReturn(List.of(new CalendarCollection(href,
+                                                                                                                            name,
+                                                                                                                            null,
+                                                                                                                            null,
+                                                                                                                            null,
+                                                                                                                            true)));
+  }
+
+  /**
+   * @return a binding the user hid
+   */
+  private CalendarSync tombstone() {
+    CalendarSync pair = new CalendarSync();
+    pair.setId(9L);
+    pair.setUserIdentityId(USER);
+    pair.setServerId(SERVER);
+    pair.setRemoteHref("/dav/calendars/john/private");
+    pair.setOrigin(SyncOrigin.REMOTE);
+    pair.setStatus(CalendarSyncStatus.LOCALLY_DELETED);
+    return pair;
+  }
+
+  /**
+   * @return a binding that is live
+   */
+  private CalendarSync activeBinding() {
+    CalendarSync pair = tombstone();
+    pair.setId(10L);
+    pair.setStatus(CalendarSyncStatus.ACTIVE);
+    return pair;
   }
 
   /**

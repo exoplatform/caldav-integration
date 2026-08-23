@@ -155,6 +155,19 @@ public class CaldavOutboundService {
     }
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
     CalendarSync pair = caldavSyncStorage.getPairByLocalCalendar(userIdentityId, serverId, anchor);
+    if (pair != null && pair.getOrigin() == SyncOrigin.REMOTE) {
+      // This calendar exists *because* a collection was materialised into it.
+      // Pushing it back out would give the user's own calendar a second
+      // collection on their own server, and — because recording a binding
+      // marks it ORIGIN=EXO — would relabel their collection as one eXo
+      // created. Two harms follow from that single lie: the inbound pass
+      // skips the collection, so its events never arrive again; and eXo
+      // believes it may delete a calendar it never made. The structural guard
+      // on the DELETE path refuses that today, but it should not be the only
+      // thing standing in the way.
+      LOG.debug("Calendar {} was materialised from a remote collection and is not pushed back out", calendar.getId());
+      return pair;
+    }
     String wanted = collectionHref(home, anchor);
 
     // The path carries the anchor, so a binding is recoverable from the server
@@ -169,6 +182,15 @@ public class CaldavOutboundService {
                                                        .findFirst();
     if (existing.isPresent()) {
       return record(userIdentityId, serverId, anchor, existing.get().href(), CalendarSyncStatus.ACTIVE, pair);
+    }
+    if (pair != null && stillThere(settings, endpoint, pair.getRemoteHref())) {
+      // The listing did not show it, the collection itself answers. Observed
+      // live: a collection vanished from an account's home for a quarter of an
+      // hour and came back, and the only reason eXo did not create a duplicate
+      // is that the path it derives happens to be stable. A listing is a fair
+      // way to confirm a collection is *there*; it is not evidence that one is
+      // gone.
+      return record(userIdentityId, serverId, anchor, pair.getRemoteHref(), CalendarSyncStatus.ACTIVE, pair);
     }
     if (pair != null && pair.getStatus() == CalendarSyncStatus.REMOTE_CREATE_REFUSED) {
       // Asked once, refused once. Asking again on every sync would hammer a
@@ -219,7 +241,8 @@ public class CaldavOutboundService {
       // nothing; only reading the home back settles it.
       boolean created = calDavClient.listCalendars(endpoint, home, settings.getUsername(), settings.getPassword())
                                     .stream()
-                                    .anyMatch(collection -> isSameCollection(collection.href(), null, wanted));
+                                    .anyMatch(collection -> isSameCollection(collection.href(), null, wanted))
+          || stillThere(settings, endpoint, wanted);
       if (created) {
         return record(userIdentityId, serverId, anchor, wanted, CalendarSyncStatus.ACTIVE, pair);
       }
@@ -280,6 +303,41 @@ public class CaldavOutboundService {
     }
     return href.equals(CaldavSyncStorage.canonicalHref(storedHref))
         || href.equals(CaldavSyncStorage.canonicalHref(derivedHref));
+  }
+
+  /**
+   * Whether the collection answers for itself, whatever a listing said.
+   *
+   * <p>
+   * A home listing omitting a collection is not proof the collection is gone —
+   * seen live, where one disappeared from an account's home for a quarter of
+   * an hour and returned. That matters because the answer to "it is not there"
+   * is to create it, and on a server that keeps both the user ends up with two
+   * calendars where they had one.
+   *
+   * <p>
+   * A server that cannot be reached answers false: an unreachable server is
+   * not evidence either way, and treating it as "still there" would leave a
+   * binding pointing at something nobody has confirmed.
+   *
+   * @param settings the connected account
+   * @param endpoint the declared server
+   * @param href the collection to ask about, or null
+   * @return true when the collection itself answers
+   */
+  private boolean stillThere(CaldavUserSetting settings, CalDavEndpoint endpoint, String href) {
+    if (StringUtils.isBlank(href)) {
+      return false;
+    }
+    try {
+      return calDavClient.readCalendar(endpoint,
+                                       StringUtils.appendIfMissing(href, "/"),
+                                       settings.getUsername(),
+                                       settings.getPassword()) != null;
+    } catch (CalDavException e) {
+      LOG.debug("Collection {} could not be asked about directly", href, e);
+      return false;
+    }
   }
 
   /**
