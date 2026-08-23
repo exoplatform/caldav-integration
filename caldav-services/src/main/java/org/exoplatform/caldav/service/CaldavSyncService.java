@@ -595,16 +595,18 @@ public class CaldavSyncService {
         continue;
       }
       try {
-        caldavInboundService.importInto(userIdentityId, pair, calendar, from, to);
-        // And the other direction of reading back: what the account no longer
-        // holds. The import carries additions and edits, but an object that
-        // has been deleted is simply absent from what the server returns, so
-        // without this the event stayed in eXo for good — the calendar on the
-        // user's phone and the one eXo shows them drifting apart silently.
+        // Before the import, and that ordering is the fix rather than a
+        // preference. Deleting an event in the same unit of work that has just
+        // imported events fails at commit — Hibernate finds a persistent
+        // instance referencing a transient EventEntity — while the identical
+        // deletion succeeds on its own. Reconciling first means the deletions
+        // run against a context the import has not touched.
         //
-        // After the import, not before: an object deleted and recreated in the
-        // same window should end the pass present, not removed.
-        caldavInboundService.removeVanishedObjects(userIdentityId, pair);
+        // The cost is only churn: an object deleted and recreated between two
+        // passes is removed here and imported back below, ending the pass
+        // present, which is the state the account is in.
+        CaldavInboundService.VanishedCleanup cleanup = caldavInboundService.removeVanishedObjects(userIdentityId, pair);
+        caldavInboundService.importInto(userIdentityId, pair, calendar, from, to);
         // Stamped on the way out, and only on the way out: until this line
         // the field was written when a binding was CREATED, so an account
         // whose calendars were all already bound kept reporting the day it
@@ -619,7 +621,12 @@ public class CaldavSyncService {
         // way in would make one failed collection look unchanged for ever:
         // the next pass would compare the same ctag, find it equal, and never
         // retry what it missed.
-        if (StringUtils.isNotBlank(ctag)) {
+        // Not when a deletion could not be carried out. The ctag is the claim
+        // that this collection has been fully read; recording it after a
+        // failed removal means the next pass compares an unchanged ctag,
+        // concludes there is nothing to do, and never retries — so the event
+        // the user deleted on their phone stays in eXo for good.
+        if (StringUtils.isNotBlank(ctag) && cleanup.failed() == 0) {
           pair.setCtag(ctag);
         }
         caldavSyncStorage.savePair(pair);
