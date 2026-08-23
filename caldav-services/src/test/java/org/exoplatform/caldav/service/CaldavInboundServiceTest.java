@@ -52,6 +52,7 @@ import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
 import org.exoplatform.agenda.model.EventAttendeeList;
+import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.client.CalDavClient;
@@ -190,6 +191,38 @@ public class CaldavInboundServiceTest {
     service.importInto(USER, pair(), calendar(), from(), to());
 
     verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), eq(false), eq(USER));
+  }
+
+  /**
+   * An imported event remembers what it is called on the server.
+   */
+  @Test
+  public void anImportedEventKeepsTheIdentifierTheServerGaveIt() throws Exception {
+    // Without this the event has no remote identity at all, and for as long as
+    // nothing pushed from a materialised calendar that cost nothing. Now such
+    // a calendar synchronises both ways: asked to write the event back, the
+    // push finds no identifier, mints a fresh one and writes a SECOND object
+    // beside the one the event was imported from. Renaming an imported meeting
+    // in eXo made it appear twice on the account it came from.
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
+    givenAgendaCreates(501L);
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    ArgumentCaptor<RemoteEvent> identity = ArgumentCaptor.forClass(RemoteEvent.class);
+    verify(agendaEventService).createEvent(any(),
+                                           any(),
+                                           any(),
+                                           any(),
+                                           any(),
+                                           identity.capture(),
+                                           anyBoolean(),
+                                           eq(USER));
+    // The server's own UID, so a later push addresses the object this event
+    // came from rather than a new one beside it.
+    assertEquals("uid-1@example.test", identity.getValue().getRemoteId());
+    // Named, or agenda deletes the mapping instead of storing it.
+    assertEquals("agenda.caldavCalendar", identity.getValue().getRemoteProviderName());
   }
 
   /**
