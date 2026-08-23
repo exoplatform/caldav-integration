@@ -18,6 +18,7 @@ package org.exoplatform.caldav.rest;
 
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
+import java.util.Date;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -110,8 +111,31 @@ public class CaldavReadRest {
           + "changed something on another device and want to see it.")
   @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Synchronisation ran") })
   public ResponseEntity<Void> syncNow() {
-    caldavSyncService.syncNow(currentUser(), CaldavConnectorUtils.getCurrentUser());
+    caldavSyncService.syncNowAndWait(currentUser(), CaldavConnectorUtils.getCurrentUser());
     return ResponseEntity.noContent().build();
+  }
+
+  /**
+   * When the connected account last finished synchronising.
+   *
+   * <p>
+   * Its own endpoint rather than a field on the settings: the settings are
+   * read on every page that shows a connector, and this walks the bindings.
+   * Only the screen that displays the state should pay for it.
+   *
+   * @return the instant in milliseconds, or 204 when nothing has synchronised
+   *         yet
+   */
+  @GetMapping("/sync/state")
+  @Secured("users")
+  @Operation(summary = "When the connected CalDAV account last finished synchronising",
+      description = "Read from the stored bindings, so it survives a restart — unlike the in-memory throttle, which "
+          + "would report a fresh account after every reboot.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The instant, in epoch milliseconds"),
+      @ApiResponse(responseCode = "204", description = "Nothing has ever synchronised") })
+  public ResponseEntity<Long> lastSync() {
+    Date lastSyncEnd = caldavSyncService.lastSyncEnd(currentUser());
+    return lastSyncEnd == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(lastSyncEnd.getTime());
   }
 
   /**

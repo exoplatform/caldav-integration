@@ -24,6 +24,7 @@ import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.model.Calendar;
@@ -32,11 +33,13 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.caldav.model.HiddenCalendar;
+import org.exoplatform.caldav.model.CalendarSyncState;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -72,6 +75,13 @@ public class CaldavDeletionService {
 
   @Autowired
   private AgendaCalendarService  agendaCalendarService;
+
+  @Autowired
+  private CaldavServerService    caldavServerService;
+
+  @Autowired
+  @Lazy
+  private CaldavSyncService      caldavSyncService;
 
   /**
    * Deletes a personal calendar in eXo and, when eXo created it, on the server
@@ -194,7 +204,7 @@ public class CaldavDeletionService {
       return new CalendarDeletionPlan(false, false, null);
     }
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
-    String server = settings == null ? null : settings.getCaldavUrl();
+    String server = serverName(settings);
     // Only an EXO collection is eXo's to delete. A REMOTE one is the user's
     // own, made in their own client, and saying otherwise in a dialog would
     // be a promise to destroy something we will not touch.
@@ -202,27 +212,183 @@ public class CaldavDeletionService {
   }
 
   /**
-   * Freezes every binding of a user, which is what disconnecting an account
-   * does.
+   * What to call the server in a sentence shown to the user.
    *
    * <p>
-   * <b>Disconnecting never deletes anything.</b> A user unlinking their
-   * calendar account is saying "stop syncing", not "destroy what is on my
-   * server" — and the bindings are kept precisely so that reconnecting finds
-   * its collections again instead of creating a second set beside them.
+   * The declared server's provider name first — it is what the user picked in
+   * the connect drawer and what every other screen calls it. The stored URL
+   * only ever holds a value for an account attached the legacy way, before
+   * servers were declared, so reading it alone left the warning saying "the
+   * matching calendar on  will not be touched", with a blank where the name
+   * belongs.
+   *
+   * @param settings the connected account, possibly null
+   * @return the name, or null when there is nothing to call it
+   */
+  private String serverName(CaldavUserSetting settings) {
+    if (settings == null) {
+      return null;
+    }
+    if (settings.getServerId() != null && settings.getServerId() > 0) {
+      try {
+        CaldavServer server = caldavServerService.getServerById(settings.getServerId());
+        // getName, not getProviderName: the provider name is the key agenda
+        // binds the connector under — "agenda.caldavCalendar.6" — and putting
+        // it in a sentence shows the user a raw key. getName is the display
+        // name the administrator typed.
+        if (server != null && StringUtils.isNotBlank(server.getName())) {
+          return server.getName();
+        }
+      } catch (ObjectNotFoundException e) {
+        // A registration removed while an account still points at it. The URL
+        // below is a poorer name, not a reason to say nothing.
+        LOG.debug("CalDAV server {} is no longer declared", settings.getServerId(), e);
+      }
+    }
+    return settings.getCaldavUrl();
+  }
+
+  /**
+   * Puts back to work every binding a disconnect froze.
+   *
+   * <p>
+   * Disconnecting pauses the bindings of the calendars eXo pushed out, so that
+   * reconnecting the same account finds its collections again instead of
+   * creating a second set beside them. Reconnecting is the other half of that
+   * bargain: the account is usable again, so its bindings are too.
+   *
+   * <p>
+   * Left paused they are repaired only incidentally — by the next sweep
+   * re-ensuring each collection, a second or so later. In the meantime the
+   * account is connected and the user's own calendars report themselves as
+   * failing, which a UI reading the states has every reason to believe and
+   * show.
+   *
+   * <p>
+   * A pause set because credentials were refused is thawed here as well, and
+   * deliberately: someone who has just entered a password is asking for
+   * precisely that retry.
    *
    * @param userIdentityId identity of the user
    * @param serverId the declared server registration
    */
-  public void freezeOnDisconnect(long userIdentityId, long serverId) {
+  public void thawOnConnect(long userIdentityId, long serverId) {
+    for (CalendarSync pair : caldavSyncStorage.getPairs(userIdentityId, serverId)) {
+      // Only a pause. A tombstone is a deletion the user made, and a binding
+      // marked gone is a claim about the server that only the server's own
+      // listing may withdraw.
+      if (pair.getStatus() == CalendarSyncStatus.PAUSED) {
+        pair.setStatus(CalendarSyncStatus.ACTIVE);
+        caldavSyncStorage.savePair(pair);
+      }
+    }
+  }
+
+  /**
+   * Freezes every binding of a user, which is what disconnecting an account
+   * does.
+   *
+   * <p>
+   * <b>Nothing on the server is ever touched.</b> A user unlinking their
+   * account is saying "stop syncing", not "destroy what is on my server".
+   *
+   * <p>
+   * In eXo, what happens depends on which side made the calendar, because the
+   * two are not the same object at all:
+   *
+   * <ul>
+   * <li>a calendar eXo <b>materialised</b> from a collection of the account is
+   * a mirror. Everything in it lives on that account and nothing in it was
+   * created here, so it goes with the account. Left behind it would keep
+   * showing, unchanged and no longer updating — present, plausible, and wrong
+   * from the next change onward;</li>
+   * <li>a calendar the user <b>made in eXo</b> and eXo pushed out is theirs.
+   * The account was its destination, never its source. It stays, and only its
+   * binding is paused — dropped, reconnecting the same account would create a
+   * second collection beside the first.</li>
+   * </ul>
+   *
+   * @param userIdentityId identity of the user
+   * @param serverId the declared server registration
+   * @param username the user's login, which agenda's ACL needs to delete a
+   *          calendar on their behalf
+   */
+  public void freezeOnDisconnect(long userIdentityId, long serverId, String username) {
+    Map<String, Calendar> byAnchor = calendarsByAnchor(userIdentityId, username);
     List<CalendarSync> pairs = caldavSyncStorage.getPairs(userIdentityId, serverId);
     for (CalendarSync pair : pairs) {
       if (pair.getStatus() != CalendarSyncStatus.ACTIVE) {
+        // A tombstone is a deliberate deletion the user already made, and a
+        // paused binding has already been through this. Neither is ours to
+        // reopen.
         continue;
       }
-      pair.setStatus(CalendarSyncStatus.PAUSED);
-      caldavSyncStorage.savePair(pair);
+      if (pair.getOrigin() == SyncOrigin.REMOTE) {
+        removeMirror(pair, byAnchor.get(pair.getLocalCalendarSyncUid()), username);
+      } else {
+        // Made in eXo and pushed out. The remote account was its destination,
+        // never its source, so it is the user's and it stays. The binding is
+        // paused rather than dropped: reconnecting the same account must find
+        // its collection again instead of creating a second one beside it.
+        pair.setStatus(CalendarSyncStatus.PAUSED);
+        caldavSyncStorage.savePair(pair);
+      }
     }
+  }
+
+  /**
+   * Removes the eXo calendar standing for a collection of the account being
+   * disconnected, and the binding with it.
+   *
+   * <p>
+   * Everything in that calendar lives on the account; nothing in it was ever
+   * created in eXo. Left behind it would keep showing, unchanged and no longer
+   * updating — present, plausible, and wrong from the next change onward.
+   *
+   * <p>
+   * A calendar that cannot be deleted leaves its binding alone rather than
+   * dropping it: a binding with no calendar behind it is what makes
+   * materialisation skip the collection for good.
+   *
+   * @param pair the binding to lift
+   * @param calendar the eXo calendar it stands for, null when already gone
+   * @param username the owner's login, which agenda's ACL needs
+   */
+  private void removeMirror(CalendarSync pair, Calendar calendar, String username) {
+    if (calendar != null) {
+      try {
+        agendaCalendarService.deleteCalendarById(calendar.getId(), username);
+      } catch (Exception e) { // NOSONAR agenda declares a bare Exception here
+        LOG.warn("The mirror calendar {} could not be removed while disconnecting; its binding is kept",
+                 calendar.getId(),
+                 e);
+        return;
+      }
+    }
+    caldavSyncStorage.deleteObjects(pair.getId());
+    caldavSyncStorage.deletePair(pair.getId());
+  }
+
+  /**
+   * The user's calendars, keyed by the anchor a binding records.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login
+   * @return the calendars by anchor, empty when they cannot be read
+   */
+  private Map<String, Calendar> calendarsByAnchor(long userIdentityId, String username) {
+    Map<String, Calendar> byAnchor = new HashMap<>();
+    try {
+      for (Calendar calendar : agendaCalendarService.getCalendars(0, Integer.MAX_VALUE, username)) {
+        if (calendar.getOwnerId() == userIdentityId && !calendar.isDeleted()
+            && StringUtils.isNotBlank(calendar.getSyncUid())) {
+          byAnchor.put(calendar.getSyncUid(), calendar);
+        }
+      }
+    } catch (Exception e) { // NOSONAR agenda declares a bare Exception here
+      LOG.warn("The calendars of user {} could not be read; nothing is removed on disconnect", userIdentityId, e);
+    }
+    return byAnchor;
   }
 
   /**
@@ -285,7 +451,8 @@ public class CaldavDeletionService {
    * @throws IllegalAccessException when the tombstone is not this user's
    * @throws ObjectNotFoundException when there is no such tombstone
    */
-  public void showAgain(long userIdentityId, long pairId) throws IllegalAccessException, ObjectNotFoundException {
+  public void showAgain(long userIdentityId, long pairId, String username) throws IllegalAccessException,
+                                                                           ObjectNotFoundException {
     CalendarSync pair = caldavSyncStorage.getPair(pairId);
     if (pair == null || pair.getStatus() != CalendarSyncStatus.LOCALLY_DELETED) {
       throw new ObjectNotFoundException("No hidden calendar with id " + pairId);
@@ -297,7 +464,113 @@ public class CaldavDeletionService {
     }
     caldavSyncStorage.deleteObjects(pairId);
     caldavSyncStorage.deletePair(pairId);
-    LOG.info("Tombstone {} lifted; the collection will be materialised again at the next sync", pairId);
+    LOG.info("Tombstone {} lifted; synchronising so the collection comes back now", pairId);
+    // Synchronised here rather than left to the next run. Lifting the
+    // tombstone alone makes the collection unbound, and an unbound collection
+    // is exactly what the Remote section lists — so a user who pressed "Show
+    // again" watched their calendar reappear in the section for calendars eXo
+    // is NOT showing, and stay there until the throttle expired.
+    //
+    // The failure is swallowed on purpose: the tombstone is lifted either
+    // way, and the next run will materialise the collection. Reporting a sync
+    // failure here would say the un-hiding did not happen, which is false.
+    try {
+      caldavSyncService.syncNow(userIdentityId, username);
+    } catch (RuntimeException e) {
+      LOG.warn("The calendar was un-hidden but could not be synchronised back at once", e);
+    }
+  }
+
+  /**
+   * What each of this user's calendars is doing, for the ones worth telling
+   * them about.
+   *
+   * <p>
+   * The engine has always known this per binding and kept it in the database
+   * and the logs. A user seeing their agenda has no way to tell a calendar
+   * that is synchronising from one whose server refused it — both simply sit
+   * there — so this surfaces the states where something they might do would
+   * change the outcome, and nothing else.
+   *
+   * <p>
+   * Names come from the eXo calendar for a binding that has one, and from the
+   * server for the ones that do not — a collection eXo was refused permission
+   * to create has no eXo calendar to name it by.
+   *
+   * @param userIdentityId whose calendars
+   * @param username the user's login, which agenda's ACL needs to read their
+   *          calendars
+   * @return the states worth showing, empty when everything is well
+   */
+  public List<CalendarSyncState> listSyncStates(long userIdentityId, String username) {
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (settings == null || StringUtils.isBlank(settings.getUsername())) {
+      return List.of();
+    }
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    List<CalendarSync> pairs = caldavSyncStorage.getPairs(userIdentityId, serverId)
+                                                .stream()
+                                                .filter(pair -> pair.getStatus() != null)
+                                                .toList();
+    if (pairs.isEmpty()) {
+      return List.of();
+    }
+    Map<String, Calendar> byAnchor = calendarsByAnchorForStates(userIdentityId, username);
+    List<CalendarSyncState> states = new ArrayList<>();
+    Map<String, String> remoteNames = null;
+    for (CalendarSync pair : pairs) {
+      Calendar calendar = byAnchor.get(pair.getLocalCalendarSyncUid());
+      CalendarSyncState state = new CalendarSyncState(pair.getId(),
+                                                      calendar == null ? 0L : calendar.getId(),
+                                                      calendar == null ? null
+                                                                       : StringUtils.firstNonBlank(calendar.getName(),
+                                                                                                   calendar.getTitle()),
+                                                      pair.getStatus(),
+                                                      pair.getLastSyncEnd() == null ? null
+                                                                                    : pair.getLastSyncEnd().getTime());
+      if (!state.worthTelling()) {
+        continue;
+      }
+      if (StringUtils.isBlank(state.name())) {
+        // No eXo calendar to name it by — a collection eXo was refused
+        // permission to create, or one whose calendar is already gone. The
+        // server is asked, once, and only when it turns out to be needed.
+        if (remoteNames == null) {
+          remoteNames = collectionNames(settings);
+        }
+        state = new CalendarSyncState(state.id(),
+                                      state.calendarId(),
+                                      remoteNames.get(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())),
+                                      state.status(),
+                                      state.lastSyncEnd());
+      }
+      if (StringUtils.isNotBlank(state.name())) {
+        states.add(state);
+      }
+    }
+    return states;
+  }
+
+  /**
+   * A user's calendars, keyed by the anchor a binding records.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login
+   * @return the calendars by anchor, empty when they cannot be read
+   */
+  private Map<String, Calendar> calendarsByAnchorForStates(long userIdentityId, String username) {
+    Map<String, Calendar> byAnchor = new HashMap<>();
+    try {
+      for (Calendar calendar : agendaCalendarService.getCalendars(0, Integer.MAX_VALUE, username)) {
+        if (calendar.getOwnerId() == userIdentityId && !calendar.isDeleted()
+            && StringUtils.isNotBlank(calendar.getSyncUid())) {
+          byAnchor.put(calendar.getSyncUid(), calendar);
+        }
+      }
+    } catch (Exception e) { // NOSONAR agenda declares a bare Exception here
+      LOG.warn("The calendars of user {} could not be read; their states are named from the server", userIdentityId, e);
+    }
+    return byAnchor;
   }
 
   /**
@@ -318,10 +591,14 @@ public class CaldavDeletionService {
         names.put(CaldavSyncStorage.canonicalHref(collection.href()),
                   StringUtils.defaultIfBlank(collection.displayName(), collection.href()));
       }
-    } catch (CalDavException e) {
-      // Nothing offered rather than a list of paths the user never chose to
-      // see. They can try again when the server answers.
-      LOG.debug("The account's collections could not be listed; nothing is offered to show again", e);
+    } catch (RuntimeException e) {
+      // RuntimeException, not only CalDavException: this is called from
+      // screens that must render whatever the account is doing — a settings
+      // row that throws because a server is unreachable is a worse outcome
+      // than a row with nothing in it. Nothing offered rather than a list of
+      // paths the user never chose to see; they can try again when the server
+      // answers.
+      LOG.debug("The account's collections could not be listed; nothing is named from the server", e);
     }
     return names;
   }

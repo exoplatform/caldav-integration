@@ -19,22 +19,40 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Date;
 import java.util.List;
 import java.util.Set;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import java.util.ArrayList;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.mockito.Mockito.doAnswer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -43,12 +61,16 @@ import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.test.util.ReflectionTestUtils;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
+import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -98,6 +120,15 @@ public class CaldavSyncServiceTest {
   private AgendaCalendarService      agendaCalendarService;
 
   @Mock
+  private IdentityManager            identityManager;
+
+  @Mock
+  private CaldavTuningService        caldavTuningService;
+
+  @Mock
+  private CaldavMirrorVerificationService caldavMirrorVerificationService;
+
+  @Mock
   private CalDavEndpoint             endpoint;
 
   @InjectMocks
@@ -105,7 +136,12 @@ public class CaldavSyncServiceTest {
 
   @BeforeEach
   public void connectAnAccount() {
-    ReflectionTestUtils.setField(service, "throttleMinutes", 15L);
+    // The engine reads its tuning where it uses it rather than capturing it at
+    // bean creation, which is what lets an administrator change it without a
+    // restart — so the test stubs the reader, not a field.
+    lenient().when(caldavTuningService.getThrottleMinutes()).thenReturn(15L);
+    lenient().when(caldavTuningService.getPastDays()).thenReturn(60L);
+    lenient().when(caldavTuningService.getFutureDays()).thenReturn(365L);
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     lenient().when(calDavClient.discoverCalendarHome(any(), anyString(), anyString())).thenReturn(HOME);
@@ -173,7 +209,6 @@ public class CaldavSyncServiceTest {
     givenServerCalendars();
     CalendarSync bound = remotePair("/dav/calendars/john/private/", "anchor-1");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
-    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
     givenUserCalendars(calendarWithAnchor(77L, "anchor-1"));
 
     service.syncNow(USER, LOGIN);
@@ -182,17 +217,65 @@ public class CaldavSyncServiceTest {
   }
 
   @Test
-  public void aCollectionExoPushedIsNeverReadBackIn() throws Exception {
-    // It holds copies of events agenda already has. Importing them would show
-    // every one of the user's own meetings twice — the object-level twin of
-    // the calendar-level loop.
+  public void theMirrorIsNeverReadBackIn() throws Exception {
+    // The one collection that stays one-way. It is not a calendar of the
+    // user's at all — it is eXo's projection of meetings they accepted
+    // elsewhere — so reading it back would let a copy overwrite the event it
+    // is a copy of, and show every one of those meetings twice.
     givenServerCalendars();
-    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of());
-    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of());
+    CalendarSync mirror = mirrorPair("/dav/calendars/john/exo-meetings/");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirror));
 
     service.syncNow(USER, LOGIN);
 
     verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  @Test
+  public void aCalendarExoCreatedIsNotDeclaredGoneWhenTheListingOmitsIt() throws Exception {
+    // "No longer on the account" is a statement about the user's own calendar
+    // disappearing from their server, and it earns a warning in the settings.
+    // A collection eXo created is absent from the listing for a duller reason
+    // — the server reporting it under a name other than the one it was
+    // created at, which BlueMind does — and calling that gone flagged the
+    // user's own calendars as broken until a later pass revived them.
+    //
+    // The check only ever saw materialised bindings until the import widened
+    // to carry every calendar the user has on their devices. Its sibling
+    // above, aCollectionTheAccountNoLongerHoldsIsMarkedGone, is the control:
+    // the same omission on a materialised binding must still be marked.
+    givenServerCalendars(collection("/dav/calendars/john/other/", "Other"));
+    givenAgendaCreates("other-anchor");
+    CalendarSync mine = exoPair("/dav/calendars/john/exo-cal-renamed-by-the-server/");
+    mine.setLocalCalendarSyncUid("anchor-mine");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mine));
+    givenAgendaHasCalendar("anchor-mine");
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(CalendarSyncStatus.ACTIVE, mine.getStatus());
+  }
+
+  @Test
+  public void aCalendarExoCreatedOnTheAccountIsReadBackIn() throws Exception {
+    // The user's own calendar, which happens to have been created from this
+    // side. They see it on their devices exactly as they see a materialised
+    // one, so an event they edit on a phone belongs back here — who created
+    // the collection is eXo's bookkeeping, not a fact about their calendar.
+    //
+    // The import used to select REMOTE-origin pairs alone, which made the
+    // direction depend on that bookkeeping: two calendars sitting side by side
+    // under Personal, looking identical, one round-tripping and one silently
+    // not.
+    givenServerCalendars();
+    CalendarSync mine = exoPair("/dav/calendars/john/exo-cal-mine/");
+    mine.setLocalCalendarSyncUid("anchor-mine");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mine));
+    givenUserCalendars(calendarWithAnchor(88L, "anchor-mine"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService).importInto(eq(USER), eq(mine), any(), any(), any());
   }
 
   @Test
@@ -203,7 +286,6 @@ public class CaldavSyncServiceTest {
     CalendarSync tombstone = remotePair("/dav/calendars/john/private/", "anchor-1");
     tombstone.setStatus(CalendarSyncStatus.LOCALLY_DELETED);
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(tombstone));
-    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(tombstone));
 
     service.syncNow(USER, LOGIN);
 
@@ -216,7 +298,6 @@ public class CaldavSyncServiceTest {
     givenServerCalendars();
     CalendarSync orphan = remotePair("/dav/calendars/john/private/", "anchor-missing");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(orphan));
-    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(orphan));
     givenUserCalendars(calendarWithAnchor(77L, "another-anchor"));
 
     service.syncNow(USER, LOGIN);
@@ -230,7 +311,6 @@ public class CaldavSyncServiceTest {
     CalendarSync first = remotePair("/dav/calendars/john/a/", "anchor-1");
     CalendarSync second = remotePair("/dav/calendars/john/b/", "anchor-2");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(first, second));
-    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(first, second));
     givenUserCalendars(calendarWithAnchor(77L, "anchor-1"), calendarWithAnchor(78L, "anchor-2"));
     when(caldavInboundService.importInto(anyLong(), eq(first), any(), any(), any()))
                                                                                     .thenThrow(new IllegalStateException("down"));
@@ -245,6 +325,23 @@ public class CaldavSyncServiceTest {
    * @param anchor the eXo calendar's sync uid
    * @return a binding the user's own client created
    */
+  /**
+   * The mirror binding: eXo's own collection on the account.
+   *
+   * @param href where it lives
+   * @return the pair
+   */
+  private CalendarSync mirrorPair(String href) {
+    CalendarSync pair = new CalendarSync();
+    pair.setId(3L);
+    pair.setUserIdentityId(USER);
+    pair.setServerId(SERVER);
+    pair.setRemoteHref(href);
+    pair.setOrigin(SyncOrigin.MIRROR);
+    pair.setStatus(CalendarSyncStatus.ACTIVE);
+    return pair;
+  }
+
   private CalendarSync remotePair(String href, String anchor) {
     CalendarSync pair = new CalendarSync();
     pair.setId(2L);
@@ -548,10 +645,19 @@ public class CaldavSyncServiceTest {
   }
 
   @Test
-  public void theMaterialisedPairRecordsWhereItCameFromAndHowFreshItIs() throws Exception {
-    // The ctag and the sync token are what let the next pass ask the server
-    // "anything new?" instead of reading the whole collection back; ACTIVE is
+  public void theMaterialisedPairRecordsWhereItCameFrom() throws Exception {
+    // The path is how the binding finds its collection again, and ACTIVE is
     // what separates a live binding from a tombstone.
+    //
+    // This used to assert the ctag and the sync token here too, on the
+    // reasoning that they are what let the next pass ask "anything new?"
+    // instead of reading the whole collection back. That reasoning is right
+    // about the ctag and wrong about when to record it: written before the
+    // collection has been read, it says the binding is up to date with a
+    // collection it has never opened, and the import step believes it. The
+    // ctag is recorded in importRemoteEvents, after a read that succeeded —
+    // which is the only moment it is true. See
+    // aFreshlyMaterialisedBindingClaimsNothingItHasNotRead.
     givenServerCalendars(collectionOf("/dav/calendars/john/private/", "Private", Set.of("VEVENT")));
     givenNoKnownPairs();
     givenAgendaCreates("anchor-5");
@@ -561,8 +667,6 @@ public class CaldavSyncServiceTest {
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
     assertEquals("/dav/calendars/john/private/", saved.getValue().getRemoteHref());
-    assertEquals("ctag-1", saved.getValue().getCtag());
-    assertEquals("token-1", saved.getValue().getSyncToken());
     assertEquals(CalendarSyncStatus.ACTIVE, saved.getValue().getStatus());
   }
 
@@ -674,7 +778,7 @@ public class CaldavSyncServiceTest {
     // in a few milliseconds never reaches by itself: a stamp older than the
     // window must not keep the account frozen. A throttle that never expired
     // would look identical for fifteen minutes and then never sync again.
-    ReflectionTestUtils.setField(service, "throttleMinutes", 0L);
+    when(caldavTuningService.getThrottleMinutes()).thenReturn(0L);
     givenServerCalendars();
     givenNoKnownPairs();
 
@@ -764,6 +868,515 @@ public class CaldavSyncServiceTest {
   /**
    * @return a connected account
    */
+  /**
+   * A successful import moves the time the settings row shows.
+   */
+  @Test
+  public void animportedCollectionStampsTheBinding() {
+    // The defect this pins: the field was written only when a binding was
+    // created, so an account whose calendars were all already bound reported
+    // the day it was connected however often it synchronised — and a user
+    // pressing Sync now saw nothing move.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage, atLeastOnce()).savePair(saved.capture());
+    assertTrue(saved.getAllValues().stream().anyMatch(p -> p.getLastSyncEnd() != null),
+               "a collection that imported must stamp when it finished");
+  }
+
+  /**
+   * A collection that failed does not claim to have synchronised.
+   */
+  @Test
+  public void aCollectionThatFailedIsNotStamped() {
+    // Stamping on failure would be worse than not stamping at all: the line
+    // exists to say when eXo last got through, and a user whose account has
+    // been unreachable for a day would be told it just synchronised.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+    doThrow(new IllegalStateException("server down")).when(caldavInboundService)
+                                                     .importInto(anyLong(), any(), any(), any(), any());
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(null, pair.getLastSyncEnd());
+  }
+
+  /**
+   * @param href the collection the binding points at
+   * @param anchor the local calendar's anchor
+   * @return an active binding of remote origin
+   */
+  private CalendarSync activeRemotePair(String href, String anchor) {
+    CalendarSync pair = new CalendarSync();
+    pair.setUserIdentityId(USER);
+    pair.setServerId(SERVER);
+    pair.setRemoteHref(href);
+    pair.setLocalCalendarSyncUid(anchor);
+    pair.setOrigin(SyncOrigin.REMOTE);
+    pair.setStatus(CalendarSyncStatus.ACTIVE);
+    return pair;
+  }
+
+  /**
+   * @param anchor the anchor agenda's calendar carries
+   */
+  private void givenAgendaHasCalendar(String anchor) {
+    Calendar calendar = new Calendar();
+    calendar.setId(1L);
+    calendar.setOwnerId(USER);
+    calendar.setSyncUid(anchor);
+    try {
+      when(agendaCalendarService.getCalendars(anyInt(), anyInt(), anyString())).thenReturn(List.of(calendar));
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /**
+   * Several stale bindings of one account cost one pass, not one each.
+   */
+  @Test
+  public void anAccountWithSeveralStaleCalendarsIsSweptOnce() {
+    // Synchronisation is per account: a user with five stale calendars would
+    // otherwise be synchronised five times in a row, each pass doing the work
+    // of all five.
+    CalendarSync one = activeRemotePair("/dav/calendars/john/a/", "anchor-a");
+    CalendarSync two = activeRemotePair("/dav/calendars/john/b/", "anchor-b");
+    givenDuePairs(one, two);
+    givenServerCalendars();
+    givenNoKnownPairs();
+
+    assertEquals(1, service.sweepDueAccounts(30L, 50));
+  }
+
+  /**
+   * An account whose login cannot be resolved is left for the next run.
+   */
+  @Test
+  public void anAccountWithoutAResolvableLoginIsSkipped() {
+    // Agenda's ACL needs the login and a binding does not carry it. Guessing
+    // one would be worse than waiting.
+    givenDuePairs(activeRemotePair("/dav/calendars/john/a/", "anchor-a"));
+    when(identityManager.getIdentity(anyString())).thenReturn(null);
+
+    assertEquals(0, service.sweepDueAccounts(30L, 50));
+  }
+
+  /**
+   * One account failing does not cost the rest of the page.
+   */
+  @Test
+  public void oneFailingAccountDoesNotStopTheSweep() {
+    CalendarSync mine = activeRemotePair("/dav/calendars/john/a/", "anchor-a");
+    CalendarSync theirs = activeRemotePair("/dav/calendars/jane/a/", "anchor-b");
+    theirs.setUserIdentityId(USER + 1);
+    givenDuePairs(mine, theirs);
+    givenServerCalendars();
+    givenNoKnownPairs();
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenThrow(new IllegalStateException("boom"));
+
+    // The failing one is logged and left stale; it comes back at the top of
+    // the next run because the page is ordered by how long it has waited.
+    assertEquals(1, service.sweepDueAccounts(30L, 50));
+  }
+
+  /**
+   * Nothing due costs nothing.
+   */
+  @Test
+  public void aSweepWithNothingDueDoesNoWork() {
+    when(caldavSyncStorage.getDuePairs(eq(CalendarSyncStatus.ACTIVE), any(), anyInt(), anyInt()))
+                                                                                                .thenReturn(Page.empty());
+
+    assertEquals(0, service.sweepDueAccounts(30L, 50));
+    verify(caldavConnectorStorage, never()).getCaldavSetting(anyLong());
+  }
+
+  /**
+   * @param pairs what the sweep should find due
+   */
+  private void givenDuePairs(CalendarSync... pairs) {
+    when(caldavSyncStorage.getDuePairs(eq(CalendarSyncStatus.ACTIVE), any(), anyInt(), anyInt()))
+                                                                                                .thenReturn(new PageImpl<>(List.of(pairs)));
+    Identity identity = new Identity(String.valueOf(USER));
+    identity.setRemoteId(LOGIN);
+    lenient().when(identityManager.getIdentity(anyString())).thenReturn(identity);
+  }
+
+  /**
+   * A refused password stops the account rather than being retried.
+   */
+  @Test
+  public void aRefusedPasswordPausesTheAccountAtOnce() {
+    // Retried on every page load it is a login attempt every few minutes
+    // against a server that may well be counting them. Locking the account is
+    // a worse outcome than not synchronising.
+    CalendarSync bound = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+                                                                           .thenThrow(new CalDavAuthenticationException("401"));
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(CalendarSyncStatus.PAUSED, bound.getStatus());
+  }
+
+  /**
+   * A collection the account no longer lists stops receiving events.
+   */
+  @Test
+  public void aCollectionTheAccountNoLongerHoldsIsMarkedGone() throws Exception {
+    givenServerCalendars(collection("/dav/calendars/john/other/", "Other"));
+    givenAgendaCreates("other-anchor");
+    CalendarSync bound = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(CalendarSyncStatus.REMOTE_GONE, bound.getStatus());
+    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  /**
+   * An empty listing is not taken as every calendar having been deleted.
+   */
+  @Test
+  public void anEmptyListingDoesNotMarkEverythingGone() {
+    // A server briefly answering with nothing is far likelier than a user
+    // deleting every calendar they have, and the second conclusion would mark
+    // the whole account gone in a single pass.
+    givenServerCalendars();
+    CalendarSync bound = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(CalendarSyncStatus.ACTIVE, bound.getStatus());
+  }
+
+  /**
+   * A collection that comes back starts receiving events again.
+   */
+  @Test
+  public void aCollectionThatComesBackIsRevived() {
+    // Materialisation skips a collection that already has a binding, so
+    // without this a calendar deleted and restored on the user's own client
+    // would never fill again.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync gone = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    gone.setStatus(CalendarSyncStatus.REMOTE_GONE);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(gone));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(gone));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(CalendarSyncStatus.ACTIVE, gone.getStatus());
+  }
+
+  /**
+   * A collection failing every time is eventually left alone.
+   */
+  @Test
+  public void aCollectionThatKeepsFailingIsPaused() {
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync bound = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    bound.setConsecutiveFailures(4);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
+    givenAgendaHasCalendar("anchor-1");
+    doThrow(new IllegalStateException("boom")).when(caldavInboundService)
+                                              .importInto(anyLong(), any(), any(), any(), any());
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(CalendarSyncStatus.PAUSED, bound.getStatus());
+  }
+
+  /**
+   * One success clears what earlier failures had counted.
+   */
+  @Test
+  public void oneSuccessForgivesTheFailuresBeforeIt() {
+    // Otherwise a collection that fails now and then would reach the limit
+    // eventually, however well it works in between.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync bound = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    bound.setConsecutiveFailures(4);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(0, bound.getConsecutiveFailures());
+    assertEquals(CalendarSyncStatus.ACTIVE, bound.getStatus());
+  }
+
+  /**
+   * A collection whose ctag has not moved is not read again.
+   */
+  @Test
+  public void anUnchangedCollectionIsNotReadAgain() {
+    // The whole point: an account with a handful of calendars and a year-wide
+    // window pays for the full walk on every agenda open, most of it for
+    // nothing.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    pair.setCtag("ctag-1");
+    pair.setLastSyncEnd(new Date());
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  /**
+   * A collection whose ctag moved is read.
+   */
+  @Test
+  public void aChangedCollectionIsRead() {
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    pair.setCtag("ctag-0");
+    pair.setLastSyncEnd(new Date());
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  /**
+   * A server publishing no ctag is read in full rather than assumed quiet.
+   */
+  @Test
+  public void aCollectionWithoutACtagIsAlwaysRead() {
+    // Silence is not "nothing changed". Reading it as such would stop
+    // importing entirely from any server that does not publish the property.
+    givenServerCalendars(new CalendarCollection("/dav/calendars/john/private/", "Private", null, null, null, true));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    pair.setLastSyncEnd(new Date());
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  /**
+   * A matching ctag read before today is not enough to skip.
+   */
+  @Test
+  public void aCollectionLastReadBeforeTodayIsReadAgain() {
+    // The window is cut at a day boundary and reaches a fixed number of days
+    // forward. Yesterday's read covered a range that stops one day short of
+    // today's, so an event in that last day would never be imported however
+    // quiet the collection has been.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    pair.setCtag("ctag-1");
+    pair.setLastSyncEnd(Date.from(Instant.now().minus(Duration.ofDays(2))));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  /**
+   * The ctag is recorded only once the import went through.
+   */
+  @Test
+  public void aFailedImportDoesNotRecordTheCtag() {
+    // Recording it on the way in would make one failed collection look
+    // unchanged for ever: the next pass would compare the same ctag, find it
+    // equal, and never retry what it missed.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+    doThrow(new IllegalStateException("server down")).when(caldavInboundService)
+                                                     .importInto(anyLong(), any(), any(), any(), any());
+
+    service.syncNow(USER, LOGIN);
+
+    assertEquals(null, pair.getCtag());
+  }
+
+  /**
+   * The state the settings row shows is the latest across the bindings.
+   */
+  @Test
+  public void theLastSyncIsTheLatestAcrossBindings() {
+    // The question the line answers is "when did eXo last speak to my
+    // account", so one binding that has been failing on its own must not drag
+    // the whole line back to its own last success.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pairSyncedAt(new Date(1_000L)),
+                                                                     pairSyncedAt(new Date(9_000L)),
+                                                                     pairSyncedAt(new Date(5_000L))));
+
+    assertEquals(new Date(9_000L), service.lastSyncEnd(USER));
+  }
+
+  /**
+   * A binding that has never finished is skipped rather than counted as now.
+   */
+  @Test
+  public void aBindingThatNeverFinishedIsNotATime() {
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pairSyncedAt(null),
+                                                                     pairSyncedAt(new Date(3_000L))));
+
+    assertEquals(new Date(3_000L), service.lastSyncEnd(USER));
+  }
+
+  /**
+   * An account whose every binding is new has no time to show.
+   */
+  @Test
+  public void anAccountThatNeverSynchronisedHasNoTime() {
+    // Null rather than the epoch: the row has to tell "not yet" apart from a
+    // date, and any date it invented would read as a real one.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pairSyncedAt(null)));
+
+    assertEquals(null, service.lastSyncEnd(USER));
+  }
+
+  /**
+   * No connected account is asked nothing of the storage.
+   */
+  @Test
+  public void anAccountThatIsNotConnectedIsNotLookedUp() {
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
+
+    assertEquals(null, service.lastSyncEnd(USER));
+    verify(caldavSyncStorage, never()).getPairs(anyLong(), anyLong());
+  }
+
+  /**
+   * @param lastSyncEnd when this binding last finished, null when never
+   * @return a binding carrying that time
+   */
+  private CalendarSync pairSyncedAt(Date lastSyncEnd) {
+    CalendarSync pair = new CalendarSync();
+    pair.setLastSyncEnd(lastSyncEnd);
+    return pair;
+  }
+
+
+  @Test
+  public void aCallerToldTheSyncRanWaitsForThePassActuallyRunningIt() throws Exception {
+    // The whole reason connecting looked unstable. A second caller used to be
+    // handed an immediate "done" while the first pass was still materialising
+    // collections, so the display it refreshed on the strength of that answer
+    // showed calendars eXo had not finished taking in yet — and kept showing
+    // them until the page was reloaded.
+    CountDownLatch passStarted = new CountDownLatch(1);
+    CountDownLatch releasePass = new CountDownLatch(1);
+    when(caldavOutboundService.bindPersonalCalendars(USER, LOGIN)).thenAnswer(invocation -> {
+      passStarted.countDown();
+      releasePass.await(5, TimeUnit.SECONDS);
+      return null;
+    });
+    ExecutorService pool = Executors.newSingleThreadExecutor();
+    try {
+      Future<?> first = pool.submit(() -> service.syncNow(USER, LOGIN));
+      assertTrue(passStarted.await(5, TimeUnit.SECONDS), "the first pass never started");
+
+      AtomicBoolean returned = new AtomicBoolean(false);
+      Thread waiter = new Thread(() -> {
+        service.syncNowAndWait(USER, LOGIN);
+        returned.set(true);
+      });
+      waiter.start();
+      Thread.sleep(300);
+      assertFalse(returned.get(), "the caller was told the sync had run while the pass was still running");
+
+      releasePass.countDown();
+      waiter.join(5000);
+      first.get(5, TimeUnit.SECONDS);
+      assertTrue(returned.get(), "the caller was never released when the pass finished");
+    } finally {
+      releasePass.countDown();
+      pool.shutdownNow();
+    }
+  }
+
+
+  @Test
+  public void aCollectionMaterialisedWithEventsAlreadyInItIsReadInTheSamePass() throws Exception {
+    // The ordinary first connect, and it was the one case that failed. The
+    // binding used to be stamped with the collection's ctag and a sync time
+    // the moment it was created, before a single event had been read out of
+    // it — so the import step, which skips a collection whose ctag still
+    // matches and whose last sync is from today, agreed there was nothing to
+    // read. The calendar arrived empty and stayed empty until somebody
+    // changed it on the server and moved the ctag.
+    //
+    // The storage is modelled rather than stubbed flat, because the defect
+    // only shows across the two steps of one pass: what materialisation saves
+    // is what the import then reads back.
+    List<CalendarSync> stored = new ArrayList<>();
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenAnswer(invocation -> List.copyOf(stored));
+    doAnswer(invocation -> {
+      CalendarSync saved = invocation.getArgument(0);
+      if (!stored.contains(saved)) {
+        stored.add(saved);
+      }
+      return saved;
+    }).when(caldavSyncStorage).savePair(any());
+    givenServerCalendars(collection("/dav/calendars/john/holidays/", "Holidays"));
+    givenAgendaCreates("anchor-new");
+    givenUserCalendars(calendarWithAnchor(99L, "anchor-new"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService).importInto(eq(USER), any(), any(), any(), any());
+  }
+
+  @Test
+  public void aFreshlyMaterialisedBindingClaimsNothingItHasNotRead() throws Exception {
+    // The invariant behind the test above, asserted directly so a future
+    // change that re-stamps any of the three is caught at the point it is
+    // made rather than through its downstream effect.
+    givenServerCalendars(collection("/dav/calendars/john/holidays/", "Holidays"));
+    givenAgendaCreates("anchor-new");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of());
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(saved.capture());
+    assertNull(saved.getValue().getCtag(), "a binding that has read nothing must not carry a ctag");
+    assertNull(saved.getValue().getSyncToken(), "a binding that has read nothing must not carry a sync token");
+    assertNull(saved.getValue().getLastSyncEnd(), "a binding that has read nothing must not claim a sync time");
+  }
+
   private CaldavUserSetting settings() {
     CaldavUserSetting setting = new CaldavUserSetting();
     setting.setUsername(LOGIN);

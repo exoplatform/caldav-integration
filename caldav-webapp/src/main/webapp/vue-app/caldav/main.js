@@ -78,6 +78,25 @@ i18nPromise.finally(() => {
     vueComponent: Vue.options.components['caldav-admin-servers-section'],
   });
   document.dispatchEvent(new CustomEvent('agenda-admin-sections-refresh'));
+
+  // The user-settings row, ranked to land between the connected account and
+  // the copy switch: what it offers back is a calendar of that account, so it
+  // reads as part of it rather than as a fourth unrelated setting. The row
+  // draws nothing when no calendar is hidden, which is the usual case.
+  extensionRegistry.registerExtension('agenda-user-settings', 'sections', {
+    id: 'caldavHiddenCalendars',
+    rank: 30,
+    vueComponent: Vue.options.components['caldav-hidden-calendars-section'],
+  });
+  // Just above the hidden calendars, and for the same reason it sits where it
+  // does: a calendar that cannot synchronise is a problem with the account
+  // the row above it describes, and the user reads down from there.
+  extensionRegistry.registerExtension('agenda-user-settings', 'sections', {
+    id: 'caldavCalendarStates',
+    rank: 29,
+    vueComponent: Vue.options.components['caldav-calendar-states-section'],
+  });
+  document.dispatchEvent(new CustomEvent('agenda-user-sections-refresh'));
 });
 
 // One agenda connector per ACTIVE declared server, its label merged into the
