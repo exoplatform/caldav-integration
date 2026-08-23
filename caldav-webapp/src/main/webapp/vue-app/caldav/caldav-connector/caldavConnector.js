@@ -13,6 +13,12 @@ const caldavConnector = {
   isOauth: false,
   canConnect: true,
   canPush: true,
+  // Says that this connector holds a collection of its own for the user's
+  // personal calendars, so agenda may offer it their events too and not only
+  // the space meetings it copies into the mirror. A connector that fetches
+  // remotely without materialising anything — Google, Office 365, Exchange —
+  // declares nothing here and keeps exactly the behaviour it had.
+  pushesOwnCalendars: true,
   initialized: true,
   isSignedIn: true,
   pushing: false,
