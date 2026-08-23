@@ -851,7 +851,7 @@ public class CaldavInboundServiceTest {
     givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
                   objectSync(102L, 502L, HREF + "vanished.ics"));
 
-    int removed = service.removeVanishedObjects(USER, pair());
+    int removed = service.removeVanishedObjects(USER, pair()).removed();
 
     assertEquals(1, removed);
     verify(agendaEventService).deleteEventById(502L, USER);
@@ -870,7 +870,7 @@ public class CaldavInboundServiceTest {
     when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
         .thenThrow(new CalDavException("unreachable"));
 
-    int removed = service.removeVanishedObjects(USER, pair());
+    int removed = service.removeVanishedObjects(USER, pair()).removed();
 
     assertEquals(0, removed);
     verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
@@ -887,7 +887,7 @@ public class CaldavInboundServiceTest {
     when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
     givenMappings(objectSync(103L, null, HREF + "orphan.ics"));
 
-    int removed = service.removeVanishedObjects(USER, pair());
+    int removed = service.removeVanishedObjects(USER, pair()).removed();
 
     assertEquals(0, removed);
     verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
@@ -907,7 +907,7 @@ public class CaldavInboundServiceTest {
     givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
                   objectSync(102L, 502L, HREF + "vanished.ics"));
 
-    int removed = service.removeVanishedObjects(USER, pair());
+    int removed = service.removeVanishedObjects(USER, pair()).removed();
 
     assertEquals(0, removed);
     verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());

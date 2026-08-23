@@ -139,6 +139,11 @@ public class CaldavSyncServiceTest {
     // The engine reads its tuning where it uses it rather than capturing it at
     // bean creation, which is what lets an administrator change it without a
     // restart — so the test stubs the reader, not a field.
+    // The reconciliation runs on every pass and a mock answers null, which the
+    // pass then reads as a failure. Stubbed to "nothing to clean" so each test
+    // exercises what it is actually about.
+    lenient().when(caldavInboundService.removeVanishedObjects(anyLong(), any()))
+             .thenReturn(CaldavInboundService.VanishedCleanup.nothing());
     lenient().when(caldavTuningService.getThrottleMinutes()).thenReturn(15L);
     lenient().when(caldavTuningService.getPastDays()).thenReturn(60L);
     lenient().when(caldavTuningService.getFutureDays()).thenReturn(365L);

@@ -666,15 +666,15 @@ public class CaldavInboundService {
    * @param userIdentityId identity of the user, whose ACL the deletion runs
    *          under
    * @param pair the binding whose collection is reconciled
-   * @return how many events were removed
+   * @return what was removed and what could not be
    */
-  public int removeVanishedObjects(long userIdentityId, CalendarSync pair) {
+  public VanishedCleanup removeVanishedObjects(long userIdentityId, CalendarSync pair) {
     if (pair == null || StringUtils.isBlank(pair.getRemoteHref())) {
-      return 0;
+      return VanishedCleanup.nothing();
     }
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (settings == null || StringUtils.isBlank(settings.getUsername())) {
-      return 0;
+      return VanishedCleanup.nothing();
     }
     Map<String, String> etags;
     try {
@@ -685,10 +685,10 @@ public class CaldavInboundService {
                                              settings.getPassword());
     } catch (RuntimeException e) {
       LOG.warn("Collection {} could not be listed; nothing is removed from it this round", pair.getRemoteHref(), e);
-      return 0;
+      return VanishedCleanup.nothing();
     }
     if (etags == null) {
-      return 0;
+      return VanishedCleanup.nothing();
     }
     Set<String> held = etags.keySet()
                             .stream()
@@ -711,15 +711,40 @@ public class CaldavInboundService {
       objects = caldavSyncStorage.getObjects(pair.getId(), ++page, OBJECT_PAGE_SIZE).getContent();
     }
     int removed = 0;
+    int failed = 0;
     for (ObjectSync object : vanished) {
       if (removeOne(userIdentityId, object)) {
         removed++;
+      } else {
+        failed++;
       }
     }
     if (removed > 0) {
       LOG.info("{} event(s) deleted on the account are no longer shown from collection {}", removed, pair.getRemoteHref());
     }
-    return removed;
+    return new VanishedCleanup(removed, failed);
+  }
+
+  /**
+   * What one reconciliation managed.
+   *
+   * <p>
+   * The failure count is not a statistic: a collection whose deletions did not
+   * all go through must not have its ctag recorded as read, or the next pass
+   * compares an unchanged ctag, concludes there is nothing to do, and never
+   * retries — the events stay in eXo for good and nothing ever looks again.
+   *
+   * @param removed events removed because their object is gone
+   * @param failed events whose object is gone but which could not be removed
+   */
+  public record VanishedCleanup(int removed, int failed) {
+
+    /**
+     * @return a reconciliation that did nothing, because it could not tell
+     */
+    public static VanishedCleanup nothing() {
+      return new VanishedCleanup(0, 0);
+    }
   }
 
   /**
