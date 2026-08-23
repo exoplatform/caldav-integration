@@ -16,6 +16,11 @@
  */
 package org.exoplatform.caldav.rest;
 
+import org.exoplatform.services.log.Log;
+import org.exoplatform.services.log.ExoLogger;
+import org.springframework.web.server.ResponseStatusException;
+import java.util.List;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -35,6 +40,8 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
 import org.exoplatform.caldav.model.CalendarDeletionPlan;
+import org.exoplatform.caldav.model.HiddenCalendar;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.service.CaldavPushException;
 import org.exoplatform.caldav.service.CaldavDeletionService;
@@ -61,6 +68,9 @@ import org.exoplatform.social.core.manager.IdentityManager;
          + "the paths on purpose: /push/events takes an eXo event identifier, /push/objects takes the iCalendar "
          + "UID of the calendar object that event was written as.")
 public class CaldavPushRest {
+
+  private static final Log LOG = ExoLogger.getLogger(CaldavPushRest.class);
+
 
   @Autowired
   private CaldavPushService     caldavPushService;
@@ -237,6 +247,53 @@ public class CaldavPushRest {
                                                     long calendarId) {
     caldavDeletionService.keepRemoteCounterpart(currentUser(), calendarId);
     return ResponseEntity.noContent().build();
+  }
+
+  /**
+   * The calendars this user has hidden on their account.
+   *
+   * @return what can be shown again, empty when nothing is hidden
+   */
+  @GetMapping("/hidden-calendars")
+  @Secured("users")
+  @Operation(summary = "Lists the calendars the user hid",
+      description = "A hidden calendar is one deleted in eXo while its remote counterpart was kept. Nothing on "
+          + "screen shows it any more, so this is the only way back to it.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The hidden calendars, possibly none") })
+  public List<HiddenCalendar> hiddenCalendars() {
+    return caldavDeletionService.listHidden(currentUser());
+  }
+
+  /**
+   * Shows a hidden calendar again.
+   *
+   * @param pairId the binding to lift
+   * @return an empty 204
+   */
+  @DeleteMapping("/hidden-calendars/{pairId}")
+  @Secured("users")
+  @Operation(summary = "Shows a hidden calendar again",
+      description = "Lifts the tombstone so the next synchronisation materialises the collection afresh. It comes "
+          + "back as a new calendar, not as the deleted one restored — its events went to the user's default "
+          + "calendar when it was deleted, and they stay there.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Lifted"),
+      @ApiResponse(responseCode = "403", description = "Not this user's calendar"),
+      @ApiResponse(responseCode = "404", description = "No such hidden calendar") })
+  public ResponseEntity<Void> showCalendarAgain(@Parameter(description = "Technical identifier of the binding",
+                                                           required = true)
+                                                @PathVariable("pairId")
+                                                long pairId) {
+    try {
+      caldavDeletionService.showAgain(currentUser(), pairId);
+      return ResponseEntity.noContent().build();
+    } catch (ObjectNotFoundException e) {
+      // Not an incident: a stale drawer offering something already lifted.
+      LOG.debug("No hidden calendar with id {}", pairId, e);
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      LOG.debug("User {} may not lift binding {}", currentUser(), pairId, e);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    }
   }
 
   /**
