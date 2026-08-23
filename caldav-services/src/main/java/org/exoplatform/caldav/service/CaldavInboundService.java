@@ -39,6 +39,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.container.ExoContainer;
+import org.exoplatform.container.ExoContainerContext;
+import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -710,13 +713,36 @@ public class CaldavInboundService {
       }
       objects = caldavSyncStorage.getObjects(pair.getId(), ++page, OBJECT_PAGE_SIZE).getContent();
     }
+    if (vanished.isEmpty()) {
+      return VanishedCleanup.nothing();
+    }
+    // The removals get a persistence context of their own, and that is the
+    // difference between working and not. Deleting inside the one the pass has
+    // been using fails at commit — Hibernate reports a persistent instance
+    // referencing a transient EventEntity — while the identical deletion
+    // through agenda's own REST, which gets a fresh request, succeeds every
+    // time. Reordering the work within the pass does not help; only leaving
+    // its context does.
+    //
+    // Safe to renew here: everything this class holds across the boundary is a
+    // DTO, not a managed entity, so nothing is left detached by it.
+    ExoContainer container = ExoContainerContext.getCurrentContainer();
+    boolean isolated = renewContext(container);
     int removed = 0;
     int failed = 0;
-    for (ObjectSync object : vanished) {
-      if (removeOne(userIdentityId, object)) {
-        removed++;
-      } else {
-        failed++;
+    try {
+      for (ObjectSync object : vanished) {
+        if (removeOne(userIdentityId, object)) {
+          removed++;
+        } else {
+          failed++;
+        }
+      }
+    } finally {
+      if (isolated) {
+        // The caller carries on with the pass, so it is handed a clean context
+        // rather than none at all.
+        renewContext(container);
       }
     }
     if (removed > 0) {
@@ -760,6 +786,33 @@ public class CaldavInboundService {
    * @param object the mapping whose object vanished
    * @return true when the mapping was dropped
    */
+
+  /**
+   * Closes the current request's persistence context and opens a fresh one.
+   *
+   * <p>
+   * Guarded rather than assumed: outside a portal request — a unit test, most
+   * obviously — there is no lifecycle to renew, and failing to renew one is
+   * not a reason to abandon the work. The caller is told whether it happened
+   * so it can put things back the way it found them.
+   *
+   * @param container the container whose lifecycle is renewed, may be null
+   * @return true when a fresh context was opened
+   */
+  private boolean renewContext(ExoContainer container) {
+    if (container == null) {
+      return false;
+    }
+    try {
+      RequestLifeCycle.end();
+      RequestLifeCycle.begin(container);
+      return true;
+    } catch (RuntimeException e) {
+      LOG.debug("No request lifecycle to renew; the removals run in the caller's context", e);
+      return false;
+    }
+  }
+
   private boolean removeOne(long userIdentityId, ObjectSync object) {
     try {
       agendaEventService.deleteEventById(object.getLocalEventId(), userIdentityId);
