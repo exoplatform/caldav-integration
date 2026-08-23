@@ -39,6 +39,7 @@ import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.caldav.model.HiddenCalendar;
+import org.exoplatform.caldav.model.CalendarSyncState;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -445,6 +446,98 @@ public class CaldavDeletionService {
   }
 
   /**
+   * What each of this user's calendars is doing, for the ones worth telling
+   * them about.
+   *
+   * <p>
+   * The engine has always known this per binding and kept it in the database
+   * and the logs. A user seeing their agenda has no way to tell a calendar
+   * that is synchronising from one whose server refused it — both simply sit
+   * there — so this surfaces the states where something they might do would
+   * change the outcome, and nothing else.
+   *
+   * <p>
+   * Names come from the eXo calendar for a binding that has one, and from the
+   * server for the ones that do not — a collection eXo was refused permission
+   * to create has no eXo calendar to name it by.
+   *
+   * @param userIdentityId whose calendars
+   * @param username the user's login, which agenda's ACL needs to read their
+   *          calendars
+   * @return the states worth showing, empty when everything is well
+   */
+  public List<CalendarSyncState> listSyncStates(long userIdentityId, String username) {
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (settings == null || StringUtils.isBlank(settings.getUsername())) {
+      return List.of();
+    }
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    List<CalendarSync> pairs = caldavSyncStorage.getPairs(userIdentityId, serverId)
+                                                .stream()
+                                                .filter(pair -> pair.getStatus() != null)
+                                                .toList();
+    if (pairs.isEmpty()) {
+      return List.of();
+    }
+    Map<String, Calendar> byAnchor = calendarsByAnchorForStates(userIdentityId, username);
+    List<CalendarSyncState> states = new ArrayList<>();
+    Map<String, String> remoteNames = null;
+    for (CalendarSync pair : pairs) {
+      Calendar calendar = byAnchor.get(pair.getLocalCalendarSyncUid());
+      CalendarSyncState state = new CalendarSyncState(pair.getId(),
+                                                      calendar == null ? 0L : calendar.getId(),
+                                                      calendar == null ? null
+                                                                       : StringUtils.firstNonBlank(calendar.getName(),
+                                                                                                   calendar.getTitle()),
+                                                      pair.getStatus(),
+                                                      pair.getLastSyncEnd() == null ? null
+                                                                                    : pair.getLastSyncEnd().getTime());
+      if (!state.worthTelling()) {
+        continue;
+      }
+      if (StringUtils.isBlank(state.name())) {
+        // No eXo calendar to name it by — a collection eXo was refused
+        // permission to create, or one whose calendar is already gone. The
+        // server is asked, once, and only when it turns out to be needed.
+        if (remoteNames == null) {
+          remoteNames = collectionNames(settings);
+        }
+        state = new CalendarSyncState(state.id(),
+                                      state.calendarId(),
+                                      remoteNames.get(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())),
+                                      state.status(),
+                                      state.lastSyncEnd());
+      }
+      if (StringUtils.isNotBlank(state.name())) {
+        states.add(state);
+      }
+    }
+    return states;
+  }
+
+  /**
+   * A user's calendars, keyed by the anchor a binding records.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login
+   * @return the calendars by anchor, empty when they cannot be read
+   */
+  private Map<String, Calendar> calendarsByAnchorForStates(long userIdentityId, String username) {
+    Map<String, Calendar> byAnchor = new HashMap<>();
+    try {
+      for (Calendar calendar : agendaCalendarService.getCalendars(0, Integer.MAX_VALUE, username)) {
+        if (calendar.getOwnerId() == userIdentityId && !calendar.isDeleted()
+            && StringUtils.isNotBlank(calendar.getSyncUid())) {
+          byAnchor.put(calendar.getSyncUid(), calendar);
+        }
+      }
+    } catch (Exception e) { // NOSONAR agenda declares a bare Exception here
+      LOG.warn("The calendars of user {} could not be read; their states are named from the server", userIdentityId, e);
+    }
+    return byAnchor;
+  }
+
+  /**
    * The account's collections, by canonical path.
    *
    * @param settings the connected account
@@ -462,10 +555,14 @@ public class CaldavDeletionService {
         names.put(CaldavSyncStorage.canonicalHref(collection.href()),
                   StringUtils.defaultIfBlank(collection.displayName(), collection.href()));
       }
-    } catch (CalDavException e) {
-      // Nothing offered rather than a list of paths the user never chose to
-      // see. They can try again when the server answers.
-      LOG.debug("The account's collections could not be listed; nothing is offered to show again", e);
+    } catch (RuntimeException e) {
+      // RuntimeException, not only CalDavException: this is called from
+      // screens that must render whatever the account is doing — a settings
+      // row that throws because a server is unreachable is a worse outcome
+      // than a row with nothing in it. Nothing offered rather than a list of
+      // paths the user never chose to see; they can try again when the server
+      // answers.
+      LOG.debug("The account's collections could not be listed; nothing is named from the server", e);
     }
     return names;
   }

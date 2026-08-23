@@ -40,6 +40,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
 import org.exoplatform.caldav.model.CalendarDeletionPlan;
+import org.exoplatform.caldav.model.CalendarSyncState;
 import org.exoplatform.caldav.model.HiddenCalendar;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.caldav.model.ObjectSync;
@@ -279,6 +280,22 @@ public class CaldavPushRest {
    *
    * @return what can be shown again, empty when nothing is hidden
    */
+  /**
+   * What each of this user's calendars is doing, for the ones worth telling
+   * them about.
+   *
+   * @return the states, empty when every calendar is synchronising normally
+   */
+  @GetMapping("/calendar-states")
+  @Secured("users")
+  @Operation(summary = "Lists the calendars whose synchronisation needs the user's attention",
+      description = "Only the states where something the user might do would change the outcome. A calendar that "
+          + "is synchronising is not news, and a calendar the user hid has its own listing.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The states, possibly empty") })
+  public List<CalendarSyncState> calendarStates() {
+    return caldavDeletionService.listSyncStates(currentUser(), CaldavConnectorUtils.getCurrentUser());
+  }
+
   @GetMapping("/hidden-calendars")
   @Secured("users")
   @Operation(summary = "Lists the calendars the user hid",

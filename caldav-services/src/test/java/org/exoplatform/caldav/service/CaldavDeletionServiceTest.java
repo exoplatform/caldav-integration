@@ -63,6 +63,7 @@ import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncState;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -858,6 +859,121 @@ public class CaldavDeletionServiceTest {
     assertDoesNotThrow(() -> service.showAgain(USER, 9L, LOGIN));
 
     verify(caldavSyncStorage).deletePair(9L);
+  }
+
+  @Test
+  public void aCalendarSynchronisingNormallyIsNotReported() {
+    // The row exists to name a problem. A calendar that is working is not
+    // news, and listing it would bury the ones that are not.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.REMOTE,
+                                                                          CalendarSyncStatus.ACTIVE)));
+
+    assertTrue(service.listSyncStates(USER, LOGIN).isEmpty());
+  }
+
+  @Test
+  public void aCalendarTheUserHidIsNotReportedHere() {
+    // A tombstone has its own listing, which offers to bring the calendar back
+    // rather than to worry about it.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.REMOTE,
+                                                                          CalendarSyncStatus.LOCALLY_DELETED)));
+
+    assertTrue(service.listSyncStates(USER, LOGIN).isEmpty());
+  }
+
+  @Test
+  public void aPausedCalendarIsReportedWithItsName() {
+    CalendarSync paused = pair(SyncOrigin.REMOTE, CalendarSyncStatus.PAUSED);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(paused));
+    givenAgendaCalendarNamed("Family");
+
+    List<CalendarSyncState> states = service.listSyncStates(USER, LOGIN);
+
+    assertEquals(1, states.size());
+    assertEquals("Family", states.get(0).name());
+    assertEquals(CALENDAR, states.get(0).calendarId());
+    assertEquals(CalendarSyncStatus.PAUSED, states.get(0).status());
+  }
+
+  @Test
+  public void aRefusedCalendarIsNamedFromTheServerWhenExoHasNone() {
+    // A collection eXo was refused permission to create has no eXo calendar to
+    // name it by, and a row with no name is a row the user cannot act on.
+    CalendarSync refused = pair(SyncOrigin.EXO, CalendarSyncStatus.REMOTE_CREATE_REFUSED);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(refused));
+    givenNoAgendaCalendars();
+    givenServerCollectionNamed("Work");
+
+    List<CalendarSyncState> states = service.listSyncStates(USER, LOGIN);
+
+    assertEquals(1, states.size());
+    assertEquals("Work", states.get(0).name());
+  }
+
+  @Test
+  public void aStateNobodyCanNameIsLeftOut() {
+    // Neither eXo nor the server knows what to call it. "A calendar" is not
+    // something a user can act on, so it is not offered.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.REMOTE,
+                                                                          CalendarSyncStatus.PAUSED)));
+    givenNoAgendaCalendars();
+    givenServerListingFails();
+
+    assertTrue(service.listSyncStates(USER, LOGIN).isEmpty());
+  }
+
+  @Test
+  public void anAccountThatIsNotConnectedHasNoStates() {
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
+
+    assertTrue(service.listSyncStates(USER, LOGIN).isEmpty());
+  }
+
+  /**
+   * @param name what agenda calls the calendar behind the binding
+   */
+  private void givenAgendaCalendarNamed(String name) {
+    Calendar calendar = new Calendar();
+    calendar.setId(CALENDAR);
+    calendar.setOwnerId(USER);
+    calendar.setSyncUid(ANCHOR);
+    calendar.setName(name);
+    try {
+      when(agendaCalendarService.getCalendars(anyInt(), anyInt(), anyString())).thenReturn(List.of(calendar));
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /**
+   * Agenda holds no calendar for this binding.
+   */
+  private void givenNoAgendaCalendars() {
+    try {
+      when(agendaCalendarService.getCalendars(anyInt(), anyInt(), anyString())).thenReturn(List.of());
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /**
+   * @param name what the server calls the collection the binding points at
+   */
+  private void givenServerCollectionNamed(String name) {
+    when(calDavClient.listCalendars(any(), anyString(), anyString(), anyString()))
+                                                                                 .thenReturn(List.of(new CalendarCollection(HREF,
+                                                                                                                            name,
+                                                                                                                            null,
+                                                                                                                            null,
+                                                                                                                            null,
+                                                                                                                            true)));
+  }
+
+  /**
+   * The server cannot be listed at all.
+   */
+  private void givenServerListingFails() {
+    when(calDavClient.listCalendars(any(), anyString(), anyString(), anyString())).thenThrow(new IllegalStateException("down"));
   }
 
   private CaldavUserSetting settings() {
