@@ -50,6 +50,9 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import java.util.ArrayList;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.mockito.Mockito.doAnswer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -642,10 +645,19 @@ public class CaldavSyncServiceTest {
   }
 
   @Test
-  public void theMaterialisedPairRecordsWhereItCameFromAndHowFreshItIs() throws Exception {
-    // The ctag and the sync token are what let the next pass ask the server
-    // "anything new?" instead of reading the whole collection back; ACTIVE is
+  public void theMaterialisedPairRecordsWhereItCameFrom() throws Exception {
+    // The path is how the binding finds its collection again, and ACTIVE is
     // what separates a live binding from a tombstone.
+    //
+    // This used to assert the ctag and the sync token here too, on the
+    // reasoning that they are what let the next pass ask "anything new?"
+    // instead of reading the whole collection back. That reasoning is right
+    // about the ctag and wrong about when to record it: written before the
+    // collection has been read, it says the binding is up to date with a
+    // collection it has never opened, and the import step believes it. The
+    // ctag is recorded in importRemoteEvents, after a read that succeeded —
+    // which is the only moment it is true. See
+    // aFreshlyMaterialisedBindingClaimsNothingItHasNotRead.
     givenServerCalendars(collectionOf("/dav/calendars/john/private/", "Private", Set.of("VEVENT")));
     givenNoKnownPairs();
     givenAgendaCreates("anchor-5");
@@ -655,8 +667,6 @@ public class CaldavSyncServiceTest {
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
     assertEquals("/dav/calendars/john/private/", saved.getValue().getRemoteHref());
-    assertEquals("ctag-1", saved.getValue().getCtag());
-    assertEquals("token-1", saved.getValue().getSyncToken());
     assertEquals(CalendarSyncStatus.ACTIVE, saved.getValue().getStatus());
   }
 
@@ -1315,6 +1325,56 @@ public class CaldavSyncServiceTest {
       releasePass.countDown();
       pool.shutdownNow();
     }
+  }
+
+
+  @Test
+  public void aCollectionMaterialisedWithEventsAlreadyInItIsReadInTheSamePass() throws Exception {
+    // The ordinary first connect, and it was the one case that failed. The
+    // binding used to be stamped with the collection's ctag and a sync time
+    // the moment it was created, before a single event had been read out of
+    // it — so the import step, which skips a collection whose ctag still
+    // matches and whose last sync is from today, agreed there was nothing to
+    // read. The calendar arrived empty and stayed empty until somebody
+    // changed it on the server and moved the ctag.
+    //
+    // The storage is modelled rather than stubbed flat, because the defect
+    // only shows across the two steps of one pass: what materialisation saves
+    // is what the import then reads back.
+    List<CalendarSync> stored = new ArrayList<>();
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenAnswer(invocation -> List.copyOf(stored));
+    doAnswer(invocation -> {
+      CalendarSync saved = invocation.getArgument(0);
+      if (!stored.contains(saved)) {
+        stored.add(saved);
+      }
+      return saved;
+    }).when(caldavSyncStorage).savePair(any());
+    givenServerCalendars(collection("/dav/calendars/john/holidays/", "Holidays"));
+    givenAgendaCreates("anchor-new");
+    givenUserCalendars(calendarWithAnchor(99L, "anchor-new"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService).importInto(eq(USER), any(), any(), any(), any());
+  }
+
+  @Test
+  public void aFreshlyMaterialisedBindingClaimsNothingItHasNotRead() throws Exception {
+    // The invariant behind the test above, asserted directly so a future
+    // change that re-stamps any of the three is caught at the point it is
+    // made rather than through its downstream effect.
+    givenServerCalendars(collection("/dav/calendars/john/holidays/", "Holidays"));
+    givenAgendaCreates("anchor-new");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of());
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(saved.capture());
+    assertNull(saved.getValue().getCtag(), "a binding that has read nothing must not carry a ctag");
+    assertNull(saved.getValue().getSyncToken(), "a binding that has read nothing must not carry a sync token");
+    assertNull(saved.getValue().getLastSyncEnd(), "a binding that has read nothing must not claim a sync time");
   }
 
   private CaldavUserSetting settings() {
