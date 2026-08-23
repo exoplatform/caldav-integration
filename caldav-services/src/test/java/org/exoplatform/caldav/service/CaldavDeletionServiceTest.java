@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -261,19 +262,78 @@ public class CaldavDeletionServiceTest {
   }
 
   @Test
-  public void disconnectingAnAccountDeletesNothingAtAll() {
-    // A user unlinking their account is saying "stop syncing", not "destroy
-    // what is on my server". The bindings are kept so reconnecting finds its
-    // collections again instead of creating a second set beside them.
+  public void disconnectingKeepsACalendarTheUserMadeInExo() {
+    // The account was its destination, never its source. It stays, and only
+    // its binding is paused: dropped, reconnecting the same account would
+    // create a second collection beside the first.
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.EXO, CalendarSyncStatus.ACTIVE)));
 
-    service.freezeOnDisconnect(USER, SERVER);
+    service.freezeOnDisconnect(USER, SERVER, LOGIN);
 
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
     assertEquals(CalendarSyncStatus.PAUSED, saved.getValue().getStatus());
-    verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
     verify(caldavSyncStorage, never()).deletePair(anyLong());
+  }
+
+  @Test
+  public void disconnectingRemovesACalendarExoMaterialised() throws Exception {
+    // A mirror of a collection on the account: everything in it lives there
+    // and nothing in it was created here. Left behind it would keep showing,
+    // unchanged and no longer updating.
+    CalendarSync mirror = pair(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirror));
+    givenAgendaHasCalendar();
+
+    service.freezeOnDisconnect(USER, SERVER, LOGIN);
+
+    verify(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
+    verify(caldavSyncStorage).deletePair(mirror.getId());
+  }
+
+  @Test
+  public void nothingOnTheServerIsTouchedByADisconnect() {
+    // A user unlinking their account is saying "stop syncing", not "destroy
+    // what is on my server" — whichever side made the calendar.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.REMOTE,
+                                                                          CalendarSyncStatus.ACTIVE),
+                                                                     pair(SyncOrigin.EXO,
+                                                                          CalendarSyncStatus.ACTIVE)));
+    givenAgendaHasCalendar();
+
+    service.freezeOnDisconnect(USER, SERVER, LOGIN);
+
+    verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void aMirrorThatCannotBeRemovedKeepsItsBinding() throws Exception {
+    // A binding with no calendar behind it is what makes materialisation skip
+    // the collection for good, so dropping it here would cost the user the
+    // calendar on the next reconnection.
+    CalendarSync mirror = pair(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirror));
+    givenAgendaHasCalendar();
+    doThrow(new IllegalAccessException("refused")).when(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
+
+    service.freezeOnDisconnect(USER, SERVER, LOGIN);
+
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+  }
+
+  /**
+   * Agenda holds the calendar the binding stands for.
+   */
+  private void givenAgendaHasCalendar() {
+    Calendar calendar = new Calendar();
+    calendar.setId(CALENDAR);
+    calendar.setOwnerId(USER);
+    calendar.setSyncUid(ANCHOR);
+    try {
+      when(agendaCalendarService.getCalendars(anyInt(), anyInt(), anyString())).thenReturn(List.of(calendar));
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   @Test
@@ -282,7 +342,7 @@ public class CaldavDeletionServiceTest {
                                                   .thenReturn(List.of(pair(SyncOrigin.EXO,
                                                                            CalendarSyncStatus.EXO_ORPHANED)));
 
-    service.freezeOnDisconnect(USER, SERVER);
+    service.freezeOnDisconnect(USER, SERVER, LOGIN);
 
     verify(caldavSyncStorage, never()).savePair(any());
   }
@@ -350,7 +410,7 @@ public class CaldavDeletionServiceTest {
   public void freezingAnAccountWithNoBindingsDoesNothing() {
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of());
 
-    service.freezeOnDisconnect(USER, SERVER);
+    service.freezeOnDisconnect(USER, SERVER, LOGIN);
 
     verify(caldavSyncStorage, never()).savePair(any());
   }

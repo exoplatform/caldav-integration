@@ -222,18 +222,20 @@ public class CaldavConnectorRestTest {
   }
 
   /**
-   * Disconnecting names the caller's own account and nobody else's.
+   * Disconnecting names the caller's own account, and passes their login.
    */
   @Test
-  public void disconnectingNamesTheCallersOwnAccount() {
-    // The request carries no way to name another user's: the identity comes
-    // from the conversation state.
+  public void disconnectingPassesTheLogin() {
+    // The identity comes from the conversation state — the request carries no
+    // way to name another user's. The login goes with it because without one
+    // the service has no ACL to remove a calendar under, and the mirrored
+    // calendars would stay behind.
     withCurrentUser();
 
     Response response = caldavConnectorRest.deleteCaldavSetting();
 
     assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
-    verify(caldavConnectorService).deleteCaldavSetting(42L);
+    verify(caldavConnectorService).deleteCaldavSetting(42L, USER_NAME);
   }
 
   /**
@@ -242,7 +244,7 @@ public class CaldavConnectorRestTest {
   @Test
   public void aFailureWhileDisconnectingIsReported() {
     withCurrentUser();
-    doThrow(new IllegalStateException("boom")).when(caldavConnectorService).deleteCaldavSetting(anyLong());
+    doThrow(new IllegalStateException("boom")).when(caldavConnectorService).deleteCaldavSetting(anyLong(), anyString());
 
     Response response = caldavConnectorRest.deleteCaldavSetting();
 

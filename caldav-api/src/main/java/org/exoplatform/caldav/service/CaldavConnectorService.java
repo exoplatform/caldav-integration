@@ -46,6 +46,23 @@ public interface CaldavConnectorService {
   void deleteCaldavSetting(long userIdentityId);
 
   /**
+   * Disconnects a user's CalDAV account, and tidies what eXo built from it.
+   *
+   * <p>
+   * Nothing on the server is touched. In eXo, a calendar eXo materialised from
+   * a collection of that account goes with the account — everything in it
+   * lives there and nothing in it was created here — while a calendar the user
+   * made in eXo and eXo pushed out stays, since the account was its
+   * destination and never its source.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login, which agenda's ACL needs to remove a
+   *          calendar on their behalf; without it only the settings are
+   *          removed
+   */
+  void deleteCaldavSetting(long userIdentityId, String username);
+
+  /**
    * Saves the href of the mirror calendar of a user: the collection, on the
    * connected CalDAV server, that receives the meetings pushed by eXo. The
    * href — never the display name — identifies the collection, so renaming it
