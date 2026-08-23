@@ -728,6 +728,10 @@ public class CaldavInboundService {
     // DTO, not a managed entity, so nothing is left detached by it.
     ExoContainer container = ExoContainerContext.getCurrentContainer();
     boolean isolated = renewContext(container);
+    LOG.info("Reconciling {} vanished object(s) of {}; own persistence context: {}",
+             vanished.size(),
+             pair.getRemoteHref(),
+             isolated);
     int removed = 0;
     int failed = 0;
     try {
@@ -825,7 +829,13 @@ public class CaldavInboundService {
       LOG.warn("User {} may not delete event {}; it stays as it is", userIdentityId, object.getLocalEventId(), e);
       return false;
     } catch (RuntimeException e) {
-      LOG.warn("Event {} could not be removed after its object vanished", object.getLocalEventId(), e);
+      Throwable cause = e;
+      while (cause.getCause() != null && cause.getCause() != cause) {
+        cause = cause.getCause();
+      }
+      LOG.warn("Event {} could not be removed after its object vanished: {}",
+               object.getLocalEventId(),
+               cause.toString());
       return false;
     }
     caldavSyncStorage.deleteObject(object.getId());
