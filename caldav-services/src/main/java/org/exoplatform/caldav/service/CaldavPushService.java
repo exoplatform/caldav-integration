@@ -93,6 +93,14 @@ public class CaldavPushService {
   /** The server would not create a collection and no calendar could be adopted. */
   public static final String     CREATION_REFUSED       = "calendarCreationRefused";
 
+  /**
+   * The name this add-on registers itself under as an agenda remote provider,
+   * in caldav-configuration.xml. It has to match that declaration exactly:
+   * agenda resolves the provider by name when it stores the mapping between
+   * an eXo event and the object written for it.
+   */
+  private static final String    CONNECTOR_NAME = "agenda.caldavCalendar";
+
   private static final Log       LOG                    = ExoLogger.getLogger(CaldavPushService.class);
 
   @Autowired
@@ -456,6 +464,16 @@ public class CaldavPushService {
     remoteEvent.setEventId(seriesId);
     remoteEvent.setIdentityId(userIdentityId);
     remoteEvent.setRemoteId(minted);
+    // Naming the provider is what makes agenda keep this row. Without it —
+    // and this connector left it unset — saveRemoteEvent reads the record as
+    // an instruction to DELETE the mapping rather than store it, so the
+    // identifier minted here was thrown away the moment it was handed over.
+    // Every later push then found nothing, minted a fresh identifier, and
+    // wrote a second object: an edit duplicated the meeting and orphaned the
+    // original, and a delete looked for an identifier the server had never
+    // seen. The provider itself already exists — this add-on registers it as
+    // a RemoteProviderDefinitionPlugin — so naming it is all that was missing.
+    remoteEvent.setRemoteProviderName(CONNECTOR_NAME);
     // Recorded before the write, not after: an interrupted push leaves an
     // identifier pointing at an object that may or may not exist, which the
     // next push reconciles. Recording it afterwards would leave a written
