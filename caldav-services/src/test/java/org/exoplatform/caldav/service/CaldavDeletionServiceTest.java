@@ -26,12 +26,15 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -55,9 +58,12 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncState;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -102,6 +108,12 @@ public class CaldavDeletionServiceTest {
 
   @Mock
   private AgendaCalendarService      agendaCalendarService;
+
+  @Mock
+  private CaldavServerService        caldavServerService;
+
+  @Mock
+  private CaldavSyncService          caldavSyncService;
 
   @Mock
   private CalDavEndpoint             endpoint;
@@ -251,19 +263,78 @@ public class CaldavDeletionServiceTest {
   }
 
   @Test
-  public void disconnectingAnAccountDeletesNothingAtAll() {
-    // A user unlinking their account is saying "stop syncing", not "destroy
-    // what is on my server". The bindings are kept so reconnecting finds its
-    // collections again instead of creating a second set beside them.
+  public void disconnectingKeepsACalendarTheUserMadeInExo() {
+    // The account was its destination, never its source. It stays, and only
+    // its binding is paused: dropped, reconnecting the same account would
+    // create a second collection beside the first.
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.EXO, CalendarSyncStatus.ACTIVE)));
 
-    service.freezeOnDisconnect(USER, SERVER);
+    service.freezeOnDisconnect(USER, SERVER, LOGIN);
 
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
     assertEquals(CalendarSyncStatus.PAUSED, saved.getValue().getStatus());
-    verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
     verify(caldavSyncStorage, never()).deletePair(anyLong());
+  }
+
+  @Test
+  public void disconnectingRemovesACalendarExoMaterialised() throws Exception {
+    // A mirror of a collection on the account: everything in it lives there
+    // and nothing in it was created here. Left behind it would keep showing,
+    // unchanged and no longer updating.
+    CalendarSync mirror = pair(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirror));
+    givenAgendaHasCalendar();
+
+    service.freezeOnDisconnect(USER, SERVER, LOGIN);
+
+    verify(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
+    verify(caldavSyncStorage).deletePair(mirror.getId());
+  }
+
+  @Test
+  public void nothingOnTheServerIsTouchedByADisconnect() {
+    // A user unlinking their account is saying "stop syncing", not "destroy
+    // what is on my server" — whichever side made the calendar.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.REMOTE,
+                                                                          CalendarSyncStatus.ACTIVE),
+                                                                     pair(SyncOrigin.EXO,
+                                                                          CalendarSyncStatus.ACTIVE)));
+    givenAgendaHasCalendar();
+
+    service.freezeOnDisconnect(USER, SERVER, LOGIN);
+
+    verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void aMirrorThatCannotBeRemovedKeepsItsBinding() throws Exception {
+    // A binding with no calendar behind it is what makes materialisation skip
+    // the collection for good, so dropping it here would cost the user the
+    // calendar on the next reconnection.
+    CalendarSync mirror = pair(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirror));
+    givenAgendaHasCalendar();
+    doThrow(new IllegalAccessException("refused")).when(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
+
+    service.freezeOnDisconnect(USER, SERVER, LOGIN);
+
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+  }
+
+  /**
+   * Agenda holds the calendar the binding stands for.
+   */
+  private void givenAgendaHasCalendar() {
+    Calendar calendar = new Calendar();
+    calendar.setId(CALENDAR);
+    calendar.setOwnerId(USER);
+    calendar.setSyncUid(ANCHOR);
+    try {
+      when(agendaCalendarService.getCalendars(anyInt(), anyInt(), anyString())).thenReturn(List.of(calendar));
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   @Test
@@ -272,7 +343,7 @@ public class CaldavDeletionServiceTest {
                                                   .thenReturn(List.of(pair(SyncOrigin.EXO,
                                                                            CalendarSyncStatus.EXO_ORPHANED)));
 
-    service.freezeOnDisconnect(USER, SERVER);
+    service.freezeOnDisconnect(USER, SERVER, LOGIN);
 
     verify(caldavSyncStorage, never()).savePair(any());
   }
@@ -340,7 +411,7 @@ public class CaldavDeletionServiceTest {
   public void freezingAnAccountWithNoBindingsDoesNothing() {
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of());
 
-    service.freezeOnDisconnect(USER, SERVER);
+    service.freezeOnDisconnect(USER, SERVER, LOGIN);
 
     verify(caldavSyncStorage, never()).savePair(any());
   }
@@ -614,7 +685,7 @@ public class CaldavDeletionServiceTest {
     theirs.setUserIdentityId(USER + 1);
     when(caldavSyncStorage.getPair(9L)).thenReturn(theirs);
 
-    assertThrows(IllegalAccessException.class, () -> service.showAgain(USER, 9L));
+    assertThrows(IllegalAccessException.class, () -> service.showAgain(USER, 9L, LOGIN));
 
     verify(caldavSyncStorage, never()).deletePair(anyLong());
   }
@@ -623,7 +694,7 @@ public class CaldavDeletionServiceTest {
   public void anIdThatNamesNoTombstoneIsNotFound() throws Exception {
     when(caldavSyncStorage.getPair(9L)).thenReturn(null);
 
-    assertThrows(ObjectNotFoundException.class, () -> service.showAgain(USER, 9L));
+    assertThrows(ObjectNotFoundException.class, () -> service.showAgain(USER, 9L, LOGIN));
   }
 
   @Test
@@ -634,7 +705,7 @@ public class CaldavDeletionServiceTest {
     live.setStatus(CalendarSyncStatus.ACTIVE);
     when(caldavSyncStorage.getPair(9L)).thenReturn(live);
 
-    assertThrows(ObjectNotFoundException.class, () -> service.showAgain(USER, 9L));
+    assertThrows(ObjectNotFoundException.class, () -> service.showAgain(USER, 9L, LOGIN));
 
     verify(caldavSyncStorage, never()).deletePair(anyLong());
   }
@@ -643,7 +714,7 @@ public class CaldavDeletionServiceTest {
   public void showingACalendarAgainDropsItsBindingSoItIsMaterialisedAfresh() throws Exception {
     when(caldavSyncStorage.getPair(9L)).thenReturn(tombstone());
 
-    service.showAgain(USER, 9L);
+    service.showAgain(USER, 9L, LOGIN);
 
     verify(caldavSyncStorage).deleteObjects(9L);
     verify(caldavSyncStorage).deletePair(9L);
@@ -726,6 +797,216 @@ public class CaldavDeletionServiceTest {
   /**
    * @return a connected account
    */
+  @Test
+  public void theWarningNamesTheServerTheUserPicked() throws Exception {
+    // The dialog used to read "the matching calendar on  will not be touched",
+    // with a blank where the name belongs: it was taken from the stored URL,
+    // which only ever holds a value for an account attached the legacy way,
+    // before servers were declared.
+    CaldavServer server = new CaldavServer();
+    server.setName("BlueMind");
+    server.setProviderName("agenda.caldavCalendar.6");
+    when(caldavServerService.getServerById(SERVER)).thenReturn(server);
+    CalendarSync pair = pair(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
+    when(caldavSyncStorage.getPairByLocalCalendar(eq(USER), eq(SERVER), anyString())).thenReturn(pair);
+
+    CalendarDeletionPlan plan = service.describeDeletion(USER, CALENDAR);
+
+    assertEquals("BlueMind", plan.server());
+  }
+
+  @Test
+  public void aRegistrationThatIsGoneFallsBackToTheStoredUrl() throws Exception {
+    // A declared server removed while an account still points at it. The URL
+    // is a poorer name, not a reason to say nothing.
+    CaldavUserSetting legacy = settings();
+    legacy.setCaldavUrl("https://dav.example.org/");
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(legacy);
+    when(caldavServerService.getServerById(SERVER)).thenThrow(new ObjectNotFoundException("gone"));
+    CalendarSync pair = pair(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
+    when(caldavSyncStorage.getPairByLocalCalendar(eq(USER), eq(SERVER), anyString())).thenReturn(pair);
+
+    CalendarDeletionPlan plan = service.describeDeletion(USER, CALENDAR);
+
+    assertEquals("https://dav.example.org/", plan.server());
+  }
+
+  @Test
+  public void unHidingSynchronisesSoTheCalendarComesBackAtOnce() throws Exception {
+    // Lifting the tombstone alone leaves the collection unbound, and unbound
+    // is precisely what the Remote section lists — so the user who pressed
+    // "Show again" watched their calendar reappear under the heading for
+    // calendars eXo is NOT showing, and stay there until the throttle expired.
+    CalendarSync tombstone = pair(SyncOrigin.REMOTE, CalendarSyncStatus.LOCALLY_DELETED);
+    tombstone.setUserIdentityId(USER);
+    when(caldavSyncStorage.getPair(9L)).thenReturn(tombstone);
+
+    service.showAgain(USER, 9L, LOGIN);
+
+    verify(caldavSyncService).syncNow(USER, LOGIN);
+  }
+
+  @Test
+  public void aFailedSynchronisationDoesNotUndoTheUnHiding() throws Exception {
+    // The tombstone is lifted either way and the next run will materialise
+    // the collection. Reporting the sync failure here would tell the user the
+    // un-hiding did not happen, which is false.
+    CalendarSync tombstone = pair(SyncOrigin.REMOTE, CalendarSyncStatus.LOCALLY_DELETED);
+    tombstone.setUserIdentityId(USER);
+    when(caldavSyncStorage.getPair(9L)).thenReturn(tombstone);
+    doThrow(new IllegalStateException("server down")).when(caldavSyncService).syncNow(USER, LOGIN);
+
+    assertDoesNotThrow(() -> service.showAgain(USER, 9L, LOGIN));
+
+    verify(caldavSyncStorage).deletePair(9L);
+  }
+
+  @Test
+  public void aCalendarSynchronisingNormallyIsNotReported() {
+    // The row exists to name a problem. A calendar that is working is not
+    // news, and listing it would bury the ones that are not.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.REMOTE,
+                                                                          CalendarSyncStatus.ACTIVE)));
+
+    assertTrue(service.listSyncStates(USER, LOGIN).isEmpty());
+  }
+
+  @Test
+  public void aCalendarTheUserHidIsNotReportedHere() {
+    // A tombstone has its own listing, which offers to bring the calendar back
+    // rather than to worry about it.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.REMOTE,
+                                                                          CalendarSyncStatus.LOCALLY_DELETED)));
+
+    assertTrue(service.listSyncStates(USER, LOGIN).isEmpty());
+  }
+
+  @Test
+  public void aPausedCalendarIsReportedWithItsName() {
+    CalendarSync paused = pair(SyncOrigin.REMOTE, CalendarSyncStatus.PAUSED);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(paused));
+    givenAgendaCalendarNamed("Family");
+
+    List<CalendarSyncState> states = service.listSyncStates(USER, LOGIN);
+
+    assertEquals(1, states.size());
+    assertEquals("Family", states.get(0).name());
+    assertEquals(CALENDAR, states.get(0).calendarId());
+    assertEquals(CalendarSyncStatus.PAUSED, states.get(0).status());
+  }
+
+  @Test
+  public void aRefusedCalendarIsNamedFromTheServerWhenExoHasNone() {
+    // A collection eXo was refused permission to create has no eXo calendar to
+    // name it by, and a row with no name is a row the user cannot act on.
+    CalendarSync refused = pair(SyncOrigin.EXO, CalendarSyncStatus.REMOTE_CREATE_REFUSED);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(refused));
+    givenNoAgendaCalendars();
+    givenServerCollectionNamed("Work");
+
+    List<CalendarSyncState> states = service.listSyncStates(USER, LOGIN);
+
+    assertEquals(1, states.size());
+    assertEquals("Work", states.get(0).name());
+  }
+
+  @Test
+  public void aStateNobodyCanNameIsLeftOut() {
+    // Neither eXo nor the server knows what to call it. "A calendar" is not
+    // something a user can act on, so it is not offered.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.REMOTE,
+                                                                          CalendarSyncStatus.PAUSED)));
+    givenNoAgendaCalendars();
+    givenServerListingFails();
+
+    assertTrue(service.listSyncStates(USER, LOGIN).isEmpty());
+  }
+
+  @Test
+  public void anAccountThatIsNotConnectedHasNoStates() {
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
+
+    assertTrue(service.listSyncStates(USER, LOGIN).isEmpty());
+  }
+
+  /**
+   * @param name what agenda calls the calendar behind the binding
+   */
+  private void givenAgendaCalendarNamed(String name) {
+    Calendar calendar = new Calendar();
+    calendar.setId(CALENDAR);
+    calendar.setOwnerId(USER);
+    calendar.setSyncUid(ANCHOR);
+    calendar.setName(name);
+    try {
+      when(agendaCalendarService.getCalendars(anyInt(), anyInt(), anyString())).thenReturn(List.of(calendar));
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /**
+   * Agenda holds no calendar for this binding.
+   */
+  private void givenNoAgendaCalendars() {
+    try {
+      when(agendaCalendarService.getCalendars(anyInt(), anyInt(), anyString())).thenReturn(List.of());
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /**
+   * @param name what the server calls the collection the binding points at
+   */
+  private void givenServerCollectionNamed(String name) {
+    when(calDavClient.listCalendars(any(), anyString(), anyString(), anyString()))
+                                                                                 .thenReturn(List.of(new CalendarCollection(HREF,
+                                                                                                                            name,
+                                                                                                                            null,
+                                                                                                                            null,
+                                                                                                                            null,
+                                                                                                                            true)));
+  }
+
+  /**
+   * The server cannot be listed at all.
+   */
+  private void givenServerListingFails() {
+    when(calDavClient.listCalendars(any(), anyString(), anyString(), anyString())).thenThrow(new IllegalStateException("down"));
+  }
+
+
+  @Test
+  public void reconnectingLiftsThePauseADisconnectPutOn() {
+    // The whole point of pausing rather than dropping. Left paused, the
+    // binding is thawed only incidentally by the next sweep re-ensuring its
+    // collection — and until then a connected account reports the user's own
+    // calendar as failing.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.EXO, CalendarSyncStatus.PAUSED)));
+
+    service.thawOnConnect(USER, SERVER);
+
+    ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(saved.capture());
+    assertEquals(CalendarSyncStatus.ACTIVE, saved.getValue().getStatus());
+  }
+
+  @Test
+  public void reconnectingDoesNotReopenATombstoneOrAGoneCollection() {
+    // A tombstone is a deletion the user made; a binding marked gone is a
+    // claim about the server that only the server's own listing may withdraw.
+    // Reviving either here would resurrect a calendar nobody asked for.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.EXO,
+                                                                          CalendarSyncStatus.LOCALLY_DELETED),
+                                                                     pair(SyncOrigin.REMOTE,
+                                                                          CalendarSyncStatus.REMOTE_GONE)));
+
+    service.thawOnConnect(USER, SERVER);
+
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
   private CaldavUserSetting settings() {
     CaldavUserSetting setting = new CaldavUserSetting();
     setting.setUsername(LOGIN);

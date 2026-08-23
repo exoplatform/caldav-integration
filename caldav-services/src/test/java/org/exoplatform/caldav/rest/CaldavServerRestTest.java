@@ -44,6 +44,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.service.CaldavServerService;
+import org.exoplatform.caldav.service.CaldavTuningService;
+import org.exoplatform.caldav.model.CaldavSyncTuning;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -65,6 +67,9 @@ public class CaldavServerRestTest {
 
   @Mock
   private CaldavServerService caldavServerService;
+
+  @Mock
+  private CaldavTuningService caldavTuningService;
 
   @Mock
   private HttpServletRequest  request;
@@ -344,4 +349,54 @@ public class CaldavServerRestTest {
                                      boolean active) {
     return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null);
   }
+
+  /**
+   * The tuning is handed through as the service resolved it.
+   */
+  @Test
+  public void theTuningIsReadThroughToTheService() {
+    // Property, or saved value, or coded default — which of the three it is
+    // has already been decided by the time it reaches here, and this layer
+    // must not second-guess it.
+    CaldavSyncTuning tuning = new CaldavSyncTuning(15L, 60L, 365L, 30L, 50);
+    when(caldavTuningService.getTuning()).thenReturn(tuning);
+
+    assertEquals(tuning, caldavServerRest.getTuning());
+  }
+
+  /**
+   * Saving answers with what is now in force, not with what was sent.
+   */
+  @Test
+  public void savingAnswersWithWhatIsNowInForce() {
+    // The service is what decides. Echoing the request back would let a value
+    // it adjusted sit on the administrator's screen as though it had been
+    // taken as typed.
+    CaldavSyncTuning sent = new CaldavSyncTuning(5L, 30L, 90L, 60L, 20);
+    CaldavSyncTuning stored = new CaldavSyncTuning(5L, 30L, 90L, 60L, 20);
+    when(caldavTuningService.getTuning()).thenReturn(stored);
+
+    assertEquals(stored, caldavServerRest.saveTuning(sent));
+
+    verify(caldavTuningService).saveTuning(sent);
+  }
+
+  /**
+   * A value out of range comes back as a 400 carrying its message code.
+   */
+  @Test
+  public void aValueOutOfRangeIsFourHundredWithItsCode() {
+    // The code is the whole point of the status: it is what lets the screen
+    // say which value was refused instead of "something went wrong".
+    CaldavSyncTuning tooWide = new CaldavSyncTuning(15L, 60L, 40000L, 30L, 50);
+    doThrow(new IllegalArgumentException("caldav.tuning.futureDaysOutOfRange")).when(caldavTuningService)
+                                                                              .saveTuning(tooWide);
+
+    ResponseStatusException refused = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavServerRest.saveTuning(tooWide));
+
+    assertEquals(HttpStatus.BAD_REQUEST, refused.getStatusCode());
+    assertEquals("caldav.tuning.futureDaysOutOfRange", refused.getReason());
+  }
+
 }
