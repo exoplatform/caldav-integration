@@ -24,6 +24,7 @@ import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.model.Calendar;
@@ -32,6 +33,7 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.CalendarSync;
@@ -72,6 +74,13 @@ public class CaldavDeletionService {
 
   @Autowired
   private AgendaCalendarService  agendaCalendarService;
+
+  @Autowired
+  private CaldavServerService    caldavServerService;
+
+  @Autowired
+  @Lazy
+  private CaldavSyncService      caldavSyncService;
 
   /**
    * Deletes a personal calendar in eXo and, when eXo created it, on the server
@@ -194,11 +203,48 @@ public class CaldavDeletionService {
       return new CalendarDeletionPlan(false, false, null);
     }
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
-    String server = settings == null ? null : settings.getCaldavUrl();
+    String server = serverName(settings);
     // Only an EXO collection is eXo's to delete. A REMOTE one is the user's
     // own, made in their own client, and saying otherwise in a dialog would
     // be a promise to destroy something we will not touch.
     return new CalendarDeletionPlan(true, pair.getOrigin() == SyncOrigin.EXO, server);
+  }
+
+  /**
+   * What to call the server in a sentence shown to the user.
+   *
+   * <p>
+   * The declared server's provider name first — it is what the user picked in
+   * the connect drawer and what every other screen calls it. The stored URL
+   * only ever holds a value for an account attached the legacy way, before
+   * servers were declared, so reading it alone left the warning saying "the
+   * matching calendar on  will not be touched", with a blank where the name
+   * belongs.
+   *
+   * @param settings the connected account, possibly null
+   * @return the name, or null when there is nothing to call it
+   */
+  private String serverName(CaldavUserSetting settings) {
+    if (settings == null) {
+      return null;
+    }
+    if (settings.getServerId() != null && settings.getServerId() > 0) {
+      try {
+        CaldavServer server = caldavServerService.getServerById(settings.getServerId());
+        // getName, not getProviderName: the provider name is the key agenda
+        // binds the connector under — "agenda.caldavCalendar.6" — and putting
+        // it in a sentence shows the user a raw key. getName is the display
+        // name the administrator typed.
+        if (server != null && StringUtils.isNotBlank(server.getName())) {
+          return server.getName();
+        }
+      } catch (ObjectNotFoundException e) {
+        // A registration removed while an account still points at it. The URL
+        // below is a poorer name, not a reason to say nothing.
+        LOG.debug("CalDAV server {} is no longer declared", settings.getServerId(), e);
+      }
+    }
+    return settings.getCaldavUrl();
   }
 
   /**
@@ -285,7 +331,8 @@ public class CaldavDeletionService {
    * @throws IllegalAccessException when the tombstone is not this user's
    * @throws ObjectNotFoundException when there is no such tombstone
    */
-  public void showAgain(long userIdentityId, long pairId) throws IllegalAccessException, ObjectNotFoundException {
+  public void showAgain(long userIdentityId, long pairId, String username) throws IllegalAccessException,
+                                                                           ObjectNotFoundException {
     CalendarSync pair = caldavSyncStorage.getPair(pairId);
     if (pair == null || pair.getStatus() != CalendarSyncStatus.LOCALLY_DELETED) {
       throw new ObjectNotFoundException("No hidden calendar with id " + pairId);
@@ -297,7 +344,21 @@ public class CaldavDeletionService {
     }
     caldavSyncStorage.deleteObjects(pairId);
     caldavSyncStorage.deletePair(pairId);
-    LOG.info("Tombstone {} lifted; the collection will be materialised again at the next sync", pairId);
+    LOG.info("Tombstone {} lifted; synchronising so the collection comes back now", pairId);
+    // Synchronised here rather than left to the next run. Lifting the
+    // tombstone alone makes the collection unbound, and an unbound collection
+    // is exactly what the Remote section lists — so a user who pressed "Show
+    // again" watched their calendar reappear in the section for calendars eXo
+    // is NOT showing, and stay there until the throttle expired.
+    //
+    // The failure is swallowed on purpose: the tombstone is lifted either
+    // way, and the next run will materialise the collection. Reporting a sync
+    // failure here would say the un-hiding did not happen, which is false.
+    try {
+      caldavSyncService.syncNow(userIdentityId, username);
+    } catch (RuntimeException e) {
+      LOG.warn("The calendar was un-hidden but could not be synchronised back at once", e);
+    }
   }
 
   /**
