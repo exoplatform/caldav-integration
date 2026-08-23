@@ -197,7 +197,6 @@ public class CaldavSyncServiceTest {
     givenServerCalendars();
     CalendarSync bound = remotePair("/dav/calendars/john/private/", "anchor-1");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
-    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
     givenUserCalendars(calendarWithAnchor(77L, "anchor-1"));
 
     service.syncNow(USER, LOGIN);
@@ -206,17 +205,40 @@ public class CaldavSyncServiceTest {
   }
 
   @Test
-  public void aCollectionExoPushedIsNeverReadBackIn() throws Exception {
-    // It holds copies of events agenda already has. Importing them would show
-    // every one of the user's own meetings twice — the object-level twin of
-    // the calendar-level loop.
+  public void theMirrorIsNeverReadBackIn() throws Exception {
+    // The one collection that stays one-way. It is not a calendar of the
+    // user's at all — it is eXo's projection of meetings they accepted
+    // elsewhere — so reading it back would let a copy overwrite the event it
+    // is a copy of, and show every one of those meetings twice.
     givenServerCalendars();
-    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of());
-    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of());
+    CalendarSync mirror = mirrorPair("/dav/calendars/john/exo-meetings/");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirror));
 
     service.syncNow(USER, LOGIN);
 
     verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+  }
+
+  @Test
+  public void aCalendarExoCreatedOnTheAccountIsReadBackIn() throws Exception {
+    // The user's own calendar, which happens to have been created from this
+    // side. They see it on their devices exactly as they see a materialised
+    // one, so an event they edit on a phone belongs back here — who created
+    // the collection is eXo's bookkeeping, not a fact about their calendar.
+    //
+    // The import used to select REMOTE-origin pairs alone, which made the
+    // direction depend on that bookkeeping: two calendars sitting side by side
+    // under Personal, looking identical, one round-tripping and one silently
+    // not.
+    givenServerCalendars();
+    CalendarSync mine = exoPair("/dav/calendars/john/exo-cal-mine/");
+    mine.setLocalCalendarSyncUid("anchor-mine");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mine));
+    givenUserCalendars(calendarWithAnchor(88L, "anchor-mine"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService).importInto(eq(USER), eq(mine), any(), any(), any());
   }
 
   @Test
@@ -227,7 +249,6 @@ public class CaldavSyncServiceTest {
     CalendarSync tombstone = remotePair("/dav/calendars/john/private/", "anchor-1");
     tombstone.setStatus(CalendarSyncStatus.LOCALLY_DELETED);
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(tombstone));
-    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(tombstone));
 
     service.syncNow(USER, LOGIN);
 
@@ -240,7 +261,6 @@ public class CaldavSyncServiceTest {
     givenServerCalendars();
     CalendarSync orphan = remotePair("/dav/calendars/john/private/", "anchor-missing");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(orphan));
-    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(orphan));
     givenUserCalendars(calendarWithAnchor(77L, "another-anchor"));
 
     service.syncNow(USER, LOGIN);
@@ -254,7 +274,6 @@ public class CaldavSyncServiceTest {
     CalendarSync first = remotePair("/dav/calendars/john/a/", "anchor-1");
     CalendarSync second = remotePair("/dav/calendars/john/b/", "anchor-2");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(first, second));
-    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(first, second));
     givenUserCalendars(calendarWithAnchor(77L, "anchor-1"), calendarWithAnchor(78L, "anchor-2"));
     when(caldavInboundService.importInto(anyLong(), eq(first), any(), any(), any()))
                                                                                     .thenThrow(new IllegalStateException("down"));
@@ -269,6 +288,23 @@ public class CaldavSyncServiceTest {
    * @param anchor the eXo calendar's sync uid
    * @return a binding the user's own client created
    */
+  /**
+   * The mirror binding: eXo's own collection on the account.
+   *
+   * @param href where it lives
+   * @return the pair
+   */
+  private CalendarSync mirrorPair(String href) {
+    CalendarSync pair = new CalendarSync();
+    pair.setId(3L);
+    pair.setUserIdentityId(USER);
+    pair.setServerId(SERVER);
+    pair.setRemoteHref(href);
+    pair.setOrigin(SyncOrigin.MIRROR);
+    pair.setStatus(CalendarSyncStatus.ACTIVE);
+    return pair;
+  }
+
   private CalendarSync remotePair(String href, String anchor) {
     CalendarSync pair = new CalendarSync();
     pair.setId(2L);
