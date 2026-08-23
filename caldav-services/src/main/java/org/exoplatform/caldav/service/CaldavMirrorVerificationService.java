@@ -22,6 +22,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.lang3.StringUtils;
@@ -329,7 +330,13 @@ public class CaldavMirrorVerificationService {
    * @param written the row the push actually wrote, or null
    */
   private void dropIfSuperseded(ObjectSync object, ObjectSync written) {
-    if (written == null || object.getId() <= 0 || written.getId() == object.getId()) {
+    // Objects.equals, not ==: these identifiers are Long, so == compares
+    // references and answers false for any value outside the boxing cache —
+    // which is every identifier a real database hands out. Written as ==,
+    // this deleted the row the repair had just refreshed, and the test missed
+    // it because the identifier it used was small enough to be cached.
+    if (written == null || object.getId() == null || object.getId() <= 0
+        || Objects.equals(written.getId(), object.getId())) {
       return;
     }
     LOG.info("The mapping at {} stood for a copy now written to {}; the stale one is dropped",
