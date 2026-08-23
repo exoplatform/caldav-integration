@@ -40,6 +40,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
 import org.exoplatform.caldav.model.CalendarDeletionPlan;
+import org.exoplatform.caldav.model.CalendarSyncState;
 import org.exoplatform.caldav.model.HiddenCalendar;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.caldav.model.ObjectSync;
@@ -86,7 +87,8 @@ public class CaldavPushRest {
    *
    * @param eventId the agenda event to copy
    * @param eventUrl absolute link back to the event in eXo
-   * @return the resulting mapping
+   * @return the resulting mapping, or an empty 204 when the event's calendar
+   *         has no collection to copy into
    */
   @PostMapping("/push/events/{eventId}")
   @Secured("users")
@@ -94,16 +96,22 @@ public class CaldavPushRest {
       description = "Reads the event through agenda's own service, so its ACL applies, then writes it "
           + "server-side with the stored CalDAV credentials. The browser never sees them.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Event copied"),
+      @ApiResponse(responseCode = "204", description = "The event's calendar has no collection to copy into"),
       @ApiResponse(responseCode = "403", description = "Stored CalDAV credentials rejected upstream"),
       @ApiResponse(responseCode = "409", description = "No connected account, or the object changed concurrently"),
       @ApiResponse(responseCode = "502", description = "The calendar server refused or could not be reached") })
-  public ObjectSync push(@Parameter(description = "Technical identifier of the agenda event", required = true)
-                         @PathVariable("eventId")
-                         long eventId,
-                         @Parameter(description = "Absolute link back to the event in eXo")
-                         @RequestParam(value = "eventUrl", required = false)
-                         String eventUrl) {
-    return caldavPushService.pushAgendaEvent(currentUser(), eventId, eventUrl);
+  public ResponseEntity<ObjectSync> push(@Parameter(description = "Technical identifier of the agenda event",
+                                                    required = true)
+                                         @PathVariable("eventId")
+                                         long eventId,
+                                         @Parameter(description = "Absolute link back to the event in eXo")
+                                         @RequestParam(value = "eventUrl", required = false)
+                                         String eventUrl) {
+    ObjectSync written = caldavPushService.pushAgendaEvent(currentUser(), eventId, eventUrl);
+    // 204, not an empty 200: the caller asked for a copy and there is no
+    // collection to make one in. Nothing failed, and nothing happened, and
+    // those are different answers.
+    return written == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(written);
   }
 
   /**
@@ -174,6 +182,31 @@ public class CaldavPushRest {
    *
    * @return the destination, and whether an existing calendar was adopted
    */
+  /**
+   * The calendar the copies are currently written into, if one is set.
+   *
+   * <p>
+   * Its own endpoint because the listing that serves the Remote section
+   * deliberately hides this collection — it holds nothing but copies of events
+   * the agenda already shows. Resolving the destination's name through that
+   * listing therefore always came back empty, which the settings screen read
+   * as "no destination" and used to switch the copy setting back off in front
+   * of the user who had just chosen one.
+   *
+   * @return the destination and its current name, or 204 when none is set
+   */
+  @GetMapping("/push/mirror")
+  @Secured("users")
+  @Operation(summary = "The calendar copies are currently written into",
+      description = "Reads it; never creates one. The name is read from the server on each call, so a calendar "
+          + "renamed in the user's own client reads correctly here.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The destination"),
+      @ApiResponse(responseCode = "204", description = "No destination is set") })
+  public ResponseEntity<MirrorTarget> currentMirror() {
+    MirrorTarget mirror = caldavPushService.currentMirror(currentUser());
+    return mirror == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(mirror);
+  }
+
   @PostMapping("/push/mirror")
   @Secured("users")
   @Operation(summary = "Establishes the calendar copies are written into",
@@ -254,6 +287,22 @@ public class CaldavPushRest {
    *
    * @return what can be shown again, empty when nothing is hidden
    */
+  /**
+   * What each of this user's calendars is doing, for the ones worth telling
+   * them about.
+   *
+   * @return the states, empty when every calendar is synchronising normally
+   */
+  @GetMapping("/calendar-states")
+  @Secured("users")
+  @Operation(summary = "Lists the calendars whose synchronisation needs the user's attention",
+      description = "Only the states where something the user might do would change the outcome. A calendar that "
+          + "is synchronising is not news, and a calendar the user hid has its own listing.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The states, possibly empty") })
+  public List<CalendarSyncState> calendarStates() {
+    return caldavDeletionService.listSyncStates(currentUser(), CaldavConnectorUtils.getCurrentUser());
+  }
+
   @GetMapping("/hidden-calendars")
   @Secured("users")
   @Operation(summary = "Lists the calendars the user hid",
@@ -273,9 +322,9 @@ public class CaldavPushRest {
   @DeleteMapping("/hidden-calendars/{pairId}")
   @Secured("users")
   @Operation(summary = "Shows a hidden calendar again",
-      description = "Lifts the tombstone so the next synchronisation materialises the collection afresh. It comes "
-          + "back as a new calendar, not as the deleted one restored — its events went to the user's default "
-          + "calendar when it was deleted, and they stay there.")
+      description = "Lifts the tombstone and synchronises, so the collection is materialised again straight "
+          + "away rather than surfacing as an unbound remote calendar until the next run. It comes back as a "
+          + "new calendar, not as the deleted one restored.")
   @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Lifted"),
       @ApiResponse(responseCode = "403", description = "Not this user's calendar"),
       @ApiResponse(responseCode = "404", description = "No such hidden calendar") })
@@ -284,7 +333,7 @@ public class CaldavPushRest {
                                                 @PathVariable("pairId")
                                                 long pairId) {
     try {
-      caldavDeletionService.showAgain(currentUser(), pairId);
+      caldavDeletionService.showAgain(currentUser(), pairId, CaldavConnectorUtils.getCurrentUser());
       return ResponseEntity.noContent().build();
     } catch (ObjectNotFoundException e) {
       // Not an incident: a stale drawer offering something already lifted.

@@ -23,6 +23,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Date;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -92,6 +93,14 @@ public class CaldavPushService {
   /** The server would not create a collection and no calendar could be adopted. */
   public static final String     CREATION_REFUSED       = "calendarCreationRefused";
 
+  /**
+   * The name this add-on registers itself under as an agenda remote provider,
+   * in caldav-configuration.xml. It has to match that declaration exactly:
+   * agenda resolves the provider by name when it stores the mapping between
+   * an eXo event and the object written for it.
+   */
+  private static final String    CONNECTOR_NAME = "agenda.caldavCalendar";
+
   private static final Log       LOG                    = ExoLogger.getLogger(CaldavPushService.class);
 
   @Autowired
@@ -146,32 +155,101 @@ public class CaldavPushService {
    * @throws CaldavPushException when the write cannot be carried out
    */
   public ObjectSync pushEvent(long userIdentityId, IcsEvent event, Long localEventId) {
-    CaldavUserSetting settings = connectedSettings(userIdentityId);
-    CalDavEndpoint endpoint = endpointOf(settings);
-    MirrorTarget mirror = ensureMirror(userIdentityId, settings, endpoint);
-    return writeInto(userIdentityId, mirrorPair(userIdentityId, settings, mirror), event, localEventId);
+    return pushEvent(userIdentityId, event, localEventId, false);
   }
 
   /**
-   * The collection bound to the event's own calendar, when the event belongs
-   * to one of this user's personal calendars and that calendar has one.
+   * Writes one event into the user's mirror calendar, overwriting a drifted
+   * copy or not.
+   *
+   * @param userIdentityId identity of the user whose account is written to
+   * @param event the event to copy, with identities already resolved
+   * @param localEventId the agenda event this object stands for, or null
+   * @param overwrite true to write without the conditional guard
+   * @return the mapping row as it now stands
+   * @throws CaldavPushException when the write cannot be carried out
+   */
+  private ObjectSync pushEvent(long userIdentityId, IcsEvent event, Long localEventId, boolean overwrite) {
+    CaldavUserSetting settings = connectedSettings(userIdentityId);
+    CalDavEndpoint endpoint = endpointOf(settings);
+    MirrorTarget mirror = ensureMirror(userIdentityId, settings, endpoint);
+    return writeInto(userIdentityId, mirrorPair(userIdentityId, settings, mirror), event, localEventId, overwrite);
+  }
+
+  /**
+   * The mapping row for an iCalendar UID, in whichever collection holds it.
    *
    * <p>
-   * Answers null in three cases, and they are not the same thing. The event
-   * belongs to a space, so the mirror is where it goes. Or the calendar is the
-   * user's but carries no anchor, so nothing stable identifies it. Or the
-   * server refused to create its collection — and then the event is <b>not</b>
-   * diverted into the mirror as a consolation: a personal event filed among
-   * space copies is exactly the mixing PR7 refuses to do, and outbound simply
-   * stays unavailable for that calendar until the server allows it.
+   * The mirror is searched first because most copies live there, but a
+   * personal calendar's collection holds its own, and one UID belongs to at
+   * most one of them.
+   *
+   * @param userIdentityId identity of the user
+   * @param settings the connected account
+   * @param icsUid the iCalendar UID looked for
+   * @return the mapping row, or null when no collection holds it
+   */
+  private ObjectSync objectAnywhere(long userIdentityId, CaldavUserSetting settings, String icsUid) {
+    CalendarSync mirror = existingMirrorPair(userIdentityId, settings);
+    if (mirror != null) {
+      ObjectSync inMirror = caldavSyncStorage.getObjectByUid(mirror.getId(), icsUid);
+      if (inMirror != null) {
+        return inMirror;
+      }
+    }
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    for (CalendarSync pair : caldavSyncStorage.getPairs(userIdentityId, serverId)) {
+      // Objects.equals, not ==: these identifiers are Long, so == compares
+      // references and answers false for every value a real database issues.
+      // Written as ==, the mirror is simply searched a second time — harmless
+      // today, and the same mistake that cost a deletion elsewhere.
+      if (mirror != null && Objects.equals(pair.getId(), mirror.getId())) {
+        continue;
+      }
+      ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), icsUid);
+      if (known != null) {
+        return known;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The event's calendar, when it is one of this user's own.
+   *
+   * <p>
+   * The question the routing turns on. An event of the user's own calendar is
+   * theirs, and belongs in that calendar's collection or nowhere; anything
+   * else — a space meeting they attend — belongs in the mirror, which exists
+   * precisely because a space calendar has no counterpart on a personal
+   * account.
    *
    * @param event the agenda event being pushed
    * @param userIdentityId identity of the user
+   * @return the calendar when the user owns it, null otherwise
+   */
+  private Calendar ownCalendarOf(Event event, long userIdentityId) {
+    Calendar calendar = agendaCalendarService.getCalendarById(event.getCalendarId());
+    return calendar != null && calendar.getOwnerId() == userIdentityId ? calendar : null;
+  }
+
+  /**
+   * The collection bound to one of this user's own calendars.
+   *
+   * <p>
+   * Answers null in two cases, and neither sends the event to the mirror —
+   * that decision belongs to the caller now, which is what makes the refusal
+   * enforceable rather than merely documented. Either the calendar carries no
+   * anchor, so nothing stable identifies it; or the server refused to create
+   * its collection, and outbound stays unavailable for that calendar until it
+   * allows one.
+   *
+   * @param calendar one of the user's own calendars, already loaded
+   * @param userIdentityId identity of the user
    * @return the bound collection, or null when there is none to write into
    */
-  private CalendarSync personalPairFor(Event event, long userIdentityId) {
-    Calendar calendar = agendaCalendarService.getCalendarById(event.getCalendarId());
-    if (calendar == null || calendar.getOwnerId() != userIdentityId || StringUtils.isBlank(calendar.getSyncUid())) {
+  private CalendarSync personalPairFor(Calendar calendar, long userIdentityId) {
+    if (StringUtils.isBlank(calendar.getSyncUid())) {
       return null;
     }
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
@@ -202,6 +280,26 @@ public class CaldavPushService {
    * @throws CaldavPushException when the write cannot be carried out
    */
   public ObjectSync writeInto(long userIdentityId, CalendarSync pair, IcsEvent event, Long localEventId) {
+    return writeInto(userIdentityId, pair, event, localEventId, false);
+  }
+
+  /**
+   * Writes one event into a collection, overwriting a drifted copy or not.
+   *
+   * @param userIdentityId identity of the user whose account is written to
+   * @param pair the collection to write into
+   * @param event the event to copy, with identities already resolved
+   * @param localEventId the agenda event this object stands for, or null
+   * @param overwrite true to write without the conditional guard, which only
+   *          a repair may ask for
+   * @return the mapping row as it now stands
+   * @throws CaldavPushException when the write cannot be carried out
+   */
+  private ObjectSync writeInto(long userIdentityId,
+                               CalendarSync pair,
+                               IcsEvent event,
+                               Long localEventId,
+                               boolean overwrite) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
     CalDavEndpoint endpoint = endpointOf(settings);
 
@@ -210,7 +308,7 @@ public class CaldavPushService {
     String href = known != null && StringUtils.isNotBlank(known.getRemoteHref()) ? known.getRemoteHref()
                                                                                 : objectHref(pair.getRemoteHref(),
                                                                                              event.getUid());
-    PutResult result = write(endpoint, settings, href, ics, known);
+    PutResult result = write(endpoint, settings, href, ics, known, overwrite);
     if (result.preconditionFailed()) {
       // Someone else wrote the object between our read and our write. Never
       // retried blindly: the whole point of the conditional write is that the
@@ -253,6 +351,44 @@ public class CaldavPushService {
    * @throws CaldavPushException when the event cannot be read or written
    */
   public ObjectSync pushAgendaEvent(long userIdentityId, long eventId, String eventUrl) {
+    return pushAgendaEvent(userIdentityId, eventId, eventUrl, false);
+  }
+
+  /**
+   * Writes the copy of an agenda event again, over whatever now stands in its
+   * place on the server.
+   *
+   * <p>
+   * The entry point for repairs, and the only one that writes unconditionally.
+   * A conditional write cannot repair anything: the condition is the stored
+   * etag, and an object needs repairing exactly when the server's etag has
+   * moved away from it — so the guarded path refuses every repair it is asked
+   * to make. What makes the overwrite legitimate is that the caller has
+   * already read the object, compared it against the eXo event, and decided
+   * which copy wins.
+   *
+   * @param userIdentityId identity of the user whose account is written to
+   * @param eventId the agenda event whose copy is rebuilt
+   * @return the mapping row as it now stands
+   * @throws CaldavPushException when the event cannot be read or written
+   */
+  public ObjectSync rewriteAgendaEvent(long userIdentityId, long eventId) {
+    return pushAgendaEvent(userIdentityId, eventId, null, true);
+  }
+
+  /**
+   * Copies one agenda event into the user's account, overwriting a drifted
+   * copy or not.
+   *
+   * @param userIdentityId identity of the user whose account is written to
+   * @param eventId the agenda event to copy
+   * @param eventUrl absolute link back to the event in eXo
+   * @param overwrite true to write without the conditional guard, which only
+   *          a repair may ask for
+   * @return the mapping row as it now stands
+   * @throws CaldavPushException when the event cannot be read or written
+   */
+  private ObjectSync pushAgendaEvent(long userIdentityId, long eventId, String eventUrl, boolean overwrite) {
     Event event;
     try {
       // Read in the event's OWN zone, which is what a null argument asks
@@ -281,11 +417,23 @@ public class CaldavPushService {
     // calendar's own collection; anything else — a space event the user
     // attends — belongs in the mirror, which exists precisely because a space
     // calendar has no counterpart on a personal account.
-    CalendarSync personal = personalPairFor(event, userIdentityId);
-    if (personal != null) {
-      return writeInto(userIdentityId, personal, icsEvent, event.getId());
+    Calendar own = ownCalendarOf(event, userIdentityId);
+    if (own != null) {
+      CalendarSync personal = personalPairFor(own, userIdentityId);
+      if (personal == null) {
+        // Nothing to write into, and the mirror is not a consolation. A
+        // personal event filed among the copies of space meetings is exactly
+        // the mixing this refuses to do; outbound stays unavailable for this
+        // calendar until it has a collection of its own. Answering null says
+        // "nothing was pushed" without pretending it failed.
+        LOG.debug("Calendar {} has no usable collection; event {} is not copied out",
+                  event.getCalendarId(),
+                  event.getId());
+        return null;
+      }
+      return writeInto(userIdentityId, personal, icsEvent, event.getId(), overwrite);
     }
-    return pushEvent(userIdentityId, icsEvent, event.getId());
+    return pushEvent(userIdentityId, icsEvent, event.getId(), overwrite);
   }
 
   /**
@@ -316,6 +464,16 @@ public class CaldavPushService {
     remoteEvent.setEventId(seriesId);
     remoteEvent.setIdentityId(userIdentityId);
     remoteEvent.setRemoteId(minted);
+    // Naming the provider is what makes agenda keep this row. Without it —
+    // and this connector left it unset — saveRemoteEvent reads the record as
+    // an instruction to DELETE the mapping rather than store it, so the
+    // identifier minted here was thrown away the moment it was handed over.
+    // Every later push then found nothing, minted a fresh identifier, and
+    // wrote a second object: an edit duplicated the meeting and orphaned the
+    // original, and a delete looked for an identifier the server had never
+    // seen. The provider itself already exists — this add-on registers it as
+    // a RemoteProviderDefinitionPlugin — so naming it is all that was missing.
+    remoteEvent.setRemoteProviderName(CONNECTOR_NAME);
     // Recorded before the write, not after: an interrupted push leaves an
     // identifier pointing at an object that may or may not exist, which the
     // next push reconciles. Recording it afterwards would leave a written
@@ -325,7 +483,15 @@ public class CaldavPushService {
   }
 
   /**
-   * Removes one event's object from the mirror calendar.
+   * Removes one event's object from wherever this connector wrote it.
+   *
+   * <p>
+   * Every collection the user has, not only the mirror. An event of one of
+   * their own calendars is written into that calendar's collection, so a
+   * removal that looked only in the mirror would find nothing and quietly
+   * succeed — leaving the object on the server for ever, in the one place the
+   * user is most likely to notice it. A copy is written in one place and has
+   * to be removable from that same place.
    *
    * <p>
    * A deletion whose object is already gone is a success, not a failure: the
@@ -337,11 +503,7 @@ public class CaldavPushService {
    */
   public void deleteEvent(long userIdentityId, String icsUid) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
-    CalendarSync pair = existingMirrorPair(userIdentityId, settings);
-    if (pair == null) {
-      return;
-    }
-    ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), icsUid);
+    ObjectSync known = objectAnywhere(userIdentityId, settings, icsUid);
     if (known == null || StringUtils.isBlank(known.getRemoteHref())) {
       return;
     }
@@ -439,6 +601,43 @@ public class CaldavPushService {
    * for the same collection — a random suffix made every request a different
    * one, and a user who disconnected and reconnected collected a new calendar
    * on the server each time.
+   *
+   * <p>
+   * This reads it; it never creates one. Nothing configured is an answer, not
+   * a reason to make a calendar on someone's account — the settings screen
+   * asks this question on every render.
+   *
+   * <p>
+   * The name comes from the server on each call rather than from anything
+   * stored: the user may have renamed the calendar in their own client, and
+   * the screen showing a stale name is how a destination stops being
+   * recognisable as the one it names.
+   *
+   * @param userIdentityId identity of the user
+   * @return the destination and its current name, or null when none is set or
+   *         the one recorded is no longer there
+   */
+  public MirrorTarget currentMirror(long userIdentityId) {
+    CaldavUserSetting settings = connectedSettings(userIdentityId);
+    if (StringUtils.isBlank(settings.getMirrorCalendarHref())) {
+      return null;
+    }
+    CalDavEndpoint endpoint = endpointOf(settings);
+    String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
+    List<CalendarCollection> calendars = calDavClient.listCalendars(endpoint,
+                                                                   home,
+                                                                   settings.getUsername(),
+                                                                   settings.getPassword());
+    return findMirror(calendars, settings.getMirrorCalendarHref(), collectionHref(home, MIRROR_COLLECTION_SLUG))
+                                                                                                               .map(collection -> new MirrorTarget(collection.href(),
+                                                                                                                                                   false,
+                                                                                                                                                   collection.displayName()))
+                                                                                                               .orElse(null);
+  }
+
+  /**
+   * Establishes the calendar the copies are written into, creating it when it
+   * is not there.
    *
    * @param userIdentityId identity of the user
    * @return where the copies go, and whether an existing calendar was adopted
@@ -620,14 +819,36 @@ public class CaldavPushService {
                           CaldavUserSetting settings,
                           String href,
                           String ics,
-                          ObjectSync known) {
+                          ObjectSync known,
+                          boolean overwrite) {
     try {
       if (known == null || StringUtils.isBlank(known.getEtag())) {
+        if (overwrite) {
+          // A repair with nothing recorded against this UID. The create-only
+          // write below would send If-None-Match: * and be refused, because
+          // the object it is trying to create is usually already there —
+          // under a href this connector has lost track of. That is precisely
+          // the state a repair exists to leave: forcing the write puts the
+          // object back under the href being repaired and re-establishes the
+          // mapping, where the create refused for ever.
+          return calDavClient.overwriteObject(endpoint, href, ics, settings.getUsername(), settings.getPassword());
+        }
         return calDavClient.putObject(endpoint, href, ics, settings.getUsername(), settings.getPassword());
       }
       CalendarObject existing = calDavClient.fetchObject(endpoint, href, settings.getUsername(), settings.getPassword());
       String merged = existing == null || StringUtils.isBlank(existing.calendarData()) ? ics
                                                                               : icsMerger.merge(existing.calendarData(), ics, false);
+      if (overwrite) {
+        // No precondition at all — and it has to be neither of the two the
+        // client otherwise sends. The guard protects against clobbering a
+        // change nobody has looked at, and a repair is the one case where
+        // somebody has: verification read this object, compared it, and
+        // decided the eXo copy is the one to keep. An If-Match would refuse
+        // the write precisely when the object has drifted, which is the only
+        // time a repair is attempted; an If-None-Match would refuse it
+        // because the object exists, which it always does here.
+        return calDavClient.overwriteObject(endpoint, href, merged, settings.getUsername(), settings.getPassword());
+      }
       return calDavClient.updateObject(endpoint,
                                        href,
                                        merged,

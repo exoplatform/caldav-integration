@@ -291,6 +291,34 @@ public interface CalDavClient {
    *           status that is neither a write nor a precondition refusal
    * @throws IllegalArgumentException when the precondition is blank
    */
+  /**
+   * Writes one object over whatever is there, with no precondition at all.
+   *
+   * <p>
+   * The deliberate exception to the conditional-write doctrine every other
+   * method here follows, and the only one. {@link #putObject} sends
+   * {@code If-None-Match: *} and so refuses an object that exists;
+   * {@link #updateObject} sends {@code If-Match} and so refuses an object
+   * that has moved on. A repair needs to write in exactly the case both of
+   * them refuse — the copy is there and it has drifted — so neither can carry
+   * it, and the guard has to come off.
+   *
+   * <p>
+   * What makes that safe is not this method but its caller: a repair is only
+   * reached after both copies have been read and compared and the eXo one
+   * judged authoritative. Called anywhere that comparison has not happened,
+   * this silently destroys somebody's change. There is no way for the client
+   * to check that, which is why the name says overwrite.
+   *
+   * @param endpoint the account's endpoint
+   * @param href the object's path
+   * @param icsData the iCalendar object to write
+   * @param username the account's login
+   * @param password the account's password
+   * @return the result, which cannot be a precondition failure
+   */
+  PutResult overwriteObject(CalDavEndpoint endpoint, String href, String icsData, String username, String password);
+
   PutResult updateObject(CalDavEndpoint endpoint,
                          String href,
                          String icsData,

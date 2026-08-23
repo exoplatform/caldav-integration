@@ -32,6 +32,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -136,6 +137,49 @@ public class CaldavPushServiceTest {
     lenient().when(calDavClient.endpoint(SERVER, "john")).thenReturn(endpoint);
     lenient().when(calDavClient.discoverCalendarHome(any(), anyString(), anyString())).thenReturn(HOME);
     lenient().when(icsWriter.write(any())).thenReturn("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n");
+  }
+
+  @Test
+  public void theCurrentMirrorIsReadWithItsNameFromTheServer() {
+    // The settings screen asks this on every render. It used to look the
+    // destination up in the calendar listing, which hides this very collection
+    // on purpose — so the answer was always "no destination", the switch went
+    // back off in front of the user who had just chosen one, and the name
+    // never appeared.
+    CaldavUserSetting stored = settings();
+    stored.setMirrorCalendarHref(MIRROR);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(stored);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+                                                                                                           "Mes reunions eXo")));
+
+    MirrorTarget target = service.currentMirror(USER);
+
+    assertEquals(MIRROR, target.href());
+    // The name comes from the server, not from anything stored: a user who
+    // renamed the calendar in their own client must see the name they gave it.
+    assertEquals("Mes reunions eXo", target.name());
+  }
+
+  @Test
+  public void readingTheCurrentMirrorNeverCreatesOne() {
+    // A read on every render must not make a calendar on someone's account.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+
+    assertNull(service.currentMirror(USER));
+
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void aMirrorRecordedButGoneReadsAsNone() {
+    // Deleted from the user's own client. Saying "no destination" is right;
+    // naming a calendar that is not there would be worse than saying nothing.
+    CaldavUserSetting stored = settings();
+    stored.setMirrorCalendarHref("/dav/cal/john/gone/");
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(stored);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of());
+
+    assertNull(service.currentMirror(USER));
   }
 
   @Test
@@ -294,6 +338,38 @@ public class CaldavPushServiceTest {
   }
 
   @Test
+  public void theMintedIdentifierIsRecordedInAFormAgendaWillKeep() throws Exception {
+    // The identifier is only useful if it survives the push that minted it.
+    // agenda stores the mapping between an eXo event and its remote object
+    // only when the record names a provider — given neither a provider id nor
+    // a provider name, saveRemoteEvent reads the call as "delete this
+    // mapping" and throws the identifier away.
+    //
+    // This connector left both unset, so every push minted a fresh identifier
+    // and wrote a fresh object: editing an event duplicated it on the server
+    // and orphaned the original, and deleting it searched for an identifier
+    // the server had never seen. The provider is registered by this add-on in
+    // caldav-configuration.xml, so naming it is all that is needed — and
+    // asserting the name here is what stops it being dropped again.
+    givenAMirror();
+    givenAnAgendaEvent(130L, 0L);
+    when(agendaRemoteEventService.findRemoteEvent(130L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-130"));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"e\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 130L, null);
+
+    ArgumentCaptor<RemoteEvent> recorded = ArgumentCaptor.forClass(RemoteEvent.class);
+    verify(agendaRemoteEventService).saveRemoteEvent(eq(130L), recorded.capture(), eq(USER));
+    assertEquals("agenda.caldavCalendar", recorded.getValue().getRemoteProviderName());
+    assertNotNull(recorded.getValue().getRemoteId());
+  }
+
+  @Test
   public void anEventAgendaAlreadyPushedKeepsItsIdentifier() throws Exception {
     // Migrated users are exactly the ones with events already on the server,
     // so minting a fresh UID here would give every one of them a duplicate.
@@ -398,6 +474,127 @@ public class CaldavPushServiceTest {
     ObjectSync mapping = service.pushEvent(USER, event("evt-1"));
 
     assertEquals(104L, mapping.getLocalEventId());
+  }
+
+  /**
+   * A repair writes over the drifted copy instead of asking the server's
+   * permission first.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void aRepairWritesWithoutTheConditionalGuard() throws Exception {
+    // The guarded write carries the etag this connector last recorded, and
+    // the server refuses it when the object has moved on — which is the
+    // definition of the case being repaired. Guarded, no repair could ever
+    // succeed: every pass reported "altered: 1, re-pushed: 0".
+    givenAMirror();
+    givenAnAgendaEvent(120L, 0L);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("evt-1"));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(mapped("\"etag-1\""));
+    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+                                                                               .thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
+                                                                                                              "\"etag-9\"",
+                                                                                                              "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"));
+    when(icsMerger.merge(anyString(), anyString(), anyBoolean())).thenReturn("MERGED");
+    when(calDavClient.overwriteObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                 .thenReturn(new PutResult(204,
+                                                                                                                           "\"etag-10\"",
+                                                                                                                           null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.rewriteAgendaEvent(USER, 120L);
+
+    verify(calDavClient).overwriteObject(any(), anyString(), eq("MERGED"), anyString(), anyString());
+    // Neither of the guarded writes: If-Match is refused when the object has
+    // drifted, and If-None-Match — which putObject sends — is refused because
+    // the object exists. Both refuse exactly the case being repaired.
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * A repair with no mapping recorded still overwrites rather than trying to
+   * create.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void aRepairWithNothingRecordedStillOverwrites() throws Exception {
+    // The case a live account was stuck in: the row named an href the server
+    // no longer had, its UID matched no row, so the push had nothing to go
+    // on and fell to the create-only path — which the server refused, because
+    // the object was there all along under the href being repaired. Refused
+    // every pass, for ever.
+    givenAMirror();
+    givenAnAgendaEvent(122L, 0L);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("evt-1"));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(null);
+    when(calDavClient.overwriteObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                .thenReturn(new PutResult(204,
+                                                                                                                          "\"etag-11\"",
+                                                                                                                          null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.rewriteAgendaEvent(USER, 122L);
+
+    verify(calDavClient).overwriteObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * A first push with nothing recorded still insists on creating.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void aFirstPushWithNothingRecordedStillInsistsOnCreating() throws Exception {
+    // If-None-Match: * is what stops a first push from silently overwriting
+    // an object somebody else put at that href. Only a repair may drop it.
+    givenAMirror();
+    givenAnAgendaEvent(123L, 0L);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("evt-1"));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(null);
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"etag-12\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 123L, null);
+
+    verify(calDavClient).putObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * An ordinary push still asks first.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void anOrdinaryPushStillCarriesTheConditionalGuard() throws Exception {
+    // The overwrite is the repair's privilege alone. A normal push that found
+    // the object changed underneath it must still stop rather than clobber an
+    // edit nobody has looked at.
+    givenAMirror();
+    givenAnAgendaEvent(121L, 0L);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("evt-1"));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(mapped("\"etag-1\""));
+    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+                                                                               .thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
+                                                                                                              "\"etag-9\"",
+                                                                                                              "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"));
+    when(icsMerger.merge(anyString(), anyString(), anyBoolean())).thenReturn("MERGED");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(204,
+                                                                                                                                    "\"etag-10\"",
+                                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 121L, null);
+
+    verify(calDavClient).updateObject(any(), anyString(), eq("MERGED"), eq("\"etag-1\""), anyString(), anyString());
   }
 
   /**
@@ -921,8 +1118,13 @@ public class CaldavPushServiceTest {
   @Test
   public void aPersonalCalendarWithNoUsableCollectionSendsNothingToTheMirror() throws Exception {
     // Outbound simply stays unavailable for that calendar. Diverting the event
-    // into the mirror as a consolation is exactly the mixing PR7 refuses.
-    givenAMirror();
+    // into the mirror as a consolation is exactly the mixing this refuses.
+    //
+    // This test asserted the opposite of its own name until the personal
+    // calendars began pushing for real: it pinned the fall-through to the
+    // mirror, which is what the code did, while the name and the service's
+    // own javadoc both said that must never happen. Nobody noticed because
+    // nothing reached this path — the browser never offered a personal event.
     givenAnAgendaEvent(111L, 0L);
     givenPersonalCalendar(8L, "cal-anchor");
     CalendarSync refused = boundPersonalPair();
@@ -930,16 +1132,78 @@ public class CaldavPushServiceTest {
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(refused);
     when(agendaRemoteEventService.findRemoteEvent(111L, USER)).thenReturn(null);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-111"));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
-                                                                                          .thenReturn(new PutResult(201,
-                                                                                                                    "\"e\"",
-                                                                                                                    null));
-    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
     ObjectSync mapping = service.pushAgendaEvent(USER, 111L, null);
 
-    // It fell back to the mirror pair, which is the space destination.
-    assertEquals(1L, mapping.getCalendarSyncId());
+    // Nothing was copied, and nothing was written anywhere.
+    assertNull(mapping);
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    // Not even established: falling back to the mirror would have created a
+    // collection the user never asked for, to hold an event that is not a
+    // space meeting.
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void aCopyInAPersonalCollectionCanBeRemovedFromIt() {
+    // The other half of writing there. A removal that looked only in the
+    // mirror found nothing, succeeded quietly, and left the object on the
+    // server for ever — in the one collection the user actually reads.
+    // The mirror's identifier is deliberately past 127. getPairs returns every
+    // pair including the mirror, so the walk has to skip the one it already
+    // searched — and these identifiers are Long, so a skip written with ==
+    // compares references and only appears to work while the value is small
+    // enough for Java to have cached it. Anything a real database issues is
+    // past the cache, which is what makes the assertion below meaningful.
+    CalendarSync mirror = pair();
+    mirror.setId(5001L);
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(mirror));
+    when(caldavSyncStorage.getObjectByUid(5001L, "uid-113")).thenReturn(null);
+    CalendarSync personal = boundPersonalPair();
+    personal.setId(5002L);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pairOf(5001L), personal));
+    ObjectSync inPersonal = mapped("\"etag-1\"");
+    inPersonal.setCalendarSyncId(5002L);
+    inPersonal.setRemoteHref(MIRROR + "in-personal.ics");
+    when(caldavSyncStorage.getObjectByUid(5002L, "uid-113")).thenReturn(inPersonal);
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.deleteEvent(USER, "uid-113");
+
+    verify(calDavClient).deleteObject(any(), eq(MIRROR + "in-personal.ics"), anyString(), anyString(), anyString());
+    // Once, not twice: the mirror was searched before the walk began.
+    verify(caldavSyncStorage, times(1)).getObjectByUid(5001L, "uid-113");
+  }
+
+  /**
+   * The mirror pair under a chosen identifier.
+   *
+   * @param id the identifier it carries
+   * @return the pair
+   */
+  private CalendarSync pairOf(long id) {
+    CalendarSync pair = pair();
+    pair.setId(id);
+    return pair;
+  }
+
+  @Test
+  public void aCopyInTheMirrorIsStillRemovedWithoutSearchingFurther() {
+    // The common case stays one lookup: the mirror holds most copies, and
+    // walking every pair for them would cost a query per calendar.
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    ObjectSync inMirror = mapped("\"etag-1\"");
+    // Read before the call: a successful removal clears the href on this very
+    // object, so asking for it afterwards asks for null.
+    String href = inMirror.getRemoteHref();
+    when(caldavSyncStorage.getObjectByUid(1L, "uid-114")).thenReturn(inMirror);
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.deleteEvent(USER, "uid-114");
+
+    verify(calDavClient).deleteObject(any(), eq(href), anyString(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).getPairs(anyLong(), anyLong());
   }
 
   @Test

@@ -22,6 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
+import java.util.List;
+import java.time.ZonedDateTime;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -244,6 +246,77 @@ public class IcsEventMapperTest {
     source.setOccurrenceId("last tuesday");
 
     assertNull(mapper.occurrenceOf(source));
+  }
+
+  @Test
+  public void aRuleThatCannotBeReadLosesTheSeriesAndKeepsTheEvent() {
+    // Losing the series loudly beats inventing one: a rule this parser cannot
+    // read would otherwise become a rule agenda made up, repeating a meeting
+    // on days nobody chose.
+    Event event = mapper.toEvent(recurring("FREQ=NONSENSE;UNTIL=nope"), CALENDAR);
+
+    assertNull(event.getRecurrence());
+  }
+
+  @Test
+  public void numericRuleListsAreCarriedThrough() {
+    Event event = mapper.toEvent(recurring("FREQ=MONTHLY;BYMONTHDAY=1,15;BYMONTH=3"), CALENDAR);
+
+    assertEquals(List.of("1", "15"), event.getRecurrence().getByMonthDay());
+    assertEquals(List.of("3"), event.getRecurrence().getByMonth());
+  }
+
+  @Test
+  public void aRuleWithNoDayListLeavesTheDaysEmpty() {
+    // An empty list, never null: agenda rebuilds the rule from these fields
+    // and a null would be a NullPointerException at the moment of writing it
+    // back out.
+    Event event = mapper.toEvent(recurring("FREQ=DAILY;COUNT=5"), CALENDAR);
+
+    assertNotNull(event.getRecurrence().getByDay());
+    assertTrue(event.getRecurrence().getByDay().isEmpty());
+  }
+
+  @Test
+  public void anUnreadableZoneFallsBackRatherThanThrowing() {
+    // A server naming a zone this JVM does not know must not cost the event.
+    IcsEvent source = base();
+    source.setTimeZoneId("Mars/Olympus_Mons");
+
+    assertNotNull(mapper.toEvent(source, CALENDAR).getStart());
+  }
+
+  @Test
+  public void anExcludedInstantIsRead() {
+    assertNotNull(mapper.occurrenceOf("20261012T070000Z", "Etc/UTC"));
+  }
+
+  @Test
+  public void anExcludedAllDayDateIsReadAsTheStartOfThatDay() {
+    // An all-day series excludes a day, not an instant. ical4j's DateTime
+    // accepts "20261012" as midnight in the JVM's own zone, which on a server
+    // east of UTC shifted the exclusion onto the day before: the occurrence
+    // the user deleted stayed, and its neighbour vanished.
+    ZonedDateTime excluded = mapper.occurrenceOf("20261012", "Etc/UTC");
+
+    assertNotNull(excluded);
+    assertEquals(2026, excluded.getYear());
+    assertEquals(10, excluded.getMonthValue());
+    assertEquals(12, excluded.getDayOfMonth());
+    assertEquals(0, excluded.getHour());
+  }
+
+  @Test
+  public void anExcludedDateThatMakesNoSenseIsIgnored() {
+    assertNull(mapper.occurrenceOf("not-a-date", "Etc/UTC"));
+    assertNull(mapper.occurrenceOf("", "Etc/UTC"));
+    assertNull(mapper.occurrenceOf(null, "Etc/UTC"));
+  }
+
+  @Test
+  public void anObjectWithNoOccurrenceIdIsNotAnOverride() {
+    assertNull(mapper.occurrenceOf((IcsEvent) null));
+    assertNull(mapper.occurrenceOf(base()));
   }
 
   /**
