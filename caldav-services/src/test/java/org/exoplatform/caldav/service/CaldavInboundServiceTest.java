@@ -17,6 +17,7 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
@@ -45,9 +46,13 @@ import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.model.EventAttendee;
+import org.exoplatform.agenda.model.EventAttendeeList;
+import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -121,6 +126,9 @@ public class CaldavInboundServiceTest {
   private AgendaEventService     agendaEventService;
 
   @Mock
+  private AgendaEventAttendeeService agendaEventAttendeeService;
+
+  @Mock
   private CalDavEndpoint         endpoint;
 
   @Spy
@@ -182,6 +190,92 @@ public class CaldavInboundServiceTest {
     service.importInto(USER, pair(), calendar(), from(), to());
 
     verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), eq(false), eq(USER));
+  }
+
+  /**
+   * The imported event names its own owner as an attendee.
+   */
+  @Test
+  public void anImportedEventNamesTheCalendarOwnerAsAttendee() throws Exception {
+    // Not a cosmetic detail: agenda's default view inner-joins the attendee
+    // table, so an event nobody attends is invisible in the calendar it was
+    // just imported into — the whole import reads as having done nothing.
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
+    givenAgendaCreates(501L);
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    ArgumentCaptor<List<EventAttendee>> attendees = ArgumentCaptor.forClass(List.class);
+    verify(agendaEventService).createEvent(any(),
+                                           attendees.capture(),
+                                           any(),
+                                           any(),
+                                           any(),
+                                           any(),
+                                           anyBoolean(),
+                                           eq(USER));
+    assertEquals(1, attendees.getValue().size());
+    assertEquals(USER, attendees.getValue().get(0).getIdentityId());
+  }
+
+  /**
+   * That attendee is accepted, not asked to answer.
+   */
+  @Test
+  public void theOwnerIsNotAskedToAnswerTheirOwnCalendar() throws Exception {
+    // NEEDS_ACTION would put a pending invitation in front of the user for a
+    // meeting they already accepted on the server this was read from.
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
+    givenAgendaCreates(501L);
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    ArgumentCaptor<List<EventAttendee>> attendees = ArgumentCaptor.forClass(List.class);
+    verify(agendaEventService).createEvent(any(), attendees.capture(), any(), any(), any(), any(), anyBoolean(), anyLong());
+    assertEquals(EventAttendeeResponse.ACCEPTED, attendees.getValue().get(0).getResponse());
+  }
+
+  /**
+   * A remote edit keeps the attendees the event already had.
+   */
+  @Test
+  public void aRemoteEditDoesNotStripTheAttendeesOffTheEvent() throws Exception {
+    // agenda reads the list it is handed as the whole truth about who
+    // attends, so an empty one deletes everybody. Anyone the user added here
+    // would disappear the next time the organiser touched the meeting.
+    givenServerObjects(object("o1.ics", "etag-2", icsModifiedAt("uid-1@example.test", "Moved", "20261005T120000Z")));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
+    givenEventAttendees(501L, attendee(USER), attendee(909L));
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    ArgumentCaptor<List<EventAttendee>> attendees = ArgumentCaptor.forClass(List.class);
+    verify(agendaEventService).updateEvent(any(), attendees.capture(), any(), any(), any(), any(), anyBoolean(), anyLong());
+    assertEquals(2, attendees.getValue().size());
+    assertEquals(List.of(USER, 909L),
+                 attendees.getValue().stream().map(EventAttendee::getIdentityId).toList());
+  }
+
+  /**
+   * An event imported before the owner was recorded gets them on the next edit.
+   */
+  @Test
+  public void aRemoteEditAddsTheOwnerToAnEventImportedWithoutOne() throws Exception {
+    // Events imported by an earlier build carry no attendee at all. Without
+    // this they stay invisible until someone deletes and re-imports the
+    // calendar, which is not a repair anybody would think to attempt.
+    givenServerObjects(object("o1.ics", "etag-2", icsModifiedAt("uid-1@example.test", "Moved", "20261005T120000Z")));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
+    givenEventAttendees(501L, attendee(909L));
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    ArgumentCaptor<List<EventAttendee>> attendees = ArgumentCaptor.forClass(List.class);
+    verify(agendaEventService).updateEvent(any(), attendees.capture(), any(), any(), any(), any(), anyBoolean(), anyLong());
+    assertEquals(2, attendees.getValue().size());
+    assertFalse(attendees.getValue().stream().noneMatch(a -> a.getIdentityId() == USER));
   }
 
   /**
@@ -621,6 +715,29 @@ public class CaldavInboundServiceTest {
    * @param eventId the id agenda mints
    * @throws Exception when the stub cannot be set
    */
+  /**
+   * States the attendees agenda already holds for an event.
+   *
+   * @param eventId the event
+   * @param attendees the attendees it carries
+   */
+  private void givenEventAttendees(long eventId, EventAttendee... attendees) {
+    when(agendaEventAttendeeService.getEventAttendees(eventId)).thenReturn(new EventAttendeeList(List.of(attendees)));
+  }
+
+  /**
+   * One attendee, accepted.
+   *
+   * @param identityId identity of the attendee
+   * @return the attendee
+   */
+  private EventAttendee attendee(long identityId) {
+    EventAttendee attendee = new EventAttendee();
+    attendee.setIdentityId(identityId);
+    attendee.setResponse(EventAttendeeResponse.ACCEPTED);
+    return attendee;
+  }
+
   private void givenAgendaCreates(long eventId) throws Exception {
     when(agendaEventService.createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong()))
                                                                                                           .thenReturn(event(eventId));
