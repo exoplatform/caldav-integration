@@ -154,6 +154,21 @@ public class CaldavSyncStorage {
   }
 
   /**
+   * One binding by its identifier, whoever it belongs to.
+   *
+   * <p>
+   * Returns it without checking ownership on purpose: the check belongs to the
+   * caller that knows who is asking, and hiding it here would make a service
+   * look safe while the storage quietly decided for it.
+   *
+   * @param id the binding's identifier
+   * @return the binding, or null when there is none
+   */
+  public CalendarSync getPair(long id) {
+    return calendarSyncDAO.findById(id).map(this::fromEntity).orElse(null);
+  }
+
+  /**
    * Creates or updates a pair, canonicalising its href on the way in.
    *
    * @param pair the pair to persist
@@ -252,6 +267,20 @@ public class CaldavSyncStorage {
   @Transactional
   public int deleteObjects(long calendarSyncId) {
     return objectSyncDAO.deleteByCalendarSyncId(calendarSyncId);
+  }
+
+  /**
+   * Forgets one object mapping.
+   *
+   * <p>
+   * What a mapping with nothing behind it gets: dropping it is how the object
+   * becomes importable again, rather than being skipped for ever by a row
+   * that describes an event no longer there.
+   *
+   * @param id the mapping's identifier
+   */
+  public void deleteObject(long id) {
+    objectSyncDAO.deleteById(id);
   }
 
   /**

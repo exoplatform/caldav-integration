@@ -53,6 +53,9 @@ public class CaldavConnectorServiceImplTest {
   private static final long              USER_IDENTITY_ID = 42L;
 
   @Mock
+  private CaldavSyncService      caldavSyncService;
+
+  @Mock
   private CaldavConnectorStorage         caldavConnectorStorage;
 
   @InjectMocks
@@ -108,7 +111,12 @@ public class CaldavConnectorServiceImplTest {
       } else {
         System.setProperty(LEGACY_PROPERTY, legacyUrl);
       }
-      return new CaldavConnectorServiceImpl(caldavConnectorStorage);
+      CaldavConnectorServiceImpl service = new CaldavConnectorServiceImpl(caldavConnectorStorage);
+      // Handed in rather than resolved: the lazy bridge lookup pulls a class
+      // graph this unit context does not carry, and what these tests are about
+      // is the credentials, not the engine.
+      service.setCaldavSyncService(caldavSyncService);
+      return service;
     } finally {
       if (previous == null) {
         System.clearProperty(LEGACY_PROPERTY);
@@ -209,6 +217,21 @@ public class CaldavConnectorServiceImplTest {
    *
    * @throws Exception never, the storage is mocked
    */
+  @Test
+  public void connectingAnAccountDoesNotWaitOnTheThrottle() throws Exception {
+    // Someone who has just entered their credentials is owed their calendars
+    // now, not in a quarter of an hour — and a throttle stamped by a previous
+    // account's run has nothing to say about this one.
+    caldavConnectorService.setCaldavSyncService(caldavSyncService);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+
+    caldavConnectorService.createCaldavSetting(setting, 7L);
+
+    verify(caldavSyncService).forgetThrottle(7L);
+  }
+
   @Test
   public void shouldStoreCompleteCredentials() throws Exception {
     CaldavUserSetting setting = new CaldavUserSetting();
