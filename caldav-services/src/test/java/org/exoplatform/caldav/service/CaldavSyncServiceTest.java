@@ -51,6 +51,10 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.client.CalDavClient;
@@ -102,6 +106,9 @@ public class CaldavSyncServiceTest {
 
   @Mock
   private AgendaCalendarService      agendaCalendarService;
+
+  @Mock
+  private IdentityManager            identityManager;
 
   @Mock
   private CalDavEndpoint             endpoint;
@@ -843,6 +850,77 @@ public class CaldavSyncServiceTest {
     } catch (Exception e) {
       throw new IllegalStateException(e);
     }
+  }
+
+  /**
+   * Several stale bindings of one account cost one pass, not one each.
+   */
+  @Test
+  public void anAccountWithSeveralStaleCalendarsIsSweptOnce() {
+    // Synchronisation is per account: a user with five stale calendars would
+    // otherwise be synchronised five times in a row, each pass doing the work
+    // of all five.
+    CalendarSync one = activeRemotePair("/dav/calendars/john/a/", "anchor-a");
+    CalendarSync two = activeRemotePair("/dav/calendars/john/b/", "anchor-b");
+    givenDuePairs(one, two);
+    givenServerCalendars();
+    givenNoKnownPairs();
+
+    assertEquals(1, service.sweepDueAccounts(30L, 50));
+  }
+
+  /**
+   * An account whose login cannot be resolved is left for the next run.
+   */
+  @Test
+  public void anAccountWithoutAResolvableLoginIsSkipped() {
+    // Agenda's ACL needs the login and a binding does not carry it. Guessing
+    // one would be worse than waiting.
+    givenDuePairs(activeRemotePair("/dav/calendars/john/a/", "anchor-a"));
+    when(identityManager.getIdentity(anyString())).thenReturn(null);
+
+    assertEquals(0, service.sweepDueAccounts(30L, 50));
+  }
+
+  /**
+   * One account failing does not cost the rest of the page.
+   */
+  @Test
+  public void oneFailingAccountDoesNotStopTheSweep() {
+    CalendarSync mine = activeRemotePair("/dav/calendars/john/a/", "anchor-a");
+    CalendarSync theirs = activeRemotePair("/dav/calendars/jane/a/", "anchor-b");
+    theirs.setUserIdentityId(USER + 1);
+    givenDuePairs(mine, theirs);
+    givenServerCalendars();
+    givenNoKnownPairs();
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenThrow(new IllegalStateException("boom"));
+
+    // The failing one is logged and left stale; it comes back at the top of
+    // the next run because the page is ordered by how long it has waited.
+    assertEquals(1, service.sweepDueAccounts(30L, 50));
+  }
+
+  /**
+   * Nothing due costs nothing.
+   */
+  @Test
+  public void aSweepWithNothingDueDoesNoWork() {
+    when(caldavSyncStorage.getDuePairs(eq(CalendarSyncStatus.ACTIVE), any(), anyInt(), anyInt()))
+                                                                                                .thenReturn(Page.empty());
+
+    assertEquals(0, service.sweepDueAccounts(30L, 50));
+    verify(caldavConnectorStorage, never()).getCaldavSetting(anyLong());
+  }
+
+  /**
+   * @param pairs what the sweep should find due
+   */
+  private void givenDuePairs(CalendarSync... pairs) {
+    when(caldavSyncStorage.getDuePairs(eq(CalendarSyncStatus.ACTIVE), any(), anyInt(), anyInt()))
+                                                                                                .thenReturn(new PageImpl<>(List.of(pairs)));
+    Identity identity = new Identity(String.valueOf(USER));
+    identity.setRemoteId(LOGIN);
+    lenient().when(identityManager.getIdentity(anyString())).thenReturn(identity);
   }
 
   /**
