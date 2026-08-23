@@ -26,7 +26,11 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
@@ -95,7 +99,28 @@ public class CaldavSyncService {
    */
   private static final int            MAX_CONSECUTIVE_FAILURES = 5;
 
-  private final Map<Long, Boolean>    syncing    = new ConcurrentHashMap<>();
+  /**
+   * How long a caller that asked to be told when the sync had run will wait
+   * for a pass already in flight. Generous enough to cover a first pass over
+   * a real account, short enough that an HTTP thread is never held hostage by
+   * one that has wedged.
+   */
+  private static final long           IN_FLIGHT_WAIT_SECONDS   = 20L;
+
+  /**
+   * The pass running for a user, so two page loads a second apart do not run
+   * two syncs against the same account at once — and so a caller who was
+   * promised the sync had run can wait for the one that is actually doing it.
+   *
+   * @param done completes when the pass leaves its body, however it leaves it
+   * @param threadId the thread running the pass, so a pass that re-enters
+   *          itself through a listener is recognised and never waits on its
+   *          own completion
+   */
+  private record SyncPass(CompletableFuture<Void> done, long threadId) {
+  }
+
+  private final Map<Long, SyncPass>   syncing    = new ConcurrentHashMap<>();
 
   /** How long a sync stays fresh; deployment-tunable. */
   /**
@@ -251,7 +276,7 @@ public class CaldavSyncService {
     if (last != null && last.isAfter(Instant.now().minus(Duration.ofMinutes(caldavTuningService.getThrottleMinutes())))) {
       return;
     }
-    sync(userIdentityId, username);
+    sync(userIdentityId, username, false);
   }
 
   /**
@@ -266,7 +291,32 @@ public class CaldavSyncService {
    * @param username the user's login
    */
   public void syncNow(long userIdentityId, String username) {
-    sync(userIdentityId, username);
+    sync(userIdentityId, username, false);
+  }
+
+  /**
+   * Synchronises now and does not return until it has.
+   *
+   * <p>
+   * The difference from {@link #syncNow(long, String)} is what happens when a
+   * pass is already running for this user. Returning then — as every caller
+   * used to — reports a synchronisation that has not happened yet, and a
+   * caller that refreshes its display on the strength of that reads the
+   * account mid-pass: collections not yet materialised still count as remote,
+   * so they are shown under the heading for calendars eXo is not holding, and
+   * stay there until the page is reloaded. Waiting for the pass in flight
+   * makes the answer true when it is given.
+   *
+   * <p>
+   * Bounded, and never waits on itself: a pass that re-enters through a
+   * listener is recognised by its thread and returns immediately, as it
+   * always did.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login
+   */
+  public void syncNowAndWait(long userIdentityId, String username) {
+    sync(userIdentityId, username, true);
   }
 
   /**
@@ -327,7 +377,7 @@ public class CaldavSyncService {
    * @param userIdentityId identity of the user
    * @param username the user's login
    */
-  private void sync(long userIdentityId, String username) {
+  private void sync(long userIdentityId, String username, boolean awaitPassInFlight) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (!connected(settings)) {
       return;
@@ -335,7 +385,16 @@ public class CaldavSyncService {
     // One sync per user at a time. Two page loads a second apart would
     // otherwise both create the same calendar, and the second would find the
     // first's collection listed and bind a duplicate to it.
-    if (syncing.putIfAbsent(userIdentityId, Boolean.TRUE) != null) {
+    SyncPass pass = new SyncPass(new CompletableFuture<>(), Thread.currentThread().threadId());
+    SyncPass running = syncing.putIfAbsent(userIdentityId, pass);
+    if (running != null) {
+      // Only a caller that was promised the sync had run waits, and never for
+      // a pass it is itself inside: a calendar created by a sync notifies a
+      // listener that syncs, and waiting there would be waiting on this very
+      // thread to finish what it is in the middle of.
+      if (awaitPassInFlight && running.threadId() != Thread.currentThread().threadId()) {
+        awaitPass(userIdentityId, running);
+      }
       return;
     }
     try {
@@ -372,6 +431,28 @@ public class CaldavSyncService {
       LOG.warn("Synchronising the CalDAV calendars of user {} failed", userIdentityId, e);
     } finally {
       syncing.remove(userIdentityId);
+      // Whatever the pass did, anyone waiting on it is waiting for it to be
+      // over, not for it to have succeeded.
+      pass.done().complete(null);
+    }
+  }
+
+  /**
+   * Waits for a pass already running, for a bounded time.
+   *
+   * @param userIdentityId identity of the user, for the log only
+   * @param running the pass to wait for
+   */
+  private void awaitPass(long userIdentityId, SyncPass running) {
+    try {
+      running.done().get(IN_FLIGHT_WAIT_SECONDS, TimeUnit.SECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    } catch (TimeoutException | ExecutionException e) {
+      // Not an error the caller can act on: the pass is still running and
+      // will finish on its own. The caller reads a slightly older account
+      // than it hoped for, which is exactly where it stood before it waited.
+      LOG.debug("The synchronisation already running for user {} outlasted the wait", userIdentityId, e);
     }
   }
 
