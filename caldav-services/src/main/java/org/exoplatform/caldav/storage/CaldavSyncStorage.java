@@ -154,13 +154,6 @@ public class CaldavSyncStorage {
   }
 
   /**
-   * Creates or updates a pair, canonicalising its href on the way in.
-   *
-   * @param pair the pair to persist
-   * @return the persisted pair, carrying its identifier
-   */
-  @Transactional
-  /**
    * One binding by its identifier, whoever it belongs to.
    *
    * <p>
@@ -175,6 +168,13 @@ public class CaldavSyncStorage {
     return calendarSyncDAO.findById(id).map(this::fromEntity).orElse(null);
   }
 
+  /**
+   * Creates or updates a pair, canonicalising its href on the way in.
+   *
+   * @param pair the pair to persist
+   * @return the persisted pair, carrying its identifier
+   */
+  @Transactional
   public CalendarSync savePair(CalendarSync pair) {
     CaldavCalendarSyncEntity entity = toEntity(pair);
     return fromEntity(calendarSyncDAO.save(entity));
