@@ -193,6 +193,38 @@ describe('deleting a calendar eXo mirrors', () => {
     expect(description.warning).toBe('');
   });
 
+  // What is said before the whole account is unlinked.
+
+  it('names the server when warning about disconnecting the account', async () => {
+    givenPlan({});
+
+    const warning = await caldavConnector.disconnectWarning.call({serverUrl: 'https://webmail.example.test/dav/'});
+
+    expect(warning).toContain('webmail.example.test');
+  });
+
+  it('answers with nothing when the sentence cannot be rendered', async () => {
+    // Pinned because of what the caller must do with it, not for its own
+    // sake. This resolves empty on any locale the sentence has not reached
+    // yet — Crowdin lags the _en source by design — and on a platform serving
+    // a stale bundle, which is neither rare nor visible.
+    //
+    // The drawer used to read an empty answer as "nothing to confirm" and
+    // disconnect on the single click. One missing translation then silently
+    // removed every calendar the account had materialised. It now falls back
+    // to agenda's own generic sentence and always asks: the explanation is
+    // what a missing string may cost, never the confirmation.
+    givenPlanWithoutBundle({});
+    let starved;
+    jest.isolateModules(() => {
+      starved = require('../../main/webapp/vue-app/caldav/caldav-connector/caldavConnector.js').default;
+    });
+
+    const warning = await starved.disconnectWarning.call({serverUrl: 'https://webmail.example.test/dav/'});
+
+    expect(warning).toBe('');
+  });
+
   // How the server is named in the sentence.
 
   it('names the server by its host when its address is not a full url', async () => {
@@ -330,5 +362,6 @@ describe('deleting a calendar eXo mirrors', () => {
   const BUNDLE = {
     'agenda.caldavCalendar.calendarDelete.propagates': 'also on {0}, deleted there too',
     'agenda.caldavCalendar.calendarDelete.keepsRemote': 'the calendar on {0} is not touched',
+    'agenda.caldavCalendar.disconnect.warning': 'the calendars from {0} will be removed',
   };
 });
