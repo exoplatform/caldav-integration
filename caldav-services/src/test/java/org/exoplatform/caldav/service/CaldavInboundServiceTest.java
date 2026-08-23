@@ -37,6 +37,9 @@ import java.time.Instant;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
+import java.util.Map;
+import org.springframework.data.domain.PageImpl;
+import static org.mockito.ArgumentMatchers.anyInt;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -834,6 +837,108 @@ public class CaldavInboundServiceTest {
   /**
    * @return the binding being read
    */
+
+  @Test
+  public void anEventDeletedOnTheAccountIsRemovedFromExo() throws Exception {
+    // The other half of reading a calendar back in, and the half that was
+    // missing: additions and edits arrived, deletions never did, so the
+    // calendar on the user's phone and the one eXo showed them drifted apart
+    // with nothing saying so.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenReturn(Map.of(HREF + "kept.ics", "etag-1"));
+    givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
+                  objectSync(102L, 502L, HREF + "vanished.ics"));
+
+    int removed = service.removeVanishedObjects(USER, pair());
+
+    assertEquals(1, removed);
+    verify(agendaEventService).deleteEventById(502L, USER);
+    verify(agendaEventService, never()).deleteEventById(eq(501L), anyLong());
+    verify(caldavSyncStorage).deleteObject(102L);
+    verify(caldavSyncStorage, never()).deleteObject(101L);
+  }
+
+  @Test
+  public void aCollectionThatCouldNotBeListedRemovesNothing() throws Exception {
+    // An unreachable server is not a statement that everything was deleted.
+    // Reading it as one would empty the user's calendar the moment their
+    // network dropped, and eXo cannot put the events back.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenThrow(new CalDavException("unreachable"));
+
+    int removed = service.removeVanishedObjects(USER, pair());
+
+    assertEquals(0, removed);
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
+  }
+
+  @Test
+  public void anEventWithNoMappingIsNeverRemoved() throws Exception {
+    // An event authored in eXo that never reached the account has no mapping.
+    // It is not this method's business, and deleting it because the server has
+    // never heard of it would destroy work the user did here.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    givenMappings(objectSync(103L, null, HREF + "orphan.ics"));
+
+    int removed = service.removeVanishedObjects(USER, pair());
+
+    assertEquals(0, removed);
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+  }
+
+
+  @Test
+  public void anEventStillOnTheAccountIsLeftAlone() throws Exception {
+    // The control for anEventDeletedOnTheAccountIsRemovedFromExo. Same
+    // mappings, same code path, one difference: the server still lists both
+    // objects. Nothing may be deleted — without this the deletion test would
+    // pass just as happily against a method that removed everything it walked.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenReturn(Map.of(HREF + "kept.ics", "etag-1", HREF + "vanished.ics", "etag-2"));
+    givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
+                  objectSync(102L, 502L, HREF + "vanished.ics"));
+
+    int removed = service.removeVanishedObjects(USER, pair());
+
+    assertEquals(0, removed);
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
+  }
+
+  /**
+   * Stubs the paged walk over the mapping rows of the binding.
+   *
+   * @param objects the rows the first page holds
+   */
+  private void givenMappings(ObjectSync... objects) {
+    when(caldavSyncStorage.getObjects(eq(PAIR), eq(0), anyInt())).thenReturn(new PageImpl<>(List.of(objects)));
+    when(caldavSyncStorage.getObjects(eq(PAIR), eq(1), anyInt())).thenReturn(new PageImpl<>(List.of()));
+  }
+
+  /**
+   * @param id the mapping row's own identifier
+   * @param eventId the eXo event it points at, null when it points at none
+   * @param href where the object lives on the account
+   * @return the mapping row
+   */
+  private ObjectSync objectSync(long id, Long eventId, String href) {
+    ObjectSync object = new ObjectSync();
+    object.setId(id);
+    object.setCalendarSyncId(PAIR);
+    object.setLocalEventId(eventId);
+    object.setRemoteHref(href);
+    return object;
+  }
+
   private CalendarSync pair() {
     CalendarSync pair = new CalendarSync();
     pair.setId(PAIR);

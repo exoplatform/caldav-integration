@@ -35,6 +35,10 @@ import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
 import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -72,6 +76,9 @@ public class CaldavInboundService {
   private static final String    CONNECTOR_NAME = "agenda.caldavCalendar";
 
   private static final Log       LOG = ExoLogger.getLogger(CaldavInboundService.class);
+
+  /** How many mapping rows are walked at a time. */
+  private static final int       OBJECT_PAGE_SIZE = 200;
 
   @Autowired
   private CalDavClient           calDavClient;
@@ -626,6 +633,127 @@ public class CaldavInboundService {
    * @param pair the binding being read
    * @return the account, or null when there is none to read with
    */
+
+  /**
+   * Removes the eXo events whose objects are no longer on the account.
+   *
+   * <p>
+   * The other half of reading a calendar back in. An event created or edited
+   * on the user's phone reaches eXo; an event <b>deleted</b> there did not,
+   * because an object that is gone is simply absent from what the server
+   * returns, and absence was never looked for. The calendar the user is
+   * looking at on their phone and the one eXo shows them drift apart, and
+   * nothing says so.
+   *
+   * <p>
+   * The listing is deliberately a full <code>PROPFIND</code> of the
+   * collection rather than the windowed query the import uses. The import
+   * walks a time window in slices, so an object it did not return may simply
+   * lie outside the window — concluding "deleted" from that would destroy
+   * every event the user has outside the period eXo happens to read.
+   *
+   * <p>
+   * Two further limits, both because this deletes the user's data:
+   * <ul>
+   * <li>only events eXo holds a mapping for are ever removed. An event
+   * authored in eXo that never reached the account has no mapping and is not
+   * this method's business;</li>
+   * <li>a listing that could not be made removes nothing. An unreachable
+   * server is not a statement that everything was deleted, and treating it as
+   * one would empty the user's calendar the moment their network dropped.</li>
+   * </ul>
+   *
+   * @param userIdentityId identity of the user, whose ACL the deletion runs
+   *          under
+   * @param pair the binding whose collection is reconciled
+   * @return how many events were removed
+   */
+  public int removeVanishedObjects(long userIdentityId, CalendarSync pair) {
+    if (pair == null || StringUtils.isBlank(pair.getRemoteHref())) {
+      return 0;
+    }
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (settings == null || StringUtils.isBlank(settings.getUsername())) {
+      return 0;
+    }
+    Map<String, String> etags;
+    try {
+      CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+      etags = calDavClient.listResourceEtags(endpoint,
+                                             pair.getRemoteHref(),
+                                             settings.getUsername(),
+                                             settings.getPassword());
+    } catch (RuntimeException e) {
+      LOG.warn("Collection {} could not be listed; nothing is removed from it this round", pair.getRemoteHref(), e);
+      return 0;
+    }
+    if (etags == null) {
+      return 0;
+    }
+    Set<String> held = etags.keySet()
+                            .stream()
+                            .map(CaldavSyncStorage::canonicalHref)
+                            .collect(Collectors.toSet());
+    // Collected before anything is deleted. Removing rows while paging over
+    // them shifts every later page, which silently skips half the mappings.
+    List<ObjectSync> vanished = new ArrayList<>();
+    int page = 0;
+    List<ObjectSync> objects = caldavSyncStorage.getObjects(pair.getId(), page, OBJECT_PAGE_SIZE).getContent();
+    while (!objects.isEmpty()) {
+      for (ObjectSync object : objects) {
+        if (object.getLocalEventId() == null || StringUtils.isBlank(object.getRemoteHref())) {
+          continue;
+        }
+        if (!held.contains(CaldavSyncStorage.canonicalHref(object.getRemoteHref()))) {
+          vanished.add(object);
+        }
+      }
+      objects = caldavSyncStorage.getObjects(pair.getId(), ++page, OBJECT_PAGE_SIZE).getContent();
+    }
+    int removed = 0;
+    for (ObjectSync object : vanished) {
+      if (removeOne(userIdentityId, object)) {
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      LOG.info("{} event(s) deleted on the account are no longer shown from collection {}", removed, pair.getRemoteHref());
+    }
+    return removed;
+  }
+
+  /**
+   * Removes one event and the mapping that pointed at it.
+   *
+   * <p>
+   * An event already gone from agenda is not a failure: the mapping is the
+   * thing left to tidy, and keeping it would make eXo look for an event that
+   * no longer exists on every later pass.
+   *
+   * @param userIdentityId identity of the user, whose ACL the deletion runs
+   *          under
+   * @param object the mapping whose object vanished
+   * @return true when the mapping was dropped
+   */
+  private boolean removeOne(long userIdentityId, ObjectSync object) {
+    try {
+      agendaEventService.deleteEventById(object.getLocalEventId(), userIdentityId);
+    } catch (ObjectNotFoundException e) {
+      LOG.debug("Event {} was already gone from agenda; only its mapping is dropped", object.getLocalEventId(), e);
+    } catch (IllegalAccessException e) {
+      // Their own calendar, so this should not happen — and if it does, the
+      // mapping is kept, because dropping it would hide an event eXo can no
+      // longer account for.
+      LOG.warn("User {} may not delete event {}; it stays as it is", userIdentityId, object.getLocalEventId(), e);
+      return false;
+    } catch (RuntimeException e) {
+      LOG.warn("Event {} could not be removed after its object vanished", object.getLocalEventId(), e);
+      return false;
+    }
+    caldavSyncStorage.deleteObject(object.getId());
+    return true;
+  }
+
   private CaldavUserSetting settingsFor(long userIdentityId, CalendarSync pair) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (settings == null || StringUtils.isBlank(settings.getUsername()) || StringUtils.isBlank(settings.getPassword())) {
