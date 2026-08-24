@@ -31,6 +31,7 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
@@ -44,6 +45,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
@@ -920,6 +922,25 @@ public class CaldavInboundServiceTest {
   }
 
   @Test
+  public void theEventIsReadIntoTheCacheBeforeItIsDeleted() throws Exception {
+    // The read is what makes the deletion safe, not a convenience: on a cache
+    // miss, agenda's delete pulls the real EventEntity into its session before
+    // the attendee rows, and Hibernate then refuses the flush that removes it.
+    // Read first — in a context that is then dropped — and the delete finds
+    // the event in the cache instead.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    givenMappings(objectSync(102L, 502L, HREF + "vanished.ics"));
+
+    service.removeVanishedObjects(USER, pair());
+
+    InOrder inOrder = inOrder(agendaEventService);
+    inOrder.verify(agendaEventService).getEventById(502L);
+    inOrder.verify(agendaEventService).deleteEventById(502L, USER);
+  }
+
+  @Test
   public void theRemovalsCycleTheLevelActuallyHoldingTheContext() throws Exception {
     // The regression that kept inbound deletions broken: under an HTTP
     // request the lifecycle stack is nested, and the kernel enrolls each
@@ -946,9 +967,11 @@ public class CaldavInboundServiceTest {
         int removed = service.removeVanishedObjects(USER, pair()).removed();
 
         assertEquals(1, removed);
-        // Once before the deletions and once after — and on the level that
-        // was actually holding the context, two levels down.
-        assertEquals(2, probe.ended, "the context-holding level was never closed: the deletions ran in the caller's context");
+        // Three times — to leave the pass's context, to drop what the
+        // warm-up reads loaded, and to hand the caller a clean context — and
+        // each time on the level that was actually holding the context, two
+        // levels down.
+        assertEquals(3, probe.ended, "the context-holding level was never closed: the deletions ran in the caller's context");
         assertTrue(probe.open, "the caller must be handed an open context back");
       } finally {
         RequestLifeCycle.end();
