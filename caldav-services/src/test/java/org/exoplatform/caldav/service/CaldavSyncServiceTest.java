@@ -54,6 +54,7 @@ import java.util.ArrayList;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.doAnswer;
 import org.junit.jupiter.api.BeforeEach;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -144,6 +145,8 @@ public class CaldavSyncServiceTest {
     // exercises what it is actually about.
     lenient().when(caldavInboundService.removeVanishedObjects(anyLong(), any()))
              .thenReturn(CaldavInboundService.VanishedCleanup.nothing());
+    lenient().when(caldavInboundService.syncContents(anyLong(), any(), any(), any(), any(), anyBoolean()))
+             .thenReturn(CaldavInboundService.VanishedCleanup.nothing());
     lenient().when(caldavTuningService.getThrottleMinutes()).thenReturn(15L);
     lenient().when(caldavTuningService.getPastDays()).thenReturn(60L);
     lenient().when(caldavTuningService.getFutureDays()).thenReturn(365L);
@@ -218,7 +221,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(eq(USER), eq(bound), any(), any(), any());
+    verify(caldavInboundService).syncContents(eq(USER), eq(bound), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -233,7 +236,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -280,7 +283,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(eq(USER), eq(mine), any(), any(), any());
+    verify(caldavInboundService).syncContents(eq(USER), eq(mine), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -294,7 +297,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -307,7 +310,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -317,12 +320,12 @@ public class CaldavSyncServiceTest {
     CalendarSync second = remotePair("/dav/calendars/john/b/", "anchor-2");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(first, second));
     givenUserCalendars(calendarWithAnchor(77L, "anchor-1"), calendarWithAnchor(78L, "anchor-2"));
-    when(caldavInboundService.importInto(anyLong(), eq(first), any(), any(), any()))
+    when(caldavInboundService.syncContents(anyLong(), eq(first), any(), any(), any(), anyBoolean()))
                                                                                     .thenThrow(new IllegalStateException("down"));
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(eq(USER), eq(second), any(), any(), any());
+    verify(caldavInboundService).syncContents(eq(USER), eq(second), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -910,7 +913,7 @@ public class CaldavSyncServiceTest {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
     givenAgendaHasCalendar("anchor-1");
     doThrow(new IllegalStateException("server down")).when(caldavInboundService)
-                                                     .importInto(anyLong(), any(), any(), any(), any());
+                                                     .syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
 
     service.syncNow(USER, LOGIN);
 
@@ -1052,7 +1055,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     assertEquals(CalendarSyncStatus.REMOTE_GONE, bound.getStatus());
-    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1106,7 +1109,7 @@ public class CaldavSyncServiceTest {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
     givenAgendaHasCalendar("anchor-1");
     doThrow(new IllegalStateException("boom")).when(caldavInboundService)
-                                              .importInto(anyLong(), any(), any(), any(), any());
+                                              .syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
 
     service.syncNow(USER, LOGIN);
 
@@ -1151,7 +1154,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1169,7 +1172,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1188,7 +1191,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1210,7 +1213,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1227,7 +1230,7 @@ public class CaldavSyncServiceTest {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
     givenAgendaHasCalendar("anchor-1");
     doThrow(new IllegalStateException("server down")).when(caldavInboundService)
-                                                     .importInto(anyLong(), any(), any(), any(), any());
+                                                     .syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
 
     service.syncNow(USER, LOGIN);
 
@@ -1361,7 +1364,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(eq(USER), any(), any(), any(), any());
+    verify(caldavInboundService).syncContents(eq(USER), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
