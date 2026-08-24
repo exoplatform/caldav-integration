@@ -831,6 +831,7 @@ public class CaldavInboundService {
 
   private boolean removeOne(long userIdentityId, ObjectSync object) {
     try {
+      LOG.info("SESSION before delete of {}: {}", object.getLocalEventId(), dumpSession());
       agendaEventService.deleteEventById(object.getLocalEventId(), userIdentityId);
     } catch (ObjectNotFoundException e) {
       LOG.debug("Event {} was already gone from agenda; only its mapping is dropped", object.getLocalEventId(), e);
@@ -848,10 +849,42 @@ public class CaldavInboundService {
       LOG.warn("Event {} could not be removed after its object vanished: {}",
                object.getLocalEventId(),
                cause.toString());
+      LOG.warn("SESSION at failure for {}: {}", object.getLocalEventId(), dumpSession());
       return false;
     }
     caldavSyncStorage.deleteObject(object.getId());
     return true;
+  }
+
+  /**
+   * TEMPORARY diagnostic — lists what the request's Hibernate session holds.
+   *
+   * @return one line naming every managed entity and its status
+   */
+  private String dumpSession() {
+    try {
+      org.exoplatform.commons.persistence.impl.EntityManagerService ems =
+        org.exoplatform.container.PortalContainer.getInstance()
+          .getComponentInstanceOfType(org.exoplatform.commons.persistence.impl.EntityManagerService.class);
+      jakarta.persistence.EntityManager em = ems == null ? null : ems.getEntityManager();
+      if (em == null) {
+        return "no request EntityManager";
+      }
+      org.hibernate.engine.spi.SessionImplementor session = em.unwrap(org.hibernate.engine.spi.SessionImplementor.class);
+      StringBuilder sb = new StringBuilder("em@").append(System.identityHashCode(em)).append(" [");
+      for (java.util.Map.Entry<Object, org.hibernate.engine.spi.EntityEntry> entry : session.getPersistenceContext()
+                                                                                            .reentrantSafeEntityEntries()) {
+        sb.append(entry.getKey().getClass().getSimpleName())
+          .append('#')
+          .append(entry.getValue().getId())
+          .append('(')
+          .append(entry.getValue().getStatus())
+          .append(") ");
+      }
+      return sb.append(']').toString();
+    } catch (RuntimeException e) {
+      return "unreadable: " + e;
+    }
   }
 
   private CaldavUserSetting settingsFor(long userIdentityId, CalendarSync pair) {
