@@ -309,7 +309,7 @@ public class CaldavPushService {
     // move. The lookup above is scoped to one collection, so an event that has
     // just changed calendar looks new here while its old mapping, and its old
     // object, are still sitting in the calendar it left.
-    ObjectSync leftBehind = known == null ? mappingElsewhere(userIdentityId, pair, event.getUid()) : null;
+    ObjectSync leftBehind = known == null ? mappingElsewhere(userIdentityId, pair, event.getUid(), localEventId) : null;
     String href = known != null && StringUtils.isNotBlank(known.getRemoteHref()) ? known.getRemoteHref()
                                                                                 : objectHref(pair.getRemoteHref(),
                                                                                              event.getUid());
@@ -356,15 +356,22 @@ public class CaldavPushService {
    * @return the mapping it had elsewhere, or null when this is an ordinary
    *         first write
    */
-  private ObjectSync mappingElsewhere(long userIdentityId, CalendarSync destination, String icsUid) {
-    if (StringUtils.isBlank(icsUid)) {
-      return null;
-    }
+  private ObjectSync mappingElsewhere(long userIdentityId, CalendarSync destination, String icsUid, Long localEventId) {
     for (CalendarSync other : caldavSyncStorage.getPairs(userIdentityId, destination.getServerId())) {
       if (Objects.equals(other.getId(), destination.getId())) {
         continue;
       }
-      ObjectSync elsewhere = caldavSyncStorage.getObjectByUid(other.getId(), icsUid);
+      // By the eXo event first, and the iCalendar UID only after. The UID is
+      // supposed to survive a move — it is adopted from agenda's remote-event
+      // mapping rather than minted afresh — but that mapping has been lost
+      // before in this codebase, and when it is, the push mints a new UID and
+      // a search by UID silently finds nothing. The event's own identifier
+      // does not depend on any of that.
+      ObjectSync elsewhere = localEventId == null ? null
+                                                  : caldavSyncStorage.getObjectByEvent(other.getId(), localEventId);
+      if (elsewhere == null && StringUtils.isNotBlank(icsUid)) {
+        elsewhere = caldavSyncStorage.getObjectByUid(other.getId(), icsUid);
+      }
       if (elsewhere != null && StringUtils.isNotBlank(elsewhere.getRemoteHref())) {
         return elsewhere;
       }

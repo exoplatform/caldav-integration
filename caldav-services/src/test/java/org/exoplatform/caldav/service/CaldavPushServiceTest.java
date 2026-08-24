@@ -1251,6 +1251,47 @@ public class CaldavPushServiceTest {
     verify(caldavSyncStorage, never()).deleteObject(anyLong());
   }
 
+
+  @Test
+  public void aMovedEventIsFoundEvenWhenItsUidWasMintedAfresh() throws Exception {
+    // The UID is supposed to survive a move — it is adopted from agenda's
+    // remote-event mapping — but that mapping has been lost before in this
+    // codebase, and when it is, the push mints a new one. A search keyed on the
+    // UID then finds nothing and the copy is left behind exactly as before,
+    // with no sign anything went wrong. The event's own identifier does not
+    // depend on that mapping.
+    givenAnAgendaEvent(112L, 0L);
+    givenPersonalCalendar(9L, "cal-anchor");
+    CalendarSync destination = boundPersonalPair();
+    destination.setId(6001L);
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(destination);
+    when(agendaRemoteEventService.findRemoteEvent(112L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-minted-anew"));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("uid-minted-anew"))).thenReturn(null);
+    CalendarSync origin = boundPersonalPair();
+    origin.setId(6002L);
+    origin.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(destination, origin));
+    // the old mapping carries the OLD uid, so only the event id can find it
+    ObjectSync stray = mapped("\"etag-old\"");
+    stray.setId(7778L);
+    stray.setCalendarSyncId(6002L);
+    stray.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor/uid-original.ics");
+    when(caldavSyncStorage.getObjectByEvent(6002L, 112L)).thenReturn(stray);
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+        .thenReturn(new PutResult(201, "\"etag-new\"", null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 112L, null);
+
+    verify(calDavClient).deleteObject(any(),
+                                     eq("/dav/calendars/john/exo-cal-old-anchor/uid-original.ics"),
+                                     eq("\"etag-old\""),
+                                     anyString(),
+                                     anyString());
+    verify(caldavSyncStorage).deleteObject(7778L);
+  }
+
   /**
    * The mirror pair under a chosen identifier.
    *
