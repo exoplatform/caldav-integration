@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -58,6 +59,10 @@ import org.exoplatform.agenda.model.EventAttendeeList;
 import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
+import org.exoplatform.container.ExoContainer;
+import org.exoplatform.container.ExoContainerContext;
+import org.exoplatform.container.component.ComponentRequestLifecycle;
+import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
@@ -912,6 +917,83 @@ public class CaldavInboundServiceTest {
     assertEquals(0, removed);
     verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
     verify(caldavSyncStorage, never()).deleteObject(anyLong());
+  }
+
+  @Test
+  public void theRemovalsCycleTheLevelActuallyHoldingTheContext() throws Exception {
+    // The regression that kept inbound deletions broken: under an HTTP
+    // request the lifecycle stack is nested, and the kernel enrolls each
+    // component only once per stack — so a nested end()/begin() pair cycles
+    // an EMPTY level and the EntityManager quietly survives. The deletions
+    // then fail at commit against everything that context already holds,
+    // while the code logs that they got a context of their own. This test
+    // reproduces the nesting and asserts the component-holding level is
+    // really cycled, which only unwinding the whole stack does.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    givenMappings(objectSync(102L, 502L, HREF + "vanished.ics"));
+
+    LifecycleProbe probe = new LifecycleProbe();
+    ExoContainer container = new ExoContainer();
+    container.registerComponentInstance(probe);
+    ExoContainer previous = ExoContainerContext.getCurrentContainerIfPresent();
+    ExoContainerContext.setCurrentContainer(container);
+    try {
+      RequestLifeCycle.begin(container); // the level that holds the context
+      RequestLifeCycle.begin(container); // the nested level a request adds
+      try {
+        int removed = service.removeVanishedObjects(USER, pair()).removed();
+
+        assertEquals(1, removed);
+        // Once before the deletions and once after — and on the level that
+        // was actually holding the context, two levels down.
+        assertEquals(2, probe.ended, "the context-holding level was never closed: the deletions ran in the caller's context");
+        assertTrue(probe.open, "the caller must be handed an open context back");
+      } finally {
+        RequestLifeCycle.end();
+        RequestLifeCycle.end();
+      }
+    } finally {
+      ExoContainerContext.setCurrentContainer(previous);
+    }
+  }
+
+  /**
+   * Counts how often the request lifecycle really reaches the component — the
+   * way {@code EntityManagerService} would experience the reconciliation.
+   */
+  private static class LifecycleProbe implements ComponentRequestLifecycle {
+
+    private int     ended;
+
+    private boolean open;
+
+    /**
+     * @param container the container the lifecycle runs in
+     */
+    @Override
+    public void startRequest(ExoContainer container) {
+      open = true;
+    }
+
+    /**
+     * @param container the container the lifecycle runs in
+     */
+    @Override
+    public void endRequest(ExoContainer container) {
+      ended++;
+      open = false;
+    }
+
+    /**
+     * @param container the container the lifecycle runs in
+     * @return whether the component currently has a context open
+     */
+    @Override
+    public boolean isStarted(ExoContainer container) {
+      return open;
+    }
   }
 
   /**
