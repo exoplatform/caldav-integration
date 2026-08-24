@@ -1258,6 +1258,30 @@ public class CaldavInboundServiceTest {
     verify(calDavClient, never()).listResourceEtags(any(), anyString(), anyString(), anyString());
   }
 
+
+  @Test
+  public void aCollectionIsAlwaysAddressedWithItsTrailingSlash() throws Exception {
+    // The stored href is canonical — no trailing slash — so that two spellings
+    // of the same path compare equal. Addressing a collection is a different
+    // job: BlueMind ignores the slashless form without answering or
+    // redirecting, so every probe spent the full 30-second timeout while the
+    // import, which appended the slash, kept working. One collection, two
+    // spellings, and only one of them worked.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setRemoteHref("/dav/calendars/john/private");
+    when(calDavClient.readCalendar(any(), anyString(), eq(LOGIN), anyString()))
+        .thenReturn(new CalendarCollection("/dav/calendars/john/private/", "P", "c", "t", null, true, Set.of("VEVENT")));
+    when(calDavClient.listResourceEtags(any(), anyString(), eq(LOGIN), anyString())).thenReturn(Map.of());
+    when(caldavSyncStorage.getObjects(eq(PAIR), anyInt(), anyInt())).thenReturn(new PageImpl<>(List.of()));
+
+    service.removeVanishedObjects(USER, bound);
+
+    verify(calDavClient).readCalendar(any(), eq("/dav/calendars/john/private/"), eq(LOGIN), anyString());
+    verify(calDavClient).listResourceEtags(any(), eq("/dav/calendars/john/private/"), eq(LOGIN), anyString());
+  }
+
   /**
    * Stubs the paged walk over the mapping rows of the binding.
    *
