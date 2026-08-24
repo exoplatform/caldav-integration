@@ -36,6 +36,22 @@ const caldavConnector = {
   // servers section of the agenda administration, not in the generic
   // connectors table (which keeps Google/Office365/Exchange only).
   multiInstance: true,
+  // Identifies this connector — and every per-server copy, which inherits it
+  // through createCaldavConnector's Object.assign — as a CalDAV one. Agenda
+  // reads it to place calendars: a CalDAV account's collections are
+  // materialised as the user's OWN personal calendars, so they belong under
+  // "My Calendars" and the account under "Your calendars" in the settings,
+  // while a connector that only fetches foreign calendars (Google, Office 365,
+  // Exchange) gets its own named left-panel section and sits in the "Remote
+  // calendars" list.
+  //
+  // Deliberately keyed on connector identity rather than on a capability:
+  // canPush is dynamic on Google (it flips the moment the user grants the
+  // write scope, which would make a section disappear mid-session), and a
+  // remote connector keeps its own section even if it becomes writable one
+  // day. Testing the name is not an option either — createCaldavConnector
+  // overrides it with the declared server's providerName.
+  isCaldav: true,
   /**
    * Opens the settings drawer and resolves once the CalDAV server itself has
    * accepted the account. The drawer verifies the credentials against the
