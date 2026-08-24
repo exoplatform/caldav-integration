@@ -129,7 +129,15 @@ public class CaldavMirrorVerificationService {
     Map<String, String> etags;
     try {
       CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
-      etags = calDavClient.listResourceEtags(endpoint, mirror.getRemoteHref(), settings.getUsername(), settings.getPassword());
+      // Slashed: the stored href is canonical so that two spellings compare
+      // equal, but addressing a collection is a different job and a server may
+      // answer one spelling and not the other. BlueMind ignores the slashless
+      // form without answering or redirecting, so this call spent the whole
+      // request timeout on every sweep.
+      etags = calDavClient.listResourceEtags(endpoint,
+                                             StringUtils.appendIfMissing(mirror.getRemoteHref(), "/"),
+                                             settings.getUsername(),
+                                             settings.getPassword());
     } catch (RuntimeException e) {
       // A collection that cannot be listed says nothing about the copies in
       // it. Treating an unreachable server as "everything was deleted" would

@@ -200,7 +200,9 @@ public class CaldavSyncService {
         // accounts the sweep exists to reach. The per-user guard still makes
         // this return at once when the owner's own page load is already
         // synchronising them.
-        syncNow(userIdentityId, username);
+        // The background entry: this is the one pass that also verifies the
+        // copies eXo pushed, because it is the only one nobody is waiting for.
+        syncInBackground(userIdentityId, username);
         swept++;
       } catch (RuntimeException e) {
         // One account must not cost the rest of the page. It stays stale and
@@ -276,7 +278,7 @@ public class CaldavSyncService {
     if (last != null && last.isAfter(Instant.now().minus(Duration.ofMinutes(caldavTuningService.getThrottleMinutes())))) {
       return;
     }
-    sync(userIdentityId, username, false);
+    sync(userIdentityId, username, false, false);
   }
 
   /**
@@ -291,7 +293,30 @@ public class CaldavSyncService {
    * @param username the user's login
    */
   public void syncNow(long userIdentityId, String username) {
-    sync(userIdentityId, username, false);
+    sync(userIdentityId, username, false, false);
+  }
+
+  /**
+   * Synchronises in the background, where the slow housekeeping belongs.
+   *
+   * <p>
+   * The only entry that verifies the copies eXo pushed. That check lists a
+   * whole collection, which on a real calendar can take longer than the request
+   * timeout allows — measured at a full 30 seconds against one account, every
+   * pass. Nobody is waiting for a repair, so making a user wait for one is pure
+   * cost: pressing <em>Synchronise now</em> took 25 seconds, almost all of it
+   * spent on a listing whose result the user would never see.
+   *
+   * <p>
+   * So the user's paths skip it and the sweep keeps it. Repairs happen exactly
+   * as often as before — the sweep runs every five minutes — they simply stop
+   * happening on someone's click.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login
+   */
+  public void syncInBackground(long userIdentityId, String username) {
+    sync(userIdentityId, username, false, true);
   }
 
   /**
@@ -316,7 +341,7 @@ public class CaldavSyncService {
    * @param username the user's login
    */
   public void syncNowAndWait(long userIdentityId, String username) {
-    sync(userIdentityId, username, true);
+    sync(userIdentityId, username, true, false);
   }
 
   /**
@@ -377,7 +402,7 @@ public class CaldavSyncService {
    * @param userIdentityId identity of the user
    * @param username the user's login
    */
-  private void sync(long userIdentityId, String username, boolean awaitPassInFlight) {
+  private void sync(long userIdentityId, String username, boolean awaitPassInFlight, boolean verifyMirror) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (!connected(settings)) {
       return;
@@ -410,7 +435,9 @@ public class CaldavSyncService {
       // its own projection of what agenda already holds, so a check on them
       // that throws must not cost the user the calendars they came for.
       try {
-        caldavMirrorVerificationService.verify(userIdentityId);
+        if (verifyMirror) {
+          caldavMirrorVerificationService.verify(userIdentityId);
+        }
       } catch (RuntimeException e) {
         LOG.warn("The copies pushed for user {} could not be verified this round", userIdentityId, e);
       }
@@ -595,7 +622,35 @@ public class CaldavSyncService {
         continue;
       }
       try {
-        caldavInboundService.importInto(userIdentityId, pair, calendar, from, to);
+        // Before the import, and that ordering is the fix rather than a
+        // preference. Deleting an event in the same unit of work that has just
+        // imported events fails at commit — Hibernate finds a persistent
+        // instance referencing a transient EventEntity — while the identical
+        // deletion succeeds on its own. Reconciling first means the deletions
+        // run against a context the import has not touched.
+        //
+        // The cost is only churn: an object deleted and recreated between two
+        // passes is removed here and imported back below, ending the pass
+        // present, which is the state the account is in.
+        // One conversation with the account, not two. A sync report says what
+        // changed and what was removed in the same answer, and it consumes the
+        // token it was given — so asking twice would let the second question
+        // miss everything the first had already taken.
+        //
+        // The window is read in full when the binding has no token to ask with,
+        // or when the window itself has moved. A token reports what changed; it
+        // says nothing about days sliding into range, and an event a year out
+        // that nobody touches must still appear when the window reaches it.
+        // That is once a day, which is what the last sync time decides.
+        boolean fullRead = StringUtils.isBlank(pair.getSyncToken())
+            || pair.getLastSyncEnd() == null
+            || pair.getLastSyncEnd().toInstant().isBefore(today);
+        CaldavInboundService.VanishedCleanup cleanup = caldavInboundService.syncContents(userIdentityId,
+                                                                                        pair,
+                                                                                        calendar,
+                                                                                        from,
+                                                                                        to,
+                                                                                        fullRead);
         // Stamped on the way out, and only on the way out: until this line
         // the field was written when a binding was CREATED, so an account
         // whose calendars were all already bound kept reporting the day it
@@ -610,7 +665,12 @@ public class CaldavSyncService {
         // way in would make one failed collection look unchanged for ever:
         // the next pass would compare the same ctag, find it equal, and never
         // retry what it missed.
-        if (StringUtils.isNotBlank(ctag)) {
+        // Not when a deletion could not be carried out. The ctag is the claim
+        // that this collection has been fully read; recording it after a
+        // failed removal means the next pass compares an unchanged ctag,
+        // concludes there is nothing to do, and never retries — so the event
+        // the user deleted on their phone stays in eXo for good.
+        if (StringUtils.isNotBlank(ctag) && cleanup.failed() == 0) {
           pair.setCtag(ctag);
         }
         caldavSyncStorage.savePair(pair);
