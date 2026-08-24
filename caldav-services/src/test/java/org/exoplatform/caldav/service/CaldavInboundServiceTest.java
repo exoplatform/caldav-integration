@@ -1217,6 +1217,26 @@ public class CaldavInboundServiceTest {
     assertEquals("token-7", bound.getSyncToken(), "the token must be kept, or the collection never escapes the slow path");
   }
 
+
+  @Test
+  public void aCollectionThatWillNotAnswerAtAllIsNotThenListedAtLength() throws Exception {
+    // A collection that cannot answer one small PROPFIND about itself is not
+    // going to enumerate its contents — and the listing would spend the full
+    // 30-second request timeout discovering that, on the user's click, every
+    // pass. Measured against a real account, where one such collection was
+    // enough to make every synchronisation feel broken.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenThrow(new CalDavException("request timed out"));
+
+    CaldavInboundService.VanishedCleanup cleanup = service.removeVanishedObjects(USER, pair());
+
+    assertEquals(0, cleanup.removed());
+    verify(calDavClient, never()).listResourceEtags(any(), anyString(), anyString(), anyString());
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+  }
+
   /**
    * Stubs the paged walk over the mapping rows of the binding.
    *
