@@ -718,20 +718,29 @@ public class CaldavInboundService {
     }
     // The removals get a persistence context of their own, and that is the
     // difference between working and not. Deleting inside the one the pass has
-    // been using fails at commit — Hibernate reports a persistent instance
-    // referencing a transient EventEntity — while the identical deletion
-    // through agenda's own REST, which gets a fresh request, succeeds every
-    // time. Reordering the work within the pass does not help; only leaving
-    // its context does.
+    // been using fails at commit: since Hibernate 6, the pre-flush cascade
+    // walks EVERY entity the session holds — clean or dirty — and refuses the
+    // flush when any of them still references the event being removed, which
+    // a session that has just read collections and events for the whole pass
+    // always does. The identical deletion through agenda's own REST succeeds
+    // because its request's session holds nothing else.
     //
-    // Safe to renew here: everything this class holds across the boundary is a
-    // DTO, not a managed entity, so nothing is left detached by it.
+    // A single RequestLifeCycle.end()/begin() does NOT deliver that context:
+    // the kernel enrolls each ComponentRequestLifecycle only once per stack,
+    // so on an HTTP request — whose filter began the outer lifecycle — a
+    // nested begin() is an empty lifecycle and the matching end() closes
+    // nothing; the EntityManager quietly survives the "renewal". Measured,
+    // not supposed: the removals failed identically while logging that they
+    // had their own context. restartTransaction() is the kernel's own way to
+    // really do it — it unwinds the whole stack, which closes the
+    // EntityManager at the level actually holding it, then re-begins the same
+    // depth so the caller never knows.
+    //
+    // Safe to restart here: everything this class holds across the boundary
+    // is a DTO, not a managed entity, so nothing is left detached by it.
     ExoContainer container = ExoContainerContext.getCurrentContainer();
-    boolean isolated = renewContext(container);
-    LOG.info("Reconciling {} vanished object(s) of {}; own persistence context: {}",
-             vanished.size(),
-             pair.getRemoteHref(),
-             isolated);
+    restartContext(container);
+    LOG.info("Reconciling {} vanished object(s) of {}", vanished.size(), pair.getRemoteHref());
     int removed = 0;
     int failed = 0;
     try {
@@ -743,11 +752,9 @@ public class CaldavInboundService {
         }
       }
     } finally {
-      if (isolated) {
-        // The caller carries on with the pass, so it is handed a clean context
-        // rather than none at all.
-        renewContext(container);
-      }
+      // The caller carries on with the pass, so it is handed a context the
+      // removals have not touched.
+      restartContext(container);
     }
     if (removed > 0) {
       LOG.info("{} event(s) deleted on the account are no longer shown from collection {}", removed, pair.getRemoteHref());
@@ -792,28 +799,33 @@ public class CaldavInboundService {
    */
 
   /**
-   * Closes the current request's persistence context and opens a fresh one.
+   * Closes the request's persistence context and opens a fresh one, however
+   * deeply the request lifecycle is nested.
    *
    * <p>
-   * Guarded rather than assumed: outside a portal request — a unit test, most
-   * obviously — there is no lifecycle to renew, and failing to renew one is
-   * not a reason to abandon the work. The caller is told whether it happened
-   * so it can put things back the way it found them.
+   * {@code RequestLifeCycle.restartTransaction} unwinds the whole lifecycle
+   * stack and re-begins it at the same depth. Unwinding it all is the point:
+   * only the outermost level actually holds the EntityManager, so ending one
+   * nested level — which is what a plain {@code end()}/{@code begin()} pair
+   * does under an HTTP request — closes nothing at all.
    *
-   * @param container the container whose lifecycle is renewed, may be null
-   * @return true when a fresh context was opened
+   * <p>
+   * Guarded rather than assumed: outside a portal request — a unit test, a
+   * scheduled thread — there may be no lifecycle to restart, which is fine:
+   * there each transactional call already opens a context of its own, and
+   * failing to restart what does not exist is not a reason to abandon the
+   * work.
+   *
+   * @param container the container whose lifecycle is restarted, may be null
    */
-  private boolean renewContext(ExoContainer container) {
+  private void restartContext(ExoContainer container) {
     if (container == null) {
-      return false;
+      return;
     }
     try {
-      RequestLifeCycle.end();
-      RequestLifeCycle.begin(container);
-      return true;
+      RequestLifeCycle.restartTransaction(container);
     } catch (RuntimeException e) {
-      LOG.debug("No request lifecycle to renew; the removals run in the caller's context", e);
-      return false;
+      LOG.debug("The request lifecycle could not be restarted; the removals run in the caller's context", e);
     }
   }
 
