@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -30,6 +31,7 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
@@ -37,9 +39,18 @@ import java.time.Instant;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
+import java.util.Map;
+import org.springframework.data.domain.PageImpl;
+import static org.mockito.ArgumentMatchers.anyInt;
+import org.exoplatform.caldav.client.SyncCollectionResult;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.ArgumentMatchers.anyList;
+import org.exoplatform.caldav.client.CalendarCollection;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
@@ -55,6 +66,10 @@ import org.exoplatform.agenda.model.EventAttendeeList;
 import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
+import org.exoplatform.container.ExoContainer;
+import org.exoplatform.container.ExoContainerContext;
+import org.exoplatform.container.component.ComponentRequestLifecycle;
+import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
@@ -834,6 +849,464 @@ public class CaldavInboundServiceTest {
   /**
    * @return the binding being read
    */
+
+  @Test
+  public void anEventDeletedOnTheAccountIsRemovedFromExo() throws Exception {
+    // The other half of reading a calendar back in, and the half that was
+    // missing: additions and edits arrived, deletions never did, so the
+    // calendar on the user's phone and the one eXo showed them drifted apart
+    // with nothing saying so.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenReturn(Map.of(HREF + "kept.ics", "etag-1"));
+    givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
+                  objectSync(102L, 502L, HREF + "vanished.ics"));
+
+    int removed = service.removeVanishedObjects(USER, pair()).removed();
+
+    assertEquals(1, removed);
+    verify(agendaEventService).deleteEventById(502L, USER);
+    verify(agendaEventService, never()).deleteEventById(eq(501L), anyLong());
+    verify(caldavSyncStorage).deleteObject(102L);
+    verify(caldavSyncStorage, never()).deleteObject(101L);
+  }
+
+  @Test
+  public void aCollectionThatCouldNotBeListedRemovesNothing() throws Exception {
+    // An unreachable server is not a statement that everything was deleted.
+    // Reading it as one would empty the user's calendar the moment their
+    // network dropped, and eXo cannot put the events back.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenThrow(new CalDavException("unreachable"));
+
+    int removed = service.removeVanishedObjects(USER, pair()).removed();
+
+    assertEquals(0, removed);
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
+  }
+
+  @Test
+  public void anEventWithNoMappingIsNeverRemoved() throws Exception {
+    // An event authored in eXo that never reached the account has no mapping.
+    // It is not this method's business, and deleting it because the server has
+    // never heard of it would destroy work the user did here.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    givenMappings(objectSync(103L, null, HREF + "orphan.ics"));
+
+    int removed = service.removeVanishedObjects(USER, pair()).removed();
+
+    assertEquals(0, removed);
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+  }
+
+
+  @Test
+  public void anEventStillOnTheAccountIsLeftAlone() throws Exception {
+    // The control for anEventDeletedOnTheAccountIsRemovedFromExo. Same
+    // mappings, same code path, one difference: the server still lists both
+    // objects. Nothing may be deleted — without this the deletion test would
+    // pass just as happily against a method that removed everything it walked.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenReturn(Map.of(HREF + "kept.ics", "etag-1", HREF + "vanished.ics", "etag-2"));
+    givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
+                  objectSync(102L, 502L, HREF + "vanished.ics"));
+
+    int removed = service.removeVanishedObjects(USER, pair()).removed();
+
+    assertEquals(0, removed);
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
+  }
+
+  @Test
+  public void theEventIsReadIntoTheCacheBeforeItIsDeleted() throws Exception {
+    // The read is what makes the deletion safe, not a convenience: on a cache
+    // miss, agenda's delete pulls the real EventEntity into its session before
+    // the attendee rows, and Hibernate then refuses the flush that removes it.
+    // Read first — in a context that is then dropped — and the delete finds
+    // the event in the cache instead.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    givenMappings(objectSync(102L, 502L, HREF + "vanished.ics"));
+
+    service.removeVanishedObjects(USER, pair());
+
+    InOrder inOrder = inOrder(agendaEventService);
+    inOrder.verify(agendaEventService).getEventById(502L);
+    inOrder.verify(agendaEventService).deleteEventById(502L, USER);
+  }
+
+  @Test
+  public void theRemovalsCycleTheLevelActuallyHoldingTheContext() throws Exception {
+    // The regression that kept inbound deletions broken: under an HTTP
+    // request the lifecycle stack is nested, and the kernel enrolls each
+    // component only once per stack — so a nested end()/begin() pair cycles
+    // an EMPTY level and the EntityManager quietly survives. The deletions
+    // then fail at commit against everything that context already holds,
+    // while the code logs that they got a context of their own. This test
+    // reproduces the nesting and asserts the component-holding level is
+    // really cycled, which only unwinding the whole stack does.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    givenMappings(objectSync(102L, 502L, HREF + "vanished.ics"));
+
+    LifecycleProbe probe = new LifecycleProbe();
+    ExoContainer container = new ExoContainer();
+    container.registerComponentInstance(probe);
+    ExoContainer previous = ExoContainerContext.getCurrentContainerIfPresent();
+    ExoContainerContext.setCurrentContainer(container);
+    try {
+      RequestLifeCycle.begin(container); // the level that holds the context
+      RequestLifeCycle.begin(container); // the nested level a request adds
+      try {
+        int removed = service.removeVanishedObjects(USER, pair()).removed();
+
+        assertEquals(1, removed);
+        // Three times — to leave the pass's context, to drop what the
+        // warm-up reads loaded, and to hand the caller a clean context — and
+        // each time on the level that was actually holding the context, two
+        // levels down.
+        assertEquals(3, probe.ended, "the context-holding level was never closed: the deletions ran in the caller's context");
+        assertTrue(probe.open, "the caller must be handed an open context back");
+      } finally {
+        RequestLifeCycle.end();
+        RequestLifeCycle.end();
+      }
+    } finally {
+      ExoContainerContext.setCurrentContainer(previous);
+    }
+  }
+
+  /**
+   * Counts how often the request lifecycle really reaches the component — the
+   * way {@code EntityManagerService} would experience the reconciliation.
+   */
+  private static class LifecycleProbe implements ComponentRequestLifecycle {
+
+    private int     ended;
+
+    private boolean open;
+
+    /**
+     * @param container the container the lifecycle runs in
+     */
+    @Override
+    public void startRequest(ExoContainer container) {
+      open = true;
+    }
+
+    /**
+     * @param container the container the lifecycle runs in
+     */
+    @Override
+    public void endRequest(ExoContainer container) {
+      ended++;
+      open = false;
+    }
+
+    /**
+     * @param container the container the lifecycle runs in
+     * @return whether the component currently has a context open
+     */
+    @Override
+    public boolean isStarted(ExoContainer container) {
+      return open;
+    }
+  }
+
+
+  @Test
+  public void aBindingWithATokenAsksWhatChangedRatherThanListingEverything() throws Exception {
+    // The whole point of the change. A full listing per collection per pass is
+    // what turned a synchronisation into a forty-second wait on a real
+    // calendar: it exceeded the request timeout, the timeout was swallowed, and
+    // deletions quietly stopped being noticed.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("token-1");
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+        .thenReturn(new SyncCollectionResult(true, "token-2", List.of(), List.of(HREF + "vanished.ics")));
+    givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
+                  objectSync(102L, 502L, HREF + "vanished.ics"));
+
+    int removed = service.removeVanishedObjects(USER, bound).removed();
+
+    assertEquals(1, removed);
+    verify(agendaEventService).deleteEventById(502L, USER);
+    verify(agendaEventService, never()).deleteEventById(eq(501L), anyLong());
+    // and the expensive question was never asked
+    verify(calDavClient, never()).listResourceEtags(any(), anyString(), anyString(), anyString());
+    assertEquals("token-2", bound.getSyncToken(), "the fresh token must be kept, or the next pass pays again");
+  }
+
+  @Test
+  public void aRefusedTokenFallsBackAndIsNotReadAsEverythingBeingGone() throws Exception {
+    // A server that can no longer say what changed has not said the collection
+    // is empty. Reading a refused token as "nothing is there" would delete
+    // every event eXo holds for that calendar.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("stale");
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("stale"), eq(LOGIN), anyString()))
+        .thenReturn(SyncCollectionResult.invalidToken());
+    // the fallback now reads the token cheaply and lists separately, so a
+    // collection too big to enumerate can still escape the slow path
+    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenReturn(new CalendarCollection(HREF, "Cal", "ctag-1", "token-9", null, true, Set.of("VEVENT")));
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenReturn(Map.of(HREF + "kept.ics", "e1"));
+    givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
+                  objectSync(102L, 502L, HREF + "gone.ics"));
+
+    int removed = service.removeVanishedObjects(USER, bound).removed();
+
+    assertEquals(1, removed, "only the mapping absent from the full listing");
+    verify(agendaEventService).deleteEventById(502L, USER);
+    verify(agendaEventService, never()).deleteEventById(eq(501L), anyLong());
+    assertEquals("token-9", bound.getSyncToken());
+  }
+
+  @Test
+  public void aReportThatCouldNotBeObtainedRemovesNothing() throws Exception {
+    // An unreachable or erroring server is not a statement that everything was
+    // deleted, and eXo cannot put the events back.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("token-1");
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+        .thenThrow(new CalDavException("unreachable"));
+
+    int removed = service.removeVanishedObjects(USER, bound).removed();
+
+    assertEquals(0, removed);
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
+    assertEquals("token-1", bound.getSyncToken(), "a failed round must not disturb the stored token");
+  }
+
+  @Test
+  public void aFailedRemovalWithholdsTheTokenSoTheNextPassLooksAgain() throws Exception {
+    // A token recorded over a failed removal claims everything up to that point
+    // was dealt with, and the next incremental report would not mention the
+    // object again — so the event would stay in eXo for good.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("token-1");
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+        .thenReturn(new SyncCollectionResult(true, "token-2", List.of(), List.of(HREF + "vanished.ics")));
+    givenMappings(objectSync(102L, 502L, HREF + "vanished.ics"));
+    doThrow(new IllegalStateException("agenda refused")).when(agendaEventService).deleteEventById(502L, USER);
+
+    CaldavInboundService.VanishedCleanup cleanup = service.removeVanishedObjects(USER, bound);
+
+    assertEquals(0, cleanup.removed());
+    assertEquals(1, cleanup.failed());
+    assertEquals("token-1", bound.getSyncToken(), "the old token must stand until the removal succeeds");
+  }
+
+
+  @Test
+  public void aChangedEventIsFetchedByPathRatherThanByRereadingTheWindow() throws Exception {
+    // The whole point. Changing one title used to re-read the window as fifteen
+    // REPORTs, each carrying the full iCalendar of everything in a 30-day
+    // slice — a year re-sent to learn one summary changed, with the user
+    // waiting for it.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("token-1");
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+        .thenReturn(new SyncCollectionResult(true,
+                                             "token-2",
+                                             List.of(new CalendarObject(HREF + "changed.ics", "e9", null)),
+                                             List.of()));
+    when(calDavClient.multiget(any(), anyString(), eq(List.of(HREF + "changed.ics")), eq(LOGIN), anyString()))
+        .thenReturn(List.of(new CalendarObject(HREF + "changed.ics", "e9", SERIES)));
+    Event imported = new Event();
+    imported.setId(4242L);
+    when(agendaEventService.createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong()))
+        .thenReturn(imported);
+    when(caldavSyncStorage.getObjects(eq(PAIR), anyInt(), anyInt())).thenReturn(new PageImpl<>(List.of()));
+
+    service.syncContents(USER, bound, calendar(), from(), to(), false);
+
+    verify(calDavClient).multiget(any(), anyString(), eq(List.of(HREF + "changed.ics")), eq(LOGIN), anyString());
+    verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
+    assertEquals("token-2", bound.getSyncToken());
+  }
+
+  @Test
+  public void aWindowThatHasMovedIsStillReadInFull() throws Exception {
+    // A token reports what changed. It says nothing about days sliding into
+    // range, so an event a year out that nobody touches would never appear
+    // without this — the caller asks for a full read once a day.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("token-1");
+    when(calDavClient.calendarQuery(any(), anyString(), any(), any(), eq(LOGIN), anyString())).thenReturn(List.of());
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    when(caldavSyncStorage.getObjects(eq(PAIR), anyInt(), anyInt())).thenReturn(new PageImpl<>(List.of()));
+
+    service.syncContents(USER, bound, calendar(), from(), to(), true);
+
+    // The window is re-read — that is the point. Reconciliation may still use
+    // the token afterwards, which is correct and costs one request; what must
+    // not happen is the window being skipped because a token exists.
+    verify(calDavClient, atLeastOnce()).calendarQuery(any(), anyString(), any(), any(), eq(LOGIN), anyString());
+    verify(calDavClient, never()).multiget(any(), anyString(), anyList(), anyString(), anyString());
+  }
+
+  @Test
+  public void changesThatCouldNotBeFetchedDoNotMoveTheToken() throws Exception {
+    // The token would claim they had been taken in, and nothing would ever go
+    // back for them.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("token-1");
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+        .thenReturn(new SyncCollectionResult(true,
+                                             "token-2",
+                                             List.of(new CalendarObject(HREF + "changed.ics", "e9", null)),
+                                             List.of()));
+    when(calDavClient.multiget(any(), anyString(), anyList(), eq(LOGIN), anyString()))
+        .thenThrow(new CalDavException("unreachable"));
+
+    service.syncContents(USER, bound, calendar(), from(), to(), false);
+
+    assertEquals("token-1", bound.getSyncToken(), "the token must not move over changes that were never read");
+  }
+
+
+  @Test
+  public void aCollectionTooBigToListStillRecordsItsTokenAndEscapesTheSlowPath() throws Exception {
+    // The trap this fixes. Getting a first token used to mean an initial sync
+    // report, which enumerates every member — the same cost as the listing, and
+    // on a real calendar the same 30-second timeout. A collection too big to
+    // list was therefore too big to get a token for, so it paid the timeout on
+    // every pass, for ever, on the user's own click. Reading the token from a
+    // Depth:0 PROPFIND breaks that: the listing may fail and the next pass can
+    // still ask the cheap question.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenReturn(new CalendarCollection(HREF, "Big", "ctag-1", "token-7", null, true, Set.of("VEVENT")));
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenThrow(new CalDavException("request timed out"));
+    CalendarSync bound = pair();
+
+    CaldavInboundService.VanishedCleanup cleanup = service.removeVanishedObjects(USER, bound);
+
+    assertEquals(0, cleanup.removed(), "a listing that failed must remove nothing");
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+    assertEquals("token-7", bound.getSyncToken(), "the token must be kept, or the collection never escapes the slow path");
+  }
+
+
+  @Test
+  public void aCollectionThatWillNotAnswerAtAllIsNotThenListedAtLength() throws Exception {
+    // A collection that cannot answer one small PROPFIND about itself is not
+    // going to enumerate its contents — and the listing would spend the full
+    // 30-second request timeout discovering that, on the user's click, every
+    // pass. Measured against a real account, where one such collection was
+    // enough to make every synchronisation feel broken.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenThrow(new CalDavException("request timed out"));
+
+    CaldavInboundService.VanishedCleanup cleanup = service.removeVanishedObjects(USER, pair());
+
+    assertEquals(0, cleanup.removed());
+    verify(calDavClient, never()).listResourceEtags(any(), anyString(), anyString(), anyString());
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+  }
+
+
+  @Test
+  public void aCollectionThatDidNotAnswerIsNotAskedAgainOnEveryClick() throws Exception {
+    // The timeout is paid once, not per click. A server that ignored a small
+    // PROPFIND a moment ago will ignore the next one too, and the user is the
+    // one waiting for it — measured at a full 30 seconds, on an http thread,
+    // on every synchronisation.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenThrow(new CalDavException("request timed out"));
+    CalendarSync bound = pair();
+
+    service.removeVanishedObjects(USER, bound);
+    service.removeVanishedObjects(USER, bound);
+    service.removeVanishedObjects(USER, bound);
+
+    verify(calDavClient, times(1)).readCalendar(any(), eq(HREF), eq(LOGIN), anyString());
+    verify(calDavClient, never()).listResourceEtags(any(), anyString(), anyString(), anyString());
+  }
+
+
+  @Test
+  public void aCollectionIsAlwaysAddressedWithItsTrailingSlash() throws Exception {
+    // The stored href is canonical — no trailing slash — so that two spellings
+    // of the same path compare equal. Addressing a collection is a different
+    // job: BlueMind ignores the slashless form without answering or
+    // redirecting, so every probe spent the full 30-second timeout while the
+    // import, which appended the slash, kept working. One collection, two
+    // spellings, and only one of them worked.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setRemoteHref("/dav/calendars/john/private");
+    when(calDavClient.readCalendar(any(), anyString(), eq(LOGIN), anyString()))
+        .thenReturn(new CalendarCollection("/dav/calendars/john/private/", "P", "c", "t", null, true, Set.of("VEVENT")));
+    when(calDavClient.listResourceEtags(any(), anyString(), eq(LOGIN), anyString())).thenReturn(Map.of());
+    when(caldavSyncStorage.getObjects(eq(PAIR), anyInt(), anyInt())).thenReturn(new PageImpl<>(List.of()));
+
+    service.removeVanishedObjects(USER, bound);
+
+    verify(calDavClient).readCalendar(any(), eq("/dav/calendars/john/private/"), eq(LOGIN), anyString());
+    verify(calDavClient).listResourceEtags(any(), eq("/dav/calendars/john/private/"), eq(LOGIN), anyString());
+  }
+
+  /**
+   * Stubs the paged walk over the mapping rows of the binding.
+   *
+   * @param objects the rows the first page holds
+   */
+  private void givenMappings(ObjectSync... objects) {
+    when(caldavSyncStorage.getObjects(eq(PAIR), eq(0), anyInt())).thenReturn(new PageImpl<>(List.of(objects)));
+    when(caldavSyncStorage.getObjects(eq(PAIR), eq(1), anyInt())).thenReturn(new PageImpl<>(List.of()));
+  }
+
+  /**
+   * @param id the mapping row's own identifier
+   * @param eventId the eXo event it points at, null when it points at none
+   * @param href where the object lives on the account
+   * @return the mapping row
+   */
+  private ObjectSync objectSync(long id, Long eventId, String href) {
+    ObjectSync object = new ObjectSync();
+    object.setId(id);
+    object.setCalendarSyncId(PAIR);
+    object.setLocalEventId(eventId);
+    object.setRemoteHref(href);
+    return object;
+  }
+
   private CalendarSync pair() {
     CalendarSync pair = new CalendarSync();
     pair.setId(PAIR);

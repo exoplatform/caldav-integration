@@ -54,6 +54,7 @@ import java.util.ArrayList;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.doAnswer;
 import org.junit.jupiter.api.BeforeEach;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -139,6 +140,13 @@ public class CaldavSyncServiceTest {
     // The engine reads its tuning where it uses it rather than capturing it at
     // bean creation, which is what lets an administrator change it without a
     // restart — so the test stubs the reader, not a field.
+    // The reconciliation runs on every pass and a mock answers null, which the
+    // pass then reads as a failure. Stubbed to "nothing to clean" so each test
+    // exercises what it is actually about.
+    lenient().when(caldavInboundService.removeVanishedObjects(anyLong(), any()))
+             .thenReturn(CaldavInboundService.VanishedCleanup.nothing());
+    lenient().when(caldavInboundService.syncContents(anyLong(), any(), any(), any(), any(), anyBoolean()))
+             .thenReturn(CaldavInboundService.VanishedCleanup.nothing());
     lenient().when(caldavTuningService.getThrottleMinutes()).thenReturn(15L);
     lenient().when(caldavTuningService.getPastDays()).thenReturn(60L);
     lenient().when(caldavTuningService.getFutureDays()).thenReturn(365L);
@@ -213,7 +221,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(eq(USER), eq(bound), any(), any(), any());
+    verify(caldavInboundService).syncContents(eq(USER), eq(bound), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -228,7 +236,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -275,7 +283,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(eq(USER), eq(mine), any(), any(), any());
+    verify(caldavInboundService).syncContents(eq(USER), eq(mine), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -289,7 +297,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -302,7 +310,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -312,12 +320,12 @@ public class CaldavSyncServiceTest {
     CalendarSync second = remotePair("/dav/calendars/john/b/", "anchor-2");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(first, second));
     givenUserCalendars(calendarWithAnchor(77L, "anchor-1"), calendarWithAnchor(78L, "anchor-2"));
-    when(caldavInboundService.importInto(anyLong(), eq(first), any(), any(), any()))
+    when(caldavInboundService.syncContents(anyLong(), eq(first), any(), any(), any(), anyBoolean()))
                                                                                     .thenThrow(new IllegalStateException("down"));
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(eq(USER), eq(second), any(), any(), any());
+    verify(caldavInboundService).syncContents(eq(USER), eq(second), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -905,7 +913,7 @@ public class CaldavSyncServiceTest {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
     givenAgendaHasCalendar("anchor-1");
     doThrow(new IllegalStateException("server down")).when(caldavInboundService)
-                                                     .importInto(anyLong(), any(), any(), any(), any());
+                                                     .syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
 
     service.syncNow(USER, LOGIN);
 
@@ -1047,7 +1055,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     assertEquals(CalendarSyncStatus.REMOTE_GONE, bound.getStatus());
-    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1101,7 +1109,7 @@ public class CaldavSyncServiceTest {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
     givenAgendaHasCalendar("anchor-1");
     doThrow(new IllegalStateException("boom")).when(caldavInboundService)
-                                              .importInto(anyLong(), any(), any(), any(), any());
+                                              .syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
 
     service.syncNow(USER, LOGIN);
 
@@ -1146,7 +1154,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService, never()).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1164,7 +1172,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1183,7 +1191,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1205,7 +1213,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(anyLong(), any(), any(), any(), any());
+    verify(caldavInboundService).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1222,7 +1230,7 @@ public class CaldavSyncServiceTest {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
     givenAgendaHasCalendar("anchor-1");
     doThrow(new IllegalStateException("server down")).when(caldavInboundService)
-                                                     .importInto(anyLong(), any(), any(), any(), any());
+                                                     .syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
 
     service.syncNow(USER, LOGIN);
 
@@ -1356,7 +1364,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).importInto(eq(USER), any(), any(), any(), any());
+    verify(caldavInboundService).syncContents(eq(USER), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -1375,6 +1383,31 @@ public class CaldavSyncServiceTest {
     assertNull(saved.getValue().getCtag(), "a binding that has read nothing must not carry a ctag");
     assertNull(saved.getValue().getSyncToken(), "a binding that has read nothing must not carry a sync token");
     assertNull(saved.getValue().getLastSyncEnd(), "a binding that has read nothing must not claim a sync time");
+  }
+
+
+  @Test
+  public void aUserTriggeredSyncDoesNotWaitForTheMirrorToBeVerified() throws Exception {
+    // Measured: that check lists a whole collection and took a full 30-second
+    // request timeout against one real account, on every pass — so pressing
+    // Synchronise now cost 25 seconds, nearly all of it spent on a repair whose
+    // result the user never sees. Nobody waits for a repair.
+    givenServerCalendars();
+
+    service.syncNowAndWait(USER, LOGIN);
+
+    verify(caldavMirrorVerificationService, never()).verify(anyLong());
+  }
+
+  @Test
+  public void theBackgroundSweepStillVerifiesTheMirror() throws Exception {
+    // The control. Moving the check off the user's path must not stop it
+    // happening — repairs run exactly as often as before, on the sweep.
+    givenServerCalendars();
+
+    service.syncInBackground(USER, LOGIN);
+
+    verify(caldavMirrorVerificationService).verify(USER);
   }
 
   private CaldavUserSetting settings() {
