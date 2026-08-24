@@ -1149,7 +1149,20 @@ public class CaldavInboundService {
         freshToken = collection.syncToken();
       }
     } catch (RuntimeException e) {
-      LOG.debug("Collection {} did not give a sync token; it will be compared in full again", pair.getRemoteHref(), e);
+      // The cheap question failed, so the expensive one is not worth asking:
+      // a collection that will not answer one small PROPFIND about itself is
+      // not going to enumerate its whole contents, and the listing that
+      // follows would spend the full request timeout finding that out — on the
+      // user's own click, every pass. Measured at 30 seconds against a real
+      // account, for a collection that had been failing all along.
+      //
+      // Nothing is concluded and nothing is removed, which is what a failure
+      // always meant here. The difference is that it now costs one request
+      // instead of a timeout.
+      LOG.warn("Collection {} did not answer; it is left alone this round rather than listed at length",
+               pair.getRemoteHref(),
+               e);
+      return Vanished.inconclusive();
     }
     Map<String, String> etags;
     try {
