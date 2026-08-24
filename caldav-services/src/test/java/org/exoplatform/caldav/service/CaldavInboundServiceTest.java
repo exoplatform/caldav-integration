@@ -42,6 +42,8 @@ import org.junit.jupiter.api.BeforeEach;
 import java.util.Map;
 import org.springframework.data.domain.PageImpl;
 import static org.mockito.ArgumentMatchers.anyInt;
+import org.exoplatform.caldav.client.SyncCollectionResult;
+import static org.mockito.Mockito.doThrow;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -1017,6 +1019,99 @@ public class CaldavInboundServiceTest {
     public boolean isStarted(ExoContainer container) {
       return open;
     }
+  }
+
+
+  @Test
+  public void aBindingWithATokenAsksWhatChangedRatherThanListingEverything() throws Exception {
+    // The whole point of the change. A full listing per collection per pass is
+    // what turned a synchronisation into a forty-second wait on a real
+    // calendar: it exceeded the request timeout, the timeout was swallowed, and
+    // deletions quietly stopped being noticed.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("token-1");
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+        .thenReturn(new SyncCollectionResult(true, "token-2", List.of(), List.of(HREF + "vanished.ics")));
+    givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
+                  objectSync(102L, 502L, HREF + "vanished.ics"));
+
+    int removed = service.removeVanishedObjects(USER, bound).removed();
+
+    assertEquals(1, removed);
+    verify(agendaEventService).deleteEventById(502L, USER);
+    verify(agendaEventService, never()).deleteEventById(eq(501L), anyLong());
+    // and the expensive question was never asked
+    verify(calDavClient, never()).listResourceEtags(any(), anyString(), anyString(), anyString());
+    assertEquals("token-2", bound.getSyncToken(), "the fresh token must be kept, or the next pass pays again");
+  }
+
+  @Test
+  public void aRefusedTokenFallsBackAndIsNotReadAsEverythingBeingGone() throws Exception {
+    // A server that can no longer say what changed has not said the collection
+    // is empty. Reading a refused token as "nothing is there" would delete
+    // every event eXo holds for that calendar.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("stale");
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("stale"), eq(LOGIN), anyString()))
+        .thenReturn(SyncCollectionResult.invalidToken());
+    when(calDavClient.syncCollection(any(), eq(HREF), eq(""), eq(LOGIN), anyString()))
+        .thenReturn(new SyncCollectionResult(true,
+                                             "token-9",
+                                             List.of(new CalendarObject(HREF + "kept.ics", "e1", null)),
+                                             List.of()));
+    givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
+                  objectSync(102L, 502L, HREF + "gone.ics"));
+
+    int removed = service.removeVanishedObjects(USER, bound).removed();
+
+    assertEquals(1, removed, "only the mapping absent from the full listing");
+    verify(agendaEventService).deleteEventById(502L, USER);
+    verify(agendaEventService, never()).deleteEventById(eq(501L), anyLong());
+    assertEquals("token-9", bound.getSyncToken());
+  }
+
+  @Test
+  public void aReportThatCouldNotBeObtainedRemovesNothing() throws Exception {
+    // An unreachable or erroring server is not a statement that everything was
+    // deleted, and eXo cannot put the events back.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("token-1");
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+        .thenThrow(new CalDavException("unreachable"));
+
+    int removed = service.removeVanishedObjects(USER, bound).removed();
+
+    assertEquals(0, removed);
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
+    assertEquals("token-1", bound.getSyncToken(), "a failed round must not disturb the stored token");
+  }
+
+  @Test
+  public void aFailedRemovalWithholdsTheTokenSoTheNextPassLooksAgain() throws Exception {
+    // A token recorded over a failed removal claims everything up to that point
+    // was dealt with, and the next incremental report would not mention the
+    // object again — so the event would stay in eXo for good.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("token-1");
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+        .thenReturn(new SyncCollectionResult(true, "token-2", List.of(), List.of(HREF + "vanished.ics")));
+    givenMappings(objectSync(102L, 502L, HREF + "vanished.ics"));
+    doThrow(new IllegalStateException("agenda refused")).when(agendaEventService).deleteEventById(502L, USER);
+
+    CaldavInboundService.VanishedCleanup cleanup = service.removeVanishedObjects(USER, bound);
+
+    assertEquals(0, cleanup.removed());
+    assertEquals(1, cleanup.failed());
+    assertEquals("token-1", bound.getSyncToken(), "the old token must stand until the removal succeeds");
   }
 
   /**

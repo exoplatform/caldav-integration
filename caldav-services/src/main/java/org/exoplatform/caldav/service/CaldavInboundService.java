@@ -42,6 +42,8 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.container.ExoContainer;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.container.component.RequestLifeCycle;
+import java.util.Collection;
+import org.exoplatform.caldav.client.SyncCollectionResult;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -679,41 +681,23 @@ public class CaldavInboundService {
     if (settings == null || StringUtils.isBlank(settings.getUsername())) {
       return VanishedCleanup.nothing();
     }
-    Map<String, String> etags;
+    CalDavEndpoint endpoint;
     try {
-      CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
-      etags = calDavClient.listResourceEtags(endpoint,
-                                             pair.getRemoteHref(),
-                                             settings.getUsername(),
-                                             settings.getPassword());
+      endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
     } catch (RuntimeException e) {
-      LOG.warn("Collection {} could not be listed; nothing is removed from it this round", pair.getRemoteHref(), e);
+      LOG.warn("No endpoint for collection {}; nothing is removed from it this round", pair.getRemoteHref(), e);
       return VanishedCleanup.nothing();
     }
-    if (etags == null) {
+    Vanished found = findVanished(pair, settings, endpoint);
+    if (!found.conclusive()) {
       return VanishedCleanup.nothing();
     }
-    Set<String> held = etags.keySet()
-                            .stream()
-                            .map(CaldavSyncStorage::canonicalHref)
-                            .collect(Collectors.toSet());
-    // Collected before anything is deleted. Removing rows while paging over
-    // them shifts every later page, which silently skips half the mappings.
-    List<ObjectSync> vanished = new ArrayList<>();
-    int page = 0;
-    List<ObjectSync> objects = caldavSyncStorage.getObjects(pair.getId(), page, OBJECT_PAGE_SIZE).getContent();
-    while (!objects.isEmpty()) {
-      for (ObjectSync object : objects) {
-        if (object.getLocalEventId() == null || StringUtils.isBlank(object.getRemoteHref())) {
-          continue;
-        }
-        if (!held.contains(CaldavSyncStorage.canonicalHref(object.getRemoteHref()))) {
-          vanished.add(object);
-        }
-      }
-      objects = caldavSyncStorage.getObjects(pair.getId(), ++page, OBJECT_PAGE_SIZE).getContent();
-    }
+    List<ObjectSync> vanished = found.objects();
     if (vanished.isEmpty()) {
+      // Nothing to remove, but the account was reached and answered — so the
+      // token it gave is worth keeping, or the next pass asks the expensive
+      // question again for no reason.
+      rememberToken(pair, found.freshToken());
       return VanishedCleanup.nothing();
     }
     // The removals get a persistence context of their own, and that is the
@@ -778,6 +762,13 @@ public class CaldavInboundService {
     }
     if (removed > 0) {
       LOG.info("{} event(s) deleted on the account are no longer shown from collection {}", removed, pair.getRemoteHref());
+    }
+    if (failed == 0) {
+      // Only when every removal went through. A token recorded over a failed
+      // removal is a claim to have dealt with everything up to that point, and
+      // the next incremental report would not mention the object again — so the
+      // event the user deleted would stay in eXo for good.
+      rememberToken(pair, found.freshToken());
     }
     return new VanishedCleanup(removed, failed);
   }
@@ -870,6 +861,190 @@ public class CaldavInboundService {
     } catch (RuntimeException e) {
       LOG.debug("The request lifecycle could not be restarted; the removals run in the caller's context", e);
     }
+  }
+
+
+  /**
+   * What one discovery round concluded.
+   *
+   * <p>
+   * <b>conclusive</b> is the safety flag and is not the same as "found
+   * nothing". A report that could not be obtained, or a token the server
+   * refused, tells us nothing about what the collection holds — and this code
+   * deletes the user's events, so "we could not ask" must never be read as
+   * "everything is gone".
+   *
+   * @param conclusive whether the account actually answered the question
+   * @param objects the mappings whose objects are gone
+   * @param freshToken the token to record for the next pass, null when none
+   */
+  private record Vanished(boolean conclusive, List<ObjectSync> objects, String freshToken) {
+
+    /**
+     * @return a round that concluded nothing, because it could not ask
+     */
+    static Vanished inconclusive() {
+      return new Vanished(false, List.of(), null);
+    }
+  }
+
+  /**
+   * Works out which of a binding's objects are no longer on the account.
+   *
+   * <p>
+   * Two ways, and which one is used matters for the user rather than only for
+   * the code. With a sync token, the server is asked what changed since it
+   * (<a href="https://www.rfc-editor.org/rfc/rfc6578">RFC 6578</a>) and answers
+   * with the handful of objects actually removed. Without one, the whole
+   * collection has to be listed and compared — which on a real calendar can
+   * take longer than the request timeout allows, and did: a full listing per
+   * collection per pass turned a synchronisation into a forty-second wait.
+   *
+   * <p>
+   * So the expensive question is asked once, and only until the account has
+   * given us a token to ask the cheap one with.
+   *
+   * @param pair the binding being reconciled
+   * @param settings the connected account
+   * @param endpoint where its server lives
+   * @return what this round concluded
+   */
+  private Vanished findVanished(CalendarSync pair, CaldavUserSetting settings, CalDavEndpoint endpoint) {
+    String token = pair.getSyncToken();
+    if (StringUtils.isNotBlank(token)) {
+      SyncCollectionResult report;
+      try {
+        report = calDavClient.syncCollection(endpoint,
+                                             pair.getRemoteHref(),
+                                             token,
+                                             settings.getUsername(),
+                                             settings.getPassword());
+      } catch (RuntimeException e) {
+        LOG.warn("Collection {} could not report its changes; nothing is removed from it this round",
+                 pair.getRemoteHref(),
+                 e);
+        return Vanished.inconclusive();
+      }
+      if (report != null && report.tokenValid()) {
+        return new Vanished(true, mappingsMatching(pair, canonical(report.deleted()), true), report.syncToken());
+      }
+      // A refused token says the server can no longer tell us what changed —
+      // never that nothing is there. Falling back to the full comparison is
+      // what keeps that distinction.
+      LOG.info("The sync token of collection {} was refused; it is compared in full this round", pair.getRemoteHref());
+    }
+    return byFullComparison(pair, settings, endpoint);
+  }
+
+  /**
+   * Compares every mapping against everything the collection holds.
+   *
+   * <p>
+   * The fallback, for a binding that has never been read or whose token the
+   * server refused. It asks for an initial sync report first, because that
+   * returns the members <b>and</b> a token — so the next pass can take the
+   * cheap path instead of paying this again. A server that does not answer
+   * that is listed the older way, and simply keeps paying.
+   *
+   * @param pair the binding being reconciled
+   * @param settings the connected account
+   * @param endpoint where its server lives
+   * @return what this round concluded
+   */
+  private Vanished byFullComparison(CalendarSync pair, CaldavUserSetting settings, CalDavEndpoint endpoint) {
+    Set<String> held = null;
+    String freshToken = null;
+    try {
+      SyncCollectionResult initial = calDavClient.syncCollection(endpoint,
+                                                                pair.getRemoteHref(),
+                                                                "",
+                                                                settings.getUsername(),
+                                                                settings.getPassword());
+      if (initial != null && initial.tokenValid()) {
+        held = initial.changed().stream().map(CalendarObject::href).filter(StringUtils::isNotBlank).map(CaldavSyncStorage::canonicalHref).collect(Collectors.toSet());
+        freshToken = initial.syncToken();
+      }
+    } catch (RuntimeException e) {
+      LOG.debug("Collection {} did not answer an initial sync report; falling back to a listing", pair.getRemoteHref(), e);
+    }
+    if (held == null) {
+      Map<String, String> etags;
+      try {
+        etags = calDavClient.listResourceEtags(endpoint,
+                                               pair.getRemoteHref(),
+                                               settings.getUsername(),
+                                               settings.getPassword());
+      } catch (RuntimeException e) {
+        LOG.warn("Collection {} could not be listed; nothing is removed from it this round", pair.getRemoteHref(), e);
+        return Vanished.inconclusive();
+      }
+      if (etags == null) {
+        return Vanished.inconclusive();
+      }
+      held = canonical(etags.keySet());
+    }
+    return new Vanished(true, mappingsMatching(pair, held, false), freshToken);
+  }
+
+  /**
+   * The mappings of a binding whose object is, or is not, in a set of paths.
+   *
+   * <p>
+   * Collected before anything is deleted. Removing rows while paging over them
+   * shifts every later page, which silently skips half the mappings.
+   *
+   * @param pair the binding whose mappings are walked
+   * @param hrefs canonical paths to test against
+   * @param present true to select the mappings <b>in</b> the set (paths the
+   *          server reported deleted), false to select those <b>absent</b> from
+   *          it (paths the server no longer holds)
+   * @return the mappings selected, never null
+   */
+  private List<ObjectSync> mappingsMatching(CalendarSync pair, Set<String> hrefs, boolean present) {
+    List<ObjectSync> selected = new ArrayList<>();
+    int page = 0;
+    List<ObjectSync> objects = caldavSyncStorage.getObjects(pair.getId(), page, OBJECT_PAGE_SIZE).getContent();
+    while (!objects.isEmpty()) {
+      for (ObjectSync object : objects) {
+        if (object.getLocalEventId() == null || StringUtils.isBlank(object.getRemoteHref())) {
+          continue;
+        }
+        if (hrefs.contains(CaldavSyncStorage.canonicalHref(object.getRemoteHref())) == present) {
+          selected.add(object);
+        }
+      }
+      objects = caldavSyncStorage.getObjects(pair.getId(), ++page, OBJECT_PAGE_SIZE).getContent();
+    }
+    return selected;
+  }
+
+  /**
+   * Canonicalises a collection of paths, so comparisons do not turn on a
+   * trailing slash or an escape.
+   *
+   * @param hrefs the paths as the server wrote them
+   * @return the same paths, canonical
+   */
+  private Set<String> canonical(Collection<String> hrefs) {
+    return hrefs.stream()
+                .filter(StringUtils::isNotBlank)
+                .map(CaldavSyncStorage::canonicalHref)
+                .collect(Collectors.toSet());
+  }
+
+  /**
+   * Records the token the account just gave, so the next pass can ask what
+   * changed rather than listing everything.
+   *
+   * @param pair the binding to record it on
+   * @param freshToken the token, ignored when blank or unchanged
+   */
+  private void rememberToken(CalendarSync pair, String freshToken) {
+    if (StringUtils.isBlank(freshToken) || StringUtils.equals(freshToken, pair.getSyncToken())) {
+      return;
+    }
+    pair.setSyncToken(freshToken);
+    caldavSyncStorage.savePair(pair);
   }
 
   private boolean removeOne(long userIdentityId, ObjectSync object) {
