@@ -653,6 +653,21 @@ public class CaldavInboundService {
     return StringUtils.appendIfMissing(pair.getRemoteHref(), "/");
   }
 
+  /*
+   * Why every client call goes through the method above rather than taking the
+   * stored href directly: the stored form is canonical — no trailing slash —
+   * because that is what makes two spellings of the same path compare equal.
+   * Addressing a collection is a different job: a server may answer one
+   * spelling and not the other. BlueMind ignores the slashless form entirely,
+   * neither answering nor redirecting, so a request to it spends the whole
+   * 30-second timeout finding out nothing.
+   *
+   * The import already appended the slash, which is why events kept arriving
+   * from calendars whose every probe timed out — the two halves of the same
+   * pass were addressing the same collection by different names, and only one
+   * of them worked.
+   */
+
   /**
    * The connected account behind a binding, when it is still usable.
    *
@@ -746,7 +761,7 @@ public class CaldavInboundService {
     try {
       endpoint = calDavClient.endpoint(pair.getServerId(), settings.getUsername());
       report = calDavClient.syncCollection(endpoint,
-                                           pair.getRemoteHref(),
+                                           collectionUrl(pair),
                                            pair.getSyncToken(),
                                            settings.getUsername(),
                                            settings.getPassword());
@@ -1195,7 +1210,7 @@ public class CaldavInboundService {
     String freshToken = null;
     try {
       CalendarCollection collection = calDavClient.readCalendar(endpoint,
-                                                               pair.getRemoteHref(),
+                                                               collectionUrl(pair),
                                                                settings.getUsername(),
                                                                settings.getPassword());
       if (collection != null) {
@@ -1224,7 +1239,7 @@ public class CaldavInboundService {
     Map<String, String> etags;
     try {
       etags = calDavClient.listResourceEtags(endpoint,
-                                             pair.getRemoteHref(),
+                                             collectionUrl(pair),
                                              settings.getUsername(),
                                              settings.getPassword());
     } catch (RuntimeException e) {
