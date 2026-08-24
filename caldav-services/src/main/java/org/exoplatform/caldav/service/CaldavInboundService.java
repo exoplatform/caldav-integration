@@ -44,6 +44,7 @@ import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.container.component.RequestLifeCycle;
 import java.util.Collection;
 import org.exoplatform.caldav.client.SyncCollectionResult;
+import java.util.concurrent.ConcurrentHashMap;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.client.CalDavClient;
@@ -85,6 +86,26 @@ public class CaldavInboundService {
 
   /** How many mapping rows are walked at a time. */
   private static final int       OBJECT_PAGE_SIZE = 200;
+
+  /**
+   * How long a collection that did not answer is left unasked.
+   *
+   * <p>
+   * Long enough that a user clicking repeatedly pays the timeout once rather
+   * than every time, short enough that a server coming back is noticed within
+   * a few minutes without anyone doing anything.
+   */
+  private static final Duration  NOT_ANSWERING_FOR = Duration.ofMinutes(10);
+
+  /**
+   * When each collection last failed to answer at all.
+   *
+   * <p>
+   * In memory on purpose: it is a hint about a server's mood, not a fact about
+   * the binding, and a restart should forget it. Recording it in the schema
+   * would turn a passing outage into stored state someone later has to explain.
+   */
+  private final Map<Long, Instant> notAnswering = new ConcurrentHashMap<>();
 
   @Autowired
   private CalDavClient           calDavClient;
@@ -703,7 +724,7 @@ public class CaldavInboundService {
       }
     }
     importInto(userIdentityId, pair, calendar, from, to);
-    return removeVanishedObjects(userIdentityId, pair);
+    return removeVanishedObjects(userIdentityId, pair, calendar.getTitle());
   }
 
   /**
@@ -835,6 +856,25 @@ public class CaldavInboundService {
    * @return what was removed and what could not be
    */
   public VanishedCleanup removeVanishedObjects(long userIdentityId, CalendarSync pair) {
+    return removeVanishedObjects(userIdentityId, pair, null);
+  }
+
+  /**
+   * The same, told which calendar it is working on so its warnings can name it.
+   *
+   * <p>
+   * A collection href is <code>exo-cal-&lt;syncUid&gt;</code>, and nothing a
+   * user or an administrator can reach maps that back to a calendar — the
+   * agenda REST does not expose <code>syncUid</code> at all. A warning naming
+   * only the href therefore cannot be acted on by the person reading it, which
+   * is how one failing collection went unexplained for a whole morning.
+   *
+   * @param userIdentityId identity of the user
+   * @param pair the binding whose collection is reconciled
+   * @param calendarName the eXo calendar's name, for the log only, may be null
+   * @return what was removed and what could not be
+   */
+  public VanishedCleanup removeVanishedObjects(long userIdentityId, CalendarSync pair, String calendarName) {
     if (pair == null || StringUtils.isBlank(pair.getRemoteHref())) {
       return VanishedCleanup.nothing();
     }
@@ -849,7 +889,7 @@ public class CaldavInboundService {
       LOG.warn("No endpoint for collection {}; nothing is removed from it this round", pair.getRemoteHref(), e);
       return VanishedCleanup.nothing();
     }
-    Vanished found = findVanished(pair, settings, endpoint);
+    Vanished found = findVanished(pair, settings, endpoint, calendarName);
     if (!found.conclusive()) {
       return VanishedCleanup.nothing();
     }
@@ -1087,7 +1127,10 @@ public class CaldavInboundService {
    * @param endpoint where its server lives
    * @return what this round concluded
    */
-  private Vanished findVanished(CalendarSync pair, CaldavUserSetting settings, CalDavEndpoint endpoint) {
+  private Vanished findVanished(CalendarSync pair,
+                                CaldavUserSetting settings,
+                                CalDavEndpoint endpoint,
+                                String calendarName) {
     String token = pair.getSyncToken();
     if (StringUtils.isNotBlank(token)) {
       SyncCollectionResult report;
@@ -1111,7 +1154,7 @@ public class CaldavInboundService {
       // what keeps that distinction.
       LOG.info("The sync token of collection {} was refused; it is compared in full this round", pair.getRemoteHref());
     }
-    return byFullComparison(pair, settings, endpoint);
+    return byFullComparison(pair, settings, endpoint, calendarName);
   }
 
   /**
@@ -1129,7 +1172,10 @@ public class CaldavInboundService {
    * @param endpoint where its server lives
    * @return what this round concluded
    */
-  private Vanished byFullComparison(CalendarSync pair, CaldavUserSetting settings, CalDavEndpoint endpoint) {
+  private Vanished byFullComparison(CalendarSync pair,
+                                    CaldavUserSetting settings,
+                                    CalDavEndpoint endpoint,
+                                    String calendarName) {
     // The token is read first, and cheaply: a Depth:0 PROPFIND asks the
     // collection for one property and enumerates nothing.
     //
@@ -1139,6 +1185,13 @@ public class CaldavInboundService {
     // collection too big to list was also too big to get a token for, and could
     // never reach the cheap path: the escape needed the very call that was
     // failing. Read the token separately and that trap disappears.
+    if (silentRecently(pair)) {
+      // Asked within the last few minutes and it did not answer. The timeout is
+      // paid once, not on every click: a server that ignored a small PROPFIND a
+      // moment ago will ignore this one too, and the user is the one waiting.
+      LOG.debug("Collection {} did not answer recently; not asked again this round", pair.getRemoteHref());
+      return Vanished.inconclusive();
+    }
     String freshToken = null;
     try {
       CalendarCollection collection = calDavClient.readCalendar(endpoint,
@@ -1148,6 +1201,7 @@ public class CaldavInboundService {
       if (collection != null) {
         freshToken = collection.syncToken();
       }
+      notAnswering.remove(pair.getId());
     } catch (RuntimeException e) {
       // The cheap question failed, so the expensive one is not worth asking:
       // a collection that will not answer one small PROPFIND about itself is
@@ -1159,9 +1213,12 @@ public class CaldavInboundService {
       // Nothing is concluded and nothing is removed, which is what a failure
       // always meant here. The difference is that it now costs one request
       // instead of a timeout.
-      LOG.warn("Collection {} did not answer; it is left alone this round rather than listed at length",
+      LOG.warn("Calendar \"{}\" did not answer at {}; it is left alone for the next {} minutes rather than listed at length",
+               StringUtils.defaultIfBlank(calendarName, "?"),
                pair.getRemoteHref(),
+               NOT_ANSWERING_FOR.toMinutes(),
                e);
+      notAnswering.put(pair.getId(), Instant.now());
       return Vanished.inconclusive();
     }
     Map<String, String> etags;
@@ -1175,7 +1232,8 @@ public class CaldavInboundService {
       // collection holds. But the token is kept if we got one, because that is
       // what lets the next pass ask the cheap question instead of failing here
       // again, every pass, for ever.
-      LOG.warn("Collection {} could not be listed; nothing is removed from it this round{}",
+      LOG.warn("Calendar \"{}\" could not be listed at {}; nothing is removed from it this round{}",
+               StringUtils.defaultIfBlank(calendarName, "?"),
                pair.getRemoteHref(),
                freshToken == null ? "" : ", but its sync token is recorded so the next pass can ask what changed",
                e);
@@ -1248,6 +1306,18 @@ public class CaldavInboundService {
     }
     pair.setSyncToken(freshToken);
     caldavSyncStorage.savePair(pair);
+  }
+
+
+  /**
+   * Whether a collection refused to answer within the last few minutes.
+   *
+   * @param pair the binding whose collection is asked about
+   * @return true when it is too soon to ask again
+   */
+  private boolean silentRecently(CalendarSync pair) {
+    Instant last = notAnswering.get(pair.getId());
+    return last != null && last.isAfter(Instant.now().minus(NOT_ANSWERING_FOR));
   }
 
   private boolean removeOne(long userIdentityId, ObjectSync object) {
