@@ -1382,6 +1382,31 @@ public class CaldavSyncServiceTest {
     assertNull(saved.getValue().getLastSyncEnd(), "a binding that has read nothing must not claim a sync time");
   }
 
+
+  @Test
+  public void aUserTriggeredSyncDoesNotWaitForTheMirrorToBeVerified() throws Exception {
+    // Measured: that check lists a whole collection and took a full 30-second
+    // request timeout against one real account, on every pass — so pressing
+    // Synchronise now cost 25 seconds, nearly all of it spent on a repair whose
+    // result the user never sees. Nobody waits for a repair.
+    givenServerCalendars();
+
+    service.syncNowAndWait(USER, LOGIN);
+
+    verify(caldavMirrorVerificationService, never()).verify(anyLong());
+  }
+
+  @Test
+  public void theBackgroundSweepStillVerifiesTheMirror() throws Exception {
+    // The control. Moving the check off the user's path must not stop it
+    // happening — repairs run exactly as often as before, on the sweep.
+    givenServerCalendars();
+
+    service.syncInBackground(USER, LOGIN);
+
+    verify(caldavMirrorVerificationService).verify(USER);
+  }
+
   private CaldavUserSetting settings() {
     CaldavUserSetting setting = new CaldavUserSetting();
     setting.setUsername(LOGIN);
