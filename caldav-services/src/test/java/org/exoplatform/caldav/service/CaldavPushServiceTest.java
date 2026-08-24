@@ -1176,6 +1176,122 @@ public class CaldavPushServiceTest {
     verify(caldavSyncStorage, times(1)).getObjectByUid(5001L, "uid-113");
   }
 
+
+  @Test
+  public void anEventMovedToAnotherCalendarLeavesNoCopyBehind() throws Exception {
+    // Found by hand: move an event between two personal calendars and it
+    // appears twice on the server, once in each collection. The mapping lookup
+    // is scoped to the destination, so after a move the event looks new there
+    // while its old mapping — and its object — are still sitting in the
+    // calendar it left. Nothing on the push path noticed a calendar change.
+    //
+    // The old copy is not merely untidy: a later edit in eXo updates only the
+    // new collection, so the one left behind goes on looking like a real event
+    // on the user's phone while quietly diverging from it.
+    //
+    // The identifiers are past 127 deliberately: they are Long, so a skip
+    // written with == compares references and only appears to work while the
+    // value is small enough for Java to have cached it.
+    givenAnAgendaEvent(112L, 0L);
+    givenPersonalCalendar(9L, "cal-anchor");
+    CalendarSync destination = boundPersonalPair();
+    destination.setId(6001L);
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(destination);
+    when(agendaRemoteEventService.findRemoteEvent(112L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-112"));
+    // nothing in the destination — this looks like a create
+    when(caldavSyncStorage.getObjectByUid(6001L, "uid-112")).thenReturn(null);
+    // but the event was in another calendar of the same account a moment ago
+    CalendarSync origin = boundPersonalPair();
+    origin.setId(6002L);
+    origin.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(destination, origin));
+    ObjectSync stray = mapped("\"etag-old\"");
+    stray.setId(7777L);
+    stray.setCalendarSyncId(6002L);
+    stray.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor/uid-112.ics");
+    when(caldavSyncStorage.getObjectByUid(6002L, "uid-112")).thenReturn(stray);
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+        .thenReturn(new PutResult(201, "\"etag-new\"", null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 112L, null);
+
+    // the copy left behind is removed, conditionally on what eXo last saw
+    verify(calDavClient).deleteObject(any(),
+                                     eq("/dav/calendars/john/exo-cal-old-anchor/uid-112.ics"),
+                                     eq("\"etag-old\""),
+                                     anyString(),
+                                     anyString());
+    verify(caldavSyncStorage).deleteObject(7777L);
+  }
+
+  @Test
+  public void anOrdinaryFirstWriteRemovesNothing() throws Exception {
+    // The control. An event that was never anywhere else must not send a
+    // delete to the account just because it is being written for the first
+    // time — the search for a previous home must come back empty and stay
+    // harmless.
+    givenAnAgendaEvent(113L, 0L);
+    givenPersonalCalendar(10L, "cal-anchor");
+    CalendarSync destination = boundPersonalPair();
+    destination.setId(6001L);
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(destination);
+    when(agendaRemoteEventService.findRemoteEvent(113L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-113"));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("uid-113"))).thenReturn(null);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(destination));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+        .thenReturn(new PutResult(201, "\"etag-new\"", null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 113L, null);
+
+    verify(calDavClient, never()).deleteObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
+  }
+
+
+  @Test
+  public void aMovedEventIsFoundEvenWhenItsUidWasMintedAfresh() throws Exception {
+    // The UID is supposed to survive a move — it is adopted from agenda's
+    // remote-event mapping — but that mapping has been lost before in this
+    // codebase, and when it is, the push mints a new one. A search keyed on the
+    // UID then finds nothing and the copy is left behind exactly as before,
+    // with no sign anything went wrong. The event's own identifier does not
+    // depend on that mapping.
+    givenAnAgendaEvent(112L, 0L);
+    givenPersonalCalendar(9L, "cal-anchor");
+    CalendarSync destination = boundPersonalPair();
+    destination.setId(6001L);
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(destination);
+    when(agendaRemoteEventService.findRemoteEvent(112L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-minted-anew"));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("uid-minted-anew"))).thenReturn(null);
+    CalendarSync origin = boundPersonalPair();
+    origin.setId(6002L);
+    origin.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(destination, origin));
+    // the old mapping carries the OLD uid, so only the event id can find it
+    ObjectSync stray = mapped("\"etag-old\"");
+    stray.setId(7778L);
+    stray.setCalendarSyncId(6002L);
+    stray.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor/uid-original.ics");
+    when(caldavSyncStorage.getObjectByEvent(6002L, 112L)).thenReturn(stray);
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+        .thenReturn(new PutResult(201, "\"etag-new\"", null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 112L, null);
+
+    verify(calDavClient).deleteObject(any(),
+                                     eq("/dav/calendars/john/exo-cal-old-anchor/uid-original.ics"),
+                                     eq("\"etag-old\""),
+                                     anyString(),
+                                     anyString());
+    verify(caldavSyncStorage).deleteObject(7778L);
+  }
+
   /**
    * The mirror pair under a chosen identifier.
    *

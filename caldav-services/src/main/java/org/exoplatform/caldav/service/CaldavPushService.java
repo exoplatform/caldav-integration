@@ -305,6 +305,11 @@ public class CaldavPushService {
 
     String ics = icsWriter.write(event);
     ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), event.getUid());
+    // Only when the destination holds no mapping, which is a create — or a
+    // move. The lookup above is scoped to one collection, so an event that has
+    // just changed calendar looks new here while its old mapping, and its old
+    // object, are still sitting in the calendar it left.
+    ObjectSync leftBehind = known == null ? mappingElsewhere(userIdentityId, pair, event.getUid(), localEventId) : null;
     String href = known != null && StringUtils.isNotBlank(known.getRemoteHref()) ? known.getRemoteHref()
                                                                                 : objectHref(pair.getRemoteHref(),
                                                                                              event.getUid());
@@ -327,7 +332,91 @@ public class CaldavPushService {
     mapping.setEtag(result.etag());
     mapping.setPushedHash(hashOf(ics));
     mapping.setLastSync(new Date());
-    return caldavSyncStorage.saveObject(mapping);
+    ObjectSync saved = caldavSyncStorage.saveObject(mapping);
+    // Last, and only once the destination holds the event: a move that failed
+    // here would otherwise take the copy away without having written the new
+    // one, which loses the user's event rather than tidying it.
+    removeWhatWasLeftBehind(userIdentityId, leftBehind, endpoint, settings);
+    return saved;
+  }
+
+  /**
+   * The mapping of this event in some other collection of the same account.
+   *
+   * <p>
+   * Answers "was this event somewhere else a moment ago?". A mapping is stored
+   * per collection, so moving an event between calendars leaves one behind
+   * rather than moving it, and the object it points at stays on the server —
+   * where it goes on looking like a real event, on the user's phone, in the
+   * calendar they took it out of.
+   *
+   * @param userIdentityId identity of the user
+   * @param destination the binding the event is being written into
+   * @param icsUid the event's iCalendar identifier
+   * @return the mapping it had elsewhere, or null when this is an ordinary
+   *         first write
+   */
+  private ObjectSync mappingElsewhere(long userIdentityId, CalendarSync destination, String icsUid, Long localEventId) {
+    for (CalendarSync other : caldavSyncStorage.getPairs(userIdentityId, destination.getServerId())) {
+      if (Objects.equals(other.getId(), destination.getId())) {
+        continue;
+      }
+      // By the eXo event first, and the iCalendar UID only after. The UID is
+      // supposed to survive a move — it is adopted from agenda's remote-event
+      // mapping rather than minted afresh — but that mapping has been lost
+      // before in this codebase, and when it is, the push mints a new UID and
+      // a search by UID silently finds nothing. The event's own identifier
+      // does not depend on any of that.
+      ObjectSync elsewhere = localEventId == null ? null
+                                                  : caldavSyncStorage.getObjectByEvent(other.getId(), localEventId);
+      if (elsewhere == null && StringUtils.isNotBlank(icsUid)) {
+        elsewhere = caldavSyncStorage.getObjectByUid(other.getId(), icsUid);
+      }
+      if (elsewhere != null && StringUtils.isNotBlank(elsewhere.getRemoteHref())) {
+        return elsewhere;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Removes the copy an event left in the calendar it moved out of.
+   *
+   * <p>
+   * Conditional on the ETag eXo recorded, so a copy someone has since edited on
+   * another device is refused rather than destroyed — the user moved an event
+   * between their own calendars, which is not consent to discard a change they
+   * made elsewhere. A refusal leaves both the object and its mapping alone: a
+   * stray eXo still knows about is a much smaller problem than one it has
+   * forgotten, and the next write can try again.
+   *
+   * @param userIdentityId identity of the user, for the log
+   * @param leftBehind the mapping in the old collection, may be null
+   * @param endpoint where the account lives
+   * @param settings the connected account
+   */
+  private void removeWhatWasLeftBehind(long userIdentityId,
+                                       ObjectSync leftBehind,
+                                       CalDavEndpoint endpoint,
+                                       CaldavUserSetting settings) {
+    if (leftBehind == null) {
+      return;
+    }
+    try {
+      calDavClient.deleteObject(endpoint,
+                                leftBehind.getRemoteHref(),
+                                leftBehind.getEtag(),
+                                settings.getUsername(),
+                                settings.getPassword());
+    } catch (RuntimeException e) {
+      LOG.warn("The copy user {} left at {} when moving the event could not be removed; it stays, and so does its mapping",
+               userIdentityId,
+               leftBehind.getRemoteHref(),
+               e);
+      return;
+    }
+    caldavSyncStorage.deleteObject(leftBehind.getId());
+    LOG.info("The copy left at {} was removed after the event moved to another calendar", leftBehind.getRemoteHref());
   }
 
   /**
