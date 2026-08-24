@@ -44,6 +44,7 @@ import org.springframework.data.domain.PageImpl;
 import static org.mockito.ArgumentMatchers.anyInt;
 import org.exoplatform.caldav.client.SyncCollectionResult;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.ArgumentMatchers.anyList;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -1112,6 +1113,80 @@ public class CaldavInboundServiceTest {
     assertEquals(0, cleanup.removed());
     assertEquals(1, cleanup.failed());
     assertEquals("token-1", bound.getSyncToken(), "the old token must stand until the removal succeeds");
+  }
+
+
+  @Test
+  public void aChangedEventIsFetchedByPathRatherThanByRereadingTheWindow() throws Exception {
+    // The whole point. Changing one title used to re-read the window as fifteen
+    // REPORTs, each carrying the full iCalendar of everything in a 30-day
+    // slice — a year re-sent to learn one summary changed, with the user
+    // waiting for it.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("token-1");
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+        .thenReturn(new SyncCollectionResult(true,
+                                             "token-2",
+                                             List.of(new CalendarObject(HREF + "changed.ics", "e9", null)),
+                                             List.of()));
+    when(calDavClient.multiget(any(), anyString(), eq(List.of(HREF + "changed.ics")), eq(LOGIN), anyString()))
+        .thenReturn(List.of(new CalendarObject(HREF + "changed.ics", "e9", SERIES)));
+    Event imported = new Event();
+    imported.setId(4242L);
+    when(agendaEventService.createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong()))
+        .thenReturn(imported);
+    when(caldavSyncStorage.getObjects(eq(PAIR), anyInt(), anyInt())).thenReturn(new PageImpl<>(List.of()));
+
+    service.syncContents(USER, bound, calendar(), from(), to(), false);
+
+    verify(calDavClient).multiget(any(), anyString(), eq(List.of(HREF + "changed.ics")), eq(LOGIN), anyString());
+    verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
+    assertEquals("token-2", bound.getSyncToken());
+  }
+
+  @Test
+  public void aWindowThatHasMovedIsStillReadInFull() throws Exception {
+    // A token reports what changed. It says nothing about days sliding into
+    // range, so an event a year out that nobody touches would never appear
+    // without this — the caller asks for a full read once a day.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("token-1");
+    when(calDavClient.calendarQuery(any(), anyString(), any(), any(), eq(LOGIN), anyString())).thenReturn(List.of());
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    when(caldavSyncStorage.getObjects(eq(PAIR), anyInt(), anyInt())).thenReturn(new PageImpl<>(List.of()));
+
+    service.syncContents(USER, bound, calendar(), from(), to(), true);
+
+    // The window is re-read — that is the point. Reconciliation may still use
+    // the token afterwards, which is correct and costs one request; what must
+    // not happen is the window being skipped because a token exists.
+    verify(calDavClient, atLeastOnce()).calendarQuery(any(), anyString(), any(), any(), eq(LOGIN), anyString());
+    verify(calDavClient, never()).multiget(any(), anyString(), anyList(), anyString(), anyString());
+  }
+
+  @Test
+  public void changesThatCouldNotBeFetchedDoNotMoveTheToken() throws Exception {
+    // The token would claim they had been taken in, and nothing would ever go
+    // back for them.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    CalendarSync bound = pair();
+    bound.setSyncToken("token-1");
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+        .thenReturn(new SyncCollectionResult(true,
+                                             "token-2",
+                                             List.of(new CalendarObject(HREF + "changed.ics", "e9", null)),
+                                             List.of()));
+    when(calDavClient.multiget(any(), anyString(), anyList(), eq(LOGIN), anyString()))
+        .thenThrow(new CalDavException("unreachable"));
+
+    service.syncContents(USER, bound, calendar(), from(), to(), false);
+
+    assertEquals("token-1", bound.getSyncToken(), "the token must not move over changes that were never read");
   }
 
   /**
