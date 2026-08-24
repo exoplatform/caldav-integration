@@ -1237,6 +1237,27 @@ public class CaldavInboundServiceTest {
     verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
   }
 
+
+  @Test
+  public void aCollectionThatDidNotAnswerIsNotAskedAgainOnEveryClick() throws Exception {
+    // The timeout is paid once, not per click. A server that ignored a small
+    // PROPFIND a moment ago will ignore the next one too, and the user is the
+    // one waiting for it — measured at a full 30 seconds, on an http thread,
+    // on every synchronisation.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenThrow(new CalDavException("request timed out"));
+    CalendarSync bound = pair();
+
+    service.removeVanishedObjects(USER, bound);
+    service.removeVanishedObjects(USER, bound);
+    service.removeVanishedObjects(USER, bound);
+
+    verify(calDavClient, times(1)).readCalendar(any(), eq(HREF), eq(LOGIN), anyString());
+    verify(calDavClient, never()).listResourceEtags(any(), anyString(), anyString(), anyString());
+  }
+
   /**
    * Stubs the paged walk over the mapping rows of the binding.
    *
