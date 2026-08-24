@@ -738,7 +738,27 @@ public class CaldavInboundService {
     //
     // Safe to restart here: everything this class holds across the boundary
     // is a DTO, not a managed entity, so nothing is left detached by it.
-    ExoContainer container = ExoContainerContext.getCurrentContainer();
+    // IfPresent, not getCurrentContainer(): outside a portal — a unit test —
+    // the latter bootstraps a root container off the test classpath, which is
+    // neither wanted nor able to succeed there. No container simply means no
+    // context to restart.
+    ExoContainer container = ExoContainerContext.getCurrentContainerIfPresent();
+    restartContext(container);
+    // Read every event once BEFORE deleting any, then leave that context
+    // behind too. This is not an optimisation: agenda's delete reads the
+    // event, and on a cache miss that read pulls the real EventEntity into
+    // the session before the attendee rows are read, so the attendees hold
+    // the real instance rather than a lazy proxy. Hibernate's flush check
+    // exempts an uninitialised proxy but refuses a real instance that the
+    // same flush deletes — which is why a deletion that follows any read of
+    // the event (a REST GET, a previous failed attempt) always worked, and
+    // the first cold attempt never did. Reading here fills agenda's event
+    // cache, and the restart drops the entities the read loaded, so the
+    // delete that follows finds its event in the cache and touches nothing
+    // but the row it removes.
+    for (ObjectSync object : vanished) {
+      warmEvent(object.getLocalEventId());
+    }
     restartContext(container);
     LOG.info("Reconciling {} vanished object(s) of {}", vanished.size(), pair.getRemoteHref());
     int removed = 0;
@@ -818,6 +838,29 @@ public class CaldavInboundService {
    *
    * @param container the container whose lifecycle is restarted, may be null
    */
+  /**
+   * Puts one event into agenda's cache so the deletion that follows does not
+   * have to read it into its own session.
+   *
+   * <p>
+   * Nothing this read learns is used; what matters is the side effect on the
+   * cache. An event already gone, or unreadable for any reason, changes
+   * nothing about what the deletion will then do with it — so nothing here is
+   * allowed to fail the reconciliation.
+   *
+   * @param eventId the event about to be removed, may be null
+   */
+  private void warmEvent(Long eventId) {
+    if (eventId == null) {
+      return;
+    }
+    try {
+      agendaEventService.getEventById(eventId);
+    } catch (RuntimeException e) {
+      LOG.debug("Event {} could not be read ahead of its removal", eventId, e);
+    }
+  }
+
   private void restartContext(ExoContainer container) {
     if (container == null) {
       return;
