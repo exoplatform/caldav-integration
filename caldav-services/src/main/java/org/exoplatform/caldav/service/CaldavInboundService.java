@@ -639,6 +639,166 @@ public class CaldavInboundService {
    * @return the account, or null when there is none to read with
    */
 
+
+  /**
+   * Brings a collection's contents into eXo and removes what left it, in one
+   * conversation with the account.
+   *
+   * <p>
+   * The pass used to ask two separate questions. What changed was answered by
+   * re-reading the <b>whole window</b> — 426 days cut into 30-day slices, so
+   * fifteen REPORTs each carrying the full iCalendar of everything in its
+   * slice. Changing one event's title asked a real server to re-send a year,
+   * fifteen times over, and the user waited for it. What vanished was answered
+   * separately.
+   *
+   * <p>
+   * A sync token answers both at once, and cheaply:
+   * <a href="https://www.rfc-editor.org/rfc/rfc6578">RFC 6578</a> returns the
+   * handful of objects that changed and the handful that were removed. The
+   * changed ones are then fetched by path — one multiget carrying one event
+   * rather than fifteen REPORTs carrying a year.
+   *
+   * <p>
+   * <b>One report, never two.</b> The two halves must come from the same call:
+   * a report consumes the token it was given and hands back a new one, so two
+   * calls sharing a token would let whichever ran second miss everything the
+   * first had already taken. That is why importing and reconciling live in one
+   * method rather than being called in sequence.
+   *
+   * <p>
+   * <b>The window still has to be read in full sometimes</b>, and that is what
+   * {@code fullRead} is for. A token says what changed; it says nothing about
+   * days sliding into range as time passes. An event a year out is untouched
+   * by anyone and reported by nothing, and it still has to appear when the
+   * window reaches it — so the caller asks for a full read when the window has
+   * moved, which is once a day.
+   *
+   * @param userIdentityId identity of the user
+   * @param pair the binding being read
+   * @param calendar the eXo calendar it fills
+   * @param from start of the window, for a full read
+   * @param to end of the window, for a full read
+   * @param fullRead true to re-read the whole window rather than ask what
+   *          changed — a binding with no token, or one whose window has moved
+   * @return what the reconciliation removed and what it could not
+   */
+  public VanishedCleanup syncContents(long userIdentityId,
+                                      CalendarSync pair,
+                                      Calendar calendar,
+                                      Instant from,
+                                      Instant to,
+                                      boolean fullRead) {
+    if (pair == null || calendar == null) {
+      return VanishedCleanup.nothing();
+    }
+    if (!fullRead && StringUtils.isNotBlank(pair.getSyncToken())) {
+      CaldavUserSetting settings = settingsFor(userIdentityId, pair);
+      if (settings != null) {
+        VanishedCleanup incremental = readWhatChanged(userIdentityId, pair, calendar, settings);
+        if (incremental != null) {
+          return incremental;
+        }
+      }
+    }
+    importInto(userIdentityId, pair, calendar, from, to);
+    return removeVanishedObjects(userIdentityId, pair);
+  }
+
+  /**
+   * Asks the account what changed since the token, and acts on the answer.
+   *
+   * @param userIdentityId identity of the user
+   * @param pair the binding being read
+   * @param calendar the eXo calendar it fills
+   * @param settings the connected account
+   * @return what was reconciled, or null when the token could not be used and
+   *         the caller should read the window in full instead
+   */
+  private VanishedCleanup readWhatChanged(long userIdentityId,
+                                          CalendarSync pair,
+                                          Calendar calendar,
+                                          CaldavUserSetting settings) {
+    CalDavEndpoint endpoint;
+    SyncCollectionResult report;
+    try {
+      endpoint = calDavClient.endpoint(pair.getServerId(), settings.getUsername());
+      report = calDavClient.syncCollection(endpoint,
+                                           pair.getRemoteHref(),
+                                           pair.getSyncToken(),
+                                           settings.getUsername(),
+                                           settings.getPassword());
+    } catch (RuntimeException e) {
+      // Nothing is concluded from a report that could not be made — neither
+      // that the collection is empty nor that it is unchanged. Reading the
+      // window in full is the honest fallback.
+      LOG.warn("Collection {} could not report its changes; its window is read in full", pair.getRemoteHref(), e);
+      return null;
+    }
+    if (report == null || !report.tokenValid()) {
+      LOG.info("The sync token of collection {} was refused; its window is read in full", pair.getRemoteHref());
+      return null;
+    }
+    List<String> changed = report.changed()
+                                 .stream()
+                                 .map(CalendarObject::href)
+                                 .filter(StringUtils::isNotBlank)
+                                 .toList();
+    if (!changed.isEmpty() && !importByHref(userIdentityId, pair, calendar, settings, endpoint, changed)) {
+      // The changes could not be fetched, so the token must not move: it would
+      // claim they had been taken in, and nothing would ever fetch them again.
+      return VanishedCleanup.nothing();
+    }
+    return removeAll(userIdentityId,
+                     pair,
+                     mappingsMatching(pair, canonical(report.deleted()), true),
+                     report.syncToken());
+  }
+
+  /**
+   * Fetches named objects and imports them.
+   *
+   * @param userIdentityId identity of the user
+   * @param pair the binding being read
+   * @param calendar the eXo calendar they belong to
+   * @param settings the connected account
+   * @param endpoint where its server lives
+   * @param hrefs the paths the account reported changed
+   * @return true when they were fetched; false when the account could not be
+   *         asked, which must stop the token moving
+   */
+  private boolean importByHref(long userIdentityId,
+                               CalendarSync pair,
+                               Calendar calendar,
+                               CaldavUserSetting settings,
+                               CalDavEndpoint endpoint,
+                               List<String> hrefs) {
+    List<CalendarObject> objects;
+    try {
+      objects = calDavClient.multiget(endpoint,
+                                      collectionUrl(pair),
+                                      hrefs,
+                                      settings.getUsername(),
+                                      settings.getPassword());
+    } catch (RuntimeException e) {
+      LOG.warn("The {} changed object(s) of collection {} could not be fetched; they are left for the next pass",
+               hrefs.size(),
+               pair.getRemoteHref(),
+               e);
+      return false;
+    }
+    if (objects == null) {
+      return false;
+    }
+    for (CalendarObject object : objects) {
+      importObject(userIdentityId, pair, calendar, object);
+    }
+    LOG.debug("{} changed object(s) read from collection {} without re-reading its window",
+              objects.size(),
+              pair.getRemoteHref());
+    return true;
+  }
+
   /**
    * Removes the eXo events whose objects are no longer on the account.
    *
@@ -692,12 +852,29 @@ public class CaldavInboundService {
     if (!found.conclusive()) {
       return VanishedCleanup.nothing();
     }
-    List<ObjectSync> vanished = found.objects();
+    return removeAll(userIdentityId, pair, found.objects(), found.freshToken());
+  }
+
+  /**
+   * Removes a set of mappings whose objects are gone, and records the token.
+   *
+   * @param userIdentityId identity of the user, whose ACL the deletions run
+   *          under
+   * @param pair the binding being reconciled
+   * @param vanished the mappings to remove, may be empty
+   * @param freshToken the token the account gave, recorded only if every
+   *          removal goes through
+   * @return what was removed and what could not be
+   */
+  private VanishedCleanup removeAll(long userIdentityId,
+                                    CalendarSync pair,
+                                    List<ObjectSync> vanished,
+                                    String freshToken) {
     if (vanished.isEmpty()) {
       // Nothing to remove, but the account was reached and answered — so the
       // token it gave is worth keeping, or the next pass asks the expensive
       // question again for no reason.
-      rememberToken(pair, found.freshToken());
+      rememberToken(pair, freshToken);
       return VanishedCleanup.nothing();
     }
     // The removals get a persistence context of their own, and that is the
@@ -768,7 +945,7 @@ public class CaldavInboundService {
       // removal is a claim to have dealt with everything up to that point, and
       // the next incremental report would not mention the object again — so the
       // event the user deleted would stay in eXo for good.
-      rememberToken(pair, found.freshToken());
+      rememberToken(pair, freshToken);
     }
     return new VanishedCleanup(removed, failed);
   }

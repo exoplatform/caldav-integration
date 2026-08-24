@@ -632,8 +632,25 @@ public class CaldavSyncService {
         // The cost is only churn: an object deleted and recreated between two
         // passes is removed here and imported back below, ending the pass
         // present, which is the state the account is in.
-        CaldavInboundService.VanishedCleanup cleanup = caldavInboundService.removeVanishedObjects(userIdentityId, pair);
-        caldavInboundService.importInto(userIdentityId, pair, calendar, from, to);
+        // One conversation with the account, not two. A sync report says what
+        // changed and what was removed in the same answer, and it consumes the
+        // token it was given — so asking twice would let the second question
+        // miss everything the first had already taken.
+        //
+        // The window is read in full when the binding has no token to ask with,
+        // or when the window itself has moved. A token reports what changed; it
+        // says nothing about days sliding into range, and an event a year out
+        // that nobody touches must still appear when the window reaches it.
+        // That is once a day, which is what the last sync time decides.
+        boolean fullRead = StringUtils.isBlank(pair.getSyncToken())
+            || pair.getLastSyncEnd() == null
+            || pair.getLastSyncEnd().toInstant().isBefore(today);
+        CaldavInboundService.VanishedCleanup cleanup = caldavInboundService.syncContents(userIdentityId,
+                                                                                        pair,
+                                                                                        calendar,
+                                                                                        from,
+                                                                                        to,
+                                                                                        fullRead);
         // Stamped on the way out, and only on the way out: until this line
         // the field was written when a binding was CREATED, so an account
         // whose calendars were all already bound kept reporting the day it
