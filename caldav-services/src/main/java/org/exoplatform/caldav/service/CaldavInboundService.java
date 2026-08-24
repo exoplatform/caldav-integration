@@ -44,6 +44,7 @@ import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.container.component.RequestLifeCycle;
 import java.util.Collection;
 import org.exoplatform.caldav.client.SyncCollectionResult;
+import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -1129,38 +1130,50 @@ public class CaldavInboundService {
    * @return what this round concluded
    */
   private Vanished byFullComparison(CalendarSync pair, CaldavUserSetting settings, CalDavEndpoint endpoint) {
-    Set<String> held = null;
+    // The token is read first, and cheaply: a Depth:0 PROPFIND asks the
+    // collection for one property and enumerates nothing.
+    //
+    // This ordering is the whole point. Obtaining the first token used to mean
+    // an initial sync report, which returns every member — the same cost as the
+    // listing below, and on a real calendar the same 30-second timeout. So a
+    // collection too big to list was also too big to get a token for, and could
+    // never reach the cheap path: the escape needed the very call that was
+    // failing. Read the token separately and that trap disappears.
     String freshToken = null;
     try {
-      SyncCollectionResult initial = calDavClient.syncCollection(endpoint,
-                                                                pair.getRemoteHref(),
-                                                                "",
-                                                                settings.getUsername(),
-                                                                settings.getPassword());
-      if (initial != null && initial.tokenValid()) {
-        held = initial.changed().stream().map(CalendarObject::href).filter(StringUtils::isNotBlank).map(CaldavSyncStorage::canonicalHref).collect(Collectors.toSet());
-        freshToken = initial.syncToken();
+      CalendarCollection collection = calDavClient.readCalendar(endpoint,
+                                                               pair.getRemoteHref(),
+                                                               settings.getUsername(),
+                                                               settings.getPassword());
+      if (collection != null) {
+        freshToken = collection.syncToken();
       }
     } catch (RuntimeException e) {
-      LOG.debug("Collection {} did not answer an initial sync report; falling back to a listing", pair.getRemoteHref(), e);
+      LOG.debug("Collection {} did not give a sync token; it will be compared in full again", pair.getRemoteHref(), e);
     }
-    if (held == null) {
-      Map<String, String> etags;
-      try {
-        etags = calDavClient.listResourceEtags(endpoint,
-                                               pair.getRemoteHref(),
-                                               settings.getUsername(),
-                                               settings.getPassword());
-      } catch (RuntimeException e) {
-        LOG.warn("Collection {} could not be listed; nothing is removed from it this round", pair.getRemoteHref(), e);
-        return Vanished.inconclusive();
-      }
-      if (etags == null) {
-        return Vanished.inconclusive();
-      }
-      held = canonical(etags.keySet());
+    Map<String, String> etags;
+    try {
+      etags = calDavClient.listResourceEtags(endpoint,
+                                             pair.getRemoteHref(),
+                                             settings.getUsername(),
+                                             settings.getPassword());
+    } catch (RuntimeException e) {
+      // Nothing is removed — a listing that failed says nothing about what the
+      // collection holds. But the token is kept if we got one, because that is
+      // what lets the next pass ask the cheap question instead of failing here
+      // again, every pass, for ever.
+      LOG.warn("Collection {} could not be listed; nothing is removed from it this round{}",
+               pair.getRemoteHref(),
+               freshToken == null ? "" : ", but its sync token is recorded so the next pass can ask what changed",
+               e);
+      rememberToken(pair, freshToken);
+      return Vanished.inconclusive();
     }
-    return new Vanished(true, mappingsMatching(pair, held, false), freshToken);
+    if (etags == null) {
+      rememberToken(pair, freshToken);
+      return Vanished.inconclusive();
+    }
+    return new Vanished(true, mappingsMatching(pair, canonical(etags.keySet()), false), freshToken);
   }
 
   /**

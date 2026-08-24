@@ -45,6 +45,8 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import org.exoplatform.caldav.client.SyncCollectionResult;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.ArgumentMatchers.anyList;
+import org.exoplatform.caldav.client.CalendarCollection;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -1059,11 +1061,12 @@ public class CaldavInboundServiceTest {
     bound.setSyncToken("stale");
     when(calDavClient.syncCollection(any(), eq(HREF), eq("stale"), eq(LOGIN), anyString()))
         .thenReturn(SyncCollectionResult.invalidToken());
-    when(calDavClient.syncCollection(any(), eq(HREF), eq(""), eq(LOGIN), anyString()))
-        .thenReturn(new SyncCollectionResult(true,
-                                             "token-9",
-                                             List.of(new CalendarObject(HREF + "kept.ics", "e1", null)),
-                                             List.of()));
+    // the fallback now reads the token cheaply and lists separately, so a
+    // collection too big to enumerate can still escape the slow path
+    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenReturn(new CalendarCollection(HREF, "Cal", "ctag-1", "token-9", null, true, Set.of("VEVENT")));
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenReturn(Map.of(HREF + "kept.ics", "e1"));
     givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
                   objectSync(102L, 502L, HREF + "gone.ics"));
 
@@ -1187,6 +1190,31 @@ public class CaldavInboundServiceTest {
     service.syncContents(USER, bound, calendar(), from(), to(), false);
 
     assertEquals("token-1", bound.getSyncToken(), "the token must not move over changes that were never read");
+  }
+
+
+  @Test
+  public void aCollectionTooBigToListStillRecordsItsTokenAndEscapesTheSlowPath() throws Exception {
+    // The trap this fixes. Getting a first token used to mean an initial sync
+    // report, which enumerates every member — the same cost as the listing, and
+    // on a real calendar the same 30-second timeout. A collection too big to
+    // list was therefore too big to get a token for, so it paid the timeout on
+    // every pass, for ever, on the user's own click. Reading the token from a
+    // Depth:0 PROPFIND breaks that: the listing may fail and the next pass can
+    // still ask the cheap question.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenReturn(new CalendarCollection(HREF, "Big", "ctag-1", "token-7", null, true, Set.of("VEVENT")));
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenThrow(new CalDavException("request timed out"));
+    CalendarSync bound = pair();
+
+    CaldavInboundService.VanishedCleanup cleanup = service.removeVanishedObjects(USER, bound);
+
+    assertEquals(0, cleanup.removed(), "a listing that failed must remove nothing");
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+    assertEquals("token-7", bound.getSyncToken(), "the token must be kept, or the collection never escapes the slow path");
   }
 
   /**
