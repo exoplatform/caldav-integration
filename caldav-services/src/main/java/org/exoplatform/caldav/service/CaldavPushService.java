@@ -702,15 +702,52 @@ public class CaldavPushService {
    * the screen showing a stale name is how a destination stops being
    * recognisable as the one it names.
    *
+   * Recorded href or not, the account is asked. Disconnecting clears the
+   * href while leaving the collection on the server, so a reconnected account
+   * has a destination it does not remember — and answering "none" there made
+   * eXo offer to create a calendar that already existed, and invite a second
+   * one beside it. The collection eXo creates lives at a path eXo derives, so
+   * it can be recognised without having been remembered: the same second
+   * candidate {@link #ensureMirror} adopts. The two now answer alike, where
+   * before creation adopted what this reported absent.
+   *
+   * A destination that was recorded and cannot be reached still raises: the
+   * user chose it, so the screen must say the account is unreachable rather
+   * than quietly report having no destination. With nothing recorded there is
+   * no such claim to keep, and an unreachable server answers null.
+   *
    * @param userIdentityId identity of the user
-   * @return the destination and its current name, or null when none is set or
-   *         the one recorded is no longer there
+   * @return the destination and its current name, or null when the account
+   *         has none — neither the one recorded nor one at the derived path
    */
   public MirrorTarget currentMirror(long userIdentityId) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
-    if (StringUtils.isBlank(settings.getMirrorCalendarHref())) {
+    boolean recorded = StringUtils.isNotBlank(settings.getMirrorCalendarHref());
+    try {
+      return lookUpMirror(settings);
+    } catch (RuntimeException e) {
+      if (recorded) {
+        throw e;
+      }
+      // Nothing was recorded, so nothing is being claimed lost: the account
+      // simply has no destination as far as anyone knew, and an unreachable
+      // server cannot turn that into a failure. Before this method looked for
+      // a collection it had not recorded, the same account answered "none"
+      // without a request at all — an error here would make every render of
+      // the settings page report a problem the user does not have.
+      LOG.debug("could not look for a destination calendar of user {}", userIdentityId, e);
       return null;
     }
+  }
+
+  /**
+   * Asks the account for the calendar holding the copies.
+   *
+   * @param settings the connected account
+   * @return the destination and its current name, or null when the account
+   *         holds neither the recorded collection nor one at the derived path
+   */
+  private MirrorTarget lookUpMirror(CaldavUserSetting settings) {
     CalDavEndpoint endpoint = endpointOf(settings);
     String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
     List<CalendarCollection> calendars = calDavClient.listCalendars(endpoint,
