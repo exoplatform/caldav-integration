@@ -25,68 +25,79 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template slot="content">
       <div class="pa-4">
-        <div class="text-subtitle mb-4">
+        <div class="text-header mb-4">
           {{ $t('caldav.deviceSetup.drawer.description') }}
         </div>
-        <div class="mb-4">
-          <div class="text-subtitle-2 text-color">
-            {{ $t('caldav.deviceSetup.serverAddress') }}
-          </div>
-          <div class="d-flex align-center">
-            <!--
-              A selectable text node, not an input: when the clipboard API is
-              unavailable or refused, the copy button falls back to selecting
-              this very node — the value must never be locked behind a dead
-              button.
-            -->
-            <span
-              ref="serverAddress"
-              class="text-break flex-grow-1 text-subtitle">
-              {{ serverUrl }}
-            </span>
-            <v-btn
-              :aria-label="$t('caldav.deviceSetup.copy', {0: $t('caldav.deviceSetup.serverAddress')})"
-              :title="$t('caldav.deviceSetup.copy', {0: $t('caldav.deviceSetup.serverAddress')})"
-              icon
-              small
-              @click="copy(serverUrl, 'serverAddress', $t('caldav.deviceSetup.serverAddress'))">
-              <v-icon size="16" class="icon-default-color">fa-copy</v-icon>
-            </v-btn>
-          </div>
+        <!--
+          The MCP server settings drawer's idiom for a value the user has to
+          carry elsewhere: a read-only outlined field with the copy button
+          inside it. The field is also what keeps the fallback honest — when
+          the clipboard is unavailable or refused, the value is still an
+          input the user can select and copy by hand, never text locked
+          behind a dead button.
+        -->
+        <div class="text-header mb-1">
+          {{ $t('caldav.deviceSetup.serverAddress') }}
         </div>
-        <div class="mb-4">
-          <div class="text-subtitle-2 text-color">
-            {{ $t('caldav.deviceSetup.username') }}
-          </div>
-          <div class="d-flex align-center">
-            <span
-              ref="username"
-              class="text-break flex-grow-1 text-subtitle">
-              {{ username }}
-            </span>
-            <v-btn
-              :aria-label="$t('caldav.deviceSetup.copy', {0: $t('caldav.deviceSetup.username')})"
-              :title="$t('caldav.deviceSetup.copy', {0: $t('caldav.deviceSetup.username')})"
-              icon
-              small
-              @click="copy(username, 'username', $t('caldav.deviceSetup.username'))">
-              <v-icon size="16" class="icon-default-color">fa-copy</v-icon>
-            </v-btn>
-          </div>
+        <v-card
+          class="border-box-sizing mb-4"
+          min-width="180"
+          max-width="100%"
+          flat>
+          <v-text-field
+            ref="serverAddress"
+            :value="serverUrl"
+            class="pa-0 ma-0"
+            outlined
+            readonly
+            dense>
+            <template #append>
+              <div class="pt-2px me-n1">
+                <v-btn
+                  :aria-label="$t('caldav.deviceSetup.copy', {0: $t('caldav.deviceSetup.serverAddress')})"
+                  :title="$t('caldav.deviceSetup.copy', {0: $t('caldav.deviceSetup.serverAddress')})"
+                  class="mt-n1"
+                  icon
+                  small
+                  @click="copy(serverUrl, 'serverAddress', $t('caldav.deviceSetup.serverAddress'))">
+                  <v-icon size="18" class="icon-default-color">fa-copy</v-icon>
+                </v-btn>
+              </div>
+            </template>
+          </v-text-field>
+        </v-card>
+        <div class="text-header mb-1">
+          {{ $t('caldav.deviceSetup.username') }}
         </div>
-        <div class="text-subtitle mb-6">
+        <v-card
+          class="border-box-sizing mb-4"
+          min-width="180"
+          max-width="100%"
+          flat>
+          <v-text-field
+            ref="username"
+            :value="username"
+            class="pa-0 ma-0"
+            outlined
+            readonly
+            dense>
+            <template #append>
+              <div class="pt-2px me-n1">
+                <v-btn
+                  :aria-label="$t('caldav.deviceSetup.copy', {0: $t('caldav.deviceSetup.username')})"
+                  :title="$t('caldav.deviceSetup.copy', {0: $t('caldav.deviceSetup.username')})"
+                  class="mt-n1"
+                  icon
+                  small
+                  @click="copy(username, 'username', $t('caldav.deviceSetup.username'))">
+                  <v-icon size="18" class="icon-default-color">fa-copy</v-icon>
+                </v-btn>
+              </div>
+            </template>
+          </v-text-field>
+        </v-card>
+        <div class="text-header">
           {{ $t('caldav.deviceSetup.passwordNote') }}
-        </div>
-        <div
-          v-for="platform in platforms"
-          :key="platform"
-          class="mb-4">
-          <div class="text-subtitle-2 text-color">
-            {{ $t(`caldav.deviceSetup.steps.${platform}.title`) }}
-          </div>
-          <div class="text-subtitle">
-            {{ $t(`caldav.deviceSetup.steps.${platform}.steps`) }}
-          </div>
         </div>
       </div>
     </template>
@@ -114,10 +125,7 @@ export default {
       default: '',
     },
   },
-  data: () => ({
-    // In the order a user is most likely to come for: phones first.
-    platforms: ['ios', 'android', 'macos', 'thunderbird'],
-  }),
+
   created() {
     this.$root.$on('open-caldav-device-setup-drawer', this.open);
   },
@@ -158,23 +166,24 @@ export default {
       return Promise.resolve(this.selectValue(ref));
     },
     /**
-     * Selects the text node holding one of the values, so the user can copy
-     * it with the keyboard when the clipboard API could not — and says so,
-     * because a selection appearing without a word reads as a glitch, not as
-     * an instruction.
+     * Selects the value in its field, so the user can copy it with the
+     * keyboard when the clipboard API could not — and says so, because a
+     * selection appearing without a word reads as a glitch rather than as an
+     * instruction.
      *
-     * @param {String} ref name of the template ref holding the value's text
-     *          node
+     * The value lives in a read-only input, so the selection is the input's
+     * own: reaching for its DOM node rather than the component, because a
+     * range over a component is not a thing the browser can select.
+     *
+     * @param {String} ref name of the template ref holding the value's field
      * @returns {void}
      */
     selectValue(ref) {
-      const node = this.$refs[ref];
-      if (node && window.getSelection) {
-        const range = document.createRange();
-        range.selectNodeContents(node);
-        const selection = window.getSelection();
-        selection.removeAllRanges();
-        selection.addRange(range);
+      const field = this.$refs[ref];
+      const input = field && field.$el && field.$el.querySelector('input');
+      if (input) {
+        input.focus();
+        input.select();
       }
       this.$root.$emit('alert-message', this.$t('caldav.deviceSetup.copyFallback'), 'info');
     },
