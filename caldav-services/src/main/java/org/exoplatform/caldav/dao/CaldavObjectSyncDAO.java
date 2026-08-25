@@ -16,6 +16,8 @@
  */
 package org.exoplatform.caldav.dao;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 
 import org.springframework.data.domain.Page;
@@ -83,6 +85,22 @@ public interface CaldavObjectSyncDAO extends JpaRepository<CaldavObjectSyncEntit
    * @return true when a mapping exists
    */
   boolean existsByLocalEventId(long localEventId);
+
+  /**
+   * Which of these eXo events are already mapped.
+   *
+   * The same question as {@link #existsByLocalEventId(long)} asked once for a
+   * whole batch. The seeding pass reads a user's upcoming meetings on every
+   * sweep and, in the steady state, finds that all of them already have a
+   * copy — so asking one event at a time made the cost of doing nothing grow
+   * with how much had already been done, which is the wrong direction for
+   * work that repeats for ever.
+   *
+   * @param localEventIds the eXo events to ask about
+   * @return the identifiers among them that carry a mapping
+   */
+  @Query("SELECT DISTINCT o.localEventId FROM CaldavObjectSyncEntity o WHERE o.localEventId IN :localEventIds")
+  List<Long> findMappedLocalEventIds(@Param("localEventIds") Collection<Long> localEventIds);
 
   /**
    * Drops every mapping of a pair. Called when a pair is unbound; the foreign

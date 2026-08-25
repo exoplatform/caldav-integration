@@ -20,6 +20,9 @@ import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
@@ -244,6 +247,25 @@ public class CaldavSyncStorage {
    */
   public boolean isEventMapped(long localEventId) {
     return objectSyncDAO.existsByLocalEventId(localEventId);
+  }
+
+  /**
+   * Which of these eXo events already carry a copy.
+   *
+   * The batch form of {@link #isEventMapped(long)}, for callers holding a
+   * list: the seeding pass asks about a user's whole upcoming window on every
+   * sweep, and asking one event at a time made the steady state — where every
+   * one of them is already mapped — cost a query per meeting to learn there
+   * was nothing to do.
+   *
+   * @param localEventIds the eXo events to ask about
+   * @return the identifiers among them that are mapped, empty when none are
+   */
+  public Set<Long> mappedEventIds(Collection<Long> localEventIds) {
+    if (localEventIds == null || localEventIds.isEmpty()) {
+      return Set.of();
+    }
+    return new HashSet<>(objectSyncDAO.findMappedLocalEventIds(localEventIds));
   }
 
   /**
