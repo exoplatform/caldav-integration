@@ -84,6 +84,22 @@ describe('createCaldavConnector', () => {
   });
 
   /**
+   * isCaldav is what agenda reads to place a connector's calendars: a CalDAV
+   * account's collections are materialised as the user's own, so they belong
+   * under My Calendars and the account under "Your calendars", while a remote
+   * connector gets its own named section. The flag is declared once on the
+   * seed descriptor and reaches the per-server ones only through the
+   * factory's Object.assign — so the inheritance, not just the declaration,
+   * is what has to hold. A per-server descriptor losing it would scatter a
+   * user's own calendars into a remote section.
+   */
+  it('declares isCaldav on every descriptor shape the factory produces', () => {
+    expect(caldavConnector.isCaldav).toBe(true);
+    expect(createCaldavConnector(seedServer, 0).isCaldav).toBe(true);
+    expect(createCaldavConnector(declaredServer, 1).isCaldav).toBe(true);
+  });
+
+  /**
    * The legacy fallback descriptor — registered when the registry answers
    * nothing — carries the same contract itself.
    */
