@@ -702,15 +702,21 @@ public class CaldavPushService {
    * the screen showing a stale name is how a destination stops being
    * recognisable as the one it names.
    *
+   * Recorded href or not, the account is asked. Disconnecting clears the
+   * href while leaving the collection on the server, so a reconnected account
+   * has a destination it does not remember — and answering "none" there made
+   * eXo offer to create a calendar that already existed, and invite a second
+   * one beside it. The collection eXo creates lives at a path eXo derives, so
+   * it can be recognised without having been remembered: the same second
+   * candidate {@link #ensureMirror} adopts. The two now answer alike, where
+   * before creation adopted what this reported absent.
+   *
    * @param userIdentityId identity of the user
-   * @return the destination and its current name, or null when none is set or
-   *         the one recorded is no longer there
+   * @return the destination and its current name, or null when the account
+   *         has none — neither the one recorded nor one at the derived path
    */
   public MirrorTarget currentMirror(long userIdentityId) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
-    if (StringUtils.isBlank(settings.getMirrorCalendarHref())) {
-      return null;
-    }
     CalDavEndpoint endpoint = endpointOf(settings);
     String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
     List<CalendarCollection> calendars = calDavClient.listCalendars(endpoint,
