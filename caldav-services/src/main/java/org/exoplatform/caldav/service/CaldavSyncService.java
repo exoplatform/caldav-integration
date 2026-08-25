@@ -185,12 +185,17 @@ public class CaldavSyncService {
    */
   public int sweepDueAccounts(long staleMinutes, int batchSize) {
     Date before = Date.from(Instant.now().minus(Duration.ofMinutes(staleMinutes)));
-    List<CalendarSync> due = caldavSyncStorage.getDuePairs(CalendarSyncStatus.ACTIVE, before, 0, batchSize)
-                                              .getContent();
-    if (due.isEmpty()) {
+    // Accounts, not bindings. Paging the bindings and folding them into
+    // accounts afterwards meant a batch could be filled by one user's
+    // collections: a user holding forty of them, all stale after an outage,
+    // took every run and nobody else was swept at all — the log said "swept 1
+    // account" and looked like throughput rather than starvation. A batch of
+    // ten is now ten users, whatever each of them holds.
+    List<Long> accounts = caldavSyncStorage.getDueAccounts(CalendarSyncStatus.ACTIVE, before, 0, batchSize)
+                                           .getContent();
+    if (accounts.isEmpty()) {
       return 0;
     }
-    Set<Long> accounts = due.stream().map(CalendarSync::getUserIdentityId).collect(Collectors.toCollection(LinkedHashSet::new));
     int swept = 0;
     for (Long userIdentityId : accounts) {
       String username = loginOf(userIdentityId);
