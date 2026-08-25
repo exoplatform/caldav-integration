@@ -106,6 +106,31 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
                                          Pageable pageable);
 
   /**
+   * The users whose bindings are due, oldest first.
+   *
+   * The sweep works account by account, so this is the set it must page
+   * through. Paging the BINDINGS instead let one user's collections fill a
+   * whole batch — a user with forty of them, all stale after an outage,
+   * occupied every run and no other account was ever reached. Grouping puts
+   * one row per user in the page, so a batch of ten is ten users however many
+   * collections each of them holds.
+   *
+   * Ordered by each user's oldest binding, so the account waiting longest is
+   * served first.
+   *
+   * @param status the binding state that counts as sweepable
+   * @param before bindings last synchronised strictly before this instant
+   * @param pageable page and sort; required, this set spans every user
+   * @return one page of user identities
+   */
+  @Query("SELECT p.userIdentityId FROM CaldavCalendarSyncEntity p WHERE p.status = :status"
+      + " AND (p.lastSyncEnd IS NULL OR p.lastSyncEnd < :before)"
+      + " GROUP BY p.userIdentityId ORDER BY MIN(COALESCE(p.lastSyncEnd, {d '1970-01-01'})) ASC")
+  Page<Long> findDueAccounts(@Param("status") CalendarSyncStatus status,
+                             @Param("before") Date before,
+                             Pageable pageable);
+
+  /**
    * Every pair on one server, paginated. Used when a registration is
    * deactivated or removed and its bindings have to be dealt with.
    *
