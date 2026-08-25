@@ -100,8 +100,8 @@ public class IcsWriter {
   /** ical4j's own zone registry: the authoritative record the browser derivation approximated. */
   private static final TimeZoneRegistry      REGISTRY     = TimeZoneRegistryFactory.getInstance().createRegistry();
 
-  /** Marks a copy as one eXo has already scheduled itself; see addPeople. */
-  private static final String                CLIENT_AGENT = "CLIENT";
+  /** Marks a copy as one nobody performs scheduling for; see addPeople. */
+  private static final String                NO_AGENT     = "NONE";
 
   /** The YYYYMMDD form an iCalendar date value is written in. */
   private static final java.time.format.DateTimeFormatter DATE_FORMAT = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd");
@@ -263,12 +263,18 @@ public class IcsWriter {
    * ORGANIZER property is what marks.
    *
    * <p>
-   * Every ATTENDEE carries SCHEDULE-AGENT=CLIENT, and so does ORGANIZER when
+   * Every ATTENDEE carries SCHEDULE-AGENT=NONE, and so does ORGANIZER when
    * the pushing user is not the organizer (RFC 6638 section 7.1). The copy
    * mirrors scheduling that already happened in eXo; without the parameter a
    * scheduling-aware server would take the PUT as an instruction to run that
    * scheduling itself — mailing invitations to every attendee, or a reply to
-   * the organizer.
+   * the organizer. NONE rather than CLIENT, since the copy became something
+   * the user answers on (EXO-89681): CLIENT also keeps the server quiet, but
+   * it hands the scheduling to the user's own client — which a conforming
+   * client honours by emailing an iMIP reply when the user accepts or
+   * declines the copy, a reply that lands in a mailbox nobody reads. NONE
+   * says no agent acts at all: the answer stays in the object as a changed
+   * PARTSTAT, which is exactly where the verification pass reads it back.
    *
    * @param vEvent the component being built
    * @param event the event being written
@@ -281,7 +287,7 @@ public class IcsWriter {
     Organizer organizerProperty = new Organizer(mailto(organizer.getEmail()));
     addCn(organizerProperty.getParameters(), organizer.getDisplayName());
     if (!event.isOrganizerIsPusher()) {
-      organizerProperty.getParameters().add(new ScheduleAgent(CLIENT_AGENT));
+      organizerProperty.getParameters().add(new ScheduleAgent(NO_AGENT));
     }
     vEvent.getProperties().add(organizerProperty);
 
@@ -299,7 +305,7 @@ public class IcsWriter {
       Attendee attendeeProperty = new Attendee(mailto(attendee.getEmail()));
       addCn(attendeeProperty.getParameters(), attendee.getDisplayName());
       attendeeProperty.getParameters().add(new PartStat(IcsText.partStat(attendee.getResponse())));
-      attendeeProperty.getParameters().add(new ScheduleAgent(CLIENT_AGENT));
+      attendeeProperty.getParameters().add(new ScheduleAgent(NO_AGENT));
       vEvent.getProperties().add(attendeeProperty);
     }
   }

@@ -22,18 +22,20 @@ package org.exoplatform.caldav.model;
  * @param checked how many copies were compared against the server
  * @param missing how many the server no longer holds
  * @param altered how many the server holds in a form eXo did not write
+ * @param adopted how many carried an answer the account's owner gave from
+ *          their own calendar, now recorded in agenda (EXO-89681)
  * @param repaired how many were written again
  * @param abandoned how many were left alone because repairing them has stopped
  *          working — the pass gives up rather than fighting the same object
  *          for ever
  */
-public record MirrorVerification(int checked, int missing, int altered, int repaired, int abandoned) {
+public record MirrorVerification(int checked, int missing, int altered, int adopted, int repaired, int abandoned) {
 
   /**
    * @return a pass that found nothing to do, or could not run
    */
   public static MirrorVerification nothing() {
-    return new MirrorVerification(0, 0, 0, 0, 0);
+    return new MirrorVerification(0, 0, 0, 0, 0, 0);
   }
 
   /**

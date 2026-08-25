@@ -155,6 +155,9 @@ public class CaldavSyncService {
   private CaldavMirrorVerificationService caldavMirrorVerificationService;
 
   @Autowired
+  private CaldavPendingInvitationService caldavPendingInvitationService;
+
+  @Autowired
   private AgendaCalendarService       agendaCalendarService;
 
   /**
@@ -436,6 +439,10 @@ public class CaldavSyncService {
       // that throws must not cost the user the calendars they came for.
       try {
         if (verifyMirror) {
+          // Seed before verifying: a pending invitation pushed this round is
+          // read back by the same discipline as every other copy from the
+          // next round on (EXO-89681).
+          caldavPendingInvitationService.pushUpcomingMeetings(userIdentityId);
           caldavMirrorVerificationService.verify(userIdentityId);
         }
       } catch (RuntimeException e) {

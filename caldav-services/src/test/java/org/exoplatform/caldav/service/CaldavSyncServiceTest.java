@@ -130,6 +130,9 @@ public class CaldavSyncServiceTest {
   private CaldavMirrorVerificationService caldavMirrorVerificationService;
 
   @Mock
+  private CaldavPendingInvitationService caldavPendingInvitationService;
+
+  @Mock
   private CalDavEndpoint             endpoint;
 
   @InjectMocks
@@ -1397,6 +1400,7 @@ public class CaldavSyncServiceTest {
     service.syncNowAndWait(USER, LOGIN);
 
     verify(caldavMirrorVerificationService, never()).verify(anyLong());
+    verify(caldavPendingInvitationService, never()).pushUpcomingMeetings(anyLong());
   }
 
   @Test
@@ -1408,6 +1412,9 @@ public class CaldavSyncServiceTest {
     service.syncInBackground(USER, LOGIN);
 
     verify(caldavMirrorVerificationService).verify(USER);
+    // And the pending invitations were seeded first, so the pass that reads
+    // answers back is also the one that put the copies there (EXO-89681).
+    verify(caldavPendingInvitationService).pushUpcomingMeetings(USER);
   }
 
   private CaldavUserSetting settings() {
