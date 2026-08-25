@@ -47,7 +47,7 @@ Each case pins one invariant from the connector's documented bug history (the
 | 05 | series + `.override` | override spliced next to the master; exactly one RECURRENCE-ID, in the master's TZID form |
 | 06 | series spanning Oct DST | wall clock held across the transition — the EXO-89402 drift class |
 | 07 | EXDATEs + `.occurrence-delete` | EXDATE in the master's form; occurrence delete rewrites, never deletes the object |
-| 08 | attendees/organizer | truthful ORGANIZER + SCHEDULE-AGENT=CLIENT; quoted CN; address-less attendee omitted |
+| 08 | attendees/organizer | truthful ORGANIZER + SCHEDULE-AGENT=NONE (captured CLIENT, edited for EXO-89681); quoted CN; address-less attendee omitted |
 | 09 | VALARM | one DISPLAY alarm per reminder, minute triggers |
 | 10 | conference + rich text | TEXT escaping, HTML→text, folding, CONFERENCE single-feature, URL back-link |
 | 11 | Africa/Casablanca | the lunar-zone **approximation** (see waivers) |
