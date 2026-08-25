@@ -19,6 +19,7 @@ package org.exoplatform.caldav.service;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -124,11 +125,25 @@ public class CaldavPendingInvitationService {
       LOG.warn("The upcoming meetings of user {} could not be listed; nothing is seeded this round", userIdentityId, e);
       return 0;
     }
-    int pushed = 0;
-    Set<Long> seen = new HashSet<>();
+    // The series behind each occurrence, once each and in the order the window
+    // returned them.
+    Set<Long> candidates = new LinkedHashSet<>();
     for (Event occurrence : upcoming) {
       long eventId = occurrence.getParentId() > 0 ? occurrence.getParentId() : occurrence.getId();
-      if (eventId <= 0 || !seen.add(eventId)) {
+      if (eventId > 0) {
+        candidates.add(eventId);
+      }
+    }
+    // Asked once for the whole window, and asked FIRST. In the steady state
+    // every meeting in the window already has a copy, so this is the answer
+    // for all of them — and it is the cheapest question available. Asking it
+    // per meeting, after loading the event and its calendar, made the cost of
+    // finding nothing to do grow with how much had already been done, on a
+    // pass that repeats for ever.
+    Set<Long> alreadyCopied = caldavSyncStorage.mappedEventIds(candidates);
+    int pushed = 0;
+    for (Long eventId : candidates) {
+      if (alreadyCopied.contains(eventId)) {
         continue;
       }
       if (seedOne(userIdentityId, eventId)) {
@@ -163,6 +178,10 @@ public class CaldavPendingInvitationService {
       return false;
     }
     if (caldavSyncStorage.isEventMapped(eventId)) {
+      // Asked again despite the batch check the caller already made: that
+      // answer was read before this pass started writing, and a copy may have
+      // appeared since — from the user's own browser, or from an earlier
+      // meeting in this very loop belonging to the same series.
       return false;
     }
     try {
