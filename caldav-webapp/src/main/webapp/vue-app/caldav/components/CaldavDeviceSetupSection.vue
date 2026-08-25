@@ -34,14 +34,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       </v-list-item-subtitle>
     </v-list-item-content>
     <v-list-item-action>
+      <!--
+        The pencil its sibling rows use, not a worded button: every row this
+        section contributes opens a drawer the same way, and one of them
+        shouting its verb made it read as the important one.
+      -->
       <v-btn
         :aria-label="$t('caldav.deviceSetup.action')"
         :title="$t('caldav.deviceSetup.action')"
-        small
-        text
-        class="primary--text text-none"
+        icon
         @click="$root.$emit('open-caldav-device-setup-drawer')">
-        {{ $t('caldav.deviceSetup.action') }}
+        <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
       </v-btn>
     </v-list-item-action>
     <caldav-device-setup-drawer
