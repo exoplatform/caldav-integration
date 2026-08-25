@@ -157,6 +157,23 @@ public class CaldavSyncStorage {
   }
 
   /**
+   * The users whose bindings are due, oldest waiting first.
+   *
+   * The account-wise form of {@link #getDuePairs}, and what the sweep asks:
+   * batching bindings let one user's collections fill a whole run, so no
+   * other account was reached at all.
+   *
+   * @param status the binding state that counts as sweepable
+   * @param before bindings last synchronised strictly before this instant
+   * @param offset page index
+   * @param limit how many users one page carries
+   * @return one page of user identities
+   */
+  public Page<Long> getDueAccounts(CalendarSyncStatus status, Date before, int offset, int limit) {
+    return calendarSyncDAO.findDueAccounts(status, before, PageRequest.of(offset, limit));
+  }
+
+  /**
    * One binding by its identifier, whoever it belongs to.
    *
    * <p>
