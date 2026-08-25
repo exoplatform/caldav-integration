@@ -96,6 +96,16 @@ i18nPromise.finally(() => {
     rank: 29,
     vueComponent: Vue.options.components['caldav-calendar-states-section'],
   });
+  // Just under the hidden calendars: pointing a phone at the account is an
+  // offer, not a problem, so it comes after the rows that name problems. In
+  // the healthy case both problem rows are absent and this is the only
+  // nested row under My Calendars. Shown only when an account is connected —
+  // there is nothing to set up otherwise.
+  extensionRegistry.registerExtension('agenda-user-settings', 'sections', {
+    id: 'caldavDeviceSetup',
+    rank: 31,
+    vueComponent: Vue.options.components['caldav-device-setup-section'],
+  });
   document.dispatchEvent(new CustomEvent('agenda-user-sections-refresh'));
 });
 
