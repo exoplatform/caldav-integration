@@ -200,6 +200,31 @@ public class CaldavPushServiceTest {
   }
 
   @Test
+  public void anUnreachableServerReadsAsNoneWhenNothingWasRecorded() {
+    // The rediscovery must not make every settings render report a problem
+    // the user does not have: with nothing recorded, nothing is claimed lost,
+    // and an account that cannot be reached simply has no known destination.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+        .thenThrow(new IllegalStateException("the calendar server could not be reached"));
+
+    assertNull(service.currentMirror(USER));
+  }
+
+  @Test
+  public void anUnreachableServerStillRaisesForARecordedMirror() {
+    // The user chose this destination, so the screen must say the account is
+    // unreachable rather than quietly report having none.
+    CaldavUserSetting stored = settings();
+    stored.setMirrorCalendarHref(MIRROR);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(stored);
+    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+        .thenThrow(new IllegalStateException("the calendar server could not be reached"));
+
+    assertThrows(IllegalStateException.class, () -> service.currentMirror(USER));
+  }
+
+  @Test
   public void aMirrorRecordedButGoneReadsAsNone() {
     // Deleted from the user's own client. Saying "no destination" is right;
     // naming a calendar that is not there would be worse than saying nothing.
