@@ -40,6 +40,7 @@ import static org.mockito.Mockito.when;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 
@@ -1007,7 +1008,7 @@ public class CaldavSyncServiceTest {
    */
   @Test
   public void aSweepWithNothingDueDoesNoWork() {
-    when(caldavSyncStorage.getDuePairs(eq(CalendarSyncStatus.ACTIVE), any(), anyInt(), anyInt()))
+    when(caldavSyncStorage.getDueAccounts(eq(CalendarSyncStatus.ACTIVE), any(), anyInt(), anyInt()))
                                                                                                 .thenReturn(Page.empty());
 
     assertEquals(0, service.sweepDueAccounts(30L, 50));
@@ -1015,11 +1016,20 @@ public class CaldavSyncServiceTest {
   }
 
   /**
-   * @param pairs what the sweep should find due
+   * Declares what the sweep finds due. The pairs are given for readability of
+   * the callers; what the sweep actually asks for is the set of accounts
+   * owning them, distinct and in order — batching accounts rather than pairs
+   * is what stops one user's collections filling a whole run.
+   *
+   * @param pairs the due bindings, whose owners the sweep will be handed
    */
   private void givenDuePairs(CalendarSync... pairs) {
-    when(caldavSyncStorage.getDuePairs(eq(CalendarSyncStatus.ACTIVE), any(), anyInt(), anyInt()))
-                                                                                                .thenReturn(new PageImpl<>(List.of(pairs)));
+    List<Long> accounts = Arrays.stream(pairs)
+                                .map(CalendarSync::getUserIdentityId)
+                                .distinct()
+                                .toList();
+    when(caldavSyncStorage.getDueAccounts(eq(CalendarSyncStatus.ACTIVE), any(), anyInt(), anyInt()))
+                                                                                                   .thenReturn(new PageImpl<>(accounts));
     Identity identity = new Identity(String.valueOf(USER));
     identity.setRemoteId(LOGIN);
     lenient().when(identityManager.getIdentity(anyString())).thenReturn(identity);
