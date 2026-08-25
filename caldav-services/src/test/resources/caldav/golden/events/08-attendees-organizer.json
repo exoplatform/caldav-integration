@@ -3,7 +3,7 @@
   "_provenance": {
     "kind": "authored driver input",
     "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
-    "invariant": "Scheduling identities: ORGANIZER is the eXo organizer (not the pushing account) and carries SCHEDULE-AGENT=CLIENT because the pusher (identity 5) is not the organizer (identity 9); every ATTENDEE carries SCHEDULE-AGENT=CLIENT and a PARTSTAT mapped from the agenda response; a CN holding a comma is quoted; an attendee without a visible email is omitted entirely.",
+    "invariant": "Scheduling identities: ORGANIZER is the eXo organizer (not the pushing account) and carries SCHEDULE-AGENT=NONE because the pusher (identity 5) is not the organizer (identity 9); every ATTENDEE carries SCHEDULE-AGENT=NONE and a PARTSTAT mapped from the agenda response; a CN holding a comma is quoted; an attendee without a visible email is omitted entirely. SCHEDULE-AGENT was captured as CLIENT and edited to NONE for EXO-89681, which is the change under test: NONE stops the user's own client emailing an iMIP reply when they answer the copy.",
     "pins": "organizerLines/cnParam/partStat; the no-invented-CAL-ADDRESS rule"
   },
   "event": {
