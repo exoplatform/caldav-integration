@@ -171,6 +171,60 @@ public class CaldavPushServiceTest {
   }
 
   @Test
+  public void aMirrorLeftBehindByADisconnectIsRecognisedAgain() {
+    // Disconnecting clears the recorded href but leaves the collection on the
+    // server, so a reconnected account has a destination it does not
+    // remember. Answering "none" here made eXo offer to create a calendar
+    // that already existed — and invite a second one beside it.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+                                                                                                           "eXo Meetings")));
+
+    MirrorTarget target = service.currentMirror(USER);
+
+    assertNotNull(target);
+    assertEquals(MIRROR, target.href());
+    // Recognised, never re-made: this is a read.
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  @Test
+  public void anAccountWithNoMirrorAnywhereStillReadsAsNone() {
+    // The other half of the rediscovery: recognising a collection at the
+    // derived path must not turn "nothing there" into a false positive.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar("/dav/calendars/john/personal/",
+                                                                                                           "Personal")));
+
+    assertNull(service.currentMirror(USER));
+  }
+
+  @Test
+  public void anUnreachableServerReadsAsNoneWhenNothingWasRecorded() {
+    // The rediscovery must not make every settings render report a problem
+    // the user does not have: with nothing recorded, nothing is claimed lost,
+    // and an account that cannot be reached simply has no known destination.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+        .thenThrow(new IllegalStateException("the calendar server could not be reached"));
+
+    assertNull(service.currentMirror(USER));
+  }
+
+  @Test
+  public void anUnreachableServerStillRaisesForARecordedMirror() {
+    // The user chose this destination, so the screen must say the account is
+    // unreachable rather than quietly report having none.
+    CaldavUserSetting stored = settings();
+    stored.setMirrorCalendarHref(MIRROR);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(stored);
+    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+        .thenThrow(new IllegalStateException("the calendar server could not be reached"));
+
+    assertThrows(IllegalStateException.class, () -> service.currentMirror(USER));
+  }
+
+  @Test
   public void aMirrorRecordedButGoneReadsAsNone() {
     // Deleted from the user's own client. Saying "no destination" is right;
     // naming a calendar that is not there would be worse than saying nothing.
