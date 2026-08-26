@@ -231,4 +231,18 @@ public class CaldavServer {
    * explicit value changes the row.
    */
   private MirrorTargetKind mirrorTarget = MirrorTargetKind.DEDICATED_CALENDAR;
+
+  /**
+   * Name of the {@code ConnectorCredentialsProvider} this server is configured
+   * to use (e.g. "personal", "bluemind-sudo"). Not to be confused with
+   * {@link #providerName} above, which names the remote server product, not how
+   * credentials are obtained for it.
+   * <p>
+   * Carried on the model, and not only on the entity, because the CalDAV client
+   * resolves it from the registry to build a credentials context — a field only
+   * the entity knows is a field nothing can read. Not a secret: it names a
+   * provider, it holds no material. Declared LAST, after the quirk fields, for
+   * the positional-constructor reason they explain above.
+   */
+  private String  authProviderName;
 }

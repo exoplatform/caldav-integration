@@ -31,6 +31,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
+
 /**
  * A CalDAV server declared by an administrator. Holds only what every user is
  * allowed to see — name, description, URL, activation — and never a
@@ -191,4 +193,18 @@ public class CaldavServerEntity {
    */
   @Column(name = "MIRROR_TARGET", nullable = false)
   private String  mirrorTarget = "DEDICATED_CALENDAR";
+
+  /**
+   * Name of the {@link org.exoplatform.services.connector.credentials.ConnectorCredentialsProvider}
+   * this server is configured to use (e.g. "personal", "bluemind-sudo"). Not
+   * to be confused with {@link #providerName} above, which names the remote
+   * server product (Stalwart, BlueMind...), not how credentials are obtained
+   * for it. Defaults to Personal, the only mode that requires no
+   * administrator action beyond this server's own URL - every server
+   * declared before this field existed backfills to the same value via the
+   * migration's column default. Declared LAST, after the quirk columns, for the
+   * positional-constructor reason they explain above.
+   */
+  @Column(name = "AUTH_PROVIDER_NAME")
+  private String  authProviderName = PersonalCredentialsProvider.NAME;
 }
