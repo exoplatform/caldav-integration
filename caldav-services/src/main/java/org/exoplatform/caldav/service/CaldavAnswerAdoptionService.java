@@ -141,6 +141,21 @@ public class CaldavAnswerAdoptionService {
     boolean adopted = false;
     try {
       for (IcsEvent component : parsed) {
+        // TEMPORARY DIAGNOSTIC (EXO-89681): what the client actually left on
+        // the object, against the addresses we match it by. Remove once the
+        // round trip is proven.
+        if (component.getAttendees() != null) {
+          for (IcsPerson who : component.getAttendees()) {
+            LOG.info("ADOPT-DIAG user {} sees ATTENDEE email={} partstat={} (matching against profile={} account={})",
+                     userIdentityId,
+                     who.getEmail(),
+                     who.getResponse(),
+                     email,
+                     accountAddress);
+          }
+        } else {
+          LOG.info("ADOPT-DIAG user {} sees an object with NO attendees at all", userIdentityId);
+        }
         EventAttendeeResponse answer = answerOf(component, email, accountAddress);
         if (answer == null) {
           continue;
