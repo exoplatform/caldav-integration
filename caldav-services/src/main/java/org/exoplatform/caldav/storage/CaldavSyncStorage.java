@@ -278,6 +278,23 @@ public class CaldavSyncStorage {
    * @param localEventIds the eXo events to ask about
    * @return the identifiers among them that are mapped, empty when none are
    */
+  public Set<Long> mappedEventIds(long userIdentityId, Collection<Long> localEventIds) {
+    if (localEventIds == null || localEventIds.isEmpty()) {
+      return Set.of();
+    }
+    return new HashSet<>(objectSyncDAO.findMappedLocalEventIdsOfUser(userIdentityId, localEventIds));
+  }
+
+  /**
+   * Which of these eXo events carry a copy for ANYONE.
+   *
+   * Kept for the callers that genuinely ask the global question; a per-user
+   * pass wants {@link #mappedEventIds(long, Collection)} instead, or the
+   * first attendee copied answers for every other attendee.
+   *
+   * @param localEventIds the eXo events to ask about
+   * @return the identifiers among them that are mapped
+   */
   public Set<Long> mappedEventIds(Collection<Long> localEventIds) {
     if (localEventIds == null || localEventIds.isEmpty()) {
       return Set.of();
