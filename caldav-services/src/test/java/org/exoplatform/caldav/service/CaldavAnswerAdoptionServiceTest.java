@@ -45,6 +45,7 @@ import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.ics.IcsEventMapper;
 import org.exoplatform.caldav.ics.IcsParser;
 import org.exoplatform.caldav.service.CaldavAnswerAdoptionService.Outcome;
+import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
@@ -71,6 +72,14 @@ public class CaldavAnswerAdoptionServiceTest {
 
   @Mock
   private IdentityManager             identityManager;
+
+  /**
+   * Holds the address the user's account answers to. Left answering null in
+   * most cases: a copy written before that address was used names its owner
+   * by their eXo profile address, and both spellings must keep working.
+   */
+  @Mock
+  private CaldavConnectorStorage      caldavConnectorStorage;
 
   @Mock
   private AgendaEventService          agendaEventService;
