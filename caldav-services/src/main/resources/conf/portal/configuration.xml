@@ -56,5 +56,19 @@
       <description>Pushes a newly created calendar to the user's CalDAV server without waiting for the throttled sync</description>
     </component-plugin>
   </external-component-plugins>
+  <!-- The outward half of answering a meeting. Bound to responseSaved rather
+       than responseSent: the copy has to track what agenda holds, which
+       includes the reset to NEEDS-ACTION after a material edit and the
+       propagation of an answer onto a series' exceptional occurrences —
+       neither of which is "sent" by a user. -->
+  <external-component-plugins>
+    <target-component>org.exoplatform.services.listener.ListenerService</target-component>
+    <component-plugin>
+      <name>exo.agenda.event.responseSaved</name>
+      <set-method>addListener</set-method>
+      <type>org.exoplatform.caldav.listener.EventResponseSavedListener</type>
+      <description>Carries an answer recorded in eXo out to the copy on the user's CalDAV server, so the two never diverge</description>
+    </component-plugin>
+  </external-component-plugins>
 
 </configuration>
