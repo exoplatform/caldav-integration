@@ -29,6 +29,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
 
 import net.fortuna.ical4j.data.CalendarBuilder;
+import net.fortuna.ical4j.util.CompatibilityHints;
 import net.fortuna.ical4j.model.Calendar;
 import net.fortuna.ical4j.model.Parameter;
 import net.fortuna.ical4j.model.Property;
@@ -69,6 +70,25 @@ public class IcsParser {
 
   private static final Log LOG = ExoLogger.getLogger(IcsParser.class);
 
+  static {
+    // This parser reads iCalendar written by other people's servers and
+    // clients, and it must not discard an object because one parameter
+    // offends a validator. It did: macOS Calendar writes EMAIL= on the
+    // attendee line when its user answers an invitation, ical4j checks that
+    // address against a list of real top-level domains, and a test rig's
+    // alice@stalwart.local failed the check — so the whole object parsed to
+    // nothing and the user's answer was unreadable. The strictness protected
+    // nobody: eXo never sends mail to an address read off a copy, and the
+    // properties it does read — PARTSTAT, UID, RECURRENCE-ID — were all
+    // well-formed.
+    //
+    // Relaxed parsing keeps such an object readable. Relaxed unfolding goes
+    // with it: line folding is another thing clients get subtly wrong, and
+    // the same argument applies.
+    CompatibilityHints.setHintEnabled(CompatibilityHints.KEY_RELAXED_PARSING, true);
+    CompatibilityHints.setHintEnabled(CompatibilityHints.KEY_RELAXED_UNFOLDING, true);
+  }
+
   /**
    * Reads every VEVENT of one calendar object.
    *
@@ -90,10 +110,10 @@ public class IcsParser {
     try {
       calendar = new CalendarBuilder().build(new StringReader(ics));
     } catch (Exception e) {
-      // TEMPORARY (EXO-89681): raised from debug because a copy a client had
-      // answered came back unparseable and the silence hid it. Back to debug
-      // once the round trip is proven.
-      LOG.warn("PARSE-DIAG a calendar object could not be parsed and is skipped", e);
+      // Warn, not debug. An unreadable object is a fact about somebody
+      // else's data that costs a user something — an answer not seen, an
+      // event not imported — and debug hid exactly that for hours.
+      LOG.warn("A calendar object could not be parsed and is skipped", e);
       return List.of();
     }
     List<IcsEvent> masters = new ArrayList<>();
