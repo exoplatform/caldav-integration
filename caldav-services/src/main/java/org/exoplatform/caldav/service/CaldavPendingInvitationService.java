@@ -216,13 +216,34 @@ public class CaldavPendingInvitationService {
    * @param userIdentityId identity of the user
    * @return true when the connected CalDAV account accepts copies
    */
+  /**
+   * Whether a connected account's provider is one of this add-on's.
+   *
+   * <p>
+   * A declared CalDAV server gets a provider name of its own — the base name
+   * with the server's identifier appended — so only a user connected to the
+   * seed registration carries the bare name. Matching the bare name alone
+   * therefore read as "copies disabled" for everyone connected to a server an
+   * administrator had declared, and their meetings were never copied at all,
+   * silently: the pass returned before it did anything, and its own
+   * diagnostics printed nothing because nothing had been considered.
+   *
+   * @param providerName the provider a connected account names
+   * @return true when it is a CalDAV account of this add-on
+   */
+  private boolean isCaldavConnector(String providerName) {
+    return providerName != null
+        && (providerName.equals(CaldavPushService.CONNECTOR_NAME)
+            || providerName.startsWith(CaldavPushService.CONNECTOR_NAME + "."));
+  }
+
   private boolean copiesEnabled(long userIdentityId) {
     try {
       var settings = agendaUserSettingsService.getAgendaUserSettings(userIdentityId);
       return settings != null
              && settings.getConnectedConnectors()
                         .stream()
-                        .anyMatch(account -> CaldavPushService.CONNECTOR_NAME.equals(account.getProviderName())
+                        .anyMatch(account -> isCaldavConnector(account.getProviderName())
                                              && account.isPushEnabled());
     } catch (RuntimeException e) {
       // No settings readable means no consent readable, and consent is the
