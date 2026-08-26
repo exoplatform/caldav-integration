@@ -274,7 +274,7 @@ public class CaldavServerService {
         && !StringUtils.equalsIgnoreCase(System.getProperty(CALDAV_ENABLED_PROPERTY), "false");
     caldavServerStorage.createSeedServer(new CaldavServer(0, null, STALWART_SERVER_NAME, null, stalwartUrl, stalwartActive, null, null,
                                                           null, null, true, null, null, null, null, null,
-                                                          MirrorTargetKind.DEDICATED_CALENDAR),
+                                                          MirrorTargetKind.DEDICATED_CALENDAR, null),
                                          CALDAV_PROVIDER_NAME);
     // The kernel plugin only CREATES the provider when missing — an existing
     // one keeps whatever enabled state it holds (an admin may have disabled
@@ -283,13 +283,13 @@ public class CaldavServerService {
     // fresh install both writes carry the same property-driven value.
     saveAgendaRemoteProvider(new CaldavServer(0, CALDAV_PROVIDER_NAME, STALWART_SERVER_NAME, null, stalwartUrl, stalwartActive, null,
                                               null, null, null, true, null, null, null, null, null,
-                                              MirrorTargetKind.DEDICATED_CALENDAR));
+                                              MirrorTargetKind.DEDICATED_CALENDAR, null));
     LOG.info("Seeded the Stalwart CalDAV server ({}), active: {}", stalwartUrl, stalwartActive);
     boolean bluemindActive = isDeclarableSeedAddress(BLUEMIND_SERVER_NAME, DEFAULT_BLUEMIND_URL);
     CaldavServer bluemind = caldavServerStorage.createServer(new CaldavServer(0, null, BLUEMIND_SERVER_NAME, null, DEFAULT_BLUEMIND_URL,
                                                                               bluemindActive, null, null, null, null, true, null,
                                                                               null, null, null, null,
-                                                                              MirrorTargetKind.DEDICATED_CALENDAR),
+                                                                              MirrorTargetKind.DEDICATED_CALENDAR, null),
                                                              CALDAV_PROVIDER_NAME);
     saveAgendaRemoteProvider(bluemind);
     LOG.info("Seeded the Bluemind CalDAV server ({}), active: {}", DEFAULT_BLUEMIND_URL, bluemindActive);
@@ -517,7 +517,7 @@ public class CaldavServerService {
     saveAgendaRemoteProvider(new CaldavServer(server.getId(), server.getProviderName(), server.getName(),
                                               server.getDescription(), server.getServerUrl(), false, null, null, null, null,
                                               server.isAnswerLinksInCopy(), null, null, null, null,
-                                              server.getCopySettingsUpdated(), server.getMirrorTarget()));
+                                              server.getCopySettingsUpdated(), server.getMirrorTarget(), null));
     caldavServerStorage.deleteServer(serverId);
     caldavServerQuirkService.forget(serverId);
   }

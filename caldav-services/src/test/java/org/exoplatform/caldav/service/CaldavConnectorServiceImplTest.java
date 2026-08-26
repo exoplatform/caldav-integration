@@ -152,7 +152,7 @@ public class CaldavConnectorServiceImplTest {
     when(registry.resolveServer(7L)).thenReturn(new CaldavServer(7, "agenda.caldavCalendar.7", "Declared", null,
                                                                  "https://declared.example.org/cal/{username}/", true, null,
                                                                  null, null, null, true, null, null, null, null, null,
-                                                                 MirrorTargetKind.DEDICATED_CALENDAR));
+                                                                 MirrorTargetKind.DEDICATED_CALENDAR, null));
 
     CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
 
@@ -176,7 +176,7 @@ public class CaldavConnectorServiceImplTest {
     when(registry.resolveServer(null)).thenReturn(new CaldavServer(1, "agenda.caldavCalendar", "Seed", null,
                                                                    "https://seed.example.org/cal/{username}/", true, null,
                                                                    null, null, null, true, null, null, null, null,
-                                                                   null, MirrorTargetKind.DEDICATED_CALENDAR));
+                                                                   null, MirrorTargetKind.DEDICATED_CALENDAR, null));
 
     CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
 
@@ -401,7 +401,7 @@ public class CaldavConnectorServiceImplTest {
     when(registry.resolveServer(null)).thenReturn(new CaldavServer(1, "agenda.caldavCalendar", "Seed", null,
                                                                    "https://seed.example.org/", true, null, null, null,
                                                                    null, true, null, null, null, null, null,
-                                                                   MirrorTargetKind.DEDICATED_CALENDAR));
+                                                                   MirrorTargetKind.DEDICATED_CALENDAR, null));
 
     CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
 
