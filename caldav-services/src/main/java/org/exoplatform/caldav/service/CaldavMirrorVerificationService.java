@@ -319,9 +319,14 @@ public class CaldavMirrorVerificationService {
                                         object.getRemoteHref(),
                                         settings.getUsername(),
                                         settings.getPassword());
-    } catch (RuntimeException e) {
+    } catch (RuntimeException | LinkageError e) {
       // Unreadable is not the same as rewritten, and a re-push on this path
       // would overwrite whatever is there on the strength of a network error.
+      //
+      // LinkageError belongs here for the same reason it belongs on the
+      // sweep: an object can be unreadable because the parser is missing a
+      // class it only needs for certain content, and one such object must
+      // leave the other copies unexamined rather than end the pass.
       LOG.debug("The copy at {} could not be read back; it is left alone", object.getRemoteHref(), e);
       return new Assessment(Verdict.UNTOUCHED, null);
     }
