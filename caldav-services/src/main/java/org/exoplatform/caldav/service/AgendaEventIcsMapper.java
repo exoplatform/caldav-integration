@@ -171,6 +171,33 @@ public class AgendaEventIcsMapper {
   }
 
   /**
+   * The <b>profile</b> address a copy names one person by, or null when it
+   * names them not at all.
+   *
+   * <p>
+   * Public because propagating an answer outward has to find that person's
+   * ATTENDEE line in an object already on the server. It is deliberately named
+   * for what it is and not "the address of" that user, because it is not the
+   * only one a copy may carry: the account's own owner is named by the address
+   * their CalDAV account answers to, so that a client recognises the meeting
+   * as an invitation to itself. Treating this one as authoritative is how the
+   * propagation silently matched nothing on a live rig — the caller offers
+   * both and lets the object decide.
+   *
+   * <p>
+   * The rule that a person with no visible address is left off the copy is the
+   * same rule read from the other end: no address here means this mapper wrote
+   * no ATTENDEE line for them to rewrite.
+   *
+   * @param identityId the social identity
+   * @return the profile mail address, or null when none is visible
+   */
+  public String addressOf(long identityId) {
+    IcsPerson person = personOf(identityId);
+    return person == null ? null : person.getEmail();
+  }
+
+  /**
    * One identity as a calendar user, or null when no address is visible.
    *
    * <p>
