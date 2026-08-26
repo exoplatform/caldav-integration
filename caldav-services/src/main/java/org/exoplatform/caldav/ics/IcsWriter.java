@@ -145,8 +145,15 @@ public class IcsWriter {
     // means "provisionally scheduled" — a poll pushed with its own word would
     // show up as a real meeting nobody has confirmed. An event only reaches
     // this engine once it is scheduled, so the honest value is the constant.
+    //
+    // CANCELLED is the one exception, and it is not a status mapping either:
+    // it is the whole point of writing the copy again after a meeting is
+    // called off. It has to be the copy's own word rather than the copy's
+    // absence, because a client shows a cancelled meeting struck through where
+    // it shows a removed one not at all — and "not at all" is what a failed
+    // synchronisation looks like too.
     // TRANSP is the RFC default and is written for explicitness.
-    vEvent.getProperties().add(Status.VEVENT_CONFIRMED);
+    vEvent.getProperties().add(event.isCancelled() ? Status.VEVENT_CANCELLED : Status.VEVENT_CONFIRMED);
     vEvent.getProperties().add(Transp.OPAQUE);
 
     addRecurrence(vEvent, event, timeZone, occurrence);

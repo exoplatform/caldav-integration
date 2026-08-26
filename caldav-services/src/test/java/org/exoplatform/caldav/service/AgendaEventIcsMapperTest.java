@@ -37,6 +37,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
+import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.constant.ReminderPeriodType;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
@@ -234,6 +235,33 @@ public class AgendaEventIcsMapperTest {
   /**
    * @return an agenda event with the fields these tests read
    */
+  /**
+   * eXo hides a cancelled event from its own screens, so the copy is the only
+   * place its attendees can still be told the meeting is off. The mapper is
+   * what carries that across.
+   */
+  @Test
+  public void aCancelledEventIsMappedAsCancelled() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    Event event = event();
+    event.setStatus(EventStatus.CANCELLED);
+
+    assertTrue(mapper.toIcsEvent(event, "uid-1", null, PUSHER).isCancelled());
+  }
+
+  /**
+   * And an ordinary meeting is not, whichever of eXo's other statuses it
+   * carries — TENTATIVE is eXo's word for a date poll, which is never pushed.
+   */
+  @Test
+  public void anOrdinaryEventIsNotMappedAsCancelled() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    Event event = event();
+    event.setStatus(EventStatus.CONFIRMED);
+
+    assertFalse(mapper.toIcsEvent(event, "uid-1", null, PUSHER).isCancelled());
+  }
+
   private Event event() {
     Event event = new Event();
     event.setId(1L);
