@@ -141,12 +141,6 @@ public class CaldavPendingInvitationService {
     // finding nothing to do grow with how much had already been done, on a
     // pass that repeats for ever.
     Set<Long> alreadyCopied = caldavSyncStorage.mappedEventIds(userIdentityId, candidates);
-    // TEMPORARY DIAGNOSTIC (EXO-89681)
-    LOG.info("SEED-DIAG user {}: {} upcoming, {} candidate series, {} already copied",
-             userIdentityId,
-             upcoming.size(),
-             candidates.size(),
-             alreadyCopied.size());
     int pushed = 0;
     for (Long eventId : candidates) {
       if (alreadyCopied.contains(eventId)) {
