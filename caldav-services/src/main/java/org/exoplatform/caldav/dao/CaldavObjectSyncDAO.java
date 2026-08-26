@@ -102,6 +102,25 @@ public interface CaldavObjectSyncDAO extends JpaRepository<CaldavObjectSyncEntit
   List<Long> findMappedLocalEventIds(@Param("localEventIds") Collection<Long> localEventIds);
 
   /**
+   * Which of these eXo events this user already holds a copy of.
+   *
+   * Scoped through the pair to its owner, and that scope is the whole point:
+   * a mapping says "somebody has a copy of this event", and every attendee of
+   * a meeting needs one of their own. Asking the unscoped question in a
+   * per-user pass meant the first attendee to be copied answered for all the
+   * others, who were then skipped and never got their copy.
+   *
+   * @param userIdentityId the user whose copies are asked about
+   * @param localEventIds the eXo events to ask about
+   * @return the identifiers this user already has a copy of
+   */
+  @Query("SELECT DISTINCT o.localEventId FROM CaldavObjectSyncEntity o, CaldavCalendarSyncEntity p"
+      + " WHERE o.calendarSyncId = p.id AND p.userIdentityId = :userIdentityId"
+      + " AND o.localEventId IN :localEventIds")
+  List<Long> findMappedLocalEventIdsOfUser(@Param("userIdentityId") long userIdentityId,
+                                           @Param("localEventIds") Collection<Long> localEventIds);
+
+  /**
    * Drops every mapping of a pair. Called when a pair is unbound; the foreign
    * key would cascade on a row delete, but a pair is often kept as a tombstone
    * while its objects are not.
