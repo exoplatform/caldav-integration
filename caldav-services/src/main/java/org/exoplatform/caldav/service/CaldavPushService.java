@@ -329,8 +329,9 @@ public class CaldavPushService {
       mapping.setLocalEventId(localEventId);
     }
     mapping.setRemoteHref(href);
-    mapping.setEtag(result.etag());
-    mapping.setPushedHash(hashOf(ics));
+    StoredCopy stored = storedBaseline(endpoint, settings, href, ics, result.etag());
+    mapping.setEtag(stored.etag());
+    mapping.setPushedHash(stored.hash());
     mapping.setLastSync(new Date());
     ObjectSync saved = caldavSyncStorage.saveObject(mapping);
     // Last, and only once the destination holds the event: a move that failed
@@ -668,8 +669,9 @@ public class CaldavPushService {
       if (result.preconditionFailed()) {
         throw new CaldavPushException(CONFLICT, "The series at " + known.getRemoteHref() + " changed since it was read");
       }
-      known.setEtag(result.etag());
-      known.setPushedHash(hashOf(rewritten));
+      StoredCopy stored = storedBaseline(endpoint, settings, known.getRemoteHref(), rewritten, result.etag());
+      known.setEtag(stored.etag());
+      known.setPushedHash(stored.hash());
       known.setLastSync(new Date());
       caldavSyncStorage.saveObject(known);
     } catch (CalDavAuthenticationException e) {
@@ -1056,6 +1058,68 @@ public class CaldavPushService {
   }
 
   /**
+   * The baseline to record for a copy that has just been written: what the
+   * server <b>stored</b>, not what eXo sent.
+   *
+   * <p>
+   * A CalDAV server is not obliged to keep the bytes it is handed, and a whole
+   * family of them does not. BlueMind parses the object into its own model and
+   * re-serialises it, so the copy it holds is semantically the meeting eXo sent
+   * and textually a different document. Recording a digest of what was sent
+   * then makes the very next verification pass read that copy, find bytes it
+   * did not write, and conclude a client tampered with it — for every object,
+   * on every pass, until {@code giveUpOn} abandons them and eXo stops
+   * maintaining them at all. The assumption that a PUT is byte-stable was the
+   * defect; this reads the object back once and takes the answer as the
+   * baseline, so a normalising server is absorbed on the first pass and only a
+   * real edit registers as a rewrite afterwards.
+   *
+   * <p>
+   * The version comes from the same read for the same reason, and it must come
+   * from the <i>same</i> read: a digest and an ETag describing two different
+   * representations of the object are worse than either alone. It also settles
+   * the guarded write. On a server whose ETag moves after the PUT answered one,
+   * the {@code If-Match} of the next ordinary update carries a version the
+   * server has already left behind and the write is refused with a 412 — which
+   * is an eXo-side edit silently failing to reach the copy. The read-back's
+   * ETag is the one the server will still recognise.
+   *
+   * <p>
+   * It never fails a push. A read-back that cannot be done says nothing about a
+   * write that succeeded, so the sent bytes and the PUT's own ETag stand in —
+   * exactly the behaviour that held before this method existed. The cost is one
+   * GET per object actually written, which is a user action or a repair, never
+   * a per-sweep charge: a converged mirror pushes nothing and pays nothing.
+   *
+   * @param endpoint the account's endpoint
+   * @param settings the connected account
+   * @param href where the object was written
+   * @param sentIcs the iCalendar text that was sent
+   * @param putEtag the version the write itself answered, may be null
+   * @return the digest and version to record against the copy
+   */
+  private StoredCopy storedBaseline(CalDavEndpoint endpoint,
+                                    CaldavUserSetting settings,
+                                    String href,
+                                    String sentIcs,
+                                    String putEtag) {
+    try {
+      CalendarObject stored = calDavClient.fetchObject(endpoint, href, settings.getUsername(), settings.getPassword());
+      if (stored == null || StringUtils.isBlank(stored.calendarData())) {
+        // Including BlueMind's way of saying "no such object", which is a 500
+        // the client reports as absent. Nothing was learnt, so nothing changes.
+        LOG.debug("The copy written to {} could not be read back; the sent bytes stand as its baseline", href);
+        return new StoredCopy(hashOf(sentIcs), putEtag);
+      }
+      return new StoredCopy(hashOf(stored.calendarData()),
+                            StringUtils.isNotBlank(stored.etag()) ? stored.etag() : putEtag);
+    } catch (RuntimeException e) {
+      LOG.debug("The copy written to {} could not be read back; the sent bytes stand as its baseline", href, e);
+      return new StoredCopy(hashOf(sentIcs), putEtag);
+    }
+  }
+
+  /**
    * A stable digest of what was pushed, so a later read can tell "the server
    * changed this" from "this is exactly what we wrote".
    *
@@ -1069,5 +1133,16 @@ public class CaldavPushService {
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 is required by every Java platform", e);
     }
+  }
+
+  /**
+   * What the server holds for a copy, as the two things a later pass compares
+   * it by.
+   *
+   * @param hash digest of the stored iCalendar text
+   * @param etag the version the server publishes for it, or null when it
+   *          publishes none
+   */
+  private record StoredCopy(String hash, String etag) {
   }
 }

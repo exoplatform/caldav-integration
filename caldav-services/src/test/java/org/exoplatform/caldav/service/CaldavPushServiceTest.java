@@ -325,10 +325,16 @@ public class CaldavPushServiceTest {
   public void aLaterPushMergesIntoWhatTheServerHolds() {
     givenAMirror();
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(mapped("\"etag-1\""));
+    // Two reads, and they answer different things on purpose: the first is the
+    // merge read of what the server held before the write, the second is the
+    // baseline read-back of what it holds after it.
     when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
                                                                                 .thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
                                                                                                                "\"etag-1\"",
-                                                                                                               "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"));
+                                                                                                               "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"),
+                                                                                            new CalendarObject(MIRROR + "evt-1.ics",
+                                                                                                               "\"etag-2\"",
+                                                                                                               "MERGED"));
     when(icsMerger.merge(anyString(), anyString(), eq(false))).thenReturn("MERGED");
     when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
                                                                                                            .thenReturn(new PutResult(204,
@@ -942,7 +948,13 @@ public class CaldavPushServiceTest {
     // The href comes back from the filename convention, since the row that
     // would have carried one never got that far.
     assertEquals(MIRROR + "evt-1.ics", mapping.getRemoteHref());
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    // Nothing is merged: with no ETag recorded there is no object to merge
+    // into, which is what "as if it were the first time" means. The one read
+    // this makes is the baseline read-back, and it happens after the write —
+    // this test used to assert no read at all, which stopped being the same
+    // statement once the baseline came from the server rather than from us.
+    verify(icsMerger, never()).merge(anyString(), anyString(), anyBoolean());
+    verify(calDavClient, times(1)).fetchObject(any(), anyString(), anyString(), anyString());
     verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
   }
 
