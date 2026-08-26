@@ -90,7 +90,10 @@ public class IcsParser {
     try {
       calendar = new CalendarBuilder().build(new StringReader(ics));
     } catch (Exception e) {
-      LOG.debug("A calendar object could not be parsed and is skipped", e);
+      // TEMPORARY (EXO-89681): raised from debug because a copy a client had
+      // answered came back unparseable and the silence hid it. Back to debug
+      // once the round trip is proven.
+      LOG.warn("PARSE-DIAG a calendar object could not be parsed and is skipped", e);
       return List.of();
     }
     List<IcsEvent> masters = new ArrayList<>();
