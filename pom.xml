@@ -27,6 +27,7 @@
   <properties>
     <!-- 3rd party libraries versions -->
     <addon.exo.agenda.version>7.3.x-ai-contribution-SNAPSHOT</addon.exo.agenda.version>
+    <org.exoplatform.commons-exo.version>7.3.x-ai-contribution-SNAPSHOT</org.exoplatform.commons-exo.version>
     <!-- Sonar properties -->
     <sonar.organization>exoplatform</sonar.organization>
 
@@ -37,6 +38,13 @@
         <groupId>org.exoplatform.agenda</groupId>
         <artifactId>agenda-parent</artifactId>
         <version>${addon.exo.agenda.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.exoplatform.commons-exo</groupId>
+        <artifactId>commons-exo</artifactId>
+        <version>${org.exoplatform.commons-exo.version}</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>
