@@ -102,6 +102,49 @@ public class IcsParser {
    * @param ics the calendar object as the server sent it
    * @return the events it carries, master first; empty when it carries none
    */
+  /**
+   * Reads an object again with its EMAIL parameters removed, or answers null.
+   *
+   * <p>
+   * ical4j validates the EMAIL parameter's address in the parameter's own
+   * constructor, before any relaxed-parsing hint can apply, and rejects
+   * anything commons-validator dislikes — a host whose top-level domain is
+   * not a real one, for instance. macOS Calendar writes EMAIL= on the
+   * attendee line whenever its user answers an invitation, so one address
+   * eXo never uses could make a whole object unreadable, and with it the
+   * user's answer.
+   *
+   * <p>
+   * Dropping the parameter is safe precisely because eXo does not read it:
+   * an attendee is identified by the address in the property's own value,
+   * and the answer is carried by PARTSTAT. Nothing eXo needs is in EMAIL.
+   * The retry runs only after a first failure, so a well-formed object is
+   * never touched.
+   *
+   * @param ics the object as the server returned it
+   * @param cause why it would not parse the first time
+   * @return the calendar read without those parameters, or null when it
+   *         still will not parse
+   */
+  private Calendar parseWithoutEmailParameters(String ics, Exception cause) {
+    // Unfolded first: a parameter can straddle a folded line, and a
+    // substitution that ignored that would leave half of it behind.
+    String unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "").replace("\n ", "").replace("\n\t", "");
+    String stripped = unfolded.replaceAll("(?i);EMAIL=(\"[^\"]*\"|[^;:\r\n]*)", "");
+    if (stripped.equals(unfolded)) {
+      // Nothing of the kind in it; the failure is something else entirely.
+      return null;
+    }
+    try (StringReader reader = new StringReader(stripped)) {
+      Calendar calendar = new CalendarBuilder().build(reader);
+      LOG.info("A calendar object carried an EMAIL parameter its own library refuses; it was read without it", cause);
+      return calendar;
+    } catch (Exception e) {
+      LOG.debug("A calendar object could not be read even without its EMAIL parameters", e);
+      return null;
+    }
+  }
+
   public List<IcsEvent> parse(String ics) {
     if (StringUtils.isBlank(ics)) {
       return List.of();
@@ -110,11 +153,14 @@ public class IcsParser {
     try {
       calendar = new CalendarBuilder().build(new StringReader(ics));
     } catch (Exception e) {
-      // Warn, not debug. An unreadable object is a fact about somebody
-      // else's data that costs a user something — an answer not seen, an
-      // event not imported — and debug hid exactly that for hours.
-      LOG.warn("A calendar object could not be parsed and is skipped", e);
-      return List.of();
+      calendar = parseWithoutEmailParameters(ics, e);
+      if (calendar == null) {
+        // Warn, not debug. An unreadable object is a fact about somebody
+        // else's data that costs a user something — an answer not seen, an
+        // event not imported — and debug hid exactly that for hours.
+        LOG.warn("A calendar object could not be parsed and is skipped", e);
+        return List.of();
+      }
     }
     List<IcsEvent> masters = new ArrayList<>();
     List<IcsEvent> overrides = new ArrayList<>();
