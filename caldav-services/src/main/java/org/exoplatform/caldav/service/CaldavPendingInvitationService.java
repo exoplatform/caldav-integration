@@ -140,7 +140,7 @@ public class CaldavPendingInvitationService {
     // per meeting, after loading the event and its calendar, made the cost of
     // finding nothing to do grow with how much had already been done, on a
     // pass that repeats for ever.
-    Set<Long> alreadyCopied = caldavSyncStorage.mappedEventIds(candidates);
+    Set<Long> alreadyCopied = caldavSyncStorage.mappedEventIds(userIdentityId, candidates);
     int pushed = 0;
     for (Long eventId : candidates) {
       if (alreadyCopied.contains(eventId)) {
@@ -177,11 +177,16 @@ public class CaldavPendingInvitationService {
       // mirror refuses.
       return false;
     }
-    if (caldavSyncStorage.isEventMapped(eventId)) {
+    if (!caldavSyncStorage.mappedEventIds(userIdentityId, List.of(eventId)).isEmpty()) {
       // Asked again despite the batch check the caller already made: that
       // answer was read before this pass started writing, and a copy may have
       // appeared since — from the user's own browser, or from an earlier
       // meeting in this very loop belonging to the same series.
+      //
+      // Asked of THIS user's copies, never of everyone's: a meeting has an
+      // attendee list, and each of them needs a copy of their own. The
+      // unscoped question let whichever attendee was copied first answer for
+      // all the rest, who were skipped and never got theirs.
       return false;
     }
     try {
