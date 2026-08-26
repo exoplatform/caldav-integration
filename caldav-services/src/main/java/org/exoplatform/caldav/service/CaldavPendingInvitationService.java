@@ -141,6 +141,12 @@ public class CaldavPendingInvitationService {
     // finding nothing to do grow with how much had already been done, on a
     // pass that repeats for ever.
     Set<Long> alreadyCopied = caldavSyncStorage.mappedEventIds(userIdentityId, candidates);
+    // TEMPORARY DIAGNOSTIC (EXO-89681)
+    LOG.info("SEED-DIAG user {}: {} upcoming, {} candidate series, {} already copied",
+             userIdentityId,
+             upcoming.size(),
+             candidates.size(),
+             alreadyCopied.size());
     int pushed = 0;
     for (Long eventId : candidates) {
       if (alreadyCopied.contains(eventId)) {
@@ -193,8 +199,10 @@ public class CaldavPendingInvitationService {
       return caldavPushService.pushAgendaEvent(userIdentityId, eventId, null) != null;
     } catch (CaldavPushException e) {
       // One refused meeting must not stop the rest; whatever refused it is
-      // asked again next pass.
-      LOG.debug("Event {} could not be seeded into the account of user {}", eventId, userIdentityId, e);
+      // asked again next pass. Warn rather than debug: a meeting that never
+      // reaches a user's calendar is invisible to them and, at debug, to
+      // everyone else too.
+      LOG.warn("Event {} could not be seeded into the account of user {}", eventId, userIdentityId, e);
       return false;
     }
   }
