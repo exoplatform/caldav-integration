@@ -1,0 +1,457 @@
+/*
+ * Copyright (C) 2026 eXo Platform SAS.
+ *
+ * This is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU Lesser General Public License as
+ * published by the Free Software Foundation; either version 2.1 of
+ * the License, or (at your option) any later version.
+ *
+ * This software is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this software; if not, write to the Free
+ * Software Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
+ * 02110-1301 USA, or see the FSF site: http://www.fsf.org.
+ */
+package org.exoplatform.caldav.service;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import java.util.List;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.Spy;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.model.RemoteEvent;
+import org.exoplatform.agenda.service.AgendaCalendarService;
+import org.exoplatform.agenda.service.AgendaEventService;
+import org.exoplatform.agenda.service.AgendaRemoteEventService;
+import org.exoplatform.caldav.client.CalDavClient;
+import org.exoplatform.caldav.client.CalDavEndpoint;
+import org.exoplatform.caldav.client.CalendarObject;
+import org.exoplatform.caldav.client.PutResult;
+import org.exoplatform.caldav.ics.IcsMerger;
+import org.exoplatform.caldav.ics.IcsWriter;
+import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
+import org.exoplatform.caldav.model.ObjectSync;
+import org.exoplatform.caldav.model.SyncOrigin;
+import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.caldav.storage.CaldavSyncStorage;
+
+/**
+ * The outward half of answering a meeting.
+ *
+ * <p>
+ * The load-bearing test is {@link #anAnswerGivenInExoReachesTheCopy()}, and it
+ * pins a defect that was reproduced end to end: a user declined in their
+ * calendar client, changed their mind and clicked Accept in the notification
+ * mail, and five verification passes later an ordinary rename of the event in
+ * the client put the declined answer back — because nothing had ever carried
+ * the accepted one out to the copy, and the copy is what adoption reads.
+ *
+ * <p>
+ * The merger is real here rather than mocked. A mocked merger would let the
+ * whole chain pass while producing an object whose PARTSTAT never moved, which
+ * is exactly the failure being pinned.
+ */
+@ExtendWith(MockitoExtension.class)
+public class CaldavAnswerPushTest {
+
+  private static final long        USER    = 42L;
+
+  private static final long        SERVER  = 7L;
+
+  private static final long        EVENT   = 964L;
+
+  private static final String      MIRROR  = "/dav/cal/alice@stalwart.local/exo-meetings";
+
+  private static final String      HREF    = MIRROR + "/evt-1.ics";
+
+  private static final String      ADDRESS = "alice@stalwart.local";
+
+  @Mock
+  private CalDavClient             calDavClient;
+
+  @Mock
+  private CaldavConnectorStorage   caldavConnectorStorage;
+
+  @Mock
+  private CaldavSyncStorage        caldavSyncStorage;
+
+  @Mock
+  private IcsWriter                icsWriter;
+
+  @Spy
+  private IcsMerger                icsMerger = new IcsMerger();
+
+  @Mock
+  private AgendaEventService       agendaEventService;
+
+  @Mock
+  private AgendaEventIcsMapper     agendaEventIcsMapper;
+
+  @Mock
+  private AgendaRemoteEventService agendaRemoteEventService;
+
+  @Mock
+  private AgendaCalendarService    agendaCalendarService;
+
+  @Mock
+  private CalDavEndpoint           endpoint;
+
+  @InjectMocks
+  private CaldavPushService        service;
+
+  /**
+   * A connected account whose mirror already holds a copy of the meeting.
+   */
+  @BeforeEach
+  public void connectAnAccountHoldingTheCopy() {
+    lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    lenient().when(calDavClient.endpoint(SERVER, "alice")).thenReturn(endpoint);
+    lenient().when(agendaEventIcsMapper.addressOf(USER)).thenReturn(ADDRESS);
+    lenient().when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    lenient().when(caldavSyncStorage.getObjectByUid(1L, "evt-1")).thenReturn(mapped());
+    lenient().when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+  }
+
+  /**
+   * The regression this whole change exists for: an answer recorded in eXo is
+   * written onto the copy, so the copy stops carrying an answer the user has
+   * already changed — and stops being a stale answer waiting to be adopted.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anAnswerGivenInExoReachesTheCopy() throws Exception {
+    givenTheMeetingIsCopied();
+    givenTheCopySays("DECLINED");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(204,
+                                                                                                                                    "\"etag-2\"",
+                                                                                                                                    null));
+
+    assertTrue(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+
+    ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).updateObject(eq(endpoint),
+                                      eq(HREF),
+                                      written.capture(),
+                                      eq("\"etag-1\""),
+                                      eq("alice"),
+                                      eq("secret"));
+    assertTrue(written.getValue().contains("PARTSTAT=ACCEPTED"), written.getValue());
+    assertFalse(written.getValue().contains("PARTSTAT=DECLINED"), written.getValue());
+    // Everything else the object carried is still there: an answer is not
+    // consent to re-serialise a meeting another client may have added to.
+    assertTrue(written.getValue().contains("SUMMARY:invit5"), written.getValue());
+    assertTrue(written.getValue().contains("mailto:root@stalwart.local"), written.getValue());
+  }
+
+  /**
+   * The recorded hash follows what was just written. Left as it was, the next
+   * verification pass would read the ETag it does not recognise, judge the copy
+   * altered by a client, and repair it back to the answer this call replaced —
+   * the same silent revert, taking one pass longer.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void theCopyIsNotLeftLookingLikeAClientRewroteIt() throws Exception {
+    givenTheMeetingIsCopied();
+    givenTheCopySays("NEEDS-ACTION");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(204,
+                                                                                                                                    "\"etag-2\"",
+                                                                                                                                    null));
+
+    service.pushAnswer(USER, EVENT, "DECLINED");
+
+    ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
+    verify(caldavSyncStorage).saveObject(saved.capture());
+    assertEquals("\"etag-2\"", saved.getValue().getEtag());
+    ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString(), anyString(), anyString());
+    assertEquals(sha256(written.getValue()), saved.getValue().getPushedHash());
+  }
+
+  /**
+   * A copy that already says this is left alone. Writing anyway would move the
+   * ETag for nothing — and would push straight back at the server an answer
+   * that had just been adopted from it, which is how two convergent halves turn
+   * into a loop.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void aCopyThatAlreadySaysThisIsNotWrittenAgain() throws Exception {
+    givenTheMeetingIsCopied();
+    givenTheCopySays("ACCEPTED");
+
+    assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  /**
+   * An answer to one instance of a series reaches the object the series is
+   * written under, not an object of its own: agenda gives an override its own
+   * event id, while RFC 4791 puts the whole series in one file.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anAnswerToAnOverrideFindsTheSeriesCopy() throws Exception {
+    Event override = new Event();
+    override.setId(965L);
+    override.setParentId(EVENT);
+    when(agendaEventService.getEventById(eq(965L), isNull(), eq(USER))).thenReturn(override);
+    when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
+    givenTheCopySays("NEEDS-ACTION");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(204,
+                                                                                                                                    "\"etag-2\"",
+                                                                                                                                    null));
+
+    assertTrue(service.pushAnswer(USER, 965L, "TENTATIVE"));
+
+    verify(agendaRemoteEventService).findRemoteEvent(EVENT, USER);
+  }
+
+  /**
+   * A user with no CalDAV account has no copy to keep in step, and that is an
+   * ordinary state rather than a failure. Nothing is read, nothing is written,
+   * and nothing is said about it.
+   */
+  @Test
+  public void aUserWithNoAccountIsNotAFailure() {
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
+
+    assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+
+    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * A meeting this user never had copied out has no ATTENDEE line anywhere to
+   * rewrite. Answering it is not a reason to start copying it: the push is
+   * driven by the connector's own rules, not by whoever happens to answer.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void aMeetingWithNoCopyIsNotCopiedNow() throws Exception {
+    Event event = new Event();
+    event.setId(EVENT);
+    when(agendaEventService.getEventById(eq(EVENT), isNull(), eq(USER))).thenReturn(event);
+    when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(null);
+
+    assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+
+    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * A mapping with no ETag describes an object eXo never managed to write.
+   * There is nothing to condition a write on, and the client refuses an
+   * unconditional one on purpose — so this stops rather than fetching an object
+   * it could not write back.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void aCopyWithNoTagRecordedIsLeftToTheSweep() throws Exception {
+    givenTheMeetingIsCopied();
+    ObjectSync interrupted = mapped();
+    interrupted.setEtag(" ");
+    when(caldavSyncStorage.getObjectByUid(1L, "evt-1")).thenReturn(interrupted);
+
+    assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+
+    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * A copy someone edited between our read and our write is refused rather than
+   * overwritten. This has been told an answer and has not read the object, so
+   * it is in no position to decide anything about the rest of it; the
+   * verification pass, which does read before it writes, is.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void aConcurrentEditIsRefusedRatherThanOverwritten() throws Exception {
+    givenTheMeetingIsCopied();
+    givenTheCopySays("DECLINED");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(412,
+                                                                                                                                    null,
+                                                                                                                                    null));
+
+    CaldavPushException failure = org.junit.jupiter.api.Assertions.assertThrows(CaldavPushException.class,
+                                                                               () -> service.pushAnswer(USER,
+                                                                                                        EVENT,
+                                                                                                        "ACCEPTED"));
+
+    assertEquals(CaldavPushService.CONFLICT, failure.getCode());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  /**
+   * An answer agenda holds under a value the RFC does not define is written as
+   * NEEDS-ACTION rather than as itself: a strict reader rejects the whole
+   * object over one invalid token, and a rejected object is a meeting that
+   * vanishes from the user's phone.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anAnswerTheRfcDoesNotDefineIsWrittenAsNeedsAction() throws Exception {
+    givenTheMeetingIsCopied();
+    givenTheCopySays("ACCEPTED");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(204,
+                                                                                                                                    "\"etag-2\"",
+                                                                                                                                    null));
+
+    service.pushAnswer(USER, EVENT, "MAYBE_LATER");
+
+    ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString(), anyString(), anyString());
+    assertTrue(written.getValue().contains("PARTSTAT=NEEDS-ACTION"), written.getValue());
+  }
+
+  /**
+   * The meeting has a copy, under the identifier agenda recorded for it.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  private void givenTheMeetingIsCopied() throws Exception {
+    Event event = new Event();
+    event.setId(EVENT);
+    when(agendaEventService.getEventById(eq(EVENT), isNull(), eq(USER))).thenReturn(event);
+    when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
+  }
+
+  /**
+   * The object the server holds, naming this user with one answer.
+   *
+   * @param partStat the answer the copy currently carries
+   */
+  private void givenTheCopySays(String partStat) {
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq("alice"), eq("secret")))
+                                                                                     .thenReturn(new CalendarObject(HREF,
+                                                                                                                    "\"etag-1\"",
+                                                                                                                    copy(partStat)));
+  }
+
+  /**
+   * @param partStat the answer the copy carries
+   * @return a calendar object as a server serves it
+   */
+  private String copy(String partStat) {
+    return String.join("\r\n",
+                       "BEGIN:VCALENDAR",
+                       "VERSION:2.0",
+                       "PRODID:-//eXo//caldav//EN",
+                       "BEGIN:VEVENT",
+                       "UID:evt-1",
+                       "DTSTAMP:20260826T150000Z",
+                       "DTSTART:20260908T090000Z",
+                       "DTEND:20260908T100000Z",
+                       "SUMMARY:invit5",
+                       "ORGANIZER;CN=Root Root:mailto:root@stalwart.local",
+                       "ATTENDEE;CN=Alice;PARTSTAT=" + partStat + ":mailto:alice@stalwart.local",
+                       "END:VEVENT",
+                       "END:VCALENDAR",
+                       "");
+  }
+
+  /**
+   * @return a connected account
+   */
+  private CaldavUserSetting settings() {
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("alice");
+    setting.setPassword("secret");
+    setting.setServerId(SERVER);
+    return setting;
+  }
+
+  /**
+   * @return the mirror pair, already bound
+   */
+  private CalendarSync pair() {
+    CalendarSync pair = new CalendarSync();
+    pair.setId(1L);
+    pair.setUserIdentityId(USER);
+    pair.setServerId(SERVER);
+    pair.setRemoteHref(MIRROR);
+    pair.setOrigin(SyncOrigin.MIRROR);
+    pair.setStatus(CalendarSyncStatus.ACTIVE);
+    return pair;
+  }
+
+  /**
+   * @return the mapping of the meeting's copy
+   */
+  private ObjectSync mapped() {
+    ObjectSync mapping = new ObjectSync();
+    mapping.setId(5L);
+    mapping.setCalendarSyncId(1L);
+    mapping.setIcsUid("evt-1");
+    mapping.setRemoteHref(HREF);
+    mapping.setEtag("\"etag-1\"");
+    mapping.setPushedHash("whatever-was-pushed");
+    return mapping;
+  }
+
+  /**
+   * @return the identifier agenda recorded for the copy
+   */
+  private RemoteEvent remoteEvent() {
+    RemoteEvent remoteEvent = new RemoteEvent();
+    remoteEvent.setEventId(EVENT);
+    remoteEvent.setIdentityId(USER);
+    remoteEvent.setRemoteId("evt-1");
+    return remoteEvent;
+  }
+
+  /**
+   * @param value the document that was written
+   * @return its digest, as the mapping records it
+   */
+  private String sha256(String value) {
+    try {
+      java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+      return java.util.HexFormat.of().formatHex(digest.digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    } catch (java.security.NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+}

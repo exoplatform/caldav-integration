@@ -21,6 +21,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
 
 import net.fortuna.ical4j.data.CalendarBuilder;
@@ -30,6 +31,8 @@ import net.fortuna.ical4j.model.DateTime;
 import net.fortuna.ical4j.model.DateList;
 import net.fortuna.ical4j.model.component.VEvent;
 import net.fortuna.ical4j.model.component.VTimeZone;
+import net.fortuna.ical4j.model.parameter.PartStat;
+import net.fortuna.ical4j.model.property.Attendee;
 import net.fortuna.ical4j.model.property.ExDate;
 import net.fortuna.ical4j.model.property.RecurrenceId;
 import net.fortuna.ical4j.model.property.TzId;
@@ -212,6 +215,95 @@ public class IcsMerger {
     } catch (Exception e) {
       throw new IcsParseException("The calendar object could not be read as iCalendar", e);
     }
+  }
+
+  /**
+   * Rewrites one attendee's participation status in the object a server holds,
+   * leaving every other byte of it alone.
+   *
+   * <p>
+   * The outward half of answering a meeting. An answer given in eXo — in the
+   * agenda screen, or through the tokenised link in the notification mail —
+   * only ever reached eXo's own database, so the copy on the user's calendar
+   * server went on displaying the answer it last carried. That is a wrong
+   * answer shown to its own author, and worse: the copy is also what the
+   * verification pass reads a client's answer back from, so a stale one is
+   * eventually adopted and the newer answer is silently lost.
+   *
+   * <p>
+   * A targeted rewrite rather than a fresh serialisation of the whole event:
+   * the object may carry overrides and properties another client wrote, and
+   * an answer is not consent to discard them. It is also what makes the write
+   * idempotent — an object that already says this returns null, which is what
+   * stops an answer adopted from the copy from being pushed straight back at
+   * it.
+   *
+   * <p>
+   * Every VEVENT in the object is visited, master and overrides alike, because
+   * agenda propagates an answer to a series onto each of its exceptional
+   * occurrences: leaving the overrides on their old value would show the user
+   * one answer for the series and another for the instances of it they moved.
+   *
+   * @param existing the calendar object as fetched from the server
+   * @param email the address the copy names this attendee by
+   * @param partStat the RFC 5545 token to set, already validated by
+   *          {@link IcsText#partStat(String)}
+   * @return the object to write back, or null when it already says this — or
+   *         names no such attendee
+   * @throws IcsParseException when the document is not readable iCalendar
+   */
+  public String setAttendeeResponse(String existing, String email, String partStat) {
+    String address = bareAddress(email);
+    if (address == null || StringUtils.isBlank(partStat)) {
+      return null;
+    }
+    Calendar target = parse(existing);
+    boolean changed = false;
+    for (Object component : target.getComponents(net.fortuna.ical4j.model.Component.VEVENT)) {
+      VEvent event = (VEvent) component;
+      for (Object property : event.getProperties(net.fortuna.ical4j.model.Property.ATTENDEE)) {
+        Attendee attendee = (Attendee) property;
+        if (!address.equals(bareAddress(attendee.getValue()))) {
+          continue;
+        }
+        PartStat current = attendee.getParameter(net.fortuna.ical4j.model.Parameter.PARTSTAT);
+        if (current != null && StringUtils.equalsIgnoreCase(partStat, current.getValue())) {
+          continue;
+        }
+        // Removed then added rather than replaced: RFC 5545 allows a
+        // parameter once, and a document that reached us carrying two
+        // PARTSTATs must not be written back carrying two different ones.
+        attendee.getParameters().removeAll(net.fortuna.ical4j.model.Parameter.PARTSTAT);
+        attendee.getParameters().add(new PartStat(partStat));
+        changed = true;
+      }
+    }
+    return changed ? target.toString() : null;
+  }
+
+  /**
+   * A calendar user address stripped of its scheme and case, so that the same
+   * person written by two clients compares equal.
+   *
+   * <p>
+   * RFC 5545 makes the value a URI, and clients differ on the case of the
+   * scheme; the local part of a mailbox is technically case-sensitive, but no
+   * calendar server this connector talks to treats it as such, and matching on
+   * case would leave the answer unpropagated for a user whose server echoes
+   * their address back capitalised.
+   *
+   * @param value a CAL-ADDRESS or a bare mail address, may be null
+   * @return the comparable address, or null when there is none
+   */
+  private String bareAddress(String value) {
+    String trimmed = StringUtils.trimToNull(value);
+    if (trimmed == null) {
+      return null;
+    }
+    if (StringUtils.startsWithIgnoreCase(trimmed, "mailto:")) {
+      trimmed = StringUtils.trimToNull(trimmed.substring("mailto:".length()));
+    }
+    return trimmed == null ? null : trimmed.toLowerCase();
   }
 
   /**
