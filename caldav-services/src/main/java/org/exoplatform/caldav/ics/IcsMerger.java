@@ -19,7 +19,10 @@ package org.exoplatform.caldav.ics;
 import java.io.StringReader;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
@@ -234,9 +237,9 @@ public class IcsMerger {
    * A targeted rewrite rather than a fresh serialisation of the whole event:
    * the object may carry overrides and properties another client wrote, and
    * an answer is not consent to discard them. It is also what makes the write
-   * idempotent — an object that already says this returns null, which is what
-   * stops an answer adopted from the copy from being pushed straight back at
-   * it.
+   * idempotent — an object that already says this comes back with no document
+   * to write, which is what stops an answer adopted from the copy from being
+   * pushed straight back at it.
    *
    * <p>
    * Every VEVENT in the object is visited, master and overrides alike, because
@@ -244,28 +247,40 @@ public class IcsMerger {
    * occurrences: leaving the overrides on their old value would show the user
    * one answer for the series and another for the instances of it they moved.
    *
+   * <p>
+   * <b>A set of addresses, not one.</b> A copy does not name a person the same
+   * way everywhere: their own line carries the address their CalDAV account
+   * answers to, so that a client recognises the meeting as an invitation to
+   * its owner, while every other line — and every copy written before that
+   * rule existed — carries their eXo profile address. Being handed one address
+   * and told it is <i>the</i> one is how this silently matched nothing on a
+   * live rig: the caller offers every address that could name this person, and
+   * whichever the object actually holds is the one rewritten.
+   *
    * @param existing the calendar object as fetched from the server
-   * @param email the address the copy names this attendee by
+   * @param addresses every address the copy might name this attendee by
    * @param partStat the RFC 5545 token to set, already validated by
    *          {@link IcsText#partStat(String)}
-   * @return the object to write back, or null when it already says this — or
-   *         names no such attendee
+   * @return whether the object names the attendee at all, and the document to
+   *         write back when the answer moved
    * @throws IcsParseException when the document is not readable iCalendar
    */
-  public String setAttendeeResponse(String existing, String email, String partStat) {
-    String address = bareAddress(email);
-    if (address == null || StringUtils.isBlank(partStat)) {
-      return null;
+  public AnswerRewrite setAttendeeResponse(String existing, Collection<String> addresses, String partStat) {
+    Set<String> wanted = comparableAddresses(addresses);
+    if (wanted.isEmpty() || StringUtils.isBlank(partStat)) {
+      return new AnswerRewrite(false, null);
     }
     Calendar target = parse(existing);
+    boolean named = false;
     boolean changed = false;
     for (Object component : target.getComponents(net.fortuna.ical4j.model.Component.VEVENT)) {
       VEvent event = (VEvent) component;
       for (Object property : event.getProperties(net.fortuna.ical4j.model.Property.ATTENDEE)) {
         Attendee attendee = (Attendee) property;
-        if (!address.equals(bareAddress(attendee.getValue()))) {
+        if (!wanted.contains(bareAddress(attendee.getValue()))) {
           continue;
         }
+        named = true;
         PartStat current = attendee.getParameter(net.fortuna.ical4j.model.Parameter.PARTSTAT);
         if (current != null && StringUtils.equalsIgnoreCase(partStat, current.getValue())) {
           continue;
@@ -278,7 +293,56 @@ public class IcsMerger {
         changed = true;
       }
     }
-    return changed ? target.toString() : null;
+    return new AnswerRewrite(named, changed ? target.toString() : null);
+  }
+
+  /**
+   * What an attempted answer rewrite found.
+   *
+   * <p>
+   * The two reasons nothing is written are told apart on purpose, because they
+   * are not the same event at all. An object that already carries the answer
+   * is the ordinary idempotent case. An object that does not name the attendee
+   * <i>while eXo holds a mapping saying it is that user's copy</i> is an
+   * inconsistency worth saying out loud — it is exactly the state that made
+   * this propagation do nothing, silently, on a live rig.
+   *
+   * @param attendeeNamed whether any address offered matched a line on the
+   *          object
+   * @param document the object to write back, or null when nothing moved
+   */
+  public record AnswerRewrite(boolean attendeeNamed, String document) {
+
+    /**
+     * Whether there is something to write.
+     *
+     * @return true when the answer moved and the document must be sent
+     */
+    public boolean hasChange() {
+      return document != null;
+    }
+  }
+
+  /**
+   * The offered addresses reduced to what they compare as, with the blanks and
+   * the duplicates dropped.
+   *
+   * @param addresses every address the copy might name someone by, may be null
+   *          or hold nulls
+   * @return the comparable set, possibly empty
+   */
+  private Set<String> comparableAddresses(Collection<String> addresses) {
+    Set<String> comparable = new LinkedHashSet<>();
+    if (addresses == null) {
+      return comparable;
+    }
+    for (String address : addresses) {
+      String bare = bareAddress(address);
+      if (bare != null) {
+        comparable.add(bare);
+      }
+    }
+    return comparable;
   }
 
   /**
