@@ -171,6 +171,26 @@ public class AgendaEventIcsMapper {
   }
 
   /**
+   * The address the copy names one person by, or null when it names them not
+   * at all.
+   *
+   * <p>
+   * Public because propagating an answer outward has to find that person's
+   * ATTENDEE line in an object already on the server, and it must look for
+   * exactly the address this mapper wrote — a second opinion on which address
+   * a user answers to would silently match nothing. The rule that a person
+   * with no visible address is left off the copy is the same rule read from
+   * the other end: no address here means there is no ATTENDEE line to rewrite.
+   *
+   * @param identityId the social identity
+   * @return the mail address, or null when none is visible
+   */
+  public String addressOf(long identityId) {
+    IcsPerson person = personOf(identityId);
+    return person == null ? null : person.getEmail();
+  }
+
+  /**
    * One identity as a calendar user, or null when no address is visible.
    *
    * <p>
