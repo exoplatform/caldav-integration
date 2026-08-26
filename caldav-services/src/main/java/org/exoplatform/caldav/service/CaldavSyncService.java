@@ -212,9 +212,18 @@ public class CaldavSyncService {
         // copies eXo pushed, because it is the only one nobody is waiting for.
         syncInBackground(userIdentityId, username);
         swept++;
-      } catch (RuntimeException e) {
+      } catch (RuntimeException | LinkageError e) {
         // One account must not cost the rest of the page. It stays stale and
         // comes back at the top of the next run.
+        //
+        // LinkageError is caught beside the exceptions on purpose. A missing
+        // optional dependency of the iCalendar parser — ical4j builds its
+        // EMAIL parameter through commons-validator — surfaced as a
+        // NoClassDefFoundError while reading an object a client had written,
+        // and being an Error it walked straight past a RuntimeException
+        // guard: the sweep died mid-run, every run, and every account after
+        // the failing one silently stopped synchronising. A pass that visits
+        // accounts on everyone's behalf cannot let one object end the pass.
         LOG.warn("The CalDAV account of user {} could not be swept", userIdentityId, e);
       }
     }
