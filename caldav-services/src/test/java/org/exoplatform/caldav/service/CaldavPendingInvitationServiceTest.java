@@ -23,10 +23,12 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.Set;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -110,10 +112,35 @@ public class CaldavPendingInvitationServiceTest {
     // verification pass has not read yet.
     givenUpcoming(event(5L, 0, SPACE, EventStatus.CONFIRMED));
     givenCalendar(SPACE, 7L);
-    when(caldavSyncStorage.isEventMapped(5L)).thenReturn(true);
+    when(caldavSyncStorage.mappedEventIds(eq(USER), any())).thenReturn(Set.of(5L));
 
     assertEquals(0, service.pushUpcomingMeetings(USER));
     verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong(), any());
+  }
+
+  /**
+   * Another attendee holding a copy must not stop this one getting theirs.
+   *
+   * A meeting has an attendee list and each of them needs a copy of their
+   * own, so the question is always "does THIS user have one". Asked without
+   * the user, whichever attendee was copied first answered for all the rest:
+   * they were skipped, and the meeting never reached their calendar. The
+   * assertion is on the identity the storage is asked about, because that is
+   * the whole of the fix.
+   */
+  @Test
+  public void aCopyBelongingToAnotherAttendeeDoesNotBlockThisOne() throws Exception {
+    givenUpcoming(event(5L, 0, SPACE, EventStatus.CONFIRMED));
+    givenCalendar(SPACE, 7L);
+    // This user has none; that another user does is not this question.
+    when(caldavSyncStorage.mappedEventIds(eq(USER), any())).thenReturn(Set.of());
+    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L), isNull())).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.pushUpcomingMeetings(USER));
+
+    verify(caldavPushService).pushAgendaEvent(USER, 5L, null);
+    verify(caldavSyncStorage, atLeastOnce()).mappedEventIds(eq(USER), any());
+    verify(caldavSyncStorage, never()).isEventMapped(anyLong());
   }
 
   @Test
