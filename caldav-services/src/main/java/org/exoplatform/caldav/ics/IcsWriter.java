@@ -101,7 +101,7 @@ public class IcsWriter {
   private static final TimeZoneRegistry      REGISTRY     = TimeZoneRegistryFactory.getInstance().createRegistry();
 
   /** Marks a copy as one nobody performs scheduling for; see addPeople. */
-  private static final String                NO_AGENT     = "NONE";
+  private static final String                CLIENT_AGENT = "CLIENT";
 
   /** The YYYYMMDD form an iCalendar date value is written in. */
   private static final java.time.format.DateTimeFormatter DATE_FORMAT = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd");
@@ -263,18 +263,28 @@ public class IcsWriter {
    * ORGANIZER property is what marks.
    *
    * <p>
-   * Every ATTENDEE carries SCHEDULE-AGENT=NONE, and so does ORGANIZER when
+   * Every ATTENDEE carries SCHEDULE-AGENT=CLIENT, and so does ORGANIZER when
    * the pushing user is not the organizer (RFC 6638 section 7.1). The copy
    * mirrors scheduling that already happened in eXo; without the parameter a
    * scheduling-aware server would take the PUT as an instruction to run that
    * scheduling itself — mailing invitations to every attendee, or a reply to
-   * the organizer. NONE rather than CLIENT, since the copy became something
-   * the user answers on (EXO-89681): CLIENT also keeps the server quiet, but
-   * it hands the scheduling to the user's own client — which a conforming
-   * client honours by emailing an iMIP reply when the user accepts or
-   * declines the copy, a reply that lands in a mailbox nobody reads. NONE
-   * says no agent acts at all: the answer stays in the object as a changed
-   * PARTSTAT, which is exactly where the verification pass reads it back.
+   * the organizer.
+   *
+   * <p>
+   * CLIENT rather than NONE, and the difference was measured rather than
+   * reasoned. NONE reads as "no agent acts on this event at all", and a
+   * client honours it by declining to record an answer anywhere: macOS
+   * Calendar offered Accept and Decline on a copy written that way, edited
+   * the object when the user pressed one — and left PARTSTAT untouched, so
+   * the verification pass found the copy altered with no answer in it, every
+   * pass. CLIENT says the client is the agent, which is what makes it write
+   * the answer into the object where the pass reads it back.
+   *
+   * <p>
+   * The price is that a conforming client may also email an iMIP reply to the
+   * organizer, and nothing ingests those yet — so an organizer can receive a
+   * reply eXo does not act on. That is a mailbox oddity; NONE was silent data
+   * loss, which is worse.
    *
    * @param vEvent the component being built
    * @param event the event being written
@@ -287,7 +297,7 @@ public class IcsWriter {
     Organizer organizerProperty = new Organizer(mailto(organizer.getEmail()));
     addCn(organizerProperty.getParameters(), organizer.getDisplayName());
     if (!event.isOrganizerIsPusher()) {
-      organizerProperty.getParameters().add(new ScheduleAgent(NO_AGENT));
+      organizerProperty.getParameters().add(new ScheduleAgent(CLIENT_AGENT));
     }
     vEvent.getProperties().add(organizerProperty);
 
@@ -305,7 +315,7 @@ public class IcsWriter {
       Attendee attendeeProperty = new Attendee(mailto(attendee.getEmail()));
       addCn(attendeeProperty.getParameters(), attendee.getDisplayName());
       attendeeProperty.getParameters().add(new PartStat(IcsText.partStat(attendee.getResponse())));
-      attendeeProperty.getParameters().add(new ScheduleAgent(NO_AGENT));
+      attendeeProperty.getParameters().add(new ScheduleAgent(CLIENT_AGENT));
       vEvent.getProperties().add(attendeeProperty);
     }
   }
