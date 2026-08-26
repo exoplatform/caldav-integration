@@ -296,7 +296,7 @@ public class CaldavServerStorage {
                             entity.getOmittedProperties(),
                             observedQuirks(entity.getObservedQuirks()),
                             entity.getCopySettingsUpdated(),
-                            MirrorTargetKind.of(entity.getMirrorTarget()));
+                            MirrorTargetKind.of(entity.getMirrorTarget()), entity.getAuthProviderName());
   }
 
   /**
