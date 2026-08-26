@@ -24,7 +24,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
+
 import org.junit.jupiter.api.Test;
+
+import org.exoplatform.caldav.ics.IcsMerger.AnswerRewrite;
 
 /**
  * Writing one attendee's answer onto an object a server already holds.
@@ -45,10 +49,11 @@ public class IcsMergerAnswerTest {
    */
   @Test
   public void theAnswerIsRewrittenAndNothingElseIs() {
-    String rewritten = merger.setAttendeeResponse(meeting("DECLINED"), "alice@stalwart.local", "ACCEPTED");
+    AnswerRewrite rewrite = merger.setAttendeeResponse(meeting("DECLINED"), List.of("alice@stalwart.local"), "ACCEPTED");
 
-    assertNotNull(rewritten);
-    String unfolded = unfolded(rewritten);
+    assertTrue(rewrite.attendeeNamed());
+    assertTrue(rewrite.hasChange());
+    String unfolded = unfolded(rewrite.document());
     assertTrue(unfolded.contains("PARTSTAT=ACCEPTED"), unfolded);
     assertFalse(unfolded.contains("PARTSTAT=DECLINED"), unfolded);
     // The other attendee's answer, the organiser, the summary and the
@@ -71,7 +76,14 @@ public class IcsMergerAnswerTest {
    */
   @Test
   public void anObjectThatAlreadySaysThisIsNotRewritten() {
-    assertNull(merger.setAttendeeResponse(meeting("ACCEPTED"), "alice@stalwart.local", "ACCEPTED"));
+    AnswerRewrite rewrite = merger.setAttendeeResponse(meeting("ACCEPTED"), List.of("alice@stalwart.local"), "ACCEPTED");
+
+    assertNull(rewrite.document());
+    assertFalse(rewrite.hasChange());
+    // And it is told apart from an object that does not name the user at all:
+    // one is the ordinary idempotent case, the other an inconsistency the
+    // caller has to say out loud.
+    assertTrue(rewrite.attendeeNamed());
   }
 
   /**
@@ -81,7 +93,45 @@ public class IcsMergerAnswerTest {
    */
   @Test
   public void anAttendeeTheObjectDoesNotNameIsNotAddedToIt() {
-    assertNull(merger.setAttendeeResponse(meeting("DECLINED"), "carol@stalwart.local", "ACCEPTED"));
+    AnswerRewrite rewrite = merger.setAttendeeResponse(meeting("DECLINED"), List.of("carol@stalwart.local"), "ACCEPTED");
+
+    assertNull(rewrite.document());
+    assertFalse(rewrite.attendeeNamed());
+  }
+
+  /**
+   * The live defect, at this level. A copy names its account's own owner by
+   * the address their CalDAV account answers to, while their eXo profile
+   * carries another one entirely — {@code alice@} against {@code bob@} on the
+   * rig this was reproduced on. Handed only the profile address, this matched
+   * no line and the whole propagation did nothing; handed both, the object
+   * decides which one it actually carries.
+   */
+  @Test
+  public void theAccountAddressIsMatchedEvenWhenTheProfileSaysSomethingElse() {
+    AnswerRewrite rewrite = merger.setAttendeeResponse(meeting("DECLINED"),
+                                                       List.of("alice@stalwart.local", "bob@stalwart.local"),
+                                                       "ACCEPTED");
+
+    assertTrue(rewrite.attendeeNamed());
+    assertTrue(unfolded(rewrite.document()).contains("PARTSTAT=ACCEPTED"), rewrite.document());
+  }
+
+  /**
+   * And the other way round, which is what a copy written before that rule
+   * existed looks like: the object carries the profile address, the account
+   * address names nobody, and the answer still lands.
+   */
+  @Test
+  public void theProfileAddressIsMatchedOnACopyWrittenUnderTheOlderRule() {
+    String olderCopy = meeting("DECLINED").replace("mailto:alice@stalwart.local", "mailto:bob@stalwart.local");
+
+    AnswerRewrite rewrite = merger.setAttendeeResponse(olderCopy,
+                                                       List.of("alice@stalwart.local", "bob@stalwart.local"),
+                                                       "ACCEPTED");
+
+    assertTrue(rewrite.attendeeNamed());
+    assertTrue(unfolded(rewrite.document()).contains("PARTSTAT=ACCEPTED"), rewrite.document());
   }
 
   /**
@@ -91,13 +141,13 @@ public class IcsMergerAnswerTest {
    */
   @Test
   public void theAddressIsMatchedWhateverCaseAndSchemeItIsWrittenIn() {
-    String rewritten = merger.setAttendeeResponse(meeting("DECLINED").replace("mailto:alice@stalwart.local",
-                                                                             "MAILTO:Alice@Stalwart.Local"),
-                                                  "alice@stalwart.local",
-                                                  "ACCEPTED");
+    AnswerRewrite rewrite = merger.setAttendeeResponse(meeting("DECLINED").replace("mailto:alice@stalwart.local",
+                                                                                   "MAILTO:Alice@Stalwart.Local"),
+                                                       List.of("alice@stalwart.local"),
+                                                       "ACCEPTED");
 
-    assertNotNull(rewritten);
-    assertTrue(unfolded(rewritten).contains("PARTSTAT=ACCEPTED"), rewritten);
+    assertNotNull(rewrite.document());
+    assertTrue(unfolded(rewrite.document()).contains("PARTSTAT=ACCEPTED"), rewrite.document());
   }
 
   /**
@@ -108,10 +158,10 @@ public class IcsMergerAnswerTest {
    */
   @Test
   public void anOverrideCarriesTheAnswerToo() {
-    String rewritten = merger.setAttendeeResponse(series("DECLINED"), "alice@stalwart.local", "ACCEPTED");
+    AnswerRewrite rewrite = merger.setAttendeeResponse(series("DECLINED"), List.of("alice@stalwart.local"), "ACCEPTED");
 
-    assertNotNull(rewritten);
-    String unfolded = unfolded(rewritten);
+    assertNotNull(rewrite.document());
+    String unfolded = unfolded(rewrite.document());
     assertFalse(unfolded.contains("PARTSTAT=DECLINED"), unfolded);
     assertEquals(2, count(unfolded, "PARTSTAT=ACCEPTED"), unfolded);
   }
@@ -123,12 +173,12 @@ public class IcsMergerAnswerTest {
    */
   @Test
   public void anAttendeeWithNoAnswerYetGainsOne() {
-    String rewritten = merger.setAttendeeResponse(meeting("DECLINED").replace(";PARTSTAT=DECLINED", ""),
-                                                  "alice@stalwart.local",
-                                                  "ACCEPTED");
+    AnswerRewrite rewrite = merger.setAttendeeResponse(meeting("DECLINED").replace(";PARTSTAT=DECLINED", ""),
+                                                       List.of("alice@stalwart.local"),
+                                                       "ACCEPTED");
 
-    assertNotNull(rewritten);
-    assertTrue(unfolded(rewritten).contains("PARTSTAT=ACCEPTED"), rewritten);
+    assertNotNull(rewrite.document());
+    assertTrue(unfolded(rewrite.document()).contains("PARTSTAT=ACCEPTED"), rewrite.document());
   }
 
   /**
@@ -137,9 +187,10 @@ public class IcsMergerAnswerTest {
    */
   @Test
   public void nothingToMatchOnIsNothingToDo() {
-    assertNull(merger.setAttendeeResponse(meeting("DECLINED"), null, "ACCEPTED"));
-    assertNull(merger.setAttendeeResponse(meeting("DECLINED"), "  ", "ACCEPTED"));
-    assertNull(merger.setAttendeeResponse(meeting("DECLINED"), "alice@stalwart.local", " "));
+    assertNull(merger.setAttendeeResponse(meeting("DECLINED"), null, "ACCEPTED").document());
+    assertNull(merger.setAttendeeResponse(meeting("DECLINED"), List.of(), "ACCEPTED").document());
+    assertNull(merger.setAttendeeResponse(meeting("DECLINED"), java.util.Arrays.asList("  ", null), "ACCEPTED").document());
+    assertNull(merger.setAttendeeResponse(meeting("DECLINED"), List.of("alice@stalwart.local"), " ").document());
   }
 
   /**
