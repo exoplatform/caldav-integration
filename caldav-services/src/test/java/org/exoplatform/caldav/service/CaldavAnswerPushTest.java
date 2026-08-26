@@ -90,7 +90,11 @@ public class CaldavAnswerPushTest {
 
   private static final String      HREF    = MIRROR + "/evt-1.ics";
 
-  private static final String      ADDRESS = "alice@stalwart.local";
+  /** What the copy names the account's owner by: their CalDAV account address. */
+  private static final String      ACCOUNT = "alice@stalwart.local";
+
+  /** What their eXo profile says, which on the rig is a different mailbox. */
+  private static final String      PROFILE = "bob@stalwart.local";
 
   @Mock
   private CalDavClient             calDavClient;
@@ -131,8 +135,8 @@ public class CaldavAnswerPushTest {
   @BeforeEach
   public void connectAnAccountHoldingTheCopy() {
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
-    lenient().when(calDavClient.endpoint(SERVER, "alice")).thenReturn(endpoint);
-    lenient().when(agendaEventIcsMapper.addressOf(USER)).thenReturn(ADDRESS);
+    lenient().when(calDavClient.endpoint(SERVER, ACCOUNT)).thenReturn(endpoint);
+    lenient().when(agendaEventIcsMapper.addressOf(USER)).thenReturn(PROFILE);
     lenient().when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
     lenient().when(caldavSyncStorage.getObjectByUid(1L, "evt-1")).thenReturn(mapped());
     lenient().when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
@@ -161,7 +165,7 @@ public class CaldavAnswerPushTest {
                                       eq(HREF),
                                       written.capture(),
                                       eq("\"etag-1\""),
-                                      eq("alice"),
+                                      eq(ACCOUNT),
                                       eq("secret"));
     assertTrue(written.getValue().contains("PARTSTAT=ACCEPTED"), written.getValue());
     assertFalse(written.getValue().contains("PARTSTAT=DECLINED"), written.getValue());
@@ -169,6 +173,87 @@ public class CaldavAnswerPushTest {
     // consent to re-serialise a meeting another client may have added to.
     assertTrue(written.getValue().contains("SUMMARY:invit5"), written.getValue());
     assertTrue(written.getValue().contains("mailto:root@stalwart.local"), written.getValue());
+  }
+
+  /**
+   * The live defect this had to be fixed for, and the reason the addresses are
+   * offered as a set.
+   *
+   * <p>
+   * A copy names the account's own owner by the address their CalDAV account
+   * answers to — that is what lets a client recognise the meeting as an
+   * invitation to itself — while their eXo profile carries another mailbox
+   * entirely. On the rig they were {@code alice@stalwart.local} and
+   * {@code bob@stalwart.local} for one user. Asking the profile alone matched
+   * no ATTENDEE line, so the merger changed nothing, so nothing was written,
+   * and the whole propagation reported success by saying nothing at all.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void theAnswerReachesACopyThatNamesTheUserByTheirAccountAddress() throws Exception {
+    givenTheMeetingIsCopied();
+    givenTheCopySays("DECLINED");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(204,
+                                                                                                                                    "\"etag-2\"",
+                                                                                                                                    null));
+
+    assertTrue(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+
+    ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString(), anyString(), anyString());
+    assertTrue(written.getValue().contains("PARTSTAT=ACCEPTED"), written.getValue());
+    assertTrue(written.getValue().contains(ACCOUNT), written.getValue());
+  }
+
+  /**
+   * And a copy written before that rule existed, which names them by their
+   * profile address instead, is still answered. Both spellings are offered and
+   * the object decides — a deployment holds copies written under either.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void theAnswerAlsoReachesACopyWrittenUnderTheOlderNamingRule() throws Exception {
+    givenTheMeetingIsCopied();
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+                                                                                     .thenReturn(new CalendarObject(HREF,
+                                                                                                                    "\"etag-1\"",
+                                                                                                                    copy("DECLINED").replace(ACCOUNT,
+                                                                                                                                             PROFILE)));
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(204,
+                                                                                                                                    "\"etag-2\"",
+                                                                                                                                    null));
+
+    assertTrue(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+
+    ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString(), anyString(), anyString());
+    assertTrue(written.getValue().contains("PARTSTAT=ACCEPTED"), written.getValue());
+  }
+
+  /**
+   * A copy that names neither is left alone rather than half-rewritten — and
+   * the caller, which is the one that can log it, is told the difference
+   * between "nobody to rewrite" and "already correct".
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void aCopyNamingTheUserByNeitherAddressIsLeftAlone() throws Exception {
+    givenTheMeetingIsCopied();
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+                                                                                     .thenReturn(new CalendarObject(HREF,
+                                                                                                                    "\"etag-1\"",
+                                                                                                                    copy("DECLINED").replace(ACCOUNT,
+                                                                                                                                             "carol@stalwart.local")));
+
+    assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).saveObject(any());
   }
 
   /**
@@ -364,7 +449,7 @@ public class CaldavAnswerPushTest {
    * @param partStat the answer the copy currently carries
    */
   private void givenTheCopySays(String partStat) {
-    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq("alice"), eq("secret")))
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
                                                                                      .thenReturn(new CalendarObject(HREF,
                                                                                                                     "\"etag-1\"",
                                                                                                                     copy(partStat)));
@@ -386,7 +471,8 @@ public class CaldavAnswerPushTest {
                        "DTEND:20260908T100000Z",
                        "SUMMARY:invit5",
                        "ORGANIZER;CN=Root Root:mailto:root@stalwart.local",
-                       "ATTENDEE;CN=Alice;PARTSTAT=" + partStat + ":mailto:alice@stalwart.local",
+                       "ATTENDEE;CN=\"benjamin mestrallet\";PARTSTAT=" + partStat
+                           + ";SCHEDULE-AGENT=CLIENT:mailto:" + ACCOUNT,
                        "END:VEVENT",
                        "END:VCALENDAR",
                        "");
@@ -397,7 +483,9 @@ public class CaldavAnswerPushTest {
    */
   private CaldavUserSetting settings() {
     CaldavUserSetting setting = new CaldavUserSetting();
-    setting.setUsername("alice");
+    // The rig's account username is itself a mail address, which is exactly why
+    // a copy can name its owner by it.
+    setting.setUsername(ACCOUNT);
     setting.setPassword("secret");
     setting.setServerId(SERVER);
     return setting;

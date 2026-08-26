@@ -82,6 +82,9 @@ public class EventResponseSavedListener extends Listener<EventAttendee, EventAtt
       // is ordinary — a second click, a reset onto an attendee who was already
       // at NEEDS-ACTION. Nothing to carry outward, and a fetch of the copy is
       // not free.
+      LOG.debug("Answer of user {} to event {} is unchanged; nothing to carry to their calendar server",
+                answer.getIdentityId(),
+                answer.getEventId());
       return;
     }
     CaldavPushService pushService = getCaldavPushService();

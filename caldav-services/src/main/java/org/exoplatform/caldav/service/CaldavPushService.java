@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HexFormat;
 import java.util.List;
@@ -707,9 +708,15 @@ public class CaldavPushService {
    *
    * <p>
    * Answers false for every ordinary reason there is nothing to do — no
-   * connected account, no visible address, no copy of this meeting, a copy
-   * that already says this. None of those is a failure, and none is worth a
-   * line in the log of a user who simply does not use the feature.
+   * connected account, no copy of this meeting, a copy that already says this.
+   * <b>Every one of those says so in the log before it returns.</b> This
+   * method did all of it silently once, and a propagation that silently does
+   * nothing is indistinguishable from the defect it was written to fix: it
+   * cost a whole live test round to find out which guard had refused. The
+   * ordinary no-ops are DEBUG; the states that should not arise — a mapping
+   * with no ETag, an object the server serves as empty, a copy that does not
+   * name the user it belongs to — are WARN, because each is an inconsistency
+   * somebody has to repair rather than a user simply not using the feature.
    *
    * @param userIdentityId identity of the user whose answer was recorded
    * @param eventId the agenda event answered — an occurrence is resolved to
@@ -721,25 +728,40 @@ public class CaldavPushService {
   public boolean pushAnswer(long userIdentityId, long eventId, String response) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (!connected(settings)) {
+      LOG.debug("Answer of user {} to event {} is not carried out: no connected CalDAV account", userIdentityId, eventId);
       return false;
     }
-    // The address this connector itself writes into ATTENDEE, asked of the
-    // mapper that writes it. Resolving it a second way here would be a second
-    // opinion on which address the user answers to, and the two disagreeing
-    // means matching nothing and propagating nothing — silently.
-    String address = agendaEventIcsMapper.addressOf(userIdentityId);
-    if (address == null) {
+    List<String> addresses = addressesNaming(userIdentityId, settings);
+    if (addresses.isEmpty()) {
+      LOG.debug("Answer of user {} to event {} is not carried out: no address could name them on a copy",
+                userIdentityId,
+                eventId);
       return false;
     }
     String icsUid = icsUidOf(eventId, userIdentityId);
     if (icsUid == null) {
+      LOG.debug("Answer of user {} to event {} is not carried out: this meeting has no copy on their account",
+                userIdentityId,
+                eventId);
       return false;
     }
     ObjectSync known = objectAnywhere(userIdentityId, settings, icsUid);
-    // A mapping with no ETag describes an object eXo never managed to write.
-    // There is nothing to condition a write on, and an unconditional one is
-    // refused by the client on purpose; the sweep re-establishes the mapping.
-    if (known == null || StringUtils.isBlank(known.getRemoteHref()) || StringUtils.isBlank(known.getEtag())) {
+    if (known == null || StringUtils.isBlank(known.getRemoteHref())) {
+      LOG.debug("Answer of user {} to event {} is not carried out: nothing is mapped under {}",
+                userIdentityId,
+                eventId,
+                icsUid);
+      return false;
+    }
+    if (StringUtils.isBlank(known.getEtag())) {
+      // A mapping pointing at an href while recording no ETag describes an
+      // object eXo never managed to write. There is nothing to condition a
+      // write on, and the client refuses an unconditional one on purpose.
+      LOG.warn("Answer of user {} to event {} is not carried out: the copy at {} is mapped without an ETag,"
+          + " so no conditional write is possible; the verification pass has to re-establish it",
+               userIdentityId,
+               eventId,
+               known.getRemoteHref());
       return false;
     }
     CalDavEndpoint endpoint = endpointOf(settings);
@@ -749,18 +771,42 @@ public class CaldavPushService {
                                                         settings.getUsername(),
                                                         settings.getPassword());
       if (existing == null || StringUtils.isBlank(existing.calendarData())) {
+        LOG.warn("Answer of user {} to event {} is not carried out: the copy at {} is mapped but the server serves"
+            + " nothing at it",
+                 userIdentityId,
+                 eventId,
+                 known.getRemoteHref());
         return false;
       }
-      String rewritten = icsMerger.setAttendeeResponse(existing.calendarData(), address, IcsText.partStat(response));
-      if (rewritten == null) {
+      IcsMerger.AnswerRewrite rewrite = icsMerger.setAttendeeResponse(existing.calendarData(),
+                                                                     addresses,
+                                                                     IcsText.partStat(response));
+      if (!rewrite.attendeeNamed()) {
+        // The state that made this whole thing do nothing on a live rig, and
+        // the reason the addresses are now offered as a set. Naming them in
+        // the message is the point: whoever reads this line can compare them
+        // against the ATTENDEE lines on the object in one step.
+        LOG.warn("Answer of user {} to event {} is not carried out: the copy at {} names none of {},"
+            + " so there is no participation status of theirs to rewrite",
+                 userIdentityId,
+                 eventId,
+                 known.getRemoteHref(),
+                 addresses);
+        return false;
+      }
+      if (!rewrite.hasChange()) {
         // The copy already says this. Writing anyway would move the ETag for
         // nothing — and would push straight back at the server an answer that
         // had just been adopted from it.
+        LOG.debug("Answer of user {} to event {} is not carried out: the copy already says {}",
+                  userIdentityId,
+                  eventId,
+                  response);
         return false;
       }
       PutResult result = calDavClient.updateObject(endpoint,
                                                    known.getRemoteHref(),
-                                                   rewritten,
+                                                   rewrite.document(),
                                                    known.getEtag(),
                                                    settings.getUsername(),
                                                    settings.getPassword());
@@ -772,15 +818,56 @@ public class CaldavPushService {
       // calls the copy ALTERED, and repairs it back to what eXo last pushed —
       // which is the answer this call replaced.
       known.setEtag(result.etag());
-      known.setPushedHash(hashOf(rewritten));
+      known.setPushedHash(hashOf(rewrite.document()));
       known.setLastSync(new Date());
       caldavSyncStorage.saveObject(known);
+      LOG.debug("Answer of user {} to event {} carried out onto the copy at {}: {}",
+                userIdentityId,
+                eventId,
+                known.getRemoteHref(),
+                response);
       return true;
     } catch (CalDavAuthenticationException e) {
       throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
     } catch (CalDavException e) {
       throw new CaldavPushException(SAVE, "The answer could not be written to " + known.getRemoteHref(), e);
     }
+  }
+
+  /**
+   * Every address a copy on this user's account might name them by.
+   *
+   * <p>
+   * There is more than one, and assuming otherwise is what made this
+   * propagation silently do nothing on a live rig. A copy names the account's
+   * own owner by <b>the address their CalDAV account answers to</b> — that is
+   * what lets a calendar client recognise the meeting as an invitation to
+   * itself and offer to answer it — while every other line on that object, and
+   * every object written before that rule existed, carries the person's
+   * <b>eXo profile address</b>. On the rig the two were {@code alice@…} and
+   * {@code bob@…} for the same user, so asking the profile alone matched no
+   * line at all.
+   *
+   * <p>
+   * Both are offered and the object decides. Neither is authoritative here on
+   * purpose: an address that names nobody costs one failed comparison, while
+   * the wrong single answer costs the whole feature, without a sound.
+   *
+   * @param userIdentityId identity of the user whose answer was recorded
+   * @param settings their connected account
+   * @return the addresses to look for, most specific first, possibly empty
+   */
+  private List<String> addressesNaming(long userIdentityId, CaldavUserSetting settings) {
+    List<String> addresses = new ArrayList<>();
+    String account = StringUtils.trimToNull(settings.getUsername());
+    if (account != null) {
+      addresses.add(account);
+    }
+    String profile = StringUtils.trimToNull(agendaEventIcsMapper.addressOf(userIdentityId));
+    if (profile != null && !addresses.contains(profile)) {
+      addresses.add(profile);
+    }
+    return addresses;
   }
 
   /**
