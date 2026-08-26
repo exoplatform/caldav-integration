@@ -32,6 +32,8 @@ import org.exoplatform.caldav.ics.IcsParser;
 import org.exoplatform.caldav.ics.IcsText;
 import org.exoplatform.caldav.model.IcsEvent;
 import org.exoplatform.caldav.model.IcsPerson;
+import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -76,6 +78,10 @@ public class CaldavAnswerAdoptionService {
   @Autowired
   private IcsParser                  icsParser;
 
+  /** Holds the account whose address a copy names its owner by. */
+  @Autowired
+  private CaldavConnectorStorage     caldavConnectorStorage;
+
   @Autowired
   private IcsEventMapper             icsEventMapper;
 
@@ -111,7 +117,13 @@ public class CaldavAnswerAdoptionService {
    */
   public Outcome adoptAnswer(long userIdentityId, long localEventId, String remoteIcs) {
     String email = ownEmail(userIdentityId);
-    if (StringUtils.isBlank(email)) {
+    // The address the user's CalDAV account answers to. Copies name their
+    // owner by it, so that a client recognises the event as an invitation to
+    // itself; older copies name them by their eXo profile address, and both
+    // are accepted.
+    CaldavUserSetting account = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    String accountAddress = account == null ? null : StringUtils.trimToNull(account.getUsername());
+    if (StringUtils.isBlank(email) && StringUtils.isBlank(accountAddress)) {
       // Without a visible address there is no line to read: the write side
       // leaves an address-less owner off the roster, so there is nothing on
       // the object that is theirs to answer on.
@@ -129,7 +141,7 @@ public class CaldavAnswerAdoptionService {
     boolean adopted = false;
     try {
       for (IcsEvent component : parsed) {
-        EventAttendeeResponse answer = answerOf(component, email);
+        EventAttendeeResponse answer = answerOf(component, email, accountAddress);
         if (answer == null) {
           continue;
         }
@@ -232,12 +244,12 @@ public class CaldavAnswerAdoptionService {
    * @param email the owner's own address, as the write side spells it
    * @return the response to record, or null when the component carries none
    */
-  private EventAttendeeResponse answerOf(IcsEvent component, String email) {
+  private EventAttendeeResponse answerOf(IcsEvent component, String email, String accountAddress) {
     if (component.getAttendees() == null) {
       return null;
     }
     for (IcsPerson attendee : component.getAttendees()) {
-      if (attendee == null || !StringUtils.equalsIgnoreCase(StringUtils.trimToNull(attendee.getEmail()), email)) {
+      if (attendee == null || !isOwner(attendee.getEmail(), email, accountAddress)) {
         continue;
       }
       String response = IcsText.agendaResponse(attendee.getResponse());
@@ -271,6 +283,30 @@ public class CaldavAnswerAdoptionService {
    * @param userIdentityId identity of the account's owner
    * @return the address, or null when their profile exposes none
    */
+  /**
+   * Whether an attendee line is the owner's own.
+   *
+   * <p>
+   * Two spellings are accepted because two exist. Copies are written with the
+   * address the user's CalDAV account answers to, so that a client recognises
+   * the event as an invitation to itself; copies written before that carry
+   * the eXo profile address. Refusing the older spelling would make every
+   * answer on an existing copy unreadable.
+   *
+   * @param candidate the address on the attendee line
+   * @param profileEmail the owner's eXo profile address
+   * @param accountAddress the address the owner's CalDAV account answers to
+   * @return true when the line belongs to the owner
+   */
+  private boolean isOwner(String candidate, String profileEmail, String accountAddress) {
+    String address = StringUtils.trimToNull(candidate);
+    if (address == null) {
+      return false;
+    }
+    return StringUtils.equalsIgnoreCase(address, profileEmail)
+        || StringUtils.equalsIgnoreCase(address, accountAddress);
+  }
+
   private String ownEmail(long userIdentityId) {
     Identity identity = identityManager.getIdentity(userIdentityId);
     if (identity == null || identity.getProfile() == null) {
