@@ -16,10 +16,6 @@
  */
 package org.exoplatform.caldav.service;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -33,6 +29,7 @@ import org.springframework.stereotype.Service;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarObject;
+import org.exoplatform.caldav.ics.IcsEquivalence;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.MirrorVerification;
@@ -64,6 +61,20 @@ import org.exoplatform.services.log.Log;
  * and only when the ETag actually moved.
  *
  * <p>
+ * <b>What "what eXo wrote" means.</b> Not bytes — <i>meaning</i>. The copy is
+ * compared against the object eXo would render for the same event now, by
+ * {@link org.exoplatform.caldav.ics.IcsEquivalence}, and nothing is recorded to
+ * compare against. Two byte baselines were tried and neither can be captured:
+ * a digest of what eXo <i>sent</i> made every copy on a re-serialising server
+ * look tampered with from the first pass, and a digest of what the server was
+ * seen to <i>store</i>, read back after the write, caught BlueMind mid-settle —
+ * it finished afterwards without moving the ETag, so all 19 copies of a live
+ * account were judged altered and rewritten every five minutes, for ever. A
+ * CalDAV object is a structured document and a server re-serialising it is
+ * behaving normally; the fix is to understand the content rather than to learn
+ * one server's serialisation.
+ *
+ * <p>
  * <b>The ETag also decides direction.</b> Comparing PARTSTAT values alone
  * cannot tell "answered on the phone" from "answered in eXo and not pushed
  * yet" — both read as a difference. An ETag that moved away from the one this
@@ -74,14 +85,6 @@ import org.exoplatform.services.log.Log;
  * <i>before</i> the object is repaired, deliberately: when eXo changed the
  * meeting while the user accepted it on their phone, both differ at once, and
  * a repair-first pass would overwrite the acceptance before anything read it.
- *
- * <b>What "what eXo wrote" means.</b> The baseline it compares against is the
- * copy as the <i>server stored</i> it, read back once at push time — not the
- * bytes eXo sent. A server is free to re-serialise what it is given and
- * BlueMind does, so a baseline taken from the sent bytes made every copy on
- * such a server look tampered with, on every pass, until it was abandoned. See
- * {@code CaldavPushService.storedBaseline}: this pass only works because the
- * push records the right thing.
  *
  * <p>
  * <b>It gives up.</b> An object that keeps disappearing — a server refusing
@@ -111,6 +114,9 @@ public class CaldavMirrorVerificationService {
 
   @Autowired
   private CaldavPushService            caldavPushService;
+
+  @Autowired
+  private IcsEquivalence               icsEquivalence;
 
   @Autowired
   private CaldavAnswerAdoptionService  caldavAnswerAdoptionService;
@@ -201,7 +207,7 @@ public class CaldavMirrorVerificationService {
           continue;
         }
         checked++;
-        Assessment assessment = judge(object, settings, etags);
+        Assessment assessment = judge(userIdentityId, object, settings, etags);
         if (assessment.verdict() == Verdict.UNTOUCHED) {
           continue;
         }
@@ -280,6 +286,16 @@ public class CaldavMirrorVerificationService {
    * fails cannot reopen the loop; the repair's own write then records its own
    * ETag over this one.
    *
+   * <p>
+   * The ETag is the whole of it, and it always was. This used to record a
+   * digest of the client's bytes as well, but that digest could only ever
+   * matter for an object the ETag gate had already let through — and the gate
+   * only lets an object through when its version moved, which is precisely
+   * when the pass wants to look again. EXO-89716 removed every stored digest
+   * because none can be captured reliably on a re-serialising server; keeping
+   * one here would have put back, on the one path that must not loop, the
+   * state that never converges.
+   *
    * @param object the mapping row of the copy
    * @param remote the copy as the client left it
    * @param listedEtag the ETag the collection listing carried for the copy,
@@ -287,7 +303,6 @@ public class CaldavMirrorVerificationService {
    */
   private void recordClientWrite(ObjectSync object, CalendarObject remote, String listedEtag) {
     object.setEtag(StringUtils.isNotBlank(remote.etag()) ? remote.etag() : listedEtag);
-    object.setPushedHash(hashOf(remote.calendarData()));
     object.setLastSync(new java.util.Date());
     caldavSyncStorage.saveObject(object);
   }
@@ -295,12 +310,23 @@ public class CaldavMirrorVerificationService {
   /**
    * What the server's listing says about one copy.
    *
+   * <p>
+   * The ETag decides <i>whether</i> anything happened; it never decides what.
+   * That split is deliberate and belongs to EXO-89681: an ETag that has not
+   * moved is the server's own promise that nobody wrote, and it is the reason
+   * this pass costs one listing on a converged mirror rather than one fetch per
+   * copy.
+   *
+   * @param userIdentityId identity of the user
    * @param object the mapping row
    * @param settings the connected account
    * @param etags what the server currently holds, by href
    * @return the verdict, carrying the fetched copy when there is one to act on
    */
-  private Assessment judge(ObjectSync object, CaldavUserSetting settings, Map<String, String> etags) {
+  private Assessment judge(long userIdentityId,
+                           ObjectSync object,
+                           CaldavUserSetting settings,
+                           Map<String, String> etags) {
     String etag = etagOf(object.getRemoteHref(), etags);
     if (etag == null) {
       return new Assessment(Verdict.MISSING, null);
@@ -308,16 +334,80 @@ public class CaldavMirrorVerificationService {
     if (StringUtils.isBlank(object.getEtag()) || StringUtils.equals(normalise(etag), normalise(object.getEtag()))) {
       // The same ETag, or a server that publishes none we can compare. Either
       // way there is no reason to spend a fetch: an unchanged ETag is the
-      // server's own promise that the bytes are the ones it was given. It is
-      // also the direction rule's other half: untouched since eXo wrote it,
-      // so any difference with agenda is eXo-side and the ordinary push
-      // overwrites the copy.
+      // server's own promise that nobody has written since eXo did. It is also
+      // the direction rule's other half: untouched since eXo wrote it, so any
+      // difference with agenda is eXo-side and the ordinary push overwrites the
+      // copy.
       return new Assessment(Verdict.UNTOUCHED, null);
     }
-    if (StringUtils.isBlank(object.getPushedHash())) {
-      // Written before the hash was recorded. The ETag moved, and nothing
-      // here can say whether that matters — a re-push would overwrite a copy
-      // that may be perfectly fine.
+    return assessContent(userIdentityId, object, settings, etag);
+  }
+
+  /**
+   * Whether what the server holds still says what eXo would write for this
+   * event — and, when it does not, the copy itself, because the answer the
+   * client wrote on it is read from there.
+   *
+   * <p>
+   * An ETag moves for reasons that are not a rewrite — a server touching its
+   * own metadata, a change of storage format, a re-serialisation on store — so
+   * the object is read and its <i>content</i> judged, never trusted to the
+   * version alone.
+   *
+   * <p>
+   * The render comes before the fetch, and that ordering is the whole cost
+   * argument: a row this pass cannot judge costs no network call at all. It
+   * takes nothing from the answer path either, because every case that skips
+   * the fetch here is a case {@code adoptAnswer} would have answered
+   * {@code NOTHING} to — it needs the same eXo event this needs to render one.
+   *
+   * <p>
+   * The owner's own addresses go with the comparison, and both of them do:
+   * a server may attach the calendar's owner to a copy that lands in their
+   * calendar, and recognising that line means recognising the person on it —
+   * who a copy names either by the address their CalDAV account answers to or
+   * by their eXo profile address. The pair comes from
+   * {@code CaldavPushService.addressesNaming}, the same one EXO-89715 uses to
+   * find their line and EXO-89681 uses to read their answer off it, because an
+   * exemption that checked only one of the two would miss the way 89715 missed.
+   *
+   * <p>
+   * Four ways to answer "no rewrite" and they are not the same. The copy states
+   * what eXo states: the version is adopted and the next pass is free. eXo
+   * cannot say what it would write — the event is gone, the mapping never
+   * carried one, the render is unusable: nothing is concluded, and the copy is
+   * left exactly as it is. The server cannot be read at all: likewise, because
+   * a re-push on the strength of a network error would overwrite a user's
+   * calendar with no evidence. And the comparison itself failing is the same
+   * answer again, for the reason the fetch's {@code LinkageError} records —
+   * one unreadable object must leave the other copies unexamined rather than
+   * end the pass.
+   *
+   * @param userIdentityId identity of the user
+   * @param object the mapping row
+   * @param settings the connected account
+   * @param currentEtag the version the listing published for it
+   * @return the verdict, carrying the fetched copy when there is one to act on
+   */
+  private Assessment assessContent(long userIdentityId,
+                                   ObjectSync object,
+                                   CaldavUserSetting settings,
+                                   String currentEtag) {
+    if (object.getLocalEventId() == null || object.getLocalEventId() <= 0) {
+      // Nothing to compare against, nothing a repair could write, and no event
+      // to record an answer against either.
+      LOG.debug("The copy at {} stands for no known event; its content is not judged", object.getRemoteHref());
+      return new Assessment(Verdict.UNTOUCHED, null);
+    }
+    String rendered;
+    try {
+      rendered = caldavPushService.renderAgendaEvent(userIdentityId, object.getLocalEventId(), object.getIcsUid());
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("Event {} could not be rendered; its copy is left alone", object.getLocalEventId(), e);
+      return new Assessment(Verdict.UNTOUCHED, null);
+    }
+    if (StringUtils.isBlank(rendered)) {
+      LOG.debug("Event {} renders to nothing; its copy is left alone", object.getLocalEventId());
       return new Assessment(Verdict.UNTOUCHED, null);
     }
     CalendarObject remote;
@@ -327,7 +417,8 @@ public class CaldavMirrorVerificationService {
                                         object.getRemoteHref(),
                                         settings.getUsername(),
                                         settings.getPassword());
-    } catch (RuntimeException | LinkageError e) {      // Unreadable is not the same as rewritten, and a re-push on this path
+    } catch (RuntimeException | LinkageError e) {
+      // Unreadable is not the same as rewritten, and a re-push on this path
       // would overwrite whatever is there on the strength of a network error.
       //
       // LinkageError belongs here for the same reason it belongs on the
@@ -343,17 +434,30 @@ public class CaldavMirrorVerificationService {
       // it to read.
       return new Assessment(Verdict.ALTERED, null);
     }
-    if (StringUtils.equals(hashOf(remote.calendarData()), object.getPushedHash())) {
-      // An ETag moves for reasons that are not a rewrite — a server touching
-      // its own metadata, a change of storage format — so the bytes decide.
-      // The version it moved to is recorded all the same (EXO-89716): left
-      // behind, every later pass would fetch this object again to reach this
-      // same conclusion, and the next conditional write would carry a version
-      // the server has already left behind and be refused.
-      adoptVersion(object, StringUtils.defaultIfBlank(remote.etag(), etag));
+    IcsEquivalence.Judgement judgement;
+    try {
+      judgement = icsEquivalence.compare(remote.calendarData(),
+                                         rendered,
+                                         caldavPushService.addressesNaming(userIdentityId, settings));
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("The copy at {} could not be judged; it is left alone", object.getRemoteHref(), e);
       return new Assessment(Verdict.UNTOUCHED, null);
     }
-    return new Assessment(Verdict.ALTERED, remote);
+    if (judgement.different()) {
+      // Named, not counted. A pass that keeps finding the same divergence is
+      // the failure this design is answering, and the only way anyone can see
+      // which property is doing it is if the line says so. The copy travels
+      // with the verdict: the answer its writer left on it is read from there,
+      // before any repair overwrites it.
+      LOG.info("The copy at {} no longer states what eXo writes: {}", object.getRemoteHref(), judgement.detail());
+      return new Assessment(Verdict.ALTERED, remote);
+    }
+    if (judgement.verdict() == IcsEquivalence.Verdict.UNJUDGEABLE) {
+      LOG.debug("The copy at {} cannot be judged ({}); it is left alone", object.getRemoteHref(), judgement.detail());
+      return new Assessment(Verdict.UNTOUCHED, null);
+    }
+    adoptVersion(object, StringUtils.defaultIfBlank(remote.etag(), currentEtag));
+    return new Assessment(Verdict.UNTOUCHED, null);
   }
 
   /**
@@ -371,8 +475,11 @@ public class CaldavMirrorVerificationService {
    * silently not reaching the copy.
    *
    * <p>
-   * Only ever on bytes that matched. This is not "trust the server's version",
-   * it is "the bytes are ours, so this version names our copy".
+   * Only ever on a copy that was just judged equivalent. This is not "trust the
+   * server's version", it is "the copy still says what we say, so this version
+   * names our copy". It is also what makes the pass fall silent: after the
+   * first sweep absorbs a server's own serialisation, the listing and the row
+   * agree and nothing is fetched again until somebody actually writes.
    *
    * @param object the mapping row whose content was just confirmed
    * @param currentEtag the version the server publishes now, may be blank
@@ -534,21 +641,6 @@ public class CaldavMirrorVerificationService {
    */
   private String normalise(String etag) {
     return StringUtils.removeStart(StringUtils.strip(etag, "\""), "W/").replace("\"", "");
-  }
-
-  /**
-   * A stable digest of an object, computed the same way the push records one.
-   *
-   * @param ics the object as the server holds it
-   * @return the digest, hexadecimal
-   */
-  private String hashOf(String ics) {
-    try {
-      MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      return HexFormat.of().formatHex(digest.digest(ics.getBytes(StandardCharsets.UTF_8)));
-    } catch (NoSuchAlgorithmException e) {
-      throw new IllegalStateException("SHA-256 is required by every Java platform", e);
-    }
   }
 
   /** What one copy turned out to be. */

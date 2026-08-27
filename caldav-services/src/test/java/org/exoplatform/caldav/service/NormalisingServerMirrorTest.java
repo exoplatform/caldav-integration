@@ -57,12 +57,14 @@ import org.exoplatform.caldav.client.MkCalendarResult;
 import org.exoplatform.caldav.client.PutResult;
 import org.exoplatform.caldav.client.ServerCapabilities;
 import org.exoplatform.caldav.client.SyncCollectionResult;
+import org.exoplatform.caldav.ics.IcsEquivalence;
 import org.exoplatform.caldav.ics.IcsMerger;
 import org.exoplatform.caldav.ics.IcsWriter;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.IcsEvent;
+import org.exoplatform.caldav.model.IcsPerson;
 import org.exoplatform.caldav.model.MirrorVerification;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
@@ -83,13 +85,24 @@ import org.exoplatform.caldav.storage.CaldavSyncStorage;
  * had <i>sent</i>. The same code against byte-stable Stalwart was silent.
  *
  * <p>
- * The two services are the real ones here, wired to each other, because the
- * defect lived in neither of them alone: the push recorded the wrong baseline
- * and the pass drew the correct conclusion from it. A mock of either half would
- * have agreed with itself. What is faked is the server — twice: one that
- * re-serialises what it stores, and one that keeps the bytes verbatim, so the
- * claim "this changes nothing for a byte-stable server" is a test rather than a
- * sentence.
+ * Recording a digest of what the server was seen to <i>store</i> instead — read
+ * back right after the write — ended the abandonment on a live account and
+ * never converged: all 19 copies were judged altered and rewritten every five
+ * minutes, for ever, because BlueMind was still settling the object when the
+ * read-back arrived and finished afterwards without moving the ETag. So this
+ * fake server does the same: it settles <b>after</b> the write returns, and
+ * silently. Any test whose server hands back its final state on the first read
+ * would pass against the code that failed in production.
+ *
+ * <p>
+ * The two services are the real ones here, wired to each other, along with the
+ * real {@link org.exoplatform.caldav.ics.IcsEquivalence} and the real
+ * {@link IcsWriter} — because the defect lived in none of them alone, and a
+ * mock of any of the three would have agreed with itself. What is faked is the
+ * server, three ways: one that re-serialises and settles late, one that keeps
+ * the bytes verbatim, and one that re-serialises <i>and</i> adds a property of
+ * its own, so that "anything unrecognised counts as different" is a test rather
+ * than a sentence.
  */
 @ExtendWith(MockitoExtension.class)
 public class NormalisingServerMirrorTest {
@@ -108,17 +121,17 @@ public class NormalisingServerMirrorTest {
 
   private static final String                  HREF    = MIRROR + "evt-1.ics";
 
-  /** What eXo writes: its own PRODID, its own property order. */
-  private static final String                  EXO_ICS = "BEGIN:VCALENDAR\r\n"
-      + "VERSION:2.0\r\n"
-      + "PRODID:-//eXo//Agenda//EN\r\n"
-      + "BEGIN:VEVENT\r\n"
-      + "UID:evt-1\r\n"
-      + "SUMMARY:Sprint review\r\n"
-      + "DTSTART:20260901T090000Z\r\n"
-      + "DTEND:20260901T100000Z\r\n"
-      + "END:VEVENT\r\n"
-      + "END:VCALENDAR\r\n";
+  /** The address a copy on this account names its owner by. */
+  private static final String                  OWNER   = "john@acme.test";
+
+  /** The zone the fake server restates the meeting's wall clock on. */
+  private static final String                  ZONE    = "Europe/Paris";
+
+  /** When the meeting starts, in the zone the fake server restates it in. */
+  private static final Instant                 START   = Instant.parse("2026-09-01T09:00:00Z");
+
+  /** When it ends. */
+  private static final Instant                 END     = Instant.parse("2026-09-01T10:00:00Z");
 
   @Mock
   private CaldavConnectorStorage               caldavConnectorStorage;
@@ -126,11 +139,14 @@ public class NormalisingServerMirrorTest {
   @Mock
   private CaldavSyncStorage                    caldavSyncStorage;
 
-  @Mock
-  private IcsWriter                            icsWriter;
+  /** The real engine: what eXo writes is what this test compares against. */
+  private final IcsWriter                      icsWriter = new IcsWriter();
 
-  @Mock
-  private IcsMerger                            icsMerger;
+  /** The real merge, because it decides what a repair actually leaves behind. */
+  private final IcsMerger                      icsMerger = new IcsMerger();
+
+  /** The real judge, which is the thing under test. */
+  private final IcsEquivalence                 icsEquivalence = new IcsEquivalence();
 
   @Mock
   private AgendaEventService                   agendaEventService;
@@ -143,6 +159,16 @@ public class NormalisingServerMirrorTest {
 
   @Mock
   private AgendaCalendarService                agendaCalendarService;
+
+  /**
+   * Mocked, deliberately. EXO-89681 reads the owner's answer off a copy the
+   * pass has just called altered; what this rig pins is <b>which</b> copies get
+   * called that, not what is then done with the answer on one — that is
+   * {@code CaldavAnswerAdoptionServiceTest}'s subject. Answering NOTHING keeps
+   * every scenario here on the ordinary repair path it was written for.
+   */
+  @Mock
+  private CaldavAnswerAdoptionService          caldavAnswerAdoptionService;
 
   private FakeCalDavServer                     server;
 
@@ -162,7 +188,7 @@ public class NormalisingServerMirrorTest {
    */
   @BeforeEach
   public void connectAnAccountOnANormalisingServer() {
-    server = new FakeCalDavServer(true);
+    server = new FakeCalDavServer(Normalisation.RESERIALISE);
     push = new CaldavPushService();
     verification = new CaldavMirrorVerificationService();
     inject(push);
@@ -174,6 +200,11 @@ public class NormalisingServerMirrorTest {
     ReflectionTestUtils.setField(push, "agendaRemoteEventService", agendaRemoteEventService);
     ReflectionTestUtils.setField(push, "agendaCalendarService", agendaCalendarService);
     ReflectionTestUtils.setField(verification, "caldavPushService", push);
+    ReflectionTestUtils.setField(verification, "icsEquivalence", icsEquivalence);
+    ReflectionTestUtils.setField(verification, "caldavAnswerAdoptionService", caldavAnswerAdoptionService);
+    lenient().when(caldavAnswerAdoptionService.adoptAnswer(anyLong(), anyLong(), anyString()))
+             .thenReturn(CaldavAnswerAdoptionService.Outcome.NOTHING);
+    ReflectionTestUtils.setField(icsEquivalence, "ignoredProperties", "");
     ReflectionTestUtils.setField(verification, "maxRepairs", 3);
     // EXO-89681 gave the pass an answer-adoption collaborator that did not exist
     // when this test was written. It is stubbed rather than exercised: what is
@@ -194,22 +225,17 @@ public class NormalisingServerMirrorTest {
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(mirror));
     lenient().when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirror));
-    lenient().when(icsWriter.write(any())).thenReturn(EXO_ICS);
-    // A repair rewrites through the merge, so what the merger answers is what
-    // is written: eXo's own text, which is the case the merge collapses to
-    // when the server holds nothing another client authored.
-    lenient().when(icsMerger.merge(anyString(), anyString(), anyBoolean())).thenReturn(EXO_ICS);
     givenAnInMemoryMappingTable();
+    givenTheRepairCanRebuildTheEvent();
   }
-
   @Test
   public void aServerThatReSerialisesWhatItStoresDoesNotMakeEveryCopyLookTamperedWith() {
-    // The bug, stated as the rig stated it: four consecutive identical passes,
-    // "19 checked, 0 missing, 19 altered, 0 re-pushed, 19 abandoned". One
-    // object is enough to reproduce it; the count only multiplied it.
+    // The bug, stated as the live rig stated it: pass after pass of "19
+    // checked, 0 missing, 19 altered". One object is enough to reproduce it;
+    // the count only multiplied it.
     push.writeInto(USER, mirror, event(), EVENT);
     // What the server holds is not what eXo sent, and that is legitimate.
-    assertNotEquals(EXO_ICS, server.stored(HREF));
+    assertNotEquals(exoRender(), server.stored(HREF));
 
     for (int pass = 0; pass < 4; pass++) {
       MirrorVerification result = verification.verify(USER);
@@ -222,94 +248,211 @@ public class NormalisingServerMirrorTest {
   }
 
   @Test
+  public void aServerStillSettlingTheObjectAfterTheWriteChangesNothing() {
+    // Why the digest was replaced rather than re-timed. On the live account the
+    // recorded digest and ETag moved on every sweep although nothing but our
+    // own repairs was writing, which leaves only one shape: the server had not
+    // finished with the object when we read it back, and finished without
+    // moving the ETag. So this server settles late — the form it holds changes
+    // once more, after the first read, into a second re-serialisation that is
+    // again the same meeting. No digest taken at any moment is stable, and it
+    // does not matter, because none is taken.
+    server.settlesLate();
+    push.writeInto(USER, mirror, event(), EVENT);
+    String first = server.stored(HREF);
+
+    MirrorVerification pass = verification.verify(USER);
+
+    assertNotEquals(first, server.stored(HREF), "the server was supposed to settle into another form");
+    assertEquals(0, pass.altered());
+    assertEquals(0, verification.verify(USER).altered());
+    assertEquals(0, verification.verify(USER).altered());
+  }
+
+  @Test
   public void aByteStableServerIsUnaffected() {
-    // Stalwart. It was already healthy, and the read-back must not make it
-    // anything else: the baseline it yields is the same bytes eXo sent.
-    server = new FakeCalDavServer(false);
+    // Stalwart. It was already healthy, and this must not make it anything
+    // else: the object it holds is the object eXo sent.
+    server = new FakeCalDavServer(Normalisation.NONE);
     inject(push);
     inject(verification);
 
     ObjectSync mapping = push.writeInto(USER, mirror, event(), EVENT);
 
-    assertEquals(EXO_ICS, server.stored(HREF));
+    assertEquals(exoRender(), server.stored(HREF));
     assertEquals(0, verification.verify(USER).altered());
     assertEquals(server.etag(HREF), mapping.getEtag());
   }
 
   @Test
   public void anEditMadeInExoReachesTheCopyOnANormalisingServer() {
-    // The ticket's second acceptance criterion, and the half a digest alone
-    // does not cover. An ordinary update is guarded by If-Match with the
-    // version eXo recorded; record the version the write answered rather than
-    // the one the server settled on, and every later edit is refused with a
-    // 412 the user never sees. The meeting moves in eXo and not in their
-    // calendar.
+    // The ticket's second acceptance criterion. An ordinary update is guarded
+    // by If-Match with the version eXo recorded, so a recorded version the
+    // server has left behind is an eXo-side edit the user never sees arrive.
+    // The verification pass is what keeps that version current, by adopting it
+    // the first time it reads a copy and finds it equivalent.
     push.writeInto(USER, mirror, event(), EVENT);
-    when(icsWriter.write(any())).thenReturn(EXO_ICS.replace("090000Z", "150000Z"));
-    when(icsMerger.merge(anyString(), anyString(), anyBoolean())).thenReturn(EXO_ICS.replace("090000Z", "150000Z"));
+    verification.verify(USER);
 
-    push.writeInto(USER, mirror, event(), EVENT);
+    IcsEvent moved = event();
+    moved.setStart(START.plusSeconds(6 * 3600));
+    moved.setEnd(END.plusSeconds(6 * 3600));
+    push.writeInto(USER, mirror, moved, EVENT);
 
-    assertTrue(server.stored(HREF).contains("DTSTART:20260901T150000Z"), server.stored(HREF));
+    // 15:00 UTC, which this server restates as 17:00 on Europe/Paris — the very
+    // re-anchoring that used to make the copy look rewritten.
+    assertTrue(server.stored(HREF).contains("DTSTART;TZID=Europe/Paris:20260901T170000"), server.stored(HREF));
   }
 
   @Test
   public void aGenuineClientEditIsStillCalledAlteredAndStillRepaired() {
-    // The whole point of the pass, and the thing a fix must not buy its
-    // silence with. Somebody opened the copy on their phone and changed it;
+    // The whole point of the pass, and the thing a fix must not buy its silence
+    // with. Somebody opened the copy on their phone and renamed the meeting;
     // the mirror is eXo's projection, so eXo writes it back.
     push.writeInto(USER, mirror, event(), EVENT);
-    givenTheRepairCanRebuildTheEvent();
 
-    server.editedByAClient(HREF, EXO_ICS.replace("Sprint review", "Sprint review (moved to the pub)"));
+    server.editedByAClient(HREF, server.stored(HREF).replace("Sprint review", "Sprint review (moved to the pub)"));
     MirrorVerification result = verification.verify(USER);
 
     assertEquals(1, result.altered());
     assertEquals(1, result.repaired());
     assertEquals(0, result.abandoned());
-    // And the repair converges: the copy the server now holds is eXo's again,
-    // so the next pass has nothing to say. Before the fix this second pass
-    // reported "altered" once more, which is how an object reached maxRepairs.
+    // And the repair converges: what the server now holds says what eXo says,
+    // so the next pass has nothing to report. Before EXO-89716 this second pass
+    // said "altered" once more, which is how an object reached maxRepairs.
     assertEquals(0, verification.verify(USER).altered());
   }
 
   @Test
-  public void aCopyAbandonedBeforeTheFixHealsOnTheFirstPassAfterIt() {
-    // The installed base. A row written by the old code carries a digest of
-    // what eXo sent, and the repair counter that abandoned it lived in memory
-    // — so deploying this fix restarts the JVM and forgives the counter, but
-    // the stale digest is still in the database. It costs exactly one repair.
+  public void aClientThatMovedTheMeetingIsCaughtEvenWhenItRestatedTheTimeInAnotherZone() {
+    // The comparison folds a wall clock on a zone into the instant it denotes,
+    // which is what stops a re-serialisation counting as a rewrite. It must not
+    // also let a real move through: same form, different meeting.
+    push.writeInto(USER, mirror, event(), EVENT);
+
+    server.editedByAClient(HREF, server.stored(HREF).replace("T110000", "T160000"));
+
+    assertEquals(1, verification.verify(USER).altered());
+  }
+
+  @Test
+  public void anAttendeeTheServerDidNotKeepDoesNotMakeTheCopyLookRewritten() {
+    // The reverse of what this test asserted two rounds ago, by the architect's
+    // decision. A server that discards attendees it does not know about leaves
+    // a copy eXo can never make match: it re-pushes the whole roster, the
+    // server drops the same address again, and the pass says the same thing
+    // five minutes later. Four passes, because one proves nothing about a loop.
+    IcsEvent invited = event();
+    invited.setOrganizer(person("boss@acme.test", "The Boss"));
+    invited.setAttendees(List.of(person("ann@acme.test", "Ann"), person("bob@acme.test", "Bob")));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(invited);
+    push.writeInto(USER, mirror, invited, EVENT);
+
+    server.editedByAClient(HREF,
+                           Arrays.stream(server.stored(HREF).split("\r\n"))
+                                 .filter(line -> !line.contains("bob@acme.test"))
+                                 .collect(Collectors.joining("\r\n"))
+                              + "\r\n");
+
+    for (int pass = 0; pass < 4; pass++) {
+      MirrorVerification result = verification.verify(USER);
+
+      assertEquals(0, result.altered(), "pass " + pass);
+      assertEquals(0, result.repaired(), "pass " + pass);
+    }
+  }
+
+  @Test
+  public void aClientAddingAnAttendeeIsStillCaughtWhileAnotherIsBeingTolerated() {
+    // Both tolerances active on one object, end to end. The server never kept
+    // Bob, and a client has now added Mallory. The first is not a rewrite and
+    // the second is, and the pass has to separate them on the same copy — which
+    // is the whole risk of having two rules that point opposite ways.
+    IcsEvent invited = event();
+    invited.setOrganizer(person("boss@acme.test", "The Boss"));
+    invited.setAttendees(List.of(person("ann@acme.test", "Ann"), person("bob@acme.test", "Bob")));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(invited);
+    push.writeInto(USER, mirror, invited, EVENT);
+
+    // Inside the VEVENT, not appended to the document. Written the lazy way the
+    // added line lands after END:VCALENDAR, where it is not an attendee of
+    // anything — and the test still went green, on a parse failure rather than
+    // on the roster. Checking what the splice actually produced is what caught
+    // it.
+    server.editedByAClient(HREF,
+                           Arrays.stream(server.stored(HREF).split("\r\n"))
+                                 .filter(line -> !line.contains("bob@acme.test"))
+                                 .collect(Collectors.joining("\r\n"))
+                                 .replace("END:VEVENT",
+                                          "ATTENDEE;CN=Mallory:mailto:mallory@acme.test\r\nEND:VEVENT")
+                              + "\r\n");
+
+    assertEquals(1, verification.verify(USER).altered());
+  }
+
+  @Test
+  public void aPropertyNobodyRecognisesCountsAsADifference() {
+    // Conservative by construction. eXo emits a closed set of properties, and
+    // anything else inside the component it owns is a change it cannot vouch
+    // for — so it is reported rather than waved through. The cost of being
+    // wrong here is one rewrite; the cost of the opposite mistake is a user's
+    // edit lost without trace.
+    server = new FakeCalDavServer(Normalisation.RESERIALISE_AND_ANNOTATE);
+    inject(push);
+    inject(verification);
+    push.writeInto(USER, mirror, event(), EVENT);
+
+    assertEquals(1, verification.verify(USER).altered());
+  }
+
+  @Test
+  public void aPropertyTheOperatorHasDeclaredUninterestingIsNotADifference() {
+    // The one lever for a server that re-adds its own property on every store,
+    // which no amount of rewriting would remove. Narrow on purpose: it can only
+    // silence a property eXo does not emit — no setting of it can make a
+    // changed summary or a moved start look equal.
+    server = new FakeCalDavServer(Normalisation.RESERIALISE_AND_ANNOTATE);
+    inject(push);
+    inject(verification);
+    ReflectionTestUtils.setField(icsEquivalence, "ignoredProperties", "X-FAKEMIND-SEQ");
+    push.writeInto(USER, mirror, event(), EVENT);
+
+    assertEquals(0, verification.verify(USER).altered());
+  }
+
+  @Test
+  public void aCopyAbandonedBeforeTheFixHealsWithoutOneRepair() {
+    // The installed base. A row written by the old code carries a version the
+    // server has since moved past, and the repair counter that abandoned it
+    // lived in memory — so deploying restarts the JVM and forgives the counter.
+    // What is left is a stale ETag, and it costs a fetch rather than a rewrite:
+    // the copy still says what eXo says, so the version is adopted and nothing
+    // is pushed at all.
     ObjectSync legacy = push.writeInto(USER, mirror, event(), EVENT);
-    // Exactly what the old code left behind: a digest of the bytes eXo sent,
-    // and a version the server has since moved past — which is the state that
-    // sent BlueMind's copies round the repair loop to abandonment.
-    legacy.setPushedHash(digestOf(EXO_ICS));
     legacy.setEtag("\"v0\"");
     caldavSyncStorage.saveObject(legacy);
-    givenTheRepairCanRebuildTheEvent();
 
     MirrorVerification first = verification.verify(USER);
     MirrorVerification second = verification.verify(USER);
 
-    assertEquals(1, first.altered());
-    assertEquals(1, first.repaired());
+    assertEquals(0, first.altered());
+    assertEquals(0, first.repaired());
     assertEquals(0, second.altered());
     assertEquals(0, second.abandoned());
   }
 
   @Test
-  public void anEtagThatMovedOverBytesThatDidNotIsRecordedRatherThanPaidForForEver() {
-    // A server touching its own metadata. The bytes are ours, so the version
-    // it now publishes names our copy: recording it stops the next pass paying
-    // another fetch to reach the same conclusion, and — the reason it matters
-    // — stops the next ordinary update carrying an If-Match the server has
-    // already left behind, which it would refuse.
+  public void anEtagThatMovedOverAnEquivalentCopyIsRecordedRatherThanPaidForForEver() {
+    // A server touching its own metadata. The copy still says what eXo says, so
+    // the version it now publishes names our copy: recording it stops the next
+    // pass paying another fetch to reach the same conclusion, and — the reason
+    // it matters — stops the next ordinary update carrying an If-Match the
+    // server has already left behind, which it would refuse.
     ObjectSync mapping = push.writeInto(USER, mirror, event(), EVENT);
-    String recorded = mapping.getEtag();
+    verification.verify(USER);
     server.touchedItsOwnMetadata(HREF);
 
     assertEquals(0, verification.verify(USER).altered());
-    assertNotEquals(recorded, rows.get(mapping.getId()).getEtag());
     assertEquals(server.etag(HREF), rows.get(mapping.getId()).getEtag());
     // Cheap from now on: the listing and the row agree, so nothing is fetched.
     int before = server.fetches();
@@ -318,15 +461,121 @@ public class NormalisingServerMirrorTest {
   }
 
   @Test
-  public void aServerThatCannotBeReadBackLeavesThePushSucceeding() {
-    // A read-back that fails says nothing about a write that succeeded. The
-    // sent bytes stand in, which is exactly what happened before this existed.
+  public void anAnswerExoWritesOntoTheCopyIsNotThenUndoneByTheVerificationPass() {
+    // EXO-89715's guarantee, re-expressed without a digest — and it is a real
+    // question, not a formality, because the two halves take different code
+    // paths over the same object. pushAnswer rewrites ONE PARTSTAT surgically
+    // through IcsMerger, leaving the rest of the server's own serialisation
+    // untouched; the verification pass then compares that document against a
+    // FULL re-render by IcsWriter. They have to agree, or eXo repairs the copy
+    // back to what it last pushed and the user's answer disappears.
+    //
+    // The digest used to buy that agreement by remembering the bytes it had
+    // just written. This gets it for a better reason: the answer was recorded
+    // in agenda before pushAnswer was called, so the re-render already carries
+    // it. The baseline agrees because it comes from the same source the answer
+    // did.
+    IcsEvent invited = event();
+    invited.setOrganizer(person("boss@acme.test", "The Boss"));
+    invited.setAttendees(List.of(person(OWNER, "John")));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(invited);
+    when(agendaEventIcsMapper.addressOf(USER)).thenReturn(OWNER);
+    push.writeInto(USER, mirror, invited, EVENT);
+    assertEquals(0, verification.verify(USER).altered());
+
+    // The answer is recorded in eXo first — that is what triggers the push —
+    // so what eXo would render from now on carries it.
+    IcsEvent answered = event();
+    answered.setOrganizer(person("boss@acme.test", "The Boss"));
+    IcsPerson accepted = person(OWNER, "John");
+    accepted.setResponse("ACCEPTED");
+    answered.setAttendees(List.of(accepted));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(answered);
+
+    assertTrue(push.pushAnswer(USER, EVENT, "ACCEPTED"), "the answer should have reached the copy");
+    assertTrue(server.stored(HREF).contains("PARTSTAT=ACCEPTED"), server.stored(HREF));
+
+    // And the pass says nothing about the write eXo has just made.
+    MirrorVerification after = verification.verify(USER);
+
+    assertEquals(0, after.altered());
+    assertEquals(0, after.repaired());
+    assertTrue(server.stored(HREF).contains("PARTSTAT=ACCEPTED"), server.stored(HREF));
+  }
+
+  @Test
+  public void aServerThatAttachesTheCalendarsOwnerDoesNotMakeEveryCopyLookRewritten() {
+    // The first deploy of EXO-89716, reproduced. The comparison worked and the
+    // pass still reported "20 checked, 20 altered, 20 re-pushed" on every
+    // sweep, because BlueMind attaches the calendar's owner to every copy and
+    // puts the line straight back after each repair. Four passes, because one
+    // proves nothing about a loop.
+    server = new FakeCalDavServer(Normalisation.RESERIALISE_AND_ATTACH_OWNER);
+    inject(push);
+    inject(verification);
+    when(agendaEventIcsMapper.addressOf(USER)).thenReturn(OWNER);
+    push.writeInto(USER, mirror, event(), EVENT);
+    assertTrue(server.stored(HREF).contains("mailto:" + OWNER), server.stored(HREF));
+
+    for (int pass = 0; pass < 4; pass++) {
+      MirrorVerification result = verification.verify(USER);
+
+      assertEquals(1, result.checked(), "pass " + pass);
+      assertEquals(0, result.altered(), "pass " + pass);
+      assertEquals(0, result.repaired(), "pass " + pass);
+    }
+  }
+
+  @Test
+  public void anOwnerAnsweringOnTheirPhoneIsStillCaughtOnAServerThatAttachesThem() {
+    // The fence around the relaxation, where it actually matters. The same
+    // server, the same attached line — but this time it carries an answer, so
+    // it is the user replying and the pass has to say so. Silence here would
+    // mean EXO-89681 never reads an answer off a BlueMind copy again.
+    server = new FakeCalDavServer(Normalisation.RESERIALISE_AND_ATTACH_OWNER);
+    inject(push);
+    inject(verification);
+    when(agendaEventIcsMapper.addressOf(USER)).thenReturn(OWNER);
+    push.writeInto(USER, mirror, event(), EVENT);
+    assertEquals(0, verification.verify(USER).altered());
+
+    server.editedByAClient(HREF, server.stored(HREF).replace("mailto:" + OWNER,
+                                                             "mailto:" + OWNER).replace("CN=FRANCOIS",
+                                                                                        "CN=FRANCOIS;PARTSTAT=ACCEPTED"));
+
+    assertEquals(1, verification.verify(USER).altered());
+  }
+
+  @Test
+  public void aServerThatCannotBeReadLeavesItsCopiesAlone() {
+    // Unreadable is not the same as rewritten. A re-push here would overwrite
+    // whatever is on the user's calendar on the strength of a network error,
+    // and the pass has to be able to say nothing at all.
+    push.writeInto(USER, mirror, event(), EVENT);
+    server.touchedItsOwnMetadata(HREF);
     server.refuseReads();
 
-    ObjectSync mapping = push.writeInto(USER, mirror, event(), EVENT);
+    MirrorVerification result = verification.verify(USER);
 
-    assertEquals(digestOf(EXO_ICS), mapping.getPushedHash());
-    assertTrue(rows.containsKey(mapping.getId()));
+    assertEquals(1, result.checked());
+    assertEquals(0, result.altered());
+    assertEquals(0, result.repaired());
+  }
+
+  @Test
+  public void anEventThatCanNoLongerBeReadLeavesItsCopyAlone() {
+    // The baseline is regenerated, so there is a case where it cannot be: the
+    // event was deleted in eXo, or is no longer visible to this user. Nothing
+    // is concluded from an absence, and above all nothing is written.
+    push.writeInto(USER, mirror, event(), EVENT);
+    server.touchedItsOwnMetadata(HREF);
+    givenTheEventCannotBeRead();
+
+    MirrorVerification result = verification.verify(USER);
+
+    assertEquals(1, result.checked());
+    assertEquals(0, result.altered());
+    assertEquals(0, result.repaired());
   }
 
   /**
@@ -374,20 +623,53 @@ public class NormalisingServerMirrorTest {
   }
 
   /**
-   * Lets the repair rebuild the event from agenda, the way a live repair does.
+   * Lets agenda answer for the event, which both the repair and the baseline
+   * render need — the pass regenerates what eXo would write on every judgement,
+   * so this is not a repair fixture any more, it is the ordinary path.
    */
   private void givenTheRepairCanRebuildTheEvent() {
     Event event = new Event();
     event.setId(EVENT);
     event.setCalendarId(11L);
     try {
-      when(agendaEventService.getEventById(EVENT, null, USER)).thenReturn(event);
+      lenient().when(agendaEventService.getEventById(EVENT, null, USER)).thenReturn(event);
     } catch (IllegalAccessException e) {
       throw new IllegalStateException(e);
     }
-    when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event());
-    when(agendaCalendarService.getCalendarById(11L)).thenReturn(null);
+    lenient().when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
+    lenient().when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event());
+    lenient().when(agendaCalendarService.getCalendarById(11L)).thenReturn(null);
+  }
+
+  /**
+   * Makes agenda answer that the event is gone, which is what a deletion in eXo
+   * — or a visibility change — looks like from here.
+   */
+  private void givenTheEventCannotBeRead() {
+    try {
+      when(agendaEventService.getEventById(EVENT, null, USER)).thenReturn(null);
+    } catch (IllegalAccessException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /**
+   * @return the object eXo's own engine renders for this event
+   */
+  private String exoRender() {
+    return icsWriter.write(event());
+  }
+
+  /**
+   * @param email the address
+   * @param name how the person is displayed
+   * @return one calendar user
+   */
+  private IcsPerson person(String email, String name) {
+    IcsPerson person = new IcsPerson();
+    person.setEmail(email);
+    person.setDisplayName(name);
+    return person;
   }
 
   /**
@@ -408,6 +690,9 @@ public class NormalisingServerMirrorTest {
     IcsEvent event = new IcsEvent();
     event.setUid("evt-1");
     event.setSummary("Sprint review");
+    event.setStart(START);
+    event.setEnd(END);
+    event.setTimeZoneId("Europe/Paris");
     return event;
   }
 
@@ -423,20 +708,6 @@ public class NormalisingServerMirrorTest {
   }
 
   /**
-   * @param ics an iCalendar object
-   * @return the digest the push records for it
-   */
-  private String digestOf(String ics) {
-    try {
-      java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-      return java.util.HexFormat.of()
-                                .formatHex(digest.digest(ics.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-    } catch (Exception e) {
-      throw new IllegalStateException(e);
-    }
-  }
-
-  /**
    * A CalDAV server that either keeps the bytes it is handed or re-serialises
    * them, and says which of the two it is at construction.
    *
@@ -447,8 +718,8 @@ public class NormalisingServerMirrorTest {
    */
   private static final class FakeCalDavServer implements CalDavClient {
 
-    /** Whether this server re-serialises what it stores, as BlueMind does. */
-    private final boolean             normalising;
+    /** What this server does to the objects it is handed. */
+    private final Normalisation       normalisation;
 
     /** The objects it holds, by href. */
     private final Map<String, String> objects = new LinkedHashMap<>();
@@ -459,17 +730,47 @@ public class NormalisingServerMirrorTest {
     /** Bumped on every write, so no two versions are alike. */
     private int                       version;
 
-    /** How many GETs it has served, which is what the read-back costs. */
+    /** How many GETs it has served. */
     private int                       fetches;
 
     /** Whether reads are refused, standing for an unreachable server. */
     private boolean                   readsRefused;
 
+    /** How many annotations it has stamped, so no two are alike. */
+    private int                       annotations;
+
     /**
-     * @param normalising true to re-serialise stored objects
+     * Whether this server is still settling the objects it stores, and finishes
+     * only after somebody has read them once — without moving the ETag.
      */
-    private FakeCalDavServer(boolean normalising) {
-      this.normalising = normalising;
+    private boolean                   settlesLate;
+
+    /** The hrefs it has not finished settling. */
+    private final java.util.Set<String> unsettled = new java.util.LinkedHashSet<>();
+
+    /**
+     * @param normalisation what it does to what it stores
+     */
+    private FakeCalDavServer(Normalisation normalisation) {
+      this.normalisation = normalisation;
+    }
+
+    /**
+     * Makes this server finish storing an object only after the first read of
+     * it, changing its serialisation once more without moving its version.
+     *
+     * <p>
+     * The live measurement said the recorded digest and ETag moved on every
+     * sweep while nothing but eXo's own repairs was writing, and a diagnostic
+     * that read each object twice in a row found them identical. Reads are
+     * stable at rest, nothing else writes, and the baseline was still wrong —
+     * which leaves the server finishing after the read-back and not saying so.
+     * The exact mechanism could not be recovered from outside; what this models
+     * is the property that follows from it, and the property is what matters:
+     * <b>no digest of this object is stable, whenever it is taken</b>.
+     */
+    private void settlesLate() {
+      settlesLate = true;
     }
 
     /**
@@ -526,26 +827,164 @@ public class NormalisingServerMirrorTest {
      * What this server actually stores for what it was given.
      *
      * <p>
-     * A stand-in for BlueMind's parse-and-re-serialise: the same meeting, a
-     * different document — its own PRODID and the event's properties in its
-     * own order. Semantically equal, textually not, which is the only
-     * property this test needs it to have.
+     * A stand-in for BlueMind's parse-and-re-serialise, and not a cosmetic one:
+     * the document is parsed with ical4j and written back with this server's
+     * own PRODID, its own DTSTAMP, the redundant {@code TRANSP:OPAQUE} dropped
+     * as the RFC allows, the calendar-scale statement gone, and the start and
+     * end restated as a wall clock on the event's zone rather than in UTC —
+     * carrying the VTIMEZONE that anchors them. The same meeting, and not one
+     * line in common. That last transformation is the one that matters: it is
+     * the difference a comparison of values would still call a rewrite, and
+     * only a comparison of <i>meaning</i> resolves.
      *
      * @param ics the text that was PUT
+     * @param second whether this is the second, settling pass over the object
      * @return the text this server keeps
      */
-    private String store(String ics) {
-      if (!normalising) {
+    private String store(String ics, boolean second) {
+      if (normalisation == Normalisation.NONE) {
         return ics;
       }
-      List<String> lines = Arrays.asList(ics.split("\r\n"));
-      List<String> properties = lines.stream()
-                                     .filter(line -> !line.startsWith("BEGIN:") && !line.startsWith("END:")
-                                         && !line.startsWith("PRODID:"))
-                                     .sorted()
-                                     .collect(Collectors.toList());
-      return "BEGIN:VCALENDAR\r\nPRODID:-//FakeMind//Calendar//EN\r\nBEGIN:VEVENT\r\n"
-          + String.join("\r\n", properties) + "\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+      net.fortuna.ical4j.model.Calendar calendar;
+      try {
+        calendar = new net.fortuna.ical4j.data.CalendarBuilder().build(new java.io.StringReader(ics));
+      } catch (Exception e) {
+        throw new IllegalStateException("the fake server was handed something it cannot parse", e);
+      }
+      calendar.getProperties().remove(calendar.getProperty(net.fortuna.ical4j.model.Property.PRODID));
+      calendar.getProperties().add(new net.fortuna.ical4j.model.property.ProdId("-//FakeMind//Calendar//EN"));
+      calendar.getProperties().remove(calendar.getProperty(net.fortuna.ical4j.model.Property.CALSCALE));
+      for (net.fortuna.ical4j.model.component.CalendarComponent component :
+           calendar.getComponents(net.fortuna.ical4j.model.Component.VEVENT)) {
+        reSerialise((net.fortuna.ical4j.model.component.VEvent) component, calendar, second);
+      }
+      return calendar.toString();
+    }
+
+    /**
+     * Rewrites one component the way this server keeps it.
+     *
+     * @param event the component to rewrite
+     * @param calendar the object it belongs to, which gains the zone definition
+     * @param second whether this is the settling pass, which chooses a second
+     *          serialisation of the same meeting rather than the first
+     */
+    private void reSerialise(net.fortuna.ical4j.model.component.VEvent event,
+                             net.fortuna.ical4j.model.Calendar calendar,
+                             boolean second) {
+      event.getProperties().remove(event.getProperty(net.fortuna.ical4j.model.Property.TRANSP));
+      event.getProperties().remove(event.getProperty(net.fortuna.ical4j.model.Property.DTSTAMP));
+      event.getProperties().add(new net.fortuna.ical4j.model.property.DtStamp());
+      // VERSION inside the VEVENT, which is not conformant and is what BlueMind
+      // stores. Every scenario in this rig runs against it, rather than one
+      // test doing so: it is a property of the server, not of a scenario, and a
+      // fixture that only sometimes resembles the real thing is how the first
+      // deploy got as far as it did.
+      event.getProperties().add(new net.fortuna.ical4j.model.property.Version(new net.fortuna.ical4j.model.ParameterList(), "2.0"));
+      substituteDirectoryNames(event);
+      if (normalisation == Normalisation.RESERIALISE_AND_ANNOTATE) {
+        event.getProperties()
+             .add(new net.fortuna.ical4j.model.property.XProperty("X-FAKEMIND-SEQ", String.valueOf(++annotations)));
+      }
+      if (normalisation == Normalisation.RESERIALISE_AND_ATTACH_OWNER) {
+        attachOwner(event);
+      }
+      net.fortuna.ical4j.model.TimeZone zone =
+          net.fortuna.ical4j.model.TimeZoneRegistryFactory.getInstance().createRegistry().getTimeZone(ZONE);
+      if (calendar.getComponent(net.fortuna.ical4j.model.Component.VTIMEZONE) == null) {
+        calendar.getComponents().add(zone.getVTimeZone());
+      }
+      // The settling pass states the very same instants a second way — a UTC
+      // wall clock rather than a zoned one — so that no digest of this object
+      // is stable at any moment, which is the whole point of it.
+      anchor(event, net.fortuna.ical4j.model.Property.DTSTART, zone, second);
+      anchor(event, net.fortuna.ical4j.model.Property.DTEND, zone, second);
+    }
+
+    /**
+     * Replaces every calendar user's display name with this server's own
+     * directory's spelling of it, which is what BlueMind does — CN=FRANCOIS
+     * where eXo wrote CN=Root Root, for one and the same address.
+     *
+     * <p>
+     * On every store and to every ORGANIZER and ATTENDEE, for the reason the
+     * misplaced VERSION is done that way: it is a property of the server, not
+     * of one scenario, and a fixture that only sometimes resembles the real
+     * thing is how three deploys each found one more of these.
+     *
+     * @param event the component being stored
+     */
+    private void substituteDirectoryNames(net.fortuna.ical4j.model.component.VEvent event) {
+      for (String name : List.of(net.fortuna.ical4j.model.Property.ORGANIZER,
+                                 net.fortuna.ical4j.model.Property.ATTENDEE)) {
+        for (Object candidate : event.getProperties(name)) {
+          net.fortuna.ical4j.model.Property person = (net.fortuna.ical4j.model.Property) candidate;
+          net.fortuna.ical4j.model.Parameter existing =
+              person.getParameter(net.fortuna.ical4j.model.Parameter.CN);
+          if (existing != null) {
+            person.getParameters().remove(existing);
+          }
+          person.getParameters()
+                .add(new net.fortuna.ical4j.model.parameter.Cn(person.getValue()
+                                                                     .replaceFirst("(?i)^mailto:", "")
+                                                                     .replaceFirst("@.*$", "")
+                                                                     .toUpperCase(java.util.Locale.ROOT)));
+        }
+      }
+    }
+
+    /**
+     * Attaches the calendar's owner to a component, the way a server does with
+     * an event that lands in somebody's calendar: named from its own directory,
+     * with a pointer into it, and with no answer on it yet.
+     *
+     * <p>
+     * Re-attached on every store, deliberately. That is what makes this the
+     * live defect rather than a one-off: a repair strips the line and the very
+     * next write puts it straight back, so a pass that calls it a rewrite can
+     * never converge however many times it repairs.
+     *
+     * @param event the component being stored
+     */
+    private void attachOwner(net.fortuna.ical4j.model.component.VEvent event) {
+      for (Object existing : event.getProperties(net.fortuna.ical4j.model.Property.ATTENDEE)) {
+        if (((net.fortuna.ical4j.model.Property) existing).getValue().toLowerCase(java.util.Locale.ROOT)
+                                                          .endsWith(OWNER.toLowerCase(java.util.Locale.ROOT))) {
+          return;
+        }
+      }
+      net.fortuna.ical4j.model.ParameterList parameters = new net.fortuna.ical4j.model.ParameterList();
+      parameters.add(new net.fortuna.ical4j.model.parameter.Cn("FRANCOIS"));
+      parameters.add(new net.fortuna.ical4j.model.parameter.Dir(java.net.URI.create("bm://19d43a7c-dead-beef")));
+      event.getProperties()
+           .add(new net.fortuna.ical4j.model.property.Attendee(parameters, java.net.URI.create("mailto:" + OWNER)));
+    }
+
+    /**
+     * Restates one date-time property without moving the instant it denotes.
+     *
+     * @param event the component
+     * @param name the property to restate
+     * @param zone the zone to anchor it on
+     * @param utc true to restate it in UTC instead
+     */
+    private void anchor(net.fortuna.ical4j.model.component.VEvent event,
+                        String name,
+                        net.fortuna.ical4j.model.TimeZone zone,
+                        boolean utc) {
+      net.fortuna.ical4j.model.Property property = event.getProperty(name);
+      if (!(property instanceof net.fortuna.ical4j.model.property.DateProperty dated)
+          || !(dated.getDate() instanceof net.fortuna.ical4j.model.DateTime)) {
+        return;
+      }
+      net.fortuna.ical4j.model.DateTime restated =
+          new net.fortuna.ical4j.model.DateTime(java.util.Date.from(dated.getDate().toInstant()));
+      if (utc) {
+        restated.setUtc(true);
+      } else {
+        restated.setTimeZone(zone);
+      }
+      dated.setDate(restated);
     }
 
     /**
@@ -569,8 +1008,11 @@ public class NormalisingServerMirrorTest {
      */
     private PutResult accept(String href, String ics, int status) {
       String answered = "\"v" + ++version + "\"";
-      objects.put(href, store(ics));
-      etags.put(href, normalising ? "\"v" + ++version + "\"" : answered);
+      objects.put(href, store(ics, false));
+      etags.put(href, normalisation == Normalisation.NONE ? answered : "\"v" + ++version + "\"");
+      if (settlesLate) {
+        unsettled.add(href);
+      }
       return new PutResult(status, answered, null);
     }
 
@@ -656,6 +1098,12 @@ public class NormalisingServerMirrorTest {
         throw new IllegalStateException("the server cannot be reached");
       }
       String ics = objects.get(href);
+      if (ics != null && unsettled.remove(href)) {
+        // It finishes here, after the read, and says nothing about it: the
+        // version stays exactly where it was.
+        ics = store(ics, true);
+        objects.put(href, ics);
+      }
       return ics == null ? null : new CalendarObject(href, etags.get(href), ics);
     }
 
@@ -708,5 +1156,21 @@ public class NormalisingServerMirrorTest {
     public int deleteCollection(CalDavEndpoint endpoint, CalendarSync pair, String username, String password) {
       return 204;
     }
+  }
+
+  /** What a fake server does to the objects it is handed. */
+  private enum Normalisation {
+    /** Keeps the bytes verbatim, as Stalwart does. */
+    NONE,
+    /** Parses and writes the same meeting its own way, as BlueMind does. */
+    RESERIALISE,
+    /** The same, and stamps a proprietary property of its own on every store. */
+    RESERIALISE_AND_ANNOTATE,
+    /**
+     * The same, and attaches the calendar's own owner to every copy that lands
+     * in it, naming them from its own directory — which is what BlueMind does,
+     * and what made all 20 copies of a live account altered on every sweep.
+     */
+    RESERIALISE_AND_ATTACH_OWNER
   }
 }
