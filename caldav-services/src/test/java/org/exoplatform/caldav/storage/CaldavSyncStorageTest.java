@@ -141,7 +141,7 @@ public class CaldavSyncStorageTest {
   public void saveObjectNormalisesItsHrefToo() {
     when(objectSyncDAO.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    ObjectSync object = new ObjectSync(null, 3L, 9L, "uid@acme", "/cal/john/work/uid%40acme.ics", null, null, new Date());
+    ObjectSync object = new ObjectSync(null, 3L, 9L, "uid@acme", "/cal/john/work/uid%40acme.ics", null, new Date());
     storage.saveObject(object);
 
     ArgumentCaptor<CaldavObjectSyncEntity> saved = ArgumentCaptor.forClass(CaldavObjectSyncEntity.class);
