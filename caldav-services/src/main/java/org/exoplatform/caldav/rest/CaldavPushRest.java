@@ -30,7 +30,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -85,8 +84,14 @@ public class CaldavPushRest {
   /**
    * Copies one agenda event into the connected user's mirror calendar.
    *
+   * <p>
+   * The request carries no link back into eXo. It used to, built by the page
+   * and passed as a query parameter, and that is exactly why the copy kept
+   * losing it: a value only the browser supplied was absent on every sweep and
+   * every repair. The link is derived from the event server-side now, so the
+   * page has nothing to say about it (EXO-89751).
+   *
    * @param eventId the agenda event to copy
-   * @param eventUrl absolute link back to the event in eXo
    * @return the resulting mapping, or an empty 204 when the event's calendar
    *         has no collection to copy into
    */
@@ -103,11 +108,8 @@ public class CaldavPushRest {
   public ResponseEntity<ObjectSync> push(@Parameter(description = "Technical identifier of the agenda event",
                                                     required = true)
                                          @PathVariable("eventId")
-                                         long eventId,
-                                         @Parameter(description = "Absolute link back to the event in eXo")
-                                         @RequestParam(value = "eventUrl", required = false)
-                                         String eventUrl) {
-    ObjectSync written = caldavPushService.pushAgendaEvent(currentUser(), eventId, eventUrl);
+                                         long eventId) {
+    ObjectSync written = caldavPushService.pushAgendaEvent(currentUser(), eventId);
     // 204, not an empty 200: the caller asked for a copy and there is no
     // collection to make one in. Nothing failed, and nothing happened, and
     // those are different answers.

@@ -318,6 +318,22 @@ public class CaldavSyncStorageTest {
     assertEquals(1, storage.getObjects(3L, 0, 100).getContent().size());
   }
 
+  /**
+   * The lookup an edit fans out from: every copy of one meeting, across every
+   * user's collections. Asked of the mapping table rather than of agenda's
+   * attendee list, because it is the only source that still answers after eXo
+   * has destroyed the event — and the only one that says who <i>already</i> has
+   * a copy.
+   */
+  @Test
+  public void everyCopyOfOneEventComesBackAcrossEveryUsersCollections() {
+    when(objectSyncDAO.findByLocalEventId(eq(7L), any(Pageable.class)))
+                                                                      .thenReturn(new PageImpl<>(List.of(objectEntity(1L),
+                                                                                                         objectEntity(2L))));
+
+    assertEquals(2, storage.getObjectsByEvent(7L, 0, 50).getContent().size());
+  }
+
   @Test
   public void theObjectsOfABindingCanBeCounted() {
     when(objectSyncDAO.countByCalendarSyncId(3L)).thenReturn(4L);
