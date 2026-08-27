@@ -100,7 +100,7 @@ public class IcsWriter {
   /** ical4j's own zone registry: the authoritative record the browser derivation approximated. */
   private static final TimeZoneRegistry      REGISTRY     = TimeZoneRegistryFactory.getInstance().createRegistry();
 
-  /** Marks a copy as one eXo has already scheduled itself; see addPeople. */
+  /** Marks a copy as one nobody performs scheduling for; see addPeople. */
   private static final String                CLIENT_AGENT = "CLIENT";
 
   /** The YYYYMMDD form an iCalendar date value is written in. */
@@ -269,6 +269,22 @@ public class IcsWriter {
    * scheduling-aware server would take the PUT as an instruction to run that
    * scheduling itself — mailing invitations to every attendee, or a reply to
    * the organizer.
+   *
+   * <p>
+   * CLIENT rather than NONE, and the difference was measured rather than
+   * reasoned. NONE reads as "no agent acts on this event at all", and a
+   * client honours it by declining to record an answer anywhere: macOS
+   * Calendar offered Accept and Decline on a copy written that way, edited
+   * the object when the user pressed one — and left PARTSTAT untouched, so
+   * the verification pass found the copy altered with no answer in it, every
+   * pass. CLIENT says the client is the agent, which is what makes it write
+   * the answer into the object where the pass reads it back.
+   *
+   * <p>
+   * The price is that a conforming client may also email an iMIP reply to the
+   * organizer, and nothing ingests those yet — so an organizer can receive a
+   * reply eXo does not act on. That is a mailbox oddity; NONE was silent data
+   * loss, which is worse.
    *
    * @param vEvent the component being built
    * @param event the event being written

@@ -294,7 +294,12 @@ public class GoldenCorpusTest {
    * 08 — scheduling identities: the organizer is the eXo organizer with
    * SCHEDULE-AGENT=CLIENT (the pusher merely accepted), a CN holding a comma
    * is quoted, every attendee carries SCHEDULE-AGENT=CLIENT and its mapped
-   * PARTSTAT, and the address-less attendee was left off the copy.
+   * PARTSTAT, and the address-less attendee was left off the copy. NONE
+   * CLIENT, as captured. NONE was tried under EXO-89681 to stop a client
+   * emailing a reply, and put back when macOS Calendar showed what it costs:
+   * it offered Accept and Decline on a NONE copy, edited the object when the
+   * user pressed one, and left PARTSTAT untouched — so the answer never
+   * reached the object the verification pass reads back.
    *
    * @throws Exception when the goldens cannot be read
    */
@@ -302,7 +307,7 @@ public class GoldenCorpusTest {
   public void schedulingIdentitiesAreTruthful() throws Exception {
     String ics = unfolded(golden("08-attendees-organizer"));
     assertTrue(ics.contains("ORGANIZER;CN=\"Martin, Alice\";SCHEDULE-AGENT=CLIENT:mailto:alice.martin@example.test"),
-               "the organizer is the eXo organizer, quoted CN, marked already-scheduled");
+               "the organizer is the eXo organizer, quoted CN, marked as client-scheduled");
     assertEquals(3, countOf(ics, "ATTENDEE"), "the attendee without a visible address is omitted, never invented");
     assertTrue(ics.contains("PARTSTAT=ACCEPTED") && ics.contains("PARTSTAT=DECLINED") && ics.contains("PARTSTAT=TENTATIVE"),
                "participation statuses map through");
