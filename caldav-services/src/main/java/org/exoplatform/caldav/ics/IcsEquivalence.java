@@ -113,6 +113,12 @@ import net.fortuna.ical4j.model.component.VTimeZone;
  * {@link #tolerated}.
  *
  * <p>
+ * <b>Names are the server's to spell.</b> {@code CN} and {@code DIR} are
+ * dropped from every compared statement: a server substituting its directory's
+ * own name and pointer for a person says nothing about the meeting, and the
+ * address — which is who they actually are — is compared regardless.
+ *
+ * <p>
  * <b>And an attendee the server did not keep.</b> BlueMind discards attendees
  * whose addresses are not in its directory, so a copy carries fewer people than
  * eXo sent and no repair can change that. Tolerated for the same reason and in
@@ -251,11 +257,27 @@ public class IcsEquivalence {
    * {@code DIR} (RFC 5545 section 3.2.6) is a URI pointing at the server's own
    * directory entry for a calendar user — {@code bm://19d43...} on BlueMind. It
    * says who the server thinks the person is, in the server's own namespace,
-   * and nothing whatever about the meeting. It cannot hide an attendee change
-   * either: the address and the PARTSTAT are compared regardless.
+   * and nothing whatever about the meeting.
+   *
+   * <p>
+   * {@code CN} is the same thing in words. This was deliberately kept compared
+   * at first, on the grounds that a display name <i>arguably</i> carries
+   * something a person authored where a directory pointer carries nothing; the
+   * evidence settled it. BlueMind substitutes its directory's own name for
+   * everybody — {@code CN=FRANCOIS} where eXo writes {@code CN=Root Root} for
+   * the same address — and the copies were reaching {@code maxRepairs} over it.
+   * A server substituting its own name for a person is the same class of
+   * normalisation as substituting its own pointer to them. What is given up is
+   * only eXo's opinion of how to spell somebody, against the server's.
+   *
+   * <p>
+   * Neither can hide who is on the event: the <b>address</b> is the identity and
+   * it is compared regardless, on ORGANIZER and ATTENDEE alike, as is every
+   * PARTSTAT.
    */
   private static final Set<String>         IGNORED_PARAMETERS       = Set.of("TZID",
                                                                              "VALUE",
+                                                                             "CN",
                                                                              "DIR",
                                                                              "SCHEDULE-AGENT",
                                                                              "SCHEDULE-STATUS",
