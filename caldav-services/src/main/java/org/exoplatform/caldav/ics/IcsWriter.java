@@ -22,12 +22,11 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
-import java.util.ArrayList;
-import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.agenda.util.EventIcsBuilder;
 import org.exoplatform.caldav.model.IcsEvent;
 import org.exoplatform.caldav.model.IcsPerson;
 import org.exoplatform.caldav.model.IcsReminder;
@@ -145,8 +144,15 @@ public class IcsWriter {
     // means "provisionally scheduled" — a poll pushed with its own word would
     // show up as a real meeting nobody has confirmed. An event only reaches
     // this engine once it is scheduled, so the honest value is the constant.
+    //
+    // CANCELLED is the one exception, and it is not a status mapping either:
+    // it is the whole point of writing the copy again after a meeting is
+    // called off. It has to be the copy's own word rather than the copy's
+    // absence, because a client shows a cancelled meeting struck through where
+    // it shows a removed one not at all — and "not at all" is what a failed
+    // synchronisation looks like too.
     // TRANSP is the RFC default and is written for explicitness.
-    vEvent.getProperties().add(Status.VEVENT_CONFIRMED);
+    vEvent.getProperties().add(event.isCancelled() ? Status.VEVENT_CANCELLED : Status.VEVENT_CONFIRMED);
     vEvent.getProperties().add(Transp.OPAQUE);
 
     addRecurrence(vEvent, event, timeZone, occurrence);
@@ -199,18 +205,15 @@ public class IcsWriter {
       vEvent.getProperties().add(new Location(event.getLocation()));
     }
     String conferenceUrl = StringUtils.trimToNull(event.getConferenceUrl());
-    List<String> parts = new ArrayList<>();
+    // The description arrives as the plain text RFC 5545 3.8.1.5 defines it,
+    // already carrying the attribution and the conference line: since
+    // EXO-89732 it is composed by agenda's EventIcsBuilder, the same code that
+    // writes the description of the mailed document, so that the two channels
+    // describe one meeting in one set of words. Rendering it a second time
+    // here would be a second implementation of exactly the drift that change
+    // removed — and appending the conference again would print the link twice.
     if (StringUtils.isNotBlank(event.getDescription())) {
-      String text = IcsText.htmlToText(event.getDescription());
-      if (StringUtils.isNotBlank(text)) {
-        parts.add(text);
-      }
-    }
-    if (conferenceUrl != null) {
-      parts.add(conferenceUrl);
-    }
-    if (!parts.isEmpty()) {
-      vEvent.getProperties().add(new Description(String.join("\n\n", parts)));
+      vEvent.getProperties().add(new Description(event.getDescription()));
     }
     if (StringUtils.isNotBlank(event.getEventUrl())) {
       vEvent.getProperties().add(new Url(URI.create(event.getEventUrl())));
@@ -526,11 +529,21 @@ public class IcsWriter {
   /**
    * A mail address as the CAL-ADDRESS URI the RFC requires.
    *
+   * <p>
+   * Delegated to agenda's {@link EventIcsBuilder} so that both channels turn an
+   * address into a calendar user address the same way (EXO-89732). It is not
+   * the same as prefixing the scheme: an address that already carries it is
+   * left alone, which matters here because the address written for the
+   * account's own owner is whatever their CalDAV account answers to —
+   * configuration rather than a profile field — and a value pasted in with its
+   * scheme would otherwise become <code>mailto:mailto:...</code>, matching no
+   * account and taking the RSVP controls with it.
+   *
    * @param email the address
    * @return the mailto URI
    */
   private URI mailto(String email) {
-    return URI.create("mailto:" + email.trim());
+    return EventIcsBuilder.calendarUserAddress(email);
   }
 
   /**

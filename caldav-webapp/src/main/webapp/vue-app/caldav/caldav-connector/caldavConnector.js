@@ -385,9 +385,13 @@ const caldavConnector = {
     // where the credentials already live, so the page never handles them and
     // the outcome becomes something a test can assert. What the page keeps is
     // rendering the failure, which is why the codes below are unchanged.
-    const link = eventUrl(event);
-    const query = link && `?eventUrl=${encodeURIComponent(link)}` || '';
-    return fetch(`${window.location.origin}/caldav/rest/push/events/${event.id}${query}`, {
+    //
+    // The link back to the event is no longer sent from here. Built in the
+    // page, it only ever reached the copy on a browser push: a sweep and a
+    // repair had none, so the link appeared once and the next repair stripped
+    // it. The server derives it from the event now, and every path writes the
+    // same one (EXO-89751).
+    return fetch(`${window.location.origin}/caldav/rest/push/events/${event.id}`, {
       method: 'POST',
       credentials: 'include',
     }).then(pushOutcome).then(identifiedByUid);
@@ -638,30 +642,6 @@ function caldavError(code, cause) {
   error.cause = cause;
   return error;
 }
-
-/**
- * Absolute link to the event in eXo, for the URL property — the one way back
- * from the copy on the phone to the event itself, its attendees and its
- * space. It has to be absolute: a client is not a browser sitting on the
- * portal, so a path alone resolves against nothing.
- *
- * The path is the one the agenda application uses to open an event from
- * outside itself, as its search results already do.
- *
- * @param {Object} event agenda event being pushed
- * @returns {String} the link, or an empty string when the page carries no
- * portal environment to build it from
- */
-function eventUrl(event) {
-  const eventId = event.id || event.parent?.id;
-  const portal = window.eXo?.env?.portal;
-  if (!eventId || !portal?.portalName || !portal?.context) {
-    return '';
-  }
-  return `${window.location.origin}${portal.context}/${portal.portalName}/agenda?eventId=${eventId}`;
-}
-
-
 
 /**
  * The relay prefix a URL path may carry: the per-server namespace the
