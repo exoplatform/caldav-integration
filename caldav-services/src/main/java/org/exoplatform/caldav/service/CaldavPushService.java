@@ -905,7 +905,7 @@ public class CaldavPushService {
    * @param settings their connected account
    * @return the addresses to look for, most specific first, possibly empty
    */
-  private List<String> addressesNaming(long userIdentityId, CaldavUserSetting settings) {
+  public List<String> addressesNaming(long userIdentityId, CaldavUserSetting settings) {
     List<String> addresses = new ArrayList<>();
     String account = StringUtils.trimToNull(settings.getUsername());
     if (account != null) {

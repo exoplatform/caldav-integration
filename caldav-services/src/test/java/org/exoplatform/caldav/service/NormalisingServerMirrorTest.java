@@ -462,6 +462,49 @@ public class NormalisingServerMirrorTest {
   }
 
   @Test
+  public void aServerThatAttachesTheCalendarsOwnerDoesNotMakeEveryCopyLookRewritten() {
+    // The first deploy of EXO-89716, reproduced. The comparison worked and the
+    // pass still reported "20 checked, 20 altered, 20 re-pushed" on every
+    // sweep, because BlueMind attaches the calendar's owner to every copy and
+    // puts the line straight back after each repair. Four passes, because one
+    // proves nothing about a loop.
+    server = new FakeCalDavServer(Normalisation.RESERIALISE_AND_ATTACH_OWNER);
+    inject(push);
+    inject(verification);
+    when(agendaEventIcsMapper.addressOf(USER)).thenReturn(OWNER);
+    push.writeInto(USER, mirror, event(), EVENT);
+    assertTrue(server.stored(HREF).contains("mailto:" + OWNER), server.stored(HREF));
+
+    for (int pass = 0; pass < 4; pass++) {
+      MirrorVerification result = verification.verify(USER);
+
+      assertEquals(1, result.checked(), "pass " + pass);
+      assertEquals(0, result.altered(), "pass " + pass);
+      assertEquals(0, result.repaired(), "pass " + pass);
+    }
+  }
+
+  @Test
+  public void anOwnerAnsweringOnTheirPhoneIsStillCaughtOnAServerThatAttachesThem() {
+    // The fence around the relaxation, where it actually matters. The same
+    // server, the same attached line — but this time it carries an answer, so
+    // it is the user replying and the pass has to say so. Silence here would
+    // mean EXO-89681 never reads an answer off a BlueMind copy again.
+    server = new FakeCalDavServer(Normalisation.RESERIALISE_AND_ATTACH_OWNER);
+    inject(push);
+    inject(verification);
+    when(agendaEventIcsMapper.addressOf(USER)).thenReturn(OWNER);
+    push.writeInto(USER, mirror, event(), EVENT);
+    assertEquals(0, verification.verify(USER).altered());
+
+    server.editedByAClient(HREF, server.stored(HREF).replace("mailto:" + OWNER,
+                                                             "mailto:" + OWNER).replace("CN=FRANCOIS",
+                                                                                        "CN=FRANCOIS;PARTSTAT=ACCEPTED"));
+
+    assertEquals(1, verification.verify(USER).altered());
+  }
+
+  @Test
   public void aServerThatCannotBeReadLeavesItsCopiesAlone() {
     // Unreadable is not the same as rewritten. A re-push here would overwrite
     // whatever is on the user's calendar on the strength of a network error,
@@ -794,6 +837,9 @@ public class NormalisingServerMirrorTest {
         event.getProperties()
              .add(new net.fortuna.ical4j.model.property.XProperty("X-FAKEMIND-SEQ", String.valueOf(++annotations)));
       }
+      if (normalisation == Normalisation.RESERIALISE_AND_ATTACH_OWNER) {
+        attachOwner(event);
+      }
       net.fortuna.ical4j.model.TimeZone zone =
           net.fortuna.ical4j.model.TimeZoneRegistryFactory.getInstance().createRegistry().getTimeZone(ZONE);
       if (calendar.getComponent(net.fortuna.ical4j.model.Component.VTIMEZONE) == null) {
@@ -804,6 +850,33 @@ public class NormalisingServerMirrorTest {
       // is stable at any moment, which is the whole point of it.
       anchor(event, net.fortuna.ical4j.model.Property.DTSTART, zone, second);
       anchor(event, net.fortuna.ical4j.model.Property.DTEND, zone, second);
+    }
+
+    /**
+     * Attaches the calendar's owner to a component, the way a server does with
+     * an event that lands in somebody's calendar: named from its own directory,
+     * with a pointer into it, and with no answer on it yet.
+     *
+     * <p>
+     * Re-attached on every store, deliberately. That is what makes this the
+     * live defect rather than a one-off: a repair strips the line and the very
+     * next write puts it straight back, so a pass that calls it a rewrite can
+     * never converge however many times it repairs.
+     *
+     * @param event the component being stored
+     */
+    private void attachOwner(net.fortuna.ical4j.model.component.VEvent event) {
+      for (Object existing : event.getProperties(net.fortuna.ical4j.model.Property.ATTENDEE)) {
+        if (((net.fortuna.ical4j.model.Property) existing).getValue().toLowerCase(java.util.Locale.ROOT)
+                                                          .endsWith(OWNER.toLowerCase(java.util.Locale.ROOT))) {
+          return;
+        }
+      }
+      net.fortuna.ical4j.model.ParameterList parameters = new net.fortuna.ical4j.model.ParameterList();
+      parameters.add(new net.fortuna.ical4j.model.parameter.Cn("FRANCOIS"));
+      parameters.add(new net.fortuna.ical4j.model.parameter.Dir(java.net.URI.create("bm://19d43a7c-dead-beef")));
+      event.getProperties()
+           .add(new net.fortuna.ical4j.model.property.Attendee(parameters, java.net.URI.create("mailto:" + OWNER)));
     }
 
     /**
@@ -1011,6 +1084,12 @@ public class NormalisingServerMirrorTest {
     /** Parses and writes the same meeting its own way, as BlueMind does. */
     RESERIALISE,
     /** The same, and stamps a proprietary property of its own on every store. */
-    RESERIALISE_AND_ANNOTATE
+    RESERIALISE_AND_ANNOTATE,
+    /**
+     * The same, and attaches the calendar's own owner to every copy that lands
+     * in it, naming them from its own directory — which is what BlueMind does,
+     * and what made all 20 copies of a live account altered on every sweep.
+     */
+    RESERIALISE_AND_ATTACH_OWNER
   }
 }
