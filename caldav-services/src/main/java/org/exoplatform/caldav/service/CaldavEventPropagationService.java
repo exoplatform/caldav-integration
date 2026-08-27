@@ -18,6 +18,8 @@ package org.exoplatform.caldav.service;
 
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -28,16 +30,22 @@ import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.constant.AgendaEventModificationType;
 import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.model.EventAttendee;
+import org.exoplatform.agenda.model.EventAttendeeList;
+import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.manager.IdentityManager;
 
 /**
- * Carries an edit or a cancellation made in eXo out to every calendar copy of
- * that meeting that already exists.
+ * Carries what happens to a meeting in eXo out to the calendars of the people
+ * it concerns: a creation to everyone invited, an edit or a cancellation to
+ * every copy that already exists, a deletion to every copy that has to go.
  *
  * <p>
  * The half of the feature that was never built. A copy was written when
@@ -57,13 +65,20 @@ import org.exoplatform.services.log.Log;
  * <h2>What it writes to, and what it refuses to</h2>
  *
  * <p>
- * Only where a copy already exists. The set is read from the mapping table, not
- * from agenda's attendee list, and that is the whole guard: an attendee who has
- * never had a copy of this meeting does not acquire one from somebody editing
- * it. Seeding a copy is a different decision, taken elsewhere, for its own
- * reasons — being added to a meeting is not the same event as the meeting
- * changing, and conflating them would push a year of past meetings at the first
- * person to connect an account.
+ * For an <b>edit</b> or a <b>deletion</b>: only where a copy already exists. The
+ * set is read from the mapping table, not from agenda's attendee list, and that
+ * is the whole guard: an attendee who has never had a copy of this meeting does
+ * not acquire one from somebody editing it. Conflating the two would push a year
+ * of past meetings at the first person to connect an account.
+ *
+ * <p>
+ * For a <b>creation</b> the set is agenda's attendee list, because handing out a
+ * copy is precisely what a creation means — and it is bounded by construction:
+ * one meeting, the people invited to it, once. What each of them gets is still
+ * not decided here: {@link #propagateCreation} asks
+ * {@link CaldavPendingInvitationService}, which already owns that question for
+ * the background seeding pass, so the answer does not depend on which path
+ * arrived at it.
  *
  * <p>
  * A mapping row with no href is not a copy. It is the tombstone a removal
@@ -133,6 +148,182 @@ public class CaldavEventPropagationService {
 
   @Autowired
   private AgendaEventService                                   agendaEventService;
+
+  @Autowired
+  private AgendaEventAttendeeService                           agendaEventAttendeeService;
+
+  @Autowired
+  private IdentityManager                                      identityManager;
+
+  @Autowired
+  private CaldavPendingInvitationService                       caldavPendingInvitationService;
+
+  /**
+   * Copies a meeting that has just been created into the calendar of everybody
+   * invited to it.
+   *
+   * <p>
+   * The asymmetry with {@link #propagateUpdate} is the whole point of having a
+   * second method rather than one. An edit writes only where a copy already
+   * exists — the set is read from the mapping table, so that editing a meeting
+   * never hands a copy to somebody who has never had one. A creation is the one
+   * moment where handing out a copy <i>is</i> the instruction, so the set is
+   * read from agenda's attendee list instead, and it is bounded by construction:
+   * one meeting, the people invited to it, once.
+   *
+   * <p>
+   * The decision about each of them is not taken here. It belongs to
+   * {@link CaldavPendingInvitationService}, which already owns the question
+   * "does this user get a copy of this meeting" for the background seeding pass
+   * — the account has to be connected, copies have to be enabled on it, the
+   * meeting has to be CONFIRMED rather than a date poll, an event of the user's
+   * own calendars belongs to their own collections, and a meeting that already
+   * has a copy is left to the machinery that owns it. Asking the same service
+   * here is what keeps the answer the same whichever path arrives at it, and it
+   * is the guard that makes a second trigger on the same creation write nothing.
+   *
+   * <p>
+   * Only the attendees that are <b>users</b> are considered. A space invited to
+   * a meeting is one attendee row standing for its members, and expanding it
+   * here would turn one creation into as many settings reads and writes as the
+   * space has members — for people this add-on does not even name on the copy it
+   * writes. They are reached by the background seeding pass, which resolves
+   * space membership through agenda's own query and costs one pass per user
+   * rather than one fan-out per event.
+   *
+   * <h2>The author's own copy is not written here, and that is the double push</h2>
+   *
+   * <p>
+   * The person who created the meeting is skipped, because their <b>browser
+   * already pushes their own copy on save</b> — agenda's connector panel calls
+   * {@code pushEvent} the moment the event is created, for the current user and
+   * only for them ({@code AgendaConnector.vue}). That was the one path that
+   * worked before this method existed, and it is why the defect looked like a
+   * feature that worked: whoever created an event saw a copy appear, and every
+   * other attendee got nothing.
+   *
+   * <p>
+   * Writing it here as well is not a harmless duplicate. Measured on a rig
+   * (2026-08-27): both writers mint the same stable iCalendar UID, both PUT the
+   * same object, and the second one to record its mapping row dies on
+   * {@code UQ_CALDAV_OBJECT_SYNC_UID} — a constraint violation logged as an
+   * ERROR with a stack trace, on the ordinary path, on every creation. The
+   * check that a copy already exists cannot prevent it: both writers read "no
+   * copy" before either had written one.
+   *
+   * <p>
+   * What this costs, said out loud: an event created <b>without</b> a browser —
+   * through the REST API or an MCP tool — leaves its author's own copy to the
+   * background seeding pass, which writes it on the next sweep of that account.
+   * That is exactly what happened to them before this method existed, so it is
+   * a gap this does not close rather than one it opens; closing it means moving
+   * the author's copy off the browser and onto the server, which is a change to
+   * how agenda's connector panel saves, not to this listener.
+   *
+   * @param eventId the agenda event that was just created
+   * @param authorIdentityId whoever created it, as the broadcast names them;
+   *          skipped, and 0 or less means the broadcast named nobody and
+   *          everybody invited is written to
+   * @return how many copies were written
+   */
+  public int propagateCreation(long eventId, long authorIdentityId) {
+    if (eventId <= 0) {
+      return 0;
+    }
+    Set<Long> invited = invitedUsers(eventId);
+    invited.remove(authorIdentityId);
+    if (invited.isEmpty()) {
+      LOG.debug("Event {} was created with nobody this add-on has to copy it to; nothing is written", eventId);
+      return 0;
+    }
+    int written = 0;
+    for (Long userIdentityId : invited) {
+      if (seedOne(userIdentityId, eventId)) {
+        written++;
+      }
+    }
+    LOG.info("Event {} was created; a copy was written for {} of the {} invited user(s) its author does not cover",
+             eventId,
+             written,
+             invited.size());
+    return written;
+  }
+
+  /**
+   * Everybody invited to a meeting who is a user, once each.
+   *
+   * <p>
+   * Read from agenda at the moment this runs rather than from the broadcast:
+   * agenda saves the attendees before it broadcasts the creation
+   * ({@code AgendaEventServiceImpl.createEvent} saves them, then broadcasts),
+   * so the list is complete by the time this is asked — and asking agenda
+   * rather than trusting a payload keeps that true if the order ever changes.
+   *
+   * @param eventId the agenda event
+   * @return the identities of the invited users, in the order agenda lists them
+   */
+  private Set<Long> invitedUsers(long eventId) {
+    Set<Long> invited = new LinkedHashSet<>();
+    EventAttendeeList attendeeList;
+    try {
+      attendeeList = agendaEventAttendeeService.getEventAttendees(eventId);
+    } catch (Exception | LinkageError e) {
+      LOG.warn("The attendees of the new event {} could not be listed; no copy is written for it", eventId, e);
+      return invited;
+    }
+    List<EventAttendee> attendees = attendeeList == null ? null : attendeeList.getEventAttendees();
+    if (attendees == null) {
+      return invited;
+    }
+    for (EventAttendee attendee : attendees) {
+      long identityId = attendee.getIdentityId();
+      if (identityId > 0 && isUser(identityId)) {
+        invited.add(identityId);
+      }
+    }
+    return invited;
+  }
+
+  /**
+   * Whether an attendee identity is a person rather than a space.
+   *
+   * @param identityId the social identity an attendee row names
+   * @return true when it is a user identity
+   */
+  private boolean isUser(long identityId) {
+    try {
+      Identity identity = identityManager.getIdentity(String.valueOf(identityId));
+      return identity != null && identity.isUser();
+    } catch (Exception | LinkageError e) {
+      LOG.debug("Identity {} could not be read; it is not offered a copy of the new meeting", identityId, e);
+      return false;
+    }
+  }
+
+  /**
+   * Writes one invited user's copy, absorbing whatever that one account does to
+   * it.
+   *
+   * <p>
+   * Contained here for the same reason {@link #rewriteOne} is: an account being
+   * down, full or mid-password-change is an ordinary Tuesday, and it is not a
+   * reason the other attendees never see the meeting.
+   *
+   * @param userIdentityId the invited user
+   * @param eventId the agenda event just created
+   * @return true when a copy was written
+   */
+  private boolean seedOne(long userIdentityId, long eventId) {
+    try {
+      return caldavPendingInvitationService.seedMeeting(userIdentityId, eventId);
+    } catch (Exception | LinkageError e) {
+      LOG.warn("The new event {} could not be copied into the calendar of user {}; the seeding pass will retry",
+               eventId,
+               userIdentityId,
+               e);
+      return false;
+    }
+  }
 
   /**
    * Rewrites every existing copy of a meeting that has just been edited.
