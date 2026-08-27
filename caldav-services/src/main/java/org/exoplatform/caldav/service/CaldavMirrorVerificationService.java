@@ -75,6 +75,14 @@ import org.exoplatform.services.log.Log;
  * meeting while the user accepted it on their phone, both differ at once, and
  * a repair-first pass would overwrite the acceptance before anything read it.
  *
+ * <b>What "what eXo wrote" means.</b> The baseline it compares against is the
+ * copy as the <i>server stored</i> it, read back once at push time — not the
+ * bytes eXo sent. A server is free to re-serialise what it is given and
+ * BlueMind does, so a baseline taken from the sent bytes made every copy on
+ * such a server look tampered with, on every pass, until it was abandoned. See
+ * {@code CaldavPushService.storedBaseline}: this pass only works because the
+ * push records the right thing.
+ *
  * <p>
  * <b>It gives up.</b> An object that keeps disappearing — a server refusing
  * writes it pretends to accept, a rule on the account deleting what eXo sends
@@ -319,8 +327,7 @@ public class CaldavMirrorVerificationService {
                                         object.getRemoteHref(),
                                         settings.getUsername(),
                                         settings.getPassword());
-    } catch (RuntimeException | LinkageError e) {
-      // Unreadable is not the same as rewritten, and a re-push on this path
+    } catch (RuntimeException | LinkageError e) {      // Unreadable is not the same as rewritten, and a re-push on this path
       // would overwrite whatever is there on the strength of a network error.
       //
       // LinkageError belongs here for the same reason it belongs on the
@@ -339,9 +346,43 @@ public class CaldavMirrorVerificationService {
     if (StringUtils.equals(hashOf(remote.calendarData()), object.getPushedHash())) {
       // An ETag moves for reasons that are not a rewrite — a server touching
       // its own metadata, a change of storage format — so the bytes decide.
+      // The version it moved to is recorded all the same (EXO-89716): left
+      // behind, every later pass would fetch this object again to reach this
+      // same conclusion, and the next conditional write would carry a version
+      // the server has already left behind and be refused.
+      adoptVersion(object, StringUtils.defaultIfBlank(remote.etag(), etag));
       return new Assessment(Verdict.UNTOUCHED, null);
     }
     return new Assessment(Verdict.ALTERED, remote);
+  }
+
+  /**
+   * Records the version a server now publishes for a copy whose content is
+   * exactly the one eXo wrote.
+   *
+   * <p>
+   * The comparison above exists because an ETag moves for reasons that are not
+   * a rewrite. Having paid a fetch to establish that this is one of them, the
+   * pass has learnt the object's current version and there is no reason to
+   * keep the superseded one: kept, the listing disagrees with the row on every
+   * later pass and every later pass fetches the object again to reach the same
+   * conclusion — and, worse, the next ordinary update carries that superseded
+   * version as its {@code If-Match} and is refused, which is an eXo-side edit
+   * silently not reaching the copy.
+   *
+   * <p>
+   * Only ever on bytes that matched. This is not "trust the server's version",
+   * it is "the bytes are ours, so this version names our copy".
+   *
+   * @param object the mapping row whose content was just confirmed
+   * @param currentEtag the version the server publishes now, may be blank
+   */
+  private void adoptVersion(ObjectSync object, String currentEtag) {
+    if (StringUtils.isBlank(currentEtag) || StringUtils.equals(normalise(currentEtag), normalise(object.getEtag()))) {
+      return;
+    }
+    object.setEtag(currentEtag);
+    caldavSyncStorage.saveObject(object);
   }
 
   /**
