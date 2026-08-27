@@ -92,6 +92,14 @@ import net.fortuna.ical4j.model.component.VTimeZone;
  * statement about the record rather than about the meeting.
  *
  * <p>
+ * <b>A document's own structural properties are ignored wherever they sit.</b>
+ * {@code VERSION}, {@code PRODID} and {@code CALSCALE} describe the document,
+ * not the meeting, and this comparison never looked at them at calendar level.
+ * BlueMind writes {@code VERSION:2.0} inside the VEVENT, which is not
+ * conformant and is still not a disagreement — so they are ignored by name
+ * rather than by position. See {@link #STRUCTURAL_PROPERTIES}.
+ *
+ * <p>
  * <b>One exemption inside the attendee set, and it is narrow on purpose.</b> A
  * server may attach the calendar's own owner to an event that lands in their
  * calendar — BlueMind writes
@@ -121,6 +129,33 @@ import net.fortuna.ical4j.model.component.VTimeZone;
  */
 @Component
 public class IcsEquivalence {
+
+  /**
+   * The structural properties of an iCalendar <i>document</i>, which are never
+   * compared — at any level, wherever a server chooses to put them.
+   *
+   * <p>
+   * These three are calendar-level by the RFC and {@link IcsWriter} emits them
+   * there. The comparison already ignores them there, for the reason the scope
+   * paragraph gives: a repair replaces one component and leaves the enclosing
+   * VCALENDAR alone, so a difference on them could never be repaired away.
+   *
+   * <p>
+   * BlueMind writes {@code VERSION:2.0} <b>inside the VEVENT</b>. That is not
+   * conformant, and it is also not a disagreement: the property says "this
+   * document is iCalendar 2.0" wherever it sits, eXo's own render says exactly
+   * the same thing one level up, and neither statement is about the meeting.
+   * Ignoring them by name rather than by position says that plainly, and keeps
+   * the operator's {@code ignoredProperties} lever for what it was built for —
+   * proprietary hints nobody could have anticipated.
+   *
+   * <p>
+   * Nothing can hide here. {@code VERSION} is a fixed token, {@code CALSCALE}
+   * names the calendar system, and {@code PRODID} names the software that wrote
+   * the document; none of the three can express a fact about a meeting, so no
+   * user edit can be spelled in one.
+   */
+  private static final Set<String>         STRUCTURAL_PROPERTIES    = Set.of("VERSION", "PRODID", "CALSCALE");
 
   /**
    * Properties of the compared component that are read but never compared,
@@ -522,7 +557,7 @@ public class IcsEquivalence {
                                          Set<String> ignored,
                                          Set<String> ownerAddresses) {
     String name = property.getName().toUpperCase(Locale.ROOT);
-    if (ignored.contains(name)) {
+    if (ignored.contains(name) || STRUCTURAL_PROPERTIES.contains(name)) {
       return List.of();
     }
     String value = property.getValue();
