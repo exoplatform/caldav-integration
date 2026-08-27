@@ -524,6 +524,62 @@ public class IcsEquivalenceTest {
     assertDifferent(EXO.replace("SUMMARY:Sprint review", "SUMMARY:Sprint retro"));
   }
 
+  // ---------------------------------- the document's own structural properties
+
+  @Test
+  public void aCalendarLevelVersionIsNeverAComponentStatement() {
+    // The scoping itself, pinned. VERSION is a calendar-level property and the
+    // comparison is scoped to one component, so it must not reach the statement
+    // set from any position a server may write it in — before the components,
+    // after them, after a VTIMEZONE, or not at all. These four passing is what
+    // says the leak that reached production was not the scope going wrong.
+    assertEquivalent(EXO.replace("VERSION:2.0\r\n", "").replace("END:VCALENDAR", "VERSION:2.0\r\nEND:VCALENDAR"));
+    assertEquivalent(EXO.replace("VERSION:2.0\r\n", ""));
+    assertEquivalent(EXO.replace("BEGIN:VEVENT\r\n", PARIS + "BEGIN:VEVENT\r\n")
+                        .replace("VERSION:2.0\r\n", "")
+                        .replace("END:VCALENDAR", "VERSION:2.0\r\nEND:VCALENDAR"));
+  }
+
+  @Test
+  public void aVersionTheServerPutInsideTheComponentIsNotAnEdit() {
+    // What BlueMind actually does, and what the first deploy of the semantic
+    // comparison reported on every copy. It is not conformant — VERSION cannot
+    // legally sit in a VEVENT — and it is still not a disagreement: it says the
+    // document is iCalendar 2.0, eXo's render says exactly that one level up,
+    // and neither is a statement about the meeting.
+    assertEquivalent(EXO.replace("BEGIN:VEVENT\r\n", "BEGIN:VEVENT\r\nVERSION:2.0\r\n"));
+  }
+
+  @Test
+  public void aProdidOrCalscaleInsideTheComponentIsNotAnEditEither() {
+    // The same rule, and the reason it is stated by name rather than by
+    // position: a server that misplaces one of the three can misplace the
+    // others, and none of the three can carry a fact about a meeting.
+    assertEquivalent(EXO.replace("BEGIN:VEVENT\r\n",
+                                 "BEGIN:VEVENT\r\nPRODID:-//BlueMind//EN\r\nCALSCALE:GREGORIAN\r\n"));
+  }
+
+  @Test
+  public void theOutlookInteropHintsAreStillReportedSoSomebodyCanDecideAboutThem() {
+    // The rest of what the deploy found, kept strict on purpose. These two are
+    // proprietary hints nobody could have anticipated, which is exactly what
+    // the operator's ignoredProperties lever is for — a decision somebody makes
+    // after reading a log line, not one this class makes for them.
+    IcsEquivalence.Judgement judgement =
+        judge.compare(EXO.replace("BEGIN:VEVENT\r\n", "BEGIN:VEVENT\r\nVERSION:2.0\r\n")
+                         .replace("STATUS:CONFIRMED",
+                                  "X-MICROSOFT-CDO-BUSYSTATUS:BUSY\r\nX-MICROSOFT-DISALLOW-COUNTER:false\r\n"
+                                      + "STATUS:CONFIRMED"),
+                      EXO,
+                      OWNER);
+
+    assertEquals(IcsEquivalence.Verdict.DIFFERENT, judgement.verdict());
+    // And the line names them and nothing else — the VERSION that used to lead
+    // it is gone, so whoever reads the log sees only what is still undecided.
+    assertEquals("UNRECOGNISED:X-MICROSOFT-CDO-BUSYSTATUS=BUSY (server 1, eXo 0); "
+        + "UNRECOGNISED:X-MICROSOFT-DISALLOW-COUNTER=false (server 1, eXo 0)", judgement.detail());
+  }
+
   // ------------------------------------------- scope: what a repair rewrites
 
   @Test

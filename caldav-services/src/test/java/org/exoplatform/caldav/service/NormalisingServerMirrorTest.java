@@ -817,6 +817,12 @@ public class NormalisingServerMirrorTest {
       event.getProperties().remove(event.getProperty(net.fortuna.ical4j.model.Property.TRANSP));
       event.getProperties().remove(event.getProperty(net.fortuna.ical4j.model.Property.DTSTAMP));
       event.getProperties().add(new net.fortuna.ical4j.model.property.DtStamp());
+      // VERSION inside the VEVENT, which is not conformant and is what BlueMind
+      // stores. Every scenario in this rig runs against it, rather than one
+      // test doing so: it is a property of the server, not of a scenario, and a
+      // fixture that only sometimes resembles the real thing is how the first
+      // deploy got as far as it did.
+      event.getProperties().add(new net.fortuna.ical4j.model.property.Version(new net.fortuna.ical4j.model.ParameterList(), "2.0"));
       if (normalisation == Normalisation.RESERIALISE_AND_ANNOTATE) {
         event.getProperties()
              .add(new net.fortuna.ical4j.model.property.XProperty("X-FAKEMIND-SEQ", String.valueOf(++annotations)));
