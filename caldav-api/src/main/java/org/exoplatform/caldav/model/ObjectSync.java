@@ -49,9 +49,6 @@ public class ObjectSync {
   /** The server's entity tag as we last saw it; every write is conditional on it. */
   private String etag;
 
-  /** Hash of the iCalendar body eXo last pushed. */
-  private String pushedHash;
-
   /** When this object was last written or verified. */
   private Date   lastSync;
 
