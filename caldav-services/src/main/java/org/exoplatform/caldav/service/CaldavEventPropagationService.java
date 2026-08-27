@@ -325,7 +325,7 @@ public class CaldavEventPropagationService {
    */
   private boolean rewriteOne(long userIdentityId, long eventId) {
     try {
-      return caldavPushService.pushAgendaEvent(userIdentityId, eventId, null) != null;
+      return caldavPushService.pushAgendaEvent(userIdentityId, eventId) != null;
     } catch (CaldavPushException e) {
       if (CaldavPushService.CONFLICT.equals(e.getCode())) {
         // Somebody wrote that object between the read and the write — very

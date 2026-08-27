@@ -61,6 +61,9 @@ import org.exoplatform.caldav.model.IcsPerson;
  */
 public class IcsWriterPayloadContractTest {
 
+  /** The link back to the event in eXo, of the shape agenda mints. */
+  private static final String EXO_LINK = "https://exo.example.com/portal/dw/agenda?eventId=1";
+
   /** The writer under test, which needs nothing injected. */
   private final IcsWriter writer = new IcsWriter();
 
@@ -196,6 +199,32 @@ public class IcsWriterPayloadContractTest {
   }
 
   /**
+   * The copy says where the meeting lives, in URL and in the description.
+   *
+   * <p>
+   * URL is "where this event lives" (RFC 5545 &sect;3.8.4.6) — the event in
+   * eXo, never the video call, which has its own CONFERENCE property. The
+   * description repeats it beside the conference line because many clients
+   * never surface URL, and the description is what a person reads
+   * (EXO-89751).
+   */
+  @Test
+  public void theCopySaysWhereTheMeetingLives() {
+    String ics = writer.write(meeting());
+
+    String url = property(ics, "URL");
+    assertNotNull(url, "the copy must carry a way back to the event");
+    assertTrue(url.contains(EXO_LINK), "URL must be the event in eXo: " + url);
+    assertFalse(url.contains("meet.example.com"), "URL must not be the conference link: " + url);
+
+    assertNotNull(property(ics, "CONFERENCE"), "and the video call keeps its own property");
+
+    String description = property(ics, "DESCRIPTION");
+    assertNotNull(description);
+    assertTrue(description.contains(EXO_LINK), "the description must name the link too: " + description);
+  }
+
+  /**
    * One meeting carrying everything the five defects are about: a description
    * stored as markup, an accented word written as an entity, a conference
    * link, an organizer and one other attendee.
@@ -220,9 +249,11 @@ public class IcsWriterPayloadContractTest {
                                                             "The Organiser",
                                                             "Chemistry",
                                                             "https://meet.example.com/room",
+                                                            EXO_LINK,
                                                             "<p>Bring the <b>slides</b>.</p>"
                                                                 + "<p>R&eacute;union pr&eacute;par&eacute;e</p>"))
                    .conferenceUrl("https://meet.example.com/room")
+                   .eventUrl(EXO_LINK)
                    .start(Instant.parse("2026-09-08T07:00:00Z"))
                    .end(Instant.parse("2026-09-08T08:00:00Z"))
                    .timeZoneId("Europe/Paris")

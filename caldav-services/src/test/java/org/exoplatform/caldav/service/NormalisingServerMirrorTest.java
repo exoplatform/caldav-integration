@@ -322,7 +322,7 @@ public class NormalisingServerMirrorTest {
     IcsEvent invited = event();
     invited.setOrganizer(person("boss@acme.test", "The Boss"));
     invited.setAttendees(List.of(person("ann@acme.test", "Ann"), person("bob@acme.test", "Bob")));
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(invited);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(invited);
     push.writeInto(USER, mirror, invited, EVENT);
 
     server.editedByAClient(HREF,
@@ -348,7 +348,7 @@ public class NormalisingServerMirrorTest {
     IcsEvent invited = event();
     invited.setOrganizer(person("boss@acme.test", "The Boss"));
     invited.setAttendees(List.of(person("ann@acme.test", "Ann"), person("bob@acme.test", "Bob")));
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(invited);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(invited);
     push.writeInto(USER, mirror, invited, EVENT);
 
     // Inside the VEVENT, not appended to the document. Written the lazy way the
@@ -455,7 +455,7 @@ public class NormalisingServerMirrorTest {
     IcsEvent invited = event();
     invited.setOrganizer(person("boss@acme.test", "The Boss"));
     invited.setAttendees(List.of(person(OWNER, "John")));
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(invited);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(invited);
     when(agendaEventIcsMapper.addressOf(USER)).thenReturn(OWNER);
     push.writeInto(USER, mirror, invited, EVENT);
     assertEquals(0, verification.verify(USER).altered());
@@ -467,7 +467,7 @@ public class NormalisingServerMirrorTest {
     IcsPerson accepted = person(OWNER, "John");
     accepted.setResponse("ACCEPTED");
     answered.setAttendees(List.of(accepted));
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(answered);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(answered);
 
     assertTrue(push.pushAnswer(USER, EVENT, "ACCEPTED"), "the answer should have reached the copy");
     assertTrue(server.stored(HREF).contains("PARTSTAT=ACCEPTED"), server.stored(HREF));
@@ -614,7 +614,7 @@ public class NormalisingServerMirrorTest {
       throw new IllegalStateException(e);
     }
     lenient().when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
-    lenient().when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event());
+    lenient().when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event());
     lenient().when(agendaCalendarService.getCalendarById(11L)).thenReturn(null);
   }
 

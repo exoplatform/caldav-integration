@@ -48,12 +48,22 @@ describe('the browser write path is a shim', () => {
     expect(require('../../main/webapp/vue-app/caldav/js/agendaCaldavService.js').getCaldavSetting).not.toHaveBeenCalled();
   });
 
-  it('carries the eXo back-link so the copy can point home', async () => {
+  // The page used to build the eXo back-link and send it as a query
+  // parameter. It no longer does: a link only the browser supplied reached the
+  // copy on a browser push and on nothing else, so a sweep or a repair wrote
+  // the copy without it and the link was lost. The server derives it from the
+  // event now, and the page must not send one — a request that still carried
+  // one would be a second source of truth for a value that has to be identical
+  // on every path (EXO-89751).
+  it('sends no link of its own, so every path writes the same one', async () => {
     global.fetch = jest.fn(() => Promise.resolve({ok: true, status: 200, json: () => Promise.resolve({})}));
 
     await caldavConnector.pushEvent({id: 101});
 
-    expect(decodeURIComponent(global.fetch.mock.calls[0][0])).toContain('agenda?eventId=101');
+    const url = decodeURIComponent(global.fetch.mock.calls[0][0]);
+    expect(url).toContain('/caldav/rest/push/events/101');
+    expect(url).not.toContain('eventUrl');
+    expect(url).not.toContain('agenda?eventId=');
   });
 
   it('keeps the refusal code the page already knows how to render', async () => {
