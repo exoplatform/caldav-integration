@@ -450,6 +450,9 @@ public class IcsEquivalence {
    * @param serverCalendar the object it belongs to, for its zone definitions
    * @param exoEvent the component eXo renders
    * @param exoCalendar the object it belongs to, for its zone definitions
+   * @param ownerAddresses the bare addresses this account's owner may be named
+   *          by, carried down so an attendee line naming them is compared as
+   *          the owner rather than as whichever spelling each side chose
    * @return the divergences, capped, empty when the two say the same thing
    */
   private List<String> divergences(VEvent serverEvent,
@@ -549,6 +552,9 @@ public class IcsEquivalence {
    * @param calendar the object it belongs to, for zone resolution
    * @param recognised the closed set of property names this level emits
    * @param ignored the property names read but never compared at this level
+   * @param ownerAddresses the bare addresses naming the account's owner, passed
+   *          on to each property and into every VALARM, so the owner exemption
+   *          holds at every depth rather than only at the top level
    * @return the statements, by canonical line and count
    */
   private Map<String, Integer> statementsOf(net.fortuna.ical4j.model.Component component,
@@ -596,6 +602,9 @@ public class IcsEquivalence {
    * @param calendar the object it belongs to, for zone resolution
    * @param recognised the closed set of property names this level emits
    * @param ignored the property names read but never compared at this level
+   * @param ownerAddresses the bare addresses naming the account's owner: an
+   *          ATTENDEE matching one of them collapses to {@link #OWNER_ATTENDEE},
+   *          so the spelling the server chose for them cannot read as a change
    * @return the canonical statements, possibly empty
    */
   private List<String> normaliseProperty(Property property,

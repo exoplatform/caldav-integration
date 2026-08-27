@@ -350,6 +350,10 @@ public class CaldavPushService {
    * @param userIdentityId identity of the user
    * @param destination the binding the event is being written into
    * @param icsUid the event's iCalendar identifier
+   * @param localEventId the agenda event being written, searched for before the
+   *          iCalendar UID because it does not depend on a UID surviving the
+   *          move — which this codebase has lost before. May be null when the
+   *          caller does not know it.
    * @return the mapping it had elsewhere, or null when this is an ordinary
    *         first write
    */
@@ -1222,6 +1226,10 @@ public class CaldavPushService {
    * @param href where the object lives
    * @param ics the object this engine built
    * @param known the mapping row, or null on a first push
+   * @param overwrite whether a repair is driving this write, in which case the
+   *          conditional headers are dropped. The object a repair puts back is
+   *          usually already on the server under a href this connector has lost
+   *          track of, so a conditional write would be refused for ever.
    * @return the server's answer
    */
   private PutResult write(CalDavEndpoint endpoint,
