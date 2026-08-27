@@ -105,6 +105,13 @@ public class CaldavInboundServiceTest {
 
   private static final String    LOGIN    = "john";
 
+  /**
+   * The account on the CalDAV server, deliberately NOT the eXo login: the two
+   * are different identities, and a test where they share a string cannot tell
+   * which one a call was made with.
+   */
+  private static final String    DAV_ACCOUNT = "john@dav.example";
+
   private static final String    HREF     = "/dav/calendars/john/private/";
 
   /** The name this add-on registers itself under as an agenda remote provider. */
@@ -192,7 +199,12 @@ public class CaldavInboundServiceTest {
     givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
     givenAgendaCreates(501L);
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    // The endpoint is asked for THIS user, by their eXo login: the account in
+    // the URL comes from their credentials provider, and nothing else in this
+    // suite would notice if it came from somewhere else.
+    verify(calDavClient).endpoint(SERVER, LOGIN);
 
     ArgumentCaptor<Event> created = ArgumentCaptor.forClass(Event.class);
     verify(agendaEventService).createEvent(created.capture(),
@@ -219,7 +231,7 @@ public class CaldavInboundServiceTest {
     givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
     givenAgendaCreates(501L);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), eq(false), eq(USER));
   }
@@ -238,7 +250,7 @@ public class CaldavInboundServiceTest {
     givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
     givenAgendaCreates(501L);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     ArgumentCaptor<RemoteEvent> identity = ArgumentCaptor.forClass(RemoteEvent.class);
     verify(agendaEventService).createEvent(any(),
@@ -267,7 +279,7 @@ public class CaldavInboundServiceTest {
     givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
     givenAgendaCreates(501L);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     ArgumentCaptor<List<EventAttendee>> attendees = ArgumentCaptor.forClass(List.class);
     verify(agendaEventService).createEvent(any(),
@@ -292,7 +304,7 @@ public class CaldavInboundServiceTest {
     givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
     givenAgendaCreates(501L);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     ArgumentCaptor<List<EventAttendee>> attendees = ArgumentCaptor.forClass(List.class);
     verify(agendaEventService).createEvent(any(), attendees.capture(), any(), any(), any(), any(), anyBoolean(), anyLong());
@@ -312,7 +324,7 @@ public class CaldavInboundServiceTest {
     when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
     givenEventAttendees(501L, attendee(USER), attendee(909L));
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     ArgumentCaptor<List<EventAttendee>> attendees = ArgumentCaptor.forClass(List.class);
     verify(agendaEventService).updateEvent(any(), attendees.capture(), any(), any(), any(), any(), anyBoolean(), anyLong());
@@ -334,7 +346,7 @@ public class CaldavInboundServiceTest {
     when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
     givenEventAttendees(501L, attendee(909L));
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     ArgumentCaptor<List<EventAttendee>> attendees = ArgumentCaptor.forClass(List.class);
     verify(agendaEventService).updateEvent(any(), attendees.capture(), any(), any(), any(), any(), anyBoolean(), anyLong());
@@ -350,7 +362,7 @@ public class CaldavInboundServiceTest {
     givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
     givenAgendaCreates(501L);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
     verify(caldavSyncStorage).saveObject(saved.capture());
@@ -372,7 +384,7 @@ public class CaldavInboundServiceTest {
     givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
     when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
 
-    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(agendaEventService, never()).createEvent(any(),
                                                     any(),
@@ -395,7 +407,7 @@ public class CaldavInboundServiceTest {
     givenServerObjects(object("o1.ics", "etag-2", ics("uid-1@example.test", "Design review")));
     when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
 
-    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(agendaEventService, never()).createEvent(any(),
                                                     any(),
@@ -412,10 +424,10 @@ public class CaldavInboundServiceTest {
    */
   @Test
   public void aCollectionTheServerRefusesLeavesTheCalendarAsItIs() {
-    when(calDavClient.calendarQuery(any(), anyString(), any(), any(), anyString(), anyString()))
+    when(calDavClient.calendarQuery(any(), anyString(), any(), any()))
                                                                                                .thenThrow(new CalDavException("down"));
 
-    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(caldavSyncStorage, never()).saveObject(any());
   }
@@ -443,7 +455,7 @@ public class CaldavInboundServiceTest {
         """;
     givenServerObjects(object("o1.ics", "etag-1", override));
 
-    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(agendaEventService, never()).createEvent(any(),
                                                     any(),
@@ -464,7 +476,7 @@ public class CaldavInboundServiceTest {
                        object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
     givenAgendaCreates(501L);
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
   }
 
   /**
@@ -478,7 +490,7 @@ public class CaldavInboundServiceTest {
                                                                                                           .thenThrow(new IllegalStateException("no"))
                                                                                                           .thenReturn(event(502L));
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     // The refused one is not recorded, so the next run tries it again rather
     // than believing it was imported.
@@ -494,9 +506,9 @@ public class CaldavInboundServiceTest {
     elsewhere.setServerId(SERVER + 1);
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(elsewhere);
 
-    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
-    verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
+    verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any());
   }
 
   /**
@@ -506,9 +518,9 @@ public class CaldavInboundServiceTest {
   public void anAccountThatIsGoneReadsNothing() {
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
 
-    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
-    verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
+    verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any());
   }
 
   /**
@@ -516,8 +528,8 @@ public class CaldavInboundServiceTest {
    */
   @Test
   public void nothingToImportIntoIsNotAnError() {
-    assertEquals(0, service.importInto(USER, null, calendar(), from(), to()));
-    assertEquals(0, service.importInto(USER, pair(), null, from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, null, calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), null, from(), to()));
   }
 
   @Test
@@ -526,11 +538,11 @@ public class CaldavInboundServiceTest {
     // response, and it timed out against a real calendar — losing the whole
     // collection for it. Sliced, each round trip is small.
     ReflectionTestUtils.setField(service, "sliceDays", 10L);
-    when(calDavClient.calendarQuery(any(), anyString(), any(), any(), anyString(), anyString())).thenReturn(List.of());
+    when(calDavClient.calendarQuery(any(), anyString(), any(), any())).thenReturn(List.of());
 
-    service.importInto(USER, pair(), calendar(), from(), from().plus(Duration.ofDays(30)));
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), from().plus(Duration.ofDays(30)));
 
-    verify(calDavClient, times(3)).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
+    verify(calDavClient, times(3)).calendarQuery(any(), anyString(), any(), any());
   }
 
   @Test
@@ -538,7 +550,7 @@ public class CaldavInboundServiceTest {
     // The failure that started this: one slow stretch of a calendar must not
     // lose the days on either side of it.
     ReflectionTestUtils.setField(service, "sliceDays", 10L);
-    when(calDavClient.calendarQuery(any(), anyString(), any(), any(), anyString(), anyString()))
+    when(calDavClient.calendarQuery(any(), anyString(), any(), any()))
                                                                                                .thenThrow(new CalDavException("timed out"))
                                                                                                .thenReturn(List.of(object("o1.ics",
                                                                                                                           "etag-1",
@@ -547,7 +559,7 @@ public class CaldavInboundServiceTest {
                                                                                                .thenReturn(List.of());
     givenAgendaCreates(501L);
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), from().plus(Duration.ofDays(30))));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), from().plus(Duration.ofDays(30))));
   }
 
   @Test
@@ -556,7 +568,7 @@ public class CaldavInboundServiceTest {
     when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
     when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     ArgumentCaptor<Event> saved = ArgumentCaptor.forClass(Event.class);
     verify(agendaEventService).updateEvent(saved.capture(), any(), any(), any(), any(), any(), eq(false), eq(USER));
@@ -573,7 +585,7 @@ public class CaldavInboundServiceTest {
     when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
     when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T12:00:00Z"));
 
-    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(agendaEventService, never()).updateEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong());
   }
@@ -586,7 +598,7 @@ public class CaldavInboundServiceTest {
     when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
     when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T12:00:00Z"));
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     verify(caldavSyncStorage, never()).saveObject(any());
   }
@@ -600,7 +612,7 @@ public class CaldavInboundServiceTest {
     when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
     when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
   }
 
   @Test
@@ -611,7 +623,7 @@ public class CaldavInboundServiceTest {
     when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
     when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T12:00:00Z"));
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
   }
 
   @Test
@@ -622,7 +634,7 @@ public class CaldavInboundServiceTest {
     when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
     when(agendaEventService.getEventById(501L)).thenReturn(null);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     verify(caldavSyncStorage).deleteObject(1L);
   }
@@ -671,7 +683,7 @@ public class CaldavInboundServiceTest {
     occurrence.setId(777L);
     when(agendaEventService.saveEventExceptionalOccurrence(eq(501L), any())).thenReturn(occurrence);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     ArgumentCaptor<Event> amended = ArgumentCaptor.forClass(Event.class);
     verify(agendaEventService, atLeastOnce()).updateEvent(amended.capture(),
@@ -697,7 +709,7 @@ public class CaldavInboundServiceTest {
     occurrence.setId(777L);
     when(agendaEventService.saveEventExceptionalOccurrence(eq(501L), any())).thenReturn(occurrence);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     ArgumentCaptor<Event> amended = ArgumentCaptor.forClass(Event.class);
     verify(agendaEventService, atLeastOnce()).updateEvent(amended.capture(),
@@ -726,7 +738,7 @@ public class CaldavInboundServiceTest {
     cancelled.setId(888L);
     when(agendaEventService.saveEventExceptionalOccurrence(eq(501L), any())).thenReturn(moved).thenReturn(cancelled);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
     ArgumentCaptor<Event> saved = ArgumentCaptor.forClass(Event.class);
@@ -752,7 +764,7 @@ public class CaldavInboundServiceTest {
     givenAgendaCreates(501L);
     when(agendaEventService.saveEventExceptionalOccurrence(eq(501L), any())).thenThrow(new IllegalStateException("no"));
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(caldavSyncStorage).saveObject(any());
   }
@@ -762,7 +774,7 @@ public class CaldavInboundServiceTest {
     givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Plain")));
     givenAgendaCreates(501L);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     verify(agendaEventService, never()).saveEventExceptionalOccurrence(anyLong(), any());
   }
@@ -771,7 +783,7 @@ public class CaldavInboundServiceTest {
    * @param objects what the server answers
    */
   private void givenServerObjects(CalendarObject... objects) {
-    when(calDavClient.calendarQuery(any(), anyString(), any(), any(), anyString(), anyString()))
+    when(calDavClient.calendarQuery(any(), anyString(), any(), any()))
                                                                                                .thenReturn(List.of(objects));
   }
 
@@ -902,12 +914,12 @@ public class CaldavInboundServiceTest {
     // with nothing saying so.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+    when(calDavClient.listResourceEtags(any(), eq(HREF)))
         .thenReturn(Map.of(HREF + "kept.ics", "etag-1"));
     givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
                   objectSync(102L, 502L, HREF + "vanished.ics"));
 
-    int removed = service.removeVanishedObjects(USER, pair()).removed();
+    int removed = service.removeVanishedObjects(USER, LOGIN, pair()).removed();
 
     assertEquals(1, removed);
     verify(agendaEventService).deleteEventById(502L, USER);
@@ -923,10 +935,10 @@ public class CaldavInboundServiceTest {
     // network dropped, and eXo cannot put the events back.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+    when(calDavClient.listResourceEtags(any(), eq(HREF)))
         .thenThrow(new CalDavException("unreachable"));
 
-    int removed = service.removeVanishedObjects(USER, pair()).removed();
+    int removed = service.removeVanishedObjects(USER, LOGIN, pair()).removed();
 
     assertEquals(0, removed);
     verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
@@ -940,10 +952,10 @@ public class CaldavInboundServiceTest {
     // never heard of it would destroy work the user did here.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    when(calDavClient.listResourceEtags(any(), eq(HREF))).thenReturn(Map.of());
     givenMappings(objectSync(103L, null, HREF + "orphan.ics"));
 
-    int removed = service.removeVanishedObjects(USER, pair()).removed();
+    int removed = service.removeVanishedObjects(USER, LOGIN, pair()).removed();
 
     assertEquals(0, removed);
     verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
@@ -958,12 +970,12 @@ public class CaldavInboundServiceTest {
     // pass just as happily against a method that removed everything it walked.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+    when(calDavClient.listResourceEtags(any(), eq(HREF)))
         .thenReturn(Map.of(HREF + "kept.ics", "etag-1", HREF + "vanished.ics", "etag-2"));
     givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
                   objectSync(102L, 502L, HREF + "vanished.ics"));
 
-    int removed = service.removeVanishedObjects(USER, pair()).removed();
+    int removed = service.removeVanishedObjects(USER, LOGIN, pair()).removed();
 
     assertEquals(0, removed);
     verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
@@ -979,10 +991,10 @@ public class CaldavInboundServiceTest {
     // the event in the cache instead.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    when(calDavClient.listResourceEtags(any(), eq(HREF))).thenReturn(Map.of());
     givenMappings(objectSync(102L, 502L, HREF + "vanished.ics"));
 
-    service.removeVanishedObjects(USER, pair());
+    service.removeVanishedObjects(USER, LOGIN, pair());
 
     InOrder inOrder = inOrder(agendaEventService);
     inOrder.verify(agendaEventService).getEventById(502L);
@@ -1001,7 +1013,7 @@ public class CaldavInboundServiceTest {
     // really cycled, which only unwinding the whole stack does.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    when(calDavClient.listResourceEtags(any(), eq(HREF))).thenReturn(Map.of());
     givenMappings(objectSync(102L, 502L, HREF + "vanished.ics"));
 
     LifecycleProbe probe = new LifecycleProbe();
@@ -1013,7 +1025,7 @@ public class CaldavInboundServiceTest {
       RequestLifeCycle.begin(container); // the level that holds the context
       RequestLifeCycle.begin(container); // the nested level a request adds
       try {
-        int removed = service.removeVanishedObjects(USER, pair()).removed();
+        int removed = service.removeVanishedObjects(USER, LOGIN, pair()).removed();
 
         assertEquals(1, removed);
         // Three times — to leave the pass's context, to drop what the
@@ -1079,18 +1091,18 @@ public class CaldavInboundServiceTest {
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     CalendarSync bound = pair();
     bound.setSyncToken("token-1");
-    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1")))
         .thenReturn(new SyncCollectionResult(true, "token-2", List.of(), List.of(HREF + "vanished.ics")));
     givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
                   objectSync(102L, 502L, HREF + "vanished.ics"));
 
-    int removed = service.removeVanishedObjects(USER, bound).removed();
+    int removed = service.removeVanishedObjects(USER, LOGIN, bound).removed();
 
     assertEquals(1, removed);
     verify(agendaEventService).deleteEventById(502L, USER);
     verify(agendaEventService, never()).deleteEventById(eq(501L), anyLong());
     // and the expensive question was never asked
-    verify(calDavClient, never()).listResourceEtags(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).listResourceEtags(any(), anyString());
     assertEquals("token-2", bound.getSyncToken(), "the fresh token must be kept, or the next pass pays again");
   }
 
@@ -1103,18 +1115,18 @@ public class CaldavInboundServiceTest {
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     CalendarSync bound = pair();
     bound.setSyncToken("stale");
-    when(calDavClient.syncCollection(any(), eq(HREF), eq("stale"), eq(LOGIN), anyString()))
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("stale")))
         .thenReturn(SyncCollectionResult.invalidToken());
     // the fallback now reads the token cheaply and lists separately, so a
     // collection too big to enumerate can still escape the slow path
-    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+    when(calDavClient.readCalendar(any(), eq(HREF)))
         .thenReturn(new CalendarCollection(HREF, "Cal", "ctag-1", "token-9", null, true, Set.of("VEVENT")));
-    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+    when(calDavClient.listResourceEtags(any(), eq(HREF)))
         .thenReturn(Map.of(HREF + "kept.ics", "e1"));
     givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
                   objectSync(102L, 502L, HREF + "gone.ics"));
 
-    int removed = service.removeVanishedObjects(USER, bound).removed();
+    int removed = service.removeVanishedObjects(USER, LOGIN, bound).removed();
 
     assertEquals(1, removed, "only the mapping absent from the full listing");
     verify(agendaEventService).deleteEventById(502L, USER);
@@ -1130,10 +1142,10 @@ public class CaldavInboundServiceTest {
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     CalendarSync bound = pair();
     bound.setSyncToken("token-1");
-    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1")))
         .thenThrow(new CalDavException("unreachable"));
 
-    int removed = service.removeVanishedObjects(USER, bound).removed();
+    int removed = service.removeVanishedObjects(USER, LOGIN, bound).removed();
 
     assertEquals(0, removed);
     verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
@@ -1150,12 +1162,12 @@ public class CaldavInboundServiceTest {
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     CalendarSync bound = pair();
     bound.setSyncToken("token-1");
-    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1")))
         .thenReturn(new SyncCollectionResult(true, "token-2", List.of(), List.of(HREF + "vanished.ics")));
     givenMappings(objectSync(102L, 502L, HREF + "vanished.ics"));
     doThrow(new IllegalStateException("agenda refused")).when(agendaEventService).deleteEventById(502L, USER);
 
-    CaldavInboundService.VanishedCleanup cleanup = service.removeVanishedObjects(USER, bound);
+    CaldavInboundService.VanishedCleanup cleanup = service.removeVanishedObjects(USER, LOGIN, bound);
 
     assertEquals(0, cleanup.removed());
     assertEquals(1, cleanup.failed());
@@ -1173,12 +1185,12 @@ public class CaldavInboundServiceTest {
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     CalendarSync bound = pair();
     bound.setSyncToken("token-1");
-    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1")))
         .thenReturn(new SyncCollectionResult(true,
                                              "token-2",
                                              List.of(new CalendarObject(HREF + "changed.ics", "e9", null)),
                                              List.of()));
-    when(calDavClient.multiget(any(), anyString(), eq(List.of(HREF + "changed.ics")), eq(LOGIN), anyString()))
+    when(calDavClient.multiget(any(), anyString(), eq(List.of(HREF + "changed.ics"))))
         .thenReturn(List.of(new CalendarObject(HREF + "changed.ics", "e9", SERIES)));
     Event imported = new Event();
     imported.setId(4242L);
@@ -1186,10 +1198,10 @@ public class CaldavInboundServiceTest {
         .thenReturn(imported);
     when(caldavSyncStorage.getObjects(eq(PAIR), anyInt(), anyInt())).thenReturn(new PageImpl<>(List.of()));
 
-    service.syncContents(USER, bound, calendar(), from(), to(), false);
+    service.syncContents(USER, LOGIN, bound, calendar(), from(), to(), false);
 
-    verify(calDavClient).multiget(any(), anyString(), eq(List.of(HREF + "changed.ics")), eq(LOGIN), anyString());
-    verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
+    verify(calDavClient).multiget(any(), anyString(), eq(List.of(HREF + "changed.ics")));
+    verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any());
     assertEquals("token-2", bound.getSyncToken());
   }
 
@@ -1202,17 +1214,17 @@ public class CaldavInboundServiceTest {
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     CalendarSync bound = pair();
     bound.setSyncToken("token-1");
-    when(calDavClient.calendarQuery(any(), anyString(), any(), any(), eq(LOGIN), anyString())).thenReturn(List.of());
-    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    when(calDavClient.calendarQuery(any(), anyString(), any(), any())).thenReturn(List.of());
+    when(calDavClient.listResourceEtags(any(), eq(HREF))).thenReturn(Map.of());
     when(caldavSyncStorage.getObjects(eq(PAIR), anyInt(), anyInt())).thenReturn(new PageImpl<>(List.of()));
 
-    service.syncContents(USER, bound, calendar(), from(), to(), true);
+    service.syncContents(USER, LOGIN, bound, calendar(), from(), to(), true);
 
     // The window is re-read — that is the point. Reconciliation may still use
     // the token afterwards, which is correct and costs one request; what must
     // not happen is the window being skipped because a token exists.
-    verify(calDavClient, atLeastOnce()).calendarQuery(any(), anyString(), any(), any(), eq(LOGIN), anyString());
-    verify(calDavClient, never()).multiget(any(), anyString(), anyList(), anyString(), anyString());
+    verify(calDavClient, atLeastOnce()).calendarQuery(any(), anyString(), any(), any());
+    verify(calDavClient, never()).multiget(any(), anyString(), anyList());
   }
 
   @Test
@@ -1223,15 +1235,15 @@ public class CaldavInboundServiceTest {
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     CalendarSync bound = pair();
     bound.setSyncToken("token-1");
-    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1"), eq(LOGIN), anyString()))
+    when(calDavClient.syncCollection(any(), eq(HREF), eq("token-1")))
         .thenReturn(new SyncCollectionResult(true,
                                              "token-2",
                                              List.of(new CalendarObject(HREF + "changed.ics", "e9", null)),
                                              List.of()));
-    when(calDavClient.multiget(any(), anyString(), anyList(), eq(LOGIN), anyString()))
+    when(calDavClient.multiget(any(), anyString(), anyList()))
         .thenThrow(new CalDavException("unreachable"));
 
-    service.syncContents(USER, bound, calendar(), from(), to(), false);
+    service.syncContents(USER, LOGIN, bound, calendar(), from(), to(), false);
 
     assertEquals("token-1", bound.getSyncToken(), "the token must not move over changes that were never read");
   }
@@ -1248,13 +1260,13 @@ public class CaldavInboundServiceTest {
     // still ask the cheap question.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+    when(calDavClient.readCalendar(any(), eq(HREF)))
         .thenReturn(new CalendarCollection(HREF, "Big", "ctag-1", "token-7", null, true, Set.of("VEVENT")));
-    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString()))
+    when(calDavClient.listResourceEtags(any(), eq(HREF)))
         .thenThrow(new CalDavException("request timed out"));
     CalendarSync bound = pair();
 
-    CaldavInboundService.VanishedCleanup cleanup = service.removeVanishedObjects(USER, bound);
+    CaldavInboundService.VanishedCleanup cleanup = service.removeVanishedObjects(USER, LOGIN, bound);
 
     assertEquals(0, cleanup.removed(), "a listing that failed must remove nothing");
     verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
@@ -1271,13 +1283,13 @@ public class CaldavInboundServiceTest {
     // enough to make every synchronisation feel broken.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+    when(calDavClient.readCalendar(any(), eq(HREF)))
         .thenThrow(new CalDavException("request timed out"));
 
-    CaldavInboundService.VanishedCleanup cleanup = service.removeVanishedObjects(USER, pair());
+    CaldavInboundService.VanishedCleanup cleanup = service.removeVanishedObjects(USER, LOGIN, pair());
 
     assertEquals(0, cleanup.removed());
-    verify(calDavClient, never()).listResourceEtags(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).listResourceEtags(any(), anyString());
     verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
   }
 
@@ -1290,16 +1302,16 @@ public class CaldavInboundServiceTest {
     // on every synchronisation.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+    when(calDavClient.readCalendar(any(), eq(HREF)))
         .thenThrow(new CalDavException("request timed out"));
     CalendarSync bound = pair();
 
-    service.removeVanishedObjects(USER, bound);
-    service.removeVanishedObjects(USER, bound);
-    service.removeVanishedObjects(USER, bound);
+    service.removeVanishedObjects(USER, LOGIN, bound);
+    service.removeVanishedObjects(USER, LOGIN, bound);
+    service.removeVanishedObjects(USER, LOGIN, bound);
 
-    verify(calDavClient, times(1)).readCalendar(any(), eq(HREF), eq(LOGIN), anyString());
-    verify(calDavClient, never()).listResourceEtags(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, times(1)).readCalendar(any(), eq(HREF));
+    verify(calDavClient, never()).listResourceEtags(any(), anyString());
   }
 
 
@@ -1315,15 +1327,15 @@ public class CaldavInboundServiceTest {
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     CalendarSync bound = pair();
     bound.setRemoteHref("/dav/calendars/john/private");
-    when(calDavClient.readCalendar(any(), anyString(), eq(LOGIN), anyString()))
+    when(calDavClient.readCalendar(any(), anyString()))
         .thenReturn(new CalendarCollection("/dav/calendars/john/private/", "P", "c", "t", null, true, Set.of("VEVENT")));
-    when(calDavClient.listResourceEtags(any(), anyString(), eq(LOGIN), anyString())).thenReturn(Map.of());
+    when(calDavClient.listResourceEtags(any(), anyString())).thenReturn(Map.of());
     when(caldavSyncStorage.getObjects(eq(PAIR), anyInt(), anyInt())).thenReturn(new PageImpl<>(List.of()));
 
-    service.removeVanishedObjects(USER, bound);
+    service.removeVanishedObjects(USER, LOGIN, bound);
 
-    verify(calDavClient).readCalendar(any(), eq("/dav/calendars/john/private/"), eq(LOGIN), anyString());
-    verify(calDavClient).listResourceEtags(any(), eq("/dav/calendars/john/private/"), eq(LOGIN), anyString());
+    verify(calDavClient).readCalendar(any(), eq("/dav/calendars/john/private/"));
+    verify(calDavClient).listResourceEtags(any(), eq("/dav/calendars/john/private/"));
   }
 
   /**
@@ -1344,7 +1356,7 @@ public class CaldavInboundServiceTest {
     lenient().when(agendaEventService.createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong()))
              .thenReturn(event(501L));
 
-    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(agendaEventService, never()).createEvent(any(),
                                                     any(),
@@ -1376,7 +1388,7 @@ public class CaldavInboundServiceTest {
     lenient().when(agendaEventAttendeeService.getEventAttendees(501L))
              .thenReturn(new EventAttendeeList(List.of(attendee(USER))));
 
-    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(agendaEventService, never()).updateEvent(any(),
                                                     any(),
@@ -1414,7 +1426,7 @@ public class CaldavInboundServiceTest {
     when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
     when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-1@example.test")).thenReturn(777L);
 
-    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(caldavAnswerAdoptionService).adoptAnswer(USER, 777L, answered);
   }
@@ -1434,7 +1446,7 @@ public class CaldavInboundServiceTest {
     lenient().when(agendaEventService.createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong()))
              .thenReturn(event(501L));
 
-    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(agendaEventService, never()).createEvent(any(),
                                                     any(),
@@ -1459,7 +1471,7 @@ public class CaldavInboundServiceTest {
     when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
     when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-1@example.test")).thenReturn(null);
 
-    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
   }
@@ -1481,7 +1493,7 @@ public class CaldavInboundServiceTest {
                                                                                  .thenThrow(new IllegalStateException("agenda is down"));
     givenAgendaCreates(501L);
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
   }
 
   /**
@@ -1502,7 +1514,7 @@ public class CaldavInboundServiceTest {
     lenient().when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-9@example.test")).thenReturn(777L);
     givenAgendaCreates(501L);
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
   }
@@ -1519,7 +1531,7 @@ public class CaldavInboundServiceTest {
     lenient().when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-9@example.test")).thenReturn(false);
     givenAgendaCreates(501L);
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     ArgumentCaptor<Event> created = ArgumentCaptor.forClass(Event.class);
     verify(agendaEventService).createEvent(created.capture(),
@@ -1546,7 +1558,7 @@ public class CaldavInboundServiceTest {
     CalendarSync mirror = pair();
     mirror.setOrigin(SyncOrigin.MIRROR);
 
-    assertEquals(1, service.importInto(USER, mirror, calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, mirror, calendar(), from(), to()));
 
     verify(caldavSyncStorage, never()).isMirrorOwned(anyLong(), anyLong(), anyString());
   }
@@ -1565,16 +1577,16 @@ public class CaldavInboundServiceTest {
     // meetings out of eXo. This is the pin that fails if the walk is widened.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+    when(calDavClient.readCalendar(any(), eq(HREF)))
         .thenReturn(new CalendarCollection(HREF, "Primary", "ctag-1", null, null, true, Set.of("VEVENT")));
     // The account holds nothing at all at that path, so every row walked would
     // be judged vanished.
-    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    when(calDavClient.listResourceEtags(any(), eq(HREF))).thenReturn(Map.of());
     when(caldavSyncStorage.getObjects(eq(PAIR), anyInt(), anyInt())).thenReturn(new PageImpl<>(List.of()));
     lenient().when(caldavSyncStorage.getObjects(eq(MIRROR_PAIR), anyInt(), anyInt()))
              .thenReturn(new PageImpl<>(List.of(mirrorMapping())));
 
-    service.removeVanishedObjects(USER, pair());
+    service.removeVanishedObjects(USER, LOGIN, pair());
 
     verify(caldavSyncStorage, never()).getObjects(eq(MIRROR_PAIR), anyInt(), anyInt());
     verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
@@ -1645,7 +1657,7 @@ public class CaldavInboundServiceTest {
    */
   private CaldavUserSetting settings() {
     CaldavUserSetting setting = new CaldavUserSetting();
-    setting.setUsername(LOGIN);
+    setting.setUsername(DAV_ACCOUNT);
     setting.setPassword("secret");
     setting.setServerId(SERVER);
     return setting;
@@ -1689,7 +1701,7 @@ public class CaldavInboundServiceTest {
     givenMappingsArePersisted();
     when(agendaEventService.getEventById(501L)).thenReturn(event(501L));
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(agendaEventService, never()).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong());
     ArgumentCaptor<Event> updated = ArgumentCaptor.forClass(Event.class);
@@ -1730,7 +1742,7 @@ public class CaldavInboundServiceTest {
     });
     when(agendaEventService.getEventById(501L)).thenReturn(event(501L));
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     assertNull(etagsAsSaved.get(0));
     // And the comparison that follows does record it, so the next pass has an
@@ -1760,7 +1772,7 @@ public class CaldavInboundServiceTest {
              .thenReturn(remoteIdentity("uid-1@example.test", CONNECTOR));
     givenAgendaCreates(777L);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), eq(USER));
     verify(agendaEventService, never()).updateEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong());
@@ -1783,7 +1795,7 @@ public class CaldavInboundServiceTest {
              .thenReturn(remoteIdentity("uid-1@example.test", CONNECTOR));
     givenAgendaCreates(777L);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), eq(USER));
   }
@@ -1803,7 +1815,7 @@ public class CaldavInboundServiceTest {
     givenRemoteIdentity(501L, "uid-1@example.test", "agenda.googleCalendar");
     givenAgendaCreates(777L);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), eq(USER));
   }
@@ -1825,7 +1837,7 @@ public class CaldavInboundServiceTest {
              .thenReturn(remoteIdentity("uid-1@example.test", CONNECTOR));
     givenAgendaCreates(777L);
 
-    service.importInto(USER, pair(), calendar(), from(), to());
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
 
     verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), eq(USER));
     verify(agendaRemoteEventService, never()).findRemoteEvent(anyLong(), anyLong());
@@ -1842,7 +1854,7 @@ public class CaldavInboundServiceTest {
     givenRemoteIdentity(501L, "uid-1@example.test", CONNECTOR);
     givenAgendaCreates(777L);
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), eq(USER));
   }
@@ -1856,7 +1868,7 @@ public class CaldavInboundServiceTest {
     givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
     when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
 
-    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(agendaEventService, never()).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong());
     // The index costs a listing of the window and a read per event in it. An
@@ -1873,7 +1885,7 @@ public class CaldavInboundServiceTest {
     when(agendaEventService.getEvents(any(), any(), anyLong())).thenThrow(new IllegalAccessException("refused"));
     givenAgendaCreates(777L);
 
-    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
     verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), eq(USER));
   }

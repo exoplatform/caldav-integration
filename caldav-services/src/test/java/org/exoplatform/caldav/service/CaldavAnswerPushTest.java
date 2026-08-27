@@ -86,6 +86,8 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 @ExtendWith(MockitoExtension.class)
 public class CaldavAnswerPushTest {
 
+  private static final String LOGIN = "john";
+
   private static final long        USER    = 42L;
 
   private static final long        SERVER  = 7L;
@@ -154,7 +156,9 @@ public class CaldavAnswerPushTest {
   @BeforeEach
   public void connectAnAccountHoldingTheCopy() {
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
-    lenient().when(calDavClient.endpoint(SERVER, ACCOUNT)).thenReturn(endpoint);
+    // The client is asked with the eXo login: the DAV account below is what
+    // the provider derives from it, and the two are deliberately different.
+    lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     lenient().when(agendaEventIcsMapper.addressOf(USER)).thenReturn(PROFILE);
     lenient().when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
     lenient().when(caldavSyncStorage.getObjectByUid(1L, "evt-1")).thenReturn(mapped());
@@ -172,20 +176,18 @@ public class CaldavAnswerPushTest {
   public void anAnswerGivenInExoReachesTheCopy() throws Exception {
     givenTheMeetingIsCopied();
     givenTheCopySays("DECLINED");
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(204,
                                                                                                                                     "\"etag-2\"",
                                                                                                                                     null));
 
-    assertTrue(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+    assertTrue(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
 
     ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
     verify(calDavClient).updateObject(eq(endpoint),
                                       eq(HREF),
                                       written.capture(),
-                                      eq("\"etag-1\""),
-                                      eq(ACCOUNT),
-                                      eq("secret"));
+                                      eq("\"etag-1\""));
     assertTrue(written.getValue().contains("PARTSTAT=ACCEPTED"), written.getValue());
     assertFalse(written.getValue().contains("PARTSTAT=DECLINED"), written.getValue());
     // Everything else the object carried is still there: an answer is not
@@ -213,15 +215,15 @@ public class CaldavAnswerPushTest {
   public void theAnswerReachesACopyThatNamesTheUserByTheirAccountAddress() throws Exception {
     givenTheMeetingIsCopied();
     givenTheCopySays("DECLINED");
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(204,
                                                                                                                                     "\"etag-2\"",
                                                                                                                                     null));
 
-    assertTrue(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+    assertTrue(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
 
     ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
-    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString(), anyString(), anyString());
+    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString());
     assertTrue(written.getValue().contains("PARTSTAT=ACCEPTED"), written.getValue());
     assertTrue(written.getValue().contains(ACCOUNT), written.getValue());
   }
@@ -236,20 +238,20 @@ public class CaldavAnswerPushTest {
   @Test
   public void theAnswerAlsoReachesACopyWrittenUnderTheOlderNamingRule() throws Exception {
     givenTheMeetingIsCopied();
-    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF)))
                                                                                      .thenReturn(new CalendarObject(HREF,
                                                                                                                     "\"etag-1\"",
                                                                                                                     copy("DECLINED").replace(ACCOUNT,
                                                                                                                                              PROFILE)));
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(204,
                                                                                                                                     "\"etag-2\"",
                                                                                                                                     null));
 
-    assertTrue(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+    assertTrue(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
 
     ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
-    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString(), anyString(), anyString());
+    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString());
     assertTrue(written.getValue().contains("PARTSTAT=ACCEPTED"), written.getValue());
   }
 
@@ -263,15 +265,15 @@ public class CaldavAnswerPushTest {
   @Test
   public void aCopyNamingTheUserByNeitherAddressIsLeftAlone() throws Exception {
     givenTheMeetingIsCopied();
-    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF)))
                                                                                      .thenReturn(new CalendarObject(HREF,
                                                                                                                     "\"etag-1\"",
                                                                                                                     copy("DECLINED").replace(ACCOUNT,
                                                                                                                                              "carol@stalwart.local")));
 
-    assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+    assertFalse(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
 
-    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
     verify(caldavSyncStorage, never()).saveObject(any());
   }
 
@@ -320,19 +322,19 @@ public class CaldavAnswerPushTest {
   public void anOrganizerAnsweringTheirOwnEventIsDeclinedWithoutAWarning() throws Exception {
     lenient().when(agendaEventService.getEventById(eq(EVENT), isNull(), eq(USER))).thenReturn(anEvent(EVENT, 0L, USER));
     lenient().when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
-    lenient().when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+    lenient().when(calDavClient.fetchObject(eq(endpoint), eq(HREF)))
              .thenReturn(new CalendarObject(HREF, "\"etag-1\"", copy("NEEDS-ACTION").replace(ACCOUNT, CAROL_ADDRESS)));
     givenTheEventWasCreatedBy(USER);
 
     List<ILoggingEvent> recorded;
     try (LogRecorder log = new LogRecorder(CaldavPushService.class)) {
-      assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+      assertFalse(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
       recorded = List.copyOf(log.events());
     }
 
     assertTrue(recorded.stream().noneMatch(line -> line.getLevel() == Level.WARN),
                "an organiser's own answer is a normal no-op, not an inconsistency somebody can repair: " + recorded);
-    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
     verify(caldavSyncStorage, never()).saveObject(any());
   }
 
@@ -357,14 +359,14 @@ public class CaldavAnswerPushTest {
     // is ever touched, which is what the verifications say.
     lenient().when(agendaEventService.getEventById(eq(EVENT), isNull(), eq(USER))).thenReturn(anEvent(EVENT, 0L, USER));
     lenient().when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
-    lenient().when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+    lenient().when(calDavClient.fetchObject(eq(endpoint), eq(HREF)))
              .thenReturn(new CalendarObject(HREF, "\"etag-1\"", copy("NEEDS-ACTION").replace(ACCOUNT, CAROL_ADDRESS)));
     givenTheEventWasCreatedBy(USER);
 
-    assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+    assertFalse(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
 
     verify(agendaRemoteEventService, never()).findRemoteEvent(anyLong(), anyLong());
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
   }
 
   /**
@@ -385,7 +387,7 @@ public class CaldavAnswerPushTest {
   public void aCopyNamingSomebodyWhoDoesNotOrganizeTheMeetingStillWarns() throws Exception {
     givenTheMeetingIsCopied();
     givenTheEventWasCreatedBy(CAROL);
-    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF)))
                                                                                      .thenReturn(new CalendarObject(HREF,
                                                                                                                     "\"etag-1\"",
                                                                                                                     copy("DECLINED").replace(ACCOUNT,
@@ -393,7 +395,7 @@ public class CaldavAnswerPushTest {
 
     List<ILoggingEvent> recorded;
     try (LogRecorder log = new LogRecorder(CaldavPushService.class)) {
-      assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+      assertFalse(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
       recorded = List.copyOf(log.events());
     }
 
@@ -418,15 +420,15 @@ public class CaldavAnswerPushTest {
     givenTheMeetingIsCopied();
     givenTheEventWasCreatedBy(CAROL);
     givenTheCopySays("NEEDS-ACTION");
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(204,
                                                                                                                                     "\"etag-2\"",
                                                                                                                                     null));
 
-    assertTrue(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+    assertTrue(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
 
     ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
-    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString(), anyString(), anyString());
+    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString());
     assertTrue(written.getValue().contains("PARTSTAT=ACCEPTED"), written.getValue());
   }
 
@@ -464,13 +466,13 @@ public class CaldavAnswerPushTest {
     lenient().when(agendaEventService.getEventById(eq(occurrenceId), isNull(), eq(USER)))
              .thenReturn(anEvent(occurrenceId, EVENT, USER));
     lenient().when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
-    lenient().when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+    lenient().when(calDavClient.fetchObject(eq(endpoint), eq(HREF)))
              .thenReturn(new CalendarObject(HREF, "\"etag-1\"", copy("NEEDS-ACTION").replace(ACCOUNT, CAROL_ADDRESS)));
 
-    assertFalse(service.pushAnswer(USER, occurrenceId, "ACCEPTED"));
+    assertFalse(service.pushAnswer(USER, LOGIN, occurrenceId, "ACCEPTED"));
 
     verify(agendaRemoteEventService, never()).findRemoteEvent(anyLong(), anyLong());
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
   }
 
   /**
@@ -490,14 +492,14 @@ public class CaldavAnswerPushTest {
     givenTheMeetingIsCopied();
     givenTheCopySays("NEEDS-ACTION");
     when(agendaEventService.getEventById(EVENT)).thenThrow(new IllegalStateException("agenda is having a moment"));
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(204,
                                                                                                                                     "\"etag-2\"",
                                                                                                                                     null));
 
-    assertTrue(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+    assertTrue(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
 
-    verify(calDavClient).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient).updateObject(any(), anyString(), anyString(), anyString());
   }
 
   /**
@@ -512,12 +514,12 @@ public class CaldavAnswerPushTest {
   public void theCopyIsNotLeftLookingLikeAClientRewroteIt() throws Exception {
     givenTheMeetingIsCopied();
     givenTheCopySays("NEEDS-ACTION");
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(204,
                                                                                                                                     "\"etag-2\"",
                                                                                                                                     null));
 
-    service.pushAnswer(USER, EVENT, "DECLINED");
+    service.pushAnswer(USER, LOGIN, EVENT, "DECLINED");
 
     // The version the write produced, and nothing else recorded against the
     // copy. EXO-89716 removed the digest this used to assert: the guarantee it
@@ -546,9 +548,9 @@ public class CaldavAnswerPushTest {
     givenTheMeetingIsCopied();
     givenTheCopySays("ACCEPTED");
 
-    assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+    assertFalse(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
 
-    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
     verify(caldavSyncStorage, never()).saveObject(any());
   }
 
@@ -567,12 +569,12 @@ public class CaldavAnswerPushTest {
     when(agendaEventService.getEventById(eq(965L), isNull(), eq(USER))).thenReturn(override);
     when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
     givenTheCopySays("NEEDS-ACTION");
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(204,
                                                                                                                                     "\"etag-2\"",
                                                                                                                                     null));
 
-    assertTrue(service.pushAnswer(USER, 965L, "TENTATIVE"));
+    assertTrue(service.pushAnswer(USER, LOGIN, 965L, "TENTATIVE"));
 
     verify(agendaRemoteEventService).findRemoteEvent(EVENT, USER);
   }
@@ -586,9 +588,9 @@ public class CaldavAnswerPushTest {
   public void aUserWithNoAccountIsNotAFailure() {
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
 
-    assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+    assertFalse(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
 
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
   }
 
   /**
@@ -605,10 +607,10 @@ public class CaldavAnswerPushTest {
     when(agendaEventService.getEventById(eq(EVENT), isNull(), eq(USER))).thenReturn(event);
     when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(null);
 
-    assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+    assertFalse(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
 
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
-    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
   }
 
   /**
@@ -626,9 +628,9 @@ public class CaldavAnswerPushTest {
     interrupted.setEtag(" ");
     when(caldavSyncStorage.getObjectByUid(1L, "evt-1")).thenReturn(interrupted);
 
-    assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+    assertFalse(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
 
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
   }
 
   /**
@@ -643,13 +645,13 @@ public class CaldavAnswerPushTest {
   public void aConcurrentEditIsRefusedRatherThanOverwritten() throws Exception {
     givenTheMeetingIsCopied();
     givenTheCopySays("DECLINED");
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(412,
                                                                                                                                     null,
                                                                                                                                     null));
 
     CaldavPushException failure = org.junit.jupiter.api.Assertions.assertThrows(CaldavPushException.class,
-                                                                               () -> service.pushAnswer(USER,
+                                                                               () -> service.pushAnswer(USER, LOGIN,
                                                                                                         EVENT,
                                                                                                         "ACCEPTED"));
 
@@ -669,15 +671,15 @@ public class CaldavAnswerPushTest {
   public void anAnswerTheRfcDoesNotDefineIsWrittenAsNeedsAction() throws Exception {
     givenTheMeetingIsCopied();
     givenTheCopySays("ACCEPTED");
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(204,
                                                                                                                                     "\"etag-2\"",
                                                                                                                                     null));
 
-    service.pushAnswer(USER, EVENT, "MAYBE_LATER");
+    service.pushAnswer(USER, LOGIN, EVENT, "MAYBE_LATER");
 
     ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
-    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString(), anyString(), anyString());
+    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString());
     assertTrue(written.getValue().contains("PARTSTAT=NEEDS-ACTION"), written.getValue());
   }
 
@@ -696,21 +698,19 @@ public class CaldavAnswerPushTest {
   @Test
   public void anotherAttendeesAnswerIsWrittenOntoThisAccountsCopy() throws Exception {
     givenTheCopyAlsoNames(CAROL_ADDRESS, "NEEDS-ACTION");
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(204,
                                                                                                                                     "\"etag-2\"",
                                                                                                                                     null));
 
     assertEquals(CaldavPushService.AnswerOutcome.WRITTEN,
-                 service.pushAnswerOnto(USER, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
+                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
 
     ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
     verify(calDavClient).updateObject(eq(endpoint),
                                       eq(HREF),
                                       written.capture(),
-                                      eq("\"etag-1\""),
-                                      eq(ACCOUNT),
-                                      eq("secret"));
+                                      eq("\"etag-1\""));
     assertTrue(attendeeLine(written.getValue(), CAROL_ADDRESS).contains("PARTSTAT=ACCEPTED"),
                written.getValue());
   }
@@ -753,19 +753,19 @@ public class CaldavAnswerPushTest {
   @Test
   public void writingOneAttendeesAnswerLeavesTheOtherAttendeesAnswerUntouched() throws Exception {
     String served = copyNaming(CAROL_ADDRESS, "NEEDS-ACTION", "ACCEPTED");
-    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF)))
                                                                                      .thenReturn(new CalendarObject(HREF,
                                                                                                                     "\"etag-1\"",
                                                                                                                     served));
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(204,
                                                                                                                                     "\"etag-2\"",
                                                                                                                                     null));
 
-    service.pushAnswerOnto(USER, mapped(), List.of(CAROL_ADDRESS), "DECLINED");
+    service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "DECLINED");
 
     ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
-    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString(), anyString(), anyString());
+    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString());
     assertEquals("PARTSTAT=ACCEPTED",
                  partStatOn(served, ACCOUNT),
                  "the fixture must actually carry the holder's own answer, or this pins nothing");
@@ -791,9 +791,9 @@ public class CaldavAnswerPushTest {
     givenTheCopyAlsoNames(CAROL_ADDRESS, "ACCEPTED");
 
     assertEquals(CaldavPushService.AnswerOutcome.ALREADY_SAID,
-                 service.pushAnswerOnto(USER, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
+                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
 
-    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
     verify(caldavSyncStorage, never()).saveObject(any());
   }
 
@@ -810,10 +810,10 @@ public class CaldavAnswerPushTest {
     givenTheCopySays("ACCEPTED");
 
     assertEquals(CaldavPushService.AnswerOutcome.NOT_NAMED,
-                 service.pushAnswerOnto(USER, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
+                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
 
     assertFalse(CaldavPushService.AnswerOutcome.NOT_NAMED.settles());
-    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
   }
 
   /**
@@ -826,15 +826,14 @@ public class CaldavAnswerPushTest {
   @Test
   public void aConcurrentChangeToTheHoldersCopyIsRefusedRatherThanOverwritten() throws Exception {
     givenTheCopyAlsoNames(CAROL_ADDRESS, "NEEDS-ACTION");
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(412,
                                                                                                                                     null,
                                                                                                                                     null));
 
     CaldavPushException failure =
                                 org.junit.jupiter.api.Assertions.assertThrows(CaldavPushException.class,
-                                                                             () -> service.pushAnswerOnto(USER,
-                                                                                                          mapped(),
+                                                                             () -> service.pushAnswerOnto(USER, LOGIN, mapped(),
                                                                                                           List.of(CAROL_ADDRESS),
                                                                                                           "ACCEPTED"));
 
@@ -856,8 +855,7 @@ public class CaldavAnswerPushTest {
 
     CaldavPushException failure =
                                 org.junit.jupiter.api.Assertions.assertThrows(CaldavPushException.class,
-                                                                             () -> service.pushAnswerOnto(CAROL,
-                                                                                                          mapped(),
+                                                                             () -> service.pushAnswerOnto(CAROL, LOGIN, mapped(),
                                                                                                           List.of(CAROL_ADDRESS),
                                                                                                           "ACCEPTED"));
 
@@ -902,7 +900,7 @@ public class CaldavAnswerPushTest {
    * @param partStat the answer the copy currently carries for them
    */
   private void givenTheCopyAlsoNames(String address, String partStat) {
-    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF)))
                                                                                      .thenReturn(new CalendarObject(HREF,
                                                                                                                     "\"etag-1\"",
                                                                                                                     copyNaming(address,
@@ -1038,7 +1036,7 @@ public class CaldavAnswerPushTest {
    * @param partStat the answer the copy currently carries
    */
   private void givenTheCopySays(String partStat) {
-    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF)))
                                                                                      .thenReturn(new CalendarObject(HREF,
                                                                                                                     "\"etag-1\"",
                                                                                                                     copy(partStat)));

@@ -39,11 +39,13 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavRelayRequest;
 import org.exoplatform.caldav.model.CaldavRelayedResponse;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.services.log.ExoLogger;
@@ -65,9 +67,13 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * chooses a {@code serverId} and a path on that host, never a URL. An
  * unknown, inactive or non-registry target is refused, not forwarded, and the
  * refusal happens before any socket is opened.</li>
- * <li><b>Credential custody</b> — Basic credentials are read from the user's
- * stored setting and injected here; any Authorization or Cookie header the
- * browser sends is dropped. Nothing auth-shaped is ever logged.</li>
+ * <li><b>Credential custody</b> — the credentials are produced by the provider
+ * the server row is configured with ({@link CaldavCredentialsResolver}) and
+ * injected here, never assembled from anything this class holds; any
+ * Authorization or Cookie header the browser sends is dropped. Nothing
+ * auth-shaped is ever logged. The one exception is {@code probeAccount}, which
+ * tries a credential pair typed in the connect drawer — material no provider
+ * can produce, because nothing stores it yet.</li>
  * <li><b>Method and header allow-lists</b> — only the DAV verbs and headers
  * the shipped connector actually issues pass through; everything else is
  * attack surface and is refused or dropped.</li>
@@ -222,6 +228,9 @@ public class CaldavRelayService {
   @Autowired
   private IdentityManager           identityManager;
 
+  @Autowired
+  private CaldavCredentialsResolver caldavCredentialsResolver;
+
   /**
    * The JDK's own HTTP client, TLS trust from the platform truststore —
    * exactly the transport email-connector's CardDAV client rides. Redirects
@@ -284,8 +293,11 @@ public class CaldavRelayService {
     URI upstreamBase = serverBaseUri(server);
     URI target = URI.create(upstreamBase.getScheme() + "://" + upstreamBase.getRawAuthority() + davPath
         + (StringUtils.isBlank(relayRequest.getQuery()) ? "" : "?" + relayRequest.getQuery()));
-    HttpRequest request = buildUpstreamRequest(target, method, relayRequest.getHeaders(), relayRequest.getBody(),
-                                               setting.getUsername(), setting.getPassword());
+    HttpRequest request = buildUpstreamRequest(target,
+                                               method,
+                                               relayRequest.getHeaders(),
+                                               relayRequest.getBody(),
+                                               authorization(server, relayRequest.getUsername()));
     return execute(request, upstreamBase, relayRequest.getRelayPrefix());
   }
 
@@ -448,25 +460,24 @@ public class CaldavRelayService {
   }
 
   /**
-   * Builds the upstream request: allow-listed headers only, the user's stored
-   * credentials as Basic auth — whatever Authorization the browser sent is
-   * not in the allow-list, so it is structurally impossible to forward it —
+   * Builds the upstream request: allow-listed headers only, the credentials
+   * the configured provider produced — whatever Authorization the browser sent
+   * is not in the allow-list, so it is structurally impossible to forward it —
    * and the configured per-request timeout.
    *
    * @param target upstream URI to call
    * @param method allow-listed DAV verb
    * @param headers request headers as the browser sent them, lower-cased
    * @param body request body bytes, possibly empty
-   * @param davUsername stored CalDAV username
-   * @param davPassword stored CalDAV password
+   * @param authorization the header value to authenticate with, produced
+   *          elsewhere and never assembled here
    * @return the request to send
    */
   private HttpRequest buildUpstreamRequest(URI target,
                                            String method,
                                            Map<String, String> headers,
                                            byte[] body,
-                                           String davUsername,
-                                           String davPassword) {
+                                           String authorization) {
     HttpRequest.Builder builder = HttpRequest.newBuilder(target)
                                              .method(method, BodyPublishers.ofByteArray(body == null ? new byte[0] : body))
                                              .timeout(Duration.ofSeconds(intProperty(REQUEST_TIMEOUT_PROPERTY,
@@ -478,9 +489,32 @@ public class CaldavRelayService {
         }
       });
     }
-    builder.header("Authorization", basicAuth(davUsername, davPassword));
+    builder.header("Authorization", authorization);
     builder.header("User-Agent", "eXo-CalDAV-Relay");
     return builder.build();
+  }
+
+  /**
+   * The credentials the forwarded request travels with, as the server row's
+   * configured provider produced them for this user.
+   * <p>
+   * A production failure surfaces as {@link IllegalStateException} carrying
+   * {@value #NOT_CONNECTED_MESSAGE}, the same answer the drawer already knows
+   * how to read: from the browser's side, credentials that cannot be produced
+   * and credentials that were never stored are one situation — this account
+   * cannot talk to its server, reconnect it.
+   *
+   * @param server the registration the request is authorized against
+   * @param username eXo login of the caller
+   * @return the Authorization header value
+   * @throws IllegalStateException when the provider produces nothing
+   */
+  private String authorization(CaldavServer server, String username) {
+    try {
+      return caldavCredentialsResolver.authorization(server.getId(), server.getAuthProviderName(), username);
+    } catch (CalDavException e) {
+      throw new IllegalStateException(NOT_CONNECTED_MESSAGE, e);
+    }
   }
 
   /**

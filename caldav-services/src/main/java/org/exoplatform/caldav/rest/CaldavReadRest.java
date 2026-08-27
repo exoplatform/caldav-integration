@@ -107,8 +107,8 @@ public class CaldavReadRest {
     // minute are three page loads and not three reasons to talk to a calendar
     // server — and it never throws, so a server being down cannot stop an
     // agenda rendering the events it already has.
-    caldavSyncService.syncIfDue(currentUser(), CaldavConnectorUtils.getCurrentUser());
-    return caldavReadService.readEvents(currentUser(), from, to);
+    caldavSyncService.syncIfDue(currentUser(), currentLogin());
+    return caldavReadService.readEvents(currentUser(), currentLogin(), from, to);
   }
 
   /**
@@ -131,7 +131,7 @@ public class CaldavReadRest {
           + "copies are settled, seeded and verified on a background thread this starts and does not wait for.")
   @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Synchronisation ran") })
   public ResponseEntity<Void> syncNow() {
-    caldavSyncService.syncNowAndWait(currentUser(), CaldavConnectorUtils.getCurrentUser());
+    caldavSyncService.syncNowAndWait(currentUser(), currentLogin());
     return ResponseEntity.noContent().build();
   }
 
@@ -174,7 +174,7 @@ public class CaldavReadRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The account's calendars, and whether the "
       + "listing failed") })
   public RemoteCalendarsRead calendars() {
-    return caldavReadService.listCalendars(currentUser());
+    return caldavReadService.listCalendars(currentUser(), currentLogin());
   }
 
   /**
@@ -205,5 +205,16 @@ public class CaldavReadRest {
    */
   private long currentUser() {
     return CaldavConnectorUtils.getCurrentUserIdentityId(identityManager);
+  }
+
+  /**
+   * The login of the same authenticated caller — what the credentials provider
+   * resolves a CalDAV account from, where {@link #currentUser()} is what the
+   * storage and the agenda ACL are keyed by.
+   *
+   * @return the caller's eXo login
+   */
+  private String currentLogin() {
+    return CaldavConnectorUtils.getCurrentUser();
   }
 }

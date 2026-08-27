@@ -35,7 +35,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Set;
 import java.util.HashSet;
-import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,8 +53,10 @@ import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
 
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.SyncOrigin;
+import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -144,6 +145,9 @@ public class HttpCalDavClient implements CalDavClient {
    */
   private static final Pattern        USERNAME_PATTERN          = Pattern.compile("[A-Za-z0-9._%+@\\-]+");
 
+  /** The one placeholder a declared server URL may carry, filled per account. */
+  private static final String         USERNAME_PLACEHOLDER      = "{username}";
+
   /**
    * The characters a server-absolute DAV path may carry: the RFC 3986 path
    * character set, percent-encoding included — the relay's own gate,
@@ -160,6 +164,20 @@ public class HttpCalDavClient implements CalDavClient {
   private static final String         PROPFIND_PRINCIPAL        = """
       <?xml version="1.0" encoding="utf-8"?>
       <d:propfind xmlns:d="DAV:"><d:prop><d:current-user-principal/></d:prop></d:propfind>""";
+
+  /** The principal's scheduling inbox, first hop of the default-calendar question. */
+  private static final String         PROPFIND_SCHEDULE_INBOX   = """
+      <?xml version="1.0" encoding="utf-8"?>
+      <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+        <d:prop><c:schedule-inbox-URL/></d:prop>
+      </d:propfind>""";
+
+  /** What the inbox calls the account's default calendar, second hop. */
+  private static final String         PROPFIND_DEFAULT_CALENDAR = """
+      <?xml version="1.0" encoding="utf-8"?>
+      <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+        <d:prop><c:schedule-default-calendar-URL/></d:prop>
+      </d:propfind>""";
 
   private static final String         PROPFIND_HOME             = """
       <?xml version="1.0" encoding="utf-8"?>
@@ -187,20 +205,6 @@ public class HttpCalDavClient implements CalDavClient {
         </d:prop>
       </d:propfind>""";
 
-  /** The principal's scheduling inbox, first hop of the default-calendar question. */
-  private static final String         PROPFIND_SCHEDULE_INBOX   = """
-      <?xml version="1.0" encoding="utf-8"?>
-      <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
-        <d:prop><c:schedule-inbox-URL/></d:prop>
-      </d:propfind>""";
-
-  /** What the inbox calls the account's default calendar, second hop. */
-  private static final String         PROPFIND_DEFAULT_CALENDAR = """
-      <?xml version="1.0" encoding="utf-8"?>
-      <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
-        <d:prop><c:schedule-default-calendar-URL/></d:prop>
-      </d:propfind>""";
-
   private static final String         PROPFIND_ETAGS            = """
       <?xml version="1.0" encoding="utf-8"?>
       <d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>""";
@@ -211,9 +215,11 @@ public class HttpCalDavClient implements CalDavClient {
         <d:prop><d:supported-report-set/><cs:getctag/><d:sync-token/></d:prop>
       </d:propfind>""";
 
-  private final HttpClient            httpClient;
+  private final HttpClient                 httpClient;
 
-  private final CaldavServerService   caldavServerService;
+  private final CaldavServerService        caldavServerService;
+
+  private final CaldavCredentialsResolver  caldavCredentialsResolver;
 
   /**
    * The client Spring builds. Redirects are NEVER followed: the target host
@@ -221,14 +227,17 @@ public class HttpCalDavClient implements CalDavClient {
    * server must not be able to bounce credentialed requests anywhere else.
    *
    * @param caldavServerService the registry every endpoint is resolved from
+   * @param caldavCredentialsResolver the addon's seam onto the shared
+   *          credentials contract — this client resolves, it never assembles
    */
   @Autowired
-  public HttpCalDavClient(CaldavServerService caldavServerService) {
+  public HttpCalDavClient(CaldavServerService caldavServerService, CaldavCredentialsResolver caldavCredentialsResolver) {
     this(HttpClient.newBuilder()
                    .connectTimeout(Duration.ofSeconds(intProperty(CONNECT_TIMEOUT_PROPERTY, DEFAULT_CONNECT_TIMEOUT)))
                    .followRedirects(HttpClient.Redirect.NEVER)
                    .build(),
-         caldavServerService);
+         caldavServerService,
+         caldavCredentialsResolver);
   }
 
   /**
@@ -237,45 +246,99 @@ public class HttpCalDavClient implements CalDavClient {
    *
    * @param httpClient the transport to send on
    * @param caldavServerService the registry every endpoint is resolved from
+   * @param caldavCredentialsResolver the credentials seam, stubbed in protocol
+   *          tests that have no provider to resolve
    */
-  HttpCalDavClient(HttpClient httpClient, CaldavServerService caldavServerService) {
+  HttpCalDavClient(HttpClient httpClient,
+                   CaldavServerService caldavServerService,
+                   CaldavCredentialsResolver caldavCredentialsResolver) {
     this.httpClient = httpClient;
     this.caldavServerService = caldavServerService;
+    this.caldavCredentialsResolver = caldavCredentialsResolver;
   }
 
   @Override
-  public CalDavEndpoint endpoint(Long serverId, String davUsername) {
-    String url = caldavServerService.resolveServerUrl(serverId);
+  public CalDavEndpoint endpoint(Long serverId, String exoLogin) {
+    CaldavServer server = caldavServerService.resolveServer(serverId);
+    String authProviderName = server == null ? null : server.getAuthProviderName();
+    String url = declaredUrl(server == null ? null : server.getServerUrl());
+    // Only a templated URL needs an account to name, and only then is the
+    // provider worth asking: a server whose path is fixed gets the rest of its
+    // hrefs from discovery, so there is nothing here to substitute.
+    String account = url.contains(USERNAME_PLACEHOLDER) ? targetAccount(serverId, authProviderName, exoLogin) : null;
+    return mint(serverId, url, account, authProviderName, exoLogin);
+  }
+
+  /**
+   * The URL of a declared server, or the failure that no server is declared at
+   * all.
+   *
+   * @param fromRegistry the registration's URL, or null when the registry
+   *          answered nothing
+   * @return a non-blank URL, still possibly templated
+   */
+  private String declaredUrl(String fromRegistry) {
+    String url = fromRegistry;
     if (StringUtils.isBlank(url)) {
       // The registry seeds itself from this property at startup, so reading
-      // it here only matters for a deployment whose seeding has not run yet;
-      // it is the same admin-controlled fallback resolveServerUrl documents.
+      // it here only matters for a deployment whose seeding has not run yet.
+      // Admin-controlled either way, which is why it is trusted as a target.
       url = System.getProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY);
     }
     if (StringUtils.isBlank(url)) {
       throw new CalDavException("No CalDAV server is declared to talk to");
     }
-    if (url.contains("{username}")) {
-      if (StringUtils.isBlank(davUsername) || !USERNAME_PATTERN.matcher(davUsername).matches()) {
+    return url;
+  }
+
+  /**
+   * The account this conversation addresses, as the configured provider names
+   * it — the user's own for Personal, someone else's for a provider that
+   * authenticates as a technical account.
+   *
+   * @param serverId registration the account references
+   * @param authProviderName provider the registration is configured with
+   * @param exoLogin the eXo login the endpoint is being minted for
+   * @return the account name to place in the URL, or null when the provider
+   *         has none to offer
+   */
+  private String targetAccount(Long serverId, String authProviderName, String exoLogin) {
+    return caldavCredentialsResolver.targetAccount(serverId, authProviderName, exoLogin);
+  }
+
+  /**
+   * Builds the endpoint from a declared URL and, when the URL is templated, the
+   * account that fills its placeholder — the one place a target is minted, so
+   * that no caller can hand this client a URL, and none can hand it an account
+   * either.
+   *
+   * @param serverId registration the URL came from, or null for the legacy
+   *          property
+   * @param url the declared URL, templated or not
+   * @param account the account filling {@code {username}}, or null when the
+   *          URL carries no placeholder
+   * @param authProviderName provider to remember for later requests, or null
+   * @param exoLogin login to remember for later requests, or null
+   * @return the endpoint every other method addresses
+   */
+  private CalDavEndpoint mint(Long serverId, String url, String account, String authProviderName, String exoLogin) {
+    String resolved = url;
+    if (resolved.contains(USERNAME_PLACEHOLDER)) {
+      if (StringUtils.isBlank(account) || !USERNAME_PATTERN.matcher(account).matches()) {
         throw new CalDavException("The CalDAV username cannot be part of a URL path");
       }
-      url = url.replace("{username}", URLEncoder.encode(davUsername, StandardCharsets.UTF_8));
+      resolved = resolved.replace(USERNAME_PLACEHOLDER, URLEncoder.encode(account, StandardCharsets.UTF_8));
     }
-    URI base = uri(url.trim());
+    URI base = uri(resolved.trim());
     if (!StringUtils.equalsAnyIgnoreCase(base.getScheme(), "http", "https") || StringUtils.isBlank(base.getHost())) {
       throw new CalDavException("The declared CalDAV server URL is not a usable http(s) URL");
     }
-    return new CalDavEndpoint(serverId, base);
+    return new CalDavEndpoint(serverId, base, authProviderName, exoLogin);
   }
 
   @Override
-  public String discoverCalendarHome(CalDavEndpoint endpoint, String username, String password) {
-    Element response = firstResponse(propfind(endpoint,
-                                              discoverPrincipal(endpoint, username, password),
-                                              PROPFIND_HOME,
-                                              "0",
-                                              username,
-                                              password));
+  public String discoverCalendarHome(CalDavEndpoint endpoint) {
+    Element response = firstResponse(propfind(endpoint, discoverPrincipal(endpoint), PROPFIND_HOME, "0"));
     String home = response == null ? null : hrefWithin(response, CALDAV_NS, "calendar-home-set");
     if (StringUtils.isBlank(home)) {
       throw new CalDavException("The server did not say where the calendars are");
@@ -283,44 +346,16 @@ public class HttpCalDavClient implements CalDavClient {
     return asPath(endpoint, home);
   }
 
-  @Override
-  public String discoverDefaultCalendar(CalDavEndpoint endpoint, String username, String password) {
-    String principal = discoverPrincipal(endpoint, username, password);
-    Element response = firstResponse(propfind(endpoint, principal, PROPFIND_SCHEDULE_INBOX, "0", username, password));
-    String inbox = response == null ? null : hrefWithin(response, CALDAV_NS, "schedule-inbox-URL");
-    if (StringUtils.isBlank(inbox)) {
-      // No scheduling inbox: this server implements none of RFC 6638, which is
-      // an answer of "I have no default calendar to name", not a failure. The
-      // caller decides; this client does not invent one.
-      LOG.debug("The principal {} names no scheduling inbox; the account states no default calendar", principal);
-      return null;
-    }
-    response = firstResponse(propfind(endpoint, asPath(endpoint, inbox), PROPFIND_DEFAULT_CALENDAR, "0", username, password));
-    String defaultCalendar = response == null ? null : hrefWithin(response, CALDAV_NS, "schedule-default-calendar-URL");
-    if (StringUtils.isBlank(defaultCalendar)) {
-      LOG.debug("The scheduling inbox {} names no default calendar", inbox);
-      return null;
-    }
-    return asPath(endpoint, defaultCalendar);
-  }
-
   /**
-   * Asks the endpoint who the authenticated user is.
+   * Who the server says is speaking, as a path on this endpoint - the first hop
+   * of every discovery, and its own method because two of them start there.
    *
-   * <p>
-   * The first hop of every discovery walk, extracted so the home and the
-   * default calendar ask it the same way rather than each carrying its own
-   * copy — and so a server that answers no principal fails identically
-   * whichever of the two was being looked for.
-   *
-   * @param endpoint the declared server
-   * @param username the account to authenticate as
-   * @param password that account's password
-   * @return the principal's server-absolute raw path
-   * @throws CalDavException when the server names no principal
+   * @param endpoint the account's endpoint
+   * @return the principal's path
+   * @throws CalDavException when the server names no current user
    */
-  private String discoverPrincipal(CalDavEndpoint endpoint, String username, String password) {
-    Element response = firstResponse(propfind(endpoint, endpoint.getBasePath(), PROPFIND_PRINCIPAL, "0", username, password));
+  private String discoverPrincipal(CalDavEndpoint endpoint) {
+    Element response = firstResponse(propfind(endpoint, endpoint.getBasePath(), PROPFIND_PRINCIPAL, "0"));
     String principal = response == null ? null : hrefWithin(response, DAV_NS, "current-user-principal");
     if (StringUtils.isBlank(principal)) {
       throw new CalDavException("The server did not say who the current user is");
@@ -329,8 +364,29 @@ public class HttpCalDavClient implements CalDavClient {
   }
 
   @Override
-  public List<CalendarCollection> listCalendars(CalDavEndpoint endpoint, String homeHref, String username, String password) {
-    Element multistatus = propfind(endpoint, homeHref, PROPFIND_COLLECTION, "1", username, password);
+  public String discoverDefaultCalendar(CalDavEndpoint endpoint) {
+    String principal = discoverPrincipal(endpoint);
+    Element response = firstResponse(propfind(endpoint, principal, PROPFIND_SCHEDULE_INBOX, "0"));
+    String inbox = response == null ? null : hrefWithin(response, CALDAV_NS, "schedule-inbox-URL");
+    if (StringUtils.isBlank(inbox)) {
+      // No scheduling inbox: this server implements none of RFC 6638, which is
+      // an answer of "I have no default calendar to name", not a failure. The
+      // caller decides; this client does not invent one.
+      LOG.debug("The principal {} names no scheduling inbox; the account states no default calendar", principal);
+      return null;
+    }
+    response = firstResponse(propfind(endpoint, asPath(endpoint, inbox), PROPFIND_DEFAULT_CALENDAR, "0"));
+    String defaultCalendar = response == null ? null : hrefWithin(response, CALDAV_NS, "schedule-default-calendar-URL");
+    if (StringUtils.isBlank(defaultCalendar)) {
+      LOG.debug("The scheduling inbox {} names no default calendar", inbox);
+      return null;
+    }
+    return asPath(endpoint, defaultCalendar);
+  }
+
+  @Override
+  public List<CalendarCollection> listCalendars(CalDavEndpoint endpoint, String homeHref) {
+    Element multistatus = propfind(endpoint, homeHref, PROPFIND_COLLECTION, "1");
     List<CalendarCollection> calendars = new ArrayList<>();
     for (Element response : childElements(multistatus, DAV_NS, RESPONSE_ELEMENT)) {
       CalendarCollection calendar = toCalendar(endpoint, response);
@@ -342,23 +398,21 @@ public class HttpCalDavClient implements CalDavClient {
   }
 
   @Override
-  public CalendarCollection readCalendar(CalDavEndpoint endpoint, String href, String username, String password) {
-    Element response = firstResponse(propfind(endpoint, href, PROPFIND_COLLECTION, "0", username, password));
+  public CalendarCollection readCalendar(CalDavEndpoint endpoint, String href) {
+    Element response = firstResponse(propfind(endpoint, href, PROPFIND_COLLECTION, "0"));
     return response == null ? null : toCalendar(endpoint, response);
   }
 
   @Override
-  public String getCtag(CalDavEndpoint endpoint, String href, String username, String password) {
-    Element response = firstResponse(propfind(endpoint, href, PROPFIND_COLLECTION, "0", username, password));
+  public String getCtag(CalDavEndpoint endpoint, String href) {
+    Element response = firstResponse(propfind(endpoint, href, PROPFIND_COLLECTION, "0"));
     return response == null ? null : grantedText(response, CALENDARSERVER_NS, GETCTAG_PROPERTY);
   }
 
   @Override
   public Map<String, String> listResourceEtags(CalDavEndpoint endpoint,
-                                               String collectionHref,
-                                               String username,
-                                               String password) {
-    Element multistatus = propfind(endpoint, collectionHref, PROPFIND_ETAGS, "1", username, password);
+                                               String collectionHref) {
+    Element multistatus = propfind(endpoint, collectionHref, PROPFIND_ETAGS, "1");
     Map<String, String> etags = new LinkedHashMap<>();
     for (Element response : childElements(multistatus, DAV_NS, RESPONSE_ELEMENT)) {
       String href = responsePath(endpoint, response);
@@ -377,9 +431,7 @@ public class HttpCalDavClient implements CalDavClient {
   public List<CalendarObject> calendarQuery(CalDavEndpoint endpoint,
                                             String collectionHref,
                                             Instant start,
-                                            Instant end,
-                                            String username,
-                                            String password) {
+                                            Instant end) {
     StringBuilder timeRange = new StringBuilder();
     if (start != null || end != null) {
       timeRange.append("<c:time-range");
@@ -401,15 +453,13 @@ public class HttpCalDavClient implements CalDavClient {
             </c:comp-filter>
           </c:filter>
         </c:calendar-query>""".formatted(timeRange);
-    return readObjects(endpoint, report(endpoint, collectionHref, body, "1", username, password));
+    return readObjects(endpoint, report(endpoint, collectionHref, body, "1"));
   }
 
   @Override
   public List<CalendarObject> multiget(CalDavEndpoint endpoint,
                                        String collectionHref,
-                                       List<String> hrefs,
-                                       String username,
-                                       String password) {
+                                       List<String> hrefs) {
     if (hrefs == null || hrefs.isEmpty()) {
       return List.of();
     }
@@ -420,15 +470,13 @@ public class HttpCalDavClient implements CalDavClient {
         """);
     hrefs.forEach(href -> body.append("  <d:href>").append(escape(asPath(endpoint, href))).append("</d:href>\n"));
     body.append("</c:calendar-multiget>");
-    return readObjects(endpoint, report(endpoint, collectionHref, body.toString(), "1", username, password));
+    return readObjects(endpoint, report(endpoint, collectionHref, body.toString(), "1"));
   }
 
   @Override
   public SyncCollectionResult syncCollection(CalDavEndpoint endpoint,
                                              String collectionHref,
-                                             String syncToken,
-                                             String username,
-                                             String password) {
+                                             String syncToken) {
     String body = """
         <?xml version="1.0" encoding="utf-8"?>
         <d:sync-collection xmlns:d="DAV:">
@@ -436,7 +484,7 @@ public class HttpCalDavClient implements CalDavClient {
           <d:sync-level>1</d:sync-level>
           <d:prop><d:getetag/></d:prop>
         </d:sync-collection>""".formatted(escape(StringUtils.defaultString(syncToken)));
-    HttpRequest request = request(endpoint, collectionHref, "REPORT", body, username, password).header(DEPTH_HEADER, "0").build();
+    HttpRequest request = request(endpoint, collectionHref, "REPORT", body).header(DEPTH_HEADER, "0").build();
     DavResponse response = exchange(request);
     // Token invalidation is the routine tier-1 downgrade, answered before the
     // generic status policy so a 403 carrying the valid-sync-token
@@ -474,15 +522,11 @@ public class HttpCalDavClient implements CalDavClient {
 
   @Override
   public ServerCapabilities probeCapabilities(CalDavEndpoint endpoint,
-                                              String collectionHref,
-                                              String username,
-                                              String password) {
+                                              String collectionHref) {
     HttpRequest request = request(endpoint,
                                   collectionHref,
                                   "PROPFIND",
-                                  PROPFIND_CAPABILITIES,
-                                  username,
-                                  password).header(DEPTH_HEADER, "0").build();
+                                  PROPFIND_CAPABILITIES).header(DEPTH_HEADER, "0").build();
     DavResponse response = exchange(request);
     checkReadStatus(response, request);
     Element multistatus = parse(response.body(), request.uri());
@@ -513,10 +557,10 @@ public class HttpCalDavClient implements CalDavClient {
   }
 
   @Override
-  public CalendarObject fetchObject(CalDavEndpoint endpoint, String href, String username, String password) {
+  public CalendarObject fetchObject(CalDavEndpoint endpoint, String href) {
     HttpRequest request = HttpRequest.newBuilder(target(endpoint, href))
                                      .timeout(requestTimeout())
-                                     .header(AUTHORIZATION_HEADER, basicAuth(username, password))
+                                     .header(AUTHORIZATION_HEADER, authorization(endpoint))
                                      .GET()
                                      .build();
     DavResponse response = exchange(request);
@@ -552,40 +596,36 @@ public class HttpCalDavClient implements CalDavClient {
   }
 
   @Override
-  public PutResult putObject(CalDavEndpoint endpoint, String href, String icsData, String username, String password) {
-    return put(endpoint, href, icsData, "If-None-Match", "*", username, password);
+  public PutResult putObject(CalDavEndpoint endpoint, String href, String icsData) {
+    return put(endpoint, href, icsData, "If-None-Match", "*");
   }
 
   @Override
   public PutResult overwriteObject(CalDavEndpoint endpoint,
                                    String href,
-                                   String icsData,
-                                   String username,
-                                   String password) {
-    return put(endpoint, href, icsData, null, null, username, password);
+                                   String icsData) {
+    return put(endpoint, href, icsData, null, null);
   }
 
   @Override
   public PutResult updateObject(CalDavEndpoint endpoint,
                                 String href,
                                 String icsData,
-                                String ifMatch,
-                                String username,
-                                String password) {
+                                String ifMatch) {
     if (StringUtils.isBlank(ifMatch)) {
       // Refused rather than sent unconditional: an unconditional PUT
       // overwrites silently, which is the exact class of loss the
       // conditional-write doctrine exists to make impossible.
       throw new IllegalArgumentException("An update needs the ETag its read answered; an unconditional overwrite is refused");
     }
-    return put(endpoint, href, icsData, "If-Match", ifMatch, username, password);
+    return put(endpoint, href, icsData, "If-Match", ifMatch);
   }
 
   @Override
-  public int deleteObject(CalDavEndpoint endpoint, String href, String ifMatch, String username, String password) {
+  public int deleteObject(CalDavEndpoint endpoint, String href, String ifMatch) {
     HttpRequest.Builder builder = HttpRequest.newBuilder(target(endpoint, href))
                                              .timeout(requestTimeout())
-                                             .header(AUTHORIZATION_HEADER, basicAuth(username, password))
+                                             .header(AUTHORIZATION_HEADER, authorization(endpoint))
                                              .DELETE();
     if (StringUtils.isNotBlank(ifMatch)) {
       builder.header("If-Match", ifMatch);
@@ -609,9 +649,7 @@ public class HttpCalDavClient implements CalDavClient {
   public MkCalendarResult mkCalendar(CalDavEndpoint endpoint,
                                      String href,
                                      String displayName,
-                                     String color,
-                                     String username,
-                                     String password) {
+                                     String color) {
     // The component set is never optional: BlueMind derives the created
     // collection's KIND from the <c:comp> elements, and a request without
     // them fails that derivation internally, swallows the failure and still
@@ -632,7 +670,7 @@ public class HttpCalDavClient implements CalDavClient {
         <c:mkcalendar xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:a="http://apple.com/ns/ical/">
           <d:set><d:prop>%s</d:prop></d:set>
         </c:mkcalendar>""".formatted(props);
-    HttpRequest request = request(endpoint, href, "MKCALENDAR", body, username, password).build();
+    HttpRequest request = request(endpoint, href, "MKCALENDAR", body).build();
     DavResponse response = exchange(request);
     // 401/407 only: a 403 on this write verb IS the refusal — BlueMind
     // refuses MKCALENDAR outright with credentials that are perfectly fine,
@@ -651,8 +689,6 @@ public class HttpCalDavClient implements CalDavClient {
    * @param icsData the iCalendar text to store
    * @param preconditionHeader which precondition header to send
    * @param preconditionValue its value, never blank here
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the status and, when the server sent them, the stored version
    *         and the object's real location
    */
@@ -660,16 +696,14 @@ public class HttpCalDavClient implements CalDavClient {
                         String href,
                         String icsData,
                         String preconditionHeader,
-                        String preconditionValue,
-                        String username,
-                        String password) {
+                        String preconditionValue) {
     HttpRequest.Builder builder = HttpRequest.newBuilder(target(endpoint, href))
                                      .timeout(requestTimeout())
                                      // An iCalendar object, not DAV XML: request() is not reused
                                      // because its Content-Type belongs to PROPFIND/REPORT bodies,
                                      // and a server told an .ics is application/xml may refuse it.
                                      .header("Content-Type", "text/calendar; charset=utf-8")
-                                     .header(AUTHORIZATION_HEADER, basicAuth(username, password))
+                                     .header(AUTHORIZATION_HEADER, authorization(endpoint))
                                      .method("PUT", BodyPublishers.ofString(icsData, StandardCharsets.UTF_8));
     if (StringUtils.isNotBlank(preconditionHeader)) {
       builder.header(preconditionHeader, preconditionValue);
@@ -792,12 +826,10 @@ public class HttpCalDavClient implements CalDavClient {
    * @param href the target's server-absolute path
    * @param body the request body
    * @param depth the Depth header value
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the multistatus element
    */
-  private Element propfind(CalDavEndpoint endpoint, String href, String body, String depth, String username, String password) {
-    HttpRequest request = request(endpoint, href, "PROPFIND", body, username, password).header(DEPTH_HEADER, depth).build();
+  private Element propfind(CalDavEndpoint endpoint, String href, String body, String depth) {
+    HttpRequest request = request(endpoint, href, "PROPFIND", body).header(DEPTH_HEADER, depth).build();
     DavResponse response = exchange(request);
     checkReadStatus(response, request);
     return parse(response.body(), request.uri());
@@ -810,12 +842,10 @@ public class HttpCalDavClient implements CalDavClient {
    * @param href the target's server-absolute path
    * @param body the request body
    * @param depth the Depth header value
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the multistatus element
    */
-  private Element report(CalDavEndpoint endpoint, String href, String body, String depth, String username, String password) {
-    HttpRequest request = request(endpoint, href, "REPORT", body, username, password).header(DEPTH_HEADER, depth).build();
+  private Element report(CalDavEndpoint endpoint, String href, String body, String depth) {
+    HttpRequest request = request(endpoint, href, "REPORT", body).header(DEPTH_HEADER, depth).build();
     DavResponse response = exchange(request);
     checkReadStatus(response, request);
     return parse(response.body(), request.uri());
@@ -828,20 +858,16 @@ public class HttpCalDavClient implements CalDavClient {
    * @param href the target's server-absolute path
    * @param method PROPFIND, REPORT or MKCALENDAR
    * @param body the XML body
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the builder, so the caller can add its Depth
    */
   private HttpRequest.Builder request(CalDavEndpoint endpoint,
                                       String href,
                                       String method,
-                                      String body,
-                                      String username,
-                                      String password) {
+                                      String body) {
     return HttpRequest.newBuilder(target(endpoint, href))
                       .timeout(requestTimeout())
                       .header("Content-Type", "application/xml; charset=utf-8")
-                      .header(AUTHORIZATION_HEADER, basicAuth(username, password))
+                      .header(AUTHORIZATION_HEADER, authorization(endpoint))
                       .method(method, BodyPublishers.ofString(body, StandardCharsets.UTF_8));
   }
 
@@ -1305,18 +1331,21 @@ public class HttpCalDavClient implements CalDavClient {
   }
 
   /**
-   * The Basic credentials header. Sent on every request rather than waiting
-   * to be challenged — which is what DAV servers expect, saves a round trip,
-   * and matters doubly against BlueMind, whose refusals do not even carry a
-   * {@code WWW-Authenticate} challenge to react to.
+   * The {@code Authorization} value for this endpoint's account, resolved per
+   * request rather than once per endpoint — see
+   * {@link CaldavCredentialsResolver#authorization(Long, String, String)} for
+   * why, and for why a production failure is not a
+   * {@link CalDavAuthenticationException}.
    *
-   * @param username the account
-   * @param password its password
-   * @return the header value
+   * @param endpoint the endpoint whose account is being addressed
+   * @return the header value to send, never assembled here
+   * @throws CalDavException when the configured provider cannot produce
+   *           credentials for the account
    */
-  private String basicAuth(String username, String password) {
-    String pair = StringUtils.defaultString(username) + ":" + StringUtils.defaultString(password);
-    return "Basic " + Base64.getEncoder().encodeToString(pair.getBytes(StandardCharsets.UTF_8));
+  private String authorization(CalDavEndpoint endpoint) {
+    return caldavCredentialsResolver.authorization(endpoint.getServerId(),
+                                                   endpoint.getAuthProviderName(),
+                                                   endpoint.getExoLogin());
   }
 
   /**
@@ -1399,11 +1428,11 @@ public class HttpCalDavClient implements CalDavClient {
   private static final String                COLLECTION_PREFIX = "exo-cal-";
 
   @Override
-  public int deleteCollection(CalDavEndpoint endpoint, CalendarSync pair, String username, String password) {
+  public int deleteCollection(CalDavEndpoint endpoint, CalendarSync pair) {
     String href = authorisedTarget(pair);
     HttpRequest request = HttpRequest.newBuilder(target(endpoint, href))
                                      .timeout(requestTimeout())
-                                     .header(AUTHORIZATION_HEADER, basicAuth(username, password))
+                                     .header(AUTHORIZATION_HEADER, authorization(endpoint))
                                      .DELETE()
                                      .build();
     DavResponse response = exchange(request);

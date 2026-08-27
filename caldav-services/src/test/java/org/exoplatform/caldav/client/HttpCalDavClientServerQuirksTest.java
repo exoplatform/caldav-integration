@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -46,6 +47,11 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.caldav.service.CaldavServerService;
+import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
+import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
 
 /**
  * The client against the recorded behaviour of the real servers — the
@@ -102,9 +108,14 @@ public class HttpCalDavClientServerQuirksTest {
   @BeforeEach
   void setUp() {
     transport = mock(HttpClient.class);
-    client = new HttpCalDavClient(transport, caldavServerService);
+    client = new HttpCalDavClient(transport, caldavServerService, new CaldavCredentialsResolver(credentialsAnswering("Basic stubbed")));
     sent = new ArrayList<>();
-    lenient().when(caldavServerService.resolveServerUrl(1L)).thenReturn(SERVER_URL);
+    lenient().when(caldavServerService.resolveServer(1L))
+             .thenReturn(new CaldavServer(1L, "agenda.caldavCalendar", "BlueMind", null, SERVER_URL, true, null, null, null,
+                                          null, true, null, null, null,
+                                          null, null, null, "personal"));
+    // The declared URL carries no {username}, so minting never asks the
+    // provider for an account — only the requests on this endpoint do.
     endpoint = client.endpoint(1L, USER);
   }
 
@@ -115,7 +126,7 @@ public class HttpCalDavClientServerQuirksTest {
     givenAnswer(403, Map.of("Content-Type", "text/html"), fixture("bluemind-403-refused-auth.http"));
 
     assertThrows(CalDavAuthenticationException.class,
-                 () -> client.discoverCalendarHome(endpoint, USER, PASSWORD),
+                 () -> client.discoverCalendarHome(endpoint),
                  "a 403 on a read verb IS the BlueMind credential refusal and must classify as one");
   }
 
@@ -124,7 +135,7 @@ public class HttpCalDavClientServerQuirksTest {
     givenAnswer(401, Map.of(), "");
 
     assertThrows(CalDavAuthenticationException.class,
-                 () -> client.putObject(endpoint, "/dav/calendars/vevent/x/a.ics", "BEGIN:VCALENDAR", USER, PASSWORD));
+                 () -> client.putObject(endpoint, "/dav/calendars/vevent/x/a.ics", "BEGIN:VCALENDAR"));
   }
 
   @Test
@@ -132,10 +143,10 @@ public class HttpCalDavClientServerQuirksTest {
     givenAnswer(403, Map.of(), "");
 
     assertThrows(CalDavException.class,
-                 () -> client.putObject(endpoint, "/dav/calendars/vevent/x/a.ics", "BEGIN:VCALENDAR", USER, PASSWORD));
+                 () -> client.putObject(endpoint, "/dav/calendars/vevent/x/a.ics", "BEGIN:VCALENDAR"));
     try {
       givenAnswer(403, Map.of(), "");
-      client.putObject(endpoint, "/dav/calendars/vevent/x/a.ics", "BEGIN:VCALENDAR", USER, PASSWORD);
+      client.putObject(endpoint, "/dav/calendars/vevent/x/a.ics", "BEGIN:VCALENDAR");
     } catch (CalDavException e) {
       assertFalse(e instanceof CalDavAuthenticationException,
                   "classifying a write refusal as bad credentials would pause accounts whose password is fine");
@@ -150,7 +161,7 @@ public class HttpCalDavClientServerQuirksTest {
     // If-None-Match:* — the worst case is a refused write.
     givenAnswer(500, Map.of("Content-Type", "text/html"), "internal error");
 
-    assertNull(client.fetchObject(endpoint, "/dav/calendars/vevent/x/missing.ics", USER, PASSWORD),
+    assertNull(client.fetchObject(endpoint, "/dav/calendars/vevent/x/missing.ics"),
                "absent, reported as a fact — the conditional create keeps the answer safe");
   }
 
@@ -163,7 +174,7 @@ public class HttpCalDavClientServerQuirksTest {
     // tests below for what it really does — so refused() never fires there.
     givenAnswer(405, Map.of(), "");
 
-    MkCalendarResult result = client.mkCalendar(endpoint, "/dav/calendars/vevent/x/exo-cal-1/", "eXo", null, USER, PASSWORD);
+    MkCalendarResult result = client.mkCalendar(endpoint, "/dav/calendars/vevent/x/exo-cal-1/", "eXo", null);
 
     assertTrue(result.refused(), "the caller maps this to its inbound-only degradation, it is not an error");
     assertFalse(result.provenCreated());
@@ -183,9 +194,8 @@ public class HttpCalDavClientServerQuirksTest {
                   new String[] { fixture("bluemind-mkcalendar-201-nothing-created.http"),
                       fixture("bluemind-propfind-home-depth1.xml") });
 
-    MkCalendarResult result = client.mkCalendar(endpoint, BLUEMIND_HOME + "exo-meetings/", "eXo Meetings", null, USER,
-                                                PASSWORD);
-    List<CalendarCollection> calendars = client.listCalendars(endpoint, BLUEMIND_HOME, USER, PASSWORD);
+    MkCalendarResult result = client.mkCalendar(endpoint, BLUEMIND_HOME + "exo-meetings/", "eXo Meetings", null);
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, BLUEMIND_HOME);
 
     assertTrue(result.provenCreated(), "the server's claim — everything a client trusting the status ever sees");
     assertFalse(result.refused(), "BlueMind never refuses: the failure hides behind a 201, not a 4xx");
@@ -205,9 +215,8 @@ public class HttpCalDavClientServerQuirksTest {
                   new String[] { fixture("bluemind-mkcalendar-201-nothing-created.http"),
                       fixture("bluemind-propfind-home-depth1-with-mirror.xml") });
 
-    MkCalendarResult result = client.mkCalendar(endpoint, BLUEMIND_HOME + "exo-meetings/", "eXo Meetings", null, USER,
-                                                PASSWORD);
-    List<CalendarCollection> calendars = client.listCalendars(endpoint, BLUEMIND_HOME, USER, PASSWORD);
+    MkCalendarResult result = client.mkCalendar(endpoint, BLUEMIND_HOME + "exo-meetings/", "eXo Meetings", null);
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, BLUEMIND_HOME);
 
     assertTrue(result.provenCreated());
     String body = bodyOf(sent.get(0));
@@ -222,8 +231,7 @@ public class HttpCalDavClientServerQuirksTest {
   void aMkCalendar207WithFailingPropstatsIsNeverASuccess() throws Exception {
     givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-mkcalendar-207-failing-propstat.xml"));
 
-    MkCalendarResult result = client.mkCalendar(endpoint, "/dav/calendars/vevent/x/exo-cal-1/", "eXo", "#FF0000",
-                                                USER, PASSWORD);
+    MkCalendarResult result = client.mkCalendar(endpoint, "/dav/calendars/vevent/x/exo-cal-1/", "eXo", "#FF0000");
 
     assertFalse(result.provenCreated(),
                 "MKCALENDAR is atomic: a 207 reports a rejected property and a collection that was NOT created");
@@ -238,7 +246,7 @@ public class HttpCalDavClientServerQuirksTest {
     // its propstat reading must survive the 404-propstat interleaving.
     givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-propfind-dav-rooted.xml"));
 
-    List<CalendarCollection> calendars = client.listCalendars(endpoint, "/dav/", USER, PASSWORD);
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, "/dav/");
 
     assertEquals(1, calendars.size());
     CalendarCollection calendar = calendars.get(0);
@@ -252,7 +260,7 @@ public class HttpCalDavClientServerQuirksTest {
   void theLiveStalwartListingParsesIntoCalendarsWithTheirFullPropertySet() throws Exception {
     givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("stalwart-home-depth1-full-props.xml"));
 
-    List<CalendarCollection> calendars = client.listCalendars(endpoint, "/dav/cal/alice%40stalwart.local/", USER, PASSWORD);
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, "/dav/cal/alice%40stalwart.local/");
 
     assertTrue(calendars.size() >= 2, "the rig holds at least the default calendar and the eXo mirror");
     assertTrue(calendars.stream().noneMatch(calendar -> "/dav/cal/alice%40stalwart.local/".equals(calendar.href())),
@@ -276,7 +284,7 @@ public class HttpCalDavClientServerQuirksTest {
     // properties live outside their status.
     givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("stalwart-home-depth1-full-props.xml"));
 
-    CalendarCollection home = client.readCalendar(endpoint, "/dav/cal/alice%40stalwart.local/", USER, PASSWORD);
+    CalendarCollection home = client.readCalendar(endpoint, "/dav/cal/alice%40stalwart.local/");
 
     assertNull(home, "the home is a plain collection, not a calendar — and its 404-propstat colour was never granted");
   }
@@ -286,8 +294,7 @@ public class HttpCalDavClientServerQuirksTest {
     givenAnswer(207, Map.of("Content-Type", "application/xml", "DAV", "1, 2, 3, access-control, calendar-access"),
                 fixture("stalwart-home-depth1-full-props.xml"));
 
-    ServerCapabilities capabilities = client.probeCapabilities(endpoint, "/dav/cal/alice%40stalwart.local/", USER,
-                                                               PASSWORD);
+    ServerCapabilities capabilities = client.probeCapabilities(endpoint, "/dav/cal/alice%40stalwart.local/");
 
     assertEquals(ServerCapabilities.SyncTier.SYNC_COLLECTION, capabilities.tier());
     assertTrue(capabilities.calendarMultiget());
@@ -423,5 +430,23 @@ public class HttpCalDavClientServerQuirksTest {
       Thread.currentThread().interrupt();
     }
     return body.toString();
+  }
+
+  /**
+   * A credentials provider answering a Basic header, which is what Personal
+   * produces. The client is not supposed to know that — it sends whatever it is
+   * given — so this exists to let the requests carry something, not to pin the
+   * scheme.
+   *
+   * @return the stubbed service
+   */
+  private static ConnectorCredentialsService credentialsAnswering(String header) {
+    ConnectorCredentialsService service = mock(ConnectorCredentialsService.class);
+    try {
+      lenient().doReturn(new HttpConnectorCredentials(header, null)).when(service).produce(any());
+    } catch (ConnectorCredentialsException e) {
+      throw new IllegalStateException(e);
+    }
+    return service;
   }
 }

@@ -107,11 +107,13 @@ public class CaldavDeletionService {
    * here stops agenda before it has touched anything.
    *
    * @param userIdentityId identity of the user
+   * @param username the eXo login the credentials provider resolves the
+   *          account from
    * @param calendarId the eXo calendar being deleted
    * @throws CaldavPushException when the remote deletion could not be carried
    *           out; nothing has been deleted on either side
    */
-  public void deleteRemoteCounterpart(long userIdentityId, long calendarId) {
+  public void deleteRemoteCounterpart(long userIdentityId, String username, long calendarId) {
     Calendar calendar = agendaCalendarService.getCalendarById(calendarId);
     CalendarSync pair = pairOf(userIdentityId, calendar);
 
@@ -137,7 +139,7 @@ public class CaldavDeletionService {
 
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     try {
-      if (!removeCollection(settings, pair)) {
+      if (!removeCollection(settings, username, pair)) {
         throw new CaldavPushException(NOTHING_DELETED,
                                       "The collection " + pair.getRemoteHref() + " is still listed after the deletion");
       }
@@ -369,9 +371,11 @@ public class CaldavDeletionService {
    * a promise nothing can keep.
    *
    * @param userIdentityId identity of the user
+   * @param username the eXo login the credentials provider resolves the
+   *          account from
    * @return what can be shown again, empty when nothing is hidden
    */
-  public List<HiddenCalendar> listHidden(long userIdentityId) {
+  public List<HiddenCalendar> listHidden(long userIdentityId, String username) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (settings == null || StringUtils.isBlank(settings.getUsername())) {
       return List.of();
@@ -386,7 +390,7 @@ public class CaldavDeletionService {
       // shown must not make the drawer wait on a server to find that out.
       return List.of();
     }
-    Map<String, String> namesByHref = collectionNames(settings);
+    Map<String, String> namesByHref = collectionNames(settings, username);
     List<HiddenCalendar> hidden = new ArrayList<>();
     for (CalendarSync tombstone : tombstones) {
       String name = namesByHref.get(CaldavSyncStorage.canonicalHref(tombstone.getRemoteHref()));
@@ -499,7 +503,7 @@ public class CaldavDeletionService {
         // permission to create, or one whose calendar is already gone. The
         // server is asked, once, and only when it turns out to be needed.
         if (remoteNames == null) {
-          remoteNames = collectionNames(settings);
+          remoteNames = collectionNames(settings, username);
         }
         state = new CalendarSyncState(state.id(),
                                       state.calendarId(),
@@ -540,17 +544,17 @@ public class CaldavDeletionService {
    * The account's collections, by canonical path.
    *
    * @param settings the connected account
+   * @param username the eXo login the credentials provider resolves the
+   *          account from
    * @return their display names, empty when the server cannot be listed
    */
-  private Map<String, String> collectionNames(CaldavUserSetting settings) {
+  private Map<String, String> collectionNames(CaldavUserSetting settings, String username) {
     Map<String, String> names = new HashMap<>();
     try {
-      CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
-      String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
+      CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
+      String home = calDavClient.discoverCalendarHome(endpoint);
       for (CalendarCollection collection : calDavClient.listCalendars(endpoint,
-                                                                     home,
-                                                                     settings.getUsername(),
-                                                                     settings.getPassword())) {
+                                                                     home)) {
         names.put(CaldavSyncStorage.canonicalHref(collection.href()),
                   StringUtils.defaultIfBlank(collection.displayName(), collection.href()));
       }
@@ -570,20 +574,22 @@ public class CaldavDeletionService {
    * Removes the collection and confirms it is gone.
    *
    * @param settings the connected account
+   * @param username the eXo login the credentials provider resolves the
+   *          account from
    * @param pair the binding whose collection goes
    * @return true when a fresh listing no longer shows it
    */
-  private boolean removeCollection(CaldavUserSetting settings, CalendarSync pair) {
+  private boolean removeCollection(CaldavUserSetting settings, String username, CalendarSync pair) {
     if (settings == null || StringUtils.isBlank(settings.getUsername())) {
       throw new CaldavPushException(CaldavPushService.NOT_CONNECTED,
                                     "No connected CalDAV account; nothing was deleted, in eXo or on the server");
     }
-    CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+    CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
     try {
-      calDavClient.deleteCollection(endpoint, pair, settings.getUsername(), settings.getPassword());
-      String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
+      calDavClient.deleteCollection(endpoint, pair);
+      String home = calDavClient.discoverCalendarHome(endpoint);
       String target = CaldavSyncStorage.canonicalHref(pair.getRemoteHref());
-      return calDavClient.listCalendars(endpoint, home, settings.getUsername(), settings.getPassword())
+      return calDavClient.listCalendars(endpoint, home)
                          .stream()
                          .noneMatch(collection -> target.equals(CaldavSyncStorage.canonicalHref(collection.href())));
     } catch (CalDavException e) {

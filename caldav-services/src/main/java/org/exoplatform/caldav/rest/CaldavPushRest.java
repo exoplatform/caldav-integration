@@ -114,7 +114,7 @@ public class CaldavPushRest {
                                                     required = true)
                                          @PathVariable("eventId")
                                          long eventId) {
-    ObjectSync written = caldavPushService.pushAgendaEvent(currentUser(), eventId);
+    ObjectSync written = caldavPushService.pushAgendaEvent(currentUser(), currentLogin(), eventId);
     // 204, not an empty 200: the caller asked for a copy and there is no
     // collection to make one in. Nothing failed, and nothing happened, and
     // those are different answers.
@@ -157,7 +157,7 @@ public class CaldavPushRest {
   public ResponseEntity<Void> delete(@Parameter(description = "iCalendar UID of the copied event", required = true)
                                      @PathVariable("icsUid")
                                      String icsUid) {
-    caldavPushService.deleteEvent(currentUser(), icsUid);
+    caldavPushService.deleteEvent(currentUser(), currentLogin(), icsUid);
     return ResponseEntity.noContent().build();
   }
 
@@ -184,7 +184,7 @@ public class CaldavPushRest {
                                                     required = true)
                                                 @PathVariable("occurrence")
                                                 String occurrence) {
-    caldavPushService.excludeOccurrence(currentUser(), icsUid, instantOf(occurrence));
+    caldavPushService.excludeOccurrence(currentUser(), currentLogin(), icsUid, instantOf(occurrence));
     return ResponseEntity.noContent().build();
   }
 
@@ -230,7 +230,7 @@ public class CaldavPushRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The destination"),
       @ApiResponse(responseCode = "204", description = "No destination is set") })
   public ResponseEntity<MirrorTarget> currentMirror() {
-    MirrorTarget mirror = caldavPushService.currentMirror(currentUser());
+    MirrorTarget mirror = caldavPushService.currentMirror(currentUser(), currentLogin());
     return mirror == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(mirror);
   }
 
@@ -243,7 +243,7 @@ public class CaldavPushRest {
       @ApiResponse(responseCode = "403", description = "Stored CalDAV credentials rejected upstream"),
       @ApiResponse(responseCode = "502", description = "No destination could be established") })
   public MirrorTarget mirror() {
-    return caldavPushService.ensureMirror(currentUser());
+    return caldavPushService.ensureMirror(currentUser(), currentLogin());
   }
 
   /**
@@ -284,7 +284,7 @@ public class CaldavPushRest {
                                                                  required = true)
                                                       @PathVariable("calendarId")
                                                       long calendarId) {
-    caldavDeletionService.deleteRemoteCounterpart(currentUser(), calendarId);
+    caldavDeletionService.deleteRemoteCounterpart(currentUser(), currentLogin(), calendarId);
     return ResponseEntity.noContent().build();
   }
 
@@ -327,7 +327,7 @@ public class CaldavPushRest {
           + "is synchronising is not news, and a calendar the user hid has its own listing.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The states, possibly empty") })
   public List<CalendarSyncState> calendarStates() {
-    return caldavDeletionService.listSyncStates(currentUser(), CaldavConnectorUtils.getCurrentUser());
+    return caldavDeletionService.listSyncStates(currentUser(), currentLogin());
   }
 
   @GetMapping("/hidden-calendars")
@@ -337,7 +337,7 @@ public class CaldavPushRest {
           + "screen shows it any more, so this is the only way back to it.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The hidden calendars, possibly none") })
   public List<HiddenCalendar> hiddenCalendars() {
-    return caldavDeletionService.listHidden(currentUser());
+    return caldavDeletionService.listHidden(currentUser(), currentLogin());
   }
 
   /**
@@ -360,7 +360,7 @@ public class CaldavPushRest {
                                                 @PathVariable("pairId")
                                                 long pairId) {
     try {
-      caldavDeletionService.showAgain(currentUser(), pairId, CaldavConnectorUtils.getCurrentUser());
+      caldavDeletionService.showAgain(currentUser(), pairId, currentLogin());
       return ResponseEntity.noContent().build();
     } catch (ObjectNotFoundException e) {
       // Not an incident: a stale drawer offering something already lifted.
@@ -405,5 +405,18 @@ public class CaldavPushRest {
    */
   private long currentUser() {
     return CaldavConnectorUtils.getCurrentUserIdentityId(identityManager);
+  }
+
+  /**
+   * The login of the same authenticated caller, read from the same
+   * conversation state — what the credentials provider resolves a CalDAV
+   * account from, where {@link #currentUser()} is what the storage and the
+   * agenda ACL are keyed by. Two names for one caller, and neither is ever
+   * taken from the request.
+   *
+   * @return the caller's eXo login
+   */
+  private String currentLogin() {
+    return CaldavConnectorUtils.getCurrentUser();
   }
 }

@@ -82,18 +82,20 @@ public class CaldavReadService {
    * in a log line no browser reads.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @return the calendars, each with a usable colour, and the flag saying
    *         whether the listing failed; empty and unfailed when no account is
    *         connected
    */
-  public RemoteCalendarsRead listCalendars(long userIdentityId) {
+  public RemoteCalendarsRead listCalendars(long userIdentityId, String username) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (!connected(settings)) {
       // Not a failure: there is no account to fail. A user who has connected
       // nothing must not be told their calendar server is down.
       return RemoteCalendarsRead.empty();
     }
-    CalDavEndpoint endpoint = endpointOf(settings);
+    CalDavEndpoint endpoint = endpointOf(settings, username);
     CollectionListing listing = readableCollections(userIdentityId, endpoint, settings);
     List<CalendarCollection> collections = listing.collections();
     List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
@@ -148,12 +150,14 @@ public class CaldavReadService {
    * failed hrefs are named.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param start beginning of the window
    * @param end end of the window
    * @return the occurrences, each tagged with the calendar it came from,
    *         beside the flag and the hrefs that say what was not read
    */
-  public RemoteEventsRead readEvents(long userIdentityId, Instant start, Instant end) {
+  public RemoteEventsRead readEvents(long userIdentityId, String username, Instant start, Instant end) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (!connected(settings) || start == null || end == null || !start.isBefore(end)) {
       // Neither of these is a failure of the account: there is no account, or
@@ -161,7 +165,7 @@ public class CaldavReadService {
       // a "could not be reached" banner on a user who connected nothing.
       return RemoteEventsRead.empty();
     }
-    CalDavEndpoint endpoint = endpointOf(settings);
+    CalDavEndpoint endpoint = endpointOf(settings, username);
     CollectionListing listing = readableCollections(userIdentityId, endpoint, settings);
     if (listing.failed()) {
       // The account itself could not be asked, so there is no per-calendar
@@ -210,9 +214,7 @@ public class CaldavReadService {
       List<CalendarObject> objects = calDavClient.calendarQuery(endpoint,
                                                                 collection.href(),
                                                                 start,
-                                                                end,
-                                                                settings.getUsername(),
-                                                                settings.getPassword());
+                                                                end);
       for (CalendarObject object : objects) {
         events.addAll(readObject(object, collection.href(), colour, start, end));
       }
@@ -393,11 +395,9 @@ public class CaldavReadService {
    */
   private CollectionListing collectionsOf(CalDavEndpoint endpoint, CaldavUserSetting settings) {
     try {
-      String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
+      String home = calDavClient.discoverCalendarHome(endpoint);
       return new CollectionListing(calDavClient.listCalendars(endpoint,
-                                                              home,
-                                                              settings.getUsername(),
-                                                              settings.getPassword()),
+                                                              home),
                                    false);
     } catch (CalDavException e) {
       LOG.warn("The calendars of the connected account could not be listed", e);
@@ -420,10 +420,12 @@ public class CaldavReadService {
    * The endpoint the account's server resolves to.
    *
    * @param settings the connected account
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @return the endpoint
    */
-  private CalDavEndpoint endpointOf(CaldavUserSetting settings) {
-    return calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+  private CalDavEndpoint endpointOf(CaldavUserSetting settings, String username) {
+    return calDavClient.endpoint(settings.getServerId(), username);
   }
 
   /**
