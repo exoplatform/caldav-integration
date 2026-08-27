@@ -193,13 +193,13 @@ public class CaldavDedicatedMirrorAnswerTest {
                                                                                      : new PageImpl<>(List.of()));
     lenient().when(agendaEventService.getEventById(ANSWERED)).thenReturn(event(ANSWERED));
     lenient().when(agendaEventService.getEventById(UNANSWERED)).thenReturn(event(UNANSWERED));
-    when(calDavClient.syncCollection(endpoint, COLLECTION + "/", "token-a", LOGIN, "secret"))
+    when(calDavClient.syncCollection(endpoint, COLLECTION + "/", "token-a"))
                                                                                             .thenReturn(new SyncCollectionResult(true,
                                                                                                                                  "token-b",
                                                                                                                                  List.of(named(ANSWERED_HREF),
                                                                                                                                          named(FRESH_HREF)),
                                                                                                                                  List.of()));
-    when(calDavClient.multiget(any(), anyString(), anyList(), anyString(), anyString()))
+    when(calDavClient.multiget(any(), anyString(), anyList()))
                                                                                        .thenReturn(List.of(copy(ANSWERED_HREF,
                                                                                                                 "TENTATIVE"),
                                                                                                            copy(FRESH_HREF,
@@ -212,7 +212,7 @@ public class CaldavDedicatedMirrorAnswerTest {
     // default destination this is the only pass that ever meets this copy.
     when(agendaEventAttendeeService.getEventResponse(ANSWERED, null, USER)).thenReturn(EventAttendeeResponse.NEEDS_ACTION);
 
-    assertEquals(1, service.readAnswers(USER, settings(), mirror()));
+    assertEquals(1, service.readAnswers(USER, LOGIN, settings(), mirror()));
 
     verify(agendaEventAttendeeService).sendEventResponse(ANSWERED, USER, EventAttendeeResponse.TENTATIVE);
   }
@@ -226,7 +226,7 @@ public class CaldavDedicatedMirrorAnswerTest {
     lenient().when(agendaEventAttendeeService.getEventResponse(ANSWERED, null, USER))
              .thenReturn(EventAttendeeResponse.NEEDS_ACTION);
 
-    service.readAnswers(USER, settings(), mirror());
+    service.readAnswers(USER, LOGIN, settings(), mirror());
 
     verify(agendaEventAttendeeService, never()).sendEventResponse(eq(UNANSWERED), anyLong(), any());
   }
@@ -240,7 +240,7 @@ public class CaldavDedicatedMirrorAnswerTest {
     // collection prevents and what this pass must not undo by reading it.
     when(agendaEventAttendeeService.getEventResponse(ANSWERED, null, USER)).thenReturn(EventAttendeeResponse.NEEDS_ACTION);
 
-    service.readAnswers(USER, settings(), mirror());
+    service.readAnswers(USER, LOGIN, settings(), mirror());
 
     verify(agendaCalendarService, never()).createCalendar(any(), anyString());
     verify(agendaEventService, never()).createEvent(any(), anyList(), anyList(), anyList(), anyList(), any(), anyBoolean(), anyLong());
