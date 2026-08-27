@@ -313,20 +313,55 @@ public class NormalisingServerMirrorTest {
   }
 
   @Test
-  public void aClientThatDroppedAnAttendeeIsCaught() {
-    // The roster is the meeting. A copy that lost one is not the copy eXo
-    // wrote, however tidily the rest of it is serialised.
+  public void anAttendeeTheServerDidNotKeepDoesNotMakeTheCopyLookRewritten() {
+    // The reverse of what this test asserted two rounds ago, by the architect's
+    // decision. A server that discards attendees it does not know about leaves
+    // a copy eXo can never make match: it re-pushes the whole roster, the
+    // server drops the same address again, and the pass says the same thing
+    // five minutes later. Four passes, because one proves nothing about a loop.
     IcsEvent invited = event();
     invited.setOrganizer(person("boss@acme.test", "The Boss"));
     invited.setAttendees(List.of(person("ann@acme.test", "Ann"), person("bob@acme.test", "Bob")));
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(invited);
     push.writeInto(USER, mirror, invited, EVENT);
-    assertEquals(0, verification.verify(USER).altered());
 
     server.editedByAClient(HREF,
                            Arrays.stream(server.stored(HREF).split("\r\n"))
                                  .filter(line -> !line.contains("bob@acme.test"))
                                  .collect(Collectors.joining("\r\n"))
+                              + "\r\n");
+
+    for (int pass = 0; pass < 4; pass++) {
+      MirrorVerification result = verification.verify(USER);
+
+      assertEquals(0, result.altered(), "pass " + pass);
+      assertEquals(0, result.repaired(), "pass " + pass);
+    }
+  }
+
+  @Test
+  public void aClientAddingAnAttendeeIsStillCaughtWhileAnotherIsBeingTolerated() {
+    // Both tolerances active on one object, end to end. The server never kept
+    // Bob, and a client has now added Mallory. The first is not a rewrite and
+    // the second is, and the pass has to separate them on the same copy — which
+    // is the whole risk of having two rules that point opposite ways.
+    IcsEvent invited = event();
+    invited.setOrganizer(person("boss@acme.test", "The Boss"));
+    invited.setAttendees(List.of(person("ann@acme.test", "Ann"), person("bob@acme.test", "Bob")));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(invited);
+    push.writeInto(USER, mirror, invited, EVENT);
+
+    // Inside the VEVENT, not appended to the document. Written the lazy way the
+    // added line lands after END:VCALENDAR, where it is not an attendee of
+    // anything — and the test still went green, on a parse failure rather than
+    // on the roster. Checking what the splice actually produced is what caught
+    // it.
+    server.editedByAClient(HREF,
+                           Arrays.stream(server.stored(HREF).split("\r\n"))
+                                 .filter(line -> !line.contains("bob@acme.test"))
+                                 .collect(Collectors.joining("\r\n"))
+                                 .replace("END:VEVENT",
+                                          "ATTENDEE;CN=Mallory:mailto:mallory@acme.test\r\nEND:VEVENT")
                               + "\r\n");
 
     assertEquals(1, verification.verify(USER).altered());

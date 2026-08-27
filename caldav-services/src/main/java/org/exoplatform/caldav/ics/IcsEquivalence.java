@@ -113,6 +113,15 @@ import net.fortuna.ical4j.model.component.VTimeZone;
  * {@link #tolerated}.
  *
  * <p>
+ * <b>And an attendee the server did not keep.</b> BlueMind discards attendees
+ * whose addresses are not in its directory, so a copy carries fewer people than
+ * eXo sent and no repair can change that. Tolerated for the same reason and in
+ * the opposite direction — which is why the two rules are stated separately and
+ * each names its own side. The cost is recorded where it belongs: the copy
+ * understates the guest list, and an attendee the server dropped cannot answer
+ * from it.
+ *
+ * <p>
  * <b>What the parser settles before this sees it.</b> ical4j unfolds continued
  * lines, unescapes TEXT values, trims a value's surrounding whitespace and
  * canonicalises a duration, so none of those can register as a difference and
@@ -862,13 +871,55 @@ public class IcsEquivalence {
    * <b>server's</b> side: eXo stating a line the copy no longer carries is an
    * attendee somebody removed, which is a difference in the ordinary way.
    *
+   * <p>
+   * <b>The mirror image: an attendee the server did not keep.</b> BlueMind
+   * discards attendees whose addresses are not in its own directory, so a copy
+   * legitimately carries fewer people than eXo sent. Repairing that achieves
+   * nothing — eXo re-pushes the whole roster, the server drops the same
+   * addresses again, and the next pass reports the same difference for ever. So
+   * for the question this pass asks, <i>did a client rewrite this copy</i>, an
+   * attendee the server declined to carry is not evidence of one.
+   *
+   * <p>
+   * <b>The two tolerances point opposite ways and must never meet.</b> The
+   * owner's covers a surplus on the <b>server's</b> side; this one covers a
+   * surplus on <b>eXo's</b>. Written as "compare only the attendees both sides
+   * share" they would collapse into tolerating every roster difference there
+   * is, which would blind this pass to the thing it exists for. They are two
+   * rules over one statement each, and each names its own direction — so a
+   * PARTSTAT change always leaves a server-side surplus that neither rule
+   * covers, and a client adding somebody is a server-side surplus of a
+   * non-owner, which neither covers either.
+   *
+   * <p>
+   * The owner is deliberately outside the second rule. The architect's reason
+   * for it — that a repair would be undone on the next write — does not hold
+   * for them: the owner is in the server's own directory by construction, so
+   * re-pushing their line sticks. An owner the copy has lost stays a
+   * difference.
+   *
    * @param statement the canonical statement that diverged
    * @param onServer how many times the server's copy states it
    * @param inExo how many times eXo's render states it
    * @return true when the divergence is not a rewrite
    */
   private boolean tolerated(String statement, int onServer, int inExo) {
-    return OWNER_ATTENDEE.equals(statement) && onServer > inExo;
+    if (OWNER_ATTENDEE.equals(statement)) {
+      return onServer > inExo;
+    }
+    return isAttendee(statement) && inExo > onServer;
+  }
+
+  /**
+   * Whether a canonical statement is an ordinary attendee line — not the
+   * owner's, whose statement is {@link #OWNER_ATTENDEE} and is governed by its
+   * own rule above.
+   *
+   * @param statement the canonical statement
+   * @return true when it states an attendee
+   */
+  private boolean isAttendee(String statement) {
+    return statement.startsWith("ATTENDEE;") || statement.startsWith("ATTENDEE=");
   }
 
   /**
