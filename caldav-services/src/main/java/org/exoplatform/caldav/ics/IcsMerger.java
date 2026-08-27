@@ -19,8 +19,12 @@ package org.exoplatform.caldav.ics;
 import java.io.StringReader;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
 
 import net.fortuna.ical4j.data.CalendarBuilder;
@@ -30,6 +34,8 @@ import net.fortuna.ical4j.model.DateTime;
 import net.fortuna.ical4j.model.DateList;
 import net.fortuna.ical4j.model.component.VEvent;
 import net.fortuna.ical4j.model.component.VTimeZone;
+import net.fortuna.ical4j.model.parameter.PartStat;
+import net.fortuna.ical4j.model.property.Attendee;
 import net.fortuna.ical4j.model.property.ExDate;
 import net.fortuna.ical4j.model.property.RecurrenceId;
 import net.fortuna.ical4j.model.property.TzId;
@@ -212,6 +218,156 @@ public class IcsMerger {
     } catch (Exception e) {
       throw new IcsParseException("The calendar object could not be read as iCalendar", e);
     }
+  }
+
+  /**
+   * Rewrites one attendee's participation status in the object a server holds,
+   * leaving every other byte of it alone.
+   *
+   * <p>
+   * The outward half of answering a meeting. An answer given in eXo — in the
+   * agenda screen, or through the tokenised link in the notification mail —
+   * only ever reached eXo's own database, so the copy on the user's calendar
+   * server went on displaying the answer it last carried. That is a wrong
+   * answer shown to its own author, and worse: the copy is also what the
+   * verification pass reads a client's answer back from, so a stale one is
+   * eventually adopted and the newer answer is silently lost.
+   *
+   * <p>
+   * A targeted rewrite rather than a fresh serialisation of the whole event:
+   * the object may carry overrides and properties another client wrote, and
+   * an answer is not consent to discard them. It is also what makes the write
+   * idempotent — an object that already says this comes back with no document
+   * to write, which is what stops an answer adopted from the copy from being
+   * pushed straight back at it.
+   *
+   * <p>
+   * Every VEVENT in the object is visited, master and overrides alike, because
+   * agenda propagates an answer to a series onto each of its exceptional
+   * occurrences: leaving the overrides on their old value would show the user
+   * one answer for the series and another for the instances of it they moved.
+   *
+   * <p>
+   * <b>A set of addresses, not one.</b> A copy does not name a person the same
+   * way everywhere: their own line carries the address their CalDAV account
+   * answers to, so that a client recognises the meeting as an invitation to
+   * its owner, while every other line — and every copy written before that
+   * rule existed — carries their eXo profile address. Being handed one address
+   * and told it is <i>the</i> one is how this silently matched nothing on a
+   * live rig: the caller offers every address that could name this person, and
+   * whichever the object actually holds is the one rewritten.
+   *
+   * @param existing the calendar object as fetched from the server
+   * @param addresses every address the copy might name this attendee by
+   * @param partStat the RFC 5545 token to set, already validated by
+   *          {@link IcsText#partStat(String)}
+   * @return whether the object names the attendee at all, and the document to
+   *         write back when the answer moved
+   * @throws IcsParseException when the document is not readable iCalendar
+   */
+  public AnswerRewrite setAttendeeResponse(String existing, Collection<String> addresses, String partStat) {
+    Set<String> wanted = comparableAddresses(addresses);
+    if (wanted.isEmpty() || StringUtils.isBlank(partStat)) {
+      return new AnswerRewrite(false, null);
+    }
+    Calendar target = parse(existing);
+    boolean named = false;
+    boolean changed = false;
+    for (Object component : target.getComponents(net.fortuna.ical4j.model.Component.VEVENT)) {
+      VEvent event = (VEvent) component;
+      for (Object property : event.getProperties(net.fortuna.ical4j.model.Property.ATTENDEE)) {
+        Attendee attendee = (Attendee) property;
+        if (!wanted.contains(bareAddress(attendee.getValue()))) {
+          continue;
+        }
+        named = true;
+        PartStat current = attendee.getParameter(net.fortuna.ical4j.model.Parameter.PARTSTAT);
+        if (current != null && StringUtils.equalsIgnoreCase(partStat, current.getValue())) {
+          continue;
+        }
+        // Removed then added rather than replaced: RFC 5545 allows a
+        // parameter once, and a document that reached us carrying two
+        // PARTSTATs must not be written back carrying two different ones.
+        attendee.getParameters().removeAll(net.fortuna.ical4j.model.Parameter.PARTSTAT);
+        attendee.getParameters().add(new PartStat(partStat));
+        changed = true;
+      }
+    }
+    return new AnswerRewrite(named, changed ? target.toString() : null);
+  }
+
+  /**
+   * What an attempted answer rewrite found.
+   *
+   * <p>
+   * The two reasons nothing is written are told apart on purpose, because they
+   * are not the same event at all. An object that already carries the answer
+   * is the ordinary idempotent case. An object that does not name the attendee
+   * <i>while eXo holds a mapping saying it is that user's copy</i> is an
+   * inconsistency worth saying out loud — it is exactly the state that made
+   * this propagation do nothing, silently, on a live rig.
+   *
+   * @param attendeeNamed whether any address offered matched a line on the
+   *          object
+   * @param document the object to write back, or null when nothing moved
+   */
+  public record AnswerRewrite(boolean attendeeNamed, String document) {
+
+    /**
+     * Whether there is something to write.
+     *
+     * @return true when the answer moved and the document must be sent
+     */
+    public boolean hasChange() {
+      return document != null;
+    }
+  }
+
+  /**
+   * The offered addresses reduced to what they compare as, with the blanks and
+   * the duplicates dropped.
+   *
+   * @param addresses every address the copy might name someone by, may be null
+   *          or hold nulls
+   * @return the comparable set, possibly empty
+   */
+  private Set<String> comparableAddresses(Collection<String> addresses) {
+    Set<String> comparable = new LinkedHashSet<>();
+    if (addresses == null) {
+      return comparable;
+    }
+    for (String address : addresses) {
+      String bare = bareAddress(address);
+      if (bare != null) {
+        comparable.add(bare);
+      }
+    }
+    return comparable;
+  }
+
+  /**
+   * A calendar user address stripped of its scheme and case, so that the same
+   * person written by two clients compares equal.
+   *
+   * <p>
+   * RFC 5545 makes the value a URI, and clients differ on the case of the
+   * scheme; the local part of a mailbox is technically case-sensitive, but no
+   * calendar server this connector talks to treats it as such, and matching on
+   * case would leave the answer unpropagated for a user whose server echoes
+   * their address back capitalised.
+   *
+   * @param value a CAL-ADDRESS or a bare mail address, may be null
+   * @return the comparable address, or null when there is none
+   */
+  private String bareAddress(String value) {
+    String trimmed = StringUtils.trimToNull(value);
+    if (trimmed == null) {
+      return null;
+    }
+    if (StringUtils.startsWithIgnoreCase(trimmed, "mailto:")) {
+      trimmed = StringUtils.trimToNull(trimmed.substring("mailto:".length()));
+    }
+    return trimmed == null ? null : trimmed.toLowerCase();
   }
 
   /**
