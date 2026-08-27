@@ -250,49 +250,23 @@ public class CaldavPushService {
   private final Set<String>      unresolvedMainCalendars = ConcurrentHashMap.newKeySet();
 
   /**
-   * Writes one event into the user's mirror calendar, creating the collection
-   * and the mapping row if this is the first time.
-   *
-   * @param userIdentityId identity of the user whose account is written to
-   * @param event the event to copy, with identities already resolved
-   * @return the mapping row as it now stands
-   * @throws CaldavPushException when the write cannot be carried out
-   */
-  public ObjectSync pushEvent(long userIdentityId, IcsEvent event) {
-    return pushEvent(userIdentityId, event, null);
-  }
-
-  /**
-   * Writes one event into the user's mirror calendar, recording which eXo
-   * event the resulting object stands for.
-   *
-   * @param userIdentityId identity of the user whose account is written to
-   * @param event the event to copy, with identities already resolved
-   * @param localEventId the agenda event this object stands for, or null when
-   *          the caller has none — the read half fills it in later
-   * @return the mapping row as it now stands
-   * @throws CaldavPushException when the write cannot be carried out
-   */
-  public ObjectSync pushEvent(long userIdentityId, IcsEvent event, Long localEventId) {
-    return pushEvent(userIdentityId, event, localEventId, false);
-  }
-
-  /**
    * Writes one event into the user's mirror calendar, overwriting a drifted
    * copy or not.
    *
    * @param userIdentityId identity of the user whose account is written to
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param event the event to copy, with identities already resolved
    * @param localEventId the agenda event this object stands for, or null
    * @param overwrite true to write without the conditional guard
    * @return the mapping row as it now stands
    * @throws CaldavPushException when the write cannot be carried out
    */
-  private ObjectSync pushEvent(long userIdentityId, IcsEvent event, Long localEventId, boolean overwrite) {
+  ObjectSync pushEvent(long userIdentityId, String username, IcsEvent event, Long localEventId, boolean overwrite) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
-    CalDavEndpoint endpoint = endpointOf(settings);
+    CalDavEndpoint endpoint = endpointOf(settings, username);
     MirrorTarget mirror = ensureMirror(userIdentityId, settings, endpoint);
-    return writeInto(userIdentityId, mirrorPair(userIdentityId, settings, mirror), event, localEventId, overwrite);
+    return writeInto(userIdentityId, username, mirrorPair(userIdentityId, settings, mirror), event, localEventId, overwrite);
   }
 
   /**
@@ -392,20 +366,24 @@ public class CaldavPushService {
    * for both, which was not true while the browser held two of them.
    *
    * @param userIdentityId identity of the user whose account is written to
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param pair the collection to write into
    * @param event the event to copy, with identities already resolved
    * @param localEventId the agenda event this object stands for, or null
    * @return the mapping row as it now stands
    * @throws CaldavPushException when the write cannot be carried out
    */
-  public ObjectSync writeInto(long userIdentityId, CalendarSync pair, IcsEvent event, Long localEventId) {
-    return writeInto(userIdentityId, pair, event, localEventId, false);
+  public ObjectSync writeInto(long userIdentityId, String username, CalendarSync pair, IcsEvent event, Long localEventId) {
+    return writeInto(userIdentityId, username, pair, event, localEventId, false);
   }
 
   /**
    * Writes one event into a collection, overwriting a drifted copy or not.
    *
    * @param userIdentityId identity of the user whose account is written to
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param pair the collection to write into
    * @param event the event to copy, with identities already resolved
    * @param localEventId the agenda event this object stands for, or null
@@ -415,12 +393,13 @@ public class CaldavPushService {
    * @throws CaldavPushException when the write cannot be carried out
    */
   private ObjectSync writeInto(long userIdentityId,
+                               String username,
                                CalendarSync pair,
                                IcsEvent event,
                                Long localEventId,
                                boolean overwrite) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
-    CalDavEndpoint endpoint = endpointOf(settings);
+    CalDavEndpoint endpoint = endpointOf(settings, username);
 
     String ics = icsWriter.write(event);
     ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), event.getUid());
@@ -559,9 +538,7 @@ public class CaldavPushService {
     try {
       calDavClient.deleteObject(endpoint,
                                 leftBehind.getRemoteHref(),
-                                leftBehind.getEtag(),
-                                settings.getUsername(),
-                                settings.getPassword());
+                                leftBehind.getEtag());
     } catch (RuntimeException e) {
       LOG.warn("The copy user {} left at {} when moving the event could not be removed; it stays, and so does its mapping",
                userIdentityId,
@@ -600,13 +577,15 @@ public class CaldavPushService {
    * is the only place that has to say so.
    *
    * @param userIdentityId identity of the user whose account is written to
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param eventId the agenda event to copy
    * @return the mapping row as it now stands, or null when nothing was written
    *         — the event is a date poll, or its calendar has no collection
    * @throws CaldavPushException when the event cannot be read or written
    */
-  public ObjectSync pushAgendaEvent(long userIdentityId, long eventId) {
-    return pushAgendaEvent(userIdentityId, eventId, false);
+  public ObjectSync pushAgendaEvent(long userIdentityId, String username, long eventId) {
+    return pushAgendaEvent(userIdentityId, username, eventId, false);
   }
 
   /**
@@ -628,13 +607,15 @@ public class CaldavPushService {
    * retirement that removes its copy.
    *
    * @param userIdentityId identity of the user whose account is written to
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param eventId the agenda event whose copy is rebuilt
    * @return the mapping row as it now stands, or null when nothing was written
    *         — the event is a date poll, or its calendar has no collection
    * @throws CaldavPushException when the event cannot be read or written
    */
-  public ObjectSync rewriteAgendaEvent(long userIdentityId, long eventId) {
-    return pushAgendaEvent(userIdentityId, eventId, true);
+  public ObjectSync rewriteAgendaEvent(long userIdentityId, String username, long eventId) {
+    return pushAgendaEvent(userIdentityId, username, eventId, true);
   }
 
   /**
@@ -692,13 +673,15 @@ public class CaldavPushService {
    * copy or not.
    *
    * @param userIdentityId identity of the user whose account is written to
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param eventId the agenda event to copy
    * @param overwrite true to write without the conditional guard, which only
    *          a repair may ask for
    * @return the mapping row as it now stands
    * @throws CaldavPushException when the event cannot be read or written
    */
-  private ObjectSync pushAgendaEvent(long userIdentityId, long eventId, boolean overwrite) {
+  private ObjectSync pushAgendaEvent(long userIdentityId, String username, long eventId, boolean overwrite) {
     Event event;
     try {
       // Read in the event's OWN zone, which is what a null argument asks
@@ -760,9 +743,9 @@ public class CaldavPushService {
                   event.getId());
         return null;
       }
-      return writeInto(userIdentityId, personal, icsEvent, event.getId(), overwrite);
+      return writeInto(userIdentityId, username, personal, icsEvent, event.getId(), overwrite);
     }
-    return pushEvent(userIdentityId, icsEvent, event.getId(), overwrite);
+    return pushEvent(userIdentityId, username, icsEvent, event.getId(), overwrite);
   }
 
   /**
@@ -827,21 +810,21 @@ public class CaldavPushService {
    * end state the caller asked for is the end state that holds.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param icsUid the iCalendar UID of the event to remove
    * @throws CaldavPushException when the deletion cannot be carried out
    */
-  public void deleteEvent(long userIdentityId, String icsUid) {
+  public void deleteEvent(long userIdentityId, String username, String icsUid) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
     ObjectSync known = objectAnywhere(userIdentityId, settings, icsUid);
     if (known == null || StringUtils.isBlank(known.getRemoteHref())) {
       return;
     }
     try {
-      calDavClient.deleteObject(endpointOf(settings),
+      calDavClient.deleteObject(endpointOf(settings, username),
                                known.getRemoteHref(),
-                               known.getEtag(),
-                               settings.getUsername(),
-                               settings.getPassword());
+                               known.getEtag());
     } catch (CalDavAuthenticationException e) {
       throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
     } catch (CalDavException e) {
@@ -865,11 +848,13 @@ public class CaldavPushService {
    * overwritten with a stale copy.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param icsUid the iCalendar UID of the series
    * @param occurrence the instance to exclude
    * @throws CaldavPushException when the rewrite cannot be carried out
    */
-  public void excludeOccurrence(long userIdentityId, String icsUid, Instant occurrence) {
+  public void excludeOccurrence(long userIdentityId, String username, String icsUid, Instant occurrence) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
     CalendarSync pair = existingMirrorPair(userIdentityId, settings);
     if (pair == null) {
@@ -879,12 +864,10 @@ public class CaldavPushService {
     if (known == null || StringUtils.isBlank(known.getRemoteHref())) {
       return;
     }
-    CalDavEndpoint endpoint = endpointOf(settings);
+    CalDavEndpoint endpoint = endpointOf(settings, username);
     try {
       CalendarObject existing = calDavClient.fetchObject(endpoint,
-                                                         known.getRemoteHref(),
-                                                         settings.getUsername(),
-                                                         settings.getPassword());
+                                                         known.getRemoteHref());
       if (existing == null || StringUtils.isBlank(existing.calendarData())) {
         return;
       }
@@ -893,18 +876,14 @@ public class CaldavPushService {
         // Nothing left in the object: the last instance was the one excluded.
         calDavClient.deleteObject(endpoint,
                                   known.getRemoteHref(),
-                                  known.getEtag(),
-                                  settings.getUsername(),
-                                  settings.getPassword());
+                                  known.getEtag());
         caldavSyncStorage.saveObject(cleared(known));
         return;
       }
       PutResult result = calDavClient.updateObject(endpoint,
                                                    known.getRemoteHref(),
                                                    rewritten,
-                                                   known.getEtag(),
-                                                   settings.getUsername(),
-                                                   settings.getPassword());
+                                                   known.getEtag());
       if (result.preconditionFailed()) {
         throw new CaldavPushException(CONFLICT, "The series at " + known.getRemoteHref() + " changed since it was read");
       }
@@ -970,13 +949,15 @@ public class CaldavPushService {
    * <i>non-organiser's</i> addresses really is a state somebody has to repair.
    *
    * @param userIdentityId identity of the user whose answer was recorded
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param eventId the agenda event answered — an occurrence is resolved to
    *          its series, which is what the copy is written under
    * @param response the answer as agenda holds it, e.g. {@code ACCEPTED}
    * @return true when the copy was rewritten
    * @throws CaldavPushException when the copy could not be written
    */
-  public boolean pushAnswer(long userIdentityId, long eventId, String response) {
+  public boolean pushAnswer(long userIdentityId, String username, long eventId, String response) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (!connected(settings)) {
       LOG.debug("Answer of user {} to event {} is not carried out: no connected CalDAV account", userIdentityId, eventId);
@@ -1029,12 +1010,10 @@ public class CaldavPushService {
                known.getRemoteHref());
       return false;
     }
-    CalDavEndpoint endpoint = endpointOf(settings);
+    CalDavEndpoint endpoint = endpointOf(settings, username);
     try {
       CalendarObject existing = calDavClient.fetchObject(endpoint,
-                                                        known.getRemoteHref(),
-                                                        settings.getUsername(),
-                                                        settings.getPassword());
+                                                        known.getRemoteHref());
       if (existing == null || StringUtils.isBlank(existing.calendarData())) {
         LOG.warn("Answer of user {} to event {} is not carried out: the copy at {} is mapped but the server serves"
             + " nothing at it",
@@ -1072,9 +1051,7 @@ public class CaldavPushService {
       PutResult result = calDavClient.updateObject(endpoint,
                                                    known.getRemoteHref(),
                                                    rewrite.document(),
-                                                   known.getEtag(),
-                                                   settings.getUsername(),
-                                                   settings.getPassword());
+                                                   known.getEtag());
       if (result.preconditionFailed()) {
         throw new CaldavPushException(CONFLICT, "The copy at " + known.getRemoteHref() + " changed since it was read");
       }
@@ -1351,6 +1328,8 @@ public class CaldavPushService {
    * settled must be the same copy.
    *
    * @param holderIdentityId identity of the user whose copy is written to
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param copy the mapping row naming that copy, with its href and the ETag
    *          the write is conditioned on
    * @param answererAddresses every address the copy might name the answerer
@@ -1361,6 +1340,7 @@ public class CaldavPushService {
    * @throws CaldavPushException when the copy could not be written
    */
   public AnswerOutcome pushAnswerOnto(long holderIdentityId,
+                                      String username,
                                       ObjectSync copy,
                                       List<String> answererAddresses,
                                       String response) {
@@ -1392,12 +1372,10 @@ public class CaldavPushService {
                copy.getRemoteHref());
       return AnswerOutcome.UNWRITABLE;
     }
-    CalDavEndpoint endpoint = endpointOf(settings);
+    CalDavEndpoint endpoint = endpointOf(settings, username);
     try {
       CalendarObject existing = calDavClient.fetchObject(endpoint,
-                                                        copy.getRemoteHref(),
-                                                        settings.getUsername(),
-                                                        settings.getPassword());
+                                                        copy.getRemoteHref());
       if (existing == null || StringUtils.isBlank(existing.calendarData())) {
         LOG.warn("An answer is not carried onto the copy of user {} at {}: it is mapped but the server serves nothing at it",
                  holderIdentityId,
@@ -1440,9 +1418,7 @@ public class CaldavPushService {
       PutResult result = calDavClient.updateObject(endpoint,
                                                    copy.getRemoteHref(),
                                                    rewrite.document(),
-                                                   copy.getEtag(),
-                                                   settings.getUsername(),
-                                                   settings.getPassword());
+                                                   copy.getEtag());
       if (result.preconditionFailed()) {
         throw new CaldavPushException(CONFLICT, "The copy at " + copy.getRemoteHref() + " changed since it was read");
       }
@@ -1590,14 +1566,16 @@ public class CaldavPushService {
    * push would not write to.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @return the destination and its current name, or null when the account
    *         has none — neither the one recorded nor one at the derived path
    */
-  public MirrorTarget currentMirror(long userIdentityId) {
+  public MirrorTarget currentMirror(long userIdentityId, String username) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
     boolean recorded = StringUtils.isNotBlank(settings.getMirrorCalendarHref());
     try {
-      return lookUpMirror(userIdentityId, settings);
+      return lookUpMirror(userIdentityId, username, settings);
     } catch (RuntimeException e) {
       if (recorded) {
         throw e;
@@ -1618,17 +1596,17 @@ public class CaldavPushService {
    *
    * @param userIdentityId identity of the user, so that a main calendar which
    *          cannot be resolved is said out loud from here too
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param settings the connected account
    * @return the destination and its current name, or null when the account
    *         holds neither the recorded collection nor one at the derived path
    */
-  private MirrorTarget lookUpMirror(long userIdentityId, CaldavUserSetting settings) {
-    CalDavEndpoint endpoint = endpointOf(settings);
-    String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
+  private MirrorTarget lookUpMirror(long userIdentityId, String username, CaldavUserSetting settings) {
+    CalDavEndpoint endpoint = endpointOf(settings, username);
+    String home = calDavClient.discoverCalendarHome(endpoint);
     List<CalendarCollection> calendars = calDavClient.listCalendars(endpoint,
-                                                                   home,
-                                                                   settings.getUsername(),
-                                                                   settings.getPassword());
+                                                                   home);
     return candidateOf(userIdentityId, mirrorTargetOf(settings), settings, endpoint, calendars, home)
                                                                                      .map(collection -> new MirrorTarget(collection.href(),
                                                                                                                          false,
@@ -1742,7 +1720,7 @@ public class CaldavPushService {
                                                       CaldavUserSetting settings,
                                                       CalDavEndpoint endpoint,
                                                       List<CalendarCollection> calendars) {
-    String named = calDavClient.discoverDefaultCalendar(endpoint, settings.getUsername(), settings.getPassword());
+    String named = calDavClient.discoverDefaultCalendar(endpoint);
     Optional<CalendarCollection> resolved = findMirror(calendars, named, null).or(() -> extensionOf(calendars, named));
     if (resolved.isPresent()) {
       // Out of the state: a later spell of it is worth saying again.
@@ -1933,15 +1911,17 @@ public class CaldavPushService {
    * asked for and never invented.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @return where the copies go, and whether an existing calendar was adopted
    * @throws CaldavPushException when no destination can be established —
    *           {@link #MAIN_CALENDAR_UNKNOWN} when the account names no default
    *           calendar, {@link #CREATION_REFUSED} when nothing could be created
    *           or adopted
    */
-  public MirrorTarget ensureMirror(long userIdentityId) {
+  public MirrorTarget ensureMirror(long userIdentityId, String username) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
-    return ensureMirror(userIdentityId, settings, endpointOf(settings));
+    return ensureMirror(userIdentityId, settings, endpointOf(settings, username));
   }
 
   /**
@@ -1953,11 +1933,9 @@ public class CaldavPushService {
    * @return the destination
    */
   private MirrorTarget ensureMirror(long userIdentityId, CaldavUserSetting settings, CalDavEndpoint endpoint) {
-    String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
+    String home = calDavClient.discoverCalendarHome(endpoint);
     List<CalendarCollection> calendars = calDavClient.listCalendars(endpoint,
-                                                                    home,
-                                                                    settings.getUsername(),
-                                                                    settings.getPassword());
+                                                                    home);
     // One question, asked the same way the settings screen asks it. On a
     // converged account of either kind this is where the method ends: the
     // collection is there, it is recorded, and nothing is created, adopted or
@@ -1983,17 +1961,13 @@ public class CaldavPushService {
     MkCalendarResult creation = calDavClient.mkCalendar(endpoint,
                                                         wanted,
                                                         MIRROR_DISPLAY_NAME,
-                                                        null,
-                                                        settings.getUsername(),
-                                                        settings.getPassword());
+                                                        null);
     // The status is never taken as proof. BlueMind answers 201 while creating
     // nothing when a request omits the supported component set, and that
     // false success cost three rounds of wrong diagnosis — so creation is
     // confirmed by reading the home again, and only that counts.
     Optional<CalendarCollection> created = findMirror(calDavClient.listCalendars(endpoint,
-                                                                                 home,
-                                                                                 settings.getUsername(),
-                                                                                 settings.getPassword()),
+                                                                                 home),
                                                       null,
                                                       wanted);
     if (created.isPresent()) {
@@ -2154,11 +2128,11 @@ public class CaldavPushService {
           // the state a repair exists to leave: forcing the write puts the
           // object back under the href being repaired and re-establishes the
           // mapping, where the create refused for ever.
-          return calDavClient.overwriteObject(endpoint, href, ics, settings.getUsername(), settings.getPassword());
+          return calDavClient.overwriteObject(endpoint, href, ics);
         }
-        return calDavClient.putObject(endpoint, href, ics, settings.getUsername(), settings.getPassword());
+        return calDavClient.putObject(endpoint, href, ics);
       }
-      CalendarObject existing = calDavClient.fetchObject(endpoint, href, settings.getUsername(), settings.getPassword());
+      CalendarObject existing = calDavClient.fetchObject(endpoint, href);
       String merged = existing == null || StringUtils.isBlank(existing.calendarData()) ? ics
                                                                               : icsMerger.merge(existing.calendarData(), ics, false);
       if (overwrite) {
@@ -2170,14 +2144,12 @@ public class CaldavPushService {
         // the write precisely when the object has drifted, which is the only
         // time a repair is attempted; an If-None-Match would refuse it
         // because the object exists, which it always does here.
-        return calDavClient.overwriteObject(endpoint, href, merged, settings.getUsername(), settings.getPassword());
+        return calDavClient.overwriteObject(endpoint, href, merged);
       }
       return calDavClient.updateObject(endpoint,
                                        href,
                                        merged,
-                                       known.getEtag(),
-                                       settings.getUsername(),
-                                       settings.getPassword());
+                                       known.getEtag());
     } catch (CalDavAuthenticationException e) {
       throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
     } catch (CalDavException e) {
@@ -2218,11 +2190,13 @@ public class CaldavPushService {
    * The endpoint the account's server resolves to.
    *
    * @param settings the connected account
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @return the endpoint
    */
-  private CalDavEndpoint endpointOf(CaldavUserSetting settings) {
+  private CalDavEndpoint endpointOf(CaldavUserSetting settings, String username) {
     try {
-      return calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+      return calDavClient.endpoint(settings.getServerId(), username);
     } catch (CalDavException e) {
       throw new CaldavPushException(NOT_CONNECTED, "No CalDAV server resolves for this account", e);
     }

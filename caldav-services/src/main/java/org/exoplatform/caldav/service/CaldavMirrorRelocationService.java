@@ -159,12 +159,14 @@ public class CaldavMirrorRelocationService {
    * is pending, and this costs one resolution and one page read.
    *
    * @param userIdentityId identity of the user whose copies are moved
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param settings the connected account
    * @param mirror the binding standing for the mirror collection
    * @return what the pass moved, and whether the change may be stamped applied
    */
-  public MirrorRelocation relocate(long userIdentityId, CaldavUserSetting settings, CalendarSync mirror) {
-    String destination = destinationOf(userIdentityId);
+  public MirrorRelocation relocate(long userIdentityId, String username, CaldavUserSetting settings, CalendarSync mirror) {
+    String destination = destinationOf(userIdentityId, username);
     if (destination == null) {
       return MirrorRelocation.deferred();
     }
@@ -172,7 +174,7 @@ public class CaldavMirrorRelocationService {
     if (pair == null) {
       return MirrorRelocation.deferred();
     }
-    return movePending(userIdentityId, settings, pair, destination);
+    return movePending(userIdentityId, username, settings, pair, destination);
   }
 
   /**
@@ -215,12 +217,14 @@ public class CaldavMirrorRelocationService {
    * sweep.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @return the collection the copies belong in, or null when none could be
    *         established
    */
-  private String destinationOf(long userIdentityId) {
+  private String destinationOf(long userIdentityId, String username) {
     try {
-      MirrorTarget target = caldavPushService.ensureMirror(userIdentityId);
+      MirrorTarget target = caldavPushService.ensureMirror(userIdentityId, username);
       String href = target == null || StringUtils.isBlank(target.href()) ? null : target.href();
       if (href != null) {
         // Out of whatever state this account was in: the next spell of one is
@@ -336,16 +340,19 @@ public class CaldavMirrorRelocationService {
    * nothing left to move costs one page read.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param settings the connected account
    * @param pair the mirror pair, already re-pointed
    * @param destination where the copies now go
    * @return the tally
    */
   private MirrorRelocation movePending(long userIdentityId,
+                                       String username,
                                        CaldavUserSetting settings,
                                        CalendarSync pair,
                                        String destination) {
-    CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+    CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
     // One listing per collection the pending copies are actually in — normally
     // exactly one, the calendar just left. Read once and reused, for the reason
     // the verification pass reads one: an ETag per object from a single PROPFIND
@@ -465,7 +472,7 @@ public class CaldavMirrorRelocationService {
       // guarded write carries a version the destination has never had. What
       // makes the overwrite legitimate is that the object at the destination is
       // this connector's own writing under this connector's own UID.
-      written = calDavClient.overwriteObject(endpoint, to, ics, settings.getUsername(), settings.getPassword());
+      written = calDavClient.overwriteObject(endpoint, to, ics);
     } catch (RuntimeException | LinkageError e) {
       LOG.warn("The copy at {} of user {} could not be written to {}; it stays where it is", from, userIdentityId, to, e);
       return Outcome.FAILED;
@@ -505,7 +512,7 @@ public class CaldavMirrorRelocationService {
                                 String from,
                                 String guard) {
     try {
-      int status = calDavClient.deleteObject(endpoint, from, guard, settings.getUsername(), settings.getPassword());
+      int status = calDavClient.deleteObject(endpoint, from, guard);
       if (status != PutResult.PRECONDITION_FAILED) {
         return true;
       }
@@ -599,7 +606,7 @@ public class CaldavMirrorRelocationService {
    */
   private CalendarObject fetch(CalDavEndpoint endpoint, CaldavUserSetting settings, String href) {
     try {
-      return calDavClient.fetchObject(endpoint, href, settings.getUsername(), settings.getPassword());
+      return calDavClient.fetchObject(endpoint, href);
     } catch (RuntimeException | LinkageError e) {
       LOG.debug("The copy at {} could not be read back before being moved", href, e);
       return null;
@@ -635,9 +642,7 @@ public class CaldavMirrorRelocationService {
         // ignores the slashless form of a collection without answering or
         // redirecting, and the request then spends the whole timeout.
         return calDavClient.listResourceEtags(endpoint,
-                                              StringUtils.appendIfMissing(path, "/"),
-                                              settings.getUsername(),
-                                              settings.getPassword());
+                                              StringUtils.appendIfMissing(path, "/"));
       } catch (RuntimeException | LinkageError e) {
         LOG.debug("The collection at {} could not be listed before its copies are moved", path, e);
         return Map.of();
