@@ -170,7 +170,7 @@ public class CaldavPushServiceTest {
   public void connectAnAccount() {
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, "john")).thenReturn(endpoint);
-    lenient().when(calDavClient.discoverCalendarHome(any(), anyString(), anyString())).thenReturn(HOME);
+    lenient().when(calDavClient.discoverCalendarHome(any())).thenReturn(HOME);
     lenient().when(icsWriter.write(any())).thenReturn("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n");
   }
 
@@ -184,10 +184,10 @@ public class CaldavPushServiceTest {
     CaldavUserSetting stored = settings();
     stored.setMirrorCalendarHref(MIRROR);
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(stored);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(MIRROR,
                                                                                                            "Mes reunions eXo")));
 
-    MirrorTarget target = service.currentMirror(USER);
+    MirrorTarget target = service.currentMirror(USER, "john");
 
     assertEquals(MIRROR, target.href());
     // The name comes from the server, not from anything stored: a user who
@@ -200,9 +200,9 @@ public class CaldavPushServiceTest {
     // A read on every render must not make a calendar on someone's account.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
 
-    assertNull(service.currentMirror(USER));
+    assertNull(service.currentMirror(USER, "john"));
 
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   @Test
@@ -212,15 +212,15 @@ public class CaldavPushServiceTest {
     // remember. Answering "none" here made eXo offer to create a calendar
     // that already existed — and invite a second one beside it.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(MIRROR,
                                                                                                            "eXo Meetings")));
 
-    MirrorTarget target = service.currentMirror(USER);
+    MirrorTarget target = service.currentMirror(USER, "john");
 
     assertNotNull(target);
     assertEquals(MIRROR, target.href());
     // Recognised, never re-made: this is a read.
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   @Test
@@ -228,10 +228,10 @@ public class CaldavPushServiceTest {
     // The other half of the rediscovery: recognising a collection at the
     // derived path must not turn "nothing there" into a false positive.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar("/dav/calendars/john/personal/",
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar("/dav/calendars/john/personal/",
                                                                                                            "Personal")));
 
-    assertNull(service.currentMirror(USER));
+    assertNull(service.currentMirror(USER, "john"));
   }
 
   @Test
@@ -240,10 +240,10 @@ public class CaldavPushServiceTest {
     // the user does not have: with nothing recorded, nothing is claimed lost,
     // and an account that cannot be reached simply has no known destination.
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
-    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+    when(calDavClient.discoverCalendarHome(any()))
         .thenThrow(new IllegalStateException("the calendar server could not be reached"));
 
-    assertNull(service.currentMirror(USER));
+    assertNull(service.currentMirror(USER, "john"));
   }
 
   @Test
@@ -253,10 +253,10 @@ public class CaldavPushServiceTest {
     CaldavUserSetting stored = settings();
     stored.setMirrorCalendarHref(MIRROR);
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(stored);
-    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+    when(calDavClient.discoverCalendarHome(any()))
         .thenThrow(new IllegalStateException("the calendar server could not be reached"));
 
-    assertThrows(IllegalStateException.class, () -> service.currentMirror(USER));
+    assertThrows(IllegalStateException.class, () -> service.currentMirror(USER, "john"));
   }
 
   @Test
@@ -266,37 +266,37 @@ public class CaldavPushServiceTest {
     CaldavUserSetting stored = settings();
     stored.setMirrorCalendarHref("/dav/cal/john/gone/");
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(stored);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of());
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of());
 
-    assertNull(service.currentMirror(USER));
+    assertNull(service.currentMirror(USER, "john"));
   }
 
   @Test
   public void anExistingMirrorIsReusedRatherThanRecreated() {
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(MIRROR,
                                                                                                             "eXo Meetings")));
 
-    MirrorTarget target = service.ensureMirror(USER);
+    MirrorTarget target = service.ensureMirror(USER, "john");
 
     assertEquals(MIRROR, target.href());
     assertFalse(target.adopted());
     // Asking twice for the same calendar must ask for the same collection: a
     // second MKCALENDAR is how a reconnecting user collected a new calendar
     // on the server every time.
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   @Test
   public void aCreatedMirrorIsProvenByReadingBack() {
     // The assertion this whole PR exists to make possible.
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(),
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(),
                                                                                           List.of(calendar(MIRROR,
                                                                                                            "eXo Meetings")));
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(201,
                                                                                                                                    List.of()));
 
-    MirrorTarget target = service.ensureMirror(USER);
+    MirrorTarget target = service.ensureMirror(USER, "john");
 
     assertEquals(MIRROR, target.href());
     assertFalse(target.adopted());
@@ -308,14 +308,14 @@ public class CaldavPushServiceTest {
     // BlueMind answers 201 while creating nothing when a request omits the
     // supported component set. Believing the status cost three rounds of
     // wrong diagnosis; the read-back is what decides.
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString()))
+    when(calDavClient.listCalendars(any(), eq(HOME)))
                                                                               .thenReturn(List.of(calendar("/dav/calendars/john/personal/",
                                                                                                            "Personal")));
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(201,
                                                                                                                                    List.of()));
 
-    MirrorTarget target = service.ensureMirror(USER);
+    MirrorTarget target = service.ensureMirror(USER, "john");
 
     // Not reported as created — adopted instead, and said so.
     assertTrue(target.adopted());
@@ -325,12 +325,12 @@ public class CaldavPushServiceTest {
 
   @Test
   public void anAccountWithNoCalendarAtAllIsARefusal() {
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of());
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of());
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(403,
                                                                                                                                    List.of()));
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
 
     assertEquals(CaldavPushService.CREATION_REFUSED, failure.getCode());
   }
@@ -348,16 +348,16 @@ public class CaldavPushServiceTest {
     // that already has its exo-meetings collection is answered from the
     // listing with nothing created, adopted or refused.
     givenAServerWriting(MirrorTargetKind.DEDICATED_CALENDAR);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(PERSONAL,
                                                                                                             "Personal"),
                                                                                                    calendar(MIRROR,
                                                                                                             "eXo Meetings")));
 
-    MirrorTarget target = service.ensureMirror(USER);
+    MirrorTarget target = service.ensureMirror(USER, "john");
 
     assertEquals(MIRROR, target.href());
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
-    verify(calDavClient, never()).discoverDefaultCalendar(any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
+    verify(calDavClient, never()).discoverDefaultCalendar(any());
   }
 
   /**
@@ -377,16 +377,16 @@ public class CaldavPushServiceTest {
     CaldavUserSetting onTheMainCalendar = settings();
     onTheMainCalendar.setMirrorCalendarHref(PERSONAL);
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(onTheMainCalendar);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(PERSONAL,
                                                                                                             "Personal"),
                                                                                                    calendar(MIRROR,
                                                                                                             "eXo Meetings")));
 
-    MirrorTarget target = service.ensureMirror(USER);
+    MirrorTarget target = service.ensureMirror(USER, "john");
 
     assertEquals(MIRROR, target.href());
     verify(caldavConnectorStorage).saveMirrorCalendarHref(MIRROR, USER);
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   /**
@@ -403,14 +403,14 @@ public class CaldavPushServiceTest {
     CaldavUserSetting adopted = settings();
     adopted.setMirrorCalendarHref(PERSONAL);
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(adopted);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work"),
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(WORK, "Work"),
                                                                                                    calendar(PERSONAL,
                                                                                                             "Personal")));
 
-    MirrorTarget target = service.ensureMirror(USER);
+    MirrorTarget target = service.ensureMirror(USER, "john");
 
     assertEquals(PERSONAL, target.href());
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   /**
@@ -424,18 +424,18 @@ public class CaldavPushServiceTest {
     // listing deliberately holds another calendar FIRST — taking the first one
     // listed is the guess this kind exists not to make.
     givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work"),
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(WORK, "Work"),
                                                                                                    calendar(PERSONAL,
                                                                                                             "Personal")));
-    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(PERSONAL);
+    when(calDavClient.discoverDefaultCalendar(any())).thenReturn(PERSONAL);
 
-    MirrorTarget target = service.ensureMirror(USER);
+    MirrorTarget target = service.ensureMirror(USER, "john");
 
     assertEquals(PERSONAL, target.href());
     assertEquals("Personal", target.name());
     assertFalse(target.adopted());
     verify(caldavConnectorStorage).saveMirrorCalendarHref(PERSONAL, USER);
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   /**
@@ -449,13 +449,13 @@ public class CaldavPushServiceTest {
     // schedule-default-calendar-URL pointing at a calendar the user deleted
     // would otherwise become a destination every push writes into nothing.
     givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work")));
-    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(PERSONAL);
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(WORK, "Work")));
+    when(calDavClient.discoverDefaultCalendar(any())).thenReturn(PERSONAL);
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
 
     assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
     verify(caldavConnectorStorage, never()).saveMirrorCalendarHref(anyString(), anyLong());
   }
 
@@ -470,15 +470,15 @@ public class CaldavPushServiceTest {
     // them, and adopting the first listed would file somebody's meetings into
     // a calendar nobody chose.
     givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work"),
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(WORK, "Work"),
                                                                                                    calendar(PERSONAL,
                                                                                                             "Personal")));
-    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(null);
+    when(calDavClient.discoverDefaultCalendar(any())).thenReturn(null);
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
 
     assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   /**
@@ -494,12 +494,12 @@ public class CaldavPushServiceTest {
     // whole destination was designed for, and every copy went on being written
     // where the administrator had stopped asking for them.
     givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work"),
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(WORK, "Work"),
                                                                                                    calendar(LISTED_DEFAULT,
                                                                                                             "Personal")));
-    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(NAMED_DEFAULT);
+    when(calDavClient.discoverDefaultCalendar(any())).thenReturn(NAMED_DEFAULT);
 
-    MirrorTarget target = service.ensureMirror(USER);
+    MirrorTarget target = service.ensureMirror(USER, "john");
 
     // The collection out of the listing, never the path the server answered:
     // the answer is confirmed against the account's own home, and it is the
@@ -507,7 +507,7 @@ public class CaldavPushServiceTest {
     assertEquals(LISTED_DEFAULT, target.href());
     assertEquals("Personal", target.name());
     verify(caldavConnectorStorage).saveMirrorCalendarHref(LISTED_DEFAULT, USER);
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   /**
@@ -520,14 +520,14 @@ public class CaldavPushServiceTest {
     // chose. Ambiguity is therefore not a near-miss to arbitrate: it ends the
     // same way naming nothing does.
     givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString()))
+    when(calDavClient.listCalendars(any(), eq(HOME)))
                                                                               .thenReturn(List.of(calendar(LISTED_DEFAULT,
                                                                                                            "Personal"),
                                                                                                   calendar(SECOND_DEFAULT,
                                                                                                            "Shared")));
-    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(NAMED_DEFAULT);
+    when(calDavClient.discoverDefaultCalendar(any())).thenReturn(NAMED_DEFAULT);
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
 
     assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
     verify(caldavConnectorStorage, never()).saveMirrorCalendarHref(anyString(), anyLong());
@@ -544,11 +544,11 @@ public class CaldavPushServiceTest {
     // its "default" on the strength of a server answering its own home — which
     // is a guess wearing the shape of a confirmation.
     givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(PERSONAL,
                                                                                                             "Personal")));
-    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(HOME);
+    when(calDavClient.discoverDefaultCalendar(any())).thenReturn(HOME);
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
 
     assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
     verify(caldavConnectorStorage, never()).saveMirrorCalendarHref(anyString(), anyLong());
@@ -568,15 +568,15 @@ public class CaldavPushServiceTest {
     // setting was changed to stop using — is worse than writing nothing and
     // saying so.
     givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(MIRROR,
                                                                                                             "eXo Meetings"),
                                                                                                    calendar(WORK, "Work")));
-    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(NAMED_DEFAULT);
+    when(calDavClient.discoverDefaultCalendar(any())).thenReturn(NAMED_DEFAULT);
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
 
     assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
     verify(caldavConnectorStorage, never()).saveMirrorCalendarHref(anyString(), anyLong());
   }
 
@@ -593,12 +593,12 @@ public class CaldavPushServiceTest {
     // address is what the one line needs and nothing else does, so counting
     // that call counts the lines.
     givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work")));
-    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(null);
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(WORK, "Work")));
+    when(calDavClient.discoverDefaultCalendar(any())).thenReturn(null);
 
-    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
-    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
-    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
+    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
+    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
 
     verify(caldavServerService, times(1)).resolveServerUrl(SERVER);
   }
@@ -613,13 +613,13 @@ public class CaldavPushServiceTest {
     // calendar the user deleted months after the first spell — as silent as the
     // bug this whole task is about.
     givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(PERSONAL,
                                                                                                             "Personal")));
-    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(null, PERSONAL, null);
+    when(calDavClient.discoverDefaultCalendar(any())).thenReturn(null, PERSONAL, null);
 
-    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
-    assertEquals(PERSONAL, service.ensureMirror(USER).href());
-    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
+    assertEquals(PERSONAL, service.ensureMirror(USER, "john").href());
+    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
 
     verify(caldavServerService, times(2)).resolveServerUrl(SERVER);
   }
@@ -635,10 +635,10 @@ public class CaldavPushServiceTest {
     // about where copies go. Refusing here would strand every copy of every
     // user on it.
     when(caldavServerService.resolveServer(SERVER)).thenThrow(new IllegalStateException("registry down"));
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(MIRROR,
                                                                                                             "eXo Meetings")));
 
-    assertEquals(MIRROR, service.ensureMirror(USER).href());
+    assertEquals(MIRROR, service.ensureMirror(USER, "john").href());
   }
 
   /**
@@ -650,33 +650,33 @@ public class CaldavPushServiceTest {
     // screen named a calendar the push would not have used - which is how a
     // user is told their meetings are being copied somewhere they are not.
     givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work"),
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(WORK, "Work"),
                                                                                                    calendar(PERSONAL,
                                                                                                             "Personal")));
-    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(PERSONAL);
+    when(calDavClient.discoverDefaultCalendar(any())).thenReturn(PERSONAL);
 
-    assertEquals(PERSONAL, service.currentMirror(USER).href());
-    assertEquals(PERSONAL, service.ensureMirror(USER).href());
+    assertEquals(PERSONAL, service.currentMirror(USER, "john").href());
+    assertEquals(PERSONAL, service.ensureMirror(USER, "john").href());
   }
 
   @Test
   public void aFirstPushIsConditionalOnTheObjectNotExisting() {
     givenAMirror();
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"etag-1\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    ObjectSync mapping = service.pushEvent(USER, event("evt-1"));
+    ObjectSync mapping = service.pushEvent(USER, "john", event("evt-1"), null, false);
 
     ArgumentCaptor<String> href = ArgumentCaptor.forClass(String.class);
-    verify(calDavClient).putObject(any(), href.capture(), anyString(), anyString(), anyString());
+    verify(calDavClient).putObject(any(), href.capture(), anyString());
     // The filename convention the browser push has always used, so objects
     // written before the migration are found rather than duplicated.
     assertEquals(MIRROR + "evt-1.ics", href.getValue());
     assertEquals("\"etag-1\"", mapping.getEtag());
-    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
   }
 
   @Test
@@ -686,7 +686,7 @@ public class CaldavPushServiceTest {
     // Two reads, and they answer different things on purpose: the first is the
     // merge read of what the server held before the write, the second is the
     // baseline read-back of what it holds after it.
-    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), anyString()))
                                                                                 .thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
                                                                                                                "\"etag-1\"",
                                                                                                                "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"),
@@ -694,29 +694,29 @@ public class CaldavPushServiceTest {
                                                                                                                "\"etag-2\"",
                                                                                                                "MERGED"));
     when(icsMerger.merge(anyString(), anyString(), eq(false))).thenReturn("MERGED");
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                            .thenReturn(new PutResult(204,
                                                                                                                                      "\"etag-2\"",
                                                                                                                                      null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    ObjectSync mapping = service.pushEvent(USER, event("evt-1"));
+    ObjectSync mapping = service.pushEvent(USER, "john", event("evt-1"), null, false);
 
     // Merged, never replaced: another client's overrides live in the same
     // object, and a wholesale replacement would destroy them.
-    verify(calDavClient).updateObject(any(), anyString(), eq("MERGED"), eq("\"etag-1\""), anyString(), anyString());
+    verify(calDavClient).updateObject(any(), anyString(), eq("MERGED"), eq("\"etag-1\""));
     assertEquals("\"etag-2\"", mapping.getEtag());
   }
 
   @Test
   public void aConcurrentEditSurfacesAsAConflict() {
     givenAMirror();
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(412,
                                                                                                                     null,
                                                                                                                     null));
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushEvent(USER, event("evt-1")));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushEvent(USER, "john", event("evt-1"), null, false));
 
     assertEquals(CaldavPushService.CONFLICT, failure.getCode());
     // Never retried blindly — deciding what to do about a concurrent edit is
@@ -727,10 +727,10 @@ public class CaldavPushServiceTest {
   @Test
   public void rejectedCredentialsKeepTheirOwnCode() {
     givenAMirror();
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenThrow(new CalDavAuthenticationException("refused"));
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushEvent(USER, event("evt-1")));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushEvent(USER, "john", event("evt-1"), null, false));
 
     assertEquals(CaldavPushService.CREDENTIALS, failure.getCode());
   }
@@ -739,7 +739,7 @@ public class CaldavPushServiceTest {
   public void anAccountThatIsNotConnectedCannotBePushedTo() {
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushEvent(USER, event("evt-1")));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushEvent(USER, "john", event("evt-1"), null, false));
 
     assertEquals(CaldavPushService.NOT_CONNECTED, failure.getCode());
   }
@@ -749,10 +749,10 @@ public class CaldavPushServiceTest {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-gone"))).thenReturn(null);
 
-    service.deleteEvent(USER, "evt-gone");
+    service.deleteEvent(USER, "john", "evt-gone");
 
     // The end state the caller asked for is the end state that holds.
-    verify(calDavClient, never()).deleteObject(any(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any());
   }
 
   @Test
@@ -773,13 +773,13 @@ public class CaldavPushServiceTest {
     givenAnAgendaEvent(130L, 0L);
     when(agendaRemoteEventService.findRemoteEvent(130L, USER)).thenReturn(null);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-130"));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 130L);
+    service.pushAgendaEvent(USER, "john", 130L);
 
     ArgumentCaptor<RemoteEvent> recorded = ArgumentCaptor.forClass(RemoteEvent.class);
     verify(agendaRemoteEventService).saveRemoteEvent(eq(130L), recorded.capture(), eq(USER));
@@ -797,13 +797,13 @@ public class CaldavPushServiceTest {
     known.setRemoteId("uuid-written-by-the-browser");
     when(agendaRemoteEventService.findRemoteEvent(101L, USER)).thenReturn(known);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uuid-written-by-the-browser"));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 101L);
+    service.pushAgendaEvent(USER, "john", 101L);
 
     ArgumentCaptor<String> uid = ArgumentCaptor.forClass(String.class);
     verify(agendaEventIcsMapper).toIcsEvent(any(), uid.capture(), anyLong());
@@ -817,13 +817,13 @@ public class CaldavPushServiceTest {
     givenAnAgendaEvent(102L, 0L);
     when(agendaRemoteEventService.findRemoteEvent(102L, USER)).thenReturn(null);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("minted"));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 102L);
+    service.pushAgendaEvent(USER, "john", 102L);
 
     // Recorded before the write: an interrupted push leaves an identifier
     // pointing at an object that may not exist, which the next push
@@ -839,13 +839,13 @@ public class CaldavPushServiceTest {
     known.setRemoteId("series-uid");
     when(agendaRemoteEventService.findRemoteEvent(99L, USER)).thenReturn(known);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("series-uid"));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 103L);
+    service.pushAgendaEvent(USER, "john", 103L);
 
     // A series and its overrides live in one object, so they share one UID —
     // an override under its own UID would appear as a second meeting.
@@ -862,13 +862,13 @@ public class CaldavPushServiceTest {
     givenAnAgendaEvent(104L, 0L);
     when(agendaRemoteEventService.findRemoteEvent(104L, USER)).thenReturn(null);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-104"));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    ObjectSync mapping = service.pushAgendaEvent(USER, 104L);
+    ObjectSync mapping = service.pushAgendaEvent(USER, "john", 104L);
 
     assertEquals(104L, mapping.getLocalEventId());
   }
@@ -895,9 +895,9 @@ public class CaldavPushServiceTest {
     givenEverythingAWriteNeeds();
     givenAnAgendaEvent(150L, 0L, EventStatus.TENTATIVE);
 
-    assertNull(service.pushAgendaEvent(USER, 150L));
+    assertNull(service.pushAgendaEvent(USER, "john", 150L));
 
-    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
     verify(caldavSyncStorage, never()).saveObject(any());
     // Not even an identifier: minting one records a remote event in agenda for
     // an object that is never going to exist.
@@ -915,10 +915,10 @@ public class CaldavPushServiceTest {
     givenEverythingAWriteNeeds();
     givenAnAgendaEvent(151L, 0L, EventStatus.TENTATIVE);
 
-    assertNull(service.rewriteAgendaEvent(USER, 151L));
+    assertNull(service.rewriteAgendaEvent(USER, "john", 151L));
 
-    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
-    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString());
   }
 
   /**
@@ -933,15 +933,15 @@ public class CaldavPushServiceTest {
     givenAnAgendaEvent(152L, 0L, EventStatus.CANCELLED);
     when(agendaRemoteEventService.findRemoteEvent(152L, USER)).thenReturn(null);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-152"));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    assertNotNull(service.pushAgendaEvent(USER, 152L));
+    assertNotNull(service.pushAgendaEvent(USER, "john", 152L));
 
-    verify(calDavClient).putObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient).putObject(any(), anyString(), anyString());
   }
 
   @Test
@@ -953,14 +953,14 @@ public class CaldavPushServiceTest {
     ObjectSync known = mapped("\"etag-1\"");
     known.setLocalEventId(104L);
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(known);
-    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString())).thenReturn(null);
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), anyString())).thenReturn(null);
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                            .thenReturn(new PutResult(204,
                                                                                                                                      "\"etag-2\"",
                                                                                                                                      null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    ObjectSync mapping = service.pushEvent(USER, event("evt-1"));
+    ObjectSync mapping = service.pushEvent(USER, "john", event("evt-1"), null, false);
 
     assertEquals(104L, mapping.getLocalEventId());
   }
@@ -981,25 +981,25 @@ public class CaldavPushServiceTest {
     givenAnAgendaEvent(120L, 0L);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("evt-1"));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(mapped("\"etag-1\""));
-    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), anyString()))
                                                                                .thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
                                                                                                               "\"etag-9\"",
                                                                                                               "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"));
     when(icsMerger.merge(anyString(), anyString(), anyBoolean())).thenReturn("MERGED");
-    when(calDavClient.overwriteObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.overwriteObject(any(), anyString(), anyString()))
                                                                                                  .thenReturn(new PutResult(204,
                                                                                                                            "\"etag-10\"",
                                                                                                                            null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.rewriteAgendaEvent(USER, 120L);
+    service.rewriteAgendaEvent(USER, "john", 120L);
 
-    verify(calDavClient).overwriteObject(any(), anyString(), eq("MERGED"), anyString(), anyString());
+    verify(calDavClient).overwriteObject(any(), anyString(), eq("MERGED"));
     // Neither of the guarded writes: If-Match is refused when the object has
     // drifted, and If-None-Match — which putObject sends — is refused because
     // the object exists. Both refuse exactly the case being repaired.
-    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
-    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
   }
 
   /**
@@ -1019,16 +1019,16 @@ public class CaldavPushServiceTest {
     givenAnAgendaEvent(122L, 0L);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("evt-1"));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(null);
-    when(calDavClient.overwriteObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.overwriteObject(any(), anyString(), anyString()))
                                                                                                 .thenReturn(new PutResult(204,
                                                                                                                           "\"etag-11\"",
                                                                                                                           null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.rewriteAgendaEvent(USER, 122L);
+    service.rewriteAgendaEvent(USER, "john", 122L);
 
-    verify(calDavClient).overwriteObject(any(), anyString(), anyString(), anyString(), anyString());
-    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient).overwriteObject(any(), anyString(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
   }
 
   /**
@@ -1044,16 +1044,16 @@ public class CaldavPushServiceTest {
     givenAnAgendaEvent(123L, 0L);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("evt-1"));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(null);
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"etag-12\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 123L);
+    service.pushAgendaEvent(USER, "john", 123L);
 
-    verify(calDavClient).putObject(any(), anyString(), anyString(), anyString(), anyString());
-    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient).putObject(any(), anyString(), anyString());
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString());
   }
 
   /**
@@ -1070,20 +1070,20 @@ public class CaldavPushServiceTest {
     givenAnAgendaEvent(121L, 0L);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("evt-1"));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(mapped("\"etag-1\""));
-    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), anyString()))
                                                                                .thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
                                                                                                               "\"etag-9\"",
                                                                                                               "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"));
     when(icsMerger.merge(anyString(), anyString(), anyBoolean())).thenReturn("MERGED");
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(204,
                                                                                                                                     "\"etag-10\"",
                                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 121L);
+    service.pushAgendaEvent(USER, "john", 121L);
 
-    verify(calDavClient).updateObject(any(), anyString(), eq("MERGED"), eq("\"etag-1\""), anyString(), anyString());
+    verify(calDavClient).updateObject(any(), anyString(), eq("MERGED"), eq("\"etag-1\""));
   }
 
   /**
@@ -1098,10 +1098,10 @@ public class CaldavPushServiceTest {
   public void anEventTheCallerMayNotSeeIsNeverCopied() throws Exception {
     when(agendaEventService.getEventById(eq(105L), any(), eq(USER))).thenThrow(new IllegalAccessException("not a member"));
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushAgendaEvent(USER, 105L));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushAgendaEvent(USER, "john", 105L));
 
     assertEquals(CaldavPushService.SAVE, failure.getCode());
-    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
   }
 
   /**
@@ -1116,7 +1116,7 @@ public class CaldavPushServiceTest {
   public void anEventThatIsGoneStopsBeforeAnIdentifierIsMinted() throws Exception {
     when(agendaEventService.getEventById(eq(106L), any(), eq(USER))).thenReturn(null);
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushAgendaEvent(USER, 106L));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushAgendaEvent(USER, "john", 106L));
 
     assertEquals(CaldavPushService.SAVE, failure.getCode());
     verify(agendaRemoteEventService, never()).saveRemoteEvent(anyLong(), any(), anyLong());
@@ -1132,9 +1132,9 @@ public class CaldavPushServiceTest {
   public void deletingFromAnAccountThatNeverPushedCreatesNothing() {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of());
 
-    service.deleteEvent(USER, "evt-1");
+    service.deleteEvent(USER, "john", "evt-1");
 
-    verify(calDavClient, never()).deleteObject(any(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any());
     verify(caldavSyncStorage, never()).savePair(any());
     verify(caldavSyncStorage, never()).saveObject(any());
   }
@@ -1152,9 +1152,9 @@ public class CaldavPushServiceTest {
     when(caldavSyncStorage.getObjectByUid(1L, "evt-1")).thenReturn(mapped("\"etag-1\""));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.deleteEvent(USER, "evt-1");
+    service.deleteEvent(USER, "john", "evt-1");
 
-    verify(calDavClient).deleteObject(endpoint, MIRROR + "evt-1.ics", "\"etag-1\"", "john", "secret");
+    verify(calDavClient).deleteObject(endpoint, MIRROR + "evt-1.ics", "\"etag-1\"");
     ArgumentCaptor<ObjectSync> cleared = ArgumentCaptor.forClass(ObjectSync.class);
     verify(caldavSyncStorage).saveObject(cleared.capture());
     assertEquals("evt-1", cleared.getValue().getIcsUid());
@@ -1174,9 +1174,9 @@ public class CaldavPushServiceTest {
     unbound.setRemoteHref(" ");
     when(caldavSyncStorage.getObjectByUid(1L, "evt-1")).thenReturn(unbound);
 
-    service.deleteEvent(USER, "evt-1");
+    service.deleteEvent(USER, "john", "evt-1");
 
-    verify(calDavClient, never()).deleteObject(any(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any());
   }
 
   /**
@@ -1189,10 +1189,10 @@ public class CaldavPushServiceTest {
   public void credentialsRejectedOnARemovalKeepTheirOwnCode() {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
     when(caldavSyncStorage.getObjectByUid(1L, "evt-1")).thenReturn(mapped("\"etag-1\""));
-    when(calDavClient.deleteObject(any(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.deleteObject(any(), anyString(), any()))
                                                                                         .thenThrow(new CalDavAuthenticationException("refused"));
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.deleteEvent(USER, "evt-1"));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.deleteEvent(USER, "john", "evt-1"));
 
     assertEquals(CaldavPushService.CREDENTIALS, failure.getCode());
   }
@@ -1206,10 +1206,10 @@ public class CaldavPushServiceTest {
   public void aRefusedRemovalLeavesTheMappingPointingAtTheObject() {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
     when(caldavSyncStorage.getObjectByUid(1L, "evt-1")).thenReturn(mapped("\"etag-1\""));
-    when(calDavClient.deleteObject(any(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.deleteObject(any(), anyString(), any()))
                                                                                         .thenThrow(new CalDavException("the server said no"));
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.deleteEvent(USER, "evt-1"));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.deleteEvent(USER, "john", "evt-1"));
 
     assertEquals(CaldavPushService.SAVE, failure.getCode());
     verify(caldavSyncStorage, never()).saveObject(any());
@@ -1223,7 +1223,7 @@ public class CaldavPushServiceTest {
    */
   @Test
   public void aFirstPushBindsAPairToTheMirrorItWritesUnder() {
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(MIRROR,
                                                                                                             "eXo Meetings")));
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of());
     when(caldavSyncStorage.savePair(any())).thenAnswer(invocation -> {
@@ -1231,13 +1231,13 @@ public class CaldavPushServiceTest {
       created.setId(9L);
       return created;
     });
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    ObjectSync mapping = service.pushEvent(USER, event("evt-1"));
+    ObjectSync mapping = service.pushEvent(USER, "john", event("evt-1"), null, false);
 
     ArgumentCaptor<CalendarSync> created = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(created.capture());
@@ -1256,19 +1256,19 @@ public class CaldavPushServiceTest {
    */
   @Test
   public void aMirrorThatMovedIsReboundRatherThanDoubled() {
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(MIRROR,
                                                                                                             "eXo Meetings")));
     CalendarSync moved = pair();
     moved.setRemoteHref("/dav/calendars/john/meetings-as-they-were");
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(moved));
     when(caldavSyncStorage.savePair(any())).thenAnswer(invocation -> invocation.getArgument(0));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushEvent(USER, event("evt-1"));
+    service.pushEvent(USER, "john", event("evt-1"), null, false);
 
     ArgumentCaptor<CalendarSync> rebound = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(rebound.capture());
@@ -1283,18 +1283,18 @@ public class CaldavPushServiceTest {
    */
   @Test
   public void aDuplicatedMirrorPairDoesNotForkWhereTheCopiesGo() {
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(MIRROR,
                                                                                                             "eXo Meetings")));
     CalendarSync duplicate = pair();
     duplicate.setId(2L);
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair(), duplicate));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    ObjectSync mapping = service.pushEvent(USER, event("evt-1"));
+    ObjectSync mapping = service.pushEvent(USER, "john", event("evt-1"), null, false);
 
     assertEquals(1L, mapping.getCalendarSyncId());
     verify(caldavSyncStorage, never()).savePair(any());
@@ -1312,10 +1312,10 @@ public class CaldavPushServiceTest {
     halfStored.setPassword(" ");
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(halfStored);
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
 
     assertEquals(CaldavPushService.NOT_CONNECTED, failure.getCode());
-    verify(calDavClient, never()).discoverCalendarHome(any(), anyString(), anyString());
+    verify(calDavClient, never()).discoverCalendarHome(any());
   }
 
   /**
@@ -1328,7 +1328,7 @@ public class CaldavPushServiceTest {
   public void anAccountWhoseServerNoLongerResolvesIsNotConnected() {
     when(calDavClient.endpoint(SERVER, "john")).thenThrow(new CalDavException("no server row"));
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
 
     assertEquals(CaldavPushService.NOT_CONNECTED, failure.getCode());
   }
@@ -1342,10 +1342,10 @@ public class CaldavPushServiceTest {
   @Test
   public void aWriteTheServerRefusesRecordsNothing() {
     givenAMirror();
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenThrow(new CalDavException("507 insufficient storage"));
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushEvent(USER, event("evt-1")));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushEvent(USER, "john", event("evt-1"), null, false));
 
     assertEquals(CaldavPushService.SAVE, failure.getCode());
     verify(caldavSyncStorage, never()).saveObject(any());
@@ -1365,13 +1365,13 @@ public class CaldavPushServiceTest {
     interrupted.setCalendarSyncId(1L);
     interrupted.setIcsUid("evt-1");
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(interrupted);
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"etag-1\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    ObjectSync mapping = service.pushEvent(USER, event("evt-1"));
+    ObjectSync mapping = service.pushEvent(USER, "john", event("evt-1"), null, false);
 
     // The href comes back from the filename convention, since the row that
     // would have carried one never got that far.
@@ -1382,8 +1382,8 @@ public class CaldavPushServiceTest {
     // that briefly sat here, because the baseline it captured could not be
     // trusted and is no longer recorded at all.
     verify(icsMerger, never()).merge(anyString(), anyString(), anyBoolean());
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
-    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
   }
 
   /**
@@ -1396,25 +1396,23 @@ public class CaldavPushServiceTest {
   public void anEmptyObjectOnTheServerIsWrittenOverRatherThanMergedInto() {
     givenAMirror();
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(mapped("\"etag-1\""));
-    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), anyString()))
                                                                                 .thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
                                                                                                                "\"etag-1\"",
                                                                                                                "  "));
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                            .thenReturn(new PutResult(204,
                                                                                                                                      "\"etag-2\"",
                                                                                                                                      null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushEvent(USER, event("evt-1"));
+    service.pushEvent(USER, "john", event("evt-1"), null, false);
 
     verify(icsMerger, never()).merge(anyString(), anyString(), anyBoolean());
     verify(calDavClient).updateObject(any(),
                                       anyString(),
                                       eq("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"),
-                                      eq("\"etag-1\""),
-                                      anyString(),
-                                      anyString());
+                                      eq("\"etag-1\""));
   }
 
   /**
@@ -1432,13 +1430,13 @@ public class CaldavPushServiceTest {
     blank.setRemoteId(" ");
     when(agendaRemoteEventService.findRemoteEvent(107L, USER)).thenReturn(blank);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("minted"));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 107L);
+    service.pushAgendaEvent(USER, "john", 107L);
 
     verify(agendaRemoteEventService).saveRemoteEvent(eq(107L), any(), eq(USER));
   }
@@ -1451,11 +1449,11 @@ public class CaldavPushServiceTest {
    */
   @Test
   public void aCalendarListedWithoutAnHrefIsNotMistakenForTheMirror() {
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString()))
+    when(calDavClient.listCalendars(any(), eq(HOME)))
                                                                               .thenReturn(List.of(calendar(null, "Placeholder"),
                                                                                                   calendar(MIRROR, "eXo Meetings")));
 
-    MirrorTarget target = service.ensureMirror(USER);
+    MirrorTarget target = service.ensureMirror(USER, "john");
 
     assertEquals(MIRROR, target.href());
     assertFalse(target.adopted());
@@ -1473,16 +1471,16 @@ public class CaldavPushServiceTest {
     unregistered.setServerId(null);
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(unregistered);
     when(calDavClient.endpoint(null, "john")).thenReturn(endpoint);
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(MIRROR,
                                                                                                             "eXo Meetings")));
     when(caldavSyncStorage.getPairsByOrigin(USER, 0L, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushEvent(USER, event("evt-1"));
+    service.pushEvent(USER, "john", event("evt-1"), null, false);
 
     verify(caldavSyncStorage).getPairsByOrigin(USER, 0L, SyncOrigin.MIRROR);
   }
@@ -1499,13 +1497,13 @@ public class CaldavPushServiceTest {
     givenAnAgendaEvent(105L, 0L);
     when(agendaRemoteEventService.findRemoteEvent(105L, USER)).thenReturn(null);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-105"));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 105L);
+    service.pushAgendaEvent(USER, "john", 105L);
 
     // null is how agenda is asked for the event's own zone.
     verify(agendaEventService).getEventById(105L, null, USER);
@@ -1516,23 +1514,23 @@ public class CaldavPushServiceTest {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
     ObjectSync known = mapped("\"etag-1\"");
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("series-uid"))).thenReturn(known);
-    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), anyString()))
                                                                                 .thenReturn(new CalendarObject(known.getRemoteHref(),
                                                                                                                "\"etag-1\"",
                                                                                                                "BEGIN:VCALENDAR"));
     when(icsMerger.excludeOccurrence(anyString(), any())).thenReturn("REWRITTEN");
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                            .thenReturn(new PutResult(204,
                                                                                                                                      "\"etag-2\"",
                                                                                                                                      null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.excludeOccurrence(USER, "series-uid", Instant.parse("2026-09-15T07:00:00Z"));
+    service.excludeOccurrence(USER, "john", "series-uid", Instant.parse("2026-09-15T07:00:00Z"));
 
     // Every component of a series lives in one object: deleting it would
     // cancel every meeting of the series to cancel one.
-    verify(calDavClient).updateObject(any(), anyString(), eq("REWRITTEN"), eq("\"etag-1\""), anyString(), anyString());
-    verify(calDavClient, never()).deleteObject(any(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient).updateObject(any(), anyString(), eq("REWRITTEN"), eq("\"etag-1\""));
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any());
   }
 
   @Test
@@ -1541,34 +1539,35 @@ public class CaldavPushServiceTest {
     // then served to clients that choke on it.
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("series-uid"))).thenReturn(mapped("\"etag-1\""));
-    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), anyString()))
                                                                                 .thenReturn(new CalendarObject("/h",
                                                                                                                "\"etag-1\"",
                                                                                                                "BEGIN:VCALENDAR"));
     when(icsMerger.excludeOccurrence(anyString(), any())).thenReturn(null);
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.excludeOccurrence(USER, "series-uid", Instant.parse("2026-09-15T07:00:00Z"));
+    service.excludeOccurrence(USER, "john", "series-uid", Instant.parse("2026-09-15T07:00:00Z"));
 
-    verify(calDavClient).deleteObject(any(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient).deleteObject(any(), anyString(), any());
   }
 
   @Test
   public void aSeriesChangedElsewhereSurfacesAsAConflict() {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("series-uid"))).thenReturn(mapped("\"etag-1\""));
-    when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), anyString()))
                                                                                 .thenReturn(new CalendarObject("/h",
                                                                                                                "\"etag-1\"",
                                                                                                                "BEGIN:VCALENDAR"));
     when(icsMerger.excludeOccurrence(anyString(), any())).thenReturn("REWRITTEN");
-    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                            .thenReturn(new PutResult(412,
                                                                                                                                      null,
                                                                                                                                      null));
 
     CaldavPushException failure = assertThrows(CaldavPushException.class,
                                                () -> service.excludeOccurrence(USER,
+                                                                               "john",
                                                                                "series-uid",
                                                                                Instant.parse("2026-09-15T07:00:00Z")));
 
@@ -1580,9 +1579,9 @@ public class CaldavPushServiceTest {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("unknown"))).thenReturn(null);
 
-    service.excludeOccurrence(USER, "unknown", Instant.parse("2026-09-15T07:00:00Z"));
+    service.excludeOccurrence(USER, "john", "unknown", Instant.parse("2026-09-15T07:00:00Z"));
 
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
   }
 
   @Test
@@ -1595,18 +1594,18 @@ public class CaldavPushServiceTest {
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(boundPersonalPair());
     when(agendaRemoteEventService.findRemoteEvent(110L, USER)).thenReturn(null);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-110"));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    ObjectSync mapping = service.pushAgendaEvent(USER, 110L);
+    ObjectSync mapping = service.pushAgendaEvent(USER, "john", 110L);
 
     assertEquals(9L, mapping.getCalendarSyncId());
     // The mirror is never established for a personal event: doing so would
     // create a collection the user did not ask for.
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   @Test
@@ -1627,16 +1626,16 @@ public class CaldavPushServiceTest {
     when(agendaRemoteEventService.findRemoteEvent(111L, USER)).thenReturn(null);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-111"));
 
-    ObjectSync mapping = service.pushAgendaEvent(USER, 111L);
+    ObjectSync mapping = service.pushAgendaEvent(USER, "john", 111L);
 
     // Nothing was copied, and nothing was written anywhere.
     assertNull(mapping);
-    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
-    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
     // Not even established: falling back to the mirror would have created a
     // collection the user never asked for, to hold an event that is not a
     // space meeting.
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   @Test
@@ -1663,9 +1662,9 @@ public class CaldavPushServiceTest {
     when(caldavSyncStorage.getObjectByUid(5002L, "uid-113")).thenReturn(inPersonal);
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.deleteEvent(USER, "uid-113");
+    service.deleteEvent(USER, "john", "uid-113");
 
-    verify(calDavClient).deleteObject(any(), eq(MIRROR + "in-personal.ics"), anyString(), anyString(), anyString());
+    verify(calDavClient).deleteObject(any(), eq(MIRROR + "in-personal.ics"), anyString());
     // Once, not twice: the mirror was searched before the walk began.
     verify(caldavSyncStorage, times(1)).getObjectByUid(5001L, "uid-113");
   }
@@ -1705,18 +1704,16 @@ public class CaldavPushServiceTest {
     stray.setCalendarSyncId(6002L);
     stray.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor/uid-112.ics");
     when(caldavSyncStorage.getObjectByUid(6002L, "uid-112")).thenReturn(stray);
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
         .thenReturn(new PutResult(201, "\"etag-new\"", null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 112L);
+    service.pushAgendaEvent(USER, "john", 112L);
 
     // the copy left behind is removed, conditionally on what eXo last saw
     verify(calDavClient).deleteObject(any(),
                                      eq("/dav/calendars/john/exo-cal-old-anchor/uid-112.ics"),
-                                     eq("\"etag-old\""),
-                                     anyString(),
-                                     anyString());
+                                     eq("\"etag-old\""));
     verify(caldavSyncStorage).deleteObject(7777L);
   }
 
@@ -1735,13 +1732,13 @@ public class CaldavPushServiceTest {
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-113"));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("uid-113"))).thenReturn(null);
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(destination));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
         .thenReturn(new PutResult(201, "\"etag-new\"", null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 113L);
+    service.pushAgendaEvent(USER, "john", 113L);
 
-    verify(calDavClient, never()).deleteObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), anyString());
     verify(caldavSyncStorage, never()).deleteObject(anyLong());
   }
 
@@ -1772,17 +1769,15 @@ public class CaldavPushServiceTest {
     stray.setCalendarSyncId(6002L);
     stray.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor/uid-original.ics");
     when(caldavSyncStorage.getObjectByEvent(6002L, 112L)).thenReturn(stray);
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
         .thenReturn(new PutResult(201, "\"etag-new\"", null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 112L);
+    service.pushAgendaEvent(USER, "john", 112L);
 
     verify(calDavClient).deleteObject(any(),
                                      eq("/dav/calendars/john/exo-cal-old-anchor/uid-original.ics"),
-                                     eq("\"etag-old\""),
-                                     anyString(),
-                                     anyString());
+                                     eq("\"etag-old\""));
     verify(caldavSyncStorage).deleteObject(7778L);
   }
 
@@ -1820,13 +1815,13 @@ public class CaldavPushServiceTest {
     sameObject.setRemoteHref("/dav/calendars/john/shared/uid-114.ics");
     lenient().when(caldavSyncStorage.getObjectByEvent(6002L, 114L)).thenReturn(sameObject);
     lenient().when(caldavSyncStorage.getObjectByUid(6002L, "uid-114")).thenReturn(sameObject);
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
         .thenReturn(new PutResult(201, "\"etag-new\"", null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 114L);
+    service.pushAgendaEvent(USER, "john", 114L);
 
-    verify(calDavClient).putObject(any(), eq("/dav/calendars/john/shared/uid-114.ics"), anyString(), anyString(), anyString());
+    verify(calDavClient).putObject(any(), eq("/dav/calendars/john/shared/uid-114.ics"), anyString());
     // A pair standing for the collection being written into is not "elsewhere"
     // and is never even asked what it holds. Verified rather than inferred from
     // the absence of a delete, because the delete is also refused by the second
@@ -1834,7 +1829,7 @@ public class CaldavPushServiceTest {
     // pins neither.
     verify(caldavSyncStorage, never()).getObjectByEvent(eq(6002L), anyLong());
     verify(caldavSyncStorage, never()).getObjectByUid(eq(6002L), anyString());
-    verify(calDavClient, never()).deleteObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), anyString());
     verify(caldavSyncStorage, never()).deleteObject(anyLong());
   }
 
@@ -1867,14 +1862,14 @@ public class CaldavPushServiceTest {
     stale114.setCalendarSyncId(6002L);
     stale114.setRemoteHref("/dav/calendars/john/shared/uid-115.ics");
     when(caldavSyncStorage.getObjectByEvent(6002L, 115L)).thenReturn(stale114);
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
         .thenReturn(new PutResult(201, "\"etag-new\"", null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 115L);
+    service.pushAgendaEvent(USER, "john", 115L);
 
-    verify(calDavClient).putObject(any(), eq("/dav/calendars/john/shared/uid-115.ics"), anyString(), anyString(), anyString());
-    verify(calDavClient, never()).deleteObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient).putObject(any(), eq("/dav/calendars/john/shared/uid-115.ics"), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), anyString());
     verify(caldavSyncStorage, never()).deleteObject(anyLong());
   }
 
@@ -1902,9 +1897,9 @@ public class CaldavPushServiceTest {
     when(caldavSyncStorage.getObjectByUid(1L, "uid-114")).thenReturn(inMirror);
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.deleteEvent(USER, "uid-114");
+    service.deleteEvent(USER, "john", "uid-114");
 
-    verify(calDavClient).deleteObject(any(), eq(href), anyString(), anyString(), anyString());
+    verify(calDavClient).deleteObject(any(), eq(href), anyString());
     verify(caldavSyncStorage, never()).getPairs(anyLong(), anyLong());
   }
 
@@ -1916,13 +1911,13 @@ public class CaldavPushServiceTest {
     givenSpaceCalendar(9L);
     when(agendaRemoteEventService.findRemoteEvent(112L, USER)).thenReturn(null);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-112"));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    assertEquals(1L, service.pushAgendaEvent(USER, 112L).getCalendarSyncId());
+    assertEquals(1L, service.pushAgendaEvent(USER, "john", 112L).getCalendarSyncId());
     verify(caldavSyncStorage, never()).getPairByLocalCalendar(anyLong(), anyLong(), anyString());
   }
 
@@ -2018,20 +2013,20 @@ public class CaldavPushServiceTest {
    * declared lenient rather than left out.
    */
   private void givenEverythingAWriteNeeds() {
-    lenient().when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString()))
+    lenient().when(calDavClient.listCalendars(any(), eq(HOME)))
              .thenReturn(List.of(calendar(MIRROR, "eXo Meetings")));
     lenient().when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
     lenient().when(agendaRemoteEventService.findRemoteEvent(anyLong(), eq(USER))).thenReturn(null);
     lenient().when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-poll"));
-    lenient().when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    lenient().when(calDavClient.putObject(any(), anyString(), anyString()))
              .thenReturn(new PutResult(201, "\"e\"", null));
-    lenient().when(calDavClient.overwriteObject(any(), anyString(), anyString(), anyString(), anyString()))
+    lenient().when(calDavClient.overwriteObject(any(), anyString(), anyString()))
              .thenReturn(new PutResult(204, "\"e\"", null));
     lenient().when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
   }
 
   private void givenAMirror() {
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(MIRROR,
                                                                                                             "eXo Meetings")));
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
   }
@@ -2057,7 +2052,7 @@ public class CaldavPushServiceTest {
    */
   private CaldavUserSetting settings() {
     CaldavUserSetting setting = new CaldavUserSetting();
-    setting.setUsername("john");
+    setting.setUsername("john@dav.example");
     setting.setPassword("secret");
     setting.setServerId(SERVER);
     return setting;
@@ -2127,13 +2122,13 @@ public class CaldavPushServiceTest {
     known.setRemoteId("uid-140");
     when(agendaRemoteEventService.findRemoteEvent(140L, USER)).thenReturn(known);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-140"));
-    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.putObject(any(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 140L);
+    service.pushAgendaEvent(USER, "john", 140L);
     service.renderAgendaEvent(USER, 140L, "uid-140");
 
     ArgumentCaptor<Event> events = ArgumentCaptor.forClass(Event.class);

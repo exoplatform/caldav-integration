@@ -139,14 +139,14 @@ public class CaldavMirrorAnswerServiceTest {
   @Test
   public void anAnswerOnACopyNoOtherPassMeetsIsRecorded() {
     givenTheCollectionReports(new SyncCollectionResult(true, FRESH, List.of(named(HREF)), List.of()));
-    when(calDavClient.multiget(endpoint, COLLECTION + "/", List.of(HREF), LOGIN, "secret"))
+    when(calDavClient.multiget(endpoint, COLLECTION + "/", List.of(HREF)))
                                                                                           .thenReturn(List.of(new CalendarObject(HREF,
                                                                                                                                  "\"3244716488\"",
                                                                                                                                  ANSWERED)));
     when(caldavAnswerAdoptionService.adoptAnswer(USER, EVENT, ANSWERED))
                                                                        .thenReturn(CaldavAnswerAdoptionService.Outcome.ADOPTED);
 
-    assertEquals(1, service.readAnswers(USER, settings(), mirror()));
+    assertEquals(1, service.readAnswers(USER, LOGIN, settings(), mirror()));
 
     verify(caldavAnswerAdoptionService).adoptAnswer(USER, EVENT, ANSWERED);
   }
@@ -156,12 +156,12 @@ public class CaldavMirrorAnswerServiceTest {
     // Without this the same generation is read on every sweep for ever, which
     // is the unbounded read this whole design is arranged to avoid.
     givenTheCollectionReports(new SyncCollectionResult(true, FRESH, List.of(named(HREF)), List.of()));
-    when(calDavClient.multiget(any(), anyString(), anyList(), anyString(), anyString()))
+    when(calDavClient.multiget(any(), anyString(), anyList()))
                                                                                        .thenReturn(List.of(new CalendarObject(HREF,
                                                                                                                               "e",
                                                                                                                               ANSWERED)));
 
-    service.readAnswers(USER, settings(), mirror());
+    service.readAnswers(USER, LOGIN, settings(), mirror());
 
     assertEquals(FRESH, savedPair().getSyncToken());
   }
@@ -184,7 +184,7 @@ public class CaldavMirrorAnswerServiceTest {
                                                                            TOKEN,
                                                                            CalendarSyncStatus.ACTIVE)));
 
-    assertEquals(0, service.readAnswers(USER, settings(), mirror()));
+    assertEquals(0, service.readAnswers(USER, LOGIN, settings(), mirror()));
 
     verifyNoInteractions(calDavClient);
     verifyNoInteractions(caldavAnswerAdoptionService);
@@ -208,14 +208,14 @@ public class CaldavMirrorAnswerServiceTest {
                                                                            TOKEN,
                                                                            CalendarSyncStatus.ACTIVE)));
     givenTheCollectionReports(new SyncCollectionResult(true, FRESH, List.of(named(HREF)), List.of()));
-    when(calDavClient.multiget(any(), anyString(), anyList(), anyString(), anyString()))
+    when(calDavClient.multiget(any(), anyString(), anyList()))
                                                                                        .thenReturn(List.of(new CalendarObject(HREF,
                                                                                                                               "e",
                                                                                                                               ANSWERED)));
     when(caldavAnswerAdoptionService.adoptAnswer(USER, EVENT, ANSWERED))
                                                                        .thenReturn(CaldavAnswerAdoptionService.Outcome.ADOPTED);
 
-    assertEquals(1, service.readAnswers(USER, settings(), mirror()));
+    assertEquals(1, service.readAnswers(USER, LOGIN, settings(), mirror()));
   }
 
   @Test
@@ -226,7 +226,7 @@ public class CaldavMirrorAnswerServiceTest {
     // and the shape that got this rig's test proxy banned twice.
     CalendarSync fresh = mirror();
     fresh.setSyncToken(null);
-    when(calDavClient.syncCollection(endpoint, COLLECTION + "/", null, LOGIN, "secret"))
+    when(calDavClient.syncCollection(endpoint, COLLECTION + "/", null))
                                                                                        .thenReturn(new SyncCollectionResult(true,
                                                                                                                             FRESH,
                                                                                                                             List.of(named(HREF),
@@ -234,9 +234,9 @@ public class CaldavMirrorAnswerServiceTest {
                                                                                                                                         + "/two.ics")),
                                                                                                                             List.of()));
 
-    assertEquals(0, service.readAnswers(USER, settings(), fresh));
+    assertEquals(0, service.readAnswers(USER, LOGIN, settings(), fresh));
 
-    verify(calDavClient, never()).multiget(any(), anyString(), anyList(), anyString(), anyString());
+    verify(calDavClient, never()).multiget(any(), anyString(), anyList());
     verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
     assertEquals(FRESH, savedPair().getSyncToken());
   }
@@ -248,9 +248,9 @@ public class CaldavMirrorAnswerServiceTest {
     // is taken without reading a whole collection's worth of bodies.
     givenTheCollectionReports(SyncCollectionResult.invalidToken());
 
-    assertEquals(0, service.readAnswers(USER, settings(), mirror()));
+    assertEquals(0, service.readAnswers(USER, LOGIN, settings(), mirror()));
 
-    verify(calDavClient, never()).multiget(any(), anyString(), anyList(), anyString(), anyString());
+    verify(calDavClient, never()).multiget(any(), anyString(), anyList());
     assertNull(savedPair().getSyncToken());
   }
 
@@ -266,13 +266,13 @@ public class CaldavMirrorAnswerServiceTest {
       reported.add(named(COLLECTION + "/copy-" + i + ".ics"));
     }
     givenTheCollectionReports(new SyncCollectionResult(true, FRESH, reported, List.of()));
-    when(calDavClient.multiget(any(), anyString(), anyList(), anyString(), anyString())).thenReturn(List.of());
+    when(calDavClient.multiget(any(), anyString(), anyList())).thenReturn(List.of());
 
-    service.readAnswers(USER, settings(), mirror());
+    service.readAnswers(USER, LOGIN, settings(), mirror());
 
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<String>> asked = ArgumentCaptor.forClass(List.class);
-    verify(calDavClient).multiget(any(), anyString(), asked.capture(), anyString(), anyString());
+    verify(calDavClient).multiget(any(), anyString(), asked.capture());
     assertEquals(2, asked.getValue().size());
     assertEquals(FRESH, savedPair().getSyncToken());
   }
@@ -285,12 +285,12 @@ public class CaldavMirrorAnswerServiceTest {
     // about.
     String stranger = COLLECTION + "/stranger.ics";
     givenTheCollectionReports(new SyncCollectionResult(true, FRESH, List.of(named(stranger)), List.of()));
-    when(calDavClient.multiget(any(), anyString(), anyList(), anyString(), anyString()))
+    when(calDavClient.multiget(any(), anyString(), anyList()))
                                                                                        .thenReturn(List.of(new CalendarObject(stranger,
                                                                                                                               "e",
                                                                                                                               ANSWERED)));
 
-    assertEquals(0, service.readAnswers(USER, settings(), mirror()));
+    assertEquals(0, service.readAnswers(USER, LOGIN, settings(), mirror()));
 
     verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
   }
@@ -300,10 +300,10 @@ public class CaldavMirrorAnswerServiceTest {
     // Nothing is concluded from a report that could not be made. Moving the
     // token here would claim the changes had been taken in, and nothing would
     // ever mention them again.
-    when(calDavClient.syncCollection(any(), anyString(), anyString(), anyString(), anyString()))
+    when(calDavClient.syncCollection(any(), anyString(), anyString()))
                                                                                                .thenThrow(new CalDavException("down"));
 
-    assertEquals(0, service.readAnswers(USER, settings(), mirror()));
+    assertEquals(0, service.readAnswers(USER, LOGIN, settings(), mirror()));
 
     verify(caldavSyncStorage, never()).savePair(any());
   }
@@ -312,7 +312,7 @@ public class CaldavMirrorAnswerServiceTest {
    * @param result what the collection answers when asked with its token
    */
   private void givenTheCollectionReports(SyncCollectionResult result) {
-    when(calDavClient.syncCollection(endpoint, COLLECTION + "/", TOKEN, LOGIN, "secret")).thenReturn(result);
+    when(calDavClient.syncCollection(endpoint, COLLECTION + "/", TOKEN)).thenReturn(result);
   }
 
   /**
