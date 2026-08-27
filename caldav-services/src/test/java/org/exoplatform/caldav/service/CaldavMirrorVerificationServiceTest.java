@@ -95,6 +95,14 @@ public class CaldavMirrorVerificationServiceTest {
   private static final long                  SERVER = 7L;
 
   private static final String                LOGIN  = "john";
+  /**
+   * The account on the calendar server, deliberately different from the eXo
+   * login above. The two are distinct identities and only the provider maps one
+   * to the other: a fixture where they are equal lets a call that passes the
+   * stored DAV account where the eXo login belongs pass every test.
+   */
+  private static final String DAV_ACCOUNT = "john@dav.example";
+
 
   private static final String                MIRROR = "/dav/calendars/john/exo-meetings/";
 
@@ -278,7 +286,7 @@ public class CaldavMirrorVerificationServiceTest {
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     lenient().when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(mirror()));
     lenient().when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(ICS);
-    lenient().when(caldavMirrorRelocationService.relocate(anyLong(), any(), any()))
+    lenient().when(caldavMirrorRelocationService.relocate(anyLong(), anyString(), any(), any()))
              .thenReturn(new MirrorRelocation(MIRROR, 0, 0, 0, 0));
   }
 
@@ -290,11 +298,11 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of());
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.missing());
     assertEquals(1, result.repaired());
-    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService).rewriteAgendaEvent(USER, LOGIN, 5L);
   }
 
   // ------------------------------------------------- date polls (EXO-89863)
@@ -322,11 +330,11 @@ public class CaldavMirrorVerificationServiceTest {
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     givenTheEventIs(5L, EventStatus.TENTATIVE);
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
-    verify(caldavPushService).deleteEvent(USER, UID);
-    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(caldavPushService).deleteEvent(USER, LOGIN, UID);
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
   }
 
   /**
@@ -346,12 +354,12 @@ public class CaldavMirrorVerificationServiceTest {
     givenTheEventIs(5L, EventStatus.TENTATIVE);
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(0, result.missing(), "a poll copy that is gone is not a copy that needs putting back");
     assertEquals(0, result.repaired());
-    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
-    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
     verify(caldavSyncStorage).saveObject(row);
     assertNull(row.getRemoteHref(), "the row must stop naming an object, or the next pass repairs it");
   }
@@ -379,14 +387,14 @@ public class CaldavMirrorVerificationServiceTest {
       row.setRemoteHref(null);
       row.setEtag(null);
       return null;
-    }).when(caldavPushService).deleteEvent(USER, UID);
+    }).when(caldavPushService).deleteEvent(USER, LOGIN, UID);
 
-    service.verify(USER);
-    MirrorVerification second = service.verify(USER);
+    service.verify(USER, LOGIN);
+    MirrorVerification second = service.verify(USER, LOGIN);
 
     assertEquals(0, second.checked(), "a row naming no object is not a copy to check");
-    verify(caldavPushService, times(1)).deleteEvent(USER, UID);
-    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, times(1)).deleteEvent(USER, LOGIN, UID);
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   /**
@@ -402,7 +410,7 @@ public class CaldavMirrorVerificationServiceTest {
 
     List<ILoggingEvent> announced;
     try (LogRecorder log = new LogRecorder(CaldavMirrorVerificationService.class)) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
       announced = log.events()
                      .stream()
                      .filter(recorded -> recorded.getFormattedMessage().contains("has been retired"))
@@ -425,11 +433,11 @@ public class CaldavMirrorVerificationServiceTest {
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     givenTheEventIs(5L, EventStatus.TENTATIVE);
     doThrow(new CaldavPushException(CaldavPushService.SAVE, "the server refused it")).when(caldavPushService)
-                                                                                     .deleteEvent(USER, UID);
+                                                                                     .deleteEvent(USER, LOGIN, UID);
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
-    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   /**
@@ -443,11 +451,11 @@ public class CaldavMirrorVerificationServiceTest {
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     givenTheEventIs(5L, EventStatus.CANCELLED);
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.missing());
-    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
-    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
+    verify(caldavPushService).rewriteAgendaEvent(USER, LOGIN, 5L);
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
   }
 
   /**
@@ -461,11 +469,11 @@ public class CaldavMirrorVerificationServiceTest {
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(agendaEventService.getEventById(5L)).thenThrow(new IllegalStateException("agenda is unavailable"));
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.missing());
-    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
-    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
+    verify(caldavPushService).rewriteAgendaEvent(USER, LOGIN, 5L);
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
   }
 
   @Test
@@ -476,12 +484,12 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.checked());
     assertEquals(0, result.missing());
     assertEquals(0, result.altered());
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
   }
 
   @Test
@@ -497,7 +505,7 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     verify(caldavServerQuirkService).settle(SERVER);
     verify(caldavServerQuirkService, never()).observe(anyLong(), anyList());
@@ -511,8 +519,8 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "W/\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
-    assertEquals(0, service.verify(USER).altered());
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    assertEquals(0, service.verify(USER, LOGIN).altered());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
   }
 
   @Test
@@ -521,13 +529,13 @@ public class CaldavMirrorVerificationServiceTest {
     // mirror is eXo's projection, so eXo writes it back.
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                                             .thenReturn(new CalendarObject(HREF,
                                                                                                            "\"etag-2\"",
                                                                                                            RESERIALISED.replace("Sprint review",
                                                                                                                                 "Sprint review (moved to the pub)")));
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.altered());
     assertEquals(1, result.repaired());
@@ -536,8 +544,18 @@ public class CaldavMirrorVerificationServiceTest {
     // object, so it is refused every time — which is how this pass came to
     // report "altered: 1, re-pushed: 0" on a live account while this test,
     // mocking the push service, stayed green.
-    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService).rewriteAgendaEvent(USER, LOGIN, 5L);
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
+    // Asked for the eXo login, never for the DAV account the setting stores:
+    // the provider is what maps one to the other, and passing the stored
+    // account here would look up an eXo user that does not exist.
+    // atLeastOnce, not once: what this pins is which identity the client is
+    // asked for, never how many times the endpoint happens to be minted.
+    verify(calDavClient, org.mockito.Mockito.atLeastOnce()).endpoint(SERVER, LOGIN);
+    // And the negative, which is the half that actually holds: this pass mints
+    // the endpoint at several sites, so atLeastOnce alone stays green while one
+    // of them passes the stored account — measured, that is exactly what it did.
+    verify(calDavClient, never()).endpoint(org.mockito.ArgumentMatchers.any(), eq(DAV_ACCOUNT));
   }
 
   @Test
@@ -553,21 +571,21 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                                             .thenReturn(new CalendarObject(HREF,
                                                                                                            "\"etag-2\"",
                                                                                                            ANSWERED));
     when(caldavAnswerAdoptionService.adoptAnswer(USER, 5L, ANSWERED))
                                                                      .thenReturn(CaldavAnswerAdoptionService.Outcome.ADOPTED);
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.altered());
     assertEquals(1, result.adopted());
     assertEquals(1, result.repaired());
     InOrder order = inOrder(caldavAnswerAdoptionService, caldavPushService);
     order.verify(caldavAnswerAdoptionService).adoptAnswer(USER, 5L, ANSWERED);
-    order.verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+    order.verify(caldavPushService).rewriteAgendaEvent(USER, LOGIN, 5L);
   }
 
   @Test
@@ -580,14 +598,14 @@ public class CaldavMirrorVerificationServiceTest {
     ObjectSync row = mapping(HREF, "\"etag-1\"", 5L);
     givenMappings(row);
     when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                                             .thenReturn(new CalendarObject(HREF,
                                                                                                            "\"etag-2\"",
                                                                                                            declined));
     when(caldavAnswerAdoptionService.adoptAnswer(USER, 5L, declined))
                                                                      .thenReturn(CaldavAnswerAdoptionService.Outcome.ADOPTED);
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
     verify(caldavSyncStorage).saveObject(saved.capture());
@@ -597,7 +615,7 @@ public class CaldavMirrorVerificationServiceTest {
 
     // The second pass finds the recorded ETag and does not even fetch, let
     // alone re-adopt: the direction rule now reads the copy as untouched.
-    MirrorVerification second = service.verify(USER);
+    MirrorVerification second = service.verify(USER, LOGIN);
 
     assertEquals(0, second.adopted());
     verify(caldavAnswerAdoptionService, times(1)).adoptAnswer(anyLong(), anyLong(), anyString());
@@ -611,19 +629,19 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                                             .thenReturn(new CalendarObject(HREF,
                                                                                                            "\"etag-2\"",
                                                                                                            ANSWERED));
     when(caldavAnswerAdoptionService.adoptAnswer(USER, 5L, ANSWERED))
                                                                      .thenReturn(CaldavAnswerAdoptionService.Outcome.FAILED);
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.altered());
     assertEquals(0, result.adopted());
     assertEquals(0, result.repaired());
-    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
     verify(caldavSyncStorage, never()).saveObject(any());
   }
 
@@ -638,19 +656,19 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                                             .thenReturn(new CalendarObject(HREF,
                                                                                                            "\"etag-2\"",
                                                                                                            ANSWERED));
     when(caldavAnswerAdoptionService.adoptAnswer(USER, 5L, ANSWERED))
                                                                      .thenReturn(CaldavAnswerAdoptionService.Outcome.UNREADABLE);
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.altered());
     assertEquals(0, result.adopted());
     assertEquals(0, result.repaired());
-    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
     verify(caldavSyncStorage, never()).saveObject(any());
   }
 
@@ -665,11 +683,11 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(0, result.adopted());
     verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
   }
 
   @Test
@@ -682,7 +700,7 @@ public class CaldavMirrorVerificationServiceTest {
     orphan.setId(77L);
     givenMappings(orphan);
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.missing());
     assertEquals(0, result.repaired());
@@ -701,11 +719,11 @@ public class CaldavMirrorVerificationServiceTest {
     orphan.setId(77L);
     givenMappings(orphan);
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.checked());
     assertEquals(0, result.altered());
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
     verify(caldavSyncStorage, never()).deleteObject(anyLong());
   }
 
@@ -722,9 +740,9 @@ public class CaldavMirrorVerificationServiceTest {
     givenMappings(stale);
     ObjectSync elsewhere = mapping(MIRROR + "moved.ics", "\"etag-3\"", 5L);
     elsewhere.setId(9003L);
-    when(caldavPushService.rewriteAgendaEvent(USER, 5L)).thenReturn(elsewhere);
+    when(caldavPushService.rewriteAgendaEvent(USER, LOGIN, 5L)).thenReturn(elsewhere);
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.repaired());
     verify(caldavSyncStorage).deleteObject(9002L);
@@ -746,9 +764,9 @@ public class CaldavMirrorVerificationServiceTest {
     givenMappings(row);
     ObjectSync same = mapping(HREF, "\"etag-2\"", 5L);
     same.setId(9001L);
-    when(caldavPushService.rewriteAgendaEvent(USER, 5L)).thenReturn(same);
+    when(caldavPushService.rewriteAgendaEvent(USER, LOGIN, 5L)).thenReturn(same);
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     verify(caldavSyncStorage, never()).deleteObject(anyLong());
   }
@@ -763,9 +781,9 @@ public class CaldavMirrorVerificationServiceTest {
     givenMappings(row);
     ObjectSync elsewhere = mapping(MIRROR + "moved.ics", "\"etag-3\"", 5L);
     elsewhere.setId(4242L);
-    when(caldavPushService.rewriteAgendaEvent(USER, 5L)).thenReturn(elsewhere);
+    when(caldavPushService.rewriteAgendaEvent(USER, LOGIN, 5L)).thenReturn(elsewhere);
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     verify(caldavSyncStorage, never()).deleteObject(anyLong());
   }
@@ -779,13 +797,13 @@ public class CaldavMirrorVerificationServiceTest {
     // is nothing at all.
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                                             .thenReturn(new CalendarObject(HREF,
                                                                                                            "\"etag-2\"",
                                                                                                            RESERIALISED));
 
-    assertEquals(0, service.verify(USER).altered());
-    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    assertEquals(0, service.verify(USER, LOGIN).altered());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   @Test
@@ -798,12 +816,12 @@ public class CaldavMirrorVerificationServiceTest {
     // refusal is an eXo-side edit silently not reaching the copy.
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                                             .thenReturn(new CalendarObject(HREF,
                                                                                                            "\"etag-2\"",
                                                                                                            RESERIALISED));
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
     verify(caldavSyncStorage).saveObject(saved.capture());
@@ -818,7 +836,7 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     verify(caldavSyncStorage, never()).saveObject(any());
   }
@@ -832,9 +850,9 @@ public class CaldavMirrorVerificationServiceTest {
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(null);
 
-    assertEquals(0, service.verify(USER).altered());
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
-    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    assertEquals(0, service.verify(USER, LOGIN).altered());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   @Test
@@ -843,20 +861,20 @@ public class CaldavMirrorVerificationServiceTest {
     // overwrite whatever is there on the strength of a network error.
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString())).thenThrow(new IllegalStateException("down"));
+    when(calDavClient.fetchObject(any(), eq(HREF))).thenThrow(new IllegalStateException("down"));
 
-    assertEquals(0, service.verify(USER).altered());
-    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    assertEquals(0, service.verify(USER, LOGIN).altered());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   @Test
   public void aCollectionThatCannotBeListedVerifiesNothing() {
     // Treating an unreachable server as "everything was deleted" would
     // re-push the user's whole history the moment it came back.
-    when(calDavClient.listResourceEtags(any(), anyString(), anyString(), anyString()))
+    when(calDavClient.listResourceEtags(any(), anyString()))
                                                                                      .thenThrow(new IllegalStateException("down"));
 
-    assertEquals(0, service.verify(USER).checked());
+    assertEquals(0, service.verify(USER, LOGIN).checked());
     verify(caldavSyncStorage, never()).getObjects(anyLong(), anyInt(), anyInt());
   }
 
@@ -869,13 +887,13 @@ public class CaldavMirrorVerificationServiceTest {
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
     for (int attempt = 0; attempt < 3; attempt++) {
-      assertEquals(1, service.verify(USER).repaired());
+      assertEquals(1, service.verify(USER, LOGIN).repaired());
     }
-    MirrorVerification fourth = service.verify(USER);
+    MirrorVerification fourth = service.verify(USER, LOGIN);
 
     assertEquals(0, fourth.repaired());
     assertEquals(1, fourth.abandoned());
-    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, LOGIN, 5L);
   }
 
   /**
@@ -918,7 +936,7 @@ public class CaldavMirrorVerificationServiceTest {
     // The copy keeps coming back as the server stores it: the guest kept, the
     // answer gone, whatever eXo just wrote. The listing never moves off its own
     // version either, so nothing about this fight is ever winnable.
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                                             .thenReturn(new CalendarObject(HREF,
                                                                                                            "\"etag-2\"",
                                                                                                            INVITED));
@@ -934,10 +952,10 @@ public class CaldavMirrorVerificationServiceTest {
         // Under the bound the answer is written back, which is the whole
         // reason the comparison reports it: on a server that keeps the
         // PARTSTAT, this first write is the end of the story.
-        assertEquals(1, service.verify(USER).repaired());
+        assertEquals(1, service.verify(USER, LOGIN).repaired());
       }
-      MirrorVerification fourth = service.verify(USER);
-      MirrorVerification fifth = service.verify(USER);
+      MirrorVerification fourth = service.verify(USER, LOGIN);
+      MirrorVerification fifth = service.verify(USER, LOGIN);
 
       assertEquals(0, fourth.repaired(), "the fourth pass is where a loop would start, and it does not");
       assertEquals(1, fourth.abandoned());
@@ -945,7 +963,7 @@ public class CaldavMirrorVerificationServiceTest {
       written = List.copyOf(log.events());
     }
 
-    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, LOGIN, 5L);
     List<ILoggingEvent> warnings = written.stream().filter(event -> event.getLevel() == Level.WARN).toList();
     assertEquals(1, warnings.size(), "giving up is a state, and saying it on every pass would bury it: " + warnings);
     assertTrue(warnings.get(0).getFormattedMessage().contains("keeps going wrong"), warnings.get(0).getFormattedMessage());
@@ -965,12 +983,12 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of());
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     for (int attempt = 0; attempt < 4; attempt++) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
     }
 
     service.forgetRepairs(USER);
 
-    assertEquals(1, service.verify(USER).repaired());
+    assertEquals(1, service.verify(USER, LOGIN).repaired());
   }
 
   @Test
@@ -980,11 +998,11 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of());
     givenMappings(mapping(HREF, "\"etag-1\"", null));
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.missing());
     assertEquals(0, result.repaired());
-    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   // ------------- what an administrator can read afterwards (EXO-89762)
@@ -998,7 +1016,7 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of());
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     verify(caldavMirrorReportService).record(eq(USER), any(MirrorVerification.class), any(MirrorRelocation.class));
   }
@@ -1008,10 +1026,10 @@ public class CaldavMirrorVerificationServiceTest {
     // The pass an administrator most needs to see. Reporting only the passes
     // that succeeded would show a change of destination as quietly finished on
     // exactly the accounts it never reached.
-    when(calDavClient.listResourceEtags(any(), anyString(), anyString(), anyString()))
+    when(calDavClient.listResourceEtags(any(), anyString()))
                                                                                      .thenThrow(new IllegalStateException("down"));
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     verify(caldavMirrorReportService).record(eq(USER), any(MirrorVerification.class), any(MirrorRelocation.class));
   }
@@ -1025,7 +1043,7 @@ public class CaldavMirrorVerificationServiceTest {
     doThrow(new IllegalStateException("no store")).when(caldavMirrorReportService)
                                                   .record(anyLong(), any(), any());
 
-    assertEquals(1, service.verify(USER).checked());
+    assertEquals(1, service.verify(USER, LOGIN).checked());
   }
 
   @Test
@@ -1042,15 +1060,15 @@ public class CaldavMirrorVerificationServiceTest {
     // Most accounts, until the first meeting is copied.
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of());
 
-    assertEquals(0, service.verify(USER).checked());
-    verify(calDavClient, never()).listResourceEtags(any(), anyString(), anyString(), anyString());
+    assertEquals(0, service.verify(USER, LOGIN).checked());
+    verify(calDavClient, never()).listResourceEtags(any(), anyString());
   }
 
   @Test
   public void noConnectedAccountVerifiesNothing() {
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
 
-    assertEquals(0, service.verify(USER).checked());
+    assertEquals(0, service.verify(USER, LOGIN).checked());
   }
 
   /**
@@ -1070,7 +1088,7 @@ public class CaldavMirrorVerificationServiceTest {
   }
 
   private void givenServerHolds(Map<String, String> etags) {
-    when(calDavClient.listResourceEtags(any(), anyString(), anyString(), anyString())).thenReturn(etags);
+    when(calDavClient.listResourceEtags(any(), anyString())).thenReturn(etags);
   }
 
 
@@ -1086,14 +1104,14 @@ public class CaldavMirrorVerificationServiceTest {
     givenAnUnwinnableFight();
 
     for (int pass = 0; pass < 4; pass++) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
     }
-    MirrorVerification afterAbandonment = service.verify(USER);
+    MirrorVerification afterAbandonment = service.verify(USER, LOGIN);
 
     assertEquals(1, afterAbandonment.checked());
     assertEquals(1, afterAbandonment.abandoned());
     assertEquals(0, afterAbandonment.altered(), "an unexamined copy must not be reported as judged");
-    verify(calDavClient, times(4)).fetchObject(any(), eq(HREF), anyString(), anyString());
+    verify(calDavClient, times(4)).fetchObject(any(), eq(HREF));
   }
 
   // -------------------------- the repair bound, per statement (EXO-89863)
@@ -1114,12 +1132,12 @@ public class CaldavMirrorVerificationServiceTest {
     givenAnUnwinnableFight();
     givenTheAnswerIs(EventAttendeeResponse.NEEDS_ACTION);
     for (int pass = 0; pass < 4; pass++) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
     }
-    assertEquals(1, service.verify(USER).abandoned(), "the copy has to be abandoned before the point can be made");
+    assertEquals(1, service.verify(USER, LOGIN).abandoned(), "the copy has to be abandoned before the point can be made");
 
     givenTheAnswerIs(EventAttendeeResponse.ACCEPTED);
-    MirrorVerification afterTheAnswer = service.verify(USER);
+    MirrorVerification afterTheAnswer = service.verify(USER, LOGIN);
 
     assertEquals(1, afterTheAnswer.repaired(), "a new answer is a new statement and gets its own attempts");
     assertEquals(0, afterTheAnswer.abandoned());
@@ -1140,12 +1158,12 @@ public class CaldavMirrorVerificationServiceTest {
     givenAnUnwinnableFight();
     givenTheMeetingWasEditedAt(EDITED);
     for (int pass = 0; pass < 4; pass++) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
     }
-    assertEquals(1, service.verify(USER).abandoned());
+    assertEquals(1, service.verify(USER, LOGIN).abandoned());
 
     givenTheMeetingWasEditedAt(EDITED.plusMinutes(5));
-    MirrorVerification afterTheEdit = service.verify(USER);
+    MirrorVerification afterTheEdit = service.verify(USER, LOGIN);
 
     assertEquals(1, afterTheEdit.repaired(), "an edit is not the divergence the budget was spent on");
   }
@@ -1163,16 +1181,16 @@ public class CaldavMirrorVerificationServiceTest {
     givenAnUnwinnableFight();
     givenTheMeetingWasEditedAt(EDITED);
     for (int pass = 0; pass < 4; pass++) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
     }
-    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, LOGIN, 5L);
 
     givenTheMeetingWasEditedAt(EDITED.plusMinutes(5));
     for (int pass = 0; pass < 4; pass++) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
     }
 
-    verify(caldavPushService, times(6)).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService, times(6)).rewriteAgendaEvent(USER, LOGIN, 5L);
   }
 
   /**
@@ -1191,10 +1209,10 @@ public class CaldavMirrorVerificationServiceTest {
     givenTheMeetingWasEditedAt(EDITED);
 
     for (int pass = 0; pass < 10; pass++) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
     }
 
-    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, LOGIN, 5L);
   }
 
   /**
@@ -1240,9 +1258,9 @@ public class CaldavMirrorVerificationServiceTest {
     givenTheMeetingWasEditedAt(EDITED);
 
     for (int pass = 0; pass < 4; pass++) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
     }
-    assertEquals(1, service.verify(USER).abandoned(), "the copy has to be abandoned before the point can be made");
+    assertEquals(1, service.verify(USER, LOGIN).abandoned(), "the copy has to be abandoned before the point can be made");
 
     // The statement is asked of the copy's owner alone. Were it asked of the
     // roster, every fan-out write anywhere would be a new statement here, and
@@ -1270,10 +1288,10 @@ public class CaldavMirrorVerificationServiceTest {
     when(agendaEventService.getEventById(5L)).thenThrow(new IllegalStateException("agenda is unavailable"));
 
     for (int pass = 0; pass < 10; pass++) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
     }
 
-    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, LOGIN, 5L);
   }
 
   /**
@@ -1294,7 +1312,7 @@ public class CaldavMirrorVerificationServiceTest {
     List<ILoggingEvent> warnings;
     try (LogRecorder log = new LogRecorder(CaldavMirrorVerificationService.class)) {
       for (int pass = 0; pass < 6; pass++) {
-        service.verify(USER);
+        service.verify(USER, LOGIN);
       }
       warnings = log.events()
                     .stream()
@@ -1319,13 +1337,13 @@ public class CaldavMirrorVerificationServiceTest {
     // the server saying somebody wrote, and the pass looks again.
     givenAnUnwinnableFight();
     for (int pass = 0; pass < 4; pass++) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
     }
 
     givenServerHolds(Map.of(HREF, "\"etag-9\""));
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
-    verify(calDavClient, times(5)).fetchObject(any(), eq(HREF), anyString(), anyString());
+    verify(calDavClient, times(5)).fetchObject(any(), eq(HREF));
   }
 
   @Test
@@ -1334,14 +1352,14 @@ public class CaldavMirrorVerificationServiceTest {
     // saving lasts exactly one sweep and the loop comes back.
     givenAnUnwinnableFight();
     for (int pass = 0; pass < 4; pass++) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
     }
     givenServerHolds(Map.of(HREF, "\"etag-9\""));
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
-    verify(calDavClient, times(5)).fetchObject(any(), eq(HREF), anyString(), anyString());
+    verify(calDavClient, times(5)).fetchObject(any(), eq(HREF));
   }
 
   @Test
@@ -1351,11 +1369,11 @@ public class CaldavMirrorVerificationServiceTest {
     // unexamined.
     givenAnUnwinnableFight();
     for (int pass = 0; pass < 4; pass++) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
     }
 
     service.forgetRepairs(USER);
-    MirrorVerification afterForgetting = service.verify(USER);
+    MirrorVerification afterForgetting = service.verify(USER, LOGIN);
 
     assertEquals(1, afterForgetting.altered());
     assertEquals(1, afterForgetting.repaired());
@@ -1395,7 +1413,7 @@ public class CaldavMirrorVerificationServiceTest {
   private void givenAnUnwinnableFight() {
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                                             .thenReturn(new CalendarObject(HREF,
                                                                                                            "\"etag-2\"",
                                                                                                            HIJACKED));
@@ -1444,7 +1462,7 @@ public class CaldavMirrorVerificationServiceTest {
    */
   private CaldavUserSetting settings() {
     CaldavUserSetting setting = new CaldavUserSetting();
-    setting.setUsername(LOGIN);
+    setting.setUsername(DAV_ACCOUNT);
     setting.setPassword("secret");
     setting.setServerId(SERVER);
     return setting;
@@ -1467,18 +1485,18 @@ public class CaldavMirrorVerificationServiceTest {
     givenTheServerSettingsChanged();
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                     .thenReturn(new CalendarObject(HREF,
                                                                                    "\"etag-1\"",
                                                                                    ICS.replace("SUMMARY:Sprint review",
                                                                                                "SUMMARY:Sprint review "
                                                                                                    + "(Accept: http://exo/a)")));
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.altered(), "the copy no longer says what eXo would write for the event");
     assertEquals(1, result.repaired());
-    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService).rewriteAgendaEvent(USER, LOGIN, 5L);
   }
 
   @Test
@@ -1497,20 +1515,20 @@ public class CaldavMirrorVerificationServiceTest {
     givenMappings(mapping(HREF, "\"etag-1\"", 5L),
                   mapping(second, "\"etag-2\"", 5L),
                   mapping(third, "\"etag-3\"", 5L));
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                     .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
-    when(calDavClient.fetchObject(any(), eq(second), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(second)))
                                                     .thenReturn(new CalendarObject(second, "\"etag-2\"", RESERIALISED));
-    when(calDavClient.fetchObject(any(), eq(third), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(third)))
                                                     .thenReturn(new CalendarObject(third, "\"etag-3\"", ICS));
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(3, result.checked());
     assertEquals(0, result.altered(), "a copy that already says what eXo says is not altered");
     assertEquals(0, result.repaired(), "and nothing about a settings round may write it again");
-    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   @Test
@@ -1521,14 +1539,14 @@ public class CaldavMirrorVerificationServiceTest {
     givenTheServerSettingsChanged();
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                     .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
     givenTheMirrorHasApplied(SETTINGS_CHANGED);
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
-    verify(calDavClient, times(1)).fetchObject(any(), eq(HREF), anyString(), anyString());
+    verify(calDavClient, times(1)).fetchObject(any(), eq(HREF));
   }
 
   @Test
@@ -1538,17 +1556,17 @@ public class CaldavMirrorVerificationServiceTest {
     // one listing on a converged mirror.
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
-    lenient().when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    lenient().when(calDavClient.fetchObject(any(), eq(HREF)))
              .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
 
     givenTheServerSettingsChanged();
     givenTheMirrorHasApplied(EARLIER);
-    service.verify(USER);
-    verify(calDavClient, times(1)).fetchObject(any(), eq(HREF), anyString(), anyString());
+    service.verify(USER, LOGIN);
+    verify(calDavClient, times(1)).fetchObject(any(), eq(HREF));
 
     givenTheMirrorHasApplied(SETTINGS_CHANGED);
-    service.verify(USER);
-    verify(calDavClient, times(1)).fetchObject(any(), eq(HREF), anyString(), anyString());
+    service.verify(USER, LOGIN);
+    verify(calDavClient, times(1)).fetchObject(any(), eq(HREF));
   }
 
   @Test
@@ -1561,9 +1579,9 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
     verify(caldavSyncStorage, never()).savePair(any());
   }
 
@@ -1580,13 +1598,13 @@ public class CaldavMirrorVerificationServiceTest {
                                                                                                          "\"etag-1\"",
                                                                                                          5L))));
     lenient().when(caldavSyncStorage.getObjects(eq(3L), eq(1), anyInt())).thenReturn(new PageImpl<>(List.of()));
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                     .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
 
-    assertThrows(IllegalStateException.class, () -> service.verify(USER));
+    assertThrows(IllegalStateException.class, () -> service.verify(USER, LOGIN));
     verify(caldavSyncStorage, never()).savePair(any());
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     ArgumentCaptor<CalendarSync> stamped = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(stamped.capture());
@@ -1601,10 +1619,10 @@ public class CaldavMirrorVerificationServiceTest {
     givenTheServerSettingsChanged();
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                     .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     ArgumentCaptor<CalendarSync> stamped = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(stamped.capture());
@@ -1628,16 +1646,16 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                     .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ANSWERED));
     when(caldavAnswerAdoptionService.holdsUnrecordedAnswer(USER, 5L, ANSWERED)).thenReturn(false);
 
-    MirrorVerification result = service.verify(USER);
+    MirrorVerification result = service.verify(USER, LOGIN);
 
     assertEquals(1, result.altered());
     assertEquals(0, result.adopted(), "an unmoved ETag is not the client's writing, whatever the round is doing");
     verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
-    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService).rewriteAgendaEvent(USER, LOGIN, 5L);
   }
 
   @Test
@@ -1657,13 +1675,13 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                     .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ANSWERED));
     when(caldavAnswerAdoptionService.holdsUnrecordedAnswer(USER, 5L, ANSWERED)).thenReturn(true);
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
-    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   @Test
@@ -1677,11 +1695,11 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                     .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ANSWERED));
     when(caldavAnswerAdoptionService.holdsUnrecordedAnswer(USER, 5L, ANSWERED)).thenReturn(true);
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     ArgumentCaptor<CalendarSync> stamped = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(stamped.capture());
@@ -1698,11 +1716,11 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     InOrder order = inOrder(caldavMirrorAnswerService, calDavClient);
-    order.verify(caldavMirrorAnswerService).readAnswers(eq(USER), any(), any());
-    order.verify(calDavClient).listResourceEtags(any(), anyString(), anyString(), anyString());
+    order.verify(caldavMirrorAnswerService).readAnswers(eq(USER), anyString(), any(), any());
+    order.verify(calDavClient).listResourceEtags(any(), anyString());
   }
 
   @Test
@@ -1715,12 +1733,12 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                     .thenReturn(new CalendarObject(HREF, "\"etag-2\"", ANSWERED));
     when(caldavAnswerAdoptionService.adoptAnswer(USER, 5L, ANSWERED))
                                                     .thenReturn(CaldavAnswerAdoptionService.Outcome.ADOPTED);
 
-    assertEquals(1, service.verify(USER).adopted());
+    assertEquals(1, service.verify(USER, LOGIN).adopted());
   }
 
   @Test
@@ -1731,15 +1749,15 @@ public class CaldavMirrorVerificationServiceTest {
     // permanently unwritable copy comes back to cost a round trip for ever.
     givenAnUnwinnableFight();
     for (int pass = 0; pass < 4; pass++) {
-      service.verify(USER);
+      service.verify(USER, LOGIN);
     }
 
     givenTheServerSettingsChanged();
-    MirrorVerification duringTheRound = service.verify(USER);
+    MirrorVerification duringTheRound = service.verify(USER, LOGIN);
 
     assertEquals(1, duringTheRound.abandoned());
     assertEquals(0, duringTheRound.repaired());
-    verify(calDavClient, times(4)).fetchObject(any(), eq(HREF), anyString(), anyString());
+    verify(calDavClient, times(4)).fetchObject(any(), eq(HREF));
   }
 
   @Test
@@ -1750,11 +1768,11 @@ public class CaldavMirrorVerificationServiceTest {
     givenTheServerSettingsChanged();
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                     .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
     when(caldavSyncStorage.getPair(3L)).thenReturn(null);
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     verify(caldavSyncStorage, never()).savePair(any());
   }
@@ -1795,16 +1813,16 @@ public class CaldavMirrorVerificationServiceTest {
     // calendar the copies have just left — and then report every one of them
     // missing.
     givenTheServerSettingsChanged();
-    when(caldavMirrorRelocationService.relocate(anyLong(), any(), any()))
+    when(caldavMirrorRelocationService.relocate(anyLong(), anyString(), any(), any()))
                                                           .thenReturn(new MirrorRelocation(MOVED_TO, 1, 0, 0, 0));
     givenServerHolds(Map.of());
     givenMappings(mapping(MOVED_TO + "one.ics", "\"etag-9\"", 5L));
-    lenient().when(caldavPushService.rewriteAgendaEvent(anyLong(), anyLong())).thenReturn(null);
+    lenient().when(caldavPushService.rewriteAgendaEvent(anyLong(), anyString(), anyLong())).thenReturn(null);
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     ArgumentCaptor<String> listed = ArgumentCaptor.forClass(String.class);
-    verify(calDavClient).listResourceEtags(any(), listed.capture(), anyString(), anyString());
+    verify(calDavClient).listResourceEtags(any(), listed.capture());
     assertEquals(MOVED_TO, listed.getValue(), "the new collection, not the one just emptied");
   }
 
@@ -1815,14 +1833,14 @@ public class CaldavMirrorVerificationServiceTest {
     // strand that copy for good — which is exactly the bug EXO-89761 exists to
     // remove, reintroduced by the mechanism meant to fix it.
     givenTheServerSettingsChanged();
-    when(caldavMirrorRelocationService.relocate(anyLong(), any(), any()))
+    when(caldavMirrorRelocationService.relocate(anyLong(), anyString(), any(), any()))
                                                           .thenReturn(new MirrorRelocation(MIRROR, 3, 1, 0, 0));
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+    when(calDavClient.fetchObject(any(), eq(HREF)))
                                                     .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
     verify(caldavSyncStorage, never()).savePair(any());
   }
@@ -1834,13 +1852,13 @@ public class CaldavMirrorVerificationServiceTest {
     // know which collection they belong in — and the stamp stays where it was,
     // so the pass after the user chooses does the work.
     givenTheServerSettingsChanged();
-    when(caldavMirrorRelocationService.relocate(anyLong(), any(), any())).thenReturn(MirrorRelocation.deferred());
+    when(caldavMirrorRelocationService.relocate(anyLong(), anyString(), any(), any())).thenReturn(MirrorRelocation.deferred());
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
     verify(caldavSyncStorage, never()).savePair(any());
   }
 
@@ -1853,9 +1871,9 @@ public class CaldavMirrorVerificationServiceTest {
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
-    service.verify(USER);
+    service.verify(USER, LOGIN);
 
-    verify(caldavMirrorRelocationService, never()).relocate(anyLong(), any(), any());
+    verify(caldavMirrorRelocationService, never()).relocate(anyLong(), anyString(), any(), any());
   }
 
   @Test

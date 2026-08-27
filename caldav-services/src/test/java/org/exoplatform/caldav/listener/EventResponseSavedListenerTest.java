@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -33,6 +34,9 @@ import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.model.EventAttendee;
 import org.exoplatform.caldav.service.CaldavEventPropagationService;
 import org.exoplatform.caldav.service.CaldavPushService;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvider;
+import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.services.listener.Event;
 
 /**
@@ -44,6 +48,9 @@ public class EventResponseSavedListenerTest {
 
   private static final long          USER  = 42L;
 
+  /** The eXo login the listener resolves from the identity id. */
+  private static final String        LOGIN = "john";
+
   private static final long          EVENT = 964L;
 
   @Mock
@@ -51,6 +58,9 @@ public class EventResponseSavedListenerTest {
 
   @Mock
   private CaldavEventPropagationService caldavEventPropagationService;
+
+  @Mock
+  private IdentityManager               identityManager;
 
   private EventResponseSavedListener    listener;
 
@@ -62,6 +72,12 @@ public class EventResponseSavedListenerTest {
     listener = new EventResponseSavedListener();
     listener.setCaldavPushService(caldavPushService);
     listener.setCaldavEventPropagationService(caldavEventPropagationService);
+    listener.setIdentityManager(identityManager);
+    // The listener resolves the login itself, having no conversation state:
+    // without an identity to resolve it from, it would carry a null login.
+    Identity identity = new Identity(OrganizationIdentityProvider.NAME, LOGIN);
+    identity.setId(String.valueOf(USER));
+    lenient().when(identityManager.getIdentity(String.valueOf(USER))).thenReturn(identity);
   }
 
   /**
@@ -74,7 +90,7 @@ public class EventResponseSavedListenerTest {
   public void anAnswerRecordedInExoIsHandedOnToBeCarriedOutward() {
     listener.onEvent(answer(EventAttendeeResponse.DECLINED, EventAttendeeResponse.ACCEPTED));
 
-    verify(caldavPushService).pushAnswer(USER, EVENT, "ACCEPTED");
+    verify(caldavPushService).pushAnswer(USER, LOGIN, EVENT, "ACCEPTED");
   }
 
   /**
@@ -85,7 +101,7 @@ public class EventResponseSavedListenerTest {
   public void aFirstAnswerIsCarriedOutwardToo() {
     listener.onEvent(new Event<>("exo.agenda.event.responseSaved", null, attendee(EventAttendeeResponse.TENTATIVE)));
 
-    verify(caldavPushService).pushAnswer(USER, EVENT, "TENTATIVE");
+    verify(caldavPushService).pushAnswer(USER, LOGIN, EVENT, "TENTATIVE");
   }
 
   /**
@@ -97,7 +113,7 @@ public class EventResponseSavedListenerTest {
   public void anAnswerThatSaysWhatItAlreadySaidIsNotCarriedOutward() {
     listener.onEvent(answer(EventAttendeeResponse.ACCEPTED, EventAttendeeResponse.ACCEPTED));
 
-    verify(caldavPushService, never()).pushAnswer(anyLong(), anyLong(), anyString());
+    verify(caldavPushService, never()).pushAnswer(anyLong(), anyString(), anyLong(), anyString());
   }
 
   /**
@@ -111,7 +127,7 @@ public class EventResponseSavedListenerTest {
                                                           null,
                                                           new EventAttendee(1L, EVENT, USER, null))));
 
-    verify(caldavPushService, never()).pushAnswer(anyLong(), anyLong(), anyString());
+    verify(caldavPushService, never()).pushAnswer(anyLong(), anyString(), anyLong(), anyString());
   }
 
   /**
@@ -121,7 +137,7 @@ public class EventResponseSavedListenerTest {
    */
   @Test
   public void aFailingPushDoesNotUndoTheAnswer() {
-    when(caldavPushService.pushAnswer(USER, EVENT, "ACCEPTED")).thenThrow(new IllegalStateException("down"));
+    when(caldavPushService.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED")).thenThrow(new IllegalStateException("down"));
 
     assertDoesNotThrow(() -> listener.onEvent(answer(EventAttendeeResponse.DECLINED, EventAttendeeResponse.ACCEPTED)));
   }
@@ -155,7 +171,7 @@ public class EventResponseSavedListenerTest {
    */
   @Test
   public void aFailureOnTheAnswerersOwnCopyDoesNotStopTheFanOut() {
-    when(caldavPushService.pushAnswer(USER, EVENT, "ACCEPTED")).thenThrow(new IllegalStateException("down"));
+    when(caldavPushService.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED")).thenThrow(new IllegalStateException("down"));
 
     assertDoesNotThrow(() -> listener.onEvent(answer(EventAttendeeResponse.DECLINED, EventAttendeeResponse.ACCEPTED)));
 
@@ -173,7 +189,7 @@ public class EventResponseSavedListenerTest {
 
     assertDoesNotThrow(() -> listener.onEvent(answer(EventAttendeeResponse.DECLINED, EventAttendeeResponse.ACCEPTED)));
 
-    verify(caldavPushService).pushAnswer(USER, EVENT, "ACCEPTED");
+    verify(caldavPushService).pushAnswer(USER, LOGIN, EVENT, "ACCEPTED");
   }
 
   /**

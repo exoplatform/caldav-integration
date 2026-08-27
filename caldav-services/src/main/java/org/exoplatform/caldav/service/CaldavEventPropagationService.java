@@ -42,6 +42,7 @@ import org.exoplatform.caldav.model.PendingPush;
 import org.exoplatform.caldav.model.PendingPushKind;
 import org.exoplatform.caldav.storage.CaldavPendingPushStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
+import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -354,7 +355,7 @@ public class CaldavEventPropagationService {
     }
     int written = 0;
     for (Long userIdentityId : invited) {
-      if (seedOne(userIdentityId, eventId)) {
+      if (seedOne(userIdentityId, CaldavConnectorUtils.loginOf(identityManager, userIdentityId), eventId)) {
         written++;
       }
     }
@@ -426,12 +427,14 @@ public class CaldavEventPropagationService {
    * reason the other attendees never see the meeting.
    *
    * @param userIdentityId the invited user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param eventId the agenda event just created
    * @return true when a copy was written
    */
-  private boolean seedOne(long userIdentityId, long eventId) {
+  private boolean seedOne(long userIdentityId, String username, long eventId) {
     try {
-      return caldavPendingInvitationService.seedMeeting(userIdentityId, eventId);
+      return caldavPendingInvitationService.seedMeeting(userIdentityId, username, eventId);
     } catch (Exception | LinkageError e) {
       LOG.warn("The new event {} could not be copied into the calendar of user {}; the seeding pass will retry",
                eventId,
@@ -525,7 +528,7 @@ public class CaldavEventPropagationService {
     }
     int carried = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
-      if (rewriteOne(holder.getKey(), eventId, holder.getValue().getId())) {
+      if (rewriteOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), eventId, holder.getValue().getId())) {
         carried++;
       }
     }
@@ -605,7 +608,7 @@ public class CaldavEventPropagationService {
     int removed = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
       ObjectSync mapping = holder.getValue();
-      if (removeOne(holder.getKey(), mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref())) {
+      if (removeOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref())) {
         // At INFO and one line per copy, deliberately: this is the line an
         // administrator watching the first sweep after the deploy is looking
         // for, and a per-pass total would tell them how many without telling
@@ -712,7 +715,7 @@ public class CaldavEventPropagationService {
     int removed = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
       ObjectSync mapping = holder.getValue();
-      if (removeOne(holder.getKey(), mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref())) {
+      if (removeOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref())) {
         removed++;
       }
     }
@@ -877,7 +880,7 @@ public class CaldavEventPropagationService {
     }
     int carried = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
-      if (answerOne(holder.getKey(), holder.getValue(), addresses, eventId, answererIdentityId, response)) {
+      if (answerOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), holder.getValue(), addresses, eventId, answererIdentityId, response)) {
         carried++;
       }
     }
@@ -919,6 +922,8 @@ public class CaldavEventPropagationService {
    * write to the same refusal.
    *
    * @param holderIdentityId whose copy is written to
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param copy the mapping row naming that copy
    * @param answererAddresses every address the copy might name the answerer by
    * @param eventId the agenda event, for the log
@@ -927,13 +932,14 @@ public class CaldavEventPropagationService {
    * @return true when the copy now carries the answer
    */
   private boolean answerOne(long holderIdentityId,
+                            String username,
                             ObjectSync copy,
                             List<String> answererAddresses,
                             long eventId,
                             long answererIdentityId,
                             String response) {
     try {
-      CaldavPushService.AnswerOutcome outcome = caldavPushService.pushAnswerOnto(holderIdentityId,
+      CaldavPushService.AnswerOutcome outcome = caldavPushService.pushAnswerOnto(holderIdentityId, username,
                                                                                 copy,
                                                                                 answererAddresses,
                                                                                 response);
@@ -1098,14 +1104,16 @@ public class CaldavEventPropagationService {
    * decide there is nothing to look at.
    *
    * @param userIdentityId the holder
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param eventId the agenda event to write again
    * @param objectSyncId the mapping row the copy is recorded under, null when
    *          the caller has no row to settle an obligation against
    * @return true when the copy was rewritten
    */
-  private boolean rewriteOne(long userIdentityId, long eventId, Long objectSyncId) {
+  private boolean rewriteOne(long userIdentityId, String username, long eventId, Long objectSyncId) {
     try {
-      boolean written = caldavPushService.pushAgendaEvent(userIdentityId, eventId) != null;
+      boolean written = caldavPushService.pushAgendaEvent(userIdentityId, username, eventId) != null;
       if (written) {
         settled(objectSyncId);
       }
@@ -1164,6 +1172,8 @@ public class CaldavEventPropagationService {
    * out of the attendee's calendar.
    *
    * @param userIdentityId the holder
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param icsUid the iCalendar identity of the object to remove, which is
    *          where a removal has to address it from — agenda no longer holds
    *          the event
@@ -1172,7 +1182,7 @@ public class CaldavEventPropagationService {
    * @param remoteHref where the copy sits, for the log only; may be null
    * @return true when the copy was removed
    */
-  private boolean removeOne(long userIdentityId, String icsUid, Long objectSyncId, String remoteHref) {
+  private boolean removeOne(long userIdentityId, String username, String icsUid, Long objectSyncId, String remoteHref) {
     if (StringUtils.isBlank(icsUid)) {
       LOG.warn("Mapping {} of user {} carries no iCalendar identity; the copy it names cannot be removed",
                objectSyncId,
@@ -1180,7 +1190,7 @@ public class CaldavEventPropagationService {
       return false;
     }
     try {
-      caldavPushService.deleteEvent(userIdentityId, icsUid);
+      caldavPushService.deleteEvent(userIdentityId, username, icsUid);
       settled(objectSyncId);
       return true;
     } catch (Exception | LinkageError e) {
@@ -1314,7 +1324,7 @@ public class CaldavEventPropagationService {
     }
     int landed = 0;
     for (PendingPush pending : owed) {
-      if (settleOwed(userIdentityId, pending)) {
+      if (settleOwed(userIdentityId, CaldavConnectorUtils.loginOf(identityManager, userIdentityId), pending)) {
         landed++;
       }
     }
@@ -1381,13 +1391,15 @@ public class CaldavEventPropagationService {
    * has to go rather than be rewritten.
    *
    * @param userIdentityId whose calendar the copy sits in
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param pending what is owed to it
    * @return true when the write landed
    */
-  private boolean settleOwed(long userIdentityId, PendingPush pending) {
+  private boolean settleOwed(long userIdentityId, String username, PendingPush pending) {
     boolean landed;
     if (pending.getKind() == PendingPushKind.REMOVE) {
-      landed = removeOne(userIdentityId, pending.getIcsUid(), pending.getObjectSyncId(), null);
+      landed = removeOne(userIdentityId, username, pending.getIcsUid(), pending.getObjectSyncId(), null);
     } else if (pending.getLocalEventId() == null || pending.getLocalEventId() <= 0) {
       // A rewrite with no event to render is one nothing can ever satisfy.
       // Counted as a refusal rather than skipped, so the bound below takes it
@@ -1396,7 +1408,7 @@ public class CaldavEventPropagationService {
                userIdentityId);
       landed = false;
     } else {
-      landed = rewriteOne(userIdentityId, pending.getLocalEventId(), pending.getObjectSyncId());
+      landed = rewriteOne(userIdentityId, username, pending.getLocalEventId(), pending.getObjectSyncId());
     }
     if (!landed) {
       refuse(userIdentityId, pending);

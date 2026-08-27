@@ -37,17 +37,28 @@ public final class CalDavEndpoint {
 
   private final String basePath;
 
+  private final String authProviderName;
+
+  private final String exoLogin;
+
   /**
    * An endpoint, minted by the client from a resolved registration.
    *
    * @param serverId identifier of the registry row the URL came from, or
    *          null when the legacy deployment property resolved it
    * @param baseUri the resolved account base URI, absolute
+   * @param authProviderName name of the credentials provider the registration
+   *          is configured with, or null when the endpoint was minted from a
+   *          DAV account name rather than for an eXo user
+   * @param exoLogin the eXo login this endpoint was minted for, or null in
+   *          that same case
    */
-  CalDavEndpoint(Long serverId, URI baseUri) {
+  CalDavEndpoint(Long serverId, URI baseUri, String authProviderName, String exoLogin) {
     this.serverId = serverId;
     this.baseUri = baseUri;
     this.basePath = baseUri.getRawPath() == null || baseUri.getRawPath().isEmpty() ? "/" : baseUri.getRawPath();
+    this.authProviderName = authProviderName;
+    this.exoLogin = exoLogin;
   }
 
   /**
@@ -77,6 +88,30 @@ public final class CalDavEndpoint {
    */
   public String getBasePath() {
     return basePath;
+  }
+
+  /**
+   * Name of the credentials provider the registration is configured with —
+   * enough, with {@link #getExoLogin()}, to rebuild a credentials context for
+   * every request without reading the registry again.
+   *
+   * @return the provider name, or null when this endpoint was minted from a
+   *         DAV account name rather than for an eXo user
+   */
+  public String getAuthProviderName() {
+    return authProviderName;
+  }
+
+  /**
+   * The eXo login this endpoint was minted for. Deliberately the login and not
+   * the DAV account: it is what a credentials context identifies a user by, and
+   * what a provider resolves its own view of that user from.
+   *
+   * @return the eXo login, or null when this endpoint was minted from a DAV
+   *         account name
+   */
+  public String getExoLogin() {
+    return exoLogin;
   }
 
   /**

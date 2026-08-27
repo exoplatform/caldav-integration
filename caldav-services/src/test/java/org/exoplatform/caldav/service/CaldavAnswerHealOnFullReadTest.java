@@ -196,7 +196,7 @@ public class CaldavAnswerHealOnFullReadTest {
     // not be made" and falls back to reading the window in full. That fallback
     // would make a pass that wrongly consulted the token pass this test anyway,
     // for a reason that has nothing to do with the heal.
-    lenient().when(calDavClient.syncCollection(any(), anyString(), anyString(), anyString(), anyString()))
+    lenient().when(calDavClient.syncCollection(any(), anyString(), anyString()))
              .thenReturn(new SyncCollectionResult(true, "token-fresh", List.of(), List.of()));
     // The reconciliation half of the pass, which has nothing to do with this.
     lenient().when(caldavSyncStorage.getObjects(eq(PAIR), anyInt(), anyInt())).thenReturn(new PageImpl<>(List.of()));
@@ -215,7 +215,7 @@ public class CaldavAnswerHealOnFullReadTest {
     givenTheCopyCarries("ACCEPTED");
     when(agendaEventAttendeeService.getEventResponse(EVENT, null, USER)).thenReturn(EventAttendeeResponse.NEEDS_ACTION);
 
-    service.syncContents(USER, pair(), calendar(), from(), to(), true);
+    service.syncContents(USER, LOGIN, pair(), calendar(), from(), to(), true);
 
     verify(agendaEventAttendeeService).sendEventResponse(EVENT, USER, EventAttendeeResponse.ACCEPTED);
     // And not by being told. The copy was met because the window was walked,
@@ -224,8 +224,8 @@ public class CaldavAnswerHealOnFullReadTest {
     // whose answer was reported before the fix shipped. The reconciliation
     // that follows may still spend the token — that is its own job and costs
     // one request — but no object arrived that way.
-    verify(calDavClient).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
-    verify(calDavClient, never()).multiget(any(), anyString(), anyList(), anyString(), anyString());
+    verify(calDavClient).calendarQuery(any(), anyString(), any(), any());
+    verify(calDavClient, never()).multiget(any(), anyString(), anyList());
   }
 
   /**
@@ -246,7 +246,7 @@ public class CaldavAnswerHealOnFullReadTest {
     lenient().when(agendaEventAttendeeService.getEventResponse(EVENT, null, USER))
              .thenReturn(EventAttendeeResponse.ACCEPTED);
 
-    service.syncContents(USER, pair(), calendar(), from(), to(), true);
+    service.syncContents(USER, LOGIN, pair(), calendar(), from(), to(), true);
 
     verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any());
   }
@@ -273,7 +273,7 @@ public class CaldavAnswerHealOnFullReadTest {
     lenient().when(agendaEventService.createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong()))
              .thenReturn(event());
 
-    service.syncContents(USER, pair(), calendar(), from(), to(), true);
+    service.syncContents(USER, LOGIN, pair(), calendar(), from(), to(), true);
 
     verify(agendaEventService, never()).createEvent(any(),
                                                     any(),
@@ -299,7 +299,7 @@ public class CaldavAnswerHealOnFullReadTest {
    * @param partStat the participation status on the owner's own line
    */
   private void givenTheCopyCarries(String partStat) {
-    when(calDavClient.calendarQuery(any(), anyString(), any(), any(), anyString(), anyString()))
+    when(calDavClient.calendarQuery(any(), anyString(), any(), any()))
                                                                                                .thenReturn(List.of(new CalendarObject(HREF
                                                                                                    + "copy.ics",
                                                                                                                                       ETAG,

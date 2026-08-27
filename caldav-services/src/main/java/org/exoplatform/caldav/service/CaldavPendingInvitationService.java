@@ -215,9 +215,11 @@ public class CaldavPendingInvitationService {
    * my calendars" is two calls. Their answers are merged and asked about once.
    *
    * @param userIdentityId identity of the user whose account receives copies
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @return how many events were written this pass
    */
-  public int pushUpcomingMeetings(long userIdentityId) {
+  public int pushUpcomingMeetings(long userIdentityId, String username) {
     if (!copiesEnabled(userIdentityId)) {
       return 0;
     }
@@ -243,7 +245,7 @@ public class CaldavPendingInvitationService {
       if (alreadyCopied.contains(eventId)) {
         continue;
       }
-      if (seedOne(userIdentityId, eventId)) {
+      if (seedOne(userIdentityId, username, eventId)) {
         pushed++;
       }
     }
@@ -362,14 +364,16 @@ public class CaldavPendingInvitationService {
    * makes a second trigger on the same creation write nothing.
    *
    * @param userIdentityId identity of the user whose account receives the copy
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param eventId the agenda event — a series master or a single event
    * @return true when a copy was written
    */
-  public boolean seedMeeting(long userIdentityId, long eventId) {
+  public boolean seedMeeting(long userIdentityId, String username, long eventId) {
     if (userIdentityId <= 0 || eventId <= 0 || !copiesEnabled(userIdentityId)) {
       return false;
     }
-    return seedOne(userIdentityId, eventId);
+    return seedOne(userIdentityId, username, eventId);
   }
 
   /**
@@ -384,10 +388,12 @@ public class CaldavPendingInvitationService {
    * rule of substance is allowed to live in the window queries.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param eventId the agenda event — a series master or a single event
    * @return true when a copy was written
    */
-  private boolean seedOne(long userIdentityId, long eventId) {
+  private boolean seedOne(long userIdentityId, String username, long eventId) {
     Event event = agendaEventService.getEventById(eventId);
     if (!caldavCopyPolicy.maySeedCopy(event)) {
       // A date poll is spelled TENTATIVE and a cancelled event CANCELLED;
@@ -442,7 +448,7 @@ public class CaldavPendingInvitationService {
       return false;
     }
     try {
-      return caldavPushService.pushAgendaEvent(userIdentityId, eventId) != null;
+      return caldavPushService.pushAgendaEvent(userIdentityId, username, eventId) != null;
     } catch (CaldavPushException e) {
       if (CaldavPushService.isKnownState(e.getCode())) {
         // Not a failure and not an incident: a state of this user that no
