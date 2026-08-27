@@ -16,13 +16,9 @@
  */
 package org.exoplatform.caldav.service;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -331,9 +327,7 @@ public class CaldavPushService {
       mapping.setLocalEventId(localEventId);
     }
     mapping.setRemoteHref(href);
-    StoredCopy stored = storedBaseline(endpoint, settings, href, ics, result.etag());
-    mapping.setEtag(stored.etag());
-    mapping.setPushedHash(stored.hash());
+    mapping.setEtag(result.etag());
     mapping.setLastSync(new Date());
     ObjectSync saved = caldavSyncStorage.saveObject(mapping);
     // Last, and only once the destination holds the event: a move that failed
@@ -466,6 +460,52 @@ public class CaldavPushService {
    */
   public ObjectSync rewriteAgendaEvent(long userIdentityId, long eventId) {
     return pushAgendaEvent(userIdentityId, eventId, null, true);
+  }
+
+  /**
+   * The calendar object eXo would write for one event right now, without
+   * writing it.
+   *
+   * <p>
+   * This is the baseline the mirror verification compares a server's copy
+   * against, and it is <b>generated rather than stored</b>. A recorded digest of
+   * what was pushed — or of what the server was seen to store just after —
+   * describes one moment and goes stale from the next: a server that finishes
+   * settling the object after the read-back, an upgrade that changes its
+   * serialisation, a deploy that changes ours. Regenerating costs one read of an
+   * event already in cache and can never be out of date.
+   *
+   * <p>
+   * The UID is taken from the mapping row rather than minted: this must have no
+   * effect on anything. Asking {@code adoptOrMintUid} would record a new
+   * identifier for an event that has one, on a path that is only supposed to be
+   * looking.
+   *
+   * <p>
+   * No link back into eXo is rendered, and none is expected: {@code eventUrl} is
+   * carried on a push request, so a sweep has none. The comparison ignores the
+   * URL property for exactly that reason.
+   *
+   * @param userIdentityId identity of the user whose copy it is
+   * @param eventId the agenda event to render
+   * @param icsUid the iCalendar identifier the copy is written under
+   * @return the object as text, or null when the event can no longer be read —
+   *         it may have been deleted, or hidden from this user, and neither is
+   *         something to conclude a rewrite from
+   */
+  public String renderAgendaEvent(long userIdentityId, long eventId, String icsUid) {
+    Event event;
+    try {
+      // The event's own zone, for the all-day reason pushAgendaEvent records.
+      event = agendaEventService.getEventById(eventId, null, userIdentityId);
+    } catch (IllegalAccessException e) {
+      LOG.debug("Event {} is not visible to user {}; nothing is rendered for it", eventId, userIdentityId, e);
+      return null;
+    }
+    if (event == null || StringUtils.isBlank(icsUid)) {
+      return null;
+    }
+    return icsWriter.write(agendaEventIcsMapper.toIcsEvent(event, icsUid, null, userIdentityId));
   }
 
   /**
@@ -671,9 +711,7 @@ public class CaldavPushService {
       if (result.preconditionFailed()) {
         throw new CaldavPushException(CONFLICT, "The series at " + known.getRemoteHref() + " changed since it was read");
       }
-      StoredCopy stored = storedBaseline(endpoint, settings, known.getRemoteHref(), rewritten, result.etag());
-      known.setEtag(stored.etag());
-      known.setPushedHash(stored.hash());
+      known.setEtag(result.etag());
       known.setLastSync(new Date());
       caldavSyncStorage.saveObject(known);
     } catch (CalDavAuthenticationException e) {
@@ -815,12 +853,20 @@ public class CaldavPushService {
       if (result.preconditionFailed()) {
         throw new CaldavPushException(CONFLICT, "The copy at " + known.getRemoteHref() + " changed since it was read");
       }
-      // The recorded hash has to become the hash of what was just written, or
-      // the next verification pass judges this very write a client's doing,
-      // calls the copy ALTERED, and repairs it back to what eXo last pushed —
-      // which is the answer this call replaced.
+      // The version has to become the one this write produced, or the next
+      // ordinary update carries an If-Match the server has already left behind.
+      //
+      // Nothing else is recorded, and nothing needs to be. This used to store a
+      // digest of what was just written, so that the verification pass would
+      // not judge this very write a client's doing and repair the copy back to
+      // what eXo last pushed — undoing the answer. EXO-89716 makes that
+      // impossible by construction instead: the pass compares the copy against
+      // what eXo would render for the event <i>now</i>, and the answer was
+      // recorded in agenda before this method was ever called, so eXo's own
+      // render already carries it. The baseline agrees because it is derived
+      // from the same source the answer came from, not because a digest was
+      // remembered.
       known.setEtag(result.etag());
-      known.setPushedHash(hashOf(rewrite.document()));
       known.setLastSync(new Date());
       caldavSyncStorage.saveObject(known);
       LOG.debug("Answer of user {} to event {} carried out onto the copy at {}: {}",
@@ -859,7 +905,7 @@ public class CaldavPushService {
    * @param settings their connected account
    * @return the addresses to look for, most specific first, possibly empty
    */
-  private List<String> addressesNaming(long userIdentityId, CaldavUserSetting settings) {
+  public List<String> addressesNaming(long userIdentityId, CaldavUserSetting settings) {
     List<String> addresses = new ArrayList<>();
     String account = StringUtils.trimToNull(settings.getUsername());
     if (account != null) {
@@ -1293,97 +1339,8 @@ public class CaldavPushService {
   private ObjectSync cleared(ObjectSync mapping) {
     mapping.setRemoteHref(null);
     mapping.setEtag(null);
-    mapping.setPushedHash(null);
     mapping.setLastSync(new Date());
     return mapping;
   }
 
-  /**
-   * The baseline to record for a copy that has just been written: what the
-   * server <b>stored</b>, not what eXo sent.
-   *
-   * <p>
-   * A CalDAV server is not obliged to keep the bytes it is handed, and a whole
-   * family of them does not. BlueMind parses the object into its own model and
-   * re-serialises it, so the copy it holds is semantically the meeting eXo sent
-   * and textually a different document. Recording a digest of what was sent
-   * then makes the very next verification pass read that copy, find bytes it
-   * did not write, and conclude a client tampered with it — for every object,
-   * on every pass, until {@code giveUpOn} abandons them and eXo stops
-   * maintaining them at all. The assumption that a PUT is byte-stable was the
-   * defect; this reads the object back once and takes the answer as the
-   * baseline, so a normalising server is absorbed on the first pass and only a
-   * real edit registers as a rewrite afterwards.
-   *
-   * <p>
-   * The version comes from the same read for the same reason, and it must come
-   * from the <i>same</i> read: a digest and an ETag describing two different
-   * representations of the object are worse than either alone. It also settles
-   * the guarded write. On a server whose ETag moves after the PUT answered one,
-   * the {@code If-Match} of the next ordinary update carries a version the
-   * server has already left behind and the write is refused with a 412 — which
-   * is an eXo-side edit silently failing to reach the copy. The read-back's
-   * ETag is the one the server will still recognise.
-   *
-   * <p>
-   * It never fails a push. A read-back that cannot be done says nothing about a
-   * write that succeeded, so the sent bytes and the PUT's own ETag stand in —
-   * exactly the behaviour that held before this method existed. The cost is one
-   * GET per object actually written, which is a user action or a repair, never
-   * a per-sweep charge: a converged mirror pushes nothing and pays nothing.
-   *
-   * @param endpoint the account's endpoint
-   * @param settings the connected account
-   * @param href where the object was written
-   * @param sentIcs the iCalendar text that was sent
-   * @param putEtag the version the write itself answered, may be null
-   * @return the digest and version to record against the copy
-   */
-  private StoredCopy storedBaseline(CalDavEndpoint endpoint,
-                                    CaldavUserSetting settings,
-                                    String href,
-                                    String sentIcs,
-                                    String putEtag) {
-    try {
-      CalendarObject stored = calDavClient.fetchObject(endpoint, href, settings.getUsername(), settings.getPassword());
-      if (stored == null || StringUtils.isBlank(stored.calendarData())) {
-        // Including BlueMind's way of saying "no such object", which is a 500
-        // the client reports as absent. Nothing was learnt, so nothing changes.
-        LOG.debug("The copy written to {} could not be read back; the sent bytes stand as its baseline", href);
-        return new StoredCopy(hashOf(sentIcs), putEtag);
-      }
-      return new StoredCopy(hashOf(stored.calendarData()),
-                            StringUtils.isNotBlank(stored.etag()) ? stored.etag() : putEtag);
-    } catch (RuntimeException e) {
-      LOG.debug("The copy written to {} could not be read back; the sent bytes stand as its baseline", href, e);
-      return new StoredCopy(hashOf(sentIcs), putEtag);
-    }
-  }
-
-  /**
-   * A stable digest of what was pushed, so a later read can tell "the server
-   * changed this" from "this is exactly what we wrote".
-   *
-   * @param ics the object that was written
-   * @return the digest, hexadecimal
-   */
-  private String hashOf(String ics) {
-    try {
-      MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      return HexFormat.of().formatHex(digest.digest(ics.getBytes(StandardCharsets.UTF_8)));
-    } catch (NoSuchAlgorithmException e) {
-      throw new IllegalStateException("SHA-256 is required by every Java platform", e);
-    }
-  }
-
-  /**
-   * What the server holds for a copy, as the two things a later pass compares
-   * it by.
-   *
-   * @param hash digest of the stored iCalendar text
-   * @param etag the version the server publishes for it, or null when it
-   *          publishes none
-   */
-  private record StoredCopy(String hash, String etag) {
-  }
 }

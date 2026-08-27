@@ -82,14 +82,6 @@ public class CaldavObjectSyncEntity {
   @Column(name = "ETAG")
   private String etag;
 
-  /**
-   * Hash of the iCalendar body eXo last pushed. Lets a no-op push be skipped
-   * without re-reading the object, and — more importantly — lets a later read
-   * tell "the server changed this" from "this is exactly what we wrote".
-   */
-  @Column(name = "PUSHED_HASH")
-  private String pushedHash;
-
   /** When this object was last written or verified. */
   @Column(name = "LAST_SYNC")
   private Date   lastSync;

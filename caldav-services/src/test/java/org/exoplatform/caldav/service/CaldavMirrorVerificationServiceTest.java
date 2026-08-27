@@ -29,9 +29,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 
@@ -42,6 +39,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -49,6 +47,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarObject;
+import org.exoplatform.caldav.ics.IcsEquivalence;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.MirrorVerification;
@@ -80,7 +79,57 @@ public class CaldavMirrorVerificationServiceTest {
 
   private static final String                HREF   = "/dav/calendars/john/exo-meetings/one.ics";
 
-  private static final String                ICS    = "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n";
+  private static final String                UID    = "evt-1";
+
+  /** What eXo renders for the event this mirror row stands for. */
+  private static final String                ICS    = "BEGIN:VCALENDAR\r\n"
+      + "VERSION:2.0\r\n"
+      + "PRODID:-//Exo Platform//NONSGML v1.0//EN\r\n"
+      + "CALSCALE:GREGORIAN\r\n"
+      + "BEGIN:VEVENT\r\n"
+      + "SUMMARY:Sprint review\r\n"
+      + "UID:evt-1\r\n"
+      + "DTSTAMP:20260901T080000Z\r\n"
+      + "DTSTART:20260901T090000Z\r\n"
+      + "DTEND:20260901T100000Z\r\n"
+      + "STATUS:CONFIRMED\r\n"
+      + "TRANSP:OPAQUE\r\n"
+      + "END:VEVENT\r\n"
+      + "END:VCALENDAR\r\n";
+
+  /**
+   * The same meeting as a re-serialising server keeps it: its own PRODID, its
+   * own property order, its own DTSTAMP, no redundant TRANSP, and the start
+   * restated on a zone instead of in UTC. Not one byte in common with what eXo
+   * sent, and exactly the same meeting.
+   */
+  private static final String                RESERIALISED = "BEGIN:VCALENDAR\r\n"
+      + "PRODID:-//FakeMind//Calendar//EN\r\n"
+      + "VERSION:2.0\r\n"
+      + "BEGIN:VTIMEZONE\r\n"
+      + "TZID:Europe/Paris\r\n"
+      + "BEGIN:STANDARD\r\n"
+      + "DTSTART:19710101T030000\r\n"
+      + "TZOFFSETFROM:+0200\r\n"
+      + "TZOFFSETTO:+0100\r\n"
+      + "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU\r\n"
+      + "END:STANDARD\r\n"
+      + "BEGIN:DAYLIGHT\r\n"
+      + "DTSTART:19710101T020000\r\n"
+      + "TZOFFSETFROM:+0100\r\n"
+      + "TZOFFSETTO:+0200\r\n"
+      + "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU\r\n"
+      + "END:DAYLIGHT\r\n"
+      + "END:VTIMEZONE\r\n"
+      + "BEGIN:VEVENT\r\n"
+      + "UID:evt-1\r\n"
+      + "DTSTAMP:20260903T114500Z\r\n"
+      + "DTSTART;TZID=Europe/Paris:20260901T110000\r\n"
+      + "DTEND;TZID=Europe/Paris:20260901T120000\r\n"
+      + "STATUS:CONFIRMED\r\n"
+      + "SUMMARY:Sprint review\r\n"
+      + "END:VEVENT\r\n"
+      + "END:VCALENDAR\r\n";
 
   @Mock
   private CalDavClient                       calDavClient;
@@ -100,6 +149,14 @@ public class CaldavMirrorVerificationServiceTest {
   @Mock
   private CalDavEndpoint                     endpoint;
 
+  /**
+   * The real judge, never a mock. What this pass concludes <i>is</i> what the
+   * comparison concludes, so a stubbed answer would test the plumbing and leave
+   * the decision — the part that lost a live account's copies — unexercised.
+   */
+  @Spy
+  private IcsEquivalence                     icsEquivalence = new IcsEquivalence();
+
   @InjectMocks
   private CaldavMirrorVerificationService    service;
 
@@ -109,6 +166,7 @@ public class CaldavMirrorVerificationServiceTest {
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     lenient().when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(mirror()));
+    lenient().when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(ICS);
   }
 
   @Test
@@ -117,7 +175,7 @@ public class CaldavMirrorVerificationServiceTest {
     // nothing syncs back from it, so the answer is to put it back — not to
     // take the deletion as an instruction.
     givenServerHolds(Map.of());
-    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
     MirrorVerification result = service.verify(USER);
 
@@ -132,7 +190,7 @@ public class CaldavMirrorVerificationServiceTest {
     // unchanged ETag is the server's own promise that the bytes are the ones
     // it was given.
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
-    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
     MirrorVerification result = service.verify(USER);
 
@@ -148,7 +206,7 @@ public class CaldavMirrorVerificationServiceTest {
     // strings as they arrive would fetch and re-push every object on every
     // pass, against a server that changed nothing.
     givenServerHolds(Map.of(HREF, "W/\"etag-1\""));
-    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
     assertEquals(0, service.verify(USER).altered());
     verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
@@ -156,12 +214,15 @@ public class CaldavMirrorVerificationServiceTest {
 
   @Test
   public void aCopyTheServerRewroteIsWrittenAgain() {
+    // Somebody opened the copy on their phone and renamed the meeting. The
+    // mirror is eXo's projection, so eXo writes it back.
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
-    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
                                                                             .thenReturn(new CalendarObject(HREF,
                                                                                                            "\"etag-2\"",
-                                                                                                           "BEGIN:VCALENDAR\r\nSUMMARY:mangled\r\nEND:VCALENDAR\r\n"));
+                                                                                                           RESERIALISED.replace("Sprint review",
+                                                                                                                                "Sprint review (moved to the pub)")));
 
     MirrorVerification result = service.verify(USER);
 
@@ -280,7 +341,7 @@ public class CaldavMirrorVerificationServiceTest {
     // nothing on either side, so there is nothing to protect by keeping it —
     // only a missing count that never reaches zero.
     givenServerHolds(Map.of());
-    ObjectSync orphan = mapping(HREF, "\"etag-1\"", hash(ICS), null);
+    ObjectSync orphan = mapping(HREF, "\"etag-1\"", null);
     orphan.setId(77L);
     givenMappings(orphan);
 
@@ -292,21 +353,22 @@ public class CaldavMirrorVerificationServiceTest {
   }
 
   @Test
-  public void aRowWithNoEventWhoseObjectIsOnlyChangedIsKept() {
-    // The object is still there. The row is the only link to it, so dropping
-    // it would lose a copy the user may well want.
+  public void aRowWithNoEventWhoseObjectIsStillThereIsNotJudgedAndIsKept() {
+    // Nothing to compare it against: the baseline is what eXo would render for
+    // the event, and this row stands for no event. Saying "altered" would be a
+    // claim the pass cannot support, and it is not made — the object is not
+    // even fetched. The row stays, because it is the only link to a copy the
+    // user may well want.
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
-    ObjectSync orphan = mapping(HREF, "\"etag-1\"", hash(ICS), null);
+    ObjectSync orphan = mapping(HREF, "\"etag-1\"", null);
     orphan.setId(77L);
     givenMappings(orphan);
-    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
-                                                                            .thenReturn(new CalendarObject(HREF,
-                                                                                                           "\"etag-2\"",
-                                                                                                           "BEGIN:VCALENDAR\r\nSUMMARY:mangled\r\nEND:VCALENDAR\r\n"));
 
     MirrorVerification result = service.verify(USER);
 
-    assertEquals(1, result.altered());
+    assertEquals(1, result.checked());
+    assertEquals(0, result.altered());
+    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
     verify(caldavSyncStorage, never()).deleteObject(anyLong());
   }
 
@@ -318,10 +380,10 @@ public class CaldavMirrorVerificationServiceTest {
     // the calendar never stops "needing attention" however often the repair
     // succeeds — which is exactly what a live account did.
     givenServerHolds(Map.of());
-    ObjectSync stale = mapping(HREF, "\"etag-1\"", hash(ICS), 5L);
+    ObjectSync stale = mapping(HREF, "\"etag-1\"", 5L);
     stale.setId(9002L);
     givenMappings(stale);
-    ObjectSync elsewhere = mapping(MIRROR + "moved.ics", "\"etag-3\"", hash(ICS), 5L);
+    ObjectSync elsewhere = mapping(MIRROR + "moved.ics", "\"etag-3\"", 5L);
     elsewhere.setId(9003L);
     when(caldavPushService.rewriteAgendaEvent(USER, 5L)).thenReturn(elsewhere);
 
@@ -342,10 +404,10 @@ public class CaldavMirrorVerificationServiceTest {
     // an earlier version of this test passed against code that deleted the
     // row. Anything a real database hands out is past the cache.
     givenServerHolds(Map.of());
-    ObjectSync row = mapping(HREF, "\"etag-1\"", hash(ICS), 5L);
+    ObjectSync row = mapping(HREF, "\"etag-1\"", 5L);
     row.setId(9001L);
     givenMappings(row);
-    ObjectSync same = mapping(HREF, "\"etag-2\"", hash(ICS), 5L);
+    ObjectSync same = mapping(HREF, "\"etag-2\"", 5L);
     same.setId(9001L);
     when(caldavPushService.rewriteAgendaEvent(USER, 5L)).thenReturn(same);
 
@@ -359,10 +421,10 @@ public class CaldavMirrorVerificationServiceTest {
     // A row that was never persisted has a null identifier, and unboxing one
     // to compare it against zero throws where the pass should simply move on.
     givenServerHolds(Map.of());
-    ObjectSync row = mapping(HREF, "\"etag-1\"", hash(ICS), 5L);
+    ObjectSync row = mapping(HREF, "\"etag-1\"", 5L);
     row.setId(null);
     givenMappings(row);
-    ObjectSync elsewhere = mapping(MIRROR + "moved.ics", "\"etag-3\"", hash(ICS), 5L);
+    ObjectSync elsewhere = mapping(MIRROR + "moved.ics", "\"etag-3\"", 5L);
     elsewhere.setId(4242L);
     when(caldavPushService.rewriteAgendaEvent(USER, 5L)).thenReturn(elsewhere);
 
@@ -372,23 +434,25 @@ public class CaldavMirrorVerificationServiceTest {
   }
 
   @Test
-  public void anEtagThatMovedOverTheSameBytesIsNotARewrite() {
-    // A server touching its own metadata moves the ETag without touching the
-    // object. Trusting the ETag alone would re-push a copy that is exactly
-    // what eXo wrote.
+  public void anEtagThatMovedOverAReSerialisationIsNotARewrite() {
+    // EXO-89716 in one assertion. The server holds the same meeting written its
+    // own way — its PRODID, its property order, its own DTSTAMP, the start on a
+    // zone rather than in UTC — and the ETag moved because it stored it. Judged
+    // on bytes this is a rewrite, on every pass, for ever; judged on meaning it
+    // is nothing at all.
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
-    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
                                                                             .thenReturn(new CalendarObject(HREF,
                                                                                                            "\"etag-2\"",
-                                                                                                           ICS));
+                                                                                                           RESERIALISED));
 
     assertEquals(0, service.verify(USER).altered());
     verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
   }
 
   @Test
-  public void aVersionThatMovedOverBytesThatDidNotIsRecorded() {
+  public void aVersionThatMovedOverAnEquivalentCopyIsRecorded() {
     // Having paid a fetch to establish that the bytes are still ours, the pass
     // has learnt the object's current version. Keeping the superseded one
     // makes every later pass fetch the object again to reach the same
@@ -396,11 +460,11 @@ public class CaldavMirrorVerificationServiceTest {
     // If-Match the server has already left behind, which it refuses. That
     // refusal is an eXo-side edit silently not reaching the copy.
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
-    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
                                                                             .thenReturn(new CalendarObject(HREF,
                                                                                                            "\"etag-2\"",
-                                                                                                           ICS));
+                                                                                                           RESERIALISED));
 
     service.verify(USER);
 
@@ -415,7 +479,7 @@ public class CaldavMirrorVerificationServiceTest {
     // mirror must cost a listing and nothing else — not a database write per
     // object per sweep.
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
-    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
     service.verify(USER);
 
@@ -423,14 +487,17 @@ public class CaldavMirrorVerificationServiceTest {
   }
 
   @Test
-  public void aCopyWrittenBeforeHashesWereRecordedIsLeftAlone() {
-    // Nothing here can say whether the change matters, and a re-push would
-    // overwrite a copy that may be perfectly fine.
+  public void aCopyWhoseEventCanNoLongerBeRenderedIsLeftAlone() {
+    // The event was deleted in eXo, or is no longer visible to this user.
+    // Nothing here can say what the copy ought to say, and a re-push on that
+    // basis would overwrite a calendar on the strength of an absence.
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
-    givenMappings(mapping(HREF, "\"etag-1\"", null, 5L));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(null);
 
     assertEquals(0, service.verify(USER).altered());
     verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
   }
 
   @Test
@@ -438,7 +505,7 @@ public class CaldavMirrorVerificationServiceTest {
     // Unreadable is not the same as rewritten, and a re-push here would
     // overwrite whatever is there on the strength of a network error.
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
-    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString())).thenThrow(new IllegalStateException("down"));
 
     assertEquals(0, service.verify(USER).altered());
@@ -462,7 +529,7 @@ public class CaldavMirrorVerificationServiceTest {
     // deleting what eXo sends. Re-pushing on every sync for ever is worse than
     // saying so once and stopping.
     givenServerHolds(Map.of());
-    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
 
     for (int attempt = 0; attempt < 3; attempt++) {
       assertEquals(1, service.verify(USER).repaired());
@@ -479,7 +546,7 @@ public class CaldavMirrorVerificationServiceTest {
     // Reconnecting, or a restart. The count records that something is going
     // wrong right now, not a fact about the account worth keeping.
     givenServerHolds(Map.of());
-    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     for (int attempt = 0; attempt < 4; attempt++) {
       service.verify(USER);
     }
@@ -494,7 +561,7 @@ public class CaldavMirrorVerificationServiceTest {
     // It cannot be rebuilt from anything, and deleting it would be a guess
     // about data the user may want.
     givenServerHolds(Map.of());
-    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), null));
+    givenMappings(mapping(HREF, "\"etag-1\"", null));
 
     MirrorVerification result = service.verify(USER);
 
@@ -537,17 +604,16 @@ public class CaldavMirrorVerificationServiceTest {
   /**
    * @param href where the copy lives
    * @param etag the ETag recorded when it was written
-   * @param pushedHash the digest recorded when it was written
    * @param localEventId the agenda event it stands for
    * @return the mapping row
    */
-  private ObjectSync mapping(String href, String etag, String pushedHash, Long localEventId) {
+  private ObjectSync mapping(String href, String etag, Long localEventId) {
     ObjectSync object = new ObjectSync();
     object.setId(1L);
     object.setCalendarSyncId(3L);
+    object.setIcsUid(UID);
     object.setRemoteHref(href);
     object.setEtag(etag);
-    object.setPushedHash(pushedHash);
     object.setLocalEventId(localEventId);
     return object;
   }
@@ -576,16 +642,4 @@ public class CaldavMirrorVerificationServiceTest {
     return setting;
   }
 
-  /**
-   * @param ics the object
-   * @return the digest the push would have recorded for it
-   */
-  private String hash(String ics) {
-    try {
-      MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      return HexFormat.of().formatHex(digest.digest(ics.getBytes(StandardCharsets.UTF_8)));
-    } catch (Exception e) {
-      throw new IllegalStateException(e);
-    }
-  }
 }
