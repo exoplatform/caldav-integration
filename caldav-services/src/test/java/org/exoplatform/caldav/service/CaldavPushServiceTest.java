@@ -317,7 +317,6 @@ public class CaldavPushServiceTest {
     // written before the migration are found rather than duplicated.
     assertEquals(MIRROR + "evt-1.ics", href.getValue());
     assertEquals("\"etag-1\"", mapping.getEtag());
-    assertNotNull(mapping.getPushedHash());
     verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
   }
 
@@ -325,10 +324,16 @@ public class CaldavPushServiceTest {
   public void aLaterPushMergesIntoWhatTheServerHolds() {
     givenAMirror();
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(mapped("\"etag-1\""));
+    // Two reads, and they answer different things on purpose: the first is the
+    // merge read of what the server held before the write, the second is the
+    // baseline read-back of what it holds after it.
     when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
                                                                                 .thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
                                                                                                                "\"etag-1\"",
-                                                                                                               "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"));
+                                                                                                               "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"),
+                                                                                            new CalendarObject(MIRROR + "evt-1.ics",
+                                                                                                               "\"etag-2\"",
+                                                                                                               "MERGED"));
     when(icsMerger.merge(anyString(), anyString(), eq(false))).thenReturn("MERGED");
     when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
                                                                                                            .thenReturn(new PutResult(204,
@@ -725,7 +730,6 @@ public class CaldavPushServiceTest {
     assertEquals("evt-1", cleared.getValue().getIcsUid());
     assertNull(cleared.getValue().getRemoteHref());
     assertNull(cleared.getValue().getEtag());
-    assertNull(cleared.getValue().getPushedHash());
   }
 
   /**
@@ -942,6 +946,12 @@ public class CaldavPushServiceTest {
     // The href comes back from the filename convention, since the row that
     // would have carried one never got that far.
     assertEquals(MIRROR + "evt-1.ics", mapping.getRemoteHref());
+    // Nothing is merged and nothing is read: with no ETag recorded there is no
+    // object to merge into, which is what "as if it were the first time" means.
+    // A push costs one write and nothing else — EXO-89716 removed the read-back
+    // that briefly sat here, because the baseline it captured could not be
+    // trusted and is no longer recorded at all.
+    verify(icsMerger, never()).merge(anyString(), anyString(), anyBoolean());
     verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
     verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
   }
