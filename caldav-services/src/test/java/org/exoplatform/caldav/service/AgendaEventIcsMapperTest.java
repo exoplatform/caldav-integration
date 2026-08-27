@@ -106,6 +106,32 @@ public class AgendaEventIcsMapperTest {
     assertEquals("https://exo.test/e/1", ics.getEventUrl());
   }
 
+  /**
+   * The address the copy names a person by is asked of this mapper, and of
+   * nothing else. Propagating an answer outward has to find that person's
+   * ATTENDEE line in an object already on the server, and a second opinion on
+   * which address they answer to would match nothing — silently.
+   */
+  @Test
+  public void theAddressTheCopyNamesSomeoneByIsAskedOfTheMapperItself() {
+    givenIdentity(SOMEONE, "Alice", "alice@example.test");
+
+    assertEquals("alice@example.test", mapper.addressOf(SOMEONE));
+  }
+
+  /**
+   * A person with no visible address is left off the copy, so there is no
+   * ATTENDEE line of theirs to rewrite either. The same rule, read from the
+   * other end.
+   */
+  @Test
+  public void someoneLeftOffTheCopyHasNoAddressToMatchOn() {
+    givenIdentity(SOMEONE, "Alice", null);
+
+    assertNull(mapper.addressOf(SOMEONE));
+    assertNull(mapper.addressOf(404L));
+  }
+
   @Test
   public void anOrganizerWithNoVisibleAddressIsNotNamedAtAll() {
     // Not given a plausible-looking address: a fabricated CAL-ADDRESS would be
