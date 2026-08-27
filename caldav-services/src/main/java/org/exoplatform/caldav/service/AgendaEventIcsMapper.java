@@ -18,13 +18,17 @@ package org.exoplatform.caldav.service;
 
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
@@ -36,6 +40,7 @@ import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventConferenceService;
 import org.exoplatform.agenda.service.AgendaEventReminderService;
 import org.exoplatform.agenda.util.EventIcsBuilder;
+import org.exoplatform.agenda.util.NotificationUtils;
 import org.exoplatform.agenda.util.Utils;
 import org.exoplatform.caldav.model.IcsEvent;
 import org.exoplatform.caldav.model.IcsPerson;
@@ -75,6 +80,19 @@ public class AgendaEventIcsMapper {
 
   /** Logger for what is degraded rather than failed: an undeterminable language. */
   private static final Log            LOG = ExoLogger.getLogger(AgendaEventIcsMapper.class);
+
+  /**
+   * The answers the copy's description offers a link for.
+   *
+   * <p>
+   * The three a person can give. {@code NEEDS_ACTION} is the absence of an
+   * answer rather than one of them, and offering a link that un-answers an
+   * invitation would be a control no calendar client has.
+   */
+  private static final EventAttendeeResponse[] ANSWERS_OFFERED =
+                                                              {EventAttendeeResponse.ACCEPTED,
+                                                                  EventAttendeeResponse.TENTATIVE,
+                                                                  EventAttendeeResponse.DECLINED};
 
   /** The roster of an event, before it is filtered to the addressable. */
   @Autowired
@@ -206,7 +224,140 @@ public class AgendaEventIcsMapper {
                                        spaceNameOf(event),
                                        conference,
                                        link,
+                                       rsvpLinks(event, pusherIdentityId),
                                        event.getDescription());
+  }
+
+  /**
+   * The answer links this copy offers, minted for the one person whose calendar
+   * it is written into.
+   *
+   * <p>
+   * <b>Why the copy carries them at all.</b> Some clients will never offer an
+   * Accept or Decline control on the eXo Meetings calendar. BlueMind's web UI
+   * is the confirmed case: it renders RSVP only for events in the account's
+   * <i>default</i> calendar, and a calendar created over CalDAV is marked
+   * non-default in its code, so <code>exo-meetings</code> can never show one.
+   * That is established from BlueMind's own source and cannot be fixed from
+   * here. A description, on the other hand, every client renders (EXO-89753).
+   *
+   * <p>
+   * <b>Whose token goes into which copy.</b> The links carry a token that
+   * answers <i>as</i> the person named in it, so putting one attendee's token
+   * into another attendee's copy would hand over the ability to answer as them.
+   * That cannot happen on this path, and the reason is structural rather than
+   * careful: no document is ever built once and pushed to several people.
+   * {@code CaldavPushService} takes the recipient as the first argument of
+   * every entry point and threads it down to a single
+   * {@link #toIcsEvent(Event, String, long)} call, and the fan-out over
+   * attendees happens above that, one full mapping pass per holder. The
+   * identifier below therefore comes from {@code pusherIdentityId} - the owner
+   * of the calendar being written - and from nothing else.
+   *
+   * <p>
+   * <b>The links are the same on every render.</b> The token is
+   * {@code encode(eventId | user | response | expiry)} through the platform
+   * codec, and since EXO-89752 the expiry is a pure function of the event
+   * rather than a window from "now". The mirror compares DESCRIPTION, so a
+   * token that varied per render would put every copy into permanent churn -
+   * exactly what EXO-89716 was spent removing. Expect one rewrite of every
+   * existing copy as this description lands, and none after that.
+   *
+   * <p>
+   * <b>No answer is stated here, only offered.</b> The current answer lives on
+   * the attendee line's PARTSTAT, which is structured state the client
+   * understands and refreshes on its own schedule. A description repeating it
+   * would be stale the moment the user clicked.
+   *
+   * @param event the event being copied
+   * @param pusherIdentityId the user whose calendar receives the copy, and the
+   *          only person whose token may appear in it
+   * @return the answer links keyed by the answer they record, empty when no
+   *         link can be offered
+   */
+  private Map<EventAttendeeResponse, String> rsvpLinks(Event event, long pusherIdentityId) {
+    String attendeeIdentifier = attendeeIdentifierOf(pusherIdentityId);
+    if (StringUtils.isBlank(attendeeIdentifier)) {
+      return Collections.emptyMap();
+    }
+    // The same identifier the link back to the event uses: a series and its
+    // overrides answer as one meeting, which is also the only thing a client
+    // showing no RSVP control could mean by a click.
+    long answerableEventId = event.getParentId() > 0 ? event.getParentId() : event.getId();
+    Map<EventAttendeeResponse, String> links = new EnumMap<>(EventAttendeeResponse.class);
+    for (EventAttendeeResponse response : ANSWERS_OFFERED) {
+      String url = answerUrl(answerableEventId, attendeeIdentifier, response);
+      if (url != null) {
+        links.put(response, url);
+      }
+    }
+    return links;
+  }
+
+  /**
+   * One answer link, or null when no usable one can be built.
+   *
+   * <p>
+   * {@code getResponseURL} substitutes an empty token rather than failing when
+   * none can be minted, which would leave a link in the copy that answers
+   * nothing and reports no error to whoever clicked it. A link with no token in
+   * it is therefore treated as no link at all. Since EXO-89752 that case is
+   * reachable: no token is minted for an event carrying no date to bound it by.
+   *
+   * <p>
+   * Guarded like {@code EventIcsBuilder.eventUrl} and {@link #localeOf}, and
+   * for the same reason: the address needs the portal's configured domain,
+   * which is not resolvable outside a running container, and this runs on the
+   * push path. A copy that reached nobody's calendar because an answer link
+   * could not be composed would be a far worse outcome than a copy whose
+   * description offers no answer links.
+   *
+   * @param eventId the event the answer applies to
+   * @param attendeeIdentifier username of an internal attendee, or mail address
+   *          of a guest, as the token payload carries it
+   * @param response the answer this link records
+   * @return the absolute address, or null when it would carry no token
+   */
+  private String answerUrl(long eventId, String attendeeIdentifier, EventAttendeeResponse response) {
+    try {
+      String url = NotificationUtils.getResponseURL(agendaEventAttendeeService, eventId, attendeeIdentifier, response);
+      if (StringUtils.isBlank(url) || url.contains("&token=&")) {
+        return null;
+      }
+      return url;
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("No answer link could be composed for event {}; the copy offers none", eventId, e);
+      return null;
+    }
+  }
+
+  /**
+   * How the invitation token names the owner of this calendar.
+   *
+   * <p>
+   * The token payload carries a username for an internal attendee and a mail
+   * address for a guest, which is exactly what an identity's remote id holds in
+   * either case - so the same lookup serves both populations, as the mechanism
+   * itself does.
+   *
+   * <p>
+   * Deliberately <b>not</b> the CalDAV account address used to spell the
+   * attendee's own roster line: that one is configuration, chosen so the client
+   * recognises the copy as an invitation to itself, and on a live rig it is a
+   * different address from the eXo one. The token has to name the attendee the
+   * way eXo knows them, or it resolves to nobody.
+   *
+   * @param identityId the user whose calendar receives the copy
+   * @return their remote id, or null when the identity cannot be resolved
+   */
+  private String attendeeIdentifierOf(long identityId) {
+    try {
+      Identity identity = identityManager.getIdentity(identityId);
+      return identity == null ? null : StringUtils.trimToNull(identity.getRemoteId());
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("No identity could be resolved for {}; the copy offers no answer links", identityId, e);
+      return null;
+    }
   }
 
   /**
