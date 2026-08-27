@@ -70,5 +70,35 @@
       <description>Carries an answer recorded in eXo out to the copy on the user's CalDAV server, so the two never diverge</description>
     </component-plugin>
   </external-component-plugins>
+  <!-- An edit reaching everyone's calendar, not only the editor's. Before
+       these two, the only push of an event was the one the editing user's own
+       browser made, so an organiser who moved a meeting moved it on their own
+       phone and on nobody else's.
+
+       exo.agenda.event.updated is the only modification agenda broadcasts for
+       an existing meeting, and it carries the cancellation too: cancelling is
+       an update that sets the status, and the copy is rewritten with
+       STATUS:CANCELLED. exo.agenda.event.deleted is separate because it is
+       broadcast after the event row is gone — nothing is left to render, so
+       the copy is removed instead. Neither ever creates a copy: only somebody
+       who already has one is written to. -->
+  <external-component-plugins>
+    <target-component>org.exoplatform.services.listener.ListenerService</target-component>
+    <component-plugin>
+      <name>exo.agenda.event.updated</name>
+      <set-method>addListener</set-method>
+      <type>org.exoplatform.caldav.listener.EventUpdatedListener</type>
+      <description>Rewrites the calendar copy every attendee already holds when a meeting is edited or cancelled in eXo</description>
+    </component-plugin>
+  </external-component-plugins>
+  <external-component-plugins>
+    <target-component>org.exoplatform.services.listener.ListenerService</target-component>
+    <component-plugin>
+      <name>exo.agenda.event.deleted</name>
+      <set-method>addListener</set-method>
+      <type>org.exoplatform.caldav.listener.EventDeletedListener</type>
+      <description>Removes the calendar copy every attendee already holds when a meeting is deleted in eXo</description>
+    </component-plugin>
+  </external-component-plugins>
 
 </configuration>

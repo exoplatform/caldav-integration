@@ -246,6 +246,24 @@ public class CaldavSyncStorage {
   }
 
   /**
+   * One page of the mappings of a single eXo event, across every user's
+   * collections.
+   *
+   * <p>
+   * The set an edit of that event is allowed to reach — every copy that already
+   * exists, and nothing else.
+   *
+   * @param localEventId the eXo event
+   * @param offset page offset, in pages
+   * @param limit page size
+   * @return one page of mappings, by identifier
+   */
+  public Page<ObjectSync> getObjectsByEvent(long localEventId, int offset, int limit) {
+    Pageable pageable = PageRequest.of(offset, limit, Sort.by(Sort.Direction.ASC, "id"));
+    return objectSyncDAO.findByLocalEventId(localEventId, pageable).map(this::fromEntity);
+  }
+
+  /**
    * How many objects a pair maps.
    *
    * @param calendarSyncId the pair
