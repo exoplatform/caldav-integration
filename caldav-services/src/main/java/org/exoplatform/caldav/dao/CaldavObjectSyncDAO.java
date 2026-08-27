@@ -61,6 +61,28 @@ public interface CaldavObjectSyncDAO extends JpaRepository<CaldavObjectSyncEntit
   Optional<CaldavObjectSyncEntity> findByCalendarSyncIdAndLocalEventId(long calendarSyncId, long localEventId);
 
   /**
+   * Every mapping of one eXo event, across the collections of every user.
+   *
+   * <p>
+   * The query the propagation of an edit is driven from: the rows it answers
+   * <b>are</b> the set of people who already hold a copy of that meeting, which
+   * is the only set an edit is allowed to write to. Asked of the mapping table
+   * rather than of agenda's attendee list on purpose — an attendee without a
+   * copy must not acquire one from an edit, and a meeting destroyed in eXo has
+   * no attendee list left to ask.
+   *
+   * <p>
+   * Paginated like every other listing here: the row count is the number of
+   * attendees who connected a calendar account, which is the users' number to
+   * decide and not the developer's.
+   *
+   * @param localEventId the eXo event
+   * @param pageable page and sort; required
+   * @return one page of mappings
+   */
+  Page<CaldavObjectSyncEntity> findByLocalEventId(long localEventId, Pageable pageable);
+
+  /**
    * One page of a pair's object mappings.
    *
    * @param calendarSyncId the pair
