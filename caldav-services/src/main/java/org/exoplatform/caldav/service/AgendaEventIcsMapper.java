@@ -33,6 +33,8 @@ import org.exoplatform.agenda.service.AgendaEventConferenceService;
 import org.exoplatform.agenda.service.AgendaEventReminderService;
 import org.exoplatform.caldav.model.IcsEvent;
 import org.exoplatform.caldav.model.IcsPerson;
+import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.IcsReminder;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
@@ -64,6 +66,10 @@ public class AgendaEventIcsMapper {
   @Autowired
   private AgendaEventAttendeeService  agendaEventAttendeeService;
 
+  /** Holds the account a copy names its owner by. */
+  @Autowired
+  private CaldavConnectorStorage     caldavConnectorStorage;
+
   /** The conference links an event carries; only the first is written. */
   @Autowired
   private AgendaEventConferenceService agendaEventConferenceService;
@@ -88,7 +94,27 @@ public class AgendaEventIcsMapper {
    *          copy, which decides whether ORGANIZER carries SCHEDULE-AGENT
    * @return the event as the ICS engine takes it
    */
+
+  /**
+   * The same, with the address the pushing user's own account answers to.
+   *
+   * <p>
+   * A calendar client decides whether an event is an invitation TO ITS OWNER
+   * by matching the ATTENDEE addresses against the ones the account owns. The
+   * copy names everyone by their eXo profile address, which the account
+   * knows nothing about — so the owner's own line looked like somebody else's
+   * and no client offered to answer it. Their line carries the account's own
+   * address instead, and only theirs: the other attendees are described to
+   * them, not to their server.
+   *
+   * @param event the event being copied
+   * @param icsUid the identifier the copy carries
+   * @param eventUrl a link back to the event, or null
+   * @param pusherIdentityId the user whose account is written into
+   * @return the ICS view of the event
+   */
   public IcsEvent toIcsEvent(Event event, String icsUid, String eventUrl, long pusherIdentityId) {
+    String pusherAccountAddress = accountAddressOf(pusherIdentityId);
     IcsPerson organizer = personOf(event.getCreatorId());
     return IcsEvent.builder()
                    .uid(icsUid)
@@ -105,7 +131,7 @@ public class AgendaEventIcsMapper {
                    .updated(instantOf(event.getUpdated()))
                    .organizer(organizer)
                    .organizerIsPusher(event.getCreatorId() == pusherIdentityId)
-                   .attendees(attendees(event.getId()))
+                   .attendees(attendees(event.getId(), pusherIdentityId, pusherAccountAddress))
                    .recurrenceRule(event.getRecurrence() == null ? null : event.getRecurrence().getRrule())
                    .occurrenceId(occurrenceId(event))
                    .reminders(reminders(event.getId(), pusherIdentityId))
@@ -154,7 +180,7 @@ public class AgendaEventIcsMapper {
    * @param eventId the agenda event
    * @return the attendees that can be named truthfully
    */
-  private List<IcsPerson> attendees(long eventId) {
+  private List<IcsPerson> attendees(long eventId, long pusherIdentityId, String pusherAccountAddress) {
     List<IcsPerson> people = new ArrayList<>();
     List<EventAttendee> attendees = agendaEventAttendeeService.getEventAttendees(eventId).getEventAttendees();
     if (attendees == null) {
@@ -162,6 +188,11 @@ public class AgendaEventIcsMapper {
     }
     for (EventAttendee attendee : attendees) {
       IcsPerson person = personOf(attendee.getIdentityId());
+      if (person != null && attendee.getIdentityId() == pusherIdentityId
+          && StringUtils.isNotBlank(pusherAccountAddress)) {
+        // Their own line, spelled the way their account spells them.
+        person.setEmail(pusherAccountAddress);
+      }
       if (person != null) {
         person.setResponse(attendee.getResponse() == null ? null : attendee.getResponse().name());
         people.add(person);
@@ -180,6 +211,18 @@ public class AgendaEventIcsMapper {
    * @param identityId the social identity
    * @return the person, or null
    */
+  /**
+   * The address the user's own CalDAV account answers to, when they have one.
+   *
+   * @param identityId the user whose account is written into
+   * @return the account address, or null when there is none to use
+   */
+  private String accountAddressOf(long identityId) {
+    CaldavUserSetting account = caldavConnectorStorage == null ? null
+                                                               : caldavConnectorStorage.getCaldavSetting(identityId);
+    return account == null ? null : StringUtils.trimToNull(account.getUsername());
+  }
+
   private IcsPerson personOf(long identityId) {
     Identity identity = identityManager.getIdentity(identityId);
     if (identity == null || identity.getProfile() == null) {

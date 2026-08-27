@@ -22,6 +22,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -35,6 +36,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
@@ -142,6 +144,9 @@ public class CaldavMirrorVerificationServiceTest {
   private CaldavPushService                  caldavPushService;
 
   @Mock
+  private CaldavAnswerAdoptionService        caldavAnswerAdoptionService;
+
+  @Mock
   private CalDavEndpoint                     endpoint;
 
   /**
@@ -230,6 +235,104 @@ public class CaldavMirrorVerificationServiceTest {
     // mocking the push service, stayed green.
     verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
     verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong(), any());
+  }
+
+  @Test
+  public void anAnswerOnARewrittenCopyIsAdoptedBeforeTheRepair() {
+    // The ETag moved, so the client wrote the object after eXo did: whatever
+    // answer it carries is the user's latest word. It is read and recorded
+    // BEFORE the repair — the both-changed case is exactly the one where a
+    // repair-first pass would overwrite the acceptance nobody had read yet.
+    String rewritten = "BEGIN:VCALENDAR\r\nATTENDEE;PARTSTAT=ACCEPTED:mailto:john@x\r\nEND:VCALENDAR\r\n";
+    givenServerHolds(Map.of(HREF, "\"etag-2\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                                            .thenReturn(new CalendarObject(HREF,
+                                                                                                           "\"etag-2\"",
+                                                                                                           rewritten));
+    when(caldavAnswerAdoptionService.adoptAnswer(USER, 5L, rewritten))
+                                                                     .thenReturn(CaldavAnswerAdoptionService.Outcome.ADOPTED);
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(1, result.adopted());
+    assertEquals(1, result.repaired());
+    InOrder order = inOrder(caldavAnswerAdoptionService, caldavPushService);
+    order.verify(caldavAnswerAdoptionService).adoptAnswer(USER, 5L, rewritten);
+    order.verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+  }
+
+  @Test
+  public void anAdoptedAnswerRecordsTheClientsEtagSoItIsNeverAdoptedTwice() {
+    // Without recording what was just read, the next pass sees the same moved
+    // ETag, reads the same answer, and adopts it again for ever — over any
+    // answer the user gives in eXo later. The record is what closes the loop.
+    String rewritten = "BEGIN:VCALENDAR\r\nATTENDEE;PARTSTAT=DECLINED:mailto:john@x\r\nEND:VCALENDAR\r\n";
+    givenServerHolds(Map.of(HREF, "\"etag-2\""));
+    ObjectSync row = mapping(HREF, "\"etag-1\"", hash(ICS), 5L);
+    givenMappings(row);
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                                            .thenReturn(new CalendarObject(HREF,
+                                                                                                           "\"etag-2\"",
+                                                                                                           rewritten));
+    when(caldavAnswerAdoptionService.adoptAnswer(USER, 5L, rewritten))
+                                                                     .thenReturn(CaldavAnswerAdoptionService.Outcome.ADOPTED);
+
+    service.verify(USER);
+
+    ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
+    verify(caldavSyncStorage).saveObject(saved.capture());
+    assertEquals("\"etag-2\"", saved.getValue().getEtag());
+    assertEquals(hash(rewritten), saved.getValue().getPushedHash());
+
+    // The second pass finds the recorded ETag and does not even fetch, let
+    // alone re-adopt: the direction rule now reads the copy as untouched.
+    MirrorVerification second = service.verify(USER);
+
+    assertEquals(0, second.adopted());
+    verify(caldavAnswerAdoptionService, times(1)).adoptAnswer(anyLong(), anyLong(), anyString());
+  }
+
+  @Test
+  public void aFailedAdoptionLeavesTheCopyAlone() {
+    // The object still holds the only record of the user's answer. A repair
+    // here would overwrite it on the strength of a transient agenda failure;
+    // the next pass reads the same answer again instead.
+    String rewritten = "BEGIN:VCALENDAR\r\nATTENDEE;PARTSTAT=ACCEPTED:mailto:john@x\r\nEND:VCALENDAR\r\n";
+    givenServerHolds(Map.of(HREF, "\"etag-2\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                                            .thenReturn(new CalendarObject(HREF,
+                                                                                                           "\"etag-2\"",
+                                                                                                           rewritten));
+    when(caldavAnswerAdoptionService.adoptAnswer(USER, 5L, rewritten))
+                                                                     .thenReturn(CaldavAnswerAdoptionService.Outcome.FAILED);
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(1, result.altered());
+    assertEquals(0, result.adopted());
+    assertEquals(0, result.repaired());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  @Test
+  public void anAnswerGivenInExoAloneIsPushedNotAdopted() {
+    // The direction rule's other half. The ETag still matches what eXo
+    // recorded, so the copy is untouched since the last write: whatever
+    // differs between agenda and the copy is eXo-side, the ordinary push owns
+    // overwriting it, and nothing is read off the object at all — which is
+    // what stops "answered in eXo, not pushed yet" being mistaken for an
+    // answer from the phone.
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(0, result.adopted());
+    verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
   }
 
   @Test
