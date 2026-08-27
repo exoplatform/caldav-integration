@@ -250,6 +250,7 @@ public class IcsWriterPayloadContractTest {
                                                             "Chemistry",
                                                             "https://meet.example.com/room",
                                                             EXO_LINK,
+                                                            null,
                                                             "<p>Bring the <b>slides</b>.</p>"
                                                                 + "<p>R&eacute;union pr&eacute;par&eacute;e</p>"))
                    .conferenceUrl("https://meet.example.com/room")
