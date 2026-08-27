@@ -100,7 +100,7 @@ public class CaldavPendingInvitationServiceTest {
     // the calendar on their phone becomes the surface they can answer on.
     givenUpcoming(event(5L, 0, SPACE, EventStatus.CONFIRMED));
     givenCalendar(SPACE, 7L);
-    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L), isNull())).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L))).thenReturn(new ObjectSync());
 
     assertEquals(1, service.pushUpcomingMeetings(USER));
   }
@@ -115,7 +115,7 @@ public class CaldavPendingInvitationServiceTest {
     when(caldavSyncStorage.mappedEventIds(eq(USER), any())).thenReturn(Set.of(5L));
 
     assertEquals(0, service.pushUpcomingMeetings(USER));
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong(), any());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
   }
 
   /**
@@ -134,11 +134,11 @@ public class CaldavPendingInvitationServiceTest {
     givenCalendar(SPACE, 7L);
     // This user has none; that another user does is not this question.
     when(caldavSyncStorage.mappedEventIds(eq(USER), any())).thenReturn(Set.of());
-    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L), isNull())).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L))).thenReturn(new ObjectSync());
 
     assertEquals(1, service.pushUpcomingMeetings(USER));
 
-    verify(caldavPushService).pushAgendaEvent(USER, 5L, null);
+    verify(caldavPushService).pushAgendaEvent(USER, 5L);
     verify(caldavSyncStorage, atLeastOnce()).mappedEventIds(eq(USER), any());
     verify(caldavSyncStorage, never()).isEventMapped(anyLong());
   }
@@ -151,7 +151,7 @@ public class CaldavPendingInvitationServiceTest {
     givenCalendar(800L, USER);
 
     assertEquals(0, service.pushUpcomingMeetings(USER));
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong(), any());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
   }
 
   @Test
@@ -161,7 +161,7 @@ public class CaldavPendingInvitationServiceTest {
     givenUpcoming(event(5L, 0, SPACE, EventStatus.TENTATIVE));
 
     assertEquals(0, service.pushUpcomingMeetings(USER));
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong(), any());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
   }
 
   @Test
@@ -172,10 +172,10 @@ public class CaldavPendingInvitationServiceTest {
                   event(0L, 5L, SPACE, EventStatus.CONFIRMED),
                   event(9L, 5L, SPACE, EventStatus.CONFIRMED));
     givenCalendar(SPACE, 7L);
-    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L), isNull())).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L))).thenReturn(new ObjectSync());
 
     assertEquals(1, service.pushUpcomingMeetings(USER));
-    verify(caldavPushService).pushAgendaEvent(USER, 5L, null);
+    verify(caldavPushService).pushAgendaEvent(USER, 5L);
   }
 
   @Test
@@ -193,9 +193,9 @@ public class CaldavPendingInvitationServiceTest {
   public void oneRefusedMeetingDoesNotStopTheRest() throws Exception {
     givenUpcoming(event(5L, 0, SPACE, EventStatus.CONFIRMED), event(6L, 0, SPACE, EventStatus.CONFIRMED));
     givenCalendar(SPACE, 7L);
-    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L), isNull())).thenThrow(new CaldavPushException("caldav.error.save",
+    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L))).thenThrow(new CaldavPushException("caldav.error.save",
                                                                                                           "refused"));
-    when(caldavPushService.pushAgendaEvent(eq(USER), eq(6L), isNull())).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(eq(USER), eq(6L))).thenReturn(new ObjectSync());
 
     assertEquals(1, service.pushUpcomingMeetings(USER));
   }

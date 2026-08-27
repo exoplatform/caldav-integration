@@ -242,6 +242,10 @@ public class CaldavAnswerAdoptionService {
    *
    * @param component the parsed component
    * @param email the owner's own address, as the write side spells it
+   * @param accountAddress the address the owner's CalDAV account answers to,
+   *          which is how copies spell their own line now. Both spellings are
+   *          accepted here, for the reason
+   *          {@link #isOwner(String, String, String)} records.
    * @return the response to record, or null when the component carries none
    */
   private EventAttendeeResponse answerOf(IcsEvent component, String email, String accountAddress) {
