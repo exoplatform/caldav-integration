@@ -24,6 +24,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
 import org.exoplatform.agenda.model.EventConference;
@@ -135,6 +136,13 @@ public class AgendaEventIcsMapper {
                    .recurrenceRule(event.getRecurrence() == null ? null : event.getRecurrence().getRrule())
                    .occurrenceId(occurrenceId(event))
                    .reminders(reminders(event.getId(), pusherIdentityId))
+                   // eXo hides a cancelled event from its own screens, so the
+                   // only place its attendees can still be told the meeting is
+                   // off is the copy. Carried as a flag rather than the status
+                   // itself: TENTATIVE is eXo's word for a date poll, which is
+                   // never pushed, so CANCELLED is the only other thing a copy
+                   // can truthfully say.
+                   .cancelled(event.getStatus() == EventStatus.CANCELLED)
                    // Exclusions are deliberately absent: agenda's model exposes
                    // no list of excluded instances, and deleting an occurrence
                    // goes through a rewrite of the stored object instead. Left

@@ -121,4 +121,16 @@ public class IcsEvent {
   /** Reminders to turn into VALARM components. */
   private List<IcsReminder> reminders;
 
+  /**
+   * Whether this meeting has been called off.
+   *
+   * <p>
+   * The one thing about a meeting that is not a property of the meeting but a
+   * statement about it, which is why it is a flag and not a status string. Every
+   * event this engine writes is CONFIRMED except a cancelled one — eXo spells a
+   * date poll TENTATIVE and a poll is never pushed, so the only other value
+   * RFC 5545 offers that eXo can ever mean is CANCELLED.
+   */
+  private boolean           cancelled;
+
 }
