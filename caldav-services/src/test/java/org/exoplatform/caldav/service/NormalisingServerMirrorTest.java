@@ -874,6 +874,7 @@ public class NormalisingServerMirrorTest {
       // fixture that only sometimes resembles the real thing is how the first
       // deploy got as far as it did.
       event.getProperties().add(new net.fortuna.ical4j.model.property.Version(new net.fortuna.ical4j.model.ParameterList(), "2.0"));
+      substituteDirectoryNames(event);
       if (normalisation == Normalisation.RESERIALISE_AND_ANNOTATE) {
         event.getProperties()
              .add(new net.fortuna.ical4j.model.property.XProperty("X-FAKEMIND-SEQ", String.valueOf(++annotations)));
@@ -891,6 +892,38 @@ public class NormalisingServerMirrorTest {
       // is stable at any moment, which is the whole point of it.
       anchor(event, net.fortuna.ical4j.model.Property.DTSTART, zone, second);
       anchor(event, net.fortuna.ical4j.model.Property.DTEND, zone, second);
+    }
+
+    /**
+     * Replaces every calendar user's display name with this server's own
+     * directory's spelling of it, which is what BlueMind does — CN=FRANCOIS
+     * where eXo wrote CN=Root Root, for one and the same address.
+     *
+     * <p>
+     * On every store and to every ORGANIZER and ATTENDEE, for the reason the
+     * misplaced VERSION is done that way: it is a property of the server, not
+     * of one scenario, and a fixture that only sometimes resembles the real
+     * thing is how three deploys each found one more of these.
+     *
+     * @param event the component being stored
+     */
+    private void substituteDirectoryNames(net.fortuna.ical4j.model.component.VEvent event) {
+      for (String name : List.of(net.fortuna.ical4j.model.Property.ORGANIZER,
+                                 net.fortuna.ical4j.model.Property.ATTENDEE)) {
+        for (Object candidate : event.getProperties(name)) {
+          net.fortuna.ical4j.model.Property person = (net.fortuna.ical4j.model.Property) candidate;
+          net.fortuna.ical4j.model.Parameter existing =
+              person.getParameter(net.fortuna.ical4j.model.Parameter.CN);
+          if (existing != null) {
+            person.getParameters().remove(existing);
+          }
+          person.getParameters()
+                .add(new net.fortuna.ical4j.model.parameter.Cn(person.getValue()
+                                                                     .replaceFirst("(?i)^mailto:", "")
+                                                                     .replaceFirst("@.*$", "")
+                                                                     .toUpperCase(java.util.Locale.ROOT)));
+        }
+      }
     }
 
     /**
