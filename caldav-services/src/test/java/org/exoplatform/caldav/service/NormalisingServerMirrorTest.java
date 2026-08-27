@@ -121,6 +121,9 @@ public class NormalisingServerMirrorTest {
 
   private static final String                  HREF    = MIRROR + "evt-1.ics";
 
+  /** The address a copy on this account names its owner by. */
+  private static final String                  OWNER   = "john@acme.test";
+
   /** The zone the fake server restates the meeting's wall clock on. */
   private static final String                  ZONE    = "Europe/Paris";
 
@@ -413,6 +416,49 @@ public class NormalisingServerMirrorTest {
     int before = server.fetches();
     verification.verify(USER);
     assertEquals(before, server.fetches());
+  }
+
+  @Test
+  public void anAnswerExoWritesOntoTheCopyIsNotThenUndoneByTheVerificationPass() {
+    // EXO-89715's guarantee, re-expressed without a digest — and it is a real
+    // question, not a formality, because the two halves take different code
+    // paths over the same object. pushAnswer rewrites ONE PARTSTAT surgically
+    // through IcsMerger, leaving the rest of the server's own serialisation
+    // untouched; the verification pass then compares that document against a
+    // FULL re-render by IcsWriter. They have to agree, or eXo repairs the copy
+    // back to what it last pushed and the user's answer disappears.
+    //
+    // The digest used to buy that agreement by remembering the bytes it had
+    // just written. This gets it for a better reason: the answer was recorded
+    // in agenda before pushAnswer was called, so the re-render already carries
+    // it. The baseline agrees because it comes from the same source the answer
+    // did.
+    IcsEvent invited = event();
+    invited.setOrganizer(person("boss@acme.test", "The Boss"));
+    invited.setAttendees(List.of(person(OWNER, "John")));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(invited);
+    when(agendaEventIcsMapper.addressOf(USER)).thenReturn(OWNER);
+    push.writeInto(USER, mirror, invited, EVENT);
+    assertEquals(0, verification.verify(USER).altered());
+
+    // The answer is recorded in eXo first — that is what triggers the push —
+    // so what eXo would render from now on carries it.
+    IcsEvent answered = event();
+    answered.setOrganizer(person("boss@acme.test", "The Boss"));
+    IcsPerson accepted = person(OWNER, "John");
+    accepted.setResponse("ACCEPTED");
+    answered.setAttendees(List.of(accepted));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(answered);
+
+    assertTrue(push.pushAnswer(USER, EVENT, "ACCEPTED"), "the answer should have reached the copy");
+    assertTrue(server.stored(HREF).contains("PARTSTAT=ACCEPTED"), server.stored(HREF));
+
+    // And the pass says nothing about the write eXo has just made.
+    MirrorVerification after = verification.verify(USER);
+
+    assertEquals(0, after.altered());
+    assertEquals(0, after.repaired());
+    assertTrue(server.stored(HREF).contains("PARTSTAT=ACCEPTED"), server.stored(HREF));
   }
 
   @Test
