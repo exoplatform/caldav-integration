@@ -20,6 +20,9 @@ import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
@@ -154,6 +157,23 @@ public class CaldavSyncStorage {
   }
 
   /**
+   * The users whose bindings are due, oldest waiting first.
+   *
+   * The account-wise form of {@link #getDuePairs}, and what the sweep asks:
+   * batching bindings let one user's collections fill a whole run, so no
+   * other account was reached at all.
+   *
+   * @param status the binding state that counts as sweepable
+   * @param before bindings last synchronised strictly before this instant
+   * @param offset page index
+   * @param limit how many users one page carries
+   * @return one page of user identities
+   */
+  public Page<Long> getDueAccounts(CalendarSyncStatus status, Date before, int offset, int limit) {
+    return calendarSyncDAO.findDueAccounts(status, before, PageRequest.of(offset, limit));
+  }
+
+  /**
    * One binding by its identifier, whoever it belongs to.
    *
    * <p>
@@ -244,6 +264,42 @@ public class CaldavSyncStorage {
    */
   public boolean isEventMapped(long localEventId) {
     return objectSyncDAO.existsByLocalEventId(localEventId);
+  }
+
+  /**
+   * Which of these eXo events already carry a copy.
+   *
+   * The batch form of {@link #isEventMapped(long)}, for callers holding a
+   * list: the seeding pass asks about a user's whole upcoming window on every
+   * sweep, and asking one event at a time made the steady state — where every
+   * one of them is already mapped — cost a query per meeting to learn there
+   * was nothing to do.
+   *
+   * @param localEventIds the eXo events to ask about
+   * @return the identifiers among them that are mapped, empty when none are
+   */
+  public Set<Long> mappedEventIds(long userIdentityId, Collection<Long> localEventIds) {
+    if (localEventIds == null || localEventIds.isEmpty()) {
+      return Set.of();
+    }
+    return new HashSet<>(objectSyncDAO.findMappedLocalEventIdsOfUser(userIdentityId, localEventIds));
+  }
+
+  /**
+   * Which of these eXo events carry a copy for ANYONE.
+   *
+   * Kept for the callers that genuinely ask the global question; a per-user
+   * pass wants {@link #mappedEventIds(long, Collection)} instead, or the
+   * first attendee copied answers for every other attendee.
+   *
+   * @param localEventIds the eXo events to ask about
+   * @return the identifiers among them that are mapped
+   */
+  public Set<Long> mappedEventIds(Collection<Long> localEventIds) {
+    if (localEventIds == null || localEventIds.isEmpty()) {
+      return Set.of();
+    }
+    return new HashSet<>(objectSyncDAO.findMappedLocalEventIds(localEventIds));
   }
 
   /**
