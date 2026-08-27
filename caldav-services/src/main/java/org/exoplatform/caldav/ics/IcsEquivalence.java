@@ -21,6 +21,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.GregorianCalendar;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -89,6 +90,19 @@ import net.fortuna.ical4j.model.component.VTimeZone;
  * {@link #IGNORED_EVENT_PROPERTIES}, {@link #IGNORED_PARAMETERS} and
  * {@link #DEFAULT_STATEMENTS}, each with the reason it is safe, and each is a
  * statement about the record rather than about the meeting.
+ *
+ * <p>
+ * <b>One exemption inside the attendee set, and it is narrow on purpose.</b> A
+ * server may attach the calendar's own owner to an event that lands in their
+ * calendar — BlueMind writes
+ * {@code ATTENDEE;CN=FRANCOIS;DIR=bm://19d43...} on every copy — and that is
+ * permitted behaviour of the same kind as re-ordering properties. So an
+ * attendee line naming the owner, present on the server's copy and not on
+ * eXo's render, and <b>stating no answer</b>, is not a difference. Everything
+ * else about the roster stays strict: any other attendee added or removed is a
+ * difference, an owner line eXo states and the copy has lost is a difference,
+ * and every PARTSTAT — the owner's included — is compared as before. See
+ * {@link #tolerated}.
  *
  * <p>
  * <b>What the parser settles before this sees it.</b> ical4j unfolds continued
@@ -188,9 +202,17 @@ public class IcsEquivalence {
    * user authors. eXo sends {@code SCHEDULE-AGENT=CLIENT} on every attendee, and
    * a scheduling-aware server that consumes it would otherwise leave every copy
    * permanently "altered".
+   *
+   * <p>
+   * {@code DIR} (RFC 5545 section 3.2.6) is a URI pointing at the server's own
+   * directory entry for a calendar user — {@code bm://19d43...} on BlueMind. It
+   * says who the server thinks the person is, in the server's own namespace,
+   * and nothing whatever about the meeting. It cannot hide an attendee change
+   * either: the address and the PARTSTAT are compared regardless.
    */
   private static final Set<String>         IGNORED_PARAMETERS       = Set.of("TZID",
                                                                              "VALUE",
+                                                                             "DIR",
                                                                              "SCHEDULE-AGENT",
                                                                              "SCHEDULE-STATUS",
                                                                              "SCHEDULE-FORCE-SEND");
@@ -239,6 +261,25 @@ public class IcsEquivalence {
   /** Seconds in a day, for the expansion window. */
   private static final long                DAY_SECONDS              = 86400L;
 
+  /**
+   * The canonical statement an attendee naming the account's own owner is
+   * reduced to.
+   *
+   * <p>
+   * Deliberately without an address. A copy names its owner two ways — the
+   * address their CalDAV account answers to, and their eXo profile address —
+   * and the two differ in practice. Every other place that has to recognise
+   * this person accepts both ({@code CaldavPushService.addressesNaming},
+   * {@code CaldavAnswerAdoptionService.adoptAnswer}); an exemption that checked
+   * only one of them would miss exactly the way EXO-89715 missed, so identity
+   * here is "the owner", not a particular spelling of them.
+   *
+   * <p>
+   * What survives on it is the PARTSTAT, and only the PARTSTAT: their answer is
+   * the one thing about their own line that is theirs rather than the server's.
+   */
+  private static final String              OWNER_ATTENDEE           = "OWNER-ATTENDEE";
+
   /** How many divergences are named in the reported detail before it is cut short. */
   private static final int                 REPORTED_DIVERGENCES     = 3;
 
@@ -272,10 +313,20 @@ public class IcsEquivalence {
    *
    * @param serverIcs the calendar object as the server holds it
    * @param exoIcs the calendar object eXo's engine renders for the event now
+   * @param ownerAddresses every address a copy on this account may name its own
+   *          owner by — the address the CalDAV account answers to and the eXo
+   *          profile address, which differ in practice. Both are accepted, for
+   *          the reason {@link #OWNER_ATTENDEE} records. May be null or empty,
+   *          which simply means no attendee is treated as the owner.
    * @return the judgement, carrying what diverged when it is
    *         {@link Verdict#DIFFERENT}
    */
-  public Judgement compare(String serverIcs, String exoIcs) {
+  public Judgement compare(String serverIcs, String exoIcs, Collection<String> ownerAddresses) {
+    Set<String> owner = ownerAddresses == null ? Set.of()
+                                               : ownerAddresses.stream()
+                                                               .filter(StringUtils::isNotBlank)
+                                                               .map(this::bareAddress)
+                                                               .collect(Collectors.toSet());
     Calendar exo;
     try {
       exo = parse(exoIcs);
@@ -302,7 +353,7 @@ public class IcsEquivalence {
     if (counterpart == null) {
       return new Judgement(Verdict.DIFFERENT, "the component " + key + " is not in the object any more");
     }
-    List<String> divergences = divergences(counterpart, server, owned, exo);
+    List<String> divergences = divergences(counterpart, server, owned, exo, owner);
     if (divergences.isEmpty()) {
       return new Judgement(Verdict.EQUIVALENT, null);
     }
@@ -319,10 +370,14 @@ public class IcsEquivalence {
    * @param exoCalendar the object it belongs to, for its zone definitions
    * @return the divergences, capped, empty when the two say the same thing
    */
-  private List<String> divergences(VEvent serverEvent, Calendar serverCalendar, VEvent exoEvent, Calendar exoCalendar) {
+  private List<String> divergences(VEvent serverEvent,
+                                   Calendar serverCalendar,
+                                   VEvent exoEvent,
+                                   Calendar exoCalendar,
+                                   Set<String> ownerAddresses) {
     List<String> divergences = new ArrayList<>();
-    diff(statementsOf(serverEvent, serverCalendar, EVENT_PROPERTIES, IGNORED_EVENT_PROPERTIES),
-         statementsOf(exoEvent, exoCalendar, EVENT_PROPERTIES, IGNORED_EVENT_PROPERTIES),
+    diff(statementsOf(serverEvent, serverCalendar, EVENT_PROPERTIES, IGNORED_EVENT_PROPERTIES, ownerAddresses),
+         statementsOf(exoEvent, exoCalendar, EVENT_PROPERTIES, IGNORED_EVENT_PROPERTIES, ownerAddresses),
          divergences);
     if (divergences.isEmpty()) {
       diffExpansions(serverCalendar, serverEvent, exoCalendar, exoEvent, divergences);
@@ -417,16 +472,17 @@ public class IcsEquivalence {
   private Map<String, Integer> statementsOf(net.fortuna.ical4j.model.Component component,
                                             Calendar calendar,
                                             Set<String> recognised,
-                                            Set<String> ignored) {
+                                            Set<String> ignored,
+                                            Set<String> ownerAddresses) {
     Map<String, Integer> statements = new TreeMap<>();
     for (Property property : component.getProperties()) {
-      for (String statement : normaliseProperty(property, calendar, recognised, ignored)) {
+      for (String statement : normaliseProperty(property, calendar, recognised, ignored, ownerAddresses)) {
         statements.merge(statement, 1, Integer::sum);
       }
     }
     if (component instanceof VEvent event) {
       for (VAlarm alarm : event.getAlarms()) {
-        Map<String, Integer> inner = statementsOf(alarm, calendar, ALARM_PROPERTIES, IGNORED_ALARM_PROPERTIES);
+        Map<String, Integer> inner = statementsOf(alarm, calendar, ALARM_PROPERTIES, IGNORED_ALARM_PROPERTIES, ownerAddresses);
         statements.merge("VALARM{" + String.join("&", flatten(inner)) + "}", 1, Integer::sum);
       }
     }
@@ -463,7 +519,8 @@ public class IcsEquivalence {
   private List<String> normaliseProperty(Property property,
                                          Calendar calendar,
                                          Set<String> recognised,
-                                         Set<String> ignored) {
+                                         Set<String> ignored,
+                                         Set<String> ownerAddresses) {
     String name = property.getName().toUpperCase(Locale.ROOT);
     if (ignored.contains(name)) {
       return List.of();
@@ -484,6 +541,9 @@ public class IcsEquivalence {
         return List.of();
       }
       return List.of("UNRECOGNISED:" + name + "=" + value);
+    }
+    if ("ATTENDEE".equals(name) && ownerAddresses.contains(bareAddress(value))) {
+      return List.of(ownerStatement(property));
     }
     String suffix = normaliseParameters(property);
     if (DATE_PROPERTIES.contains(name)) {
@@ -531,6 +591,44 @@ public class IcsEquivalence {
       return value.toLowerCase(Locale.ROOT).startsWith("mailto:") ? value.toLowerCase(Locale.ROOT) : value;
     }
     return value;
+  }
+
+  /**
+   * A calendar address without its scheme or its casing, so that two spellings
+   * of the same person compare equal.
+   *
+   * @param value a CAL-ADDRESS, a bare mail address, or null
+   * @return the comparable form, never null
+   */
+  private String bareAddress(String value) {
+    String trimmed = StringUtils.trimToEmpty(value).toLowerCase(Locale.ROOT);
+    return StringUtils.removeStart(trimmed, "mailto:");
+  }
+
+  /**
+   * The canonical statement for an attendee line naming the account's own
+   * owner: the fact that it is theirs, plus their answer if it states one.
+   *
+   * <p>
+   * Everything else on the line is dropped — the address spelling, the CN the
+   * server renders from its own directory, the DIR pointer into it. A server
+   * attaching the calendar's owner to an event that lands in their calendar is
+   * normal behaviour, and it writes that line in its own terms; none of those
+   * terms is a statement about the meeting.
+   *
+   * @param property the ATTENDEE property naming the owner
+   * @return the canonical statement
+   */
+  private String ownerStatement(Property property) {
+    Parameter partStat = property.getParameter("PARTSTAT");
+    String answer = partStat == null ? null : StringUtils.trimToNull(partStat.getValue());
+    if (answer == null || answer.equalsIgnoreCase(DEFAULT_PARAMETERS.get("PARTSTAT"))) {
+      // No answer stated. NEEDS-ACTION is the RFC default and reads the same as
+      // saying nothing, which is what a server writes when it attaches somebody
+      // to an event they have not replied to yet.
+      return OWNER_ATTENDEE;
+    }
+    return OWNER_ATTENDEE + ";PARTSTAT=" + answer.toUpperCase(Locale.ROOT);
   }
 
   /**
@@ -693,7 +791,7 @@ public class IcsEquivalence {
     for (String statement : statements) {
       int onServer = serverStatements.getOrDefault(statement, 0);
       int inExo = exoStatements.getOrDefault(statement, 0);
-      if (onServer == inExo) {
+      if (onServer == inExo || tolerated(statement, onServer, inExo)) {
         continue;
       }
       if (reported++ < REPORTED_DIVERGENCES) {
@@ -704,6 +802,38 @@ public class IcsEquivalence {
     if (reported > REPORTED_DIVERGENCES) {
       divergences.add("and " + (reported - REPORTED_DIVERGENCES) + " more");
     }
+  }
+
+  /**
+   * Whether a divergence is the one thing a server may add to a copy without
+   * having rewritten it: the calendar's own owner, attached to an event that
+   * landed in their calendar, with no answer stated.
+   *
+   * <p>
+   * BlueMind does exactly this — {@code ATTENDEE;CN=FRANCOIS;DIR=bm://19d43...}
+   * on every copy — and it is permitted, normal behaviour of the same kind as
+   * re-ordering properties or filling in an RFC default. Left as a difference
+   * it made all 20 copies of a live account altered and re-pushed on every
+   * sweep, which the repair could never remove because the server puts the line
+   * straight back.
+   *
+   * <p>
+   * <b>Three conditions, and each is load-bearing.</b> The statement must be the
+   * owner's own line, so no other attendee is covered — a client adding or
+   * removing somebody is a real edit and this pass exists to catch it. It must
+   * carry <b>no answer</b>: a surplus owner line saying ACCEPTED or DECLINED is
+   * the user replying from their own client, which must still register so
+   * EXO-89681 can read it off the copy. And the surplus must be on the
+   * <b>server's</b> side: eXo stating a line the copy no longer carries is an
+   * attendee somebody removed, which is a difference in the ordinary way.
+   *
+   * @param statement the canonical statement that diverged
+   * @param onServer how many times the server's copy states it
+   * @param inExo how many times eXo's render states it
+   * @return true when the divergence is not a rewrite
+   */
+  private boolean tolerated(String statement, int onServer, int inExo) {
+    return OWNER_ATTENDEE.equals(statement) && onServer > inExo;
   }
 
   /**
