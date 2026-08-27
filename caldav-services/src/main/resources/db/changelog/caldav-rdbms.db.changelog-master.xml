@@ -255,6 +255,9 @@
   </changeSet>
 
   <changeSet author="caldav" id="1.0.0-12">
+    <preConditions onFail="MARK_RAN">
+      <columnExists tableName="CALDAV_OBJECT_SYNC" columnName="PUSHED_HASH"/>
+    </preConditions>
     <comment>
       PUSHED_HASH goes. It held a digest of the calendar object eXo had pushed,
       so that a later pass could tell "the server changed this" from "this is
@@ -275,9 +278,6 @@
       revert would find every row blank. That was already the value the previous
       code treated as "written before the hash was recorded, judge nothing".
     </comment>
-    <preConditions onFail="MARK_RAN">
-      <columnExists tableName="CALDAV_OBJECT_SYNC" columnName="PUSHED_HASH"/>
-    </preConditions>
     <dropColumn tableName="CALDAV_OBJECT_SYNC" columnName="PUSHED_HASH"/>
     <rollback>
       <addColumn tableName="CALDAV_OBJECT_SYNC">
