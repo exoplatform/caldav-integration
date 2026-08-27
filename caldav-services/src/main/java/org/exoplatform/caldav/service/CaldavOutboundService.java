@@ -117,12 +117,12 @@ public class CaldavOutboundService {
     if (!connected(settings)) {
       return List.of();
     }
-    CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+    CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
     String home;
     List<CalendarCollection> collections;
     try {
-      home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
-      collections = calDavClient.listCalendars(endpoint, home, settings.getUsername(), settings.getPassword());
+      home = calDavClient.discoverCalendarHome(endpoint);
+      collections = calDavClient.listCalendars(endpoint, home);
     } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
       // Not logged here, and that is the point: the caller says it once, for
       // the whole sequence it is abandoning. Logging here as well would put
@@ -277,15 +277,10 @@ public class CaldavOutboundService {
       MkCalendarResult creation = calDavClient.mkCalendar(endpoint,
                                                           wanted,
                                                           displayNameOf(calendar),
-                                                          null,
-                                                          settings.getUsername(),
-                                                          settings.getPassword());
+                                                          null);
       // The status is never proof. One server answers 201 while creating
       // nothing; only reading the home back settles it.
-      Optional<CalendarCollection> created = calDavClient.listCalendars(endpoint,
-                                                                        home,
-                                                                        settings.getUsername(),
-                                                                        settings.getPassword())
+      Optional<CalendarCollection> created = calDavClient.listCalendars(endpoint, home)
                                                          .stream()
                                                          .filter(collection -> isSameCollection(collection.href(),
                                                                                                 null,
@@ -397,15 +392,8 @@ public class CaldavOutboundService {
     }
     String href = StringUtils.appendIfMissing(collection.href(), "/");
     try {
-      PropPatchResult answer = calDavClient.setDisplayName(endpoint,
-                                                           href,
-                                                           wanted,
-                                                           settings.getUsername(),
-                                                           settings.getPassword());
-      CalendarCollection readBack = calDavClient.readCalendar(endpoint,
-                                                              href,
-                                                              settings.getUsername(),
-                                                              settings.getPassword());
+      PropPatchResult answer = calDavClient.setDisplayName(endpoint, href, wanted);
+      CalendarCollection readBack = calDavClient.readCalendar(endpoint, href);
       String actual = readBack == null ? null : readBack.displayName();
       if (StringUtils.equals(actual, wanted)) {
         LOG.debug("Collection {} now reads under the current name of calendar {}", href, calendar.getId());
@@ -450,10 +438,7 @@ public class CaldavOutboundService {
       return null;
     }
     try {
-      return calDavClient.readCalendar(endpoint,
-                                       StringUtils.appendIfMissing(href, "/"),
-                                       settings.getUsername(),
-                                       settings.getPassword());
+      return calDavClient.readCalendar(endpoint, StringUtils.appendIfMissing(href, "/"));
     } catch (CalDavException e) {
       LOG.debug("Collection {} could not be asked about directly", href, e);
       return null;
