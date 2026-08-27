@@ -180,16 +180,16 @@ public class CaldavSyncServiceTest {
     // The reconciliation runs on every pass and a mock answers null, which the
     // pass then reads as a failure. Stubbed to "nothing to clean" so each test
     // exercises what it is actually about.
-    lenient().when(caldavInboundService.removeVanishedObjects(anyLong(), any()))
+    lenient().when(caldavInboundService.removeVanishedObjects(anyLong(), anyString(), any()))
              .thenReturn(CaldavInboundService.VanishedCleanup.nothing());
-    lenient().when(caldavInboundService.syncContents(anyLong(), any(), any(), any(), any(), anyBoolean()))
+    lenient().when(caldavInboundService.syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean()))
              .thenReturn(CaldavInboundService.VanishedCleanup.nothing());
     lenient().when(caldavTuningService.getThrottleMinutes()).thenReturn(15L);
     lenient().when(caldavTuningService.getPastDays()).thenReturn(60L);
     lenient().when(caldavTuningService.getFutureDays()).thenReturn(365L);
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    lenient().when(calDavClient.discoverCalendarHome(any(), anyString(), anyString())).thenReturn(HOME);
+    lenient().when(calDavClient.discoverCalendarHome(any())).thenReturn(HOME);
   }
 
   @Test
@@ -264,7 +264,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     verify(agendaCalendarService, never()).createCalendar(any(), anyString());
-    verify(caldavInboundService).syncContents(eq(USER), eq(bound), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService).syncContents(eq(USER), anyString(), eq(bound), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -283,7 +283,7 @@ public class CaldavSyncServiceTest {
 
     verify(agendaCalendarService, never()).createCalendar(any(), anyString());
     // And nothing is read out of it while it is frozen.
-    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService, never()).syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -295,7 +295,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).syncContents(eq(USER), eq(bound), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService).syncContents(eq(USER), anyString(), eq(bound), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -332,7 +332,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     ArgumentCaptor<Boolean> fullRead = ArgumentCaptor.forClass(Boolean.class);
-    verify(caldavInboundService).syncContents(eq(USER), eq(bound), any(), any(), any(), fullRead.capture());
+    verify(caldavInboundService).syncContents(eq(USER), anyString(), eq(bound), any(), any(), any(), fullRead.capture());
     assertTrue(fullRead.getValue(),
                "a collection last read yesterday must be re-read in full, whatever token it holds");
   }
@@ -366,7 +366,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     ArgumentCaptor<Boolean> fullRead = ArgumentCaptor.forClass(Boolean.class);
-    verify(caldavInboundService).syncContents(eq(USER), eq(bound), any(), any(), any(), fullRead.capture());
+    verify(caldavInboundService).syncContents(eq(USER), anyString(), eq(bound), any(), any(), any(), fullRead.capture());
     assertFalse(fullRead.getValue(),
                 "a collection already read today must be asked what changed, not re-read in full");
   }
@@ -383,7 +383,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService, never()).syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -430,7 +430,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).syncContents(eq(USER), eq(mine), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService).syncContents(eq(USER), anyString(), eq(mine), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -444,7 +444,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService, never()).syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -457,7 +457,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService, never()).syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -467,12 +467,12 @@ public class CaldavSyncServiceTest {
     CalendarSync second = remotePair("/dav/calendars/john/b/", "anchor-2");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(first, second));
     givenUserCalendars(calendarWithAnchor(77L, "anchor-1"), calendarWithAnchor(78L, "anchor-2"));
-    when(caldavInboundService.syncContents(anyLong(), eq(first), any(), any(), any(), anyBoolean()))
+    when(caldavInboundService.syncContents(anyLong(), anyString(), eq(first), any(), any(), any(), anyBoolean()))
                                                                                     .thenThrow(new IllegalStateException("down"));
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).syncContents(eq(USER), eq(second), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService).syncContents(eq(USER), anyString(), eq(second), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -622,7 +622,7 @@ public class CaldavSyncServiceTest {
 
     InOrder order = inOrder(caldavOutboundService, calDavClient);
     order.verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
-    order.verify(calDavClient).listCalendars(any(), eq(HOME), anyString(), anyString());
+    order.verify(calDavClient).listCalendars(any(), eq(HOME));
   }
 
   @Test
@@ -694,7 +694,7 @@ public class CaldavSyncServiceTest {
    * @param collections what the listing answers
    */
   private void givenServerCalendars(CalendarCollection... collections) {
-    lenient().when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString()))
+    lenient().when(calDavClient.listCalendars(any(), eq(HOME)))
              .thenReturn(List.of(collections));
   }
 
@@ -953,7 +953,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     ArgumentCaptor<CalendarSync> read = ArgumentCaptor.forClass(CalendarSync.class);
-    verify(caldavInboundService).syncContents(eq(USER), read.capture(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService).syncContents(eq(USER), anyString(), read.capture(), any(), any(), any(), anyBoolean());
     // Read through its own calendar binding, never through the mirror row:
     // the ledger of eXo's copies stays one-way whatever collection it names.
     assertEquals(SyncOrigin.REMOTE, read.getValue().getOrigin());
@@ -985,7 +985,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     ArgumentCaptor<CalendarSync> read = ArgumentCaptor.forClass(CalendarSync.class);
-    verify(caldavInboundService).syncContents(eq(USER), read.capture(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService).syncContents(eq(USER), anyString(), read.capture(), any(), any(), any(), anyBoolean());
     assertEquals(SyncOrigin.REMOTE, read.getValue().getOrigin());
   }
 
@@ -1046,7 +1046,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     verify(agendaCalendarService, never()).createCalendar(any(), anyString());
-    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService, never()).syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1065,7 +1065,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     verify(agendaCalendarService, never()).createCalendar(any(), anyString());
-    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService, never()).syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -1087,7 +1087,7 @@ public class CaldavSyncServiceTest {
     // The outward half already ran and its work stands; a listing that failed
     // says nothing about what the account holds, and inventing calendars from
     // an empty answer would delete-by-omission on the next pass.
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenThrow(new CalDavException("unreachable"));
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenThrow(new CalDavException("unreachable"));
 
     service.syncNow(USER, LOGIN);
 
@@ -1259,7 +1259,7 @@ public class CaldavSyncServiceTest {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
     givenAgendaHasCalendar("anchor-1");
     doThrow(new IllegalStateException("server down")).when(caldavInboundService)
-                                                     .syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+                                                     .syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
 
     service.syncNow(USER, LOGIN);
 
@@ -1393,7 +1393,7 @@ public class CaldavSyncServiceTest {
     service.establishDestinations(USER);
 
     verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
-    verify(caldavPushService).ensureMirror(USER);
+    verify(caldavPushService).ensureMirror(USER, LOGIN);
   }
 
   /**
@@ -1408,7 +1408,7 @@ public class CaldavSyncServiceTest {
 
     assertDoesNotThrow(() -> service.establishDestinations(USER));
 
-    verify(caldavPushService).ensureMirror(USER);
+    verify(caldavPushService).ensureMirror(USER, LOGIN);
   }
 
   /**
@@ -1425,7 +1425,7 @@ public class CaldavSyncServiceTest {
 
     assertDoesNotThrow(() -> service.establishDestinations(USER));
 
-    verify(caldavPushService, never()).ensureMirror(anyLong());
+    verify(caldavPushService, never()).ensureMirror(anyLong(), anyString());
   }
 
   /**
@@ -1440,7 +1440,7 @@ public class CaldavSyncServiceTest {
 
     assertDoesNotThrow(() -> service.establishDestinations(USER));
 
-    verify(caldavPushService, never()).ensureMirror(anyLong());
+    verify(caldavPushService, never()).ensureMirror(anyLong(), anyString());
   }
 
   /**
@@ -1451,7 +1451,7 @@ public class CaldavSyncServiceTest {
   public void aMirrorThatCannotBeEstablishedDoesNotFailTheConnection() {
     givenConnectedIdentity();
     doThrow(new CaldavPushException(CaldavPushService.MAIN_CALENDAR_UNKNOWN, "no default calendar")).when(caldavPushService)
-                                                                                                    .ensureMirror(USER);
+                                                                                                    .ensureMirror(USER, LOGIN);
 
     assertDoesNotThrow(() -> service.establishDestinations(USER));
 
@@ -1475,7 +1475,7 @@ public class CaldavSyncServiceTest {
     service.establishDestinations(USER);
 
     verify(caldavOutboundService, never()).bindPersonalCalendars(anyLong(), anyString());
-    verify(caldavPushService, never()).ensureMirror(anyLong());
+    verify(caldavPushService, never()).ensureMirror(anyLong(), anyString());
   }
 
   /**
@@ -1497,7 +1497,7 @@ public class CaldavSyncServiceTest {
     // a worse outcome than not synchronising.
     CalendarSync bound = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
-    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+    when(calDavClient.discoverCalendarHome(any()))
                                                                            .thenThrow(new CalDavAuthenticationException("401"));
 
     service.syncNow(USER, LOGIN);
@@ -1519,7 +1519,7 @@ public class CaldavSyncServiceTest {
 
     // Nothing after the binding step is asked of the server: no listing to
     // materialise from, and no inbound work off the back of it.
-    verify(calDavClient, never()).listCalendars(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).listCalendars(any(), anyString());
     verifyNoInteractions(caldavInboundService);
   }
 
@@ -1538,7 +1538,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     assertEquals(CalendarSyncStatus.REMOTE_GONE, bound.getStatus());
-    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService, never()).syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1592,7 +1592,7 @@ public class CaldavSyncServiceTest {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(bound));
     givenAgendaHasCalendar("anchor-1");
     doThrow(new IllegalStateException("boom")).when(caldavInboundService)
-                                              .syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+                                              .syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
 
     service.syncNow(USER, LOGIN);
 
@@ -1637,7 +1637,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService, never()).syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1655,7 +1655,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService).syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1674,7 +1674,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService).syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1696,7 +1696,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService).syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
   }
 
   /**
@@ -1713,7 +1713,7 @@ public class CaldavSyncServiceTest {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
     givenAgendaHasCalendar("anchor-1");
     doThrow(new IllegalStateException("server down")).when(caldavInboundService)
-                                                     .syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+                                                     .syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
 
     service.syncNow(USER, LOGIN);
 
@@ -1847,7 +1847,7 @@ public class CaldavSyncServiceTest {
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavInboundService).syncContents(eq(USER), any(), any(), any(), any(), anyBoolean());
+    verify(caldavInboundService).syncContents(eq(USER), anyString(), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
@@ -1886,7 +1886,7 @@ public class CaldavSyncServiceTest {
     // time this looks, and no arrangement of the executor can hide it. What
     // the next test then adds is that the work was handed over rather than
     // dropped — only the two together say "started, not awaited".
-    verify(caldavMirrorVerificationService, never()).verify(anyLong());
+    verify(caldavMirrorVerificationService, never()).verify(anyLong(), anyString());
     assertEquals(1, seeding.queued(), "the burst that verifies must be handed to the executor, not to the caller");
   }
 
@@ -1913,7 +1913,7 @@ public class CaldavSyncServiceTest {
     establishAContainer();
     burst.runQueued();
 
-    verify(caldavMirrorVerificationService).verify(USER);
+    verify(caldavMirrorVerificationService).verify(USER, LOGIN);
   }
 
   /**
@@ -1938,8 +1938,8 @@ public class CaldavSyncServiceTest {
 
     InOrder order = inOrder(caldavEventPropagationService, caldavPendingInvitationService, caldavMirrorVerificationService);
     order.verify(caldavEventPropagationService).retryOwedPushes(USER);
-    order.verify(caldavPendingInvitationService).pushUpcomingMeetings(USER);
-    order.verify(caldavMirrorVerificationService).verify(USER);
+    order.verify(caldavPendingInvitationService).pushUpcomingMeetings(USER, LOGIN);
+    order.verify(caldavMirrorVerificationService).verify(USER, LOGIN);
   }
 
   /**
@@ -1968,7 +1968,7 @@ public class CaldavSyncServiceTest {
     // Settled before seeded, for the reason the sweep settles first: a copy
     // eXo is behind on is written before anything else looks at it.
     order.verify(caldavEventPropagationService).retryOwedPushes(USER);
-    order.verify(caldavPendingInvitationService).pushUpcomingMeetings(USER);
+    order.verify(caldavPendingInvitationService).pushUpcomingMeetings(USER, LOGIN);
   }
 
   /**
@@ -1990,7 +1990,7 @@ public class CaldavSyncServiceTest {
     service.syncNowAndWait(USER, LOGIN);
 
     assertEquals(1, seeding.queued(), "connecting must hand the copies to the seeding thread");
-    verify(caldavPendingInvitationService, never()).pushUpcomingMeetings(anyLong());
+    verify(caldavPendingInvitationService, never()).pushUpcomingMeetings(anyLong(), anyString());
     verify(caldavEventPropagationService, never()).retryOwedPushes(anyLong());
   }
 
@@ -2012,8 +2012,8 @@ public class CaldavSyncServiceTest {
 
     service.syncInBackground(USER, LOGIN);
 
-    verify(caldavPendingInvitationService).pushUpcomingMeetings(USER);
-    verify(caldavMirrorVerificationService).verify(USER);
+    verify(caldavPendingInvitationService).pushUpcomingMeetings(USER, LOGIN);
+    verify(caldavMirrorVerificationService).verify(USER, LOGIN);
   }
 
   /**
@@ -2079,7 +2079,7 @@ public class CaldavSyncServiceTest {
     establishAContainer();
     burst.runQueued();
 
-    verify(caldavMirrorVerificationService, times(1)).verify(USER);
+    verify(caldavMirrorVerificationService, times(1)).verify(USER, LOGIN);
   }
 
   /**
@@ -2116,14 +2116,14 @@ public class CaldavSyncServiceTest {
     // outward phases would satisfy every assertion below while proving
     // nothing — the shape a guard test most easily degenerates into.
     verify(caldavOutboundService, times(2)).bindPersonalCalendars(USER, LOGIN);
-    verify(caldavMirrorVerificationService, never()).verify(anyLong());
-    verify(caldavPendingInvitationService, never()).pushUpcomingMeetings(anyLong());
+    verify(caldavMirrorVerificationService, never()).verify(anyLong(), anyString());
+    verify(caldavPendingInvitationService, never()).pushUpcomingMeetings(anyLong(), anyString());
 
     // And nothing was lost by the sweep standing aside: the burst it stood
     // aside for does the same three phases.
     establishAContainer();
     burst.runQueued();
-    verify(caldavMirrorVerificationService, times(1)).verify(USER);
+    verify(caldavMirrorVerificationService, times(1)).verify(USER, LOGIN);
   }
 
   /**
@@ -2143,8 +2143,8 @@ public class CaldavSyncServiceTest {
 
     assertEquals(0, seeding.queued(), "a page load hands no copies to anybody");
     verify(caldavEventPropagationService, never()).retryOwedPushes(anyLong());
-    verify(caldavPendingInvitationService, never()).pushUpcomingMeetings(anyLong());
-    verify(caldavMirrorVerificationService, never()).verify(anyLong());
+    verify(caldavPendingInvitationService, never()).pushUpcomingMeetings(anyLong(), anyString());
+    verify(caldavMirrorVerificationService, never()).verify(anyLong(), anyString());
   }
 
   @Test
@@ -2155,10 +2155,10 @@ public class CaldavSyncServiceTest {
 
     service.syncInBackground(USER, LOGIN);
 
-    verify(caldavMirrorVerificationService).verify(USER);
+    verify(caldavMirrorVerificationService).verify(USER, LOGIN);
     // And the pending invitations were seeded first, so the pass that reads
     // answers back is also the one that put the copies there (EXO-89681).
-    verify(caldavPendingInvitationService).pushUpcomingMeetings(USER);
+    verify(caldavPendingInvitationService).pushUpcomingMeetings(USER, LOGIN);
   }
 
   /**
@@ -2179,8 +2179,8 @@ public class CaldavSyncServiceTest {
 
     InOrder order = inOrder(caldavEventPropagationService, caldavPendingInvitationService, caldavMirrorVerificationService);
     order.verify(caldavEventPropagationService).retryOwedPushes(USER);
-    order.verify(caldavPendingInvitationService).pushUpcomingMeetings(USER);
-    order.verify(caldavMirrorVerificationService).verify(USER);
+    order.verify(caldavPendingInvitationService).pushUpcomingMeetings(USER, LOGIN);
+    order.verify(caldavMirrorVerificationService).verify(USER, LOGIN);
   }
 
   /**

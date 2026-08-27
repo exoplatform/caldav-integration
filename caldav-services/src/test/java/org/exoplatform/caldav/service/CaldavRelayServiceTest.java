@@ -56,6 +56,7 @@ import org.exoplatform.caldav.model.CaldavRelayedResponse;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -92,6 +93,17 @@ public class CaldavRelayServiceTest {
 
   private static final String    SERVER_URL   = "http://dav.example.org:8888/dav/cal/{username}/";
 
+  /** The provider the registry row is configured with. */
+  private static final String    PROVIDER     = "personal";
+
+  /**
+   * The header the provider answers. Deliberately not Basic, and derivable
+   * from neither the stored account nor the stored password: an implementation
+   * that went back to assembling Basic auth from the setting would produce
+   * something else, and the assertion would say so.
+   */
+  private static final String    PROVIDED_AUTH = "Bearer produced-by-the-provider";
+
   @Mock
   private CaldavServerService    caldavServerService;
 
@@ -106,6 +118,9 @@ public class CaldavRelayServiceTest {
 
   @Mock
   private Identity               identity;
+
+  @Mock
+  private CaldavCredentialsResolver caldavCredentialsResolver;
 
   @InjectMocks
   private CaldavRelayService     caldavRelayService;
@@ -128,7 +143,7 @@ public class CaldavRelayServiceTest {
    */
   private CaldavServer server(long id, boolean active) {
     return new CaldavServer(id, "agenda.caldavCalendar." + id, "Server " + id, null, SERVER_URL, active, null, null, null,
-                            null, true, null, null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null);
+                            null, true, null, null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, PROVIDER);
   }
 
   /**
@@ -145,6 +160,7 @@ public class CaldavRelayServiceTest {
     setting.setPassword("dav-secret");
     setting.setServerId(serverId);
     when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(setting);
+    org.mockito.Mockito.lenient().when(caldavCredentialsResolver.authorization(any(), any(), any())).thenReturn(PROVIDED_AUTH);
   }
 
   /**
@@ -306,8 +322,10 @@ public class CaldavRelayServiceTest {
     HttpRequest request = sent.getValue();
     assertEquals(URI.create("http://dav.example.org:8888/dav/cal/john/"), request.uri());
     assertEquals("PROPFIND", request.method());
-    String expectedAuth = "Basic " + Base64.getEncoder().encodeToString("dav-john:dav-secret".getBytes(StandardCharsets.UTF_8));
-    assertEquals(Optional.of(expectedAuth), request.headers().firstValue("Authorization"));
+    assertEquals(Optional.of(PROVIDED_AUTH), request.headers().firstValue("Authorization"));
+    // Asked for the eXo login, on that server row's own provider — never for
+    // the DAV account, which is the provider's business to derive.
+    org.mockito.Mockito.verify(caldavCredentialsResolver).authorization(SERVER_ID, PROVIDER, USERNAME);
     assertEquals(Optional.of("1"), request.headers().firstValue("depth"));
     assertEquals(Optional.of("*"), request.headers().firstValue("if-none-match"));
     assertTrue(request.headers().firstValue("cookie").isEmpty());

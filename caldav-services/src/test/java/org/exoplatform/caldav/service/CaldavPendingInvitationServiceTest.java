@@ -90,6 +90,8 @@ import org.exoplatform.caldav.storage.CaldavSyncStorage;
 @ExtendWith(MockitoExtension.class)
 public class CaldavPendingInvitationServiceTest {
 
+  private static final String LOGIN = "john";
+
   private static final long              USER  = 42L;
 
   private static final long              SPACE = 900L;
@@ -139,9 +141,9 @@ public class CaldavPendingInvitationServiceTest {
     // the calendar on their phone becomes the surface they can answer on.
     givenUpcoming(event(5L, 0, SPACE, EventStatus.CONFIRMED));
     givenCalendar(SPACE, 7L);
-    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L))).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(eq(USER), anyString(), eq(5L))).thenReturn(new ObjectSync());
 
-    assertEquals(1, service.pushUpcomingMeetings(USER));
+    assertEquals(1, service.pushUpcomingMeetings(USER, LOGIN));
   }
 
   @Test
@@ -153,8 +155,8 @@ public class CaldavPendingInvitationServiceTest {
     givenCalendar(SPACE, 7L);
     when(caldavSyncStorage.mappedEventIds(eq(USER), any())).thenReturn(Set.of(5L));
 
-    assertEquals(0, service.pushUpcomingMeetings(USER));
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+    assertEquals(0, service.pushUpcomingMeetings(USER, LOGIN));
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   /**
@@ -173,11 +175,11 @@ public class CaldavPendingInvitationServiceTest {
     givenCalendar(SPACE, 7L);
     // This user has none; that another user does is not this question.
     when(caldavSyncStorage.mappedEventIds(eq(USER), any())).thenReturn(Set.of());
-    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L))).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(eq(USER), anyString(), eq(5L))).thenReturn(new ObjectSync());
 
-    assertEquals(1, service.pushUpcomingMeetings(USER));
+    assertEquals(1, service.pushUpcomingMeetings(USER, LOGIN));
 
-    verify(caldavPushService).pushAgendaEvent(USER, 5L);
+    verify(caldavPushService).pushAgendaEvent(USER, LOGIN, 5L);
     verify(caldavSyncStorage, atLeastOnce()).mappedEventIds(eq(USER), any());
     verify(caldavSyncStorage, never()).isEventMapped(anyLong());
   }
@@ -202,10 +204,10 @@ public class CaldavPendingInvitationServiceTest {
     givenUpcoming();
     givenInOwnCalendars(event(5L, 0, MINE, EventStatus.CONFIRMED));
     givenCalendar(MINE, USER);
-    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L))).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(eq(USER), anyString(), eq(5L))).thenReturn(new ObjectSync());
 
-    assertEquals(1, service.pushUpcomingMeetings(USER));
-    verify(caldavPushService).pushAgendaEvent(USER, 5L);
+    assertEquals(1, service.pushUpcomingMeetings(USER, LOGIN));
+    verify(caldavPushService).pushAgendaEvent(USER, LOGIN, 5L);
   }
 
   /**
@@ -225,9 +227,9 @@ public class CaldavPendingInvitationServiceTest {
     givenUpcoming();
     givenInOwnCalendars(event(5L, 0, MINE, EventStatus.CONFIRMED));
     givenCalendar(MINE, USER);
-    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L))).thenReturn(null);
+    when(caldavPushService.pushAgendaEvent(eq(USER), anyString(), eq(5L))).thenReturn(null);
 
-    assertEquals(0, service.pushUpcomingMeetings(USER));
+    assertEquals(0, service.pushUpcomingMeetings(USER, LOGIN));
   }
 
   /**
@@ -249,8 +251,8 @@ public class CaldavPendingInvitationServiceTest {
     givenCalendar(MINE, USER);
     givenDeclined(5L);
 
-    assertEquals(0, service.pushUpcomingMeetings(USER));
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+    assertEquals(0, service.pushUpcomingMeetings(USER, LOGIN));
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   /**
@@ -275,11 +277,11 @@ public class CaldavPendingInvitationServiceTest {
     givenCalendar(MINE, USER);
     givenCalendar(SPACE, 7L);
     givenDeclined(7L);
-    when(caldavPushService.pushAgendaEvent(eq(USER), anyLong())).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(eq(USER), anyString(), anyLong())).thenReturn(new ObjectSync());
 
     List<Long> seededOnCreation = new ArrayList<>();
     for (long eventId : List.of(5L, 6L, 7L, 8L)) {
-      if (service.seedMeeting(USER, eventId)) {
+      if (service.seedMeeting(USER, LOGIN, eventId)) {
         seededOnCreation.add(eventId);
       }
     }
@@ -287,12 +289,12 @@ public class CaldavPendingInvitationServiceTest {
     // not the date poll.
     assertEquals(List.of(5L, 6L), seededOnCreation);
 
-    assertEquals(seededOnCreation.size(), service.pushUpcomingMeetings(USER));
+    assertEquals(seededOnCreation.size(), service.pushUpcomingMeetings(USER, LOGIN));
     for (Long eventId : seededOnCreation) {
-      verify(caldavPushService, atLeastOnce()).pushAgendaEvent(USER, eventId);
+      verify(caldavPushService, atLeastOnce()).pushAgendaEvent(USER, LOGIN, eventId);
     }
-    verify(caldavPushService, never()).pushAgendaEvent(USER, 7L);
-    verify(caldavPushService, never()).pushAgendaEvent(USER, 8L);
+    verify(caldavPushService, never()).pushAgendaEvent(USER, LOGIN, 7L);
+    verify(caldavPushService, never()).pushAgendaEvent(USER, LOGIN, 8L);
   }
 
   /**
@@ -320,8 +322,8 @@ public class CaldavPendingInvitationServiceTest {
     givenInOwnCalendars(event(5L, 0, MINE, EventStatus.CONFIRMED));
     when(caldavSyncStorage.mappedEventIds(eq(USER), any())).thenReturn(Set.of(5L, 6L));
 
-    assertEquals(0, service.pushUpcomingMeetings(USER));
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+    assertEquals(0, service.pushUpcomingMeetings(USER, LOGIN));
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
     verify(agendaEventService, never()).getEventById(anyLong());
   }
 
@@ -331,8 +333,8 @@ public class CaldavPendingInvitationServiceTest {
     // meeting nobody has confirmed.
     givenUpcoming(event(5L, 0, SPACE, EventStatus.TENTATIVE));
 
-    assertEquals(0, service.pushUpcomingMeetings(USER));
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+    assertEquals(0, service.pushUpcomingMeetings(USER, LOGIN));
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   @Test
@@ -343,10 +345,10 @@ public class CaldavPendingInvitationServiceTest {
                   event(0L, 5L, SPACE, EventStatus.CONFIRMED),
                   event(9L, 5L, SPACE, EventStatus.CONFIRMED));
     givenCalendar(SPACE, 7L);
-    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L))).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(eq(USER), anyString(), eq(5L))).thenReturn(new ObjectSync());
 
-    assertEquals(1, service.pushUpcomingMeetings(USER));
-    verify(caldavPushService).pushAgendaEvent(USER, 5L);
+    assertEquals(1, service.pushUpcomingMeetings(USER, LOGIN));
+    verify(caldavPushService).pushAgendaEvent(USER, LOGIN, 5L);
   }
 
   @Test
@@ -356,7 +358,7 @@ public class CaldavPendingInvitationServiceTest {
     // setting's wording says since EXO-89681.
     givenCopies(false);
 
-    assertEquals(0, service.pushUpcomingMeetings(USER));
+    assertEquals(0, service.pushUpcomingMeetings(USER, LOGIN));
     verify(agendaEventService, never()).getEvents(any(), any(), anyLong());
   }
 
@@ -364,11 +366,11 @@ public class CaldavPendingInvitationServiceTest {
   public void oneRefusedMeetingDoesNotStopTheRest() throws Exception {
     givenUpcoming(event(5L, 0, SPACE, EventStatus.CONFIRMED), event(6L, 0, SPACE, EventStatus.CONFIRMED));
     givenCalendar(SPACE, 7L);
-    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L))).thenThrow(new CaldavPushException("caldav.error.save",
+    when(caldavPushService.pushAgendaEvent(eq(USER), anyString(), eq(5L))).thenThrow(new CaldavPushException("caldav.error.save",
                                                                                                           "refused"));
-    when(caldavPushService.pushAgendaEvent(eq(USER), eq(6L))).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(eq(USER), anyString(), eq(6L))).thenReturn(new ObjectSync());
 
-    assertEquals(1, service.pushUpcomingMeetings(USER));
+    assertEquals(1, service.pushUpcomingMeetings(USER, LOGIN));
   }
 
   /**
@@ -382,11 +384,11 @@ public class CaldavPendingInvitationServiceTest {
   public void oneNamedMeetingIsSeededOnDemand() throws Exception {
     givenEvent(5L, SPACE, EventStatus.CONFIRMED);
     givenCalendar(SPACE, 7L);
-    when(caldavPushService.pushAgendaEvent(USER, 5L)).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(USER, LOGIN, 5L)).thenReturn(new ObjectSync());
 
-    assertTrue(service.seedMeeting(USER, 5L));
+    assertTrue(service.seedMeeting(USER, LOGIN, 5L));
 
-    verify(caldavPushService).pushAgendaEvent(USER, 5L);
+    verify(caldavPushService).pushAgendaEvent(USER, LOGIN, 5L);
   }
 
   /**
@@ -408,9 +410,9 @@ public class CaldavPendingInvitationServiceTest {
     givenCalendar(SPACE, 7L);
     when(caldavSyncStorage.mappedEventIds(eq(USER), any())).thenReturn(Set.of(5L));
 
-    assertFalse(service.seedMeeting(USER, 5L));
+    assertFalse(service.seedMeeting(USER, LOGIN, 5L));
 
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   /**
@@ -423,10 +425,10 @@ public class CaldavPendingInvitationServiceTest {
   public void oneNamedMeetingIsNotSeededForAUserWhoTurnedCopiesOff() throws Exception {
     givenCopies(false);
 
-    assertFalse(service.seedMeeting(USER, 5L));
+    assertFalse(service.seedMeeting(USER, LOGIN, 5L));
 
     verify(agendaEventService, never()).getEventById(anyLong());
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   /**
@@ -440,9 +442,9 @@ public class CaldavPendingInvitationServiceTest {
   public void oneNamedDatePollIsNotSeeded() throws Exception {
     givenEvent(5L, SPACE, EventStatus.TENTATIVE);
 
-    assertFalse(service.seedMeeting(USER, 5L));
+    assertFalse(service.seedMeeting(USER, LOGIN, 5L));
 
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   /**
@@ -461,10 +463,10 @@ public class CaldavPendingInvitationServiceTest {
   public void aUserWithNoConnectedAccountIsRefusedWithoutThrowing() throws Exception {
     givenEvent(5L, SPACE, EventStatus.CONFIRMED);
     givenCalendar(SPACE, 7L);
-    when(caldavPushService.pushAgendaEvent(USER, 5L)).thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
+    when(caldavPushService.pushAgendaEvent(USER, LOGIN, 5L)).thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
                                                                                         "User 42 has no connected CalDAV account"));
 
-    assertFalse(assertDoesNotThrow(() -> service.seedMeeting(USER, 5L)));
+    assertFalse(assertDoesNotThrow(() -> service.seedMeeting(USER, LOGIN, 5L)));
   }
 
   /**
@@ -495,13 +497,13 @@ public class CaldavPendingInvitationServiceTest {
 
     List<ILoggingEvent> recorded;
     try (LogRecorder log = new LogRecorder(CaldavPendingInvitationService.class)) {
-      when(caldavPushService.pushAgendaEvent(USER, 5L)).thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
+      when(caldavPushService.pushAgendaEvent(USER, LOGIN, 5L)).thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
                                                                                           "no account"),
                                                                   new CaldavPushException(CaldavPushService.SAVE,
                                                                                           "the server refused the write"));
 
-      service.seedMeeting(USER, 5L);
-      service.seedMeeting(USER, 5L);
+      service.seedMeeting(USER, LOGIN, 5L);
+      service.seedMeeting(USER, LOGIN, 5L);
       recorded = List.copyOf(log.events());
     }
 
@@ -527,12 +529,11 @@ public class CaldavPendingInvitationServiceTest {
   public void anUnconnectedInviteeDoesNotStopTheSweep() throws Exception {
     givenUpcoming(event(5L, 0, SPACE, EventStatus.CONFIRMED), event(6L, 0, SPACE, EventStatus.CONFIRMED));
     givenCalendar(SPACE, 7L);
-    when(caldavPushService.pushAgendaEvent(eq(USER),
-                                           eq(5L))).thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
+    when(caldavPushService.pushAgendaEvent(eq(USER), anyString(), eq(5L))).thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
                                                                                       "User 42 has no connected CalDAV account"));
-    when(caldavPushService.pushAgendaEvent(eq(USER), eq(6L))).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(eq(USER), anyString(), eq(6L))).thenReturn(new ObjectSync());
 
-    assertEquals(1, assertDoesNotThrow(() -> service.pushUpcomingMeetings(USER)));
+    assertEquals(1, assertDoesNotThrow(() -> service.pushUpcomingMeetings(USER, LOGIN)));
   }
 
   /**
