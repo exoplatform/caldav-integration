@@ -81,6 +81,12 @@ public class AgendaEventIcsMapperTest {
 
   private static final long                 SOMEONE   = 9L;
 
+  /** How eXo names the pusher — what an invitation token carries. */
+  private static final String               PUSHER_REMOTE_ID  = "user5";
+
+  /** And how it names the other attendee. */
+  private static final String               SOMEONE_REMOTE_ID = "user9";
+
   /** The link agenda mints for the event, of the shape NotificationUtils returns. */
   private static final String               EVENT_LINK  = "http://localhost:8080/portal/dw/agenda?eventId=1";
 
@@ -176,6 +182,228 @@ public class AgendaEventIcsMapperTest {
       assertNotNull(description);
       assertTrue(description.contains(EVENT_LINK), "the description must carry the link too: " + description);
     }
+  }
+
+  /**
+   * The description offers the three answers, as links.
+   *
+   * <p>
+   * They exist because some clients will never offer an RSVP control on this
+   * calendar: BlueMind's web UI renders one only for the account's default
+   * calendar, and a calendar created over CalDAV is never default (EXO-89753).
+   */
+  @Test
+  public void theDescriptionOffersTheThreeAnswerLinks() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+      givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+
+      String description = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+
+      assertTrue(description.contains(answerLink(1L, "pusher", EventAttendeeResponse.ACCEPTED)),
+                 "accept must be offered: " + description);
+      assertTrue(description.contains(answerLink(1L, "pusher", EventAttendeeResponse.TENTATIVE)),
+                 "tentative must be offered: " + description);
+      assertTrue(description.contains(answerLink(1L, "pusher", EventAttendeeResponse.DECLINED)),
+                 "decline must be offered: " + description);
+    }
+  }
+
+  /**
+   * <b>One attendee's token never reaches another attendee's copy.</b>
+   *
+   * <p>
+   * The token in these links answers <i>as</i> the person named in it, so a
+   * copy carrying somebody else's would hand over the ability to answer for
+   * them - a defect strictly worse than not having the feature at all. The
+   * mapper takes the recipient as an argument and the fan-out over attendees
+   * happens above it, one full mapping pass per holder, so the two renders
+   * below must disagree in exactly this way: each carries its own recipient's
+   * links and none of the other's.
+   */
+  @Test
+  public void aCopyCarriesOnlyItsOwnRecipientSAnswerLinks() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenIdentity(SOMEONE, "Jane Roe", "jane@example.test");
+    lenient().when(agendaEventReminderService.getEventReminders(1L, SOMEONE)).thenReturn(List.of());
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+      givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+      givenAnswerLinks(agendaLinks, 1L, SOMEONE_REMOTE_ID, "someone");
+
+      String forPusher = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+      String forSomeone = mapper.toIcsEvent(event(), "uid-1", SOMEONE).getDescription();
+
+      assertTrue(forPusher.contains(answerLink(1L, "pusher", EventAttendeeResponse.ACCEPTED)),
+                 "the copy must carry its own recipient's link: " + forPusher);
+      assertFalse(forPusher.contains("token=someone"),
+                  "and must not carry the other attendee's token: " + forPusher);
+
+      assertTrue(forSomeone.contains(answerLink(1L, "someone", EventAttendeeResponse.ACCEPTED)),
+                 "the other copy must carry the other recipient's link: " + forSomeone);
+      assertFalse(forSomeone.contains("token=pusher"),
+                  "and must not carry the first attendee's token: " + forSomeone);
+    }
+  }
+
+  /**
+   * Two renders of the same copy are byte-identical.
+   *
+   * <p>
+   * <b>The churn guard, and the highest-risk interaction in this change.</b>
+   * The mirror compares DESCRIPTION and rewrites any copy whose description
+   * differs, so a description that varied between renders would put every copy
+   * into permanent churn on every five-minute sweep - which is precisely what
+   * EXO-89716 was spent eliminating. It holds because the token is
+   * {@code encode(eventId | user | response | expiry)} and, since EXO-89752,
+   * the expiry is derived from the event rather than from the clock.
+   */
+  @Test
+  public void twoRendersOfTheSameCopyProduceTheVerySameDescription() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+      givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+
+      String pushed = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+      String sweptAgain = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+
+      assertEquals(pushed, sweptAgain, "a sweep must render the very same description, or every copy churns");
+    }
+  }
+
+  /**
+   * An override answers for its series, exactly as its link opens the series.
+   *
+   * <p>
+   * A client showing no RSVP control offers no way to say "this occurrence
+   * only", so a click on the copy of an override can only sensibly mean the
+   * meeting as a whole - the same reading the UID and the link already take.
+   */
+  @Test
+  public void anOverrideOffersAnswersForItsSeries() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    Event override = event();
+    override.setParentId(77L);
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(77L)).thenReturn(SERIES_LINK);
+      givenAnswerLinks(agendaLinks, 77L, PUSHER_REMOTE_ID, "pusher");
+
+      String description = mapper.toIcsEvent(override, "uid-1", PUSHER).getDescription();
+
+      assertTrue(description.contains(answerLink(77L, "pusher", EventAttendeeResponse.ACCEPTED)),
+                 "the override must offer answers for the series: " + description);
+    }
+  }
+
+  /**
+   * A link that could carry no token is not offered at all.
+   *
+   * <p>
+   * {@code getResponseURL} substitutes an empty token rather than failing, so
+   * without this the copy would show an Accept link that answers nothing and
+   * reports nothing. Reachable since EXO-89752: no token is minted for an event
+   * carrying no date to bound it by.
+   */
+  @Test
+  public void anAnswerLinkWithNoTokenIsNotOffered() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+      for (EventAttendeeResponse response : List.of(EventAttendeeResponse.ACCEPTED,
+                                                    EventAttendeeResponse.TENTATIVE,
+                                                    EventAttendeeResponse.DECLINED)) {
+        agendaLinks.when(() -> NotificationUtils.getResponseURL(agendaEventAttendeeService,
+                                                                1L,
+                                                                PUSHER_REMOTE_ID,
+                                                                response))
+                   .thenReturn("http://localhost:8080/portal/rest/v1/agenda/events/1/response/send?response="
+                       + response.name() + "&token=&redirect=true");
+      }
+
+      String description = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+
+      assertFalse(description.contains("response/send"), "a tokenless link must not be offered: " + description);
+    }
+  }
+
+  /**
+   * The answer a person has already given is never written into the
+   * description.
+   *
+   * <p>
+   * Actions in the description, state in PARTSTAT. The copy is rewritten within
+   * seconds of a click, but the user's client only sees that at its own
+   * refresh, so a description repeating the answer would read as the click
+   * having failed and invite a second one.
+   */
+  @Test
+  public void theDescriptionStatesNoAnswerOnlyOffersThem() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+      givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+
+      // Asserted as an invariance rather than by looking for words: the links
+      // themselves legitimately carry "response=ACCEPTED" in their query
+      // string, so the property that actually matters is that the answer on
+      // record makes no difference to the text.
+      lenient().when(agendaEventAttendeeService.getEventAttendees(1L))
+               .thenReturn(new EventAttendeeList(List.of(new EventAttendee(1L, 1L, PUSHER, EventAttendeeResponse.NEEDS_ACTION))));
+      String beforeAnswering = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+
+      lenient().when(agendaEventAttendeeService.getEventAttendees(1L))
+               .thenReturn(new EventAttendeeList(List.of(new EventAttendee(1L, 1L, PUSHER, EventAttendeeResponse.ACCEPTED))));
+      IcsEvent afterAccepting = mapper.toIcsEvent(event(), "uid-1", PUSHER);
+
+      assertEquals(beforeAnswering,
+                   afterAccepting.getDescription(),
+                   "answering must not change the description - the answer lives in PARTSTAT");
+      assertEquals(EventAttendeeResponse.ACCEPTED.name(),
+                   afterAccepting.getAttendees().get(0).getResponse(),
+                   "and it must be on the attendee line, which is where a client reads it");
+    }
+  }
+
+  /**
+   * Stubs the three answer links agenda would mint for one attendee.
+   *
+   * @param agendaLinks the static mock standing in for agenda's link builder
+   * @param eventId the event the answers apply to
+   * @param remoteId the attendee the token names
+   * @param tokenMarker a token value unique to that attendee, so a link written
+   *          into the wrong copy is visible
+   */
+  private void givenAnswerLinks(MockedStatic<NotificationUtils> agendaLinks,
+                                long eventId,
+                                String remoteId,
+                                String tokenMarker) {
+    for (EventAttendeeResponse response : List.of(EventAttendeeResponse.ACCEPTED,
+                                                  EventAttendeeResponse.TENTATIVE,
+                                                  EventAttendeeResponse.DECLINED)) {
+      agendaLinks.when(() -> NotificationUtils.getResponseURL(agendaEventAttendeeService, eventId, remoteId, response))
+                 .thenReturn(answerLink(eventId, tokenMarker, response));
+    }
+  }
+
+  /**
+   * The shape agenda's link builder returns, with a token naming one attendee.
+   *
+   * @param eventId the event the link answers for
+   * @param tokenMarker the stand-in token value
+   * @param response the answer the link records
+   * @return the absolute address
+   */
+  private String answerLink(long eventId, String tokenMarker, EventAttendeeResponse response) {
+    return "http://localhost:8080/portal/rest/v1/agenda/events/" + eventId + "/response/send?response=" + response.name()
+        + "&token=" + tokenMarker + "&redirect=true";
   }
 
   /**
@@ -465,6 +693,10 @@ public class AgendaEventIcsMapperTest {
    */
   private void givenIdentity(long identityId, String name, String email) {
     Identity identity = new Identity(String.valueOf(identityId));
+    // The invitation token names an attendee by their remote id — a username
+    // for an internal user, a mail address for a guest — so the copy's answer
+    // links cannot be built without one (EXO-89753).
+    identity.setRemoteId("user" + identityId);
     Profile profile = new Profile(identity);
     profile.setProperty(Profile.FULL_NAME, name);
     if (email != null) {
