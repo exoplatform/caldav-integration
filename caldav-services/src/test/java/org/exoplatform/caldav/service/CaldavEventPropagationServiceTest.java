@@ -107,11 +107,11 @@ public class CaldavEventPropagationServiceTest {
   public void anEditReachesTheCopyAnAttendeeAlreadyHolds() {
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
-    when(caldavPushService.pushAgendaEvent(ALICE, EVENT, null)).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
 
     assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
 
-    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT, null);
+    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT);
   }
 
   /**
@@ -124,12 +124,12 @@ public class CaldavEventPropagationServiceTest {
                  mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
     givenPair(200L, BOB);
-    when(caldavPushService.pushAgendaEvent(anyLong(), eq(EVENT), any())).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(anyLong(), eq(EVENT))).thenReturn(new ObjectSync());
 
     assertEquals(2, service.propagateUpdate(EVENT, A_REAL_EDIT));
 
-    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT, null);
-    verify(caldavPushService).pushAgendaEvent(BOB, EVENT, null);
+    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT);
+    verify(caldavPushService).pushAgendaEvent(BOB, EVENT);
   }
 
   /**
@@ -143,7 +143,7 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
 
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong(), any());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
   }
 
   /**
@@ -160,7 +160,7 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
 
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong(), any());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
   }
 
   /**
@@ -175,15 +175,15 @@ public class CaldavEventPropagationServiceTest {
     givenPair(100L, ALICE);
     givenPair(200L, BOB);
     givenPair(300L, CAROL);
-    when(caldavPushService.pushAgendaEvent(ALICE, EVENT, null)).thenReturn(new ObjectSync());
-    when(caldavPushService.pushAgendaEvent(BOB, EVENT, null))
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(BOB, EVENT))
                                                              .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
                                                                                                 "bob's server is down"));
-    when(caldavPushService.pushAgendaEvent(CAROL, EVENT, null)).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(CAROL, EVENT)).thenReturn(new ObjectSync());
 
     assertEquals(2, service.propagateUpdate(EVENT, A_REAL_EDIT));
 
-    verify(caldavPushService).pushAgendaEvent(CAROL, EVENT, null);
+    verify(caldavPushService).pushAgendaEvent(CAROL, EVENT);
   }
 
   /**
@@ -196,12 +196,12 @@ public class CaldavEventPropagationServiceTest {
                  mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
     givenPair(200L, BOB);
-    when(caldavPushService.pushAgendaEvent(ALICE, EVENT, null)).thenThrow(new NoSuchMethodError("a half-assembled classpath"));
-    when(caldavPushService.pushAgendaEvent(BOB, EVENT, null)).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenThrow(new NoSuchMethodError("a half-assembled classpath"));
+    when(caldavPushService.pushAgendaEvent(BOB, EVENT)).thenReturn(new ObjectSync());
 
     assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
 
-    verify(caldavPushService).pushAgendaEvent(BOB, EVENT, null);
+    verify(caldavPushService).pushAgendaEvent(BOB, EVENT);
   }
 
   /**
@@ -217,7 +217,7 @@ public class CaldavEventPropagationServiceTest {
                                                     AgendaEventModificationType.AVAILABILITY_UPDATED)));
 
     verify(caldavSyncStorage, never()).getObjectsByEvent(anyLong(), anyInt(), anyInt());
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong(), any());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
   }
 
   /**
@@ -229,11 +229,11 @@ public class CaldavEventPropagationServiceTest {
   public void aModificationNobodyClassifiedIsCarriedRatherThanSkipped() {
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
-    when(caldavPushService.pushAgendaEvent(ALICE, EVENT, null)).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
 
     assertEquals(1, service.propagateUpdate(EVENT, EnumSet.of(AgendaEventModificationType.CONFERENCE_ADDED)));
 
-    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT, null);
+    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT);
   }
 
   /**
@@ -245,14 +245,14 @@ public class CaldavEventPropagationServiceTest {
   public void aCancellationIsCarriedAsARewriteNotAsARemoval() {
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
-    when(caldavPushService.pushAgendaEvent(ALICE, EVENT, null)).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
 
     assertEquals(1,
                  service.propagateUpdate(EVENT,
                                          EnumSet.of(AgendaEventModificationType.UPDATED,
                                                     AgendaEventModificationType.STATUS_UPDATED)));
 
-    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT, null);
+    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT);
     verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
   }
 
@@ -322,13 +322,13 @@ public class CaldavEventPropagationServiceTest {
     givenNoHoldersFor(override);
     givenHoldersFor(series, mapping(1L, 100L, "uid-9900", "/dav/alice/mirror/uid-9900.ics"));
     givenPair(100L, ALICE);
-    when(caldavPushService.pushAgendaEvent(ALICE, override, null)).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(ALICE, override)).thenReturn(new ObjectSync());
 
     assertEquals(1, service.propagateUpdate(override, A_REAL_EDIT));
 
     // Pushed under the override's own id, so the merge splices the amended
     // instance into the series object rather than replacing the series.
-    verify(caldavPushService).pushAgendaEvent(ALICE, override, null);
+    verify(caldavPushService).pushAgendaEvent(ALICE, override);
   }
 
   /**
@@ -342,11 +342,11 @@ public class CaldavEventPropagationServiceTest {
                  mapping(2L, 101L, "uid-8801", "/dav/alice/personal/uid-8801.ics"));
     givenPair(100L, ALICE);
     givenPair(101L, ALICE);
-    when(caldavPushService.pushAgendaEvent(ALICE, EVENT, null)).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
 
     assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
 
-    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT, null);
+    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT);
   }
 
   /**
@@ -365,11 +365,11 @@ public class CaldavEventPropagationServiceTest {
     when(caldavSyncStorage.getObjectsByEvent(EVENT, 1, 50)).thenReturn(new PageImpl<>(List.of(last),
                                                                                      PageRequest.of(1, 50),
                                                                                      51));
-    when(caldavPushService.pushAgendaEvent(anyLong(), eq(EVENT), any())).thenReturn(new ObjectSync());
+    when(caldavPushService.pushAgendaEvent(anyLong(), eq(EVENT))).thenReturn(new ObjectSync());
 
     assertEquals(51, service.propagateUpdate(EVENT, A_REAL_EDIT));
 
-    verify(caldavPushService).pushAgendaEvent(2000L, EVENT, null);
+    verify(caldavPushService).pushAgendaEvent(2000L, EVENT);
   }
 
   // ---------------------------------------------------------------- fixtures

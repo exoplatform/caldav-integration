@@ -430,14 +430,20 @@ public class CaldavPushService {
    * who may not see an event cannot have it copied into their calendar by
    * asking for its id.
    *
+   * <p>
+   * It takes no link back into eXo. It used to, and the browser used to build
+   * one and put it on the request — which meant only a browser push carried
+   * one, so the link appeared once and the next repair stripped it. The link
+   * is derived from the event by the mapper now, so every path renders the
+   * same one (EXO-89751).
+   *
    * @param userIdentityId identity of the user whose account is written to
    * @param eventId the agenda event to copy
-   * @param eventUrl absolute link back to the event in eXo
    * @return the mapping row as it now stands
    * @throws CaldavPushException when the event cannot be read or written
    */
-  public ObjectSync pushAgendaEvent(long userIdentityId, long eventId, String eventUrl) {
-    return pushAgendaEvent(userIdentityId, eventId, eventUrl, false);
+  public ObjectSync pushAgendaEvent(long userIdentityId, long eventId) {
+    return pushAgendaEvent(userIdentityId, eventId, false);
   }
 
   /**
@@ -459,7 +465,7 @@ public class CaldavPushService {
    * @throws CaldavPushException when the event cannot be read or written
    */
   public ObjectSync rewriteAgendaEvent(long userIdentityId, long eventId) {
-    return pushAgendaEvent(userIdentityId, eventId, null, true);
+    return pushAgendaEvent(userIdentityId, eventId, true);
   }
 
   /**
@@ -482,9 +488,13 @@ public class CaldavPushService {
    * looking.
    *
    * <p>
-   * No link back into eXo is rendered, and none is expected: {@code eventUrl} is
-   * carried on a push request, so a sweep has none. The comparison ignores the
-   * URL property for exactly that reason.
+   * <b>It renders the link back into eXo, exactly as a push does.</b> That was
+   * once the opposite: the link arrived on a push request, so this method had
+   * none to render, and the comparison had to exempt the {@code URL} property
+   * or every copy would have been judged altered once and then stripped of the
+   * very link it was missing. Deriving the link from the event (EXO-89751) is
+   * what makes this baseline the same document a push writes, property for
+   * property, and what let the exemption go.
    *
    * @param userIdentityId identity of the user whose copy it is
    * @param eventId the agenda event to render
@@ -505,7 +515,7 @@ public class CaldavPushService {
     if (event == null || StringUtils.isBlank(icsUid)) {
       return null;
     }
-    return icsWriter.write(agendaEventIcsMapper.toIcsEvent(event, icsUid, null, userIdentityId));
+    return icsWriter.write(agendaEventIcsMapper.toIcsEvent(event, icsUid, userIdentityId));
   }
 
   /**
@@ -514,13 +524,12 @@ public class CaldavPushService {
    *
    * @param userIdentityId identity of the user whose account is written to
    * @param eventId the agenda event to copy
-   * @param eventUrl absolute link back to the event in eXo
    * @param overwrite true to write without the conditional guard, which only
    *          a repair may ask for
    * @return the mapping row as it now stands
    * @throws CaldavPushException when the event cannot be read or written
    */
-  private ObjectSync pushAgendaEvent(long userIdentityId, long eventId, String eventUrl, boolean overwrite) {
+  private ObjectSync pushAgendaEvent(long userIdentityId, long eventId, boolean overwrite) {
     Event event;
     try {
       // Read in the event's OWN zone, which is what a null argument asks
@@ -542,7 +551,7 @@ public class CaldavPushService {
     }
     long seriesId = event.getParentId() > 0 ? event.getParentId() : event.getId();
     String icsUid = adoptOrMintUid(seriesId, userIdentityId);
-    IcsEvent icsEvent = agendaEventIcsMapper.toIcsEvent(event, icsUid, eventUrl, userIdentityId);
+    IcsEvent icsEvent = agendaEventIcsMapper.toIcsEvent(event, icsUid, userIdentityId);
 
     // Where an event goes is decided from the calendar it lives in, not from
     // the caller. An event of one of the user's own calendars belongs in that

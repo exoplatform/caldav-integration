@@ -113,21 +113,22 @@ public class CaldavPushRestTest {
   }
 
   /**
-   * The endpoint hands the service the event id and the link back, and names
-   * the caller's own identity as the account written to — the request carries
-   * no way to name anybody else's.
+   * The endpoint hands the service the event id alone, and names the caller's
+   * own identity as the account written to — the request carries no way to
+   * name anybody else's, and since EXO-89751 no way to name the link either:
+   * that is derived from the event server-side.
    */
   @Test
   public void shouldPushForTheCallerRatherThanForAnyoneTheRequestNames() {
     withCurrentUser();
     ObjectSync mapping = new ObjectSync();
-    when(caldavPushService.pushAgendaEvent(42L, 101L, "https://exo.test/event/101")).thenReturn(mapping);
+    when(caldavPushService.pushAgendaEvent(42L, 101L)).thenReturn(mapping);
 
-    ResponseEntity<ObjectSync> pushed = caldavPushRest.push(101L, "https://exo.test/event/101");
+    ResponseEntity<ObjectSync> pushed = caldavPushRest.push(101L);
 
     assertEquals(HttpStatus.OK, pushed.getStatusCode());
     assertSame(mapping, pushed.getBody());
-    verify(caldavPushService).pushAgendaEvent(42L, 101L, "https://exo.test/event/101");
+    verify(caldavPushService).pushAgendaEvent(42L, 101L);
   }
 
   /**
@@ -139,9 +140,9 @@ public class CaldavPushRestTest {
   @Test
   public void shouldAnswerNoContentWhenThereIsNowhereToCopyInto() {
     withCurrentUser();
-    when(caldavPushService.pushAgendaEvent(42L, 102L, null)).thenReturn(null);
+    when(caldavPushService.pushAgendaEvent(42L, 102L)).thenReturn(null);
 
-    ResponseEntity<ObjectSync> pushed = caldavPushRest.push(102L, null);
+    ResponseEntity<ObjectSync> pushed = caldavPushRest.push(102L);
 
     assertEquals(HttpStatus.NO_CONTENT, pushed.getStatusCode());
     assertNull(pushed.getBody());
