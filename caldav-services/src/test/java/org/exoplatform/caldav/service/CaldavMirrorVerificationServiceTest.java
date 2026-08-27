@@ -388,6 +388,41 @@ public class CaldavMirrorVerificationServiceTest {
   }
 
   @Test
+  public void aVersionThatMovedOverBytesThatDidNotIsRecorded() {
+    // Having paid a fetch to establish that the bytes are still ours, the pass
+    // has learnt the object's current version. Keeping the superseded one
+    // makes every later pass fetch the object again to reach the same
+    // conclusion — and, worse, makes the next ordinary update carry an
+    // If-Match the server has already left behind, which it refuses. That
+    // refusal is an eXo-side edit silently not reaching the copy.
+    givenServerHolds(Map.of(HREF, "\"etag-2\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                                            .thenReturn(new CalendarObject(HREF,
+                                                                                                           "\"etag-2\"",
+                                                                                                           ICS));
+
+    service.verify(USER);
+
+    ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
+    verify(caldavSyncStorage).saveObject(saved.capture());
+    assertEquals("\"etag-2\"", saved.getValue().getEtag());
+  }
+
+  @Test
+  public void aVersionThatDidNotMoveIsNotWrittenBack() {
+    // Only ever on a version that actually changed. A pass over a converged
+    // mirror must cost a listing and nothing else — not a database write per
+    // object per sweep.
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", hash(ICS), 5L));
+
+    service.verify(USER);
+
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  @Test
   public void aCopyWrittenBeforeHashesWereRecordedIsLeftAlone() {
     // Nothing here can say whether the change matters, and a re-push would
     // overwrite a copy that may be perfectly fine.
