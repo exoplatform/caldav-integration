@@ -81,6 +81,13 @@ public class CaldavOutboundServiceTest {
 
   private static final String        LOGIN  = "john";
 
+  /**
+   * The account on the CalDAV server, deliberately NOT the eXo login: the two
+   * are different identities, and a test where they share a string cannot tell
+   * which one a call was made with.
+   */
+  private static final String        DAV_ACCOUNT = "john@dav.example";
+
   private static final String        HOME   = "/dav/calendars/john/";
 
   private static final String        ANCHOR = "c0ffee-uid";
@@ -109,12 +116,12 @@ public class CaldavOutboundServiceTest {
   public void connectAnAccount() {
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    lenient().when(calDavClient.discoverCalendarHome(any(), anyString(), anyString())).thenReturn(HOME);
+    lenient().when(calDavClient.discoverCalendarHome(any())).thenReturn(HOME);
     lenient().when(caldavSyncStorage.savePair(any())).thenAnswer(invocation -> invocation.getArgument(0));
     // The stand-in server takes every rename and, unless a test says
     // otherwise, cannot be read back — the pessimistic default, so that no
     // test passes on a read-back it did not arrange.
-    lenient().when(calDavClient.setDisplayName(any(), anyString(), anyString(), anyString(), anyString()))
+    lenient().when(calDavClient.setDisplayName(any(), anyString(), anyString()))
              .thenReturn(new PropPatchResult(207, List.of()));
   }
 
@@ -122,14 +129,19 @@ public class CaldavOutboundServiceTest {
   public void aPersonalCalendarGetsACollectionNamedAfterItsAnchor() throws Exception {
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
     givenServerCalendars(List.of(), List.of(collection(WANTED)));
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(201,
                                                                                                                                    List.of()));
 
     List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
 
+    // The endpoint is asked for THIS user, by their eXo login: the account in
+    // the URL comes from their credentials provider, and nothing else in this
+    // suite would notice if it came from somewhere else.
+    verify(calDavClient).endpoint(SERVER, LOGIN);
+
     ArgumentCaptor<String> href = ArgumentCaptor.forClass(String.class);
-    verify(calDavClient).mkCalendar(any(), href.capture(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient).mkCalendar(any(), href.capture(), anyString(), any());
     // The anchor is in the path, which is what makes the binding recoverable
     // from the server alone.
     assertEquals(WANTED, href.getValue());
@@ -143,14 +155,14 @@ public class CaldavOutboundServiceTest {
     // about which of their calendars it is.
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
     givenServerCalendars(List.of(), List.of(collection(WANTED)));
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(201,
                                                                                                                                    List.of()));
 
     service.bindPersonalCalendars(USER, LOGIN);
 
     ArgumentCaptor<String> displayName = ArgumentCaptor.forClass(String.class);
-    verify(calDavClient).mkCalendar(any(), anyString(), displayName.capture(), any(), anyString(), anyString());
+    verify(calDavClient).mkCalendar(any(), anyString(), displayName.capture(), any());
     assertEquals("Work", displayName.getValue());
   }
 
@@ -164,14 +176,14 @@ public class CaldavOutboundServiceTest {
     named.setName("Holidays");
     givenPersonalCalendars(named);
     givenServerCalendars(List.of(), List.of(collection(WANTED)));
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(201,
                                                                                                                                    List.of()));
 
     service.bindPersonalCalendars(USER, LOGIN);
 
     ArgumentCaptor<String> displayName = ArgumentCaptor.forClass(String.class);
-    verify(calDavClient).mkCalendar(any(), anyString(), displayName.capture(), any(), anyString(), anyString());
+    verify(calDavClient).mkCalendar(any(), anyString(), displayName.capture(), any());
     assertEquals("Holidays", displayName.getValue());
   }
 
@@ -183,14 +195,14 @@ public class CaldavOutboundServiceTest {
     nameless.setName(null);
     givenPersonalCalendars(nameless);
     givenServerCalendars(List.of(), List.of(collection(WANTED)));
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(201,
                                                                                                                                    List.of()));
 
     service.bindPersonalCalendars(USER, LOGIN);
 
     ArgumentCaptor<String> displayName = ArgumentCaptor.forClass(String.class);
-    verify(calDavClient).mkCalendar(any(), anyString(), displayName.capture(), any(), anyString(), anyString());
+    verify(calDavClient).mkCalendar(any(), anyString(), displayName.capture(), any());
     assertEquals("eXo " + ANCHOR, displayName.getValue());
   }
 
@@ -215,7 +227,7 @@ public class CaldavOutboundServiceTest {
 
     List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
 
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
     verify(caldavSyncStorage, never()).savePair(any());
     assertEquals(SyncOrigin.REMOTE, pairs.get(0).getOrigin());
   }
@@ -229,12 +241,12 @@ public class CaldavOutboundServiceTest {
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
     givenServerCalendars(List.of(), List.of());
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(activePair());
-    when(calDavClient.readCalendar(any(), anyString(), anyString(), anyString()))
+    when(calDavClient.readCalendar(any(), anyString()))
                                                                                 .thenReturn(collection(WANTED));
 
     List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
 
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
     assertEquals(CalendarSyncStatus.ACTIVE, pairs.get(0).getStatus());
   }
 
@@ -244,14 +256,14 @@ public class CaldavOutboundServiceTest {
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
     givenServerCalendars(List.of(), List.of(collection(WANTED)));
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(activePair());
-    when(calDavClient.readCalendar(any(), anyString(), anyString(), anyString())).thenReturn(null);
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.readCalendar(any(), anyString())).thenReturn(null);
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(201,
                                                                                                                                    List.of()));
 
     service.bindPersonalCalendars(USER, LOGIN);
 
-    verify(calDavClient).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   @Test
@@ -262,15 +274,15 @@ public class CaldavOutboundServiceTest {
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
     givenServerCalendars(List.of(), List.of(collection(WANTED)));
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(activePair());
-    when(calDavClient.readCalendar(any(), anyString(), anyString(), anyString()))
+    when(calDavClient.readCalendar(any(), anyString()))
                                                                                 .thenThrow(new CalDavException("down"));
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(201,
                                                                                                                                    List.of()));
 
     service.bindPersonalCalendars(USER, LOGIN);
 
-    verify(calDavClient).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   /**
@@ -296,7 +308,7 @@ public class CaldavOutboundServiceTest {
     // on — two features behaving correctly and feeding each other.
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
     givenServerCalendars(List.of(), List.of(collection(WANTED)));
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(201,
                                                                                                                                    List.of()));
 
@@ -310,7 +322,7 @@ public class CaldavOutboundServiceTest {
     // diagnosis earlier in this migration.
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
     givenServerCalendars(List.of(), List.of());
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(201,
                                                                                                                                    List.of()));
 
@@ -323,7 +335,7 @@ public class CaldavOutboundServiceTest {
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
     givenServerCalendars(List.of(collection("/dav/calendars/john/personal/")),
                          List.of(collection("/dav/calendars/john/personal/")));
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(403,
                                                                                                                                    List.of()));
 
@@ -338,12 +350,12 @@ public class CaldavOutboundServiceTest {
   @Test
   public void aServerThatSaidNoIsNotAskedAgainOnEverySync() {
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of());
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of());
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(refusedPair());
 
     service.bindPersonalCalendars(USER, LOGIN);
 
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   @Test
@@ -352,13 +364,13 @@ public class CaldavOutboundServiceTest {
     // recognise it. A pair row lost to a restore rebinds instead of creating a
     // second collection beside the first.
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(collection(WANTED)));
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(collection(WANTED)));
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(null);
 
     CalendarSync pair = service.bindPersonalCalendars(USER, LOGIN).get(0);
 
     assertEquals(CalendarSyncStatus.ACTIVE, pair.getStatus());
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   @Test
@@ -366,10 +378,10 @@ public class CaldavOutboundServiceTest {
     // Its events already travel to the dedicated mirror, and a shared calendar
     // filed in one member's personal account is visible to that member alone.
     givenPersonalCalendars(calendar(2L, 999L, "space-uid", "Marketing"));
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of());
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of());
 
     assertTrue(service.bindPersonalCalendars(USER, LOGIN).isEmpty());
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   @Test
@@ -378,7 +390,7 @@ public class CaldavOutboundServiceTest {
     // renumbers it, and a wrong binding writes one calendar's events into
     // another's collection.
     givenPersonalCalendars(calendar(1L, USER, null, "Work"));
-    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of());
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of());
 
     assertTrue(service.bindPersonalCalendars(USER, LOGIN).isEmpty());
     verify(caldavSyncStorage, never()).savePair(any());
@@ -389,12 +401,12 @@ public class CaldavOutboundServiceTest {
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
 
     assertTrue(service.bindPersonalCalendars(USER, LOGIN).isEmpty());
-    verify(calDavClient, never()).discoverCalendarHome(any(), anyString(), anyString());
+    verify(calDavClient, never()).discoverCalendarHome(any());
   }
 
   @Test
   public void aServerThatCannotBeListedBindsNothingRatherThanFailing() {
-    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+    when(calDavClient.discoverCalendarHome(any()))
                                                                             .thenThrow(new org.exoplatform.caldav.client.CalDavException("unreachable"));
 
     assertTrue(service.bindPersonalCalendars(USER, LOGIN).isEmpty());
@@ -408,7 +420,7 @@ public class CaldavOutboundServiceTest {
     // credential-bearing requests, each rediscovering the same absent server.
     // A server that is not there is settled after one attempt, and the caller
     // is the only party that can act on it.
-    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+    when(calDavClient.discoverCalendarHome(any()))
                                                                             .thenThrow(new CalDavUnreachableException("gateway said 502"));
 
     assertThrows(CalDavUnreachableException.class, () -> service.bindPersonalCalendars(USER, LOGIN));
@@ -420,7 +432,7 @@ public class CaldavOutboundServiceTest {
     // is a CalDavException, so absorbing the parent here swallowed it too —
     // the pass's own "pause this account rather than retry a stale password"
     // branch could never fire from the first step that meets the server.
-    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+    when(calDavClient.discoverCalendarHome(any()))
                                                                             .thenThrow(new CalDavAuthenticationException("401"));
 
     assertThrows(CalDavAuthenticationException.class, () -> service.bindPersonalCalendars(USER, LOGIN));
@@ -434,15 +446,15 @@ public class CaldavOutboundServiceTest {
     // the pair and left the name alone.
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work, renamed"));
     givenServerCalendars(List.of(collection(WANTED, "Work")));
-    when(calDavClient.readCalendar(any(), eq(WANTED), anyString(), anyString())).thenReturn(collection(WANTED,
+    when(calDavClient.readCalendar(any(), eq(WANTED))).thenReturn(collection(WANTED,
                                                                                                        "Work, renamed"));
 
     List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
 
     InOrder wire = inOrder(calDavClient);
-    wire.verify(calDavClient).setDisplayName(any(), eq(WANTED), eq("Work, renamed"), anyString(), anyString());
+    wire.verify(calDavClient).setDisplayName(any(), eq(WANTED), eq("Work, renamed"));
     // The status is never the proof: the name is read back after the write.
-    wire.verify(calDavClient).readCalendar(any(), eq(WANTED), anyString(), anyString());
+    wire.verify(calDavClient).readCalendar(any(), eq(WANTED));
     assertEquals(CalendarSyncStatus.ACTIVE, pairs.get(0).getStatus());
     assertEquals(WANTED, pairs.get(0).getRemoteHref(), "the name is data; the path stays the identity");
   }
@@ -456,8 +468,8 @@ public class CaldavOutboundServiceTest {
 
     service.bindPersonalCalendars(USER, LOGIN);
 
-    verify(calDavClient, never()).setDisplayName(any(), anyString(), anyString(), anyString(), anyString());
-    verify(calDavClient, never()).readCalendar(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).setDisplayName(any(), anyString(), anyString());
+    verify(calDavClient, never()).readCalendar(any(), anyString());
   }
 
   @Test
@@ -469,13 +481,13 @@ public class CaldavOutboundServiceTest {
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(null);
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work, renamed"));
     givenServerCalendars(List.of(collection(WANTED, "Work")));
-    when(calDavClient.readCalendar(any(), eq(WANTED), anyString(), anyString())).thenReturn(collection(WANTED,
+    when(calDavClient.readCalendar(any(), eq(WANTED))).thenReturn(collection(WANTED,
                                                                                                        "Work, renamed"));
 
     List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
 
-    verify(calDavClient).setDisplayName(any(), eq(WANTED), eq("Work, renamed"), anyString(), anyString());
-    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient).setDisplayName(any(), eq(WANTED), eq("Work, renamed"));
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
     assertEquals(CalendarSyncStatus.ACTIVE, pairs.get(0).getStatus());
   }
 
@@ -487,11 +499,11 @@ public class CaldavOutboundServiceTest {
     // an unrenamed calendar that syncs beats a renamed one that does not.
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work, renamed"));
     givenServerCalendars(List.of(collection(WANTED, "Work")));
-    when(calDavClient.readCalendar(any(), eq(WANTED), anyString(), anyString())).thenReturn(collection(WANTED, "Work"));
+    when(calDavClient.readCalendar(any(), eq(WANTED))).thenReturn(collection(WANTED, "Work"));
 
     List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
 
-    verify(calDavClient).readCalendar(any(), eq(WANTED), anyString(), anyString());
+    verify(calDavClient).readCalendar(any(), eq(WANTED));
     assertEquals(CalendarSyncStatus.ACTIVE, pairs.get(0).getStatus());
     assertEquals(WANTED, pairs.get(0).getRemoteHref());
   }
@@ -500,13 +512,13 @@ public class CaldavOutboundServiceTest {
   public void aRenameTheServerWillNotTakeIsNotAnError() {
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work, renamed"));
     givenServerCalendars(List.of(collection(WANTED, "Work")));
-    when(calDavClient.setDisplayName(any(), eq(WANTED), anyString(), anyString(), anyString()))
+    when(calDavClient.setDisplayName(any(), eq(WANTED), anyString()))
                                                                                              .thenThrow(new CalDavException("403"));
 
     List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
 
     assertEquals(CalendarSyncStatus.ACTIVE, pairs.get(0).getStatus());
-    verify(calDavClient, never()).readCalendar(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).readCalendar(any(), anyString());
   }
 
   @Test
@@ -516,14 +528,14 @@ public class CaldavOutboundServiceTest {
     // counts, so the same reconciliation runs on a collection just created.
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
     givenServerCalendars(List.of(), List.of(collection(WANTED, "Untitled")));
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(201,
                                                                                                                                    List.of()));
-    when(calDavClient.readCalendar(any(), eq(WANTED), anyString(), anyString())).thenReturn(collection(WANTED, "Work"));
+    when(calDavClient.readCalendar(any(), eq(WANTED))).thenReturn(collection(WANTED, "Work"));
 
     List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
 
-    verify(calDavClient).setDisplayName(any(), eq(WANTED), eq("Work"), anyString(), anyString());
+    verify(calDavClient).setDisplayName(any(), eq(WANTED), eq("Work"));
     assertEquals(CalendarSyncStatus.ACTIVE, pairs.get(0).getStatus());
   }
 
@@ -534,12 +546,12 @@ public class CaldavOutboundServiceTest {
                          List.of(collection(WANTED)),
                          List.of(collection(WANTED)),
                          List.of(collection(WANTED), collection("/dav/calendars/john/exo-cal-second-uid/")));
-    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any()))
                                                                                                   .thenReturn(new MkCalendarResult(201,
                                                                                                                                    List.of()));
 
     assertEquals(2, service.bindPersonalCalendars(USER, LOGIN).size());
-    verify(calDavClient, times(2)).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, times(2)).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   /**
@@ -563,7 +575,7 @@ public class CaldavOutboundServiceTest {
    */
   @SafeVarargs
   private void givenServerCalendars(List<CalendarCollection>... answers) {
-    var stub = when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString()));
+    var stub = when(calDavClient.listCalendars(any(), eq(HOME)));
     for (List<CalendarCollection> answer : answers) {
       stub = stub.thenReturn(answer);
     }
@@ -639,7 +651,7 @@ public class CaldavOutboundServiceTest {
    */
   private CaldavUserSetting settings() {
     CaldavUserSetting setting = new CaldavUserSetting();
-    setting.setUsername(LOGIN);
+    setting.setUsername(DAV_ACCOUNT);
     setting.setPassword("secret");
     setting.setServerId(SERVER);
     return setting;

@@ -174,14 +174,16 @@ public class CaldavInboundService {
    * cost, not about correctness.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param pair the binding whose collection is read
    * @param calendar the eXo calendar standing for it
    * @param from beginning of the window
    * @param to end of the window
    * @return how many events were created or updated
    */
-  public int importInto(long userIdentityId, CalendarSync pair, Calendar calendar, Instant from, Instant to) {
-    return importInto(userIdentityId, pair, calendar, from, to, adoptable(userIdentityId, calendar, from, to));
+  public int importInto(long userIdentityId, String username, CalendarSync pair, Calendar calendar, Instant from, Instant to) {
+    return importInto(userIdentityId, username, pair, calendar, from, to, adoptable(userIdentityId, calendar, from, to));
   }
 
   /**
@@ -189,6 +191,8 @@ public class CaldavInboundService {
    * shared index of the events already in the calendar.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param pair the binding whose collection is read
    * @param calendar the eXo calendar standing for it
    * @param from beginning of the window
@@ -198,6 +202,7 @@ public class CaldavInboundService {
    * @return how many events were created or updated
    */
   private int importInto(long userIdentityId,
+                         String username,
                          CalendarSync pair,
                          Calendar calendar,
                          Instant from,
@@ -210,7 +215,7 @@ public class CaldavInboundService {
     if (settings == null) {
       return 0;
     }
-    CalDavEndpoint endpoint = calDavClient.endpoint(pair.getServerId(), settings.getUsername());
+    CalDavEndpoint endpoint = calDavClient.endpoint(pair.getServerId(), username);
     int touched = 0;
     // The window is walked in slices rather than asked for at once. A
     // calendar-query returns the full ICS of everything it covers, so a year
@@ -255,9 +260,7 @@ public class CaldavInboundService {
       objects = calDavClient.calendarQuery(endpoint,
                                            collectionUrl(pair),
                                            from,
-                                           to,
-                                           settings.getUsername(),
-                                           settings.getPassword());
+                                           to);
     } catch (CalDavException e) {
       // One slice a server cannot answer must not cost the rest of the window,
       // and one collection must not cost the others. The calendar keeps what
@@ -993,6 +996,8 @@ public class CaldavInboundService {
    * moved, which is once a day.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param pair the binding being read
    * @param calendar the eXo calendar it fills
    * @param from start of the window, for a full read
@@ -1002,6 +1007,7 @@ public class CaldavInboundService {
    * @return what the reconciliation removed and what it could not
    */
   public VanishedCleanup syncContents(long userIdentityId,
+                                      String username,
                                       CalendarSync pair,
                                       Calendar calendar,
                                       Instant from,
@@ -1017,20 +1023,22 @@ public class CaldavInboundService {
     if (!fullRead && StringUtils.isNotBlank(pair.getSyncToken())) {
       CaldavUserSetting settings = settingsFor(userIdentityId, pair);
       if (settings != null) {
-        VanishedCleanup incremental = readWhatChanged(userIdentityId, pair, calendar, settings, adoptable);
+        VanishedCleanup incremental = readWhatChanged(userIdentityId, username, pair, calendar, settings, adoptable);
         if (incremental != null) {
           return incremental;
         }
       }
     }
-    importInto(userIdentityId, pair, calendar, from, to, adoptable);
-    return removeVanishedObjects(userIdentityId, pair, calendar.getTitle());
+    importInto(userIdentityId, username, pair, calendar, from, to, adoptable);
+    return removeVanishedObjects(userIdentityId, username, pair, calendar.getTitle());
   }
 
   /**
    * Asks the account what changed since the token, and acts on the answer.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param pair the binding being read
    * @param calendar the eXo calendar it fills
    * @param settings the connected account
@@ -1039,6 +1047,7 @@ public class CaldavInboundService {
    *         the caller should read the window in full instead
    */
   private VanishedCleanup readWhatChanged(long userIdentityId,
+                                          String username,
                                           CalendarSync pair,
                                           Calendar calendar,
                                           CaldavUserSetting settings,
@@ -1046,12 +1055,10 @@ public class CaldavInboundService {
     CalDavEndpoint endpoint;
     SyncCollectionResult report;
     try {
-      endpoint = calDavClient.endpoint(pair.getServerId(), settings.getUsername());
+      endpoint = calDavClient.endpoint(pair.getServerId(), username);
       report = calDavClient.syncCollection(endpoint,
                                            collectionUrl(pair),
-                                           pair.getSyncToken(),
-                                           settings.getUsername(),
-                                           settings.getPassword());
+                                           pair.getSyncToken());
     } catch (RuntimeException e) {
       // Nothing is concluded from a report that could not be made — neither
       // that the collection is empty nor that it is unchanged. Reading the
@@ -1103,9 +1110,7 @@ public class CaldavInboundService {
     try {
       objects = calDavClient.multiget(endpoint,
                                       collectionUrl(pair),
-                                      hrefs,
-                                      settings.getUsername(),
-                                      settings.getPassword());
+                                      hrefs);
     } catch (RuntimeException e) {
       LOG.warn("The {} changed object(s) of collection {} could not be fetched; they are left for the next pass",
                hrefs.size(),
@@ -1156,11 +1161,13 @@ public class CaldavInboundService {
    *
    * @param userIdentityId identity of the user, whose ACL the deletion runs
    *          under
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param pair the binding whose collection is reconciled
    * @return what was removed and what could not be
    */
-  public VanishedCleanup removeVanishedObjects(long userIdentityId, CalendarSync pair) {
-    return removeVanishedObjects(userIdentityId, pair, null);
+  public VanishedCleanup removeVanishedObjects(long userIdentityId, String username, CalendarSync pair) {
+    return removeVanishedObjects(userIdentityId, username, pair, null);
   }
 
   /**
@@ -1174,11 +1181,13 @@ public class CaldavInboundService {
    * is how one failing collection went unexplained for a whole morning.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param pair the binding whose collection is reconciled
    * @param calendarName the eXo calendar's name, for the log only, may be null
    * @return what was removed and what could not be
    */
-  public VanishedCleanup removeVanishedObjects(long userIdentityId, CalendarSync pair, String calendarName) {
+  public VanishedCleanup removeVanishedObjects(long userIdentityId, String username, CalendarSync pair, String calendarName) {
     if (pair == null || StringUtils.isBlank(pair.getRemoteHref())) {
       return VanishedCleanup.nothing();
     }
@@ -1188,7 +1197,7 @@ public class CaldavInboundService {
     }
     CalDavEndpoint endpoint;
     try {
-      endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+      endpoint = calDavClient.endpoint(settings.getServerId(), username);
     } catch (RuntimeException e) {
       LOG.warn("No endpoint for collection {}; nothing is removed from it this round", pair.getRemoteHref(), e);
       return VanishedCleanup.nothing();
@@ -1445,9 +1454,7 @@ public class CaldavInboundService {
       try {
         report = calDavClient.syncCollection(endpoint,
                                              pair.getRemoteHref(),
-                                             token,
-                                             settings.getUsername(),
-                                             settings.getPassword());
+                                             token);
       } catch (RuntimeException e) {
         LOG.warn("Collection {} could not report its changes; nothing is removed from it this round",
                  pair.getRemoteHref(),
@@ -1506,9 +1513,7 @@ public class CaldavInboundService {
     String freshToken = null;
     try {
       CalendarCollection collection = calDavClient.readCalendar(endpoint,
-                                                               collectionUrl(pair),
-                                                               settings.getUsername(),
-                                                               settings.getPassword());
+                                                               collectionUrl(pair));
       if (collection != null) {
         freshToken = collection.syncToken();
       }
@@ -1535,9 +1540,7 @@ public class CaldavInboundService {
     Map<String, String> etags;
     try {
       etags = calDavClient.listResourceEtags(endpoint,
-                                             collectionUrl(pair),
-                                             settings.getUsername(),
-                                             settings.getPassword());
+                                             collectionUrl(pair));
     } catch (RuntimeException e) {
       // Nothing is removed — a listing that failed says nothing about what the
       // collection holds. But the token is kept if we got one, because that is

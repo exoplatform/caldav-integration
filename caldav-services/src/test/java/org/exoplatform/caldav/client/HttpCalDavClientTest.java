@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -47,9 +48,14 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.service.CaldavServerService;
+import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
+import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
 
 /**
  * The protocol, exercised against canned answers. No network anywhere: the
@@ -69,8 +75,13 @@ public class HttpCalDavClientTest {
 
   private static final String  PASSWORD   = "AlicePass123!";
 
+  /** What the provider answers; the client only forwards it. */
+  private static final String  AUTHORIZATION = "Basic YWxpY2VAc3RhbHdhcnQubG9jYWw6QWxpY2VQYXNzMTIzIQ==";
+
   @Mock
   private CaldavServerService  caldavServerService;
+
+  private ConnectorCredentialsService connectorCredentialsService;
 
   private HttpClient           transport;
 
@@ -79,11 +90,28 @@ public class HttpCalDavClientTest {
   private List<HttpRequest>    sent;
 
   @BeforeEach
-  void setUp() {
+  void setUp() throws Exception {
     transport = mock(HttpClient.class);
-    client = new HttpCalDavClient(transport, caldavServerService);
+    connectorCredentialsService = credentialsAnswering(AUTHORIZATION);
+    client = new HttpCalDavClient(transport, caldavServerService, new CaldavCredentialsResolver(connectorCredentialsService));
     sent = new ArrayList<>();
-    lenient().when(caldavServerService.resolveServerUrl(1L)).thenReturn(SERVER_URL);
+    lenient().when(caldavServerService.resolveServer(1L)).thenReturn(declaredServer(SERVER_URL));
+    // The account in the path is the provider's answer, here and in
+    // production: no test can hand this client a DAV account any more.
+    lenient().when(connectorCredentialsService.resolveTargetIdentity(any())).thenReturn(USER);
+  }
+
+  /**
+   * A registry row declaring the given URL, configured with the Personal
+   * provider — the shape every protocol test mints its endpoint from.
+   *
+   * @param serverUrl the declared URL, templated or not
+   * @return the registration
+   */
+  private static CaldavServer declaredServer(String serverUrl) {
+    return new CaldavServer(1L, "agenda.caldavCalendar", "Stalwart", null, serverUrl, true, null, null, null, null,
+                            true, null, null, null, null,
+                            null, null, "personal");
   }
 
   // ---- registry-only targeting -------------------------------------------
@@ -98,17 +126,70 @@ public class HttpCalDavClientTest {
     assertEquals(BASE_PATH, endpoint.getBasePath());
   }
 
+  /**
+   * The account in the path comes from the provider, not from a name the caller
+   * looked up — which is the whole point once a provider authenticates as one
+   * identity and addresses another.
+   */
+  @Test
+  void anEndpointForAUserNamesTheAccountTheProviderResolves() throws Exception {
+    when(caldavServerService.resolveServer(1L)).thenReturn(declaredServer(SERVER_URL));
+    when(connectorCredentialsService.resolveTargetIdentity(any())).thenReturn(USER);
+
+    CalDavEndpoint endpoint = client.endpoint(1L, "alice");
+
+    assertEquals(BASE_PATH, endpoint.getBasePath(), "the provider's account fills {username}, percent-encoded");
+    assertEquals("personal", endpoint.getAuthProviderName(), "carried so each request rebuilds its context");
+    assertEquals("alice", endpoint.getExoLogin());
+    verifyNoInteractions(transport);
+  }
+
+  /**
+   * A templated URL with no resolvable account fails exactly where a blank DAV
+   * username already failed — same guard, same message, so the diagnosis does
+   * not change with the provider.
+   */
+  @Test
+  void anEndpointForAUserWhoseAccountCannotBeNamedIsRefused() throws Exception {
+    when(caldavServerService.resolveServer(1L)).thenReturn(declaredServer(SERVER_URL));
+    when(connectorCredentialsService.resolveTargetIdentity(any())).thenReturn(null);
+
+    assertThrows(CalDavException.class, () -> client.endpoint(1L, "alice"));
+    verifyNoInteractions(transport);
+  }
+
+  /**
+   * A fixed URL gets its hrefs from discovery, so there is nothing to
+   * substitute — and no reason to spend a provider call finding out.
+   */
+  @Test
+  void anEndpointForAUserOnAnUntemplatedUrlNeverAsksTheProvider() {
+    when(caldavServerService.resolveServer(1L)).thenReturn(declaredServer("http://cal.example.com/dav/"));
+
+    CalDavEndpoint endpoint = client.endpoint(1L, "alice");
+
+    assertEquals("/dav/", endpoint.getBasePath());
+    verifyNoInteractions(connectorCredentialsService, transport);
+  }
+
   @Test
   void anEndpointWithoutAnyDeclaredServerIsRefused() {
-    when(caldavServerService.resolveServerUrl(null)).thenReturn(null);
+    when(caldavServerService.resolveServer(null)).thenReturn(null);
 
     assertThrows(CalDavException.class, () -> client.endpoint(null, USER));
     verifyNoInteractions(transport);
   }
 
+  /**
+   * The guard on what may enter a URL path, exercised where the value now
+   * comes from: a provider naming an account with a dot-segment in it. No
+   * caller can supply one — this client takes an eXo login and nothing else.
+   */
   @Test
-  void aUsernameThatCannotLiveInAUrlPathIsRefused() {
-    assertThrows(CalDavException.class, () -> client.endpoint(1L, "alice/../../etc"));
+  void anAccountThatCannotLiveInAUrlPathIsRefused() throws Exception {
+    when(connectorCredentialsService.resolveTargetIdentity(any())).thenReturn("alice/../../etc");
+
+    assertThrows(CalDavException.class, () -> client.endpoint(1L, "alice"));
     verifyNoInteractions(transport);
   }
 
@@ -117,7 +198,7 @@ public class HttpCalDavClientTest {
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
     assertThrows(CalDavException.class,
-                 () -> client.getCtag(endpoint, "https://attacker.example.org/dav/cal/", USER, PASSWORD),
+                 () -> client.getCtag(endpoint, "https://attacker.example.org/dav/cal/"),
                  "an absolute href naming another host must never be sent the user's credentials");
     verifyNoInteractions(transport);
   }
@@ -126,7 +207,7 @@ public class HttpCalDavClientTest {
   void aDotSegmentPathIsRefusedBeforeAnySocketIsOpened() {
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    assertThrows(CalDavException.class, () -> client.getCtag(endpoint, "/dav/../admin/", USER, PASSWORD));
+    assertThrows(CalDavException.class, () -> client.getCtag(endpoint, "/dav/../admin/"));
     verifyNoInteractions(transport);
   }
 
@@ -135,7 +216,7 @@ public class HttpCalDavClientTest {
     givenAnswers(collectionAnswer("/dav/cal/alice%40stalwart.local/default/", "Default", "\"c-1\""));
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    client.getCtag(endpoint, "http://cal.example.com/dav/cal/alice%40stalwart.local/default/", USER, PASSWORD);
+    client.getCtag(endpoint, "http://cal.example.com/dav/cal/alice%40stalwart.local/default/");
 
     assertEquals("http://cal.example.com/dav/cal/alice%40stalwart.local/default/", sent.get(0).uri().toString());
   }
@@ -160,7 +241,7 @@ public class HttpCalDavClientTest {
         </D:multistatus>""");
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    String home = client.discoverCalendarHome(endpoint, USER, PASSWORD);
+    String home = client.discoverCalendarHome(endpoint);
 
     assertEquals("/dav/cal/alice%40stalwart.local/", home);
     assertEquals(2, sent.size(), "discovery is two PROPFINDs: principal, then home");
@@ -180,7 +261,7 @@ public class HttpCalDavClientTest {
                  defaultCalendarAnswer("/dav/cal/alice%40stalwart.local/personal/"));
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    String defaultCalendar = client.discoverDefaultCalendar(endpoint, USER, PASSWORD);
+    String defaultCalendar = client.discoverDefaultCalendar(endpoint);
 
     assertEquals("/dav/cal/alice%40stalwart.local/personal/", defaultCalendar);
     assertEquals(3, sent.size(), "three PROPFINDs: principal, then its scheduling inbox, then the inbox's default");
@@ -203,7 +284,7 @@ public class HttpCalDavClientTest {
     givenAnswers(principalAnswer(), emptyMultistatus());
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    assertNull(client.discoverDefaultCalendar(endpoint, USER, PASSWORD));
+    assertNull(client.discoverDefaultCalendar(endpoint));
     assertEquals(2, sent.size(), "asking the inbox that was never named would address a path this client made up");
   }
 
@@ -215,21 +296,21 @@ public class HttpCalDavClientTest {
     givenAnswers(principalAnswer(), scheduleInboxAnswer("/dav/cal/alice%40stalwart.local/inbox/"), emptyMultistatus());
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    assertNull(client.discoverDefaultCalendar(endpoint, USER, PASSWORD),
+    assertNull(client.discoverDefaultCalendar(endpoint),
                "an inbox that names no default calendar means the account has none, not that one must be chosen for it");
   }
 
   @Test
-  void everyRequestCarriesBasicCredentialsUnprompted() throws Exception {
+  void everyRequestCarriesTheProducedCredentialsUnprompted() throws Exception {
     givenAnswers(collectionAnswer(BASE_PATH, "Home", null));
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    client.getCtag(endpoint, null, USER, PASSWORD);
+    client.getCtag(endpoint, null);
 
     String authorization = sent.get(0).headers().firstValue("Authorization").orElse(null);
-    assertNotNull(authorization);
-    assertTrue(authorization.startsWith("Basic "),
-               "sent unprompted: BlueMind's refusals carry no WWW-Authenticate challenge to react to");
+    assertEquals(AUTHORIZATION, authorization,
+                 "sent unprompted, and verbatim: the value is the provider's, not one this client assembled — "
+                 + "BlueMind's refusals carry no WWW-Authenticate challenge to react to anyway");
   }
 
   // ---- propstat discipline: the false-success class ----------------------
@@ -258,7 +339,7 @@ public class HttpCalDavClientTest {
         </D:multistatus>""");
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    CalendarCollection calendar = client.readCalendar(endpoint, "/dav/cal/alice%40stalwart.local/default/", USER, PASSWORD);
+    CalendarCollection calendar = client.readCalendar(endpoint, "/dav/cal/alice%40stalwart.local/default/");
 
     assertNotNull(calendar);
     assertEquals("Real name", calendar.displayName());
@@ -281,7 +362,7 @@ public class HttpCalDavClientTest {
         </D:multistatus>""");
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    assertNull(client.getCtag(endpoint, "/dav/cal/alice%40stalwart.local/default/", USER, PASSWORD));
+    assertNull(client.getCtag(endpoint, "/dav/cal/alice%40stalwart.local/default/"));
   }
 
   // ---- listings ----------------------------------------------------------
@@ -309,7 +390,7 @@ public class HttpCalDavClientTest {
         </D:multistatus>""".formatted(BASE_PATH, BASE_PATH));
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    List<CalendarCollection> calendars = client.listCalendars(endpoint, BASE_PATH, USER, PASSWORD);
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, BASE_PATH);
 
     assertEquals(1, calendars.size(), "the home itself is a plain collection and is filtered by type, not by path");
     CalendarCollection calendar = calendars.get(0);
@@ -329,7 +410,7 @@ public class HttpCalDavClientTest {
     givenAnswers(emptyMultistatus());
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    client.listCalendars(endpoint, BASE_PATH, USER, PASSWORD);
+    client.listCalendars(endpoint, BASE_PATH);
 
     String body = bodyOf(sent.get(0));
     assertTrue(body.contains("supported-calendar-component-set"), body);
@@ -347,7 +428,7 @@ public class HttpCalDavClientTest {
         </A:supported-calendar-component-set>"""));
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    CalendarCollection calendar = client.listCalendars(endpoint, BASE_PATH, USER, PASSWORD).get(0);
+    CalendarCollection calendar = client.listCalendars(endpoint, BASE_PATH).get(0);
 
     assertEquals(java.util.Set.of("VEVENT", "VTODO"), calendar.components());
     assertTrue(calendar.holdsEvents());
@@ -363,7 +444,7 @@ public class HttpCalDavClientTest {
         </A:supported-calendar-component-set>"""));
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    CalendarCollection calendar = client.listCalendars(endpoint, BASE_PATH, USER, PASSWORD).get(0);
+    CalendarCollection calendar = client.listCalendars(endpoint, BASE_PATH).get(0);
 
     assertEquals(java.util.Set.of("VTODO"), calendar.components());
     assertFalse(calendar.holdsEvents());
@@ -377,7 +458,7 @@ public class HttpCalDavClientTest {
     givenAnswers(componentSetAnswer(""));
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    CalendarCollection calendar = client.listCalendars(endpoint, BASE_PATH, USER, PASSWORD).get(0);
+    CalendarCollection calendar = client.listCalendars(endpoint, BASE_PATH).get(0);
 
     assertTrue(calendar.components().isEmpty());
     assertTrue(calendar.holdsEvents());
@@ -396,7 +477,7 @@ public class HttpCalDavClientTest {
         </A:supported-calendar-component-set>"""));
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    CalendarCollection calendar = client.listCalendars(endpoint, BASE_PATH, USER, PASSWORD).get(0);
+    CalendarCollection calendar = client.listCalendars(endpoint, BASE_PATH).get(0);
 
     assertTrue(calendar.components().isEmpty());
     assertTrue(calendar.holdsEvents());
@@ -416,7 +497,7 @@ public class HttpCalDavClientTest {
         </D:multistatus>""".formatted(BASE_PATH, BASE_PATH, BASE_PATH));
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    Map<String, String> etags = client.listResourceEtags(endpoint, BASE_PATH + "default/", USER, PASSWORD);
+    Map<String, String> etags = client.listResourceEtags(endpoint, BASE_PATH + "default/");
 
     assertEquals(Map.of(BASE_PATH + "default/a.ics", "\"v1\"", BASE_PATH + "default/b.ics", "\"v2\""), etags);
   }
@@ -433,7 +514,7 @@ public class HttpCalDavClientTest {
         </D:multistatus>""".formatted(BASE_PATH));
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    Map<String, String> etags = client.listResourceEtags(endpoint, BASE_PATH + "default/", USER, PASSWORD);
+    Map<String, String> etags = client.listResourceEtags(endpoint, BASE_PATH + "default/");
 
     assertEquals(Map.of(BASE_PATH + "default/a.ics", "\"v1\""), etags,
                  "the foreign entry is ignored — it could never be fetched anyway — and the sync keeps going");
@@ -449,9 +530,7 @@ public class HttpCalDavClientTest {
     client.calendarQuery(endpoint,
                          BASE_PATH + "default/",
                          Instant.parse("2026-01-01T00:00:00Z"),
-                         Instant.parse("2026-02-01T00:00:00Z"),
-                         USER,
-                         PASSWORD);
+                         Instant.parse("2026-02-01T00:00:00Z"));
 
     assertEquals("REPORT", sent.get(0).method());
     String body = bodyOf(sent.get(0));
@@ -473,9 +552,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
 
     List<CalendarObject> objects = client.multiget(endpoint,
                                                    BASE_PATH + "default/",
-                                                   List.of(BASE_PATH + "default/a.ics", BASE_PATH + "default/gone.ics"),
-                                                   USER,
-                                                   PASSWORD);
+                                                   List.of(BASE_PATH + "default/a.ics", BASE_PATH + "default/gone.ics"));
 
     assertEquals(1, objects.size(), "an href the server did not answer is simply absent");
     assertEquals("\"v1\"", objects.get(0).etag());
@@ -489,7 +566,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
   void anEmptyMultigetCostsNoRequest() {
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    assertEquals(List.of(), client.multiget(endpoint, BASE_PATH + "default/", List.of(), USER, PASSWORD));
+    assertEquals(List.of(), client.multiget(endpoint, BASE_PATH + "default/", List.of()));
     verifyNoInteractions(transport);
   }
 
@@ -506,7 +583,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
         </D:multistatus>""".formatted(BASE_PATH, BASE_PATH));
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    SyncCollectionResult result = client.syncCollection(endpoint, BASE_PATH + "default/", "urn:token:1", USER, PASSWORD);
+    SyncCollectionResult result = client.syncCollection(endpoint, BASE_PATH + "default/", "urn:token:1");
 
     assertTrue(result.tokenValid());
     assertEquals("urn:token:2", result.syncToken());
@@ -521,7 +598,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     givenStatusAnswers(507, "");
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    SyncCollectionResult result = client.syncCollection(endpoint, BASE_PATH + "default/", "stale", USER, PASSWORD);
+    SyncCollectionResult result = client.syncCollection(endpoint, BASE_PATH + "default/", "stale");
 
     assertFalse(result.tokenValid(), "the caller falls through to the listing tier for this run");
   }
@@ -532,7 +609,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
                        "<?xml version=\"1.0\"?><D:error xmlns:D=\"DAV:\"><D:valid-sync-token/></D:error>");
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    SyncCollectionResult result = client.syncCollection(endpoint, BASE_PATH + "default/", "stale", USER, PASSWORD);
+    SyncCollectionResult result = client.syncCollection(endpoint, BASE_PATH + "default/", "stale");
 
     assertFalse(result.tokenValid(),
                 "a 403 carrying valid-sync-token must not pause the account as a credential failure");
@@ -558,7 +635,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
         </D:multistatus>""".formatted(BASE_PATH));
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    ServerCapabilities capabilities = client.probeCapabilities(endpoint, BASE_PATH + "default/", USER, PASSWORD);
+    ServerCapabilities capabilities = client.probeCapabilities(endpoint, BASE_PATH + "default/");
 
     assertTrue(capabilities.syncCollection());
     assertTrue(capabilities.calendarQuery());
@@ -580,7 +657,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
     assertEquals(ServerCapabilities.SyncTier.CTAG_ETAG,
-                 client.probeCapabilities(endpoint, BASE_PATH + "default/", USER, PASSWORD).tier());
+                 client.probeCapabilities(endpoint, BASE_PATH + "default/").tier());
   }
 
   @Test
@@ -589,7 +666,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
     assertEquals(ServerCapabilities.SyncTier.ETAG_LISTING,
-                 client.probeCapabilities(endpoint, BASE_PATH + "default/", USER, PASSWORD).tier());
+                 client.probeCapabilities(endpoint, BASE_PATH + "default/").tier());
   }
 
   // ---- writes ------------------------------------------------------------
@@ -599,7 +676,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     givenStatusAnswers(201, "");
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    PutResult result = client.putObject(endpoint, BASE_PATH + "default/a.ics", "BEGIN:VCALENDAR", USER, PASSWORD);
+    PutResult result = client.putObject(endpoint, BASE_PATH + "default/a.ics", "BEGIN:VCALENDAR");
 
     assertEquals(201, result.status());
     assertEquals("*", sent.get(0).headers().firstValue("If-None-Match").orElse(null),
@@ -612,7 +689,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     givenStatusAnswers(412, "");
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    PutResult result = client.putObject(endpoint, BASE_PATH + "default/a.ics", "BEGIN:VCALENDAR", USER, PASSWORD);
+    PutResult result = client.putObject(endpoint, BASE_PATH + "default/a.ics", "BEGIN:VCALENDAR");
 
     assertTrue(result.preconditionFailed(), "under If-None-Match:* a 412 means 'already exists' — a fact to consume");
   }
@@ -622,7 +699,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
     assertThrows(IllegalArgumentException.class,
-                 () -> client.updateObject(endpoint, BASE_PATH + "default/a.ics", "BEGIN:VCALENDAR", " ", USER, PASSWORD),
+                 () -> client.updateObject(endpoint, BASE_PATH + "default/a.ics", "BEGIN:VCALENDAR", " "),
                  "an unconditional PUT overwrites silently — the class of loss the doctrine forbids");
     verifyNoInteractions(transport);
   }
@@ -632,7 +709,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     givenStatusAnswers(204, "");
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    client.updateObject(endpoint, BASE_PATH + "default/a.ics", "BEGIN:VCALENDAR", "\"v1\"", USER, PASSWORD);
+    client.updateObject(endpoint, BASE_PATH + "default/a.ics", "BEGIN:VCALENDAR", "\"v1\"");
 
     assertEquals("\"v1\"", sent.get(0).headers().firstValue("If-Match").orElse(null),
                  "an etag only means what the server said if it is byte for byte what the server said");
@@ -643,7 +720,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     givenStatusAnswers(404, "");
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    assertEquals(404, client.deleteObject(endpoint, BASE_PATH + "default/a.ics", "\"v1\"", USER, PASSWORD),
+    assertEquals(404, client.deleteObject(endpoint, BASE_PATH + "default/a.ics", "\"v1\""),
                  "absent is absent — what makes a retried delete idempotent");
     assertEquals("\"v1\"", sent.get(0).headers().firstValue("If-Match").orElse(null));
   }
@@ -654,7 +731,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
     assertThrows(CalDavException.class,
-                 () -> client.deleteObject(endpoint, BASE_PATH + "default/a.ics", null, USER, PASSWORD));
+                 () -> client.deleteObject(endpoint, BASE_PATH + "default/a.ics", null));
   }
 
   @Test
@@ -662,7 +739,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     givenStatusAnswers(204, "");
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    assertEquals(204, client.deleteCollection(endpoint, exoPair("cal-1", BASE_PATH + "exo-cal-cal-1"), USER, PASSWORD));
+    assertEquals(204, client.deleteCollection(endpoint, exoPair("cal-1", BASE_PATH + "exo-cal-cal-1")));
 
     // The trailing slash matters: a collection is a collection, and some
     // servers answer a 301 to the slashed form rather than deleting.
@@ -678,7 +755,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
 
     // Absent is absent — which is what makes a repeated deletion idempotent
     // rather than an error somebody has to interpret.
-    assertEquals(410, client.deleteCollection(endpoint, exoPair("cal-1", BASE_PATH + "exo-cal-cal-1"), USER, PASSWORD));
+    assertEquals(410, client.deleteCollection(endpoint, exoPair("cal-1", BASE_PATH + "exo-cal-cal-1")));
   }
 
   @Test
@@ -687,7 +764,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
     assertThrows(CalDavException.class,
-                 () -> client.deleteCollection(endpoint, exoPair("cal-1", BASE_PATH + "exo-cal-cal-1"), USER, PASSWORD));
+                 () -> client.deleteCollection(endpoint, exoPair("cal-1", BASE_PATH + "exo-cal-cal-1")));
   }
 
   @Test
@@ -698,7 +775,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
     assertThrows(CalDavAuthenticationException.class,
-                 () -> client.deleteCollection(endpoint, exoPair("cal-1", BASE_PATH + "exo-cal-cal-1"), USER, PASSWORD));
+                 () -> client.deleteCollection(endpoint, exoPair("cal-1", BASE_PATH + "exo-cal-cal-1")));
   }
 
   @Test
@@ -707,7 +784,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     CalendarSync foreign = exoPair("cal-1", BASE_PATH + "exo-cal-cal-1");
     foreign.setOrigin(SyncOrigin.REMOTE);
 
-    assertThrows(IllegalArgumentException.class, () -> client.deleteCollection(endpoint, foreign, USER, PASSWORD));
+    assertThrows(IllegalArgumentException.class, () -> client.deleteCollection(endpoint, foreign));
 
     // Not merely refused: no socket was opened, because the guard runs before
     // the request exists.
@@ -737,7 +814,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
     CalDavException exception = assertThrows(CalDavException.class,
-                                             () -> client.getCtag(endpoint, null, USER, PASSWORD));
+                                             () -> client.getCtag(endpoint, null));
 
     assertTrue(exception.getMessage().contains("redirect"),
                "a registered server must not be able to bounce credentialed requests to another host");
@@ -751,7 +828,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
       givenAnswers(emptyMultistatus());
       CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-      assertThrows(CalDavException.class, () -> client.getCtag(endpoint, null, USER, PASSWORD));
+      assertThrows(CalDavException.class, () -> client.getCtag(endpoint, null));
     } finally {
       System.clearProperty("exo.agenda.caldav.client.maxBodyBytes");
     }
@@ -763,7 +840,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
     CalDavException exception = assertThrows(CalDavException.class,
-                                             () -> client.getCtag(endpoint, null, USER, PASSWORD));
+                                             () -> client.getCtag(endpoint, null));
 
     assertFalse(exception.getMessage().contains(PASSWORD));
     assertFalse(exception.getMessage().contains("Basic"));
@@ -777,7 +854,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
     CalDavException exception = assertThrows(CalDavException.class,
-                                             () -> client.getCtag(endpoint, null, USER, PASSWORD));
+                                             () -> client.getCtag(endpoint, null));
 
     assertTrue(exception.getMessage().contains("could not be reached"));
   }
@@ -792,7 +869,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     when(transport.send(any(HttpRequest.class), any())).thenThrow(new IOException("connection refused"));
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    assertThrows(CalDavUnreachableException.class, () -> client.getCtag(endpoint, null, USER, PASSWORD));
+    assertThrows(CalDavUnreachableException.class, () -> client.getCtag(endpoint, null));
   }
 
   @Test
@@ -803,7 +880,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     givenStatusAnswers(502, "");
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
-    assertThrows(CalDavUnreachableException.class, () -> client.getCtag(endpoint, null, USER, PASSWORD));
+    assertThrows(CalDavUnreachableException.class, () -> client.getCtag(endpoint, null));
   }
 
   @Test
@@ -815,7 +892,7 @@ END:VCALENDAR</A:calendar-data></D:prop>
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
 
     CalDavException exception = assertThrows(CalDavException.class,
-                                             () -> client.getCtag(endpoint, null, USER, PASSWORD));
+                                             () -> client.getCtag(endpoint, null));
 
     assertFalse(exception instanceof CalDavUnreachableException,
                 "a 500 from the server itself is a refusal of this call, not an absent server");
@@ -1050,5 +1127,23 @@ END:VCALENDAR</A:calendar-data></D:prop>
       Thread.currentThread().interrupt();
     }
     return body.toString();
+  }
+
+  /**
+   * A credentials provider answering a Basic header, which is what Personal
+   * produces. The client is not supposed to know that — it sends whatever it is
+   * given — so this exists to let the requests carry something, not to pin the
+   * scheme.
+   *
+   * @return the stubbed service
+   */
+  private static ConnectorCredentialsService credentialsAnswering(String header) {
+    ConnectorCredentialsService service = mock(ConnectorCredentialsService.class);
+    try {
+      lenient().doReturn(new HttpConnectorCredentials(header, null)).when(service).produce(any());
+    } catch (ConnectorCredentialsException e) {
+      throw new IllegalStateException(e);
+    }
+    return service;
   }
 }
