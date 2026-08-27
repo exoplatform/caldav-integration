@@ -19,19 +19,24 @@ package org.exoplatform.caldav.service;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import org.exoplatform.agenda.constant.EventStatus;
+import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
 import org.exoplatform.agenda.model.EventConference;
 import org.exoplatform.agenda.model.EventReminder;
+import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventConferenceService;
 import org.exoplatform.agenda.service.AgendaEventReminderService;
+import org.exoplatform.agenda.util.EventIcsBuilder;
+import org.exoplatform.agenda.util.Utils;
 import org.exoplatform.caldav.model.IcsEvent;
 import org.exoplatform.caldav.model.IcsPerson;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -39,7 +44,12 @@ import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.IcsReminder;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
+import org.exoplatform.social.core.identity.provider.SpaceIdentityProvider;
 import org.exoplatform.social.core.manager.IdentityManager;
+import org.exoplatform.social.core.space.model.Space;
+import org.exoplatform.social.core.space.spi.SpaceService;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
 
 /**
  * Turns an agenda event into what the ICS engine takes.
@@ -63,6 +73,9 @@ import org.exoplatform.social.core.manager.IdentityManager;
 @Component
 public class AgendaEventIcsMapper {
 
+  /** Logger for what is degraded rather than failed: an undeterminable language. */
+  private static final Log            LOG = ExoLogger.getLogger(AgendaEventIcsMapper.class);
+
   /** The roster of an event, before it is filtered to the addressable. */
   @Autowired
   private AgendaEventAttendeeService  agendaEventAttendeeService;
@@ -83,21 +96,17 @@ public class AgendaEventIcsMapper {
   @Autowired
   private IdentityManager             identityManager;
 
-  /**
-   * Maps one agenda event, resolving the identities it references.
-   *
-   * @param event the agenda event to copy
-   * @param icsUid the UID the copy is written under, which the caller owns —
-   *          a series and its overrides share one, and it must survive an
-   *          agenda id changing
-   * @param eventUrl absolute link back to the event in eXo
-   * @param pusherIdentityId identity of the user whose calendar receives the
-   *          copy, which decides whether ORGANIZER carries SCHEDULE-AGENT
-   * @return the event as the ICS engine takes it
-   */
+  /** The calendar an event sits on, which is what names the space it came from. */
+  @Autowired
+  private AgendaCalendarService        agendaCalendarService;
+
+  /** Turns a space identity into the display name the attribution carries. */
+  @Autowired
+  private SpaceService                 spaceService;
 
   /**
-   * The same, with the address the pushing user's own account answers to.
+   * Maps one agenda event, resolving the identities it references and the
+   * address the pushing user's own account answers to.
    *
    * <p>
    * A calendar client decides whether an event is an invitation TO ITS OWNER
@@ -108,22 +117,32 @@ public class AgendaEventIcsMapper {
    * address instead, and only theirs: the other attendees are described to
    * them, not to their server.
    *
-   * @param event the event being copied
-   * @param icsUid the identifier the copy carries
-   * @param eventUrl a link back to the event, or null
-   * @param pusherIdentityId the user whose account is written into
-   * @return the ICS view of the event
+   * <p>
+   * The description is composed here rather than in the writer, from agenda's
+   * shared builder, so the copy and the mailed document describe one meeting
+   * in one set of words (EXO-89732).
+   *
+   * @param event the agenda event to copy
+   * @param icsUid the UID the copy is written under, which the caller owns —
+   *          a series and its overrides share one, and it must survive an
+   *          agenda id changing
+   * @param eventUrl absolute link back to the event in eXo, or null
+   * @param pusherIdentityId identity of the user whose calendar receives the
+   *          copy, which decides whether ORGANIZER carries SCHEDULE-AGENT and
+   *          whose account address names them on the roster
+   * @return the event as the ICS engine takes it
    */
   public IcsEvent toIcsEvent(Event event, String icsUid, String eventUrl, long pusherIdentityId) {
     String pusherAccountAddress = accountAddressOf(pusherIdentityId);
     IcsPerson organizer = personOf(event.getCreatorId());
+    String conference = conferenceUrl(event.getId());
     return IcsEvent.builder()
                    .uid(icsUid)
                    .summary(event.getSummary())
                    .location(event.getLocation())
-                   .description(event.getDescription())
+                   .description(description(event, conference, pusherIdentityId))
                    .eventUrl(eventUrl)
-                   .conferenceUrl(conferenceUrl(event.getId()))
+                   .conferenceUrl(conference)
                    .start(instantOf(event.getStart()))
                    .end(instantOf(event.getEnd()))
                    .allDay(event.isAllDay())
@@ -151,6 +170,124 @@ public class AgendaEventIcsMapper {
                    // cancelled.
                    .exceptionDates(List.of())
                    .build();
+  }
+
+  /**
+   * What the copy says the meeting is, in the words the mail already uses.
+   *
+   * <p>
+   * The whole text — the attribution, the conference line and the event's own
+   * description rendered out of the markup the editor stored it as — comes
+   * from agenda's {@link EventIcsBuilder}, which is the same code that writes
+   * the description of the document attached to the notification mail
+   * (EXO-89732). Before that, the copy carried the event's raw description and
+   * nothing else, so a meeting with no description of its own reached the
+   * user's calendar with no DESCRIPTION at all: an entry among fifty others
+   * with nothing to say which system put it there or which space it came from.
+   *
+   * <p>
+   * What comes back is <b>plain text</b>, and that is the whole contract with
+   * {@link org.exoplatform.caldav.ics.IcsWriter}: the rendering happens here,
+   * where the identity and calendar services are, exactly as the roster's does.
+   * It also aligns the write path with the read path, which has always put the
+   * DESCRIPTION it read off the wire — plain text by RFC 5545 &sect;3.8.1.5 —
+   * into this same field.
+   *
+   * @param event the event being copied
+   * @param conference the conference link, already resolved, or null
+   * @param pusherIdentityId the user whose calendar receives the copy, whose
+   *          language the text is written in
+   * @return the description the copy carries
+   */
+  private String description(Event event, String conference, long pusherIdentityId) {
+    return EventIcsBuilder.description(localeOf(pusherIdentityId),
+                                       fullNameOf(event.getCreatorId()),
+                                       spaceNameOf(event),
+                                       conference,
+                                       event.getDescription());
+  }
+
+  /**
+   * The language the copy's description is written in: the recipient's own.
+   *
+   * <p>
+   * The copy lands in <i>their</i> calendar, so it is read in their language,
+   * not the organizer's. A user whose language cannot be determined gets the
+   * platform default, which is what agenda falls back to as well.
+   *
+   * <p>
+   * A language that cannot be determined is never a reason to fail the push:
+   * the copy is the user's record of a meeting, and one written in the platform
+   * default language is worth incomparably more than one that never arrived.
+   * The lookup reaches into the portal's locale policy, which walks a chain of
+   * contributed plugins, so the guard covers a {@link LinkageError} as well as
+   * a runtime failure: a plugin class absent from the classpath is not a
+   * runtime exception, and left uncaught it would take down the push of a
+   * meeting over the language its description is written in.
+   *
+   * @param identityId the user whose calendar receives the copy
+   * @return their locale, never null
+   */
+  private Locale localeOf(long identityId) {
+    try {
+      Identity identity = identityManager.getIdentity(identityId);
+      if (identity == null || StringUtils.isBlank(identity.getRemoteId())) {
+        return Locale.getDefault();
+      }
+      String language = Utils.getUserLanguage(identity.getRemoteId());
+      return StringUtils.isBlank(language) ? Locale.getDefault() : Locale.forLanguageTag(language.replace('_', '-'));
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("No language could be determined for identity {}; the copy is described in the default language",
+                identityId,
+                e);
+      return Locale.getDefault();
+    }
+  }
+
+  /**
+   * The display name of one identity, whether or not it exposes an address.
+   *
+   * <p>
+   * Deliberately not read through {@link #personOf(long)}: that one answers
+   * null for anybody with no visible mail address, which is the right rule for
+   * a roster — an address is never invented — and the wrong one for an
+   * attribution, where a name is all that is being written and no address is
+   * implied by it.
+   *
+   * @param identityId the social identity
+   * @return the display name, or null when the identity resolves to nothing
+   */
+  private String fullNameOf(long identityId) {
+    Identity identity = identityManager.getIdentity(identityId);
+    if (identity == null || identity.getProfile() == null) {
+      return null;
+    }
+    return StringUtils.trimToNull(identity.getProfile().getFullName());
+  }
+
+  /**
+   * The space the event belongs to, when it belongs to one.
+   *
+   * <p>
+   * An event lives on a calendar, and a calendar is owned by an identity that
+   * is either a space or a user. Only the first has a name to attribute the
+   * meeting to; an event on somebody's personal calendar answers null here,
+   * and the builder drops the clause rather than writing the word "null".
+   *
+   * @param event the event being copied
+   * @return the space display name, or null
+   */
+  private String spaceNameOf(Event event) {
+    Calendar calendar = agendaCalendarService.getCalendarById(event.getCalendarId());
+    if (calendar == null) {
+      return null;
+    }
+    Identity owner = identityManager.getIdentity(calendar.getOwnerId());
+    if (owner == null || !SpaceIdentityProvider.NAME.equals(owner.getProviderId())) {
+      return null;
+    }
+    Space space = spaceService.getSpaceByPrettyName(owner.getRemoteId());
+    return space == null ? null : StringUtils.trimToNull(space.getDisplayName());
   }
 
   /**
@@ -237,16 +374,6 @@ public class AgendaEventIcsMapper {
   }
 
   /**
-   * One identity as a calendar user, or null when no address is visible.
-   *
-   * <p>
-   * Spaces land here too and have no mail address, which is the same answer
-   * for a different reason: a space is not a calendar user.
-   *
-   * @param identityId the social identity
-   * @return the person, or null
-   */
-  /**
    * The address the user's own CalDAV account answers to, when they have one.
    *
    * @param identityId the user whose account is written into
@@ -258,6 +385,16 @@ public class AgendaEventIcsMapper {
     return account == null ? null : StringUtils.trimToNull(account.getUsername());
   }
 
+  /**
+   * One identity as a calendar user, or null when no address is visible.
+   *
+   * <p>
+   * Spaces land here too and have no mail address, which is the same answer
+   * for a different reason: a space is not a calendar user.
+   *
+   * @param identityId the social identity
+   * @return the person, or null
+   */
   private IcsPerson personOf(long identityId) {
     Identity identity = identityManager.getIdentity(identityId);
     if (identity == null || identity.getProfile() == null) {
