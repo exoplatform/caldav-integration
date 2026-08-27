@@ -122,13 +122,13 @@ public class CaldavPushRestTest {
   public void shouldPushForTheCallerRatherThanForAnyoneTheRequestNames() {
     withCurrentUser();
     ObjectSync mapping = new ObjectSync();
-    when(caldavPushService.pushAgendaEvent(42L, 101L)).thenReturn(mapping);
+    when(caldavPushService.pushAgendaEvent(42L, USER_NAME, 101L)).thenReturn(mapping);
 
     ResponseEntity<ObjectSync> pushed = caldavPushRest.push(101L);
 
     assertEquals(HttpStatus.OK, pushed.getStatusCode());
     assertSame(mapping, pushed.getBody());
-    verify(caldavPushService).pushAgendaEvent(42L, 101L);
+    verify(caldavPushService).pushAgendaEvent(42L, USER_NAME, 101L);
   }
 
   /**
@@ -140,7 +140,7 @@ public class CaldavPushRestTest {
   @Test
   public void shouldAnswerNoContentWhenThereIsNowhereToCopyInto() {
     withCurrentUser();
-    when(caldavPushService.pushAgendaEvent(42L, 102L)).thenReturn(null);
+    when(caldavPushService.pushAgendaEvent(42L, USER_NAME, 102L)).thenReturn(null);
 
     ResponseEntity<ObjectSync> pushed = caldavPushRest.push(102L);
 
@@ -160,7 +160,7 @@ public class CaldavPushRestTest {
     ResponseEntity<Void> response = caldavPushRest.delete("evt-1");
 
     assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
-    verify(caldavPushService).deleteEvent(42L, "evt-1");
+    verify(caldavPushService).deleteEvent(42L, USER_NAME, "evt-1");
   }
 
   /**
@@ -172,7 +172,7 @@ public class CaldavPushRestTest {
   public void shouldHandTheEstablishedDestinationBackWhole() {
     withCurrentUser();
     MirrorTarget target = new MirrorTarget("/dav/calendars/root/personal/", true, "Personal");
-    when(caldavPushService.ensureMirror(42L)).thenReturn(target);
+    when(caldavPushService.ensureMirror(42L, USER_NAME)).thenReturn(target);
 
     MirrorTarget answered = caldavPushRest.mirror();
 
@@ -237,7 +237,7 @@ public class CaldavPushRestTest {
     ResponseEntity<Void> response = caldavPushRest.excludeOccurrence("series-uid", "2026-09-15T07:00:00Z");
 
     assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
-    verify(caldavPushService).excludeOccurrence(42L, "series-uid", java.time.Instant.parse("2026-09-15T07:00:00Z"));
+    verify(caldavPushService).excludeOccurrence(42L, USER_NAME, "series-uid", java.time.Instant.parse("2026-09-15T07:00:00Z"));
   }
 
   /**
@@ -253,6 +253,7 @@ public class CaldavPushRestTest {
 
     assertEquals(HttpStatus.BAD_REQUEST, refusal.getStatusCode());
     verify(caldavPushService, org.mockito.Mockito.never()).excludeOccurrence(org.mockito.ArgumentMatchers.anyLong(),
+                                                                             org.mockito.ArgumentMatchers.eq(USER_NAME),
                                                                              org.mockito.ArgumentMatchers.anyString(),
                                                                              org.mockito.ArgumentMatchers.any());
   }
@@ -310,7 +311,7 @@ public class CaldavPushRestTest {
     ResponseEntity<Void> response = caldavPushRest.deleteRemoteCounterpart(11L);
 
     assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
-    verify(caldavDeletionService).deleteRemoteCounterpart(42L, 11L);
+    verify(caldavDeletionService).deleteRemoteCounterpart(42L, USER_NAME, 11L);
   }
 
   /**
@@ -323,7 +324,7 @@ public class CaldavPushRestTest {
     withCurrentUser();
     org.mockito.Mockito.doThrow(new CaldavPushException(CaldavDeletionService.NOTHING_DELETED, "still listed"))
                        .when(caldavDeletionService)
-                       .deleteRemoteCounterpart(42L, 11L);
+                       .deleteRemoteCounterpart(42L, USER_NAME, 11L);
 
     CaldavPushException refusal =
                                 org.junit.jupiter.api.Assertions.assertThrows(CaldavPushException.class,
@@ -454,7 +455,7 @@ public class CaldavPushRestTest {
   public void theHiddenCalendarsAreHandedThrough() {
     withCurrentUser();
     List<HiddenCalendar> hidden = List.of(new HiddenCalendar(9L, "Family"));
-    when(caldavDeletionService.listHidden(42L)).thenReturn(hidden);
+    when(caldavDeletionService.listHidden(42L, USER_NAME)).thenReturn(hidden);
 
     assertEquals(hidden, caldavPushRest.hiddenCalendars());
   }
@@ -467,7 +468,7 @@ public class CaldavPushRestTest {
     // An empty body with a 200 would read as "there is one, and it has no
     // name", which is what the settings screen would then display.
     withCurrentUser();
-    when(caldavPushService.currentMirror(42L)).thenReturn(null);
+    when(caldavPushService.currentMirror(42L, USER_NAME)).thenReturn(null);
 
     assertEquals(HttpStatus.NO_CONTENT, caldavPushRest.currentMirror().getStatusCode());
   }
@@ -479,7 +480,7 @@ public class CaldavPushRestTest {
   public void aDestinationIsAnsweredWithItsName() {
     withCurrentUser();
     MirrorTarget mirror = new MirrorTarget("/dav/root/exo-meetings/", false, "eXo Meetings");
-    when(caldavPushService.currentMirror(42L)).thenReturn(mirror);
+    when(caldavPushService.currentMirror(42L, USER_NAME)).thenReturn(mirror);
 
     ResponseEntity<MirrorTarget> response = caldavPushRest.currentMirror();
 

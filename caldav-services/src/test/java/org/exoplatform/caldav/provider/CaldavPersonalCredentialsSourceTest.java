@@ -16,8 +16,10 @@
  */
 package org.exoplatform.caldav.provider;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import org.junit.jupiter.api.Test;
@@ -28,6 +30,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
 import org.exoplatform.services.connector.credentials.RawCredentials;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvider;
@@ -44,8 +47,55 @@ public class CaldavPersonalCredentialsSourceTest {
   @Mock
   private IdentityManager                identityManager;
 
+  @Mock
+  private PersonalCredentialsProvider    personalCredentialsProvider;
+
   @InjectMocks
   private CaldavPersonalCredentialsSource caldavPersonalCredentialsSource;
+
+  /**
+   * Plants the provider in the field Spring would have populated. Mockito's
+   * {@code @InjectMocks} used the constructor and, having succeeded, skipped
+   * field injection - so the optional collaborator has to be set here.
+   *
+   * @param source the source to wire
+   * @param provider the provider to plant, possibly null
+   */
+  private static void wireProvider(CaldavPersonalCredentialsSource source, PersonalCredentialsProvider provider) {
+    try {
+      java.lang.reflect.Field field = CaldavPersonalCredentialsSource.class.getDeclaredField("personalCredentialsProvider");
+      field.setAccessible(true);
+      field.set(source, provider);
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /**
+   * The whole point of the {@code @PostConstruct}: this source pushes itself to
+   * the provider, because the provider's own context is built before this one and
+   * could not have collected it.
+   */
+  @Test
+  public void testRegistersItselfWithTheProvider() {
+    wireProvider(caldavPersonalCredentialsSource, personalCredentialsProvider);
+
+    caldavPersonalCredentialsSource.register();
+
+    verify(personalCredentialsProvider).register(caldavPersonalCredentialsSource);
+  }
+
+  /**
+   * The case {@code @Autowired(required = false)} exists for: no provider bean in
+   * the context - this addon's own Spring test context, or a platform without the
+   * credentials module. Registering must then be a no-op, not a failure.
+   */
+  @Test
+  public void testRegisteringWithoutAProviderIsHarmless() {
+    CaldavPersonalCredentialsSource orphan = new CaldavPersonalCredentialsSource(caldavConnectorStorage, identityManager);
+
+    assertDoesNotThrow(orphan::register);
+  }
 
   @Test
   public void testGetConnectorKind() {
