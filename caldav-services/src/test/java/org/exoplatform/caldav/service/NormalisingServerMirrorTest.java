@@ -157,6 +157,16 @@ public class NormalisingServerMirrorTest {
   @Mock
   private AgendaCalendarService                agendaCalendarService;
 
+  /**
+   * Mocked, deliberately. EXO-89681 reads the owner's answer off a copy the
+   * pass has just called altered; what this rig pins is <b>which</b> copies get
+   * called that, not what is then done with the answer on one — that is
+   * {@code CaldavAnswerAdoptionServiceTest}'s subject. Answering NOTHING keeps
+   * every scenario here on the ordinary repair path it was written for.
+   */
+  @Mock
+  private CaldavAnswerAdoptionService          caldavAnswerAdoptionService;
+
   private FakeCalDavServer                     server;
 
   private CaldavPushService                    push;
@@ -188,6 +198,9 @@ public class NormalisingServerMirrorTest {
     ReflectionTestUtils.setField(push, "agendaCalendarService", agendaCalendarService);
     ReflectionTestUtils.setField(verification, "caldavPushService", push);
     ReflectionTestUtils.setField(verification, "icsEquivalence", icsEquivalence);
+    ReflectionTestUtils.setField(verification, "caldavAnswerAdoptionService", caldavAnswerAdoptionService);
+    lenient().when(caldavAnswerAdoptionService.adoptAnswer(anyLong(), anyLong(), anyString()))
+             .thenReturn(CaldavAnswerAdoptionService.Outcome.NOTHING);
     ReflectionTestUtils.setField(icsEquivalence, "ignoredProperties", "");
     ReflectionTestUtils.setField(verification, "maxRepairs", 3);
 
