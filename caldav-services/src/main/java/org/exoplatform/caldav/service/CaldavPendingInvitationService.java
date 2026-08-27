@@ -190,7 +190,7 @@ public class CaldavPendingInvitationService {
       return false;
     }
     try {
-      return caldavPushService.pushAgendaEvent(userIdentityId, eventId, null) != null;
+      return caldavPushService.pushAgendaEvent(userIdentityId, eventId) != null;
     } catch (CaldavPushException e) {
       // One refused meeting must not stop the rest; whatever refused it is
       // asked again next pass. Warn rather than debug: a meeting that never

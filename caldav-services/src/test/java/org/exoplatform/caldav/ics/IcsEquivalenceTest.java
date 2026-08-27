@@ -53,6 +53,7 @@ public class IcsEquivalenceTest {
       + "DTEND:20260901T100000Z\r\n"
       + "LOCATION:Room 3\r\n"
       + "DESCRIPTION:Bring the board\r\n"
+      + "URL:https://exo.test/portal/dw/agenda?eventId=7\r\n"
       + "ORGANIZER;CN=The Boss:mailto:boss@acme.test\r\n"
       + "ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:mailto:ann@acme.test\r\n"
       + "STATUS:CONFIRMED\r\n"
@@ -291,13 +292,40 @@ public class IcsEquivalenceTest {
 
   // ---------------------------------------------------------------- URL
 
+  /**
+   * URL used to be exempt, and the exemption was right at the time: the link
+   * arrived on the push request, so only a browser push carried one and a
+   * sweep rendered none — comparing it would have reported every copy altered
+   * once and then stripped the link it complained about.
+   *
+   * <p>
+   * EXO-89751 derives the link from the event, so eXo renders the same one on
+   * every path. A copy whose link the client rewrote is a copy that no longer
+   * says where the meeting lives, and it has to be noticed: leaving the
+   * exemption in place would have shipped a link nobody was watching.
+   */
   @Test
-  public void theLinkBackIntoExoIsNotCompared() {
-    // It is carried on the push request and never stored, so a sweep renders
-    // none. Comparing it would report every copy altered exactly once and then
-    // strip the very link it complained about, because a repair cannot
-    // reconstruct it either.
-    assertEquivalent(EXO.replace("STATUS:CONFIRMED", "URL:https://exo.test/portal/event/7\r\nSTATUS:CONFIRMED"));
+  public void aRewrittenLinkBackIntoExoIsAnEdit() {
+    assertDifferent(EXO.replace("agenda?eventId=7", "agenda?eventId=999"));
+  }
+
+  /**
+   * And a client that drops the property altogether is the same finding: the
+   * copy has lost its way back into eXo, which is exactly what this ticket
+   * exists to stop happening silently.
+   */
+  @Test
+  public void aStrippedLinkBackIntoExoIsAnEdit() {
+    assertDifferent(EXO.replace("URL:https://exo.test/portal/dw/agenda?eventId=7\r\n", ""));
+  }
+
+  /**
+   * The link eXo wrote, left alone, is not an edit — the property being
+   * compared must not make a converged mirror churn.
+   */
+  @Test
+  public void theSameLinkBackIntoExoIsNotAnEdit() {
+    assertEquivalent(EXO);
   }
 
   @Test

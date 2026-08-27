@@ -56,6 +56,8 @@ public class RepositoryQueryContractTest {
 
   private static final Pattern NAMED_PARAM = Pattern.compile(":(\\w+)");
 
+  private static final Pattern DERIVED     = Pattern.compile("(?:find|count|exists|delete|remove)By(\\w+)");
+
   private static final Pattern ENTITY_IN   =
                                            Pattern.compile("\\b(?:FROM|UPDATE)\\s+(\\w+)", Pattern.CASE_INSENSITIVE);
 
@@ -117,6 +119,55 @@ public class RepositoryQueryContractTest {
   }
 
   /**
+   * Every derived query names properties the entity actually has.
+   */
+  @Test
+  public void everyDerivedQueryNamesPropertiesTheEntityHas() {
+    // A method with no @Query is a query Spring Data derives from its name,
+    // resolved against the entity's properties when the repository proxy is
+    // built. A property that does not exist fails at container start-up with a
+    // reason buried in a bean-creation stack — and never at all in a suite
+    // where the repository is a mock. Renaming a field and forgetting a method
+    // name is the whole failure mode; this is what sees it.
+    List<String> unknown = new ArrayList<>();
+    for (Class<?> dao : repositories()) {
+      for (Method method : dao.getDeclaredMethods()) {
+        if (method.getAnnotation(Query.class) != null) {
+          continue;
+        }
+        Matcher matcher = DERIVED.matcher(method.getName());
+        if (!matcher.matches()) {
+          continue;
+        }
+        for (String property : matcher.group(1).split("And")) {
+          if (!property.isEmpty() && !resolves(entityOf(dao), property)) {
+            unknown.add(dao.getSimpleName() + "." + method.getName() + " -> " + property);
+          }
+        }
+      }
+    }
+    assertTrue(unknown.isEmpty(), "derived queries naming a property the entity does not have: " + unknown);
+  }
+
+  /**
+   * The pass above inspects derived queries too.
+   */
+  @Test
+  public void theseAssertionsActuallyReadDerivedQueries() {
+    // Same self-check as below, for the same reason: a name pattern that
+    // stopped matching would leave the derived-query test green and blind.
+    int derived = 0;
+    for (Class<?> dao : repositories()) {
+      for (Method method : dao.getDeclaredMethods()) {
+        if (method.getAnnotation(Query.class) == null && DERIVED.matcher(method.getName()).matches()) {
+          derived++;
+        }
+      }
+    }
+    assertTrue(derived >= 8, "expected derived queries to check, found " + derived);
+  }
+
+  /**
    * The pass above inspects something.
    */
   @Test
@@ -157,6 +208,73 @@ public class RepositoryQueryContractTest {
       }
     }
     return false;
+  }
+
+  /**
+   * Whether one segment of a derived query name resolves to properties the
+   * entity has.
+   *
+   * <p>
+   * Split on {@code And} only, then on {@code Or} as a fallback: {@code Or} is
+   * also two letters in the middle of ordinary property names — {@code Origin}
+   * is one of this add-on's — so splitting on it unconditionally invents
+   * properties nobody wrote.
+   *
+   * @param entity the entity class
+   * @param segment one {@code And}-separated part of the derived name
+   * @return true when the segment names properties the entity declares
+   */
+  private boolean resolves(Class<?> entity, String segment) {
+    if (hasField(entity, uncapitalised(segment))) {
+      return true;
+    }
+    String[] alternatives = segment.split("Or");
+    if (alternatives.length < 2) {
+      return false;
+    }
+    for (String alternative : alternatives) {
+      if (alternative.isEmpty() || !hasField(entity, uncapitalised(alternative))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * @param name a capitalised property name as it appears in a method name
+   * @return the same name as a Java field would spell it
+   */
+  private String uncapitalised(String name) {
+    return Character.toLowerCase(name.charAt(0)) + name.substring(1);
+  }
+
+  /**
+   * @param entity the entity class
+   * @param field the property name looked for
+   * @return true when the entity declares it
+   */
+  private boolean hasField(Class<?> entity, String field) {
+    for (java.lang.reflect.Field declared : entity.getDeclaredFields()) {
+      if (declared.getName().equals(field)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The entity a repository is declared over.
+   *
+   * @param dao the repository interface
+   * @return its entity class
+   */
+  private Class<?> entityOf(Class<?> dao) {
+    for (java.lang.reflect.Type parent : dao.getGenericInterfaces()) {
+      if (parent instanceof java.lang.reflect.ParameterizedType parameterized) {
+        return (Class<?>) parameterized.getActualTypeArguments()[0];
+      }
+    }
+    throw new AssertionError(dao.getSimpleName() + " declares no entity type");
   }
 
   /**

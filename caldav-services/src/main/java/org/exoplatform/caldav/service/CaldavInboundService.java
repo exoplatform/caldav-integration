@@ -357,6 +357,9 @@ public class CaldavInboundService {
    * @param calendar the eXo calendar standing for it
    * @param object the object as the server sent it
    * @param master the parsed master event
+   * @param parsed every event the object carried, master first, so the
+   *          overrides and exclusions that travel with a series are applied to
+   *          the event this call has just created
    * @return true when the event was created
    */
   private boolean create(long userIdentityId,
@@ -429,6 +432,9 @@ public class CaldavInboundService {
    * @param object the object as the server sent it
    * @param master the parsed master event
    * @param known the mapping recorded when it was imported
+   * @param parsed every event the object carried, master first, so an override
+   *          added or an occurrence cancelled since the last read lands with
+   *          the master's own change rather than a pass later
    * @return true when the event was updated
    */
   private boolean update(long userIdentityId,
@@ -1140,6 +1146,10 @@ public class CaldavInboundService {
    * @param pair the binding being reconciled
    * @param settings the connected account
    * @param endpoint where its server lives
+   * @param calendarName the eXo calendar's name, carried through for the log
+   *          alone: the full comparison it falls back to warns about a
+   *          collection, and an operator has to recognise which one. May be
+   *          null.
    * @return what this round concluded
    */
   private Vanished findVanished(CalendarSync pair,
@@ -1185,6 +1195,9 @@ public class CaldavInboundService {
    * @param pair the binding being reconciled
    * @param settings the connected account
    * @param endpoint where its server lives
+   * @param calendarName the eXo calendar's name, used only in the two warnings
+   *          this path logs — a calendar that stops answering has to be
+   *          identifiable without resolving an href by hand. May be null.
    * @return what this round concluded
    */
   private Vanished byFullComparison(CalendarSync pair,
