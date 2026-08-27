@@ -254,4 +254,36 @@
                              onDelete="CASCADE"/>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-12">
+    <comment>
+      PUSHED_HASH goes. It held a digest of the calendar object eXo had pushed,
+      so that a later pass could tell "the server changed this" from "this is
+      exactly what we wrote" - and no such digest can be captured. A CalDAV
+      server is entitled to re-serialise the document it is given; BlueMind does,
+      and it finishes doing so after the write returns, without moving the ETag,
+      so the digest was wrong however it was taken. EXO-89716 replaces the check
+      with a comparison against the object eXo would render for the event now,
+      which needs nothing stored at all.
+
+      Dropped rather than left dead: a column nobody writes is a column the next
+      reader has to work out the status of. 1.0.0-9, which created it, is not
+      touched - a changeset's identity is its file, id and author, and every
+      database that has already run it must go on agreeing that it ran.
+
+      The rollback is written out because dropColumn has no automatic one, and
+      it restores the column and not its contents: the digests are gone, and a
+      revert would find every row blank. That was already the value the previous
+      code treated as "written before the hash was recorded, judge nothing".
+    </comment>
+    <preConditions onFail="MARK_RAN">
+      <columnExists tableName="CALDAV_OBJECT_SYNC" columnName="PUSHED_HASH"/>
+    </preConditions>
+    <dropColumn tableName="CALDAV_OBJECT_SYNC" columnName="PUSHED_HASH"/>
+    <rollback>
+      <addColumn tableName="CALDAV_OBJECT_SYNC">
+        <column name="PUSHED_HASH" type="NVARCHAR(64)"/>
+      </addColumn>
+    </rollback>
+  </changeSet>
+
 </databaseChangeLog>

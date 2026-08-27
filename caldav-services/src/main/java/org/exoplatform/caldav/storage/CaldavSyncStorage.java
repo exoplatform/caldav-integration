@@ -388,7 +388,6 @@ public class CaldavSyncStorage {
                           entity.getIcsUid(),
                           entity.getRemoteHref(),
                           entity.getEtag(),
-                          entity.getPushedHash(),
                           entity.getLastSync());
   }
 
@@ -405,7 +404,6 @@ public class CaldavSyncStorage {
                                       object.getIcsUid(),
                                       canonicalHref(object.getRemoteHref()),
                                       object.getEtag(),
-                                      object.getPushedHash(),
                                       object.getLastSync());
   }
 
