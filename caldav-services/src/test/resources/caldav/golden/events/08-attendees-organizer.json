@@ -3,7 +3,7 @@
   "_provenance": {
     "kind": "authored driver input",
     "authoredFor": "EXO-89521 golden-file harness (plan section 7); field shapes mirror what agenda hands pushEvent/deleteEvent, as read from caldavConnector.js @ cd78b8b and pushEventIcs.test.js",
-    "invariant": "Scheduling identities: ORGANIZER is the eXo organizer (not the pushing account) and carries SCHEDULE-AGENT=CLIENT because the pusher (identity 5) is not the organizer (identity 9); every ATTENDEE carries SCHEDULE-AGENT=CLIENT and a PARTSTAT mapped from the agenda response; a CN holding a comma is quoted; an attendee without a visible email is omitted entirely.",
+    "invariant": "Scheduling identities: ORGANIZER is the eXo organizer (not the pushing account) and carries SCHEDULE-AGENT=CLIENT because the pusher (identity 5) is not the organizer (identity 9); every ATTENDEE carries SCHEDULE-AGENT=CLIENT and a PARTSTAT mapped from the agenda response; a CN holding a comma is quoted; an attendee without a visible email is omitted entirely. SCHEDULE-AGENT is CLIENT, as captured. It was briefly NONE for EXO-89681 and put back once a real client showed the cost: macOS Calendar offered Accept and Decline on a NONE copy, edited the object when the user pressed one, and left PARTSTAT untouched — so the answer never reached the object the verification pass reads.",
     "pins": "organizerLines/cnParam/partStat; the no-invented-CAL-ADDRESS rule"
   },
   "event": {

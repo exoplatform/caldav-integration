@@ -106,4 +106,27 @@ public class IcsTextTest {
     assertNull(IcsText.parseInstant("not a date"));
     assertNull(IcsText.parseInstant(null));
   }
+
+  @Test
+  public void aPartStatMapsBackToTheAgendaResponseItCameFrom() {
+    // The inverse of partStat, needed since a copy became something the user
+    // can answer on (EXO-89681): what a client writes as PARTSTAT has to come
+    // back as the exact word agenda spells the response with.
+    assertEquals("ACCEPTED", IcsText.agendaResponse("ACCEPTED"));
+    assertEquals("DECLINED", IcsText.agendaResponse("declined"));
+    assertEquals("TENTATIVE", IcsText.agendaResponse("Tentative"));
+    assertEquals("NEEDS_ACTION", IcsText.agendaResponse("NEEDS-ACTION"));
+    assertEquals("NEEDS_ACTION", IcsText.agendaResponse("needs_action"));
+  }
+
+  @Test
+  public void aPartStatAgendaHasNoWordForReadsAsNoAnswer() {
+    // Narrower than the write direction on purpose: writing defaults an
+    // unknown response to the RFC's NEEDS-ACTION because the object must say
+    // something, but reading must never guess an answer the user did not give.
+    assertNull(IcsText.agendaResponse("DELEGATED"));
+    assertNull(IcsText.agendaResponse("X-CUSTOM"));
+    assertNull(IcsText.agendaResponse(""));
+    assertNull(IcsText.agendaResponse(null));
+  }
 }
