@@ -155,6 +155,9 @@ public class CaldavSyncService {
   private CaldavMirrorVerificationService caldavMirrorVerificationService;
 
   @Autowired
+  private CaldavPendingInvitationService caldavPendingInvitationService;
+
+  @Autowired
   private AgendaCalendarService       agendaCalendarService;
 
   /**
@@ -182,12 +185,17 @@ public class CaldavSyncService {
    */
   public int sweepDueAccounts(long staleMinutes, int batchSize) {
     Date before = Date.from(Instant.now().minus(Duration.ofMinutes(staleMinutes)));
-    List<CalendarSync> due = caldavSyncStorage.getDuePairs(CalendarSyncStatus.ACTIVE, before, 0, batchSize)
-                                              .getContent();
-    if (due.isEmpty()) {
+    // Accounts, not bindings. Paging the bindings and folding them into
+    // accounts afterwards meant a batch could be filled by one user's
+    // collections: a user holding forty of them, all stale after an outage,
+    // took every run and nobody else was swept at all — the log said "swept 1
+    // account" and looked like throughput rather than starvation. A batch of
+    // ten is now ten users, whatever each of them holds.
+    List<Long> accounts = caldavSyncStorage.getDueAccounts(CalendarSyncStatus.ACTIVE, before, 0, batchSize)
+                                           .getContent();
+    if (accounts.isEmpty()) {
       return 0;
     }
-    Set<Long> accounts = due.stream().map(CalendarSync::getUserIdentityId).collect(Collectors.toCollection(LinkedHashSet::new));
     int swept = 0;
     for (Long userIdentityId : accounts) {
       String username = loginOf(userIdentityId);
@@ -204,9 +212,18 @@ public class CaldavSyncService {
         // copies eXo pushed, because it is the only one nobody is waiting for.
         syncInBackground(userIdentityId, username);
         swept++;
-      } catch (RuntimeException e) {
+      } catch (RuntimeException | LinkageError e) {
         // One account must not cost the rest of the page. It stays stale and
         // comes back at the top of the next run.
+        //
+        // LinkageError is caught beside the exceptions on purpose. A missing
+        // optional dependency of the iCalendar parser — ical4j builds its
+        // EMAIL parameter through commons-validator — surfaced as a
+        // NoClassDefFoundError while reading an object a client had written,
+        // and being an Error it walked straight past a RuntimeException
+        // guard: the sweep died mid-run, every run, and every account after
+        // the failing one silently stopped synchronising. A pass that visits
+        // accounts on everyone's behalf cannot let one object end the pass.
         LOG.warn("The CalDAV account of user {} could not be swept", userIdentityId, e);
       }
     }
@@ -436,6 +453,10 @@ public class CaldavSyncService {
       // that throws must not cost the user the calendars they came for.
       try {
         if (verifyMirror) {
+          // Seed before verifying: a pending invitation pushed this round is
+          // read back by the same discipline as every other copy from the
+          // next round on (EXO-89681).
+          caldavPendingInvitationService.pushUpcomingMeetings(userIdentityId);
           caldavMirrorVerificationService.verify(userIdentityId);
         }
       } catch (RuntimeException e) {
