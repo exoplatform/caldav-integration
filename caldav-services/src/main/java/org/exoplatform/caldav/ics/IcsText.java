@@ -42,6 +42,9 @@ public final class IcsText {
   /** PARTSTAT values agenda can produce that RFC 5545 also defines. */
   private static final Set<String> KNOWN_PART_STATS = Set.of("ACCEPTED", "DECLINED", "TENTATIVE");
 
+  /** The PARTSTAT default, both what RFC 5545 assumes and what agenda calls NEEDS_ACTION. */
+  private static final String      NEEDS_ACTION     = "NEEDS-ACTION";
+
   /** Tags that end a line of text when they close. */
   private static final Pattern     BLOCK_END        = Pattern.compile("(?i)<\\s*/\\s*(p|div|li|tr|h[1-6])\\s*>");
 
@@ -106,7 +109,32 @@ public final class IcsText {
    */
   public static String partStat(String response) {
     String token = StringUtils.upperCase(StringUtils.defaultString(response)).replace('_', '-');
-    return KNOWN_PART_STATS.contains(token) ? token : "NEEDS-ACTION";
+    return KNOWN_PART_STATS.contains(token) ? token : NEEDS_ACTION;
+  }
+
+  /**
+   * The agenda response an iCalendar PARTSTAT stands for — the exact inverse
+   * of {@link #partStat(String)}, needed since a copy became something the
+   * user can answer on (EXO-89681).
+   *
+   * <p>
+   * Deliberately narrower than the write direction. Writing maps anything
+   * unknown to the RFC default, because an object has to say <i>something</i>;
+   * reading maps only the four tokens agenda has a word for, and answers null
+   * for the rest — DELEGATED, or a vendor extension, is not an answer eXo can
+   * record, and guessing one would put words in the user's mouth.
+   *
+   * @param partStat the PARTSTAT token as the client wrote it
+   * @return the agenda response name ({@code ACCEPTED}, {@code DECLINED},
+   *         {@code TENTATIVE} or {@code NEEDS_ACTION}), or null when the token
+   *         maps to nothing agenda can hold
+   */
+  public static String agendaResponse(String partStat) {
+    String token = StringUtils.upperCase(StringUtils.trimToEmpty(partStat)).replace('_', '-');
+    if (KNOWN_PART_STATS.contains(token)) {
+      return token;
+    }
+    return NEEDS_ACTION.equals(token) ? "NEEDS_ACTION" : null;
   }
 
   /**

@@ -36,6 +36,19 @@
       <artifactId>social-component-service</artifactId>
        <scope>provided</scope>
     </dependency>
+    <!--
+      ical4j builds an EMAIL parameter through commons-validator, and declares
+      it optional — so nothing brought it onto the platform. Any client that
+      writes EMAIL= on an attendee line, which Apple Calendar does whenever
+      somebody answers an invitation, then made the whole object unparseable
+      with a NoClassDefFoundError. Declared here because this add-on is the one
+      that parses iCalendar written by other people's clients.
+    -->
+    <dependency>
+      <groupId>commons-validator</groupId>
+      <artifactId>commons-validator</artifactId>
+      <version>1.7</version>
+    </dependency>
     <dependency>
       <groupId>io.swagger.core.v3</groupId>
       <artifactId>swagger-annotations-jakarta</artifactId>

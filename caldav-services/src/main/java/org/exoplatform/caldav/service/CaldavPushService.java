@@ -95,7 +95,7 @@ public class CaldavPushService {
    * agenda resolves the provider by name when it stores the mapping between
    * an eXo event and the object written for it.
    */
-  private static final String    CONNECTOR_NAME = "agenda.caldavCalendar";
+  public static final String     CONNECTOR_NAME = "agenda.caldavCalendar";
 
   private static final Log       LOG                    = ExoLogger.getLogger(CaldavPushService.class);
 
