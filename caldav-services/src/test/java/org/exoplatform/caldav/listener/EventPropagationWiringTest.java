@@ -19,7 +19,10 @@ package org.exoplatform.caldav.listener;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
@@ -35,6 +38,7 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
@@ -89,7 +93,13 @@ public class EventPropagationWiringTest {
   }
 
   /**
-   * Leaves no container behind for the next test in the JVM.
+   * Leaves no container bound to this thread for the next test.
+   *
+   * <p>
+   * This thread's binding, and only that: the static {@code topContainer} an
+   * earlier test may have pinned is out of reach of any public setter, which is
+   * the whole reason {@link #withNoContainerNothingIsAttempted()} states its
+   * condition instead of arranging it.
    */
   @AfterEach
   public void clearTheContainer() {
@@ -154,20 +164,50 @@ public class EventPropagationWiringTest {
    * that records what was pushed would be rolled back as a warning, and the
    * copies would look carried out while nothing was.
    *
+   * <h2>Why the absence is mocked rather than arranged</h2>
+   *
+   * <p>
+   * {@code setCurrentContainer(null)} does not establish this condition, which
+   * is what made this test pass here and fail on CI against the same tree. The
+   * kernel resolves the container in two steps: a per-thread
+   * {@code ThreadLocal} first, and — when that is empty — a
+   * <b>static, JVM-wide {@code topContainer}</b> field
+   * ({@code ExoContainerContext.getCurrentContainerIfPresent}). Only the first
+   * of those is a setter away; nothing public clears the second.
+   *
+   * <p>
+   * And it gets set behind our backs. Any test in the fork that drives a method
+   * carrying {@code @ExoTransactional} — {@code CaldavSyncSweepJobTest} does,
+   * through the woven aspect's
+   * {@code ExoContainerContext.getService(EntityManagerService.class)} — walks
+   * {@code getCurrentContainer()} into {@code RootContainer.getInstance()},
+   * which pins a root container into that static for the rest of the JVM. From
+   * then on no thread can see "no container" again, so whether this assertion
+   * held came down to Surefire's class order, which differs between a developer
+   * machine and CI.
+   *
+   * <p>
+   * So the condition is stated rather than arranged, with the same
+   * {@code mockStatic} this add-on's tests already use for this class. Scoped
+   * to the block and to this thread, it neither reads what ran before nor
+   * leaves anything behind for what runs next.
+   *
    * @throws Exception when the configuration cannot be read
    */
   @Test
   public void withNoContainerNothingIsAttempted() throws Exception {
     AgendaEventPropagationListener listener = listenerDeclaredFor("exo.agenda.event.updated");
-    ExoContainerContext.setCurrentContainer(null);
 
-    listener.onEvent(broadcastOf(new AgendaEventModification(EVENT,
-                                                             7L,
-                                                             9L,
-                                                             EnumSet.of(AgendaEventModificationType.UPDATED))));
+    try (MockedStatic<ExoContainerContext> containerContext = mockStatic(ExoContainerContext.class)) {
+      containerContext.when(ExoContainerContext::getCurrentContainerIfPresent).thenReturn(null);
 
-    verify(propagationService, never()).propagateUpdate(org.mockito.ArgumentMatchers.anyLong(),
-                                                        org.mockito.ArgumentMatchers.any());
+      listener.onEvent(broadcastOf(new AgendaEventModification(EVENT,
+                                                               7L,
+                                                               9L,
+                                                               EnumSet.of(AgendaEventModificationType.UPDATED))));
+    }
+
+    verify(propagationService, never()).propagateUpdate(anyLong(), any());
   }
 
   // ---------------------------------------------------------------- fixtures
