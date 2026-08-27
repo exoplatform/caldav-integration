@@ -182,12 +182,27 @@ public class IcsEquivalence {
    * comparing it would make every object differ from itself. {@code CREATED} and
    * {@code LAST-MODIFIED} are timestamps a server sets or refreshes when it
    * stores; neither can be authored as an intent, and any real edit necessarily
-   * moves something else that <i>is</i> compared. {@code URL} is the link back
-   * into eXo, which is carried on the push request and never stored — a repair
-   * cannot reconstruct it, so comparing it would report every copy altered
-   * exactly once and then strip the very link it complained about.
+   * moves something else that <i>is</i> compared.
+   *
+   * <p>
+   * <b>{@code URL} used to be here and no longer is</b> (EXO-89751). The
+   * exemption was correct for the world it was written in: the link back into
+   * eXo arrived on the push request, so only a browser push carried one and
+   * every sweep rendered the object without it. Comparing a property one side
+   * never renders reports every copy altered exactly once and then strips the
+   * link it had just complained about — the exemption was the only thing
+   * standing between that and a repair loop.
+   *
+   * <p>
+   * That world is gone. The link is now derived from the event by agenda's
+   * shared builder, so every render of the same event produces the same
+   * {@code URL} — a browser push, a sweep and a repair alike. Once eXo renders
+   * it every time, leaving it exempt would ship a link nobody is watching: a
+   * client could rewrite it, or drop it, and the mirror would go on calling
+   * that copy untouched. It is compared like any other property the writer
+   * emits.
    */
-  private static final Set<String>         IGNORED_EVENT_PROPERTIES = Set.of("DTSTAMP", "CREATED", "LAST-MODIFIED", "URL");
+  private static final Set<String>         IGNORED_EVENT_PROPERTIES = Set.of("DTSTAMP", "CREATED", "LAST-MODIFIED");
 
   /**
    * The VEVENT properties {@link IcsWriter} emits — the closed recognised set.
@@ -199,6 +214,7 @@ public class IcsEquivalence {
                                                                              "DTEND",
                                                                              "LOCATION",
                                                                              "DESCRIPTION",
+                                                                             "URL",
                                                                              "CONFERENCE",
                                                                              "ORGANIZER",
                                                                              "ATTENDEE",

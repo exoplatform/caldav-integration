@@ -413,14 +413,14 @@ public class CaldavPushServiceTest {
     givenAMirror();
     givenAnAgendaEvent(130L, 0L);
     when(agendaRemoteEventService.findRemoteEvent(130L, USER)).thenReturn(null);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-130"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-130"));
     when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 130L, null);
+    service.pushAgendaEvent(USER, 130L);
 
     ArgumentCaptor<RemoteEvent> recorded = ArgumentCaptor.forClass(RemoteEvent.class);
     verify(agendaRemoteEventService).saveRemoteEvent(eq(130L), recorded.capture(), eq(USER));
@@ -437,17 +437,17 @@ public class CaldavPushServiceTest {
     RemoteEvent known = new RemoteEvent();
     known.setRemoteId("uuid-written-by-the-browser");
     when(agendaRemoteEventService.findRemoteEvent(101L, USER)).thenReturn(known);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uuid-written-by-the-browser"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uuid-written-by-the-browser"));
     when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 101L, "https://exo.test/event/101");
+    service.pushAgendaEvent(USER, 101L);
 
     ArgumentCaptor<String> uid = ArgumentCaptor.forClass(String.class);
-    verify(agendaEventIcsMapper).toIcsEvent(any(), uid.capture(), any(), anyLong());
+    verify(agendaEventIcsMapper).toIcsEvent(any(), uid.capture(), anyLong());
     assertEquals("uuid-written-by-the-browser", uid.getValue());
     verify(agendaRemoteEventService, never()).saveRemoteEvent(anyLong(), any(), anyLong());
   }
@@ -457,14 +457,14 @@ public class CaldavPushServiceTest {
     givenAMirror();
     givenAnAgendaEvent(102L, 0L);
     when(agendaRemoteEventService.findRemoteEvent(102L, USER)).thenReturn(null);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("minted"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("minted"));
     when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 102L, "https://exo.test/event/102");
+    service.pushAgendaEvent(USER, 102L);
 
     // Recorded before the write: an interrupted push leaves an identifier
     // pointing at an object that may not exist, which the next push
@@ -479,14 +479,14 @@ public class CaldavPushServiceTest {
     RemoteEvent known = new RemoteEvent();
     known.setRemoteId("series-uid");
     when(agendaRemoteEventService.findRemoteEvent(99L, USER)).thenReturn(known);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("series-uid"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("series-uid"));
     when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 103L, null);
+    service.pushAgendaEvent(USER, 103L);
 
     // A series and its overrides live in one object, so they share one UID —
     // an override under its own UID would appear as a second meeting.
@@ -502,14 +502,14 @@ public class CaldavPushServiceTest {
     givenAMirror();
     givenAnAgendaEvent(104L, 0L);
     when(agendaRemoteEventService.findRemoteEvent(104L, USER)).thenReturn(null);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-104"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-104"));
     when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    ObjectSync mapping = service.pushAgendaEvent(USER, 104L, null);
+    ObjectSync mapping = service.pushAgendaEvent(USER, 104L);
 
     assertEquals(104L, mapping.getLocalEventId());
   }
@@ -549,7 +549,7 @@ public class CaldavPushServiceTest {
     // succeed: every pass reported "altered: 1, re-pushed: 0".
     givenAMirror();
     givenAnAgendaEvent(120L, 0L);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("evt-1"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("evt-1"));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(mapped("\"etag-1\""));
     when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
                                                                                .thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
@@ -587,7 +587,7 @@ public class CaldavPushServiceTest {
     // every pass, for ever.
     givenAMirror();
     givenAnAgendaEvent(122L, 0L);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("evt-1"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("evt-1"));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(null);
     when(calDavClient.overwriteObject(any(), anyString(), anyString(), anyString(), anyString()))
                                                                                                 .thenReturn(new PutResult(204,
@@ -612,7 +612,7 @@ public class CaldavPushServiceTest {
     // an object somebody else put at that href. Only a repair may drop it.
     givenAMirror();
     givenAnAgendaEvent(123L, 0L);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("evt-1"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("evt-1"));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(null);
     when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
@@ -620,7 +620,7 @@ public class CaldavPushServiceTest {
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 123L, null);
+    service.pushAgendaEvent(USER, 123L);
 
     verify(calDavClient).putObject(any(), anyString(), anyString(), anyString(), anyString());
     verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString(), anyString(), anyString());
@@ -638,7 +638,7 @@ public class CaldavPushServiceTest {
     // edit nobody has looked at.
     givenAMirror();
     givenAnAgendaEvent(121L, 0L);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("evt-1"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("evt-1"));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(mapped("\"etag-1\""));
     when(calDavClient.fetchObject(any(), anyString(), anyString(), anyString()))
                                                                                .thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
@@ -651,7 +651,7 @@ public class CaldavPushServiceTest {
                                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 121L, null);
+    service.pushAgendaEvent(USER, 121L);
 
     verify(calDavClient).updateObject(any(), anyString(), eq("MERGED"), eq("\"etag-1\""), anyString(), anyString());
   }
@@ -668,7 +668,7 @@ public class CaldavPushServiceTest {
   public void anEventTheCallerMayNotSeeIsNeverCopied() throws Exception {
     when(agendaEventService.getEventById(eq(105L), any(), eq(USER))).thenThrow(new IllegalAccessException("not a member"));
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushAgendaEvent(USER, 105L, null));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushAgendaEvent(USER, 105L));
 
     assertEquals(CaldavPushService.SAVE, failure.getCode());
     verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
@@ -686,7 +686,7 @@ public class CaldavPushServiceTest {
   public void anEventThatIsGoneStopsBeforeAnIdentifierIsMinted() throws Exception {
     when(agendaEventService.getEventById(eq(106L), any(), eq(USER))).thenReturn(null);
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushAgendaEvent(USER, 106L, null));
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushAgendaEvent(USER, 106L));
 
     assertEquals(CaldavPushService.SAVE, failure.getCode());
     verify(agendaRemoteEventService, never()).saveRemoteEvent(anyLong(), any(), anyLong());
@@ -1001,14 +1001,14 @@ public class CaldavPushServiceTest {
     RemoteEvent blank = new RemoteEvent();
     blank.setRemoteId(" ");
     when(agendaRemoteEventService.findRemoteEvent(107L, USER)).thenReturn(blank);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("minted"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("minted"));
     when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 107L, null);
+    service.pushAgendaEvent(USER, 107L);
 
     verify(agendaRemoteEventService).saveRemoteEvent(eq(107L), any(), eq(USER));
   }
@@ -1068,14 +1068,14 @@ public class CaldavPushServiceTest {
     givenAMirror();
     givenAnAgendaEvent(105L, 0L);
     when(agendaRemoteEventService.findRemoteEvent(105L, USER)).thenReturn(null);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-105"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-105"));
     when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 105L, null);
+    service.pushAgendaEvent(USER, 105L);
 
     // null is how agenda is asked for the event's own zone.
     verify(agendaEventService).getEventById(105L, null, USER);
@@ -1164,14 +1164,14 @@ public class CaldavPushServiceTest {
     givenPersonalCalendar(7L, "cal-anchor");
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(boundPersonalPair());
     when(agendaRemoteEventService.findRemoteEvent(110L, USER)).thenReturn(null);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-110"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-110"));
     when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    ObjectSync mapping = service.pushAgendaEvent(USER, 110L, null);
+    ObjectSync mapping = service.pushAgendaEvent(USER, 110L);
 
     assertEquals(9L, mapping.getCalendarSyncId());
     // The mirror is never established for a personal event: doing so would
@@ -1195,9 +1195,9 @@ public class CaldavPushServiceTest {
     refused.setStatus(CalendarSyncStatus.REMOTE_CREATE_REFUSED);
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(refused);
     when(agendaRemoteEventService.findRemoteEvent(111L, USER)).thenReturn(null);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-111"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-111"));
 
-    ObjectSync mapping = service.pushAgendaEvent(USER, 111L, null);
+    ObjectSync mapping = service.pushAgendaEvent(USER, 111L);
 
     // Nothing was copied, and nothing was written anywhere.
     assertNull(mapping);
@@ -1262,7 +1262,7 @@ public class CaldavPushServiceTest {
     destination.setId(6001L);
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(destination);
     when(agendaRemoteEventService.findRemoteEvent(112L, USER)).thenReturn(null);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-112"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-112"));
     // nothing in the destination — this looks like a create
     when(caldavSyncStorage.getObjectByUid(6001L, "uid-112")).thenReturn(null);
     // but the event was in another calendar of the same account a moment ago
@@ -1279,7 +1279,7 @@ public class CaldavPushServiceTest {
         .thenReturn(new PutResult(201, "\"etag-new\"", null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 112L, null);
+    service.pushAgendaEvent(USER, 112L);
 
     // the copy left behind is removed, conditionally on what eXo last saw
     verify(calDavClient).deleteObject(any(),
@@ -1302,14 +1302,14 @@ public class CaldavPushServiceTest {
     destination.setId(6001L);
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(destination);
     when(agendaRemoteEventService.findRemoteEvent(113L, USER)).thenReturn(null);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-113"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-113"));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("uid-113"))).thenReturn(null);
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(destination));
     when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
         .thenReturn(new PutResult(201, "\"etag-new\"", null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 113L, null);
+    service.pushAgendaEvent(USER, 113L);
 
     verify(calDavClient, never()).deleteObject(any(), anyString(), anyString(), anyString(), anyString());
     verify(caldavSyncStorage, never()).deleteObject(anyLong());
@@ -1330,7 +1330,7 @@ public class CaldavPushServiceTest {
     destination.setId(6001L);
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(destination);
     when(agendaRemoteEventService.findRemoteEvent(112L, USER)).thenReturn(null);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-minted-anew"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-minted-anew"));
     when(caldavSyncStorage.getObjectByUid(anyLong(), eq("uid-minted-anew"))).thenReturn(null);
     CalendarSync origin = boundPersonalPair();
     origin.setId(6002L);
@@ -1346,7 +1346,7 @@ public class CaldavPushServiceTest {
         .thenReturn(new PutResult(201, "\"etag-new\"", null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    service.pushAgendaEvent(USER, 112L, null);
+    service.pushAgendaEvent(USER, 112L);
 
     verify(calDavClient).deleteObject(any(),
                                      eq("/dav/calendars/john/exo-cal-old-anchor/uid-original.ics"),
@@ -1393,14 +1393,14 @@ public class CaldavPushServiceTest {
     // Owned by a space, not by this user.
     givenSpaceCalendar(9L);
     when(agendaRemoteEventService.findRemoteEvent(112L, USER)).thenReturn(null);
-    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), any(), anyLong())).thenReturn(event("uid-112"));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-112"));
     when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
                                                                                           .thenReturn(new PutResult(201,
                                                                                                                     "\"e\"",
                                                                                                                     null));
     when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    assertEquals(1L, service.pushAgendaEvent(USER, 112L, null).getCalendarSyncId());
+    assertEquals(1L, service.pushAgendaEvent(USER, 112L).getCalendarSyncId());
     verify(caldavSyncStorage, never()).getPairByLocalCalendar(anyLong(), anyLong(), anyString());
   }
 
@@ -1523,6 +1523,54 @@ public class CaldavPushServiceTest {
    * @param uid the iCalendar UID
    * @return an event to push
    */
+  /**
+   * A push and the baseline a repair compares against are rendered from the
+   * same inputs, so they cannot say different things about the same event.
+   *
+   * <p>
+   * This is EXO-89751's structural half. The link back into eXo used to be an
+   * argument of this call, supplied by the browser on a push and absent on
+   * every other path: a sweep rendered a document with no URL, and a repair
+   * wrote one, stripping the link the copy had. There is no longer any
+   * argument for a path to differ on — and the two calls are asserted equal
+   * here so that reintroducing one would fail rather than quietly restore the
+   * churn.
+   *
+   * @throws Exception when a stubbed call is declared as throwing
+   */
+  @Test
+  public void aRepairRendersFromTheSameInputsAsAPush() throws Exception {
+    givenAMirror();
+    givenAnAgendaEvent(140L, 0L);
+    RemoteEvent known = new RemoteEvent();
+    known.setRemoteId("uid-140");
+    when(agendaRemoteEventService.findRemoteEvent(140L, USER)).thenReturn(known);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-140"));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"e\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 140L);
+    service.renderAgendaEvent(USER, 140L, "uid-140");
+
+    ArgumentCaptor<Event> events = ArgumentCaptor.forClass(Event.class);
+    ArgumentCaptor<String> uids = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<Long> pushers = ArgumentCaptor.forClass(Long.class);
+    verify(agendaEventIcsMapper, times(2)).toIcsEvent(events.capture(), uids.capture(), pushers.capture());
+
+    assertEquals(events.getAllValues().get(0).getId(),
+                 events.getAllValues().get(1).getId(),
+                 "the repair must render the same event the push rendered");
+    assertEquals(uids.getAllValues().get(0),
+                 uids.getAllValues().get(1),
+                 "under the same identifier");
+    assertEquals(pushers.getAllValues().get(0),
+                 pushers.getAllValues().get(1),
+                 "for the same user");
+  }
+
   private IcsEvent event(String uid) {
     return IcsEvent.builder()
                    .uid(uid)

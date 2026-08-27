@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
 
 import java.time.ZoneId;
@@ -35,6 +36,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
@@ -51,6 +53,7 @@ import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventConferenceService;
 import org.exoplatform.agenda.service.AgendaEventReminderService;
+import org.exoplatform.agenda.util.NotificationUtils;
 import org.exoplatform.caldav.model.IcsEvent;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
@@ -77,6 +80,12 @@ public class AgendaEventIcsMapperTest {
   private static final long                 PUSHER    = 5L;
 
   private static final long                 SOMEONE   = 9L;
+
+  /** The link agenda mints for the event, of the shape NotificationUtils returns. */
+  private static final String               EVENT_LINK  = "http://localhost:8080/portal/dw/agenda?eventId=1";
+
+  /** The one it mints for the series an override belongs to. */
+  private static final String               SERIES_LINK = "http://localhost:8080/portal/dw/agenda?eventId=77";
 
   private static final long                 SPACE_OWNER = 77L;
 
@@ -112,13 +121,79 @@ public class AgendaEventIcsMapperTest {
   public void anEventCarriesItsOwnZoneAndInstants() {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
 
-    IcsEvent ics = mapper.toIcsEvent(event(), "uid-1", "https://exo.test/e/1", PUSHER);
+    IcsEvent ics = mapper.toIcsEvent(event(), "uid-1", PUSHER);
 
     assertEquals("uid-1", ics.getUid());
     assertEquals("Steering point", ics.getSummary());
     assertEquals("Europe/Paris", ics.getTimeZoneId());
     assertEquals(ZonedDateTime.parse("2026-09-08T09:00+02:00[Europe/Paris]").toInstant(), ics.getStart());
-    assertEquals("https://exo.test/e/1", ics.getEventUrl());
+  }
+
+  /**
+   * The link back into eXo is <b>derived from the event</b>, so every render of
+   * the same event produces the same one — a browser push, a five-minute sweep
+   * and a repair alike (EXO-89751).
+   *
+   * <p>
+   * That property is the whole point, and it is what was missing: the link used
+   * to arrive on the push request, so only a browser push carried one and the
+   * next repair stripped it. Two renders for two different pushers are asserted
+   * to agree, because nothing about the recipient may enter the link — a
+   * link that varied per render would put the churn straight back.
+   */
+  @Test
+  public void theLinkIsDerivedFromTheEventSoEveryRenderAgrees() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenIdentity(SOMEONE, "Jane Roe", "jane@example.test");
+    lenient().when(agendaEventAttendeeService.getEventAttendees(1L)).thenReturn(EventAttendeeList.EMPTY_ATTENDEE_LIST);
+    lenient().when(agendaEventReminderService.getEventReminders(1L, SOMEONE)).thenReturn(List.of());
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+
+      String pushed = mapper.toIcsEvent(event(), "uid-1", PUSHER).getEventUrl();
+      String repaired = mapper.toIcsEvent(event(), "uid-1", SOMEONE).getEventUrl();
+
+      assertEquals(EVENT_LINK, pushed, "the push must write the event's own link");
+      assertEquals(pushed, repaired, "and every other render must write the very same one");
+    }
+  }
+
+  /**
+   * The link is also repeated in the description, on a labelled line beside the
+   * conference one: many calendar clients never surface URL, and the
+   * description is what a person reads.
+   */
+  @Test
+  public void theLinkIsAlsoNamedInTheDescription() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+
+      String description = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+
+      assertNotNull(description);
+      assertTrue(description.contains(EVENT_LINK), "the description must carry the link too: " + description);
+    }
+  }
+
+  /**
+   * An override of a series links to the series, not to itself — the same rule
+   * the UID already follows. The object carries RECURRENCE-ID to say which
+   * instance it amends, and the parent id is the one agenda's screens open.
+   */
+  @Test
+  public void anOverrideLinksToItsSeries() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    Event override = event();
+    override.setParentId(77L);
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(77L)).thenReturn(SERIES_LINK);
+
+      assertEquals(SERIES_LINK, mapper.toIcsEvent(override, "uid-1", PUSHER).getEventUrl());
+    }
   }
 
   /**
@@ -155,7 +230,7 @@ public class AgendaEventIcsMapperTest {
     // 5545 requires anyway — ATTENDEE is defined only where ORGANIZER is.
     givenIdentity(PUSHER, "John Doe", null);
 
-    assertNull(mapper.toIcsEvent(event(), "uid-1", null, PUSHER).getOrganizer());
+    assertNull(mapper.toIcsEvent(event(), "uid-1", PUSHER).getOrganizer());
   }
 
   @Test
@@ -164,7 +239,7 @@ public class AgendaEventIcsMapperTest {
     givenIdentity(SOMEONE, "Hidden Profile", null);
     givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED), attendee(SOMEONE, EventAttendeeResponse.DECLINED));
 
-    List<org.exoplatform.caldav.model.IcsPerson> attendees = mapper.toIcsEvent(event(), "uid-1", null, PUSHER)
+    List<org.exoplatform.caldav.model.IcsPerson> attendees = mapper.toIcsEvent(event(), "uid-1", PUSHER)
                                                                    .getAttendees();
 
     // The roster on the phone is shorter than the one in eXo, which the URL
@@ -183,14 +258,14 @@ public class AgendaEventIcsMapperTest {
     givenIdentity(SOMEONE, "Marketing Team", null);
     givenAttendees(attendee(SOMEONE, EventAttendeeResponse.NEEDS_ACTION));
 
-    assertTrue(mapper.toIcsEvent(event(), "uid-1", null, PUSHER).getAttendees().isEmpty());
+    assertTrue(mapper.toIcsEvent(event(), "uid-1", PUSHER).getAttendees().isEmpty());
   }
 
   @Test
   public void thePusherBeingTheOrganizerDecidesTheSchedulingAgent() {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
 
-    assertTrue(mapper.toIcsEvent(event(), "uid-1", null, PUSHER).isOrganizerIsPusher());
+    assertTrue(mapper.toIcsEvent(event(), "uid-1", PUSHER).isOrganizerIsPusher());
   }
 
   @Test
@@ -200,7 +275,7 @@ public class AgendaEventIcsMapperTest {
     // not offer to invite everyone on their behalf.
     givenIdentity(PUSHER, "John Doe", "john@example.test");
 
-    assertFalse(mapper.toIcsEvent(event(), "uid-1", null, SOMEONE).isOrganizerIsPusher());
+    assertFalse(mapper.toIcsEvent(event(), "uid-1", SOMEONE).isOrganizerIsPusher());
   }
 
   @Test
@@ -211,7 +286,7 @@ public class AgendaEventIcsMapperTest {
 
     // A parameter value holding a comma gets quoted into one value a strict
     // reader ignores: one correct token beats two read as none.
-    assertEquals("https://meet.test/a", mapper.toIcsEvent(event(), "uid-1", null, PUSHER).getConferenceUrl());
+    assertEquals("https://meet.test/a", mapper.toIcsEvent(event(), "uid-1", PUSHER).getConferenceUrl());
   }
 
   @Test
@@ -219,7 +294,7 @@ public class AgendaEventIcsMapperTest {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
     when(agendaEventReminderService.getEventReminders(1L, PUSHER)).thenReturn(List.of(reminder(2, ReminderPeriodType.HOUR)));
 
-    IcsEvent ics = mapper.toIcsEvent(event(), "uid-1", null, PUSHER);
+    IcsEvent ics = mapper.toIcsEvent(event(), "uid-1", PUSHER);
 
     assertEquals(2, ics.getReminders().get(0).getBefore());
     assertEquals("HOUR", ics.getReminders().get(0).getBeforePeriodType());
@@ -233,7 +308,7 @@ public class AgendaEventIcsMapperTest {
     occurrence.setId(ZonedDateTime.parse("2026-09-15T09:00+02:00[Europe/Paris]"));
     event.setOccurrence(occurrence);
 
-    assertEquals("2026-09-15T07:00:00Z", mapper.toIcsEvent(event, "uid-1", null, PUSHER).getOccurrenceId());
+    assertEquals("2026-09-15T07:00:00Z", mapper.toIcsEvent(event, "uid-1", PUSHER).getOccurrenceId());
   }
 
   @Test
@@ -243,7 +318,7 @@ public class AgendaEventIcsMapperTest {
     // the field stays empty rather than being guessed at.
     givenIdentity(PUSHER, "John Doe", "john@example.test");
 
-    assertTrue(mapper.toIcsEvent(event(), "uid-1", null, PUSHER).getExceptionDates().isEmpty());
+    assertTrue(mapper.toIcsEvent(event(), "uid-1", PUSHER).getExceptionDates().isEmpty());
   }
 
   /**
@@ -260,7 +335,7 @@ public class AgendaEventIcsMapperTest {
     Event event = event();
     event.setStatus(EventStatus.CANCELLED);
 
-    assertTrue(mapper.toIcsEvent(event, "uid-1", null, PUSHER).isCancelled());
+    assertTrue(mapper.toIcsEvent(event, "uid-1", PUSHER).isCancelled());
   }
 
   /**
@@ -273,7 +348,7 @@ public class AgendaEventIcsMapperTest {
     Event event = event();
     event.setStatus(EventStatus.CONFIRMED);
 
-    assertFalse(mapper.toIcsEvent(event, "uid-1", null, PUSHER).isCancelled());
+    assertFalse(mapper.toIcsEvent(event, "uid-1", PUSHER).isCancelled());
   }
 
   private Event event() {
@@ -303,7 +378,7 @@ public class AgendaEventIcsMapperTest {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
     givenSpaceCalendar("Chemistry");
 
-    IcsEvent ics = mapper.toIcsEvent(event(), "uid-1", "https://exo.test/e/1", PUSHER);
+    IcsEvent ics = mapper.toIcsEvent(event(), "uid-1", PUSHER);
 
     assertNotNull(ics.getDescription(), "a copy with no description says nothing about where it came from");
     assertTrue(ics.getDescription().contains("John Doe"), "the sender must be named: " + ics.getDescription());
@@ -323,7 +398,7 @@ public class AgendaEventIcsMapperTest {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
     givenPersonalCalendar();
 
-    IcsEvent ics = mapper.toIcsEvent(event(), "uid-1", "https://exo.test/e/1", PUSHER);
+    IcsEvent ics = mapper.toIcsEvent(event(), "uid-1", PUSHER);
 
     assertNotNull(ics.getDescription());
     assertTrue(ics.getDescription().contains("John Doe"), "the sender must still be named: " + ics.getDescription());
@@ -345,7 +420,7 @@ public class AgendaEventIcsMapperTest {
     Event event = event();
     event.setDescription("<p>Bring the <b>slides</b>.</p>");
 
-    IcsEvent ics = mapper.toIcsEvent(event, "uid-1", "https://exo.test/e/1", PUSHER);
+    IcsEvent ics = mapper.toIcsEvent(event, "uid-1", PUSHER);
 
     assertTrue(ics.getDescription().contains("Bring the slides."),
                "the text must survive: " + ics.getDescription());

@@ -126,22 +126,22 @@ public class AgendaEventIcsMapper {
    * @param icsUid the UID the copy is written under, which the caller owns —
    *          a series and its overrides share one, and it must survive an
    *          agenda id changing
-   * @param eventUrl absolute link back to the event in eXo, or null
    * @param pusherIdentityId identity of the user whose calendar receives the
    *          copy, which decides whether ORGANIZER carries SCHEDULE-AGENT and
    *          whose account address names them on the roster
    * @return the event as the ICS engine takes it
    */
-  public IcsEvent toIcsEvent(Event event, String icsUid, String eventUrl, long pusherIdentityId) {
+  public IcsEvent toIcsEvent(Event event, String icsUid, long pusherIdentityId) {
     String pusherAccountAddress = accountAddressOf(pusherIdentityId);
     IcsPerson organizer = personOf(event.getCreatorId());
     String conference = conferenceUrl(event.getId());
+    String link = eventUrl(event);
     return IcsEvent.builder()
                    .uid(icsUid)
                    .summary(event.getSummary())
                    .location(event.getLocation())
-                   .description(description(event, conference, pusherIdentityId))
-                   .eventUrl(eventUrl)
+                   .description(description(event, conference, link, pusherIdentityId))
+                   .eventUrl(link)
                    .conferenceUrl(conference)
                    .start(instantOf(event.getStart()))
                    .end(instantOf(event.getEnd()))
@@ -195,16 +195,56 @@ public class AgendaEventIcsMapper {
    *
    * @param event the event being copied
    * @param conference the conference link, already resolved, or null
+   * @param link the link back to the event in eXo, already resolved, or null
    * @param pusherIdentityId the user whose calendar receives the copy, whose
    *          language the text is written in
    * @return the description the copy carries
    */
-  private String description(Event event, String conference, long pusherIdentityId) {
+  private String description(Event event, String conference, String link, long pusherIdentityId) {
     return EventIcsBuilder.description(localeOf(pusherIdentityId),
                                        fullNameOf(event.getCreatorId()),
                                        spaceNameOf(event),
                                        conference,
+                                       link,
                                        event.getDescription());
+  }
+
+  /**
+   * The link back to the event in eXo, written as {@code URL} and repeated on
+   * a labelled line in the description.
+   *
+   * <p>
+   * <b>Derived here, never taken from the caller</b> — and that is the whole
+   * point of EXO-89751. The value used to arrive on the push request, put
+   * there by the browser, so only a browser push carried one: a sweep and a
+   * repair rendered the same event with no {@code URL} at all, and the link
+   * appeared once and was stripped by the next repair. It is also why the
+   * mirror comparison had to exempt the property. Reading it off the event
+   * makes every render agree, which is what lets
+   * {@link org.exoplatform.caldav.ics.IcsEquivalence} compare it like anything
+   * else.
+   *
+   * <p>
+   * The shape belongs to agenda: {@link EventIcsBuilder#eventUrl} is the same
+   * {@code agenda?eventId=} address that goes into the body of every
+   * notification mail about this event.
+   *
+   * <p>
+   * A series override links to the series, not to itself, for the same reason
+   * the copy shares its UID with the series: the object carries
+   * {@code RECURRENCE-ID} to say which instance it amends, and the parent id
+   * is the one agenda's screens open.
+   *
+   * <p>
+   * No guest clause here, unlike the mail. A copy is written into the calendar
+   * of a user who has an eXo account by construction — there is nobody on this
+   * path the link could send to a login screen.
+   *
+   * @param event the event being copied
+   * @return the absolute link, or null when it cannot be composed
+   */
+  private String eventUrl(Event event) {
+    return EventIcsBuilder.eventUrl(event.getParentId() > 0 ? event.getParentId() : event.getId());
   }
 
   /**
