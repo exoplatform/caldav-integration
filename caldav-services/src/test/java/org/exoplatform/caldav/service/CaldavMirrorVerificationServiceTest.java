@@ -234,7 +234,7 @@ public class CaldavMirrorVerificationServiceTest {
     // report "altered: 1, re-pushed: 0" on a live account while this test,
     // mocking the push service, stayed green.
     verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
-    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong(), any());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
   }
 
   @Test
