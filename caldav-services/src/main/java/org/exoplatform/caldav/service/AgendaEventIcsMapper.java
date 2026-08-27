@@ -363,6 +363,11 @@ public class AgendaEventIcsMapper {
    * The roster, with the people whose address is not visible left off.
    *
    * @param eventId the agenda event
+   * @param pusherIdentityId the person this copy is being written for: theirs is
+   *          the one line spelled the way their own account spells it
+   * @param pusherAccountAddress the address that account answers to, put on
+   *          their line so their client reads the copy as an invitation to
+   *          itself rather than to a stranger. Left alone when blank.
    * @return the attendees that can be named truthfully
    */
   private List<IcsPerson> attendees(long eventId, long pusherIdentityId, String pusherAccountAddress) {

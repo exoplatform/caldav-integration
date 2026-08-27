@@ -245,6 +245,9 @@ public class CaldavReadService {
    * recorded for this user, canonically, and the slug the collection path ends
    * with. The second survives a disconnect, which forgets the setting.
    *
+   * @param userIdentityId the identity whose mirror setting and bindings are
+   *          read; both exclusions are that user's own, and another's would
+   *          hide the wrong collections
    * @param endpoint the declared server
    * @param settings the connected account
    * @return the collections whose events belong on the agenda

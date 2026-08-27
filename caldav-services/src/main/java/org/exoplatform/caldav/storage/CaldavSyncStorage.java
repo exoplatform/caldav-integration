@@ -293,6 +293,8 @@ public class CaldavSyncStorage {
    * one of them is already mapped — cost a query per meeting to learn there
    * was nothing to do.
    *
+   * @param userIdentityId the identity whose mappings count, so the copy made
+   *          for the first attendee does not answer for every other attendee
    * @param localEventIds the eXo events to ask about
    * @return the identifiers among them that are mapped, empty when none are
    */
