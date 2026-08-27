@@ -362,6 +362,16 @@ public class CaldavMirrorVerificationService {
    * {@code NOTHING} to — it needs the same eXo event this needs to render one.
    *
    * <p>
+   * The owner's own addresses go with the comparison, and both of them do:
+   * a server may attach the calendar's owner to a copy that lands in their
+   * calendar, and recognising that line means recognising the person on it —
+   * who a copy names either by the address their CalDAV account answers to or
+   * by their eXo profile address. The pair comes from
+   * {@code CaldavPushService.addressesNaming}, the same one EXO-89715 uses to
+   * find their line and EXO-89681 uses to read their answer off it, because an
+   * exemption that checked only one of the two would miss the way 89715 missed.
+   *
+   * <p>
    * Four ways to answer "no rewrite" and they are not the same. The copy states
    * what eXo states: the version is adopted and the next pass is free. eXo
    * cannot say what it would write — the event is gone, the mapping never
@@ -426,7 +436,9 @@ public class CaldavMirrorVerificationService {
     }
     IcsEquivalence.Judgement judgement;
     try {
-      judgement = icsEquivalence.compare(remote.calendarData(), rendered);
+      judgement = icsEquivalence.compare(remote.calendarData(),
+                                         rendered,
+                                         caldavPushService.addressesNaming(userIdentityId, settings));
     } catch (RuntimeException | LinkageError e) {
       LOG.debug("The copy at {} could not be judged; it is left alone", object.getRemoteHref(), e);
       return new Assessment(Verdict.UNTOUCHED, null);

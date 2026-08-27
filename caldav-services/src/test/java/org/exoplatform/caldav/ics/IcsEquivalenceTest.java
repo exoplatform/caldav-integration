@@ -65,6 +65,14 @@ public class IcsEquivalenceTest {
       + "END:VEVENT\r\n"
       + "END:VCALENDAR\r\n";
 
+  /**
+   * Both addresses a copy on this account may name its owner by: the one their
+   * CalDAV account answers to, and their eXo profile address. They differ, and
+   * that is the point — every test below runs with the pair, so nothing here
+   * can pass by having guessed the right one.
+   */
+  private static final java.util.List<String> OWNER = java.util.List.of("alice@stalwart.local", "bob@stalwart.local");
+
   /** A zone definition an object can carry so a TZID in it resolves. */
   private static final String PARIS = "BEGIN:VTIMEZONE\r\n"
       + "TZID:Europe/Paris\r\n"
@@ -319,6 +327,174 @@ public class IcsEquivalenceTest {
     assertDifferent(EXO.replaceAll("(?s)BEGIN:VALARM.*END:VALARM\r\n", ""));
   }
 
+  // ------------------------------------------------- the owner's own line
+
+  // The relaxation EXO-89716's first deploy forced, and the tests that bound
+  // it. BlueMind attaches the calendar's owner to every copy that lands in it,
+  // as ATTENDEE;CN=FRANCOIS;DIR=bm://19d43..., which made all 20 copies of a
+  // live account altered and re-pushed on every sweep — and no repair could
+  // remove it, because the server puts the line straight back. The exemption
+  // is one line of code; what follows is the fence around it.
+
+  @Test
+  public void anOwnerTheServerAttachedIsNotAnEdit() {
+    // The observation itself, spelled as BlueMind spells it.
+    assertEquivalent(EXO.replace("STATUS:CONFIRMED",
+                                 "ATTENDEE;CN=FRANCOIS;DIR=\"bm://19d43a7c-dead-beef\":mailto:alice@stalwart.local\r\n"
+                                     + "STATUS:CONFIRMED"));
+  }
+
+  @Test
+  public void anOwnerTheServerAttachedUnderTheirOtherAddressIsAlsoNotAnEdit() {
+    // The EXO-89715 trap, made a test. A copy names its owner either by the
+    // address their CalDAV account answers to or by their eXo profile address,
+    // and an exemption that recognised only one of the two would miss half the
+    // time — silently, and in the direction that churns.
+    assertEquivalent(EXO.replace("STATUS:CONFIRMED",
+                                 "ATTENDEE;CN=FRANCOIS:mailto:bob@stalwart.local\r\nSTATUS:CONFIRMED"));
+  }
+
+  @Test
+  public void anOwnerLineTheServerReRenderedIsNotAnEdit() {
+    // The other shape it takes: eXo already wrote the owner's line and the
+    // server rewrote it in its own terms — its directory's spelling of the
+    // name, its own DIR pointer, the address re-cased. Same person, same
+    // answer, so the same statement.
+    String exo = EXO.replace("STATUS:CONFIRMED",
+                             "ATTENDEE;CN=Alice Martin;PARTSTAT=ACCEPTED:mailto:alice@stalwart.local\r\n"
+                                 + "STATUS:CONFIRMED");
+    String server = EXO.replace("STATUS:CONFIRMED",
+                                "ATTENDEE;CN=ALICE;DIR=\"bm://19d43a7c\";PARTSTAT=ACCEPTED:"
+                                    + "MAILTO:Alice@Stalwart.Local\r\nSTATUS:CONFIRMED");
+
+    assertEquivalent(server, exo);
+  }
+
+  @Test
+  public void anOwnerAttachedWithAnAnswerOnItIsStillAnEdit() {
+    // The condition that keeps EXO-89681 working. A surplus owner line saying
+    // ACCEPTED is not the server attaching somebody — it is the user replying
+    // from their own client, and the pass has to report it so the answer can be
+    // read off the copy before anything overwrites it.
+    assertDifferent(EXO.replace("STATUS:CONFIRMED",
+                                "ATTENDEE;CN=FRANCOIS;PARTSTAT=ACCEPTED:mailto:alice@stalwart.local\r\n"
+                                    + "STATUS:CONFIRMED"));
+  }
+
+  @Test
+  public void anOwnerWhoAnsweredOnTheirPhoneIsStillAnEdit() {
+    // The same, for a copy whose owner line eXo does write. This is the case
+    // the whole answer feature rests on, and the exemption must not touch it.
+    String exo = EXO.replace("STATUS:CONFIRMED",
+                             "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:alice@stalwart.local\r\nSTATUS:CONFIRMED");
+    String server = EXO.replace("STATUS:CONFIRMED",
+                                "ATTENDEE;CN=ALICE;DIR=\"bm://19d4\";PARTSTAT=DECLINED:mailto:alice@stalwart.local\r\n"
+                                    + "STATUS:CONFIRMED");
+
+    assertDifferent(server, exo);
+  }
+
+  @Test
+  public void anOwnerTheCopyLostIsStillAnEdit() {
+    // The surplus has to be on the server's side. eXo stating a line the copy
+    // no longer carries is somebody having removed the owner from the meeting,
+    // which is a difference in the ordinary way.
+    String exo = EXO.replace("STATUS:CONFIRMED",
+                             "ATTENDEE;PARTSTAT=ACCEPTED:mailto:alice@stalwart.local\r\nSTATUS:CONFIRMED");
+
+    assertDifferent(EXO, exo);
+  }
+
+  @Test
+  public void anOwnerWhoHadNotAnsweredAndWasRemovedIsStillAnEdit() {
+    // The direction condition, on its own. The line eXo states carries no
+    // answer, so it reduces to exactly the statement the exemption tolerates —
+    // and it must still be reported, because here the surplus is on eXo's side:
+    // somebody took the owner off a meeting they had not replied to.
+    //
+    // Without this the direction condition is untestable: the sibling case
+    // above states an ACCEPTED line, which reduces to a different statement and
+    // would be caught by the answer condition instead. The mutation check found
+    // that, and this is the test it was missing.
+    String exo = EXO.replace("STATUS:CONFIRMED",
+                             "ATTENDEE;CN=Alice:mailto:alice@stalwart.local\r\nSTATUS:CONFIRMED");
+
+    assertDifferent(EXO, exo);
+  }
+
+  @Test
+  public void aSecondOwnerLineTheServerAddedIsNotAnEdit() {
+    // Decided, not stumbled into. eXo already names the owner by the address
+    // their account answers to; the server adds its own directory user beside
+    // it under their other address. Two lines, one person, and neither states
+    // an answer — so this is the exemption, for the same reason the first line
+    // is: the account owns both spellings, and a server keeping its own
+    // bookkeeping next to ours has not changed who is invited.
+    String exo = EXO.replace("STATUS:CONFIRMED",
+                             "ATTENDEE;CN=Alice:mailto:alice@stalwart.local\r\nSTATUS:CONFIRMED");
+    String server = EXO.replace("STATUS:CONFIRMED",
+                                "ATTENDEE;CN=Alice:mailto:alice@stalwart.local\r\n"
+                                    + "ATTENDEE;CN=FRANCOIS;DIR=\"bm://19d43\":mailto:bob@stalwart.local\r\n"
+                                    + "STATUS:CONFIRMED");
+
+    assertEquivalent(server, exo);
+  }
+
+  @Test
+  public void aSecondOwnerLineCarryingAnAnswerIsStillAnEdit() {
+    // The limit of the decision above. A duplicate line is bookkeeping; a
+    // duplicate line that says ACCEPTED is the user replying, and it has to
+    // reach EXO-89681 like any other answer.
+    String exo = EXO.replace("STATUS:CONFIRMED",
+                             "ATTENDEE;CN=Alice:mailto:alice@stalwart.local\r\nSTATUS:CONFIRMED");
+    String server = EXO.replace("STATUS:CONFIRMED",
+                                "ATTENDEE;CN=Alice:mailto:alice@stalwart.local\r\n"
+                                    + "ATTENDEE;CN=FRANCOIS;PARTSTAT=ACCEPTED:mailto:bob@stalwart.local\r\n"
+                                    + "STATUS:CONFIRMED");
+
+    assertDifferent(server, exo);
+  }
+
+  @Test
+  public void someoneElseTheServerAttachedIsStillAnEdit() {
+    // The exemption is the owner and nobody else. A client adding an attendee
+    // is a real edit, and it is the thing this pass exists to catch.
+    assertDifferent(EXO.replace("STATUS:CONFIRMED",
+                                "ATTENDEE;CN=Mallory:mailto:mallory@stalwart.local\r\nSTATUS:CONFIRMED"));
+  }
+
+  @Test
+  public void anAttendeeTheCopyLostIsStillAnEdit() {
+    String exo = EXO.replace("STATUS:CONFIRMED",
+                             "ATTENDEE;CN=Carol:mailto:carol@stalwart.local\r\nSTATUS:CONFIRMED");
+
+    assertDifferent(EXO, exo);
+  }
+
+  @Test
+  public void withNoOwnerDeclaredNothingIsExempt() {
+    // The exemption is not a property of ATTENDEE lines, it is a property of
+    // one known person. Told about nobody, the comparison is as strict as it
+    // was before the relaxation existed.
+    IcsEquivalence.Judgement judgement =
+        judge.compare(EXO.replace("STATUS:CONFIRMED",
+                                  "ATTENDEE;CN=FRANCOIS:mailto:alice@stalwart.local\r\nSTATUS:CONFIRMED"),
+                      EXO,
+                      java.util.List.of());
+
+    assertEquals(IcsEquivalence.Verdict.DIFFERENT, judgement.verdict());
+  }
+
+  @Test
+  public void aDirectoryPointerIsNotAnEdit() {
+    // DIR is a URI into the server's own directory (RFC 5545 3.2.6) — who the
+    // server thinks the person is, in its own namespace. It says nothing about
+    // the meeting, and dropping it cannot hide an attendee change: the address
+    // and the PARTSTAT are compared regardless, as the two tests above prove.
+    assertEquivalent(EXO.replace("ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:",
+                                 "ATTENDEE;CN=Ann;DIR=\"bm://c0ffee\";PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:"));
+  }
+
   // ------------------------------------------------------------ unknowns
 
   @Test
@@ -428,7 +604,7 @@ public class IcsEquivalenceTest {
     // Bounded rather than silent: a repair would fail on the same parse and the
     // pass gives up after a few attempts, saying so in the log — which is the
     // honest outcome for a copy nobody can read.
-    IcsEquivalence.Judgement judgement = judge.compare("this is not a calendar object at all", EXO);
+    IcsEquivalence.Judgement judgement = judge.compare("this is not a calendar object at all", EXO, OWNER);
 
     assertEquals(IcsEquivalence.Verdict.DIFFERENT, judgement.verdict());
     assertNotNull(judgement.detail());
@@ -438,13 +614,15 @@ public class IcsEquivalenceTest {
   public void anExoRenderThatCannotBeReadConcludesNothing() {
     // A defect on this side is never evidence about the user's calendar. The
     // caller leaves the copy exactly as it is.
-    assertEquals(IcsEquivalence.Verdict.UNJUDGEABLE, judge.compare(EXO, "not a calendar object").verdict());
+    assertEquals(IcsEquivalence.Verdict.UNJUDGEABLE, judge.compare(EXO, "not a calendar object", OWNER).verdict());
   }
 
   @Test
   public void anExoRenderCarryingNoEventConcludesNothing() {
     assertEquals(IcsEquivalence.Verdict.UNJUDGEABLE,
-                 judge.compare(EXO, "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//y//EN\r\nEND:VCALENDAR\r\n")
+                 judge.compare(EXO,
+                               "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//y//EN\r\nEND:VCALENDAR\r\n",
+                               OWNER)
                       .verdict());
   }
 
@@ -481,7 +659,7 @@ public class IcsEquivalenceTest {
    * @param inExo the object eXo renders
    */
   private void assertEquivalent(String onServer, String inExo) {
-    IcsEquivalence.Judgement judgement = judge.compare(onServer, inExo);
+    IcsEquivalence.Judgement judgement = judge.compare(onServer, inExo, OWNER);
     assertEquals(IcsEquivalence.Verdict.EQUIVALENT, judgement.verdict(), String.valueOf(judgement.detail()));
   }
 
@@ -502,7 +680,7 @@ public class IcsEquivalenceTest {
    * @param inExo the object eXo renders
    */
   private void assertDifferent(String onServer, String inExo) {
-    IcsEquivalence.Judgement judgement = judge.compare(onServer, inExo);
+    IcsEquivalence.Judgement judgement = judge.compare(onServer, inExo, OWNER);
     assertEquals(IcsEquivalence.Verdict.DIFFERENT, judgement.verdict());
     assertNotNull(judgement.detail(), "a difference must say what it is, or nobody can act on the log line");
   }
