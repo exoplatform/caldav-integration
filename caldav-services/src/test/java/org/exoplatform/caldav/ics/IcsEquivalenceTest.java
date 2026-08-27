@@ -327,6 +327,73 @@ public class IcsEquivalenceTest {
     assertDifferent(EXO.replaceAll("(?s)BEGIN:VALARM.*END:VALARM\r\n", ""));
   }
 
+  // ------------------------------------------- names, and who they belong to
+
+  @Test
+  public void aDisplayNameTheServerSubstitutedOnTheOrganizerIsNotAnEdit() {
+    // What the third deploy found, on the rig's root account once its profile
+    // address matched the one BlueMind knows it by:
+    //   ORGANIZER;CN=FRANCOIS=mailto:anais.francois@...   (server 1, eXo 0)
+    //   ORGANIZER;CN=Root Root=mailto:anais.francois@...  (server 0, eXo 1)
+    // Same person, same address, two directories' opinion of their name — and
+    // the copies were reaching maxRepairs over it.
+    assertEquivalent(EXO.replace("ORGANIZER;CN=The Boss:", "ORGANIZER;CN=FRANCOIS:"));
+  }
+
+  @Test
+  public void aDisplayNameTheServerSubstitutedOnAnAttendeeIsNotAnEdit() {
+    // The observation was on ORGANIZER; attendee names come from the same
+    // directory, so the next deploy would have found these instead.
+    assertEquivalent(EXO.replace("ATTENDEE;CN=Ann;", "ATTENDEE;CN=ANN MARTIN;"));
+  }
+
+  @Test
+  public void anOrganizerWithNoNameAtAllIsNotAnEdit() {
+    // A server that keeps no display name is saying the same nothing.
+    assertEquivalent(EXO.replace("ORGANIZER;CN=The Boss:", "ORGANIZER:"));
+  }
+
+  @Test
+  public void aChangedOrganizerAddressIsStillAnEdit() {
+    // The whole risk of dropping CN, and the reason it is small: the address is
+    // the identity, and it is compared regardless. Somebody else called this
+    // meeting, and that still registers.
+    assertDifferent(EXO.replace("mailto:boss@acme.test", "mailto:mallory@acme.test"));
+  }
+
+  @Test
+  public void aRemovedOrganizerIsStillAnEdit() {
+    // ORGANIZER is neither an attendee statement nor the owner's, so no
+    // tolerance covers it in either direction.
+    assertDifferent(EXO.replace("ORGANIZER;CN=The Boss:mailto:boss@acme.test\r\n", ""));
+  }
+
+  @Test
+  public void theIgnoreListCannotSilenceTheOrganizerOrTheAttendees() {
+    // ORGANIZER and ATTENDEE are properties eXo emits, so the operator's lever
+    // must not reach them — it only ever suppresses a name outside the
+    // recognised set. Pinned because the difference is invisible from the
+    // outcome alone: drop ORGANIZER from the recognised set and an address
+    // change still registers, as UNRECOGNISED, so no other test can tell. What
+    // changes is that a deployment could then configure away who called the
+    // meeting, which is exactly what the lever is built not to allow.
+    ReflectionTestUtils.setField(judge, "ignoredProperties", "ORGANIZER,ATTENDEE");
+
+    assertDifferent(EXO.replace("mailto:boss@acme.test", "mailto:mallory@acme.test"));
+    assertDifferent(EXO.replace("ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:mailto:ann@acme.test",
+                                "ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:mailto:mallory@acme.test"));
+  }
+
+  @Test
+  public void aChangedAttendeeAddressIsStillAnEditWithBothTolerancesActive() {
+    // Dropping CN must not let an address change slip past the pair of
+    // tolerances. It cannot: the substituted address is a surplus on the
+    // SERVER's side and neither rule covers a non-owner there — so what the
+    // eXo-side tolerance hides, the server-side strictness still reports.
+    assertDifferent(EXO.replace("ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:mailto:ann@acme.test",
+                                "ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:mailto:mallory@acme.test"));
+  }
+
   // ------------------------------------------------- the owner's own line
 
   // The relaxation EXO-89716's first deploy forced, and the tests that bound
