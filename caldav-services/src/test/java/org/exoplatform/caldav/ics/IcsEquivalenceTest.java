@@ -464,9 +464,58 @@ public class IcsEquivalenceTest {
   }
 
   @Test
-  public void anAttendeeTheCopyLostIsStillAnEdit() {
+  public void anAttendeeTheServerDidNotKeepIsNotAnEdit() {
+    // This test asserted the opposite two rounds ago, and the reversal is the
+    // architect's decision rather than a discovery here. BlueMind discards
+    // attendees whose addresses are not in its own directory — carol@stalwart
+    // in a BlueMind copy — so repairing achieves nothing: eXo re-pushes the
+    // whole roster, the server drops the same address again, and the next pass
+    // says the same thing. For the question this pass asks, an attendee the
+    // server declined to carry is not evidence that a client rewrote anything.
     String exo = EXO.replace("STATUS:CONFIRMED",
                              "ATTENDEE;CN=Carol:mailto:carol@stalwart.local\r\nSTATUS:CONFIRMED");
+
+    assertEquivalent(EXO, exo);
+  }
+
+  @Test
+  public void anAttendeeTheServerAddedIsStillAnEditWhileAnotherIsBeingTolerated() {
+    // Both tolerances live at once, which is the only configuration worth
+    // testing: each alone is easy to get right. eXo holds Carol and the copy
+    // does not (tolerated); the copy holds Mallory and eXo does not (a client
+    // added somebody, and it must still register). If these two rules had been
+    // written as "compare only the attendees both sides share" this would pass
+    // as equivalent and the pass would be blind to exactly what it is for.
+    String exo = EXO.replace("STATUS:CONFIRMED",
+                             "ATTENDEE;CN=Carol:mailto:carol@stalwart.local\r\nSTATUS:CONFIRMED");
+    String server = EXO.replace("STATUS:CONFIRMED",
+                                "ATTENDEE;CN=Mallory:mailto:mallory@stalwart.local\r\nSTATUS:CONFIRMED");
+
+    assertDifferent(server, exo);
+  }
+
+  @Test
+  public void aChangedPartstatIsStillAnEditWhileAnAttendeeIsBeingTolerated() {
+    // The one that matters most, with both tolerances active. Ann answered on
+    // her phone; Carol was never carried by the server. A PARTSTAT change
+    // always leaves a surplus on the SERVER's side — the answered line — and
+    // neither rule covers a non-owner surplus there, so it still registers and
+    // EXO-89681 still gets to read it.
+    String exo = EXO.replace("ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:",
+                             "ATTENDEE;CN=Ann;PARTSTAT=NEEDS-ACTION;SCHEDULE-AGENT=CLIENT:")
+                    .replace("STATUS:CONFIRMED", "ATTENDEE;CN=Carol:mailto:carol@stalwart.local\r\nSTATUS:CONFIRMED");
+
+    assertDifferent(EXO, exo);
+  }
+
+  @Test
+  public void theOwnerIsOutsideTheSecondToleranceSoALostOwnerStillRegisters() {
+    // The architect's reason for tolerating a dropped attendee — that a repair
+    // would be undone on the next write — does not hold for the owner: they are
+    // in the server's own directory by construction, so re-pushing their line
+    // sticks. Their exemption points the other way and only the other way.
+    String exo = EXO.replace("STATUS:CONFIRMED",
+                             "ATTENDEE;CN=Alice:mailto:alice@stalwart.local\r\nSTATUS:CONFIRMED");
 
     assertDifferent(EXO, exo);
   }
