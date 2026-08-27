@@ -64,7 +64,7 @@ public final class GoldenEventFixture {
                    .uid(text(event, "remoteId"))
                    .summary(text(event, "summary"))
                    .location(text(event, "location"))
-                   .description(text(event, "description"))
+                   .description(description(event))
                    .eventUrl(eventUrl(event))
                    .conferenceUrl(conferenceUrl(event))
                    .start(IcsText.parseInstant(text(event, "start")))
@@ -94,6 +94,45 @@ public final class GoldenEventFixture {
   private static String eventUrl(JsonNode event) {
     JsonNode id = event.get("id");
     return id == null || id.isNull() ? null : "https://exo.example.test/portal/dw/agenda?eventId=" + id.asText();
+  }
+
+  /**
+   * The plain-text description the engine now takes, composed here because in
+   * production it is composed before the engine sees it.
+   *
+   * <p>
+   * Since EXO-89732 the rendering of the description — markup to text, plus the
+   * conference line — happens in
+   * {@link org.exoplatform.caldav.service.AgendaEventIcsMapper}, and
+   * {@link IcsWriter} writes the plain text RFC 5545 &sect;3.8.1.5 defines
+   * DESCRIPTION to be. This fixture stands in for that mapper, so the
+   * composition moves here with it and the corpus keeps judging the engine on
+   * the same input the engine is given for real.
+   *
+   * <p>
+   * One thing production adds that this does <b>not</b>: the space attribution
+   * ("Invitation sent by X in space Y"). The goldens were captured from the
+   * browser connector, which never wrote it, and adding it here would make
+   * every text case differ from its capture for a reason that has nothing to do
+   * with the engine. The attribution is a deliberate departure from that
+   * captured behaviour and is pinned where it belongs — in
+   * {@code AgendaEventIcsMapperTest} and {@code IcsWriterPayloadContractTest} —
+   * rather than by weakening what this corpus can still see.
+   *
+   * @param event the {@code event} node of a driver-input fixture
+   * @return the description as the engine takes it, or null when there is none
+   */
+  private static String description(JsonNode event) {
+    String conferenceUrl = conferenceUrl(event);
+    java.util.List<String> parts = new java.util.ArrayList<>();
+    String text = IcsText.htmlToText(text(event, "description"));
+    if (text != null && !text.isBlank()) {
+      parts.add(text);
+    }
+    if (conferenceUrl != null) {
+      parts.add(conferenceUrl);
+    }
+    return parts.isEmpty() ? null : String.join("\n\n", parts);
   }
 
   /**
