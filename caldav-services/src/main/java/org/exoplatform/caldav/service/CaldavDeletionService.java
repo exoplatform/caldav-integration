@@ -448,6 +448,8 @@ public class CaldavDeletionService {
    *
    * @param userIdentityId identity of the user
    * @param pairId the tombstone to lift
+   * @param username the user's login, which the synchronisation run here needs
+   *          because agenda's ACL reads it rather than the identity id
    * @throws IllegalAccessException when the tombstone is not this user's
    * @throws ObjectNotFoundException when there is no such tombstone
    */
