@@ -418,6 +418,15 @@ public class CaldavSyncService {
    *
    * @param userIdentityId identity of the user
    * @param username the user's login
+   * @param awaitPassInFlight whether to wait on a pass already running for this
+   *          user instead of returning on the strength of it — what
+   *          {@link #syncNowAndWait(long, String)} needs so the answer it gives
+   *          is true when it is given. Never waits on the calling thread's own
+   *          pass.
+   * @param verifyMirror whether this pass also seeds and verifies the copies eXo
+   *          pushed. Only the background sweep asks for it: that check lists a
+   *          whole collection and was measured at 30 seconds, which nobody who
+   *          pressed a button should wait for a repair they will never see.
    */
   private void sync(long userIdentityId, String username, boolean awaitPassInFlight, boolean verifyMirror) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
@@ -556,6 +565,9 @@ public class CaldavSyncService {
    * @param userIdentityId identity of the user
    * @param username the user's login, which agenda's ACL reads
    * @param settings the connected account
+   * @param collections the account's listing as this pass read it, or null when
+   *          it could not be read — the distinction is what keeps a server
+   *          briefly answering with nothing from marking every collection gone
    */
   private void importRemoteEvents(long userIdentityId,
                                   String username,
