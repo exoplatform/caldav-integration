@@ -17,6 +17,8 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -201,6 +203,80 @@ public class CaldavPendingInvitationServiceTest {
   }
 
   /**
+   * One named meeting, seeded at the moment it is created rather than at the
+   * next sweep (EXO-89754). Nothing used to write it: every listener this
+   * add-on registered reacted to a meeting that already existed.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
+  @Test
+  public void oneNamedMeetingIsSeededOnDemand() throws Exception {
+    givenEvent(5L, SPACE, EventStatus.CONFIRMED);
+    givenCalendar(SPACE, 7L);
+    when(caldavPushService.pushAgendaEvent(USER, 5L)).thenReturn(new ObjectSync());
+
+    assertTrue(service.seedMeeting(USER, 5L));
+
+    verify(caldavPushService).pushAgendaEvent(USER, 5L);
+  }
+
+  /**
+   * The guard that keeps a creation to one write.
+   *
+   * <p>
+   * A creation reaches this add-on more than once — agenda auto-accepts the
+   * organiser from inside the {@code created} broadcast, so
+   * {@code responseSaved} follows it — and the two arrive on the same
+   * single-threaded listener executor. Whichever runs second must find the
+   * meeting already copied and write nothing: a second write carrying a fresh
+   * {@code DTSTAMP} is the churn EXO-89716 spent a day removing.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
+  @Test
+  public void aMeetingThatAlreadyHasACopyIsNotSeededAgain() throws Exception {
+    givenEvent(5L, SPACE, EventStatus.CONFIRMED);
+    givenCalendar(SPACE, 7L);
+    when(caldavSyncStorage.mappedEventIds(eq(USER), any())).thenReturn(Set.of(5L));
+
+    assertFalse(service.seedMeeting(USER, 5L));
+
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+  }
+
+  /**
+   * Seeding one named meeting refuses everything the sweep refuses. A user who
+   * turned copies off has said no to this too, whichever path asks.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
+  @Test
+  public void oneNamedMeetingIsNotSeededForAUserWhoTurnedCopiesOff() throws Exception {
+    givenCopies(false);
+
+    assertFalse(service.seedMeeting(USER, 5L));
+
+    verify(agendaEventService, never()).getEventById(anyLong());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+  }
+
+  /**
+   * A date poll created in eXo is spelled TENTATIVE and is not a scheduled
+   * meeting. Agenda broadcasts it under a name of its own, but the refusal is
+   * stated here too rather than left to the registration alone.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
+  @Test
+  public void oneNamedDatePollIsNotSeeded() throws Exception {
+    givenEvent(5L, SPACE, EventStatus.TENTATIVE);
+
+    assertFalse(service.seedMeeting(USER, 5L));
+
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+  }
+
+  /**
    * @param enabled whether the connected CalDAV account receives copies
    */
   private void givenCopies(boolean enabled) {
@@ -216,6 +292,22 @@ public class CaldavPendingInvitationServiceTest {
    */
   private void givenUpcoming(Event... events) throws IllegalAccessException {
     when(agendaEventService.getEvents(any(EventFilter.class), any(), eq(USER))).thenReturn(List.of(events));
+  }
+
+  /**
+   * Declares one event by its identifier, for the callers that name a meeting
+   * instead of listing a window.
+   *
+   * @param eventId the event identifier
+   * @param calendarId the calendar the event lives in
+   * @param status the agenda status
+   */
+  private void givenEvent(long eventId, long calendarId, EventStatus status) {
+    Event event = new Event();
+    event.setId(eventId);
+    event.setCalendarId(calendarId);
+    event.setStatus(status);
+    when(agendaEventService.getEventById(eventId)).thenReturn(event);
   }
 
   /**
