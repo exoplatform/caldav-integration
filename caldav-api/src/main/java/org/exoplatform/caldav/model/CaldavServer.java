@@ -87,9 +87,29 @@ public class CaldavServer {
   /**
    * Transient, outbound only: the URL the browser fetches the stored image
    * from, versioned by its last modification. Null when no image exists.
-   * Declared LAST on purpose — the model is built positionally through its
-   * all-args constructor, and appending keeps every existing argument on its
-   * own field.
    */
   private String  imageUrl;
+
+  /**
+   * Whether eXo writes its Accept / Decline / Tentative links into the
+   * description of every meeting copy pushed to this server.
+   *
+   * <p>
+   * Named after what eXo does, never after what the server can do: whether a
+   * native RSVP control appears is the <i>client's</i> decision — BlueMind's
+   * web UI gates it on the default calendar while Thunderbird against the same
+   * account decides for itself — so it can never be derived and stays
+   * explicit. Default true, because the failure modes are asymmetric:
+   * redundant links are a mild annoyance, missing links leave a user unable to
+   * answer at all.
+   *
+   * <p>
+   * Declared LAST on purpose — the model is built positionally through its
+   * all-args constructor, and appending keeps every existing argument on its
+   * own field. The initialiser is what makes the default a real one: it runs
+   * before every constructor, so a row built through the no-args constructor
+   * (a JSON body that never mentioned the field, most plausibly) carries the
+   * links rather than silently dropping them.
+   */
+  private boolean answerLinksInCopy = true;
 }
