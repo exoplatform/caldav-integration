@@ -710,15 +710,40 @@ public class CaldavSyncServiceTest {
   }
 
   @Test
-  public void aCollectionTheUserDesignatedAsTheMirrorIsNeverMaterialised() throws Exception {
-    // The mirror is not always the collection eXo minted: a user may point it
-    // at one of their own, whose path carries none of eXo's markers. The
-    // recorded href is then the only thing identifying it, and materialising
-    // it would show every pushed meeting a second time.
+  public void anOrdinaryCalendarTheMirrorMerelyPointsAtIsStillMaterialised() throws Exception {
+    // The skip used to be by location: whatever collection the account had
+    // recorded as its mirror was never materialised. That is fine while the
+    // mirror is the dedicated calendar eXo mints and nothing else keeps events
+    // in — and ruinous the moment it points at an ordinary calendar the user
+    // also synchronises, because their own primary calendar then stops
+    // appearing in eXo at all. The connector's core feature, lost to a guard
+    // meant to protect a handful of copies.
+    //
+    // So the recorded href alone no longer skips anything: the calendar is
+    // materialised like the calendar it is, and the copies inside it are
+    // protected one object at a time by the mapping table
+    // (CaldavInboundServiceTest#aCopyEXoWroteIntoTheMirrorIsNotImportedBackAsAnEventOfItsOwn).
     CaldavUserSetting designated = settings();
     designated.setMirrorCalendarHref("/dav/calendars/john/my-own-mirror/");
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(designated);
     givenServerCalendars(collectionOf("/dav/calendars/john/my-own-mirror/", "Meetings", Set.of("VEVENT")));
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService).createCalendar(any(), eq(LOGIN));
+  }
+
+  @Test
+  public void theDedicatedMirrorIsStillSkippedWhateverTheAccountRecorded() throws Exception {
+    // The narrowing above must not become "nothing is skipped". A collection
+    // eXo minted for its own copies is recognised from its path, so it stays
+    // out of the materialisation even for a second eXo user sharing the
+    // account — who has no recorded href for it at all.
+    CaldavUserSetting silent = settings();
+    silent.setMirrorCalendarHref(null);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(silent);
+    givenServerCalendars(collectionOf("/dav/calendars/john/exo-meetings/", "eXo Meetings", Set.of("VEVENT")));
     givenNoKnownPairs();
 
     service.syncNow(USER, LOGIN);
