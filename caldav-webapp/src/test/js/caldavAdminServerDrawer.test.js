@@ -18,6 +18,9 @@ import Vue from 'vue';
 import {shallowMount} from '@vue/test-utils';
 
 import CaldavAdminServerDrawer from '../../main/webapp/vue-app/caldav/components/admin/CaldavAdminServerDrawer.vue';
+import CaldavAdminServerMirrorTargetSelect
+  from '../../main/webapp/vue-app/caldav/components/admin/CaldavAdminServerMirrorTargetSelect.vue';
+import {presetValues, presetUrlPlaceholder, PRESET_NONE} from '../../main/webapp/vue-app/caldav/js/serverPresets.js';
 
 /**
  * The admin drawer, opened on a real registration.
@@ -74,9 +77,19 @@ describe('CaldavAdminServerDrawer', () => {
    *
    * @returns {Object} the wrapper
    */
-  function mountDrawer() {
+  function mountDrawer(saved) {
     return shallowMount(CaldavAdminServerDrawer, {
       mocks: {
+        $agendaCaldavService: {
+          createCaldavServer: payload => {
+            saved && saved.push({method: 'create', payload});
+            return Promise.resolve(payload);
+          },
+          updateCaldavServer: payload => {
+            saved && saved.push({method: 'update', payload});
+            return Promise.resolve(payload);
+          },
+        },
         $t(key, args) {
           // Deliberately depends on `this`. eXo's $t reads this.$i18n, and a
           // reference passed without its receiver is what produced the live
@@ -101,6 +114,13 @@ describe('CaldavAdminServerDrawer', () => {
           },
         },
         'caldav-admin-server-image-input': true,
+        // Only rendered on a declaration, and it has its own test file.
+        'caldav-admin-server-preset-select': true,
+        // The real one, not a stub. The destination control is where this
+        // change lives, and the failure it has to survive - a translator torn
+        // off its receiver - only shows when the component actually renders
+        // inside the drawer that hosts it.
+        'caldav-admin-server-mirror-target-select': CaldavAdminServerMirrorTargetSelect,
       },
     });
   }
@@ -186,5 +206,150 @@ describe('CaldavAdminServerDrawer', () => {
     expect(wrapper.vm.server.ignoredProperties).toBe('X-MICROSOFT-*,X-MOZ-*');
     expect(wrapper.vm.server.omittedProperties).toBe('SOLO-ORGANIZER');
     expect(wrapper.vm.server.droppedProperties).toBe('');
+  });
+  it('offers the two destinations, each with its consequence, inside the drawer that hosts them', async () => {
+    // Through the component, not through the module: what a module test cannot
+    // see is a control that never renders at all.
+    const wrapper = mountDrawer();
+
+    wrapper.vm.open({...bluemind});
+    await wrapper.vm.$nextTick();
+
+    const text = wrapper.text();
+    expect(text).toContain('caldav.admin.servers.mirrorTarget.appliesTo');
+    expect(text).toContain('caldav.admin.servers.mirrorTarget.dedicated.consequence');
+    expect(text).toContain('caldav.admin.servers.mirrorTarget.main.consequence');
+    // And no third one. Dropped from the UI by a product review; the enum still
+    // carries it, so this is the assertion that keeps it out of the drawer.
+    expect(text).not.toContain('caldav.admin.servers.mirrorTarget.userChoice.label');
+    expect(text).not.toContain('caldav.admin.servers.mirrorTarget.userChoice.consequence');
+  });
+
+  it('says the existing copies will move only once the destination actually changes', async () => {
+    const wrapper = mountDrawer();
+
+    wrapper.vm.open({...bluemind, mirrorTarget: 'DEDICATED_CALENDAR'});
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).not.toContain('caldav.admin.servers.mirrorTarget.moves');
+
+    wrapper.vm.server.mirrorTarget = 'MAIN_CALENDAR';
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain('caldav.admin.servers.mirrorTarget.moves');
+  });
+
+  it('never announces a move on a declaration, whatever destination is chosen', async () => {
+    const wrapper = mountDrawer();
+
+    wrapper.vm.open();
+    wrapper.vm.server.mirrorTarget = 'MAIN_CALENDAR';
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).not.toContain('caldav.admin.servers.mirrorTarget.moves');
+  });
+
+  it('sends a real destination on every edit, including a row that was stored without one', async () => {
+    // THE regression this change can cause. CaldavServerStorage.updateServer
+    // treats an absent mirrorTarget as "not stated" and keeps the stored value
+    // - a guard that existed for exactly one reason: no drawer carried the
+    // control. From the moment this one does, that guard protects nothing, and
+    // a save that omitted the field would reset an administrator's destination
+    // on an edit that had nothing to do with it. So the payload states it,
+    // always.
+    const saved = [];
+    const wrapper = mountDrawer(saved);
+
+    // A row as the registry sends it before anyone opened this control: no
+    // mirrorTarget at all.
+    wrapper.vm.open({...bluemind});
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.saveServer();
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0].method).toBe('update');
+    expect(saved[0].payload.mirrorTarget).toBe('DEDICATED_CALENDAR');
+  });
+
+  it('sends the destination the administrator chose, not the one the row arrived with', async () => {
+    const saved = [];
+    const wrapper = mountDrawer(saved);
+
+    wrapper.vm.open({...bluemind, mirrorTarget: 'DEDICATED_CALENDAR'});
+    await wrapper.vm.$nextTick();
+    wrapper.vm.server.mirrorTarget = 'MAIN_CALENDAR';
+    await wrapper.vm.saveServer();
+
+    expect(saved[0].payload.mirrorTarget).toBe('MAIN_CALENDAR');
+  });
+
+  it('carries a preset\'s copy settings into the form the administrator is looking at', async () => {
+    // Through the drawer, not through the module: what the module test cannot
+    // see is a preset value that arrives and is then overwritten by the
+    // drawer's own default before anybody reads it.
+    const wrapper = mountDrawer();
+
+    wrapper.vm.open();
+    wrapper.vm.applyPreset({
+      values: presetValues('bluemind'),
+      urlPlaceholder: presetUrlPlaceholder('bluemind'),
+    });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.vm.server.mirrorTarget).toBe('MAIN_CALENDAR');
+    expect(wrapper.vm.server.answerLinksInCopy).toBe(true);
+    // And the control shows it, rather than the form quietly holding one value
+    // while the radios show another.
+    expect(wrapper.find('v-radio-group').attributes('value')).toBe('MAIN_CALENDAR');
+    // A declaration still promises no move: there are no copies to move.
+    expect(wrapper.text()).not.toContain('caldav.admin.servers.mirrorTarget.moves');
+  });
+
+  it('leaves both copy settings alone when the server is one we have not characterised', async () => {
+    const wrapper = mountDrawer();
+
+    wrapper.vm.open();
+    wrapper.vm.server.mirrorTarget = 'MAIN_CALENDAR';
+    wrapper.vm.server.answerLinksInCopy = false;
+    wrapper.vm.applyPreset({
+      values: presetValues(PRESET_NONE),
+      urlPlaceholder: presetUrlPlaceholder(PRESET_NONE),
+    });
+    await wrapper.vm.$nextTick();
+
+    // Not knowing a server is not the same statement as knowing what it does,
+    // exactly as for the excusal lists beside them.
+    expect(wrapper.vm.server.mirrorTarget).toBe('MAIN_CALENDAR');
+    expect(wrapper.vm.server.answerLinksInCopy).toBe(false);
+  });
+
+  it('opens a row stored as the destination we stopped offering on the dedicated calendar', async () => {
+    // The row exists: the option was on offer until a product review dropped
+    // it, and MirrorTargetKind still stores the value. The drawer must show a
+    // real option rather than an empty radio group, and must not tell the
+    // administrator their copies are about to move when they open the row and
+    // save it unchanged.
+    const saved = [];
+    const wrapper = mountDrawer(saved);
+
+    wrapper.vm.open({...bluemind, mirrorTarget: 'USER_CHOICE'});
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.vm.server.mirrorTarget).toBe('DEDICATED_CALENDAR');
+    expect(wrapper.text()).not.toContain('caldav.admin.servers.mirrorTarget.moves');
+
+    await wrapper.vm.saveServer();
+    expect(saved[0].payload.mirrorTarget).toBe('DEDICATED_CALENDAR');
+  });
+
+  it('states a destination on a declaration too, rather than leaving the registry to guess', async () => {
+    const saved = [];
+    const wrapper = mountDrawer(saved);
+
+    wrapper.vm.open();
+    wrapper.vm.server.name = 'A server';
+    wrapper.vm.server.serverUrl = 'https://caldav.example.invalid/dav/';
+    await wrapper.vm.saveServer();
+
+    expect(saved[0].method).toBe('create');
+    expect(saved[0].payload.mirrorTarget).toBe('DEDICATED_CALENDAR');
   });
 });

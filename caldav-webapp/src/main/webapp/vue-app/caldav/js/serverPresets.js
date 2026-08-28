@@ -55,6 +55,32 @@
  * what the drawer later shows a server doing are the same thing under the same
  * name.
  *
+ * A preset states the two copy settings, and says so
+ * --------------------------------------------------
+ * Beyond the excusal lists, a characterised preset states where the copies are
+ * written and whether eXo writes its own answer links into them. Both are
+ * decisions about the document landing in somebody's calendar, and both have an
+ * answer that is known per server rather than per deployment:
+ *
+ * - Stalwart accepts an answer sent from any calendar, so the calendar client's
+ *   own Accept and Decline already work on a copy wherever it sits. eXo's links
+ *   would add text to every copy and buy nothing, so the preset turns them off.
+ *   Its copies go to the dedicated eXo Meetings calendar, which Stalwart treats
+ *   like any other.
+ * - BlueMind's dedicated calendar is known deficient: it is excluded from the
+ *   account's free/busy, so colleagues booking around the user see eXo meeting
+ *   times as free, and it carries no answer buttons. So the preset chooses the
+ *   account's main calendar — the destination whose own consequence line asks
+ *   for a measurement first, which is why the preset's summary says both that
+ *   it chose it and that the first synchronisations are still worth watching.
+ *   Answer links stay on, because BlueMind shows its own answer buttons on the
+ *   default calendar only.
+ *
+ * Both are STATED in the summary beside the preset. A shortcut that silently
+ * turns something off, or silently picks the more demanding destination, is
+ * worse than one that touches neither: the administrator would meet the choice
+ * later, as a symptom, with nothing to connect it to.
+ *
  * Three behaviours the presets deliberately do NOT carry
  * -----------------------------------------------------
  * - Everything BlueMind does that eXo already handles for every server: the
@@ -70,6 +96,8 @@
  * - Anything about a server nobody here has run. The list below is what this
  *   codebase has characterised, and it is deliberately short.
  */
+
+import {MIRROR_TARGET_DEDICATED_CALENDAR, MIRROR_TARGET_MAIN_CALENDAR} from './mirrorTargets.js';
 
 /**
  * The identifier of the option that fills nothing.
@@ -104,6 +132,23 @@ const DROPPED = 'droppedProperties';
  * calendar rather than what eXo notices about it.
  */
 const OMITTED = 'omittedProperties';
+
+/**
+ * The registration field deciding whether eXo writes its own Accept / Decline
+ * links into the description of every copy.
+ */
+const ANSWER_LINKS = 'answerLinksInCopy';
+
+/**
+ * The registration field deciding which calendar the copies are written to.
+ */
+const MIRROR_TARGET = 'mirrorTarget';
+
+/**
+ * The two fields above, as one list: they are stated together, omitted
+ * together, and are the only preset-owned fields a preset may decline to state.
+ */
+const COPY_SETTINGS = [ANSWER_LINKS, MIRROR_TARGET];
 
 /**
  * The catalogue entries a preset may name, with the list each writes into and
@@ -147,12 +192,26 @@ export const SERVER_PRESETS = [
      * The four behaviours are what kept copies of a live account in a permanent
      * repair loop until each was recognised — `CONFERENCE` alone was proved
      * dropped 399 times in one day, five copies rewritten every five minutes.
+     *
+     * The main calendar, because BlueMind's dedicated one is known deficient:
+     * it is excluded from the account's free/busy — colleagues booking around
+     * the user see eXo meeting times as free — and it carries no answer
+     * buttons. The general caution on that option ("only once copies
+     * synchronise cleanly") is right and stays where it is; what is true here
+     * is that on THIS server the dedicated calendar has an established cost the
+     * caution does not weigh, so the preset chooses the main calendar and its
+     * summary says both things.
+     *
+     * Answer links on: BlueMind shows its own answer buttons on the default
+     * calendar only, so eXo's links are what covers anything else.
      */
     id: 'bluemind',
     name: 'BlueMind',
     icon: null,
     urlPlaceholder: 'https://bluemind.example.org/dav/',
     quirks: ['dropsConference', 'addsCompatibilityMarkers', 'addsFormattedDescription', 'omitsSoloOrganizer'],
+    [ANSWER_LINKS]: true,
+    [MIRROR_TARGET]: MIRROR_TARGET_MAIN_CALENDAR,
   },
   {
     /*
@@ -172,12 +231,21 @@ export const SERVER_PRESETS = [
      * whole point of characterising a server: a deployment-wide
      * `droppedProperties` set for somebody else's BlueMind does not get to
      * blind a Stalwart that keeps everything.
+     *
+     * Answer links off, and it is the same kind of answer as the empty quirk
+     * set. Stalwart accepts an answer sent from any calendar, so the calendar
+     * client's own Accept and Decline work on a copy wherever it sits; writing
+     * eXo's links into the description as well adds text to every copy and buys
+     * nothing. The dedicated calendar, because nothing here records Stalwart
+     * treating it differently from any other.
      */
     id: 'stalwart',
     name: 'Stalwart',
     icon: null,
     urlPlaceholder: 'https://stalwart.example.org/dav/cal/{username}/',
     quirks: [],
+    [ANSWER_LINKS]: false,
+    [MIRROR_TARGET]: MIRROR_TARGET_DEDICATED_CALENDAR,
   },
   {
     /*
@@ -186,12 +254,20 @@ export const SERVER_PRESETS = [
      * settings go on deciding for it exactly as they did before this option
      * existed. Not knowing a server is not the same statement as knowing it has
      * nothing to excuse, and a row must not confuse the two.
+     *
+     * The same reasoning leaves the two copy settings UNSTATED — and here that
+     * has to mean absent rather than null, because both fields read a null as a
+     * decision: no answer links, and the default destination. So the option
+     * writes neither key, and whatever the form already carried survives
+     * choosing it.
      */
     id: PRESET_NONE,
     name: '',
     icon: null,
     urlPlaceholder: DEFAULT_URL_PLACEHOLDER,
     quirks: null,
+    [ANSWER_LINKS]: null,
+    [MIRROR_TARGET]: null,
   },
 ];
 
@@ -242,6 +318,17 @@ function storedList(list) {
  * uncharacterised option writes null — "nobody has asked" — which leaves the
  * deployment-wide list in force, exactly as before.
  *
+ * The two copy settings are the one exception to "always present", and for the
+ * same reason. An excusal list has a value meaning "nobody has asked" and it is
+ * null; `answerLinksInCopy` and `mirrorTarget` have none — a null there is read
+ * as "no links" and as the default destination, which are decisions. So the
+ * uncharacterised option omits the KEYS, and choosing it leaves whatever the
+ * form carried. That is deliberate and it is asymmetric: an administrator who
+ * picked BlueMind, then changed their mind to a server we have not
+ * characterised, keeps the main calendar in front of them, stated on a control
+ * they can read and change — which is better than a shortcut silently putting
+ * back a destination nobody chose either.
+ *
  * @param {String} presetId the identifier of the chosen preset
  * @returns {Object} the fields to copy into the registration
  */
@@ -259,13 +346,22 @@ export function presetValues(presetId) {
       lists[quirk.list] = lists[quirk.list].concat(quirk.patterns);
     }
   });
-  return {
+  const values = {
     name: preset.name,
     icon: preset.icon,
     [IGNORED]: storedList(lists[IGNORED]),
     [DROPPED]: storedList(lists[DROPPED]),
     [OMITTED]: storedList(lists[OMITTED]),
   };
+  COPY_SETTINGS.forEach(field => {
+    // Written out rather than folded in, because `false` is a value a preset
+    // states on purpose - Stalwart's answer links - and a truthiness test here
+    // would turn that statement into a silence.
+    if (typeof preset[field] !== 'undefined' && preset[field] !== null) {
+      values[field] = preset[field];
+    }
+  });
+  return values;
 }
 
 /**
