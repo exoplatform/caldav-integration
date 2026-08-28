@@ -191,7 +191,7 @@ public class CaldavEventPropagationService {
    * space membership through agenda's own query and costs one pass per user
    * rather than one fan-out per event.
    *
-   * <h2>The author's own copy is not written here, and that is the double push</h2>
+   * <b>The author's own copy is not written here, and that is the double push.</b>
    *
    * <p>
    * The person who created the meeting is skipped, because their <b>browser
