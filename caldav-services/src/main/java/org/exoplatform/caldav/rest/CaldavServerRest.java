@@ -207,8 +207,11 @@ public class CaldavServerRest {
   @PatchMapping("/{serverId}/status")
   @Secured("administrators")
   @Operation(summary = "Activates or deactivates a declared CalDAV server", method = "PATCH",
-      description = "Flips the activation of a declared CalDAV server, propagated to its agenda remote provider")
+      description = "Flips the activation of a declared CalDAV server, propagated to its agenda remote provider. "
+          + "Activating a server whose stored address the platform must not connect to is refused with the message "
+          + "code as the body; deactivating one always goes through.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found") })
   public CaldavServer setServerActive(HttpServletRequest request,
@@ -224,6 +227,8 @@ public class CaldavServerRest {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
   }
 

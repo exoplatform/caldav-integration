@@ -113,6 +113,9 @@ public class CaldavServerService {
   private CaldavServerQuirkService caldavServerQuirkService;
 
   @Autowired
+  private CaldavServerUrlValidator caldavServerUrlValidator;
+
+  @Autowired
   private UserACL                  userAcl;
 
   @Autowired
@@ -168,6 +171,20 @@ public class CaldavServerService {
    * <li><b>Bluemind</b>, a normally-named row whose agenda remote provider is
    * upserted here, since no kernel plugin declares it.</li>
    * </ul>
+   *
+   * <p>
+   * <b>Seeding is not gated by the address check (EXO-89774), on purpose.</b>
+   * These two rows are product bootstrap, not administrator input: the
+   * Stalwart default points at the local development rig by design, and the
+   * Bluemind row ships a {@code .invalid} placeholder host an administrator is
+   * expected to replace. Refusing either would break the product's own
+   * bootstrap for a reason that only applies to what a person types. What the
+   * seeding does instead is say so out loud — see
+   * {@link #warnAboutSeededUrl(String, String)} — and the first administrator
+   * edit or re-activation of a seeded row goes through the full check like any
+   * other write. The residual gap is named in the delivery: a deployment that
+   * never opens the administration screen keeps whatever the seed declared,
+   * which is today's behaviour unchanged.
    */
   protected void seedDefaultServers() {
     if (caldavServerStorage.countServers() > 0) {
@@ -191,6 +208,7 @@ public class CaldavServerService {
                                               null, null, null, true, null, null, null, null, null,
                                               MirrorTargetKind.DEDICATED_CALENDAR));
     LOG.info("Seeded the Stalwart CalDAV server ({})", stalwartUrl);
+    warnAboutSeededUrl("Stalwart", stalwartUrl);
     CaldavServer bluemind = caldavServerStorage.createServer(new CaldavServer(0, null, "Bluemind", null, DEFAULT_BLUEMIND_URL,
                                                                               true, null, null, null, null, true, null,
                                                                               null, null, null, null,
@@ -198,6 +216,32 @@ public class CaldavServerService {
                                                              CALDAV_PROVIDER_NAME);
     saveAgendaRemoteProvider(bluemind);
     LOG.info("Seeded the Bluemind CalDAV server ({})", DEFAULT_BLUEMIND_URL);
+    warnAboutSeededUrl("Bluemind", DEFAULT_BLUEMIND_URL);
+  }
+
+  /**
+   * Says out loud, at boot, that a row just seeded carries an address an
+   * administrator would not be allowed to type — and which configuration
+   * property would make it acceptable.
+   *
+   * <p>
+   * This exists so the gap between the seed and the administration screen is
+   * visible in the log rather than discovered the first time somebody edits a
+   * seeded row and is refused for a reason the screen alone cannot explain.
+   * The warning never changes what is seeded.
+   *
+   * @param name display name of the seeded row, for the log line
+   * @param url address the row was seeded with
+   */
+  private void warnAboutSeededUrl(String name, String url) {
+    try {
+      caldavServerUrlValidator.validate(url);
+    } catch (IllegalArgumentException e) {
+      LOG.warn("The seeded CalDAV server {} carries the address {}, which an administrator would be refused ({}). "
+          + "Editing or re-activating this row from the administration screen will be refused until the deployment "
+          + "opts in through exo.agenda.caldav.server.allowedSchemes / allowedPorts / allowedHosts / "
+          + "allowPrivateAddresses.", name, url, e.getMessage());
+    }
   }
 
   /**
@@ -286,11 +330,22 @@ public class CaldavServerService {
    * @return the updated registration
    * @throws IllegalAccessException when the user is not a platform administrator
    * @throws ObjectNotFoundException when no registration carries that id
+   * @throws IllegalArgumentException carrying a message code when the row is
+   *           being ACTIVATED and its stored address is one the platform must
+   *           not be made to connect to
    */
   public CaldavServer setServerActive(long serverId, boolean active, String username) throws IllegalAccessException,
                                                                                       ObjectNotFoundException {
     checkCanEdit(username);
     CaldavServer server = getServerById(serverId);
+    if (active) {
+      // Activation is a write like any other, and the row being activated may
+      // predate the address check — a registration stored before EXO-89774, or
+      // a seeded default. Checking here is what keeps those from being switched
+      // back on unexamined; deactivating is never checked, because taking a bad
+      // address out of service must always be possible.
+      caldavServerUrlValidator.validate(server.getServerUrl());
+    }
     server.setActive(active);
     // The switch changes nothing a copy carries, so the stamp must come out of
     // this write exactly as it went in. Recomputing it rather than trusting the
@@ -494,8 +549,18 @@ public class CaldavServerService {
   }
 
   /**
-   * Refuses a registration whose display name or URL is missing, with the
+   * Refuses a registration whose display name or URL is missing, or whose URL
+   * is an address the platform must not be made to connect to, with the
    * message codes the REST layer answers 400 with.
+   *
+   * <p>
+   * The address check runs HERE, at declaration time, rather than at
+   * synchronisation time: an administrator reading "this address points inside
+   * the network" while the drawer is still open can fix it, whereas the same
+   * refusal an hour later is an unexplained sync failure nobody attributes to
+   * what they typed. See {@link CaldavServerUrlValidator} for what is checked
+   * and — as importantly — for what declaration-time validation does not
+   * close.
    *
    * @param server registration to validate
    */
@@ -509,6 +574,7 @@ public class CaldavServerService {
     if (StringUtils.isBlank(server.getServerUrl())) {
       throw new IllegalArgumentException(SERVER_URL_MANDATORY_MESSAGE);
     }
+    caldavServerUrlValidator.validate(server.getServerUrl());
   }
 
   /**
