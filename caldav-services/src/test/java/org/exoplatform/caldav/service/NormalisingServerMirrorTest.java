@@ -157,6 +157,27 @@ public class NormalisingServerMirrorTest {
   @Mock
   private AgendaCalendarService                agendaCalendarService;
 
+  /**
+   * Mocked, deliberately. EXO-89681 reads the owner's answer off a copy the
+   * pass has just called altered; what this rig pins is <b>which</b> copies get
+   * called that, not what is then done with the answer on one — that is
+   * {@code CaldavAnswerAdoptionServiceTest}'s subject. Answering NOTHING keeps
+   * every scenario here on the ordinary repair path it was written for.
+   */
+  @Mock
+  private CaldavAnswerAdoptionService          caldavAnswerAdoptionService;
+
+  /**
+   * The registry the pass asks what this server is excused for (EXO-89771) and
+   * whether a copy-governing setting has moved since this mirror last applied
+   * one (EXO-89759). Unstubbed, which answers null and is the state every
+   * deployment starts in — the deployment-wide excusals decide, nothing is to
+   * be applied, and every scenario in this rig stays on the ordinary ETag-gated
+   * path it was written for.
+   */
+  @Mock
+  private CaldavServerService                  caldavServerService;
+
   private FakeCalDavServer                     server;
 
   private CaldavPushService                    push;
@@ -190,12 +211,12 @@ public class NormalisingServerMirrorTest {
     ReflectionTestUtils.setField(verification, "icsEquivalence", icsEquivalence);
     ReflectionTestUtils.setField(verification, "caldavAnswerAdoptionService", caldavAnswerAdoptionService);
     // EXO-89771 gave the pass a registry to ask what this server is excused for
-    // and a place to record what it saw. Both are stubbed: this class connects a
-    // fake server with no registration behind it, so the comparison runs on the
-    // deployment-wide fallback the ReflectionTestUtils calls below still set.
-    ReflectionTestUtils.setField(verification,
-                                 "caldavServerService",
-                                 org.mockito.Mockito.mock(CaldavServerService.class));
+    // and a place to record what it saw; EXO-89759 asks the same registry
+    // whether a copy-governing setting has moved. Both are mocks and neither is
+    // stubbed: this class connects a fake server with no registration behind it,
+    // so the comparison runs on the deployment-wide fallback the
+    // ReflectionTestUtils calls below still set, and no settings round is owed.
+    ReflectionTestUtils.setField(verification, "caldavServerService", caldavServerService);
     ReflectionTestUtils.setField(verification,
                                  "caldavServerQuirkService",
                                  org.mockito.Mockito.mock(CaldavServerQuirkService.class));

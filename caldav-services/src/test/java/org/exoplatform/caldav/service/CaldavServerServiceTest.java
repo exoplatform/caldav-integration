@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -51,6 +52,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import java.io.InputStream;
+import java.util.Date;
 import java.util.List;
 
 import org.exoplatform.caldav.model.CaldavServer;
@@ -717,6 +719,95 @@ public class CaldavServerServiceTest {
     }
   }
 
+
+  // ---- the stamp that makes a settings change reach the copies (EXO-89759)
+
+  /**
+   * Turning the answer links off stamps the row, because that change alters
+   * what eXo renders into every copy and moves no ETag on the server: without
+   * the stamp, nothing would ever look at those copies again.
+   *
+   * @throws Exception never, the storage is mocked
+   */
+  @Test
+  public void shouldStampTheRowWhenASettingGoverningTheCopiesChanges() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, "agenda.caldavCalendar.7", "Bluemind", null, SERVER_URL, true);
+    CaldavServer incoming = server(7, "agenda.caldavCalendar.7", "Bluemind", null, SERVER_URL, true);
+    incoming.setAnswerLinksInCopy(false);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    CaldavServer result = caldavServerService.updateServer(incoming, ADMIN_USER);
+
+    assertNotNull(result.getCopySettingsUpdated(), "the change has to reach the copies already written");
+  }
+
+  /**
+   * Renaming does not: presentation reaches a list in the connectors screen and
+   * never a calendar object, so making every mirror in the deployment fetch and
+   * compare every copy it holds would be pure cost.
+   *
+   * @throws Exception never, the storage is mocked
+   */
+  @Test
+  public void shouldNotStampTheRowForAChangeNoCopyCarries() throws Exception {
+    withUser(ADMIN_USER, true);
+    Date earlier = new Date(1_700_000_000_000L);
+    CaldavServer stored = server(7, "agenda.caldavCalendar.7", "Bluemind", null, SERVER_URL, true);
+    stored.setCopySettingsUpdated(earlier);
+    CaldavServer incoming = server(7, "agenda.caldavCalendar.7", "Renamed", "New description", SERVER_URL, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    CaldavServer result = caldavServerService.updateServer(incoming, ADMIN_USER);
+
+    assertEquals(earlier, result.getCopySettingsUpdated(), "and the stamp already there must survive the rename");
+  }
+
+  /**
+   * A stamp in the request body is ignored. Trusted, an invented timestamp
+   * would set every mirror in the deployment re-comparing its copies, and an
+   * echoed stale one would stop a mirror that owes a round — from a caller who
+   * needs no more rights than editing the name.
+   *
+   * @throws Exception never, the storage is mocked
+   */
+  @Test
+  public void shouldIgnoreAStampSentByTheCaller() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, "agenda.caldavCalendar.7", "Bluemind", null, SERVER_URL, true);
+    CaldavServer incoming = server(7, "agenda.caldavCalendar.7", "Bluemind", null, SERVER_URL, true);
+    incoming.setCopySettingsUpdated(new Date());
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    CaldavServer result = caldavServerService.updateServer(incoming, ADMIN_USER);
+
+    assertNull(result.getCopySettingsUpdated(), "the stamp is recomputed from the stored row, never accepted");
+  }
+
+  /**
+   * Flipping the activation switch carries the stamp through untouched. Left
+   * null by that write, it would quietly cancel a change an administrator made
+   * a minute earlier that no sweep has reached yet.
+   *
+   * @throws Exception never, the storage is mocked
+   */
+  @Test
+  public void shouldCarryTheStampThroughAnActivationToggle() throws Exception {
+    withUser(ADMIN_USER, true);
+    Date earlier = new Date(1_700_000_000_000L);
+    CaldavServer stored = server(7, "agenda.caldavCalendar.7", "Bluemind", null, SERVER_URL, true);
+    stored.setCopySettingsUpdated(earlier);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    CaldavServer result = caldavServerService.setServerActive(7, false, ADMIN_USER);
+
+    assertEquals(earlier, result.getCopySettingsUpdated());
+  }
+
   /**
    * Builds a registration with the six identity fields — the icon/image
    * fields default to null, exactly as a fresh REST payload leaves them.
@@ -731,6 +822,7 @@ public class CaldavServerServiceTest {
    */
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
-    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null, null, null, null);
+    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null,
+                            null, null, null, null);
   }
 }
