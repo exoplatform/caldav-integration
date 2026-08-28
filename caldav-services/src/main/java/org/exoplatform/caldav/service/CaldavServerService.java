@@ -309,7 +309,21 @@ public class CaldavServerService {
   public CaldavServer updateServer(CaldavServer server, String username) throws IllegalAccessException,
                                                                          ObjectNotFoundException {
     checkCanEdit(username);
-    validate(server);
+    // The address is judged only when it CHANGES. Re-judging an unchanged one
+    // buys no safety and costs an administrator their settings: the row is
+    // already declared and already dialled by every sweep, so refusing the save
+    // does not stop a single request - it only blocks renaming a server, or
+    // changing its icon, on a deployment whose CalDAV server has always been
+    // internal. That is the ordinary case for an on-premises install, and those
+    // are the administrators who changed nothing. A hostile address still
+    // cannot arrive: it cannot be introduced without editing the field, and
+    // editing the field is exactly what is checked. Activation is checked too
+    // (see setServerActive), so a row cannot be parked and switched on later.
+    validateWithoutAddress(server);
+    CaldavServer stored = server.getId() > 0 ? caldavServerStorage.getServerById(server.getId()) : null;
+    if (stored == null || !StringUtils.equals(stored.getServerUrl(), server.getServerUrl())) {
+      caldavServerUrlValidator.validate(server.getServerUrl());
+    }
     stampCopySettings(server);
     CaldavServer updatedServer = caldavServerStorage.updateServer(server);
     if (updatedServer == null) {
@@ -565,6 +579,20 @@ public class CaldavServerService {
    * @param server registration to validate
    */
   private void validate(CaldavServer server) {
+    validateWithoutAddress(server);
+    caldavServerUrlValidator.validate(server.getServerUrl());
+  }
+
+  /**
+   * The mandatory-field half of the checks, without the address check.
+   *
+   * <p>
+   * Split out for the one caller that must not re-judge an address it is not
+   * changing — see {@link #updateServer(CaldavServer, String)}.
+   *
+   * @param server registration to validate
+   */
+  private void validateWithoutAddress(CaldavServer server) {
     if (server == null) {
       throw new IllegalArgumentException(SERVER_MANDATORY_MESSAGE);
     }
@@ -574,7 +602,6 @@ public class CaldavServerService {
     if (StringUtils.isBlank(server.getServerUrl())) {
       throw new IllegalArgumentException(SERVER_URL_MANDATORY_MESSAGE);
     }
-    caldavServerUrlValidator.validate(server.getServerUrl());
   }
 
   /**
