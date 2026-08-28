@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-import {applyExcusals, splitList, withPatterns} from '../../main/webapp/vue-app/caldav/js/serverQuirks.js';
+import {applyExcusals, describeQuirk, splitList, withPatterns} from '../../main/webapp/vue-app/caldav/js/serverQuirks.js';
 
 /**
  * What ticking a box actually writes into the registration. This is the one
@@ -54,6 +54,18 @@ describe('applyExcusals', () => {
 
     expect(server.omittedProperties).toBe('SOLO-ORGANIZER');
     expect(server.droppedProperties).toBe('CONFERENCE');
+  });
+
+  it('writes every pattern a grouped behaviour covers, not just the property seen first', () => {
+    // The markers entry is one checkbox standing for a family. Live on the rig
+    // BlueMind stamped three of them; ticking it must excuse the family the
+    // sentence names, or the next marker the server invents comes straight back
+    // as a fresh unticked row.
+    const server = {ignoredProperties: '', droppedProperties: '', omittedProperties: ''};
+
+    applyExcusals(server, [{...markers, excused: true}]);
+
+    expect(server.ignoredProperties).toBe('X-MICROSOFT-*,X-MOZ-*');
   });
 
   it('writes a ticked behaviour into the list its direction belongs to', () => {
@@ -128,5 +140,66 @@ describe('splitList and withPatterns', () => {
 
   it('adds each pattern once, however many times it was already there', () => {
     expect(withPatterns(['CONFERENCE', 'conference'], ['CONFERENCE'], true)).toEqual(['CONFERENCE']);
+  });
+});
+
+describe('describeQuirk', () => {
+
+  /** A translate that echoes the key and its argument, so wording is visible. */
+  const translate = (key, args) => args && `${key}(${args[0]})` || key;
+
+  it('keys a described behaviour by its quirk, so a family is one checkbox', () => {
+    // Live on the rig: three Outlook/Thunderbird markers rendered as three
+    // identical rows. One key means one row.
+    const rows = [
+      {quirkId: 'addsCompatibilityMarkers', properties: ['X-MOZ-LASTACK'], direction: 'ADDED', count: 3,
+        patterns: ['X-MICROSOFT-*', 'X-MOZ-*']},
+      {quirkId: 'addsCompatibilityMarkers', properties: ['X-MICROSOFT-CDO-BUSYSTATUS'], direction: 'ADDED', count: 1,
+        patterns: ['X-MICROSOFT-*', 'X-MOZ-*']},
+    ].map(quirk => describeQuirk(quirk, translate));
+
+    expect(rows[0].key).toBe(rows[1].key);
+  });
+
+  it('keys a behaviour nothing describes by its own property', () => {
+    const foo = describeQuirk({quirkId: null, properties: ['X-BM-FOO'], direction: 'ADDED', count: 1}, translate);
+    const bar = describeQuirk({quirkId: null, properties: ['X-BM-BAR'], direction: 'ADDED', count: 1}, translate);
+
+    expect(foo.key).not.toBe(bar.key);
+  });
+
+  it('ticks the whole family the catalogue names, not the property seen first', () => {
+    const row = describeQuirk({quirkId: 'addsCompatibilityMarkers', properties: ['X-MOZ-LASTACK'], direction: 'ADDED',
+      count: 3, patterns: ['X-MICROSOFT-*', 'X-MOZ-*']}, translate);
+
+    expect(row.patterns).toEqual(['X-MICROSOFT-*', 'X-MOZ-*']);
+  });
+
+  it('falls back to the observed properties when no patterns arrived', () => {
+    const row = describeQuirk({quirkId: null, properties: ['X-BM-FOO'], direction: 'ADDED', count: 1}, translate);
+
+    expect(row.patterns).toEqual(['X-BM-FOO']);
+  });
+
+  it('counts in a sentence that agrees with itself', () => {
+    // "Seen 1 times" was on screen; a plural that does not agree reads as a
+    // defect in the thing it is counting.
+    expect(describeQuirk({properties: ['X'], direction: 'ADDED', count: 1}, translate).seen)
+      .toBe('caldav.admin.servers.quirks.seen.once');
+    expect(describeQuirk({properties: ['X'], direction: 'ADDED', count: 3}, translate).seen)
+      .toBe('caldav.admin.servers.quirks.seen.many(3)');
+  });
+
+  it('marks only a payload-changing behaviour as changing what eXo writes', () => {
+    expect(describeQuirk({quirkId: 'omitsSoloOrganizer', properties: ['SOLO-ORGANIZER'], direction: 'DROPPED',
+      effect: 'OMIT', count: 1}, translate).changesWhatIsWritten).toBe(true);
+    expect(describeQuirk({quirkId: 'dropsConference', properties: ['CONFERENCE'], direction: 'DROPPED',
+      effect: 'TOLERATE', count: 1}, translate).changesWhatIsWritten).toBe(false);
+  });
+
+  it('names an undescribed behaviour by its own property in the generic wording', () => {
+    const row = describeQuirk({quirkId: null, properties: ['X-BM-FOO'], direction: 'ADDED', count: 1}, translate);
+
+    expect(row.label).toBe('caldav.admin.servers.quirks.generic.added.label(X-BM-FOO)');
   });
 });
