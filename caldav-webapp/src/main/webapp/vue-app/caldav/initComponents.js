@@ -29,6 +29,7 @@ import CaldavAdminServerList from './components/admin/CaldavAdminServerList.vue'
 import CaldavAdminServerDrawer from './components/admin/CaldavAdminServerDrawer.vue';
 import CaldavAdminServerImageInput from './components/admin/CaldavAdminServerImageInput.vue';
 import CaldavAdminServerPresetSelect from './components/admin/CaldavAdminServerPresetSelect.vue';
+import CaldavAdminServerMirrorTargetSelect from './components/admin/CaldavAdminServerMirrorTargetSelect.vue';
 import CaldavServerIcon from './components/admin/CaldavServerIcon.vue';
 
 const components = {
@@ -47,6 +48,7 @@ const components = {
   'caldav-admin-server-drawer': CaldavAdminServerDrawer,
   'caldav-admin-server-image-input': CaldavAdminServerImageInput,
   'caldav-admin-server-preset-select': CaldavAdminServerPresetSelect,
+  'caldav-admin-server-mirror-target-select': CaldavAdminServerMirrorTargetSelect,
   'caldav-server-icon': CaldavServerIcon
 };
 
