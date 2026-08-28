@@ -149,6 +149,19 @@ public class CaldavMirrorVerificationServiceTest {
   @Mock
   private CaldavAnswerAdoptionService        caldavAnswerAdoptionService;
 
+  /**
+   * The registry the pass asks which behaviours this server is excused for. It
+   * answers null throughout this class, which is the "no registration" case:
+   * the comparison then runs on the deployment-wide fallback, exactly as it did
+   * before EXO-89771 — so every expectation here still measures what it did.
+   */
+  @Mock
+  private CaldavServerService                caldavServerService;
+
+  /** Where the pass records what it saw the server do; a sink here. */
+  @Mock
+  private CaldavServerQuirkService           caldavServerQuirkService;
+
   @Mock
   private CalDavEndpoint                     endpoint;
 
