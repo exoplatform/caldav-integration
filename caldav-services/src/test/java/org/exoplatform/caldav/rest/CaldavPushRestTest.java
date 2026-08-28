@@ -52,6 +52,8 @@ import org.exoplatform.caldav.service.CaldavPushService;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.caldav.service.CaldavDeletionService;
 import org.exoplatform.caldav.model.HiddenCalendar;
+import org.exoplatform.caldav.model.MirrorTargetKind;
+import org.exoplatform.caldav.service.MirrorState;
 import org.exoplatform.caldav.service.MirrorTarget;
 import org.exoplatform.services.security.ConversationState;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -199,6 +201,13 @@ public class CaldavPushRestTest {
   public void shouldReportStatesTheCallerMustResolveAsConflicts() {
     assertEquals(HttpStatus.CONFLICT, statusOf(CaldavPushService.CONFLICT));
     assertEquals(HttpStatus.CONFLICT, statusOf(CaldavPushService.NOT_CONNECTED));
+    // A user who has not said where their copies go, and one who named a
+    // calendar their account no longer holds, are both in exactly that
+    // position: the calendar server is behaving perfectly, and only the user
+    // can move things on. A 502 would make the browser retry, and would tell
+    // whoever read it that the server was down.
+    assertEquals(HttpStatus.CONFLICT, statusOf(CaldavPushService.CHOICE_PENDING));
+    assertEquals(HttpStatus.CONFLICT, statusOf(CaldavPushService.CALENDAR_NOT_ON_ACCOUNT));
   }
 
   /**
@@ -470,6 +479,34 @@ public class CaldavPushRestTest {
     when(caldavPushService.currentMirror(42L)).thenReturn(null);
 
     assertEquals(HttpStatus.NO_CONTENT, caldavPushRest.currentMirror().getStatusCode());
+  }
+
+  /**
+   * The state endpoint says how a destination is decided and whether the user
+   * still owes a choice — which the destination endpoint cannot, because its
+   * answer for "you have not chosen" is the same 204 as for "your server is
+   * unreachable".
+   */
+  @Test
+  public void thePendingChoiceIsAskedRatherThanAnsweredWithNoContent() {
+    withCurrentUser();
+    MirrorState state = new MirrorState(MirrorTargetKind.USER_CHOICE, true, null);
+    when(caldavPushService.mirrorState(42L)).thenReturn(state);
+
+    assertEquals(state, caldavPushRest.mirrorState());
+  }
+
+  /**
+   * A choice is passed to the service as the caller spelled it, and the
+   * caller never names whose account it lands in.
+   */
+  @Test
+  public void aChoiceIsRecordedForTheAuthenticatedCallerAlone() {
+    withCurrentUser();
+    MirrorTarget chosen = new MirrorTarget("/dav/root/work/", false, "Work");
+    when(caldavPushService.chooseMirror(42L, "/dav/root/work/")).thenReturn(chosen);
+
+    assertEquals(chosen, caldavPushRest.chooseMirror("/dav/root/work/"));
   }
 
   /**

@@ -1161,6 +1161,21 @@ public class NormalisingServerMirrorTest {
       return HOME;
     }
 
+    /**
+     * This fake speaks no scheduling extension, which is what most CalDAV
+     * servers do — and the registration behind this test asks for eXo's own
+     * dedicated calendar anyway, so nothing here ever asks the question.
+     *
+     * @param endpoint ignored, this fake is addressed by href alone
+     * @param username ignored
+     * @param password ignored
+     * @return null, the answer of a server naming no default calendar
+     */
+    @Override
+    public String discoverDefaultCalendar(CalDavEndpoint endpoint, String username, String password) {
+      return null;
+    }
+
     @Override
     public List<CalendarCollection> listCalendars(CalDavEndpoint endpoint,
                                                   String homeHref,
