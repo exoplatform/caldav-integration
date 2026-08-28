@@ -26,9 +26,10 @@ package org.exoplatform.caldav.model;
  * users each keep a calendar per project, and want a different answer for each.
  *
  * <p>
- * The three values are not three degrees of the same thing. Two of them name a
- * destination eXo can work out on its own; the third deliberately names none,
- * and refuses to write anything until the user has said where.
+ * Both values name a destination eXo can work out on its own, without asking
+ * anybody: this feature's value is passive, and a destination that needed an
+ * action from each user before their copies started flowing would serve
+ * nobody who never performed it.
  */
 public enum MirrorTargetKind {
 
@@ -50,19 +51,7 @@ public enum MirrorTargetKind {
    * listing. A server that names none leaves this unresolved rather than
    * letting eXo pick a calendar for somebody.
    */
-  MAIN_CALENDAR,
-
-  /**
-   * A calendar the user picks themselves, and <b>nothing is written until they
-   * have</b>.
-   *
-   * <p>
-   * The refusal is the feature. An administrator choosing this said the
-   * destination is not eXo's to decide, so falling back to a calendar of eXo's
-   * own making would contradict the very setting that was changed — quietly,
-   * and in somebody else's calendar.
-   */
-  USER_CHOICE;
+  MAIN_CALENDAR;
 
   /**
    * Reads a stored value into a kind, tolerating anything a database can hold.
@@ -72,6 +61,16 @@ public enum MirrorTargetKind {
    * default, so an unexpected value means somebody edited the row by hand or a
    * later version wrote a name this one does not know — and the safe reading of
    * both is the behaviour every deployment already had.
+   *
+   * <p>
+   * <b>This tolerance is what retires a kind without a data migration.</b>
+   * {@code USER_CHOICE} was a third value of this enum (EXO-89760) and was
+   * withdrawn (EXO-89793); rows written while it existed still carry the
+   * string, and they read as {@link #DEDICATED_CALENDAR} here. Mapping the
+   * column as a String rather than {@code @Enumerated} is what makes that a
+   * degraded setting instead of an unreadable registration — a throw on read
+   * would take down every account resolving through that server, not merely
+   * misplace its copies.
    *
    * @param stored the value read from the registration row, may be null or
    *          blank

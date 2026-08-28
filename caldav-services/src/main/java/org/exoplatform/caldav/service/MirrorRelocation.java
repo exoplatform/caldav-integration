@@ -28,8 +28,9 @@ package org.exoplatform.caldav.service;
  * will, whatever is retried.
  *
  * @param destination where the copies are now written, canonical — null when no
- *          destination could be established at all, which is the state a
- *          registration left to the user's choice sits in until they answer
+ *          destination could be established at all, which is the state an
+ *          unreachable account, or one whose server names no default calendar,
+ *          sits in until that changes
  * @param moved how many copies were written into the destination and their
  *          mapping re-pointed
  * @param refused how many old copies the server would not remove, and which
@@ -42,8 +43,8 @@ public record MirrorRelocation(String destination, int moved, int refused, int f
 
   /**
    * The answer when no destination could be established — the account cannot be
-   * reached, or the registration leaves the choice to a user who has not made
-   * it.
+   * reached, or the registration asks for a default calendar the account names
+   * none of.
    *
    * @return a relocation that did nothing and applied nothing
    */
