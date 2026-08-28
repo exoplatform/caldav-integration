@@ -98,6 +98,7 @@ public class IcsEquivalenceTest {
   public void aJudgeWithNothingIgnored() {
     judge = new IcsEquivalence();
     ReflectionTestUtils.setField(judge, "ignoredProperties", "");
+    ReflectionTestUtils.setField(judge, "droppedProperties", "");
   }
 
   // ---------------------------------------------------------------- DTSTAMP
@@ -850,6 +851,277 @@ public class IcsEquivalenceTest {
    */
   private void assertEquivalent(String onServer) {
     assertEquivalent(onServer, EXO);
+  }
+
+
+  // --------------------------------- the whitespace a server refolds (EXO-89756)
+
+  @Test
+  public void aBlankLineTheServerRefoldedIsNotAnEdit() {
+    // The residual BlueMind loop, byte for byte as the rig logged it: eXo
+    // writes "Chemistry.\n\nEvent link: ..." and the copy comes back as
+    // "Chemistry.\n Event link: ...". The blank line between the paragraphs
+    // returns as a newline and a continuation space — one whitespace character
+    // for another, nothing about the meeting touched. Left as a difference it
+    // rewrote every copy of a live account every five minutes.
+    String exo = EXO.replace("DESCRIPTION:Bring the board",
+                             "DESCRIPTION:Bring the board.\\n\\nEvent link: https://exo.test/a?t=s3cr3t");
+    String server = EXO.replace("DESCRIPTION:Bring the board",
+                                "DESCRIPTION:Bring the board.\\n Event link: https://exo.test/a?t=s3cr3t");
+    assertEquivalent(server, exo);
+  }
+
+  @Test
+  public void aRewrittenAnswerTokenIsStillAnEdit() {
+    // The pair, and the one that matters most. Since EXO-89753 the description
+    // carries the tokenised answer links, so collapsing whitespace must not
+    // un-guard them: a token is not whitespace, and rewriting one is an edit.
+    String exo = EXO.replace("DESCRIPTION:Bring the board",
+                             "DESCRIPTION:Bring the board.\\n\\nEvent link: https://exo.test/a?t=s3cr3t");
+    String server = EXO.replace("DESCRIPTION:Bring the board",
+                                "DESCRIPTION:Bring the board.\\n\\nEvent link: https://exo.test/a?t=f0rged");
+    assertDifferent(server, exo);
+  }
+
+  @Test
+  public void aDroppedParagraphIsStillAnEdit() {
+    // The other half of the pair: collapsing runs of whitespace must not make
+    // a paragraph the copy has lost look like layout.
+    String exo = EXO.replace("DESCRIPTION:Bring the board",
+                             "DESCRIPTION:Bring the board.\\n\\nEvent link: https://exo.test/a?t=s3cr3t");
+    String server = EXO.replace("DESCRIPTION:Bring the board", "DESCRIPTION:Bring the board.");
+    assertDifferent(server, exo);
+  }
+
+  @Test
+  public void aReindentedSummaryIsNotAnEdit() {
+    // The relaxation is over every TEXT property IcsWriter emits, not only the
+    // description, because folding is not description-specific.
+    assertEquivalent(EXO.replace("SUMMARY:Sprint review", "SUMMARY:Sprint\\n  review"),
+                     EXO.replace("SUMMARY:Sprint review", "SUMMARY:Sprint review"));
+  }
+
+  @Test
+  public void aRenamedMeetingIsStillAnEditDespiteWhitespaceFolding() {
+    assertDifferent(EXO.replace("SUMMARY:Sprint review", "SUMMARY:Sprint retrospective"));
+  }
+
+  // ------------------------------ the links a server linkified (EXO-89756)
+
+  @Test
+  public void aLinkTheServerAppendedInBracketsIsNotAnEdit() {
+    // The residual loop, in the shape the rig logged on 2026-08-28: BlueMind
+    // appends every URI in the description a second time in angle brackets,
+    // immediately after the one already there. eXo judged the copy rewritten,
+    // repaired it, and the server linkified the repair — five copies, every
+    // five-minute sweep, for ever.
+    assertEquivalent(described(LINKIFIED), described(WRITTEN));
+  }
+
+  @Test
+  public void aRewrittenAnswerTokenIsStillAnEditDespiteLinkification() {
+    // The case that must never pass. The answer links EXO-89753 writes reply on
+    // somebody's behalf, so a rewritten token is exactly the edit this pass
+    // exists to catch — and the exemption is a backreference, which no forged
+    // token can satisfy: it is stated twice, and it still is not what eXo wrote.
+    String forged = LINKIFIED.replace("token=s3cr3t", "token=f0rged");
+    assertDifferent(described(forged), described(WRITTEN));
+  }
+
+  @Test
+  public void aRewrittenEventLinkIsStillAnEditDespiteLinkification() {
+    // The same, one link along: a copy pointing the event link at somebody
+    // else's host is a difference however faithfully the brackets repeat it.
+    String elsewhere = LINKIFIED.replace("https://exo.test/portal/dw/agenda?eventId=7",
+                                         "https://mallory.test/portal/dw/agenda?eventId=7");
+    assertDifferent(described(elsewhere), described(WRITTEN));
+  }
+
+  @Test
+  public void aBracketedLinkThatRepeatsNothingIsStillAnEdit() {
+    // "Drop what is bracketed" would have swallowed this. The rule is narrower:
+    // the brackets must repeat the URI immediately before them, so a copy that
+    // put a second, different link behind eXo's is reported.
+    String smuggled = WRITTEN.replace("eventId=7", "eventId=7 <https://mallory.test/collect?e=7>");
+    assertDifferent(described(smuggled), described(WRITTEN));
+  }
+
+  @Test
+  public void aLinkReplacedByItsOwnBracketedFormIsStillAnEdit() {
+    // Only the bracketed copy is ever dropped, never the original — so a copy
+    // that kept the brackets and lost the link says something eXo does not.
+    String bracketedOnly = WRITTEN.replace("Event link: https://exo.test/portal/dw/agenda?eventId=7",
+                                           "Event link: <https://exo.test/portal/dw/agenda?eventId=7>");
+    assertDifferent(described(bracketedOnly), described(WRITTEN));
+  }
+
+  @Test
+  public void theLinkifyExemptionCoversTheDescriptionOnly() {
+    // Scope pin. Only the description is known to be linkified, and it is the
+    // only TEXT property eXo composes URIs into; a summary or a location
+    // carries one only because somebody typed it, and neither has ever been
+    // seen coming back with the brackets. Widening the set is one word — and
+    // wants a divergence report naming the property first.
+    assertDifferent(EXO.replace("LOCATION:Room 3", "LOCATION:https://exo.test/meet/1 <https://exo.test/meet/1>"),
+                    EXO.replace("LOCATION:Room 3", "LOCATION:https://exo.test/meet/1"));
+  }
+
+  @Test
+  public void aWordRepeatedInBracketsIsNotDroppedFromProse() {
+    // The exemption is about URIs, not about angle brackets: a bracketed word
+    // in prose has no scheme, matches nothing, and is compared as before.
+    assertDifferent(described("Ask reception <reception> for the room"), described("Ask reception for the room"));
+  }
+
+  // ------------------ a property the server stored twice over (EXO-89756)
+
+  @Test
+  public void aPropertyTheServerStoredTwiceIsNotAnEdit() {
+    // The second shape of the same loop: BlueMind keeps two identical URL lines
+    // where eXo wrote one — URL=… (server 2, eXo 1) on every copy of the live
+    // account. Not a value difference but a cardinality one, and saying a thing
+    // twice says nothing the once did not.
+    assertEquivalent(EXO.replace("URL:https://exo.test/portal/dw/agenda?eventId=7\r\n",
+                                 "URL:https://exo.test/portal/dw/agenda?eventId=7\r\n"
+                                     + "URL:https://exo.test/portal/dw/agenda?eventId=7\r\n"));
+  }
+
+  @Test
+  public void aSecondDifferentUrlIsStillAnEdit() {
+    // The whole safety argument, in one case. Only a statement eXo also makes
+    // is forgiven for being repeated; a link of the server's own is a statement
+    // eXo never made, and no rule covers that.
+    assertDifferent(EXO.replace("URL:https://exo.test/portal/dw/agenda?eventId=7\r\n",
+                                "URL:https://exo.test/portal/dw/agenda?eventId=7\r\n"
+                                    + "URL:https://mallory.test/portal/dw/agenda?eventId=7\r\n"));
+  }
+
+  @Test
+  public void anAttendeeStatedTwiceOverIsStillOneAttendee() {
+    // The rule is not URL-specific, and does not need to be: among the
+    // properties IcsWriter emits, none carries meaning in how many times it is
+    // written. The same person is one attendee however many lines name them.
+    assertEquivalent(EXO.replace("ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:mailto:ann@acme.test\r\n",
+                                 "ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:mailto:ann@acme.test\r\n"
+                                     + "ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:mailto:ann@acme.test\r\n"));
+  }
+
+  @Test
+  public void anAttendeeTheCopyAddedIsStillAnEditHoweverOftenItIsRepeated() {
+    // Repetition is forgiven, appearance never is: eXo states nothing about
+    // this person, so both of the server's lines are a surplus no rule covers.
+    assertDifferent(EXO.replace("STATUS:CONFIRMED\r\n",
+                                "ATTENDEE:mailto:mallory@acme.test\r\n"
+                                    + "ATTENDEE:mailto:mallory@acme.test\r\n"
+                                    + "STATUS:CONFIRMED\r\n"));
+  }
+
+  @Test
+  public void aReminderTheCopyStatesTwiceIsStillAnEdit() {
+    // The third condition, pinned: the rule is restricted to the property names
+    // IcsWriter emits, which is what keeps an embedded VALARM — and the owner's
+    // own canonical statement — outside it. A second reminder is a second
+    // reminder.
+    assertDifferent(EXO.replace("END:VEVENT\r\n",
+                                "BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Sprint review\r\n"
+                                    + "TRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT\r\n"));
+  }
+
+  /**
+   * The description eXo composes: prose, then the links EXO-89751 and
+   * EXO-89753 put in it, one of them carrying an answer token.
+   */
+  private static final String WRITTEN   =
+                                      "Bring the board.\\n\\nEvent link: https://exo.test/portal/dw/agenda?eventId=7"
+                                          + "\\n\\nAnswer this invitation: Accepted "
+                                          + "https://exo.test/rest/v1/agenda/events/7/response/send?response=ACCEPTED&token=s3cr3t";
+
+  /**
+   * The same description as the server hands it back: every URI stated once
+   * more, in angle brackets, immediately after itself.
+   */
+  private static final String LINKIFIED =
+                                        "Bring the board.\\n Event link: https://exo.test/portal/dw/agenda?eventId=7"
+                                            + " <https://exo.test/portal/dw/agenda?eventId=7>"
+                                            + "\\n Answer this invitation: Accepted "
+                                            + "https://exo.test/rest/v1/agenda/events/7/response/send?response=ACCEPTED&token=s3cr3t"
+                                            + " <https://exo.test/rest/v1/agenda/events/7/response/send?response=ACCEPTED&token=s3cr3t>";
+
+  /**
+   * The reference object carrying a given description.
+   *
+   * @param description the DESCRIPTION value, already escaped as iCalendar TEXT
+   * @return the object
+   */
+  private String described(String description) {
+    return EXO.replace("DESCRIPTION:Bring the board\r\n", "DESCRIPTION:" + description + "\r\n");
+  }
+
+  // ------------------------- a property the server will not store (EXO-89756)
+
+  @Test
+  public void aConferenceTheServerDropsIsAnEditUntilTheOperatorSaysOtherwise() {
+    // Shipped default: nothing is excused. BlueMind drops CONFERENCE from every
+    // copy, and until somebody has read a log line naming it, eXo says so.
+    assertDifferent(withConference(""), withConference(CONFERENCE));
+  }
+
+  @Test
+  public void aConferenceTheOperatorDeclaredDroppedIsNotAnEdit() {
+    // The lever the rig runs on. Note it could not be the existing one:
+    // ignoredProperties is consulted only for a name outside the recognised
+    // set, and CONFERENCE is a property IcsWriter emits.
+    ReflectionTestUtils.setField(judge, "droppedProperties", "CONFERENCE");
+
+    assertEquivalent(withConference(""), withConference(CONFERENCE));
+  }
+
+  @Test
+  public void theOldLeverCannotExcuseAPropertyExoEmits() {
+    // Pins the boundary between the two levers, and the reason the second one
+    // had to exist at all.
+    ReflectionTestUtils.setField(judge, "ignoredProperties", "CONFERENCE");
+
+    assertDifferent(withConference(""), withConference(CONFERENCE));
+  }
+
+  @Test
+  public void aRewrittenConferenceIsStillAnEditWhileTheLeverIsOn() {
+    // The whole safety argument for the lever, in one case. eXo's value is
+    // excused as an absence, but the client's value arrives as a surplus on the
+    // SERVER's side, which no rule covers — so a rewritten video link is still
+    // reported even on a server declared to drop the property.
+    ReflectionTestUtils.setField(judge, "droppedProperties", "CONFERENCE");
+
+    assertDifferent(withConference("CONFERENCE;FEATURE=VIDEO;VALUE=URI:https://mallory.test/meet/1\r\n"),
+                    withConference(CONFERENCE));
+  }
+
+  @Test
+  public void theLeverCannotBePointedAtTheOwnersAnswer() {
+    // OWNER-ATTENDEE is a canonical statement, not a property IcsWriter emits,
+    // and the list is restricted to the recognised set precisely so it cannot
+    // be aimed at somebody's reply.
+    ReflectionTestUtils.setField(judge, "droppedProperties", "OWNER-ATTENDEE,ATTENDEE;PARTSTAT");
+
+    String exo = EXO.replace("END:VEVENT",
+                             "ATTENDEE;PARTSTAT=ACCEPTED:mailto:alice@stalwart.local\r\nEND:VEVENT");
+    assertDifferent(EXO, exo);
+  }
+
+  /**
+   * The conference line eXo renders for a video meeting.
+   */
+  private static final String CONFERENCE = "CONFERENCE;FEATURE=VIDEO;VALUE=URI:https://exo.test/meet/1\r\n";
+
+  /**
+   * The reference object with a conference line, or without one.
+   *
+   * @param conference the line to carry, empty for a copy that has none
+   * @return the object
+   */
+  private String withConference(String conference) {
+    return EXO.replace("STATUS:CONFIRMED\r\n", conference + "STATUS:CONFIRMED\r\n");
   }
 
   /**

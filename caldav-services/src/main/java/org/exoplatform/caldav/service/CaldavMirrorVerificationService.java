@@ -87,13 +87,24 @@ import org.exoplatform.services.log.Log;
  * a repair-first pass would overwrite the acceptance before anything read it.
  *
  * <p>
- * <b>It gives up.</b> An object that keeps disappearing — a server refusing
- * writes it pretends to accept, a rule on the account deleting what eXo sends
- * — is left alone after a few attempts and said out loud, rather than
- * re-pushed on every sync for ever. The count is held in memory on purpose: a
- * restart forgives, which is the right bias when the cause is usually
- * temporary and the alternative is a database column recording that a server
- * misbehaved once.
+ * <b>It gives up, and giving up stops the work and not only the writing.</b> An
+ * object that keeps disappearing — a server refusing writes it pretends to
+ * accept, a rule on the account deleting what eXo sends — is left alone after a
+ * few attempts and said out loud, rather than re-pushed on every sync for ever.
+ * The count is held in memory on purpose: a restart forgives, which is the right
+ * bias when the cause is usually temporary and the alternative is a database
+ * column recording that a server misbehaved once.
+ *
+ * <p>
+ * That check used to sit <i>after</i> the object had been fetched, re-rendered,
+ * compared and named in the log, so an abandoned copy still cost a round trip
+ * and a log line every five minutes for ever — everything except the one step
+ * that could have changed something. The version each abandoned object settled
+ * at is now remembered ({@link #settled}), and a pass that finds the listing
+ * still publishing it moves on without a fetch. It is the version rather than a
+ * flag deliberately: a copy the user answers on their phone moves its ETag, and
+ * that copy is examined again and its answer read, because abandonment is a
+ * statement about eXo's writing and never about the user's.
  */
 @Service
 public class CaldavMirrorVerificationService {
@@ -102,6 +113,9 @@ public class CaldavMirrorVerificationService {
 
   /** How many objects one pass reads at a time from the mapping table. */
   private static final int             PAGE_SIZE    = 200;
+
+  /** The version stood in for an object the collection listing no longer carries. */
+  private static final String          ABSENT       = "(absent)";
 
   @Autowired
   private CalDavClient                 calDavClient;
@@ -138,6 +152,39 @@ public class CaldavMirrorVerificationService {
    * worth carrying across a restart.
    */
   private final Map<String, Integer>   repairs      = new ConcurrentHashMap<>();
+
+  /**
+   * The version each abandoned object carried when the pass stopped arguing with
+   * it, keyed the same way as {@link #repairs}.
+   *
+   * <p>
+   * <b>What this is for.</b> Giving up used to stop the writing and nothing
+   * else. The check sat after the object had already been listed, fetched,
+   * re-rendered, compared and named in an INFO line, so an abandoned copy went
+   * on costing a round trip and a log line every five minutes for ever — the
+   * work, minus the only part of it that could ever change anything. Recording
+   * the version it settled at lets the next pass answer "nothing has happened
+   * here" from the collection listing it already has.
+   *
+   * <p>
+   * <b>Why the version and not simply a flag.</b> A flag would also stop the
+   * pass reading the user's answer off that copy, and abandonment must not blind
+   * eXo to it: the copy still sits in their calendar and they can still accept
+   * the meeting on their phone. An ETag that moves away from this one is the
+   * server's own statement that somebody wrote, and the pass looks again —
+   * fetches, adopts the answer (EXO-89681), and settles on the new version. So
+   * what is skipped is exactly the case where nothing has changed.
+   *
+   * <p>
+   * <b>And why not record it on the row instead.</b> Writing the server's
+   * version into {@code ObjectSync.etag} would say "this copy is what eXo
+   * stands behind", which is the opposite of true, and it would outlive the
+   * restart that is meant to forgive: the next pass after a restart would find
+   * the row agreeing with the listing and never re-examine a copy it is supposed
+   * to get another chance at. In memory, beside the repair counts, for the same
+   * reason they are — this records what is going wrong right now.
+   */
+  private final Map<String, String>    settled      = new ConcurrentHashMap<>();
 
   /**
    * Compares every copy eXo pushed for a user against what the server holds.
@@ -207,6 +254,14 @@ public class CaldavMirrorVerificationService {
           continue;
         }
         checked++;
+        if (hasSettled(userIdentityId, object, etags)) {
+          // Abandoned, and the server still publishes the version it was
+          // abandoned at. There is nothing here a fetch could tell this pass
+          // that the listing has not already told it, and nothing a repair is
+          // allowed to do about it either.
+          abandoned++;
+          continue;
+        }
         Assessment assessment = judge(userIdentityId, object, settings, etags);
         if (assessment.verdict() == Verdict.UNTOUCHED) {
           continue;
@@ -234,6 +289,7 @@ public class CaldavMirrorVerificationService {
         }
         if (giveUpOn(userIdentityId, object)) {
           abandoned++;
+          settled.put(keyOf(userIdentityId, object), versionOf(object, etags));
         } else if (repair(userIdentityId, object, assessment.verdict())) {
           repaired++;
         }
@@ -591,7 +647,7 @@ public class CaldavMirrorVerificationService {
    * @return true when the pass should leave it alone and say so
    */
   private boolean giveUpOn(long userIdentityId, ObjectSync object) {
-    String key = userIdentityId + "|" + object.getRemoteHref();
+    String key = keyOf(userIdentityId, object);
     int attempts = repairs.merge(key, 1, Integer::sum);
     if (attempts <= maxRepairs) {
       return false;
@@ -607,12 +663,74 @@ public class CaldavMirrorVerificationService {
   }
 
   /**
+   * Whether an object has already been abandoned and the server still publishes
+   * the very version it was abandoned at.
+   *
+   * <p>
+   * Deliberately two conditions, not one. Abandonment alone would silence the
+   * copy for good, including the pass that reads the owner's answer off it; the
+   * version is what makes the silence conditional on nothing having happened.
+   * The count is read rather than incremented — this is not another attempt.
+   *
+   * @param userIdentityId identity of the user
+   * @param object the mapping row
+   * @param etags what the server currently holds, by href
+   * @return true when the pass has nothing left to learn about this copy
+   */
+  private boolean hasSettled(long userIdentityId, ObjectSync object, Map<String, String> etags) {
+    String key = keyOf(userIdentityId, object);
+    if (repairs.getOrDefault(key, 0) <= maxRepairs) {
+      return false;
+    }
+    return StringUtils.equals(settled.get(key), versionOf(object, etags));
+  }
+
+  /**
+   * The version the collection listing publishes for a copy, in the form the
+   * settled state compares.
+   *
+   * <p>
+   * A copy the listing does not carry is a version too — {@link #ABSENT} —
+   * rather than nothing at all. An abandoned object that has been deleted from
+   * the server stays deleted, and reporting it missing on every pass for ever is
+   * the same pointless round trip in its other form; if it comes back, the
+   * version is no longer {@code ABSENT} and the pass looks again.
+   *
+   * @param object the mapping row
+   * @param etags what the server currently holds, by href
+   * @return the comparable version, never null
+   */
+  private String versionOf(ObjectSync object, Map<String, String> etags) {
+    String etag = etagOf(object.getRemoteHref(), etags);
+    return etag == null ? ABSENT : normalise(etag);
+  }
+
+  /**
+   * The key one copy is remembered by, in both in-memory maps.
+   *
+   * @param userIdentityId identity of the user
+   * @param object the mapping row
+   * @return the key
+   */
+  private String keyOf(long userIdentityId, ObjectSync object) {
+    return userIdentityId + "|" + object.getRemoteHref();
+  }
+
+  /**
    * Forgets what is known about an account's repairs.
+   *
+   * <p>
+   * The settled versions go with them: they are the second half of the same
+   * state, and a settled version left behind after the repair counts were
+   * cleared would be consulted by {@link #hasSettled} for an object that is no
+   * longer abandoned — harmless today because the count is checked first, and a
+   * trap for the next change that reorders those two checks.
    *
    * @param userIdentityId identity of the user
    */
   public void forgetRepairs(long userIdentityId) {
     repairs.keySet().removeIf(key -> key.startsWith(userIdentityId + "|"));
+    settled.keySet().removeIf(key -> key.startsWith(userIdentityId + "|"));
   }
 
   /**
