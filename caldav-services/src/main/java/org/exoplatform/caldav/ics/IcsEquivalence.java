@@ -38,6 +38,9 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
+
 import net.fortuna.ical4j.data.CalendarBuilder;
 import net.fortuna.ical4j.model.Calendar;
 import net.fortuna.ical4j.model.DateTime;
@@ -128,6 +131,25 @@ import net.fortuna.ical4j.model.component.VTimeZone;
  * from it.
  *
  * <p>
+ * <b>Free text is compared for its words, not its layout.</b> A TEXT value is
+ * the one place where the document's line discipline and the content are
+ * spelled in the same characters, and a server re-serialising a multi-line
+ * description has to fold it. BlueMind returns eXo's blank line between two
+ * paragraphs as a newline and a continuation space, which left every copy on a
+ * live account permanently altered. Runs of whitespace are collapsed in
+ * {@link #TEXT_PROPERTIES} before comparison; every other character still
+ * counts, so the tokenised answer links the description carries since
+ * EXO-89753 stay guarded.
+ *
+ * <p>
+ * <b>Two operator levers, pointing opposite ways.</b>
+ * {@link #ignoredProperties} excuses an <i>unrecognised</i> property a server
+ * adds; {@link #droppedProperties} excuses a property eXo emits that a server
+ * declines to store — BlueMind keeps no {@code CONFERENCE}. Both are empty by
+ * default, both can only ever excuse the presence or the absence of a
+ * statement, and neither can make two differing values compare equal.
+ *
+ * <p>
  * <b>What the parser settles before this sees it.</b> ical4j unfolds continued
  * lines, unescapes TEXT values, trims a value's surrounding whitespace and
  * canonicalises a duration, so none of those can register as a difference and
@@ -144,6 +166,8 @@ import net.fortuna.ical4j.model.component.VTimeZone;
  */
 @Component
 public class IcsEquivalence {
+
+  private static final Log                 LOG                      = ExoLogger.getExoLogger(IcsEquivalence.class);
 
   /**
    * The structural properties of an iCalendar <i>document</i>, which are never
@@ -316,6 +340,41 @@ public class IcsEquivalence {
                                                                              "RELATED",
                                                                              "START");
 
+  /**
+   * Properties carrying a free-text value, whose whitespace is normalised before
+   * it is compared.
+   *
+   * <p>
+   * A TEXT value is the one place in a calendar object where the document's own
+   * line discipline and the content are spelled in the same characters. A server
+   * re-serialising a multi-line description has to fold it, and folding is
+   * whitespace: BlueMind returns eXo's {@code Chemistry.\n\nEvent link: …} as
+   * {@code Chemistry.\n Event link: …} — the blank line between the two
+   * paragraphs comes back as a newline and a continuation space. Nothing about
+   * the meeting changed; one whitespace character became another.
+   *
+   * <p>
+   * These three are exactly the TEXT properties {@link IcsWriter} emits —
+   * {@code SUMMARY}, {@code DESCRIPTION} and {@code LOCATION}, the last also
+   * standing for the alarm description, which is rendered from the summary.
+   * {@code URL} and {@code CONFERENCE} are deliberately absent: they carry URIs,
+   * where whitespace is not layout but corruption, and folding them is already
+   * undone by the parser.
+   *
+   * <p>
+   * <b>Why this cannot hide an edit.</b> Only runs of whitespace are collapsed;
+   * every other character is compared exactly as before. Since EXO-89753 the
+   * description carries the tokenised answer links, and a token is not
+   * whitespace — a client rewriting one, dropping the paragraph that holds it,
+   * or changing a single letter of the text still registers. What is given up is
+   * the ability to notice that somebody re-indented a description, which is not
+   * a fact about a meeting.
+   */
+  private static final Set<String>         TEXT_PROPERTIES          = Set.of("SUMMARY", "DESCRIPTION", "LOCATION");
+
+  /** A run of whitespace of any kind, including the line breaks a server folds on. */
+  private static final Pattern             WHITESPACE_RUN           = Pattern.compile("\\s+");
+
   /** Properties whose value is a date or date-time, normalised to an instant or a calendar day. */
   private static final Set<String>         DATE_PROPERTIES          = Set.of("DTSTART",
                                                                              "DTEND",
@@ -388,6 +447,50 @@ public class IcsEquivalence {
    */
   @Value("${exo.agenda.caldav.mirror.ignoredProperties:}")
   private String                           ignoredProperties        = "";
+
+  /**
+   * Property names the operator has declared this deployment's servers may
+   * decline to store.
+   *
+   * <p>
+   * The second lever, and it answers the opposite case to the first.
+   * {@link #ignoredProperties} covers a property the server <b>adds</b> that eXo
+   * has never heard of; this one covers a property eXo <b>emits</b> and the
+   * server does not keep at all. BlueMind does that with {@code CONFERENCE}: eXo
+   * writes the video link on every push, the copy comes back without it, and no
+   * repair can change that — the sweep proved it 399 times in one day, rewriting
+   * five copies every five minutes to have the same property dropped again.
+   * Repairing something the server will undo on every write is not a repair, and
+   * that is the same reasoning the dropped-attendee rule already records in
+   * {@link #tolerated}.
+   *
+   * <p>
+   * <b>One direction only, and that is what keeps it safe.</b> It excuses a
+   * statement eXo makes and the copy does not carry — an <i>absence</i>. It can
+   * never excuse a statement the copy makes: if a client changed the conference
+   * link rather than the server dropping it, eXo's value is excused as an
+   * absence but the client's value arrives as a surplus on the server's side,
+   * which no rule here covers, and the copy is still judged different. So no
+   * setting of this can make two differing values look equal.
+   *
+   * <p>
+   * <b>What it does cost, stated plainly.</b> On a server named here, a client
+   * <i>deleting</i> the property goes unnoticed — it is indistinguishable from
+   * the server declining to store it, and on such a server that information
+   * genuinely is not available to eXo. And the lever is <b>global</b>: a
+   * deployment running BlueMind alongside a server that stores {@code CONFERENCE}
+   * faithfully gives up the detection on both. That is an interim. The proper
+   * home is a per-server list on {@code CaldavServer}, so each connection
+   * declares what its own server drops; that is a schema change and is
+   * deliberately not made here, where the loop is blocking other work.
+   *
+   * <p>
+   * Restricted to {@link #EVENT_PROPERTIES}, so it can only ever name a property
+   * eXo actually writes, and empty by default — nothing is excused until an
+   * operator has read a log line naming what to excuse.
+   */
+  @Value("${exo.agenda.caldav.mirror.droppedProperties:}")
+  private String                           droppedProperties        = "";
 
   /**
    * Compares the object a server holds against the object eXo would write for
@@ -674,6 +777,12 @@ public class IcsEquivalence {
     if ("RRULE".equals(name)) {
       return normaliseRecurrenceRule(value, calendar);
     }
+    if (TEXT_PROPERTIES.contains(name)) {
+      // Folding is whitespace, and a server re-serialising a multi-line text
+      // value has to fold it. See TEXT_PROPERTIES for why collapsing runs
+      // cannot hide anything a user wrote.
+      return WHITESPACE_RUN.matcher(value).replaceAll(" ").trim();
+    }
     if ("ORGANIZER".equals(name) || "ATTENDEE".equals(name)) {
       // A calendar address is a URI: its scheme and its host are
       // case-insensitive, and servers do re-case them. Nobody edits a meeting
@@ -867,7 +976,18 @@ public class IcsEquivalence {
 
   /**
    * Reports every statement one side makes and the other does not, capped so a
-   * log line stays a log line.
+   * log line stays a log line — and, at DEBUG, uncapped and unabbreviated.
+   *
+   * <p>
+   * <b>Why the second, fuller report exists.</b> The capped line is what runs on
+   * every pass and it has to stay short. But a copy that keeps being judged
+   * altered is diagnosed by reading exactly what the two sides say, and the cap
+   * hides it twice over: the fourth divergence becomes "and 1 more", and the
+   * first three are abbreviated at {@link #REPORTED_STATEMENT} characters —
+   * which, for a description, cuts the line long before the paragraph that
+   * differs. Diagnosing the BlueMind whitespace divergence this way meant
+   * reading two truncated statements out of six and inferring the rest. At DEBUG
+   * both sides are stated in full, so the answer is read rather than deduced.
    *
    * @param serverStatements what the server's component says
    * @param exoStatements what eXo's component says
@@ -884,6 +1004,9 @@ public class IcsEquivalence {
       int inExo = exoStatements.getOrDefault(statement, 0);
       if (onServer == inExo || tolerated(statement, onServer, inExo)) {
         continue;
+      }
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Divergence {}: server {}, eXo {}, statement [{}]", reported + 1, onServer, inExo, statement);
       }
       if (reported++ < REPORTED_DIVERGENCES) {
         divergences.add(StringUtils.abbreviate(statement, REPORTED_STATEMENT) + " (server " + onServer + ", eXo " + inExo
@@ -945,6 +1068,17 @@ public class IcsEquivalence {
    * re-pushing their line sticks. An owner the copy has lost stays a
    * difference.
    *
+   * <p>
+   * <b>The third rule is the operator's, and it is the same shape as the
+   * second.</b> A property named in {@link #droppedProperties} that eXo states
+   * and the copy does not carry is not evidence of a rewrite either — BlueMind
+   * drops {@code CONFERENCE} from every copy it stores, and no repair can put it
+   * back. It points the same way as the dropped-attendee rule, eXo's side, for
+   * the same reason; what separates them is that this one is configured rather
+   * than built in, because which properties a server declines to store is a fact
+   * about that deployment and not about calendars. Its cost is recorded on the
+   * field itself.
+   *
    * @param statement the canonical statement that diverged
    * @param onServer how many times the server's copy states it
    * @param inExo how many times eXo's render states it
@@ -954,7 +1088,58 @@ public class IcsEquivalence {
     if (OWNER_ATTENDEE.equals(statement)) {
       return onServer > inExo;
     }
-    return isAttendee(statement) && inExo > onServer;
+    if (isAttendee(statement) && inExo > onServer) {
+      return true;
+    }
+    return inExo > onServer && isDroppedByConfiguration(propertyNameOf(statement));
+  }
+
+  /**
+   * The property name a canonical statement was built from: everything before
+   * its parameter suffix or its value.
+   *
+   * <p>
+   * Statements are written as {@code NAME[;PARAM=…]=VALUE}, so the name ends at
+   * the first {@code ;} or {@code =}, whichever comes first. A statement with
+   * neither — {@link #OWNER_ATTENDEE}, or an embedded {@code VALARM{…}} — yields
+   * its whole text, which matches no entry of {@link #EVENT_PROPERTIES} and so
+   * can never be excused by the operator's list.
+   *
+   * @param statement the canonical statement
+   * @return the property name it states, never null
+   */
+  private String propertyNameOf(String statement) {
+    int end = statement.length();
+    for (int index = 0; index < statement.length(); index++) {
+      char character = statement.charAt(index);
+      if (character == ';' || character == '=') {
+        end = index;
+        break;
+      }
+    }
+    return statement.substring(0, end);
+  }
+
+  /**
+   * Whether a property eXo emits has been declared one this deployment's servers
+   * may decline to store.
+   *
+   * <p>
+   * Guarded twice: the name must be one {@link IcsWriter} actually emits, so the
+   * list cannot be pointed at {@link #OWNER_ATTENDEE} or at an embedded alarm
+   * statement to hide an answer; and the caller has already established that the
+   * surplus is on eXo's side, so this can only ever excuse an absence.
+   *
+   * @param name the property name the statement was built from
+   * @return true when the operator asked for its absence to be excused
+   */
+  private boolean isDroppedByConfiguration(String name) {
+    if (StringUtils.isBlank(droppedProperties) || !EVENT_PROPERTIES.contains(name)) {
+      return false;
+    }
+    return Arrays.stream(droppedProperties.split(","))
+                 .map(entry -> entry.trim().toUpperCase(Locale.ROOT))
+                 .anyMatch(name::equals);
   }
 
   /**
