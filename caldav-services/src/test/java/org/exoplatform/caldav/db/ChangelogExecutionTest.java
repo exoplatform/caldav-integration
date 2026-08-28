@@ -18,14 +18,22 @@ package org.exoplatform.caldav.db;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Table;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -75,6 +83,9 @@ public class ChangelogExecutionTest {
   /** The per-server excusal lists EXO-89771 appends, and the summary they are ticked from. */
   private static final String[] QUIRK_COLUMNS = { "IGNORED_PROPERTIES", "DROPPED_PROPERTIES", "OBSERVED_QUIRKS",
       "OMITTED_PROPERTIES" };
+
+  /** The index the platform builds its EntityManager from. */
+  private static final String ENTITY_INDEX        = "jpa-entities.idx";
 
   private Connection          connection;
 
@@ -213,6 +224,68 @@ public class ChangelogExecutionTest {
       }
     }
     assertEquals(0, nullableFlag("CALDAV_SERVER", ANSWER_LINKS_COLUMN), "and the column must be NOT NULL");
+  }
+
+  /**
+   * Every column the entities map is a column the changelog creates.
+   *
+   * <p>
+   * <b>The gap between the two halves of a schema change.</b> The changelog
+   * writes the table; the JPA entity says what its columns are called; and
+   * nothing until now compared them. A column named {@code OBJECT_SYNC_ID} in
+   * one and {@code OBJECTSYNC_ID} in the other passes the changelog test (the
+   * changeset applies), passes the repository test (the query names a property
+   * the entity has) and fails at the first read, in production, with a message
+   * about a column that does not exist.
+   *
+   * <p>
+   * Nothing here names an entity: the list is {@code jpa-entities.idx}, the
+   * same file the platform builds its EntityManager from, so an entity added
+   * next year is covered by having been registered — which it has to be anyway.
+   *
+   * @throws Exception when the changelog cannot be applied or the catalogue
+   *           read
+   */
+  @Test
+  public void everyColumnTheEntitiesMapIsOneTheChangelogCreates() throws Exception {
+    update();
+
+    List<String> missing = new ArrayList<>();
+    for (String entityName : registeredEntities()) {
+      Class<?> entity = Class.forName(entityName);
+      Table table = entity.getAnnotation(Table.class);
+      assertNotNull(table, entity.getSimpleName() + " is registered as an entity but names no table");
+      for (java.lang.reflect.Field field : entity.getDeclaredFields()) {
+        Column column = field.getAnnotation(Column.class);
+        if (column == null || column.name().isEmpty()) {
+          continue;
+        }
+        if (!columnExists(table.name(), column.name())) {
+          missing.add(table.name() + "." + column.name() + " (" + entity.getSimpleName() + "." + field.getName() + ")");
+        }
+      }
+    }
+    assertTrue(missing.isEmpty(), "columns the entities map that the changelog does not create: " + missing);
+  }
+
+  /**
+   * The entities the platform registers, read from the index it reads.
+   *
+   * @return the fully-qualified names, in the order the file lists them
+   * @throws Exception when the index cannot be read
+   */
+  private List<String> registeredEntities() throws Exception {
+    List<String> names = new ArrayList<>();
+    try (InputStream index = getClass().getClassLoader().getResourceAsStream(ENTITY_INDEX)) {
+      assertNotNull(index, ENTITY_INDEX + " must be on the classpath; the platform reads it to build its EntityManager");
+      for (String line : new String(index.readAllBytes(), StandardCharsets.UTF_8).split("\\R")) {
+        if (!line.isBlank()) {
+          names.add(line.trim());
+        }
+      }
+    }
+    assertTrue(names.size() >= 4, "expected the index to register entities, found " + names);
+    return names;
   }
 
   /**

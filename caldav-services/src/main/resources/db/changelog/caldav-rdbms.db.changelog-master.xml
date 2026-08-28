@@ -315,6 +315,121 @@
       </column>
     </addColumn>
   </changeSet>
+  <changeSet author="caldav" id="1.0.0-20" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The pending-push sequence, on the vendors that have sequences - created
+      in the same breath as its table, the lesson 1.0.0-0 records.
+
+      Numbered from 20 rather than from 14 on purpose: 1.0.0-13 is already
+      applied on the rig and the ids in between are being taken concurrently by
+      another delivery. A gap in the numbering costs nothing; two changesets
+      shipping the same id costs a database that disagrees with itself about
+      which one it ran.
+    </comment>
+    <createSequence sequenceName="SEQ_CALDAV_PENDING_PUSH_ID" startValue="1"/>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-21">
+    <comment>
+      One row per calendar copy eXo owes a write to and has not managed to make
+      (EXO-89773).
+
+      Until this existed, a push that failed left nothing behind. The log said
+      the verification pass would retry; it never could. That pass compares the
+      version the server publishes against the version eXo recorded, and an edit
+      that never reached the server does not move the server's version - so the
+      copy was judged untouched before anything was fetched, and stayed wrong
+      for ever. A failed removal had no safety net at all: a destroyed event
+      renders to nothing, and the pass deliberately concludes nothing from an
+      empty render.
+
+      A table rather than two columns on CALDAV_OBJECT_SYNC, for two reasons.
+      The mapping row has several writers and every one of them saves it whole,
+      so a marker set between one of their reads and its save would be erased by
+      it, silently. And this table is EMPTY once everything has landed, so the
+      retry pass is one index lookup answering no rows - where a column on the
+      mapping table would have made every sweep read every copy a user holds to
+      discover that none of them is owed anything. That cost is exactly the
+      churn EXO-89716 and EXO-89756 removed.
+
+      LOCAL_EVENT_ID is nullable because a removal has no event left to render:
+      its meeting was destroyed, and ICS_UID is the only identity the object can
+      still be addressed by.
+
+      ATTEMPTS bounds how hard eXo argues with a server that keeps refusing. NOT
+      NULL with a default of zero, so a row written by a client that does not
+      name the column still counts from the start.
+    </comment>
+    <createTable tableName="CALDAV_PENDING_PUSH">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_CALDAV_PENDING_PUSH"/>
+      </column>
+      <column name="OBJECT_SYNC_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="USER_IDENTITY_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="KIND" type="NVARCHAR(20)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="LOCAL_EVENT_ID" type="BIGINT"/>
+      <column name="ICS_UID" type="NVARCHAR(250)"/>
+      <column name="ATTEMPTS" type="INT" defaultValueNumeric="0">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SINCE" type="TIMESTAMP"/>
+    </createTable>
+    <modifySql dbms="mysql">
+      <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
+    </modifySql>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-22">
+    <comment>
+      One obligation per copy. This is what makes recording one idempotent by
+      construction rather than by convention: a meeting edited five times in a
+      minute owes its copy one write, not five, and the constraint says so
+      rather than the code promising it.
+    </comment>
+    <createIndex tableName="CALDAV_PENDING_PUSH" indexName="UQ_CALDAV_PENDING_PUSH_OBJECT" unique="true">
+      <column name="OBJECT_SYNC_ID"/>
+    </createIndex>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-23">
+    <comment>
+      The retry is driven one account at a time, and on a converged account it
+      must find nothing without reading anything. That is this index: an
+      account with no backlog costs one lookup that answers no rows.
+
+      ATTEMPTS is the second column because the pass asks for the obligations
+      still worth attempting - the abandoned ones are left where they are, as
+      the only record that eXo gave up on them.
+    </comment>
+    <createIndex tableName="CALDAV_PENDING_PUSH" indexName="IDX_CALDAV_PENDING_PUSH_USER">
+      <column name="USER_IDENTITY_ID"/>
+      <column name="ATTEMPTS"/>
+    </createIndex>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-24">
+    <comment>
+      An obligation belongs to the copy it is owed to: a mapping row that goes
+      takes what was owed to it with it, because a write owed to a copy nothing
+      points at any more would be retried against an identifier that no longer
+      resolves.
+
+      Own changeset, no modifySql, for the reason 1.0.0-3 records about ALTER
+      TABLE.
+    </comment>
+    <addForeignKeyConstraint baseTableName="CALDAV_PENDING_PUSH"
+                             baseColumnNames="OBJECT_SYNC_ID"
+                             constraintName="FK_CALDAV_PENDING_PUSH_OBJECT"
+                             referencedTableName="CALDAV_OBJECT_SYNC"
+                             referencedColumnNames="ID"
+                             onDelete="CASCADE"/>
+  </changeSet>
 
   <changeSet author="caldav" id="1.0.0-14">
     <comment>
