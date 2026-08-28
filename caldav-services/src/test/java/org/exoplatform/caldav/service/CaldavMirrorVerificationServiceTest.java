@@ -171,6 +171,19 @@ public class CaldavMirrorVerificationServiceTest {
   @Mock
   private CaldavServerQuirkService           caldavServerQuirkService;
 
+  /**
+   * The bulk move of EXO-89761, asked once per settings round.
+   *
+   * <p>
+   * Stubbed leniently below to the answer a destination that did not change
+   * produces — the destination is the collection the pair already points at,
+   * nothing was pending, and nothing failed — because that is the case every
+   * pre-existing expectation in this class was written against. The tests that
+   * care about a relocation say so themselves.
+   */
+  @Mock
+  private CaldavMirrorRelocationService      caldavMirrorRelocationService;
+
   @Mock
   private CalDavEndpoint                     endpoint;
 
@@ -192,6 +205,8 @@ public class CaldavMirrorVerificationServiceTest {
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     lenient().when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(mirror()));
     lenient().when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(ICS);
+    lenient().when(caldavMirrorRelocationService.relocate(anyLong(), any(), any()))
+             .thenReturn(new MirrorRelocation(MIRROR, 0, 0, 0, 0));
   }
 
   @Test
@@ -1034,6 +1049,91 @@ public class CaldavMirrorVerificationServiceTest {
     CalendarSync pair = mirror();
     pair.setCopySettingsApplied(applied);
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair));
+  }
+
+  // ---- moving the copies when the destination changes (EXO-89761) ----------
+
+  /** Where the copies go after an administrator moved the destination. */
+  private static final String MOVED_TO = "/dav/calendars/john/personal/";
+
+  @Test
+  public void thePassLooksAtTheCollectionTheCopiesWereJustMovedInto() {
+    // The relocation runs BEFORE the listing, and the listing has to follow it.
+    // Listing first would spend the whole round comparing the contents of a
+    // calendar the copies have just left — and then report every one of them
+    // missing.
+    givenTheServerSettingsChanged();
+    when(caldavMirrorRelocationService.relocate(anyLong(), any(), any()))
+                                                          .thenReturn(new MirrorRelocation(MOVED_TO, 1, 0, 0, 0));
+    givenServerHolds(Map.of());
+    givenMappings(mapping(MOVED_TO + "one.ics", "\"etag-9\"", 5L));
+    lenient().when(caldavPushService.rewriteAgendaEvent(anyLong(), anyLong())).thenReturn(null);
+
+    service.verify(USER);
+
+    ArgumentCaptor<String> listed = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).listResourceEtags(any(), listed.capture(), anyString(), anyString());
+    assertEquals(MOVED_TO, listed.getValue(), "the new collection, not the one just emptied");
+  }
+
+  @Test
+  public void aRelocationThatCouldNotFinishLeavesTheChangeUnstamped() {
+    // A copy the server would not let go of is work this change still owes.
+    // Stamping over it would tell every later pass there is nothing to do and
+    // strand that copy for good — which is exactly the bug EXO-89761 exists to
+    // remove, reintroduced by the mechanism meant to fix it.
+    givenTheServerSettingsChanged();
+    when(caldavMirrorRelocationService.relocate(anyLong(), any(), any()))
+                                                          .thenReturn(new MirrorRelocation(MIRROR, 3, 1, 0, 0));
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                    .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
+
+    service.verify(USER);
+
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  @Test
+  public void aDestinationTheUserHasNotChosenYetLeavesTheRoundToTheNextPass() {
+    // Nothing can be applied to copies that have nowhere to be. The round is
+    // not run — comparing contents against a render is wasted while eXo does not
+    // know which collection they belong in — and the stamp stays where it was,
+    // so the pass after the user chooses does the work.
+    givenTheServerSettingsChanged();
+    when(caldavMirrorRelocationService.relocate(anyLong(), any(), any())).thenReturn(MirrorRelocation.deferred());
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+
+    service.verify(USER);
+
+    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  @Test
+  public void aPassOwingNothingDoesNotAskForARelocationAtAll() {
+    // The relocation is bounded to the rounds a settings change already pays
+    // for. Asking on every sweep would put a calendar-home listing and a
+    // destination resolution on the quiet path this add-on spent EXO-89756
+    // making quiet.
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+
+    service.verify(USER);
+
+    verify(caldavMirrorRelocationService, never()).relocate(anyLong(), any(), any());
+  }
+
+  @Test
+  public void forgettingAnAccountAlsoForgetsWhatItsRelocationReported() {
+    // The third map of "what is going wrong right now" for this user. Forgetting
+    // two of the three would leave a refused removal silent after the very
+    // restart meant to say it again.
+    service.forgetRepairs(USER);
+
+    verify(caldavMirrorRelocationService).forget(USER);
   }
 
 }

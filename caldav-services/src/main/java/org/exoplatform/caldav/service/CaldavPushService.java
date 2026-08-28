@@ -1177,9 +1177,24 @@ public class CaldavPushService {
     // destination eXo established under an earlier setting go on receiving
     // copies, which is the silent fallback this kind exists to refuse.
     case USER_CHOICE -> findMirror(calendars, settings.getChosenCalendarHref(), null);
-    // Unchanged: the href recorded for this user, else the path the slug
-    // derives under their home.
-    default -> findMirror(calendars, settings.getMirrorCalendarHref(), collectionHref(home, MIRROR_COLLECTION_SLUG));
+    // The path the slug derives under their home, and only then the href
+    // recorded for this user.
+    //
+    // Asked in two steps rather than as one two-signal match, because the
+    // recorded href is no longer a reliable second name for the dedicated
+    // calendar: every kind records where its copies currently go, so an
+    // account that spent a while on MAIN_CALENDAR has its main calendar
+    // recorded here. Matched together, a return to this kind found both
+    // collections in the listing and answered whichever the server happened to
+    // list first — the account's main calendar as often as not, which is the
+    // one destination this kind is not. Ordered, the derived path wins when the
+    // account holds it, and the recorded href still answers for the account
+    // whose collection was adopted rather than created (the server refused
+    // MKCALENDAR) or established before the slug existed.
+    default -> findMirror(calendars, null, collectionHref(home, MIRROR_COLLECTION_SLUG))
+                                                                                       .or(() -> findMirror(calendars,
+                                                                                                            settings.getMirrorCalendarHref(),
+                                                                                                            null));
     };
   }
 
@@ -1629,11 +1644,20 @@ public class CaldavPushService {
    * convention the browser push has always used, kept so that objects written
    * before this migration are found rather than duplicated.
    *
+   * <p>
+   * Static and package-visible so that the relocation of EXO-89761 writes a
+   * moved copy under exactly this name rather than under a second convention
+   * of its own. A filename rule duplicated across two classes is one that
+   * drifts, and the first symptom of the drift would be a moved copy the next
+   * ordinary push no longer recognises — a duplicate in the user's calendar.
+   * Destination <i>resolution</i> stays where EXO-89760 put it; this is only
+   * the leaf name inside whatever destination that resolves to.
+   *
    * @param collectionHref the collection
    * @param icsUid the iCalendar UID
    * @return the object href
    */
-  private String objectHref(String collectionHref, String icsUid) {
+  static String objectHref(String collectionHref, String icsUid) {
     return StringUtils.appendIfMissing(collectionHref, "/") + icsUid + ".ics";
   }
 
