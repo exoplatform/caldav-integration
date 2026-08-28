@@ -16,6 +16,64 @@
  */
 
 /**
+ * One observed behaviour as the drawer shows it.
+ *
+ * <p>Here rather than in the component because three of its decisions are worth
+ * pinning and none of them is presentation: which entries are one row, which
+ * patterns a tick writes, and whether the count reads as a sentence.</p>
+ *
+ * <p><b>One row per behaviour.</b> A catalogue entry can cover a family, so its
+ * key is the quirk id where there is one — three Outlook and Thunderbird
+ * markers are one habit and one checkbox. A behaviour nothing describes is keyed
+ * by its own property, because there each property genuinely is its own
+ * thing.</p>
+ *
+ * <p><b>A tick writes the whole family.</b> The patterns come from the
+ * catalogue, not from the properties that happened to be seen, so the next
+ * marker the server invents is already excused rather than arriving as a fresh
+ * unticked row. The observed properties are the fallback for a payload the
+ * catalogue did not describe.</p>
+ *
+ * @param {Object} quirk the observed behaviour as the server sent it
+ * @param {Function} translate the component's own $t
+ * @returns {Object} the behaviour, with its wording and its tick
+ */
+export function describeQuirk(quirk, translate) {
+  // The catalogue's own sentence when it has one, a sentence built from the
+  // direction and the property name when it has not - so a server nobody here
+  // has seen is still described, and an administrator is never blocked by the
+  // catalogue being incomplete.
+  const wording = quirk.quirkId || `generic.${(quirk.direction || 'ADDED').toLowerCase()}`;
+  const properties = quirk.properties || [];
+  const property = properties[0];
+  return {
+    key: quirk.quirkId || `${quirk.direction}:${property}`,
+    patterns: quirk.patterns && quirk.patterns.length && quirk.patterns || properties,
+    direction: quirk.direction,
+    effect: quirk.effect,
+    // Ticking this one changes the document eXo writes into somebody's calendar
+    // rather than only what eXo notices about it.
+    changesWhatIsWritten: quirk.effect === 'OMIT',
+    count: quirk.count,
+    // Written out rather than interpolated into one string: "Seen 1 times" was
+    // on screen, and a plural that does not agree reads as a defect in the thing
+    // it is counting.
+    seen: quirk.count === 1 && translate('caldav.admin.servers.quirks.seen.once')
+      || translate('caldav.admin.servers.quirks.seen.many', {0: quirk.count}),
+    excused: !!quirk.excused,
+    // The invitation text is the one entry that must not read as another
+    // tick-box: excusing it stops the text of every copy being compared, answer
+    // links included.
+    warning: quirk.quirkId === 'rewritesDescription',
+    label: translate(`caldav.admin.servers.quirks.${wording}.label`, {0: property}),
+    cost: translate(`caldav.admin.servers.quirks.${wording}.cost`, {0: property}),
+    // Kept so a reader of the row - or of a bug report - can see which
+    // properties an entry was built from, without it crowding the sentence.
+    properties,
+  };
+}
+
+/**
  * A stored comma-separated pattern list as its entries, blanks dropped.
  *
  * @param {String} list the stored value, may be null
