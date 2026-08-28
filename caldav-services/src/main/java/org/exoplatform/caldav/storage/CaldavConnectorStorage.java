@@ -83,6 +83,38 @@ public class CaldavConnectorStorage {
   }
 
   /**
+   * Records the collection this user picked for themselves, on a server whose
+   * registration leaves the destination to them.
+   *
+   * <p>
+   * Stored apart from the mirror href for the reason
+   * {@code CaldavUserSetting#chosenCalendarHref} gives: one says where eXo
+   * writes, the other says that a human chose it, and only the second can
+   * answer "has this user chosen yet".
+   *
+   * <p>
+   * A blank href clears the choice rather than storing an empty one, so the
+   * account goes back to owing a choice instead of holding one that resolves to
+   * nothing.
+   *
+   * @param chosenCalendarHref href of the collection the user picked, blank to
+   *          clear the choice
+   * @param userIdentityId technical identity identifier of the user
+   */
+  public void saveChosenCalendarHref(String chosenCalendarHref, long userIdentityId) {
+    if (chosenCalendarHref == null || chosenCalendarHref.isBlank()) {
+      this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
+                                 CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                 CaldavConnectorUtils.CALDAV_CHOSEN_CALENDAR_KEY);
+      return;
+    }
+    this.settingService.set(Context.USER.id(String.valueOf(userIdentityId)),
+                            CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                            CaldavConnectorUtils.CALDAV_CHOSEN_CALENDAR_KEY,
+                            SettingValue.create(chosenCalendarHref));
+  }
+
+  /**
    * Retrieves the CalDAV settings of a user: the credentials of the connected
    * account and, when one has been chosen, the href of the mirror calendar.
    *
@@ -103,6 +135,9 @@ public class CaldavConnectorStorage {
     SettingValue<?> serverId = this.settingService.get(Context.USER.id(String.valueOf(userIdentityId)),
                                                        CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                                        CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
+    SettingValue<?> chosenCalendarHref = this.settingService.get(Context.USER.id(String.valueOf(userIdentityId)),
+                                                                 CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                                                 CaldavConnectorUtils.CALDAV_CHOSEN_CALENDAR_KEY);
 
 
     CaldavUserSetting caldavUserSetting = new CaldavUserSetting();
@@ -115,6 +150,9 @@ public class CaldavConnectorStorage {
     }
     if (mirrorCalendarHref != null) {
       caldavUserSetting.setMirrorCalendarHref((String) mirrorCalendarHref.getValue());
+    }
+    if (chosenCalendarHref != null) {
+      caldavUserSetting.setChosenCalendarHref((String) chosenCalendarHref.getValue());
     }
     if (serverId != null && serverId.getValue() != null) {
       try {
@@ -129,9 +167,10 @@ public class CaldavConnectorStorage {
   }
 
   /**
-   * Deletes every stored CalDAV setting of a user: credentials and mirror
-   * calendar href alike, so a later reconnection starts from a clean state
-   * and never silently reuses the mirror of a previous account.
+   * Deletes every stored CalDAV setting of a user: credentials, mirror
+   * calendar href and the collection they had chosen alike, so a later
+   * reconnection starts from a clean state and never silently reuses the
+   * mirror — or the choice — of a previous account.
    *
    * @param userIdentityId technical identity identifier of the user
    */
@@ -149,5 +188,12 @@ public class CaldavConnectorStorage {
     this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
                                CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
+    // The choice goes with the account it was made on. A user reconnecting to
+    // another account must be asked again: the collection they picked lives on
+    // the old one, and keeping the href would make a stale path read as a
+    // choice already made.
+    this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
+                               CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                               CaldavConnectorUtils.CALDAV_CHOSEN_CALENDAR_KEY);
   }
 }

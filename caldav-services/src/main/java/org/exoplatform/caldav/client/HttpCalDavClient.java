@@ -187,6 +187,20 @@ public class HttpCalDavClient implements CalDavClient {
         </d:prop>
       </d:propfind>""";
 
+  /** The principal's scheduling inbox, first hop of the default-calendar question. */
+  private static final String         PROPFIND_SCHEDULE_INBOX   = """
+      <?xml version="1.0" encoding="utf-8"?>
+      <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+        <d:prop><c:schedule-inbox-URL/></d:prop>
+      </d:propfind>""";
+
+  /** What the inbox calls the account's default calendar, second hop. */
+  private static final String         PROPFIND_DEFAULT_CALENDAR = """
+      <?xml version="1.0" encoding="utf-8"?>
+      <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+        <d:prop><c:schedule-default-calendar-URL/></d:prop>
+      </d:propfind>""";
+
   private static final String         PROPFIND_ETAGS            = """
       <?xml version="1.0" encoding="utf-8"?>
       <d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>""";
@@ -256,17 +270,62 @@ public class HttpCalDavClient implements CalDavClient {
 
   @Override
   public String discoverCalendarHome(CalDavEndpoint endpoint, String username, String password) {
-    Element response = firstResponse(propfind(endpoint, endpoint.getBasePath(), PROPFIND_PRINCIPAL, "0", username, password));
-    String principal = response == null ? null : hrefWithin(response, DAV_NS, "current-user-principal");
-    if (StringUtils.isBlank(principal)) {
-      throw new CalDavException("The server did not say who the current user is");
-    }
-    response = firstResponse(propfind(endpoint, asPath(endpoint, principal), PROPFIND_HOME, "0", username, password));
+    Element response = firstResponse(propfind(endpoint,
+                                              discoverPrincipal(endpoint, username, password),
+                                              PROPFIND_HOME,
+                                              "0",
+                                              username,
+                                              password));
     String home = response == null ? null : hrefWithin(response, CALDAV_NS, "calendar-home-set");
     if (StringUtils.isBlank(home)) {
       throw new CalDavException("The server did not say where the calendars are");
     }
     return asPath(endpoint, home);
+  }
+
+  @Override
+  public String discoverDefaultCalendar(CalDavEndpoint endpoint, String username, String password) {
+    String principal = discoverPrincipal(endpoint, username, password);
+    Element response = firstResponse(propfind(endpoint, principal, PROPFIND_SCHEDULE_INBOX, "0", username, password));
+    String inbox = response == null ? null : hrefWithin(response, CALDAV_NS, "schedule-inbox-URL");
+    if (StringUtils.isBlank(inbox)) {
+      // No scheduling inbox: this server implements none of RFC 6638, which is
+      // an answer of "I have no default calendar to name", not a failure. The
+      // caller decides; this client does not invent one.
+      LOG.debug("The principal {} names no scheduling inbox; the account states no default calendar", principal);
+      return null;
+    }
+    response = firstResponse(propfind(endpoint, asPath(endpoint, inbox), PROPFIND_DEFAULT_CALENDAR, "0", username, password));
+    String defaultCalendar = response == null ? null : hrefWithin(response, CALDAV_NS, "schedule-default-calendar-URL");
+    if (StringUtils.isBlank(defaultCalendar)) {
+      LOG.debug("The scheduling inbox {} names no default calendar", inbox);
+      return null;
+    }
+    return asPath(endpoint, defaultCalendar);
+  }
+
+  /**
+   * Asks the endpoint who the authenticated user is.
+   *
+   * <p>
+   * The first hop of every discovery walk, extracted so the home and the
+   * default calendar ask it the same way rather than each carrying its own
+   * copy — and so a server that answers no principal fails identically
+   * whichever of the two was being looked for.
+   *
+   * @param endpoint the declared server
+   * @param username the account to authenticate as
+   * @param password that account's password
+   * @return the principal's server-absolute raw path
+   * @throws CalDavException when the server names no principal
+   */
+  private String discoverPrincipal(CalDavEndpoint endpoint, String username, String password) {
+    Element response = firstResponse(propfind(endpoint, endpoint.getBasePath(), PROPFIND_PRINCIPAL, "0", username, password));
+    String principal = response == null ? null : hrefWithin(response, DAV_NS, "current-user-principal");
+    if (StringUtils.isBlank(principal)) {
+      throw new CalDavException("The server did not say who the current user is");
+    }
+    return asPath(endpoint, principal);
   }
 
   @Override
