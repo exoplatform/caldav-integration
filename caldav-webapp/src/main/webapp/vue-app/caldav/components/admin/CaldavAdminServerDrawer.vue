@@ -133,6 +133,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-list-item-content>
         </v-list-item>
         <!--
+          Where the copies land, under the same heading as what they carry:
+          both are decisions about the document eXo writes into somebody's
+          calendar, and an administrator weighing one is weighing the other.
+        -->
+        <caldav-admin-server-mirror-target-select
+          v-model="server.mirrorTarget"
+          :stored-value="storedMirrorTarget" />
+        <!--
           Always rendered, empty or not. Two drawers with different SHAPES teach
           an administrator nothing: on a server that has shown nothing, a missing
           section reads as "unsupported here" or "not implemented" rather than as
@@ -216,11 +224,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 <script>
 import {applyExcusals, describeQuirk} from '../../js/serverQuirks.js';
+import {DEFAULT_MIRROR_TARGET, mirrorTargetOf} from '../../js/mirrorTargets.js';
 
 export default {
   data: () => ({
     caldavServerDrawer: false,
     loading: false,
+    /**
+     * The destination the registration was opened on, or null on a
+     * declaration. Kept beside the edited value rather than derived from it,
+     * because a change is only visible against what is stored — and it is what
+     * decides whether the drawer says the copies are about to move.
+     */
+    storedMirrorTarget: null,
     // The address shape the chosen preset expects. Null until one is chosen,
     // and back to null on every close, so the generic shape is what an
     // untouched declaration shows.
@@ -241,6 +257,10 @@ export default {
       ignoredProperties: null,
       droppedProperties: null,
       omittedProperties: null,
+      // Stated, never absent. The registry reads a missing destination as
+      // "not stated" and keeps whatever the row already had, which was the
+      // right reading only while no drawer carried the control.
+      mirrorTarget: DEFAULT_MIRROR_TARGET,
       observedQuirks: [],
     },
     // The behaviours this server has been seen doing, as the drawer edits
@@ -288,6 +308,12 @@ export default {
       if (server) {
         this.server = { ...server };
       }
+      // Normalised on the way in, and remembered as it was stored. A row saved
+      // before this control existed carries no destination at all; showing it
+      // as three empty radios would let a save state a destination the
+      // administrator never chose.
+      this.server.mirrorTarget = mirrorTargetOf(this.server.mirrorTarget);
+      this.storedMirrorTarget = this.server.id && this.server.mirrorTarget || null;
       this.observedQuirks = (this.server.observedQuirks || []).map(describeQuirk);
       this.$refs.caldavServerDrawer.open();
     },
@@ -325,9 +351,11 @@ export default {
         ignoredProperties: null,
         droppedProperties: null,
         omittedProperties: null,
+        mirrorTarget: DEFAULT_MIRROR_TARGET,
         observedQuirks: [],
       };
       this.observedQuirks = [];
+      this.storedMirrorTarget = null;
       this.$refs.caldavServerDrawer.close();
     },
     /**
@@ -378,6 +406,11 @@ export default {
       // it would be asking the registry to accept the evidence it produced.
       const payload = {...this.server};
       delete payload.observedQuirks;
+      // Always a real value, on every save. See mirrorTargets.mirrorTargetOf:
+      // the storage's tolerance for an absent destination protected rows only
+      // while this drawer had nothing to say about it, and a save that left it
+      // out now would be relying on a guard that no longer guards anything.
+      payload.mirrorTarget = mirrorTargetOf(this.server.mirrorTarget);
       try {
         if (isNew) {
           await this.$agendaCaldavService.createCaldavServer(payload);

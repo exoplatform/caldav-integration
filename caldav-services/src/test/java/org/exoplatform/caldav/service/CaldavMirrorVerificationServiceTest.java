@@ -24,6 +24,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -195,6 +196,9 @@ public class CaldavMirrorVerificationServiceTest {
    */
   @Mock
   private CaldavMirrorRelocationService      caldavMirrorRelocationService;
+
+  @Mock
+  private CaldavMirrorReportService          caldavMirrorReportService;
 
   @Mock
   private CalDavEndpoint                     endpoint;
@@ -646,6 +650,56 @@ public class CaldavMirrorVerificationServiceTest {
     assertEquals(1, result.missing());
     assertEquals(0, result.repaired());
     verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+  }
+
+  // ------------- what an administrator can read afterwards (EXO-89762)
+
+  @Test
+  public void everyPassThatRanAgainstTheAccountIsLeftWhereAnAdministratorCanReadIt() {
+    // Without this the only record of a pass is the platform log, and the
+    // add-on's own advice - move to the account's main calendar once copies
+    // synchronise cleanly - becomes an instruction nobody outside operations
+    // can follow.
+    givenServerHolds(Map.of());
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+
+    service.verify(USER);
+
+    verify(caldavMirrorReportService).record(eq(USER), any(MirrorVerification.class), any(MirrorRelocation.class));
+  }
+
+  @Test
+  public void aPassThatCouldNotEvenListTheCollectionIsReportedToo() {
+    // The pass an administrator most needs to see. Reporting only the passes
+    // that succeeded would show a change of destination as quietly finished on
+    // exactly the accounts it never reached.
+    when(calDavClient.listResourceEtags(any(), anyString(), anyString(), anyString()))
+                                                                                     .thenThrow(new IllegalStateException("down"));
+
+    service.verify(USER);
+
+    verify(caldavMirrorReportService).record(eq(USER), any(MirrorVerification.class), any(MirrorRelocation.class));
+  }
+
+  @Test
+  public void aPassResultIsStillReturnedWhenItCouldNotBeRecorded() {
+    // An observability aid must never cost a pass its result: nothing reads
+    // these reports and nothing depends on them.
+    givenServerHolds(Map.of());
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    doThrow(new IllegalStateException("no store")).when(caldavMirrorReportService)
+                                                  .record(anyLong(), any(), any());
+
+    assertEquals(1, service.verify(USER).checked());
+  }
+
+  @Test
+  public void forgettingAnAccountAlsoForgetsTheTallyAttributedToIt() {
+    // A number attributed to an account that no longer exists is not stale, it
+    // is wrong.
+    service.forgetRepairs(USER);
+
+    verify(caldavMirrorReportService).forget(USER);
   }
 
   @Test
