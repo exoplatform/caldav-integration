@@ -34,11 +34,20 @@
  * unticked row. The observed properties are the fallback for a payload the
  * catalogue did not describe.</p>
  *
+ * <p><b>It resolves no wording, on purpose.</b> It used to take the component's
+ * <code>$t</code> and return finished sentences, and the drawer passed
+ * <code>this.$t</code> — a method torn off its receiver, which threw
+ * <code>Cannot read properties of undefined (reading '$i18n')</code> the moment
+ * a server actually had a behaviour to show. Binding it would have fixed that
+ * one call; returning <b>keys</b> instead means no function crosses this
+ * boundary at all, so the next caller cannot make the same mistake. The
+ * template resolves them, which is where <code>$t</code> already has its
+ * receiver.</p>
+ *
  * @param {Object} quirk the observed behaviour as the server sent it
- * @param {Function} translate the component's own $t
- * @returns {Object} the behaviour, with its wording and its tick
+ * @returns {Object} the behaviour, with its wording keys and its tick
  */
-export function describeQuirk(quirk, translate) {
+export function describeQuirk(quirk) {
   // The catalogue's own sentence when it has one, a sentence built from the
   // direction and the property name when it has not - so a server nobody here
   // has seen is still described, and an administrator is never blocked by the
@@ -58,15 +67,18 @@ export function describeQuirk(quirk, translate) {
     // Written out rather than interpolated into one string: "Seen 1 times" was
     // on screen, and a plural that does not agree reads as a defect in the thing
     // it is counting.
-    seen: quirk.count === 1 && translate('caldav.admin.servers.quirks.seen.once')
-      || translate('caldav.admin.servers.quirks.seen.many', {0: quirk.count}),
+    seenKey: quirk.count === 1 && 'caldav.admin.servers.quirks.seen.once'
+      || 'caldav.admin.servers.quirks.seen.many',
     excused: !!quirk.excused,
     // The invitation text is the one entry that must not read as another
     // tick-box: excusing it stops the text of every copy being compared, answer
     // links included.
     warning: quirk.quirkId === 'rewritesDescription',
-    label: translate(`caldav.admin.servers.quirks.${wording}.label`, {0: property}),
-    cost: translate(`caldav.admin.servers.quirks.${wording}.cost`, {0: property}),
+    labelKey: `caldav.admin.servers.quirks.${wording}.label`,
+    costKey: `caldav.admin.servers.quirks.${wording}.cost`,
+    // The argument the generic wording interpolates; harmless for a catalogue
+    // sentence, which names no property.
+    property,
     // Kept so a reader of the row - or of a bug report - can see which
     // properties an entry was built from, without it crowding the sentence.
     properties,
