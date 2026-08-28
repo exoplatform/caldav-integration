@@ -95,6 +95,9 @@ public class CaldavInboundServiceTest {
 
   private static final long      PAIR     = 11L;
 
+  /** The binding standing for the collection eXo copies space meetings into. */
+  private static final long      MIRROR_PAIR = 12L;
+
   private static final long      CALENDAR = 42L;
 
   private static final String    LOGIN    = "john";
@@ -1280,6 +1283,165 @@ public class CaldavInboundServiceTest {
 
     verify(calDavClient).readCalendar(any(), eq("/dav/calendars/john/private/"), eq(LOGIN), anyString());
     verify(calDavClient).listResourceEtags(any(), eq("/dav/calendars/john/private/"), eq(LOGIN), anyString());
+  }
+
+  /**
+   * A copy eXo wrote into the mirror is never imported back as an event.
+   */
+  @Test
+  public void aCopyEXoWroteIntoTheMirrorIsNotImportedBackAsAnEventOfItsOwn() throws Exception {
+    // Until now the copy was protected by WHERE it lived: the sweep skipped
+    // the dedicated collection wholesale. Point the mirror at a calendar the
+    // inbound half also reads and that protection is gone — the pair-scoped
+    // identity lookup finds nothing on THIS pair, because a mirror copy
+    // carries its mapping on the MIRROR pair, so eXo imports its own copy of a
+    // space meeting back as a second, personal event beside it.
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Sprint review")));
+    lenient().when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
+    // Stubbed leniently so that removing the guard fails this test on its
+    // assertion — an event created — rather than on a missing stub.
+    lenient().when(agendaEventService.createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong()))
+             .thenReturn(event(501L));
+
+    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    verify(agendaEventService, never()).createEvent(any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    anyBoolean(),
+                                                    anyLong());
+  }
+
+  /**
+   * The ownership rule governs an update as well as a create.
+   */
+  @Test
+  public void aCopyEXoWroteIsStillSkippedWhenThisBindingHoldsARowForItsUid() throws Exception {
+    // Asked before the identity lookup, not after. An object that is ours is
+    // not ours a little less because this pair happens to hold a stale row for
+    // the same UID — and a check placed after the lookup would let exactly
+    // that case through to updateEvent, writing the mirror's content over the
+    // user's own event.
+    givenServerObjects(object("o1.ics", "etag-2", icsModifiedAt("uid-1@example.test", "Moved", "20261005T120000Z")));
+    lenient().when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    lenient().when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
+    // Everything the update path would need, stubbed leniently: removing the
+    // guard must fail this test on the update it then performs, not on a stub
+    // it happens to be missing.
+    lenient().when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
+    lenient().when(agendaEventAttendeeService.getEventAttendees(501L))
+             .thenReturn(new EventAttendeeList(List.of(attendee(USER))));
+
+    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    verify(agendaEventService, never()).updateEvent(any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    anyBoolean(),
+                                                    anyLong());
+    verify(agendaEventService, never()).createEvent(any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    anyBoolean(),
+                                                    anyLong());
+  }
+
+  /**
+   * An object no mirror owns is a genuine remote event and still imports.
+   */
+  @Test
+  public void anObjectNoMirrorOwnsIsStillImported() throws Exception {
+    // The other half of the guard, and the one that says it is a guard rather
+    // than a wall: the meeting a colleague put in the user's own calendar has
+    // no mapping anywhere, and the whole feature is that it appears in eXo.
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-9@example.test", "Dentist")));
+    lenient().when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-9@example.test")).thenReturn(false);
+    givenAgendaCreates(501L);
+
+    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    ArgumentCaptor<Event> created = ArgumentCaptor.forClass(Event.class);
+    verify(agendaEventService).createEvent(created.capture(),
+                                           any(),
+                                           any(),
+                                           any(),
+                                           any(),
+                                           any(),
+                                           anyBoolean(),
+                                           eq(USER));
+    assertEquals("Dentist", created.getValue().getSummary());
+  }
+
+  /**
+   * The mirror pair itself is exempt from its own ownership rule.
+   */
+  @Test
+  public void readingTheMirrorBackIsNotImportingSomebodyElsesObject() throws Exception {
+    // Answering "yes, that is a mirror copy" while reading the mirror would
+    // make the mirror unable to reconcile the very copies it owns — every
+    // object it holds is one, by construction.
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Sprint review")));
+    givenAgendaCreates(501L);
+    CalendarSync mirror = pair();
+    mirror.setOrigin(SyncOrigin.MIRROR);
+
+    assertEquals(1, service.importInto(USER, mirror, calendar(), from(), to()));
+
+    verify(caldavSyncStorage, never()).isMirrorOwned(anyLong(), anyLong(), anyString());
+  }
+
+  /**
+   * Inbound deletion can never reach a row a mirror owns.
+   */
+  @Test
+  public void reconcilingACollectionNeverDeletesACopyEXoWroteIntoIt() throws Exception {
+    // Safe today, but by accident: the deletion paths page a binding's OWN
+    // mappings, so a mirror row is out of reach because of how the walk is
+    // written and not because anything checks. That accident is load-bearing
+    // the moment two pairs share a collection — the mirror's copies are absent
+    // from nothing and present in the same listing, so a walk widened to "this
+    // collection's rows" would call them vanished and delete the user's space
+    // meetings out of eXo. This is the pin that fails if the walk is widened.
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.readCalendar(any(), eq(HREF), eq(LOGIN), anyString()))
+        .thenReturn(new CalendarCollection(HREF, "Primary", "ctag-1", null, null, true, Set.of("VEVENT")));
+    // The account holds nothing at all at that path, so every row walked would
+    // be judged vanished.
+    when(calDavClient.listResourceEtags(any(), eq(HREF), eq(LOGIN), anyString())).thenReturn(Map.of());
+    when(caldavSyncStorage.getObjects(eq(PAIR), anyInt(), anyInt())).thenReturn(new PageImpl<>(List.of()));
+    lenient().when(caldavSyncStorage.getObjects(eq(MIRROR_PAIR), anyInt(), anyInt()))
+             .thenReturn(new PageImpl<>(List.of(mirrorMapping())));
+
+    service.removeVanishedObjects(USER, pair());
+
+    verify(caldavSyncStorage, never()).getObjects(eq(MIRROR_PAIR), anyInt(), anyInt());
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+  }
+
+  /**
+   * A mapping row of the mirror pair, standing in the same collection as the
+   * binding being reconciled.
+   *
+   * @return the row a widened walk would wrongly select
+   */
+  private ObjectSync mirrorMapping() {
+    ObjectSync copy = new ObjectSync();
+    copy.setId(99L);
+    copy.setCalendarSyncId(MIRROR_PAIR);
+    copy.setIcsUid("uid-mirror@example.test");
+    copy.setLocalEventId(9001L);
+    copy.setRemoteHref(HREF + "copy.ics");
+    return copy;
   }
 
   /**

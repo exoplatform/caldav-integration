@@ -22,7 +22,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -309,6 +313,36 @@ public class CaldavSyncStorageTest {
     when(objectSyncDAO.findByCalendarSyncIdAndLocalEventId(3L, 7L)).thenReturn(Optional.of(objectEntity(1L)));
 
     assertNotNull(storage.getObjectByEvent(3L, 7L));
+  }
+
+  /**
+   * Ownership asked across every pair, not inside one.
+   */
+  @Test
+  public void aUidOneOfTheUsersMirrorsHoldsIsRecognisedAsTheirOwnCopy() {
+    // The question no pair-scoped lookup can answer: a copy eXo wrote carries
+    // its mapping on the pair it was WRITTEN into, and the pair asking is a
+    // different one. Scoped to the user and the server, because a UID on one
+    // account says nothing about an object on another.
+    when(objectSyncDAO.countByOwnerAndOriginAndIcsUid(USER, 2L, SyncOrigin.MIRROR, "uid-1")).thenReturn(1L);
+
+    assertTrue(storage.isMirrorOwned(USER, 2L, "uid-1"));
+  }
+
+  @Test
+  public void aUidNoMirrorHoldsIsNotTheUsersOwnCopy() {
+    when(objectSyncDAO.countByOwnerAndOriginAndIcsUid(USER, 2L, SyncOrigin.MIRROR, "uid-2")).thenReturn(0L);
+
+    assertFalse(storage.isMirrorOwned(USER, 2L, "uid-2"));
+  }
+
+  @Test
+  public void anObjectWithNoUidIsNobodysCopyAndIsNotAskedAbout() {
+    // A blank UID matches every blank UID, so asking would be a way to call an
+    // unrelated object ours and refuse to import it.
+    assertFalse(storage.isMirrorOwned(USER, 2L, " "));
+
+    verify(objectSyncDAO, never()).countByOwnerAndOriginAndIcsUid(anyLong(), anyLong(), any(), anyString());
   }
 
   @Test

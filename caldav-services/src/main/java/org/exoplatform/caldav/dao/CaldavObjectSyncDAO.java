@@ -29,6 +29,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.caldav.entity.CaldavObjectSyncEntity;
+import org.exoplatform.caldav.model.SyncOrigin;
 
 /**
  * Persistence access to the object mappings.
@@ -141,6 +142,39 @@ public interface CaldavObjectSyncDAO extends JpaRepository<CaldavObjectSyncEntit
       + " AND o.localEventId IN :localEventIds")
   List<Long> findMappedLocalEventIdsOfUser(@Param("userIdentityId") long userIdentityId,
                                            @Param("localEventIds") Collection<Long> localEventIds);
+
+  /**
+   * How many of this user's pairs of one origin, on one server, already map
+   * this iCalendar UID.
+   *
+   * <p>
+   * The ownership question the inbound half asks before importing an object:
+   * "did eXo write this?". Every other lookup here is scoped to a single pair,
+   * which is precisely why it cannot answer it — a copy eXo wrote carries its
+   * mapping on the pair it was <em>written</em> into, and the pair asking is a
+   * different one. Pointed at a collection both halves read, the pair-scoped
+   * question finds nothing and the import creates a duplicate of eXo's own
+   * event.
+   *
+   * <p>
+   * A count rather than the rows: the caller only ever asks whether the object
+   * is ours, and the row it would be handed belongs to another pair, so
+   * returning it would invite writing to a mapping this pair does not own.
+   *
+   * @param userIdentityId the user whose pairs are asked about
+   * @param serverId the declared server registration; a UID on one account
+   *          says nothing about an object on another
+   * @param origin which side created the collections that count as owning
+   * @param icsUid the iCalendar UID looked for
+   * @return how many mappings of that origin carry the UID, zero when none do
+   */
+  @Query("SELECT COUNT(o) FROM CaldavObjectSyncEntity o, CaldavCalendarSyncEntity p"
+      + " WHERE o.calendarSyncId = p.id AND p.userIdentityId = :userIdentityId"
+      + " AND p.serverId = :serverId AND p.origin = :origin AND o.icsUid = :icsUid")
+  long countByOwnerAndOriginAndIcsUid(@Param("userIdentityId") long userIdentityId,
+                                      @Param("serverId") long serverId,
+                                      @Param("origin") SyncOrigin origin,
+                                      @Param("icsUid") String icsUid);
 
   /**
    * Drops every mapping of a pair. Called when a pair is unbound; the foreign
