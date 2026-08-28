@@ -32,12 +32,15 @@ import org.exoplatform.caldav.model.ServerQuirkDirection;
  *
  * <p>
  * <b>The format is deliberately trivial</b> —
- * {@code DIRECTION:PROPERTY=COUNT}, entries separated by {@code ;}. It has to
+ * {@code DIRECTION:PROPERTY=COUNT@LASTSEEN}, entries separated by {@code ;},
+ * where the stamp is an epoch day. It has to
  * be read by whoever opens the row in a database client while diagnosing a
  * server, and a JSON blob in a column is read by nobody. It also has to survive
  * being written by an older build and read by a newer one, which it does the
  * only way a format this small can: an entry that cannot be read is dropped and
- * the rest of the summary still parses.
+ * the rest of the summary still parses. An entry written before the stamp
+ * existed simply has none, and {@link Tally#UNKNOWN_DAY} says so rather than
+ * pretending to a date.
  *
  * <p>
  * <b>Bounded, because a column is not a log.</b> At most
@@ -63,6 +66,9 @@ public final class ServerQuirkSummary {
 
   /** Separates an entry's key from its count. */
   private static final String COUNT_SEPARATOR = "=";
+
+  /** Separates an entry's count from the day it was last seen. */
+  private static final String DAY_SEPARATOR   = "@";
 
   /**
    * Not instantiated: a codec with no state of its own.
@@ -96,6 +102,70 @@ public final class ServerQuirkSummary {
   }
 
   /**
+   * How often a behaviour has been seen, and when it was last seen.
+   *
+   * <p>
+   * <b>The stamp is what lets a summary forget.</b> Without it the row only ever
+   * grew: a behaviour a server stopped exhibiting stayed on the screen for ever,
+   * and — worse — a behaviour the comparison learned to classify differently
+   * went on being offered under its old, broader description beside its new one.
+   * A live BlueMind account showed exactly that, listing both "drops the
+   * organizer of an event with no other participants" and "does not keep
+   * ORGANIZER", the second of which would have written an over-broad excusal if
+   * anybody had ticked it.
+   *
+   * @param count how many times it has been seen — a rolling tally,
+   *          deliberately approximate
+   * @param lastSeenDay the epoch day it was last observed, or
+   *          {@link #UNKNOWN_DAY} for an entry stored before the stamp existed
+   */
+  public record Tally(long count, long lastSeenDay) {
+
+    /** The stamp of an entry written by a build that did not record one. */
+    public static final long UNKNOWN_DAY = -1;
+
+    /**
+     * Whether this tally has gone unseen for longer than a deployment is
+     * willing to keep it.
+     *
+     * <p>
+     * An entry with no stamp is never stale: it was written before the stamp
+     * existed, and dropping somebody's history on upgrade to enforce a rule that
+     * did not apply when it was recorded would be the wrong bias. The first
+     * write after the upgrade gives it one, and the ordinary rule takes over
+     * from there.
+     *
+     * @param today the current epoch day
+     * @param retentionDays how long an unseen behaviour is kept
+     * @return true when it should be forgotten
+     */
+    public boolean staleOn(long today, long retentionDays) {
+      return lastSeenDay != UNKNOWN_DAY && today - lastSeenDay > retentionDays;
+    }
+
+    /**
+     * The same tally, seen again today.
+     *
+     * @param times how many times it was seen
+     * @param today the current epoch day
+     * @return the updated tally
+     */
+    public Tally seen(long times, long today) {
+      return new Tally(count + times, today);
+    }
+
+    /**
+     * The same tally with a stamp, for an entry that had none.
+     *
+     * @param today the current epoch day
+     * @return the tally, stamped
+     */
+    public Tally stamped(long today) {
+      return lastSeenDay == UNKNOWN_DAY ? new Tally(count, today) : this;
+    }
+  }
+
+  /**
    * Reads a stored summary.
    *
    * <p>
@@ -107,15 +177,18 @@ public final class ServerQuirkSummary {
    * @return the observations and their counts, in the order they were stored,
    *         never null
    */
-  public static Map<Observation, Long> parse(String summary) {
-    Map<Observation, Long> observations = new LinkedHashMap<>();
+  public static Map<Observation, Tally> parse(String summary) {
+    Map<Observation, Tally> observations = new LinkedHashMap<>();
     if (StringUtils.isBlank(summary)) {
       return observations;
     }
     for (String entry : StringUtils.split(summary, ENTRY_SEPARATOR)) {
-      Map.Entry<Observation, Long> parsed = parseEntry(entry);
+      Map.Entry<Observation, Tally> parsed = parseEntry(entry);
       if (parsed != null) {
-        observations.merge(parsed.getKey(), parsed.getValue(), Long::sum);
+        observations.merge(parsed.getKey(),
+                           parsed.getValue(),
+                           (first, second) -> new Tally(first.count() + second.count(),
+                                                        Math.max(first.lastSeenDay(), second.lastSeenDay())));
       }
     }
     return observations;
@@ -127,32 +200,45 @@ public final class ServerQuirkSummary {
    * @param observations the observations and their counts
    * @return the value to store, null when there is nothing to store
    */
-  public static String format(Map<Observation, Long> observations) {
+  public static String format(Map<Observation, Tally> observations) {
     if (observations == null || observations.isEmpty()) {
       return null;
     }
     String formatted = observations.entrySet()
                                    .stream()
                                    .filter(entry -> entry.getKey() != null && entry.getValue() != null
-                                       && entry.getValue() > 0)
-                                   .sorted(Comparator.<Map.Entry<Observation, Long>, Long>comparing(Map.Entry::getValue)
+                                       && entry.getValue().count() > 0)
+                                   .sorted(Comparator.comparingLong((Map.Entry<Observation, Tally> entry) -> entry.getValue()
+                                                                                                                  .count())
                                                      .reversed()
                                                      .thenComparing(entry -> entry.getKey().property()))
                                    .limit(MAX_ENTRIES)
-                                   .map(entry -> entry.getKey().direction().name() + KEY_SEPARATOR
-                                       + entry.getKey().property() + COUNT_SEPARATOR + entry.getValue())
+                                   .map(ServerQuirkSummary::formatEntry)
                                    .collect(Collectors.joining(ENTRY_SEPARATOR));
     return StringUtils.defaultIfBlank(formatted, null);
   }
 
   /**
-   * Reads one {@code DIRECTION:PROPERTY=COUNT} entry.
+   * Writes one entry, its stamp omitted when there is none to write.
+   *
+   * @param entry the observation and its tally
+   * @return the stored entry
+   */
+  private static String formatEntry(Map.Entry<Observation, Tally> entry) {
+    String written = entry.getKey().direction().name() + KEY_SEPARATOR + entry.getKey().property() + COUNT_SEPARATOR
+        + entry.getValue().count();
+    return entry.getValue().lastSeenDay() == Tally.UNKNOWN_DAY ? written
+                                                               : written + DAY_SEPARATOR + entry.getValue().lastSeenDay();
+  }
+
+  /**
+   * Reads one {@code DIRECTION:PROPERTY=COUNT@LASTSEEN} entry, stamp optional.
    *
    * @param entry the stored entry
-   * @return the observation and its count, or null when the entry cannot be
+   * @return the observation and its tally, or null when the entry cannot be
    *         read
    */
-  private static Map.Entry<Observation, Long> parseEntry(String entry) {
+  private static Map.Entry<Observation, Tally> parseEntry(String entry) {
     int count = entry.lastIndexOf(COUNT_SEPARATOR);
     int key = entry.indexOf(KEY_SEPARATOR);
     if (count < 0 || key < 0 || key > count) {
@@ -160,11 +246,14 @@ public final class ServerQuirkSummary {
     }
     ServerQuirkDirection direction = direction(entry.substring(0, key));
     Observation observation = Observation.of(direction, entry.substring(key + KEY_SEPARATOR.length(), count));
-    Long seen = count(entry.substring(count + COUNT_SEPARATOR.length()));
+    String tail = entry.substring(count + COUNT_SEPARATOR.length());
+    int day = tail.indexOf(DAY_SEPARATOR);
+    Long seen = count(day < 0 ? tail : tail.substring(0, day));
     if (observation == null || seen == null) {
       return null;
     }
-    return Map.entry(observation, seen);
+    Long lastSeen = day < 0 ? null : count(tail.substring(day + DAY_SEPARATOR.length()));
+    return Map.entry(observation, new Tally(seen, lastSeen == null ? Tally.UNKNOWN_DAY : lastSeen));
   }
 
   /**
