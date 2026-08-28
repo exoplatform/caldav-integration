@@ -134,6 +134,9 @@ public class CaldavSyncServiceTest {
   private CaldavPendingInvitationService caldavPendingInvitationService;
 
   @Mock
+  private CaldavEventPropagationService caldavEventPropagationService;
+
+  @Mock
   private CalDavEndpoint             endpoint;
 
   @InjectMocks
@@ -1450,6 +1453,42 @@ public class CaldavSyncServiceTest {
     // And the pending invitations were seeded first, so the pass that reads
     // answers back is also the one that put the copies there (EXO-89681).
     verify(caldavPendingInvitationService).pushUpcomingMeetings(USER);
+  }
+
+  /**
+   * The sweep is the only thing that ever settles a push that failed
+   * (EXO-89773), and it settles it <b>before</b> the verification pass looks.
+   *
+   * <p>
+   * The order is the assertion. A copy eXo knows it is behind on must be
+   * written before anything judges it, or the pass judges eXo's own arrears and
+   * reports a mirror needing attention that the very next call would have put
+   * right.
+   */
+  @Test
+  public void theBackgroundSweepSettlesWhatEXoOwesBeforeItJudgesAnything() throws Exception {
+    givenServerCalendars();
+
+    service.syncInBackground(USER, LOGIN);
+
+    InOrder order = inOrder(caldavEventPropagationService, caldavPendingInvitationService, caldavMirrorVerificationService);
+    order.verify(caldavEventPropagationService).retryOwedPushes(USER);
+    order.verify(caldavPendingInvitationService).pushUpcomingMeetings(USER);
+    order.verify(caldavMirrorVerificationService).verify(USER);
+  }
+
+  /**
+   * And a user pressing Synchronise now does not wait for it, for the reason
+   * the mirror check does not run there either: settling an arrear talks to
+   * somebody else's server, and nobody presses a button to wait on that.
+   */
+  @Test
+  public void aUserTriggeredSyncDoesNotWaitForWhatEXoOwesToBeSettled() throws Exception {
+    givenServerCalendars();
+
+    service.syncNowAndWait(USER, LOGIN);
+
+    verify(caldavEventPropagationService, never()).retryOwedPushes(anyLong());
   }
 
   private CaldavUserSetting settings() {
