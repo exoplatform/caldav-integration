@@ -72,4 +72,19 @@ public class CalendarSync {
   /** Failures in a row, reset on success: what turns a transient failure into a deliberate pause. */
   private int                consecutiveFailures;
 
+  /**
+   * The value of the server's own copy-settings stamp that this pair has
+   * already carried through one full comparison of its copies (EXO-89759).
+   *
+   * <p>
+   * Older than the server's stamp — null included — means the settings changed
+   * after the last full comparison, and the next pass owes the copies already on
+   * the server one round that compares content instead of trusting an unchanged
+   * ETag. Equal means there is nothing to apply. It holds the <i>server's</i>
+   * value rather than the time the round ran, deliberately: a setting changed
+   * while a round is walking the pages must not be swallowed by a stamp that
+   * happens to be later than it.
+   */
+  private Date               copySettingsApplied;
+
 }
