@@ -170,6 +170,55 @@ public class HttpCalDavClientTest {
     assertEquals("http://cal.example.com/dav/pal/alice%40stalwart.local/", sent.get(1).uri().toString());
   }
 
+  /**
+   * The account's default calendar is asked of its scheduling inbox, in the two
+   * hops RFC 6638 defines.
+   */
+  @Test
+  void theDefaultCalendarIsAskedOfTheSchedulingInboxRatherThanGuessed() throws Exception {
+    givenAnswers(principalAnswer(), scheduleInboxAnswer("/dav/cal/alice%40stalwart.local/inbox/"),
+                 defaultCalendarAnswer("/dav/cal/alice%40stalwart.local/personal/"));
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    String defaultCalendar = client.discoverDefaultCalendar(endpoint, USER, PASSWORD);
+
+    assertEquals("/dav/cal/alice%40stalwart.local/personal/", defaultCalendar);
+    assertEquals(3, sent.size(), "three PROPFINDs: principal, then its scheduling inbox, then the inbox's default");
+    assertEquals("http://cal.example.com" + BASE_PATH, sent.get(0).uri().toString());
+    assertEquals("http://cal.example.com/dav/pal/alice%40stalwart.local/", sent.get(1).uri().toString());
+    assertEquals("http://cal.example.com/dav/cal/alice%40stalwart.local/inbox/", sent.get(2).uri().toString(),
+                 "the second hop addresses the inbox the principal named, not a path this client invented");
+  }
+
+  /**
+   * A server implementing no scheduling answers "no default calendar" rather
+   * than raising.
+   */
+  @Test
+  void aServerImplementingNoSchedulingNamesNoDefaultCalendar() throws Exception {
+    // Scheduling is an extension, and plenty of servers implement none of it.
+    // That has to be an answer of "none" rather than an exception, because the
+    // caller's whole job is to decide what to do without one - and it must not
+    // become a guess here.
+    givenAnswers(principalAnswer(), emptyMultistatus());
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    assertNull(client.discoverDefaultCalendar(endpoint, USER, PASSWORD));
+    assertEquals(2, sent.size(), "asking the inbox that was never named would address a path this client made up");
+  }
+
+  /**
+   * An inbox that names no default calendar leaves the answer empty.
+   */
+  @Test
+  void aSchedulingInboxNamingNoDefaultCalendarIsNotFilledInFromTheListing() throws Exception {
+    givenAnswers(principalAnswer(), scheduleInboxAnswer("/dav/cal/alice%40stalwart.local/inbox/"), emptyMultistatus());
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    assertNull(client.discoverDefaultCalendar(endpoint, USER, PASSWORD),
+               "an inbox that names no default calendar means the account has none, not that one must be chosen for it");
+  }
+
   @Test
   void everyRequestCarriesBasicCredentialsUnprompted() throws Exception {
     givenAnswers(collectionAnswer(BASE_PATH, "Home", null));
@@ -812,11 +861,59 @@ END:VCALENDAR</A:calendar-data></D:prop>
   }
 
   /**
-   * A Depth:0 answer describing one calendar collection.
+   * The base path naming the authenticated principal — the first hop of every
+   * discovery walk.
+   *
+   * @return the multistatus body
+   */
+  private String principalAnswer() {
+    return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <D:multistatus xmlns:D="DAV:">
+          <D:response><D:href>%s</D:href><D:propstat><D:prop>
+            <D:current-user-principal><D:href>/dav/pal/alice%%40stalwart.local/</D:href></D:current-user-principal>
+          </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+        </D:multistatus>""".formatted(BASE_PATH);
+  }
+
+  /**
+   * A principal naming its scheduling inbox.
+   *
+   * @param inboxHref where the principal says its inbox lives
+   * @return the multistatus body
+   */
+  private String scheduleInboxAnswer(String inboxHref) {
+    return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <D:multistatus xmlns:D="DAV:" xmlns:A="urn:ietf:params:xml:ns:caldav">
+          <D:response><D:href>/dav/pal/alice%%40stalwart.local/</D:href><D:propstat><D:prop>
+            <A:schedule-inbox-URL><D:href>%s</D:href></A:schedule-inbox-URL>
+          </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+        </D:multistatus>""".formatted(inboxHref);
+  }
+
+  /**
+   * A scheduling inbox naming the account's default calendar.
+   *
+   * @param calendarHref the collection the inbox calls the default one
+   * @return the multistatus body
+   */
+  private String defaultCalendarAnswer(String calendarHref) {
+    return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <D:multistatus xmlns:D="DAV:" xmlns:A="urn:ietf:params:xml:ns:caldav">
+          <D:response><D:href>/dav/cal/alice%%40stalwart.local/inbox/</D:href><D:propstat><D:prop>
+            <A:schedule-default-calendar-URL><D:href>%s</D:href></A:schedule-default-calendar-URL>
+          </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+        </D:multistatus>""".formatted(calendarHref);
+  }
+
+  /**
+   * A Depth:0 listing of one calendar collection.
    *
    * @param href the collection href
-   * @param displayName the display name
-   * @param ctag the ctag, or null to answer none
+   * @param displayName its display name
+   * @param ctag its ctag, or null to answer without one
    * @return the multistatus body
    */
   private String collectionAnswer(String href, String displayName, String ctag) {
