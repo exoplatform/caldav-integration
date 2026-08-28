@@ -46,4 +46,21 @@ public class CaldavUserSetting {
    * through the seed registration, then the legacy configuration property.
    */
   private Long    serverId;
+
+  /**
+   * Href of the collection this user picked themselves, on a server whose
+   * registration says the destination is theirs to choose
+   * ({@link MirrorTargetKind#USER_CHOICE}).
+   *
+   * <p>
+   * <b>A different question from {@link #mirrorCalendarHref}, which is why it
+   * is a different field.</b> That one records where the copies are going — eXo
+   * writes it whenever it establishes a destination, however it established
+   * one. This one records that a human said so. Folding the two would make a
+   * href eXo left behind from an earlier setting read as a choice the user
+   * never made, and copies would go on landing in the dedicated calendar an
+   * administrator had just stopped asking for — the silent fallback the setting
+   * exists to prevent.
+   */
+  private String  chosenCalendarHref;
 }
