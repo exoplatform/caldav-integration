@@ -161,6 +161,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                     class="text-caption mt-1">
                     {{ quirk.cost }}
                   </div>
+                  <!--
+                    A quirk that changes what eXo WRITES says so, in its own
+                    line, above the count. Most boxes here only change what eXo
+                    notices and are reversible with no trace; this one alters the
+                    document that lands in somebody's calendar, and a box that
+                    does that must not look like a box that does not.
+                  -->
+                  <div
+                    v-if="quirk.changesWhatIsWritten"
+                    class="text-caption font-weight-bold mt-1">
+                    <v-icon class="me-1" size="14">fas fa-pen</v-icon>
+                    {{ $t('caldav.admin.servers.quirks.changesWhatIsWritten') }}
+                  </div>
                   <div class="text-caption text-sub-title mt-1">
                     {{ $t('caldav.admin.servers.quirks.seen', {0: quirk.count}) }}
                   </div>
@@ -212,6 +225,7 @@ export default {
       answerLinksInCopy: true,
       ignoredProperties: null,
       droppedProperties: null,
+      omittedProperties: null,
       observedQuirks: [],
     },
     // The behaviours this server has been seen doing, as the drawer edits
@@ -271,6 +285,10 @@ export default {
         key: `${quirk.direction}:${quirk.property}`,
         patterns: quirk.patterns && quirk.patterns.length && quirk.patterns || [quirk.property],
         direction: quirk.direction,
+        effect: quirk.effect,
+        // Ticking this one changes the document eXo writes into somebody's
+        // calendar rather than only what eXo notices about it.
+        changesWhatIsWritten: quirk.effect === 'OMIT',
         count: quirk.count,
         excused: !!quirk.excused,
         // The invitation text is the one entry that must not read as another
@@ -300,6 +318,7 @@ export default {
         answerLinksInCopy: true,
         ignoredProperties: null,
         droppedProperties: null,
+        omittedProperties: null,
         observedQuirks: [],
       };
       this.observedQuirks = [];

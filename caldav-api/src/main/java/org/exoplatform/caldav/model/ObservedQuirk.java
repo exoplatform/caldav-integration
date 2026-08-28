@@ -33,6 +33,11 @@ import java.util.List;
  *          an incomplete catalogue never blocks an administrator
  * @param property the property name the sweep saw diverge
  * @param direction which way the divergence pointed
+ * @param effect whether ticking it changes what eXo notices or what eXo writes
+ *          into copies on this server — the drawer says which, because they are
+ *          not the same kind of decision. {@link ServerQuirkEffect#TOLERATE}
+ *          for anything the catalogue does not describe: an entry nobody has
+ *          written a rule for can only ever relax a comparison
  * @param count how many times it has been seen — a rolling tally, deliberately
  *          approximate: it answers "is this what this server always does or did
  *          it happen once", and nothing finer
@@ -45,6 +50,7 @@ import java.util.List;
 public record ObservedQuirk(String quirkId,
                             String property,
                             ServerQuirkDirection direction,
+                            ServerQuirkEffect effect,
                             long count,
                             boolean excused,
                             List<String> patterns) {
