@@ -16,12 +16,14 @@
  */
 package org.exoplatform.caldav.listener;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -287,6 +289,79 @@ public class EventPropagationWiringTest {
                                                                7L,
                                                                9L,
                                                                EnumSet.of(AgendaEventModificationType.UPDATED))));
+    }
+
+    verify(propagationService, never()).propagateUpdate(anyLong(), any());
+  }
+
+  /**
+   * A propagation that blows up does not blow up the edit.
+   *
+   * <p>
+   * The listener runs on agenda's asynchronous thread, but it still runs inside
+   * the kernel's own {@code RunListener} — an exception escaping here is logged
+   * by the kernel against the broadcast, and on a synchronous listener would
+   * fail the save. The edit is already recorded in eXo and must stand whatever
+   * any calendar server says; what is owed to each copy has been written down
+   * before this point, so the sweep settles what the attempt did not.
+   *
+   * <p>
+   * {@code LinkageError} rather than an exception, deliberately: one escaped a
+   * {@code catch (RuntimeException)} on this very code path once and took a
+   * whole sweep down with it, and an {@code Error} is what a
+   * {@code catch (Exception)} would let past.
+   *
+   * @throws Exception when the configuration cannot be read
+   */
+  @Test
+  public void aPropagationThatFailsDoesNotFailTheEdit() throws Exception {
+    AgendaEventPropagationListener listener = listenerDeclaredFor("exo.agenda.event.updated");
+    Set<AgendaEventModificationType> types = EnumSet.of(AgendaEventModificationType.UPDATED);
+    doThrow(new NoSuchMethodError("a half-assembled classpath")).when(propagationService)
+                                                               .propagateUpdate(anyLong(), any());
+
+    assertDoesNotThrow(() -> listener.onEvent(broadcastOf(new AgendaEventModification(EVENT, 7L, 9L, types))));
+
+    verify(propagationService).propagateUpdate(EVENT, types);
+  }
+
+  /**
+   * A bridge that cannot hand back the service does not throw out of the
+   * listener.
+   *
+   * <p>
+   * Resolving the bean walks a class graph across the Kernel/Spring bridge, and
+   * a container assembled without part of it answers with an {@code Error}
+   * rather than an exception. The call that does it sits <b>outside</b> the
+   * {@code try} that guards the propagation itself, so this catch is the only
+   * thing between that failure and an exception escaping into agenda's own
+   * broadcast — where, on a synchronous listener, it would fail the save of an
+   * edit that has nothing to do with calendars.
+   *
+   * <p>
+   * The copies stay as they are and nothing records that they should not, which
+   * is the one arrear this design does not cover: the record is written by the
+   * service, and the service is what could not be reached.
+   *
+   * @throws Exception when the configuration cannot be read
+   */
+  @Test
+  public void aBridgeThatCannotHandBackTheServiceDoesNotThrowOutOfTheListener() throws Exception {
+    // Deliberately NOT handed a service, so the listener has to go and resolve
+    // one; listenerDeclaredFor injects one, which would skip the whole path.
+    AgendaEventPropagationListener listener =
+                                            (AgendaEventPropagationListener) classDeclaredFor("exo.agenda.event.updated").getDeclaredConstructor()
+                                                                                                                        .newInstance();
+
+    try (MockedStatic<ExoContainerContext> containerContext = mockStatic(ExoContainerContext.class)) {
+      containerContext.when(ExoContainerContext::getCurrentContainerIfPresent).thenReturn(container);
+      containerContext.when(() -> ExoContainerContext.getService(CaldavEventPropagationService.class))
+                      .thenThrow(new NoClassDefFoundError("a half-assembled container"));
+
+      assertDoesNotThrow(() -> listener.onEvent(broadcastOf(new AgendaEventModification(EVENT,
+                                                                                        7L,
+                                                                                        9L,
+                                                                                        EnumSet.of(AgendaEventModificationType.UPDATED)))));
     }
 
     verify(propagationService, never()).propagateUpdate(anyLong(), any());
