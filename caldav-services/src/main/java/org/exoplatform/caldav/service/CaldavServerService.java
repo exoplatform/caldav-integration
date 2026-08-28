@@ -88,6 +88,12 @@ public class CaldavServerService {
    * URL the Stalwart seed row falls back to when the legacy property is not
    * set on the deployment.
    */
+  /** The name the Stalwart seed is declared under. */
+  public static final String       STALWART_SERVER_NAME          = "Stalwart";
+
+  /** The name the Bluemind seed is declared under. */
+  public static final String       BLUEMIND_SERVER_NAME          = "Bluemind";
+
   public static final String       DEFAULT_STALWART_URL          = "http://localhost:8888/dav/cal/{username}/";
 
   /**
@@ -195,7 +201,7 @@ public class CaldavServerService {
       stalwartUrl = DEFAULT_STALWART_URL;
     }
     boolean stalwartActive = !StringUtils.equalsIgnoreCase(System.getProperty(CALDAV_ENABLED_PROPERTY), "false");
-    caldavServerStorage.createSeedServer(new CaldavServer(0, null, "Stalwart", null, stalwartUrl, stalwartActive, null, null,
+    caldavServerStorage.createSeedServer(new CaldavServer(0, null, STALWART_SERVER_NAME, null, stalwartUrl, stalwartActive, null, null,
                                                           null, null, true, null, null, null, null, null,
                                                           MirrorTargetKind.DEDICATED_CALENDAR),
                                          CALDAV_PROVIDER_NAME);
@@ -204,19 +210,19 @@ public class CaldavServerService {
     // it, or a deleted seed left it off). The row being seeded is the truth
     // now, so its activation is pushed onto the provider explicitly; on a
     // fresh install both writes carry the same property-driven value.
-    saveAgendaRemoteProvider(new CaldavServer(0, CALDAV_PROVIDER_NAME, "Stalwart", null, stalwartUrl, stalwartActive, null,
+    saveAgendaRemoteProvider(new CaldavServer(0, CALDAV_PROVIDER_NAME, STALWART_SERVER_NAME, null, stalwartUrl, stalwartActive, null,
                                               null, null, null, true, null, null, null, null, null,
                                               MirrorTargetKind.DEDICATED_CALENDAR));
     LOG.info("Seeded the Stalwart CalDAV server ({})", stalwartUrl);
-    warnAboutSeededUrl("Stalwart", stalwartUrl);
-    CaldavServer bluemind = caldavServerStorage.createServer(new CaldavServer(0, null, "Bluemind", null, DEFAULT_BLUEMIND_URL,
+    warnAboutSeededUrl(STALWART_SERVER_NAME, stalwartUrl);
+    CaldavServer bluemind = caldavServerStorage.createServer(new CaldavServer(0, null, BLUEMIND_SERVER_NAME, null, DEFAULT_BLUEMIND_URL,
                                                                               true, null, null, null, null, true, null,
                                                                               null, null, null, null,
                                                                               MirrorTargetKind.DEDICATED_CALENDAR),
                                                              CALDAV_PROVIDER_NAME);
     saveAgendaRemoteProvider(bluemind);
     LOG.info("Seeded the Bluemind CalDAV server ({})", DEFAULT_BLUEMIND_URL);
-    warnAboutSeededUrl("Bluemind", DEFAULT_BLUEMIND_URL);
+    warnAboutSeededUrl(BLUEMIND_SERVER_NAME, DEFAULT_BLUEMIND_URL);
   }
 
   /**
