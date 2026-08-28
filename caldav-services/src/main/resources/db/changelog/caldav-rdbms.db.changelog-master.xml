@@ -316,4 +316,105 @@
     </addColumn>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-14">
+    <comment>
+      The property-name patterns a server is excused for ADDING to the copies it
+      stores - the per-server replacement for the global
+      exo.agenda.caldav.mirror.ignoredProperties (EXO-89771).
+
+      NULLABLE, with NO default, and that is the whole upgrade story. NULL means
+      "this row has never been asked", and the deployment-wide property goes on
+      deciding for it, so an upgrade changes nothing anywhere. An empty string is
+      an administrator's own answer of "excuse nothing", which must NOT fall back
+      to the global list or unticking the last box would be a no-op. A NOT NULL
+      DEFAULT '' would have collapsed the two and silenced the global lever on
+      every existing deployment the moment this shipped.
+
+      Its own changeset, separate from the sibling below: a changeset's identity
+      is permanent, and the two lists are two decisions with different lifetimes
+      - one of them may well outlive the other.
+
+      addColumn with deliberately NO modifySql, for the reason 1.0.0-3 records:
+      the ENGINE/CHARSET append is only valid on CREATE TABLE, and gluing it onto
+      an ALTER TABLE is the MySQL-1064 failure that takes the whole platform down
+      through Liquibase. No rollback is written because addColumn has an
+      automatic one.
+    </comment>
+    <addColumn tableName="CALDAV_SERVER">
+      <column name="IGNORED_PROPERTIES" type="NVARCHAR(1000)"/>
+    </addColumn>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-15">
+    <comment>
+      The property-name patterns a server is excused for NOT KEEPING faithfully -
+      the per-server replacement for exo.agenda.caldav.mirror.droppedProperties
+      (EXO-89771). BlueMind keeps no CONFERENCE, and one catalogue entry -
+      the invitation text - additionally excuses a value the server rewrites.
+
+      Same NULLABLE, no-default rule as 1.0.0-14 above, for the same reason, and
+      the same absence of modifySql.
+    </comment>
+    <addColumn tableName="CALDAV_SERVER">
+      <column name="DROPPED_PROPERTIES" type="NVARCHAR(1000)"/>
+    </addColumn>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-16">
+    <comment>
+      What each server has actually been seen doing, as a rolling
+      DIRECTION:PROPERTY=COUNT summary (EXO-89771). This is what the drawer
+      offers to excuse: the administrator ticks from evidence the sweep gathered
+      rather than from a log line they had to find and a property name they had
+      to type correctly.
+
+      A column rather than a table, deliberately. It must survive a restart - an
+      empty drawer after one is an empty drawer exactly when somebody is
+      investigating - and it must stay cheap: one bounded row per server, never
+      one row per copy per divergence. It is also read with the registration the
+      drawer already fetches, so it costs no extra query.
+
+      Derived data, and separable on purpose: this is the one of the three
+      columns that could be dropped later without touching the two lists an
+      administrator's decisions live in, which is why it does not share their
+      changesets.
+
+      Nullable, no default: a server nothing has ever been observed on carries
+      nothing, and an empty summary and no summary mean the same thing here.
+      Same absence of modifySql as its two siblings.
+    </comment>
+    <addColumn tableName="CALDAV_SERVER">
+      <column name="OBSERVED_QUIRKS" type="NVARCHAR(2000)"/>
+    </addColumn>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-17">
+    <comment>
+      What eXo LEAVES OUT of the copies it writes to this server (EXO-89775).
+
+      Its own column, and that separation is the point. IGNORED_PROPERTIES and
+      DROPPED_PROPERTIES say what eXo tolerates in a copy; this one says what eXo
+      writes into somebody's calendar. Folding a payload decision into a
+      tolerance list would give one column two meanings, and whoever reads the
+      row next - an administrator in the drawer, or a developer in a database
+      client - could not tell which decision they were looking at.
+
+      It holds CASES rather than property names: SOLO-ORGANIZER, the organizer of
+      an event with no other participants. BlueMind stores neither ORGANIZER nor
+      ATTENDEE for such an event, so eXo wrote one, read back a copy without it,
+      and rewrote the copy on every sweep for ever. Naming a case rather than a
+      property is also what keeps it out of the comparison: those lists only
+      accept a property IcsWriter emits, so no value here can make a missing
+      organizer on an ordinary meeting stop being reported.
+
+      Nullable, no default, and nothing global behind it: unlike its two
+      siblings there is no deployment-wide property to fall back to, so an empty
+      value and no value both mean "eXo writes everything it writes". Same
+      absence of modifySql, and addColumn's automatic rollback.
+    </comment>
+    <addColumn tableName="CALDAV_SERVER">
+      <column name="OMITTED_PROPERTIES" type="NVARCHAR(1000)"/>
+    </addColumn>
+  </changeSet>
+
 </databaseChangeLog>
