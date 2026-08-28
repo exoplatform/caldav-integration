@@ -424,8 +424,14 @@ public class CaldavPushService {
     if (leftBehind == null) {
       return;
     }
+    // StringUtils.equals rather than written.equals: canonicalHref hands back
+    // what it was given when that is blank, so `written` is null for a null
+    // href. The isNotBlank guard already short-circuits before any dereference,
+    // but an analyser that does not model commons-lang reads it as a possible
+    // NPE; comparing through a null-safe call leaves nothing to misread.
     String written = CaldavSyncStorage.canonicalHref(writtenHref);
-    if (StringUtils.isNotBlank(written) && written.equals(CaldavSyncStorage.canonicalHref(leftBehind.getRemoteHref()))) {
+    String previous = CaldavSyncStorage.canonicalHref(leftBehind.getRemoteHref());
+    if (StringUtils.isNotBlank(written) && StringUtils.equals(written, previous)) {
       LOG.debug("The copy said to be left behind at {} is the object just written there; it is kept", writtenHref);
       return;
     }
