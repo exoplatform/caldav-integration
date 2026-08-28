@@ -595,6 +595,84 @@ public class CaldavServerStorageTest {
   }
 
   @Test
+  public void shouldPruneAConvergedAccountThatObservedNothingAtAll() {
+    // The rig, in the state that survived two rounds of fixes. The quirk is
+    // ticked, so eXo omits the organizer, so the copies agree, so nothing
+    // diverges, so no ETag moves and the comparison is never even reached - and
+    // the pruning rode on a write that only a divergence could cause. The
+    // cleanup was gated on exactly the activity the fix removed.
+    //
+    // NOTHING is passed in here: no increments, no observation. If this test
+    // ever starts exercising the write path it has stopped testing the thing it
+    // was written for.
+    CaldavServerEntity existing = observedOn("DROPPED:SOLO-ORGANIZER=8@" + (TODAY - 4) + ";DROPPED:ORGANIZER=4");
+    existing.setOmittedProperties(ServerQuirk.SOLO_ORGANIZER);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing, Map.of(), Set.of(), Set.of("ORGANIZER"));
+
+    assertFalse(existing.getObservedQuirks().contains("ORGANIZER=4"),
+                "a converged account must still lose its replaced record: " + existing.getObservedQuirks());
+    assertTrue(existing.getObservedQuirks().contains("SOLO-ORGANIZER=8"),
+               "and keep the excused entry it was ticked on: " + existing.getObservedQuirks());
+    verify(caldavServerDAO).save(existing);
+  }
+
+  @Test
+  public void aRecordCarriedAcrossAWriteIsNotDatedToday() {
+    // The fifth gate, found on the rig after the other four were shut. Nothing
+    // observed this record; it merely survived a write. Dating it today made the
+    // oldest entry in the row look like the freshest, and one grace period had
+    // to elapse before it could be replaced - so the supersession that the rest
+    // of this class exists to guarantee was held off by the write that was
+    // supposed to apply it.
+    CaldavServerEntity existing = observedOn("DROPPED:ORGANIZER=4");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing, Map.of(), Set.of(), Set.of());
+
+    assertFalse(existing.getObservedQuirks().contains("ORGANIZER=4@" + TODAY),
+                "a record nothing observed must not be dated today: " + existing.getObservedQuirks());
+    assertTrue(existing.getObservedQuirks().contains("ORGANIZER=4@" + (TODAY - GRACE_DAYS - 1)),
+               "it is back-dated past the grace period instead: " + existing.getObservedQuirks());
+  }
+
+  @Test
+  public void aMigratedRecordIsStillSupersededOnTheVeryNextWrite() {
+    // The live sequence, in two writes. The first carries the unstamped record
+    // across - the quirk that replaces it is excused, but supersession had not
+    // been asked for yet. The second asks. With the migration dating the record
+    // today, the second write kept it and the drawer went on offering an
+    // administrator a decision about something already solved.
+    CaldavServerEntity existing = observedOn("DROPPED:SOLO-ORGANIZER=8@" + TODAY + ";DROPPED:ORGANIZER=4");
+    existing.setOmittedProperties(ServerQuirk.SOLO_ORGANIZER);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing, Map.of(), Set.of(), Set.of());
+    merge(existing, Map.of(), Set.of(), Set.of("ORGANIZER"));
+
+    assertFalse(existing.getObservedQuirks().contains("ORGANIZER=4"),
+                "the replaced record must go on the next write, not a grace period later: "
+                    + existing.getObservedQuirks());
+    assertTrue(existing.getObservedQuirks().contains("SOLO-ORGANIZER=8"),
+               "and the excused entry it was ticked on stays: " + existing.getObservedQuirks());
+  }
+
+  @Test
+  public void shouldNotRewriteASummaryThatHasNotChanged() {
+    // A settled server is swept every few minutes for ever. Rewriting the same
+    // row each time would make a column that should be quiet the busiest write
+    // in the add-on.
+    CaldavServerEntity existing = observedOn("DROPPED:CONFERENCE=399@" + TODAY);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing, Map.of(), Set.of(), Set.of());
+
+    assertEquals("DROPPED:CONFERENCE=399@" + TODAY, existing.getObservedQuirks());
+    verify(caldavServerDAO, never()).save(existing);
+  }
+
+  @Test
   public void shouldKeepARecordStillBeingSeenEvenWhenItsReplacementIsExcused() {
     // The guard that makes the rule above safe. An excusal never expires, so
     // without a grace period a genuine, current record would be wiped on the
@@ -636,12 +714,19 @@ public class CaldavServerStorageTest {
     // Upgrade path: an entry written before stamps existed has no date, and
     // wiping somebody's history to enforce a rule that post-dates it would be
     // the wrong bias. It gets one, and the ordinary rule takes over.
+    //
+    // The date it gets is BACK-DATED, and that distinction is the whole point:
+    // this test used to pin today, which is what let a legacy record outlive
+    // the supersession meant to replace it. Nothing observed X-LEGACY in this
+    // batch - X-NEW was - so dating the two alike would say the row's oldest
+    // entry and its newest were seen together.
     CaldavServerEntity existing = observedOn("ADDED:X-LEGACY=9");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     merge(existing, Map.of(Observation.of(ServerQuirkDirection.ADDED, "X-NEW"), 1L), Set.of());
 
-    assertEquals("ADDED:X-LEGACY=9@" + TODAY + ";ADDED:X-NEW=1@" + TODAY, existing.getObservedQuirks());
+    assertEquals("ADDED:X-LEGACY=9@" + (TODAY - GRACE_DAYS - 1) + ";ADDED:X-NEW=1@" + TODAY,
+                 existing.getObservedQuirks());
   }
 
   @Test
