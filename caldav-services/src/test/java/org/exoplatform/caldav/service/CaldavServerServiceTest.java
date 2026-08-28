@@ -284,6 +284,9 @@ public class CaldavServerServiceTest {
                                                                                         ADMIN_USER));
     assertEquals(CaldavServerUrlValidator.PRIVATE_ADDRESS_MESSAGE, created.getMessage());
 
+    // The update path reads the stored row to see whether the address moved, so
+    // the storage IS touched now - what must not happen is the write.
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, "Internal", null, SERVER_URL, true));
     IllegalArgumentException updated =
                                     assertThrows(IllegalArgumentException.class,
                                                  () -> caldavServerService.updateServer(server(7, null, "Internal", null,
@@ -292,8 +295,58 @@ public class CaldavServerServiceTest {
                                                                                         ADMIN_USER));
     assertEquals(CaldavServerUrlValidator.SCHEME_NOT_ALLOWED_MESSAGE, updated.getMessage());
 
-    verifyNoInteractions(caldavServerStorage);
+    verify(caldavServerStorage, never()).createServer(any(), anyString());
+    verify(caldavServerStorage, never()).updateServer(any());
     verifyNoInteractions(agendaRemoteEventService);
+  }
+
+  /**
+   * An address that has not moved is not re-judged.
+   *
+   * <p>
+   * <b>Refusing this save would buy no safety and cost an administrator their
+   * settings.</b> The row is already declared and already dialled by every
+   * sweep, so blocking the edit stops not one request - it only makes a server
+   * unrenameable on a deployment whose CalDAV host has always been internal,
+   * which is the ordinary shape of an on-premises install. Those are precisely
+   * the administrators who changed nothing.
+   */
+  @Test
+  public void anUnchangedAddressIsNotRejudgedWhenSomethingElseIsEdited() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Internal", null, "https://10.1.2.3/dav/", true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    CaldavServer renamed = server(7, null, "Internal renamed", null, "https://10.1.2.3/dav/", true);
+    when(caldavServerStorage.updateServer(renamed)).thenReturn(renamed);
+    when(caldavServerQuirkService.decorate(renamed)).thenReturn(renamed);
+
+    CaldavServer result = assertDoesNotThrow(() -> caldavServerService.updateServer(renamed, ADMIN_USER));
+
+    assertEquals("Internal renamed", result.getName());
+    verify(caldavServerStorage).updateServer(renamed);
+  }
+
+  /**
+   * Moving the address IS judged, on a row that already existed.
+   *
+   * <p>
+   * The exemption above is scoped to an address that did not change; it is not
+   * a licence to point an existing row anywhere. A hostile address cannot be
+   * introduced without editing the field, and editing the field is what is
+   * checked.
+   */
+  @Test
+  public void aChangedAddressIsJudgedEvenOnARowThatAlreadyExisted() {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, "Public", null, SERVER_URL, true));
+    CaldavServer moved = server(7, null, "Public", null, "https://10.1.2.3/dav/", true);
+
+    IllegalArgumentException thrown =
+                                   assertThrows(IllegalArgumentException.class,
+                                                () -> caldavServerService.updateServer(moved, ADMIN_USER));
+
+    assertEquals(CaldavServerUrlValidator.PRIVATE_ADDRESS_MESSAGE, thrown.getMessage());
+    verify(caldavServerStorage, never()).updateServer(any());
   }
 
   /**
