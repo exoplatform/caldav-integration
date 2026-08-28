@@ -31,6 +31,7 @@ import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.IcsDivergence;
 import org.exoplatform.caldav.model.ObservedQuirk;
 import org.exoplatform.caldav.model.ServerQuirk;
+import org.exoplatform.caldav.model.ServerQuirkEffect;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.caldav.utils.ServerQuirkSummary;
 import org.exoplatform.caldav.utils.ServerQuirkSummary.Observation;
@@ -185,9 +186,13 @@ public class CaldavServerQuirkService {
     }
     String ignored = effective(server.getIgnoredProperties(), icsEquivalence.getGlobalIgnoredProperties());
     String dropped = effective(server.getDroppedProperties(), icsEquivalence.getGlobalDroppedProperties());
+    // The omission list has no deployment-wide fallback and never had one: it
+    // changes what eXo writes, and no property file has ever been allowed to do
+    // that. Null and empty mean the same thing here.
+    String omitted = StringUtils.defaultString(server.getOmittedProperties());
     server.setIgnoredProperties(ignored);
     server.setDroppedProperties(dropped);
-    server.setObservedQuirks(excusalOf(server.getObservedQuirks(), ignored, dropped));
+    server.setObservedQuirks(excusalOf(server.getObservedQuirks(), ignored, dropped, omitted));
     return server;
   }
 
@@ -198,9 +203,10 @@ public class CaldavServerQuirkService {
    * @param ignored the patterns in force for a property the server adds
    * @param dropped the patterns in force for a property the server does not
    *          keep
+   * @param omitted the cases eXo already leaves out of what it writes here
    * @return the same behaviours, each carrying its excusal
    */
-  private List<ObservedQuirk> excusalOf(List<ObservedQuirk> observed, String ignored, String dropped) {
+  private List<ObservedQuirk> excusalOf(List<ObservedQuirk> observed, String ignored, String dropped, String omitted) {
     if (observed == null) {
       return List.of();
     }
@@ -208,8 +214,9 @@ public class CaldavServerQuirkService {
                    .map(quirk -> new ObservedQuirk(quirk.quirkId(),
                                                    quirk.property(),
                                                    quirk.direction(),
+                                                   quirk.effect(),
                                                    quirk.count(),
-                                                   matches(listFor(quirk, ignored, dropped), quirk.property()),
+                                                   matches(listFor(quirk, ignored, dropped, omitted), quirk.property()),
                                                    quirk.patterns()))
                    .toList();
   }
@@ -217,13 +224,24 @@ public class CaldavServerQuirkService {
   /**
    * Which of the two lists decides whether a behaviour is excused.
    *
+   * <p>
+   * <b>The effect decides first, and the direction only then.</b> A behaviour
+   * whose answer is that eXo stops writing something is recorded in the omission
+   * list, not in either tolerance list — the two kinds of decision are stored
+   * apart precisely so that reading one can never be mistaken for reading the
+   * other.
+   *
    * @param quirk the observed behaviour
    * @param ignored the patterns in force for a property the server adds
    * @param dropped the patterns in force for a property the server does not
    *          keep
-   * @return the list that would excuse it
+   * @param omitted the cases eXo already leaves out of what it writes here
+   * @return the list that would carry it
    */
-  private String listFor(ObservedQuirk quirk, String ignored, String dropped) {
+  private String listFor(ObservedQuirk quirk, String ignored, String dropped, String omitted) {
+    if (quirk.effect() == ServerQuirkEffect.OMIT) {
+      return omitted;
+    }
     return switch (quirk.direction()) {
       case ADDED -> ignored;
       case DROPPED, REWRITTEN -> dropped;

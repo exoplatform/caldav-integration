@@ -388,4 +388,33 @@
     </addColumn>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-17">
+    <comment>
+      What eXo LEAVES OUT of the copies it writes to this server (EXO-89775).
+
+      Its own column, and that separation is the point. IGNORED_PROPERTIES and
+      DROPPED_PROPERTIES say what eXo tolerates in a copy; this one says what eXo
+      writes into somebody's calendar. Folding a payload decision into a
+      tolerance list would give one column two meanings, and whoever reads the
+      row next - an administrator in the drawer, or a developer in a database
+      client - could not tell which decision they were looking at.
+
+      It holds CASES rather than property names: SOLO-ORGANIZER, the organizer of
+      an event with no other participants. BlueMind stores neither ORGANIZER nor
+      ATTENDEE for such an event, so eXo wrote one, read back a copy without it,
+      and rewrote the copy on every sweep for ever. Naming a case rather than a
+      property is also what keeps it out of the comparison: those lists only
+      accept a property IcsWriter emits, so no value here can make a missing
+      organizer on an ordinary meeting stop being reported.
+
+      Nullable, no default, and nothing global behind it: unlike its two
+      siblings there is no deployment-wide property to fall back to, so an empty
+      value and no value both mean "eXo writes everything it writes". Same
+      absence of modifySql, and addColumn's automatic rollback.
+    </comment>
+    <addColumn tableName="CALDAV_SERVER">
+      <column name="OMITTED_PROPERTIES" type="NVARCHAR(1000)"/>
+    </addColumn>
+  </changeSet>
+
 </databaseChangeLog>

@@ -43,7 +43,9 @@ import org.exoplatform.caldav.ics.IcsEquivalence;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.IcsDivergence;
 import org.exoplatform.caldav.model.ObservedQuirk;
+import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkDirection;
+import org.exoplatform.caldav.model.ServerQuirkEffect;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.caldav.utils.ServerQuirkSummary.Observation;
 
@@ -174,7 +176,7 @@ public class CaldavServerQuirkServiceTest {
     // The same fallback the comparison applies, resolved here so the boxes and
     // the sweep cannot say different things.
     givenGlobals("X-MOZ-*", "CONFERENCE");
-    CaldavServer server = registration(null, null, quirk("dropsConference", "CONFERENCE", ServerQuirkDirection.DROPPED));
+    CaldavServer server = registration(null, null, quirk("dropsConference", "CONFERENCE", ServerQuirkDirection.DROPPED, ServerQuirkEffect.TOLERATE));
 
     service.decorate(server);
 
@@ -186,7 +188,7 @@ public class CaldavServerQuirkServiceTest {
   @Test
   public void aRegistrationWithItsOwnListsIgnoresTheDeploymentWideOnes() {
     givenGlobals("", "CONFERENCE");
-    CaldavServer server = registration(null, "", quirk("dropsConference", "CONFERENCE", ServerQuirkDirection.DROPPED));
+    CaldavServer server = registration(null, "", quirk("dropsConference", "CONFERENCE", ServerQuirkDirection.DROPPED, ServerQuirkEffect.TOLERATE));
 
     service.decorate(server);
 
@@ -203,8 +205,8 @@ public class CaldavServerQuirkServiceTest {
     givenGlobals("X-MOZ-*", "");
     CaldavServer server = registration(null,
                                        null,
-                                       quirk("addsCompatibilityMarkers", "X-MOZ-GENERATION", ServerQuirkDirection.ADDED),
-                                       quirk("dropsConference", "CONFERENCE", ServerQuirkDirection.DROPPED));
+                                       quirk("addsCompatibilityMarkers", "X-MOZ-GENERATION", ServerQuirkDirection.ADDED, ServerQuirkEffect.TOLERATE),
+                                       quirk("dropsConference", "CONFERENCE", ServerQuirkDirection.DROPPED, ServerQuirkEffect.TOLERATE));
 
     service.decorate(server);
 
@@ -217,11 +219,60 @@ public class CaldavServerQuirkServiceTest {
     givenGlobals("", "DESCRIPTION");
     CaldavServer server = registration(null,
                                        null,
-                                       quirk("rewritesDescription", "DESCRIPTION", ServerQuirkDirection.REWRITTEN));
+                                       quirk("rewritesDescription", "DESCRIPTION", ServerQuirkDirection.REWRITTEN, ServerQuirkEffect.TOLERATE));
 
     service.decorate(server);
 
     assertTrue(server.getObservedQuirks().get(0).excused());
+  }
+
+  @Test
+  public void aPayloadChangingBehaviourIsTickedFromTheOmissionListAndNotFromATolerance() {
+    // The two kinds of decision are stored apart on purpose. Reading a payload
+    // decision out of a tolerance list would tick a box the writer does not
+    // honour - and, worse, reading a tolerance out of the omission list would
+    // let one kind of decision quietly become the other.
+    givenGlobals("", "SOLO-ORGANIZER");
+    CaldavServer server = registration(null,
+                                       null,
+                                       quirk("omitsSoloOrganizer",
+                                             ServerQuirk.SOLO_ORGANIZER,
+                                             ServerQuirkDirection.DROPPED,
+                                             ServerQuirkEffect.OMIT));
+
+    service.decorate(server);
+
+    assertFalse(server.getObservedQuirks().get(0).excused(),
+                "a dropped list naming it must not tick a box that changes what eXo writes");
+
+    server = registration(null,
+                          null,
+                          quirk("omitsSoloOrganizer",
+                                ServerQuirk.SOLO_ORGANIZER,
+                                ServerQuirkDirection.DROPPED,
+                                ServerQuirkEffect.OMIT));
+    server.setOmittedProperties(ServerQuirk.SOLO_ORGANIZER);
+
+    service.decorate(server);
+
+    assertTrue(server.getObservedQuirks().get(0).excused(), "the omission list is what ticks it");
+  }
+
+  @Test
+  public void theOmissionListHasNoDeploymentWideFallback() {
+    // Nothing in a property file has ever been allowed to change what eXo
+    // writes into somebody's calendar, and this does not start now.
+    givenGlobals("X-MOZ-*", "CONFERENCE");
+    CaldavServer server = registration(null,
+                                       null,
+                                       quirk("omitsSoloOrganizer",
+                                             ServerQuirk.SOLO_ORGANIZER,
+                                             ServerQuirkDirection.DROPPED,
+                                             ServerQuirkEffect.OMIT));
+
+    service.decorate(server);
+
+    assertFalse(server.getObservedQuirks().get(0).excused());
   }
 
   @Test
@@ -265,9 +316,10 @@ public class CaldavServerQuirkServiceTest {
    * @param quirkId identifier of the catalogue entry describing it
    * @param property the property it was seen on
    * @param direction which way it pointed
+   * @param effect whether ticking it changes what eXo notices or what eXo writes
    * @return the behaviour, not yet excused
    */
-  private ObservedQuirk quirk(String quirkId, String property, ServerQuirkDirection direction) {
-    return new ObservedQuirk(quirkId, property, direction, 12L, false, List.of(property));
+  private ObservedQuirk quirk(String quirkId, String property, ServerQuirkDirection direction, ServerQuirkEffect effect) {
+    return new ObservedQuirk(quirkId, property, direction, effect, 12L, false, List.of(property));
   }
 }

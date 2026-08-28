@@ -52,14 +52,17 @@ export function withPatterns(list, patterns, excused) {
  * deployment-wide setting still decides for it — so declaring a server, or
  * renaming one, never quietly freezes today's global list onto it.</p>
  *
- * <p>Which list a behaviour is written into follows its direction, exactly as
- * the comparison reads it: a property the server ADDS is excused through the
- * ignored list, one it does not keep — or rewrites — through the dropped
- * list. Reading the wrong one would tick a box the sweep does not honour.</p>
+ * <p><b>The effect decides which list, and only then the direction.</b> A
+ * behaviour whose answer is that eXo stops WRITING something goes into the
+ * omission list; one whose answer is that eXo stops NOTICING something goes
+ * into the ignored list (a property the server adds) or the dropped list (one
+ * it does not keep, or rewrites), exactly as the comparison reads them. The two
+ * kinds are stored apart on purpose: a payload decision recorded in a tolerance
+ * list would be a decision nobody reading that list could recognise.</p>
  *
  * @param {Object} server the registration being saved
  * @param {Array} quirks the behaviours as the drawer shows them, each carrying
- *        its patterns, its direction and its tick
+ *        its patterns, its direction, its effect and its tick
  * @returns {Object} the same registration
  */
 export function applyExcusals(server, quirks) {
@@ -68,8 +71,11 @@ export function applyExcusals(server, quirks) {
   }
   let ignored = splitList(server.ignoredProperties);
   let dropped = splitList(server.droppedProperties);
+  let omitted = splitList(server.omittedProperties);
   quirks.forEach(quirk => {
-    if (quirk.direction === 'ADDED') {
+    if (quirk.effect === 'OMIT') {
+      omitted = withPatterns(omitted, quirk.patterns, quirk.excused);
+    } else if (quirk.direction === 'ADDED') {
       ignored = withPatterns(ignored, quirk.patterns, quirk.excused);
     } else {
       dropped = withPatterns(dropped, quirk.patterns, quirk.excused);
@@ -77,5 +83,6 @@ export function applyExcusals(server, quirks) {
   });
   server.ignoredProperties = ignored.join(',');
   server.droppedProperties = dropped.join(',');
+  server.omittedProperties = omitted.join(',');
   return server;
 }

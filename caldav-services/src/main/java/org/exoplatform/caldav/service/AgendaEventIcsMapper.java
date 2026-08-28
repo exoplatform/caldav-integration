@@ -43,6 +43,7 @@ import org.exoplatform.agenda.util.EventIcsBuilder;
 import org.exoplatform.agenda.util.NotificationUtils;
 import org.exoplatform.agenda.util.Utils;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.IcsEvent;
 import org.exoplatform.caldav.model.IcsPerson;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -156,7 +157,8 @@ public class AgendaEventIcsMapper {
    */
   public IcsEvent toIcsEvent(Event event, String icsUid, long pusherIdentityId) {
     String pusherAccountAddress = accountAddressOf(pusherIdentityId);
-    IcsPerson organizer = personOf(event.getCreatorId());
+    List<EventAttendee> roster = rosterOf(event.getId());
+    IcsPerson organizer = organizerOf(event, roster, pusherIdentityId);
     String conference = conferenceUrl(event.getId());
     String link = eventUrl(event);
     return IcsEvent.builder()
@@ -174,7 +176,7 @@ public class AgendaEventIcsMapper {
                    .updated(instantOf(event.getUpdated()))
                    .organizer(organizer)
                    .organizerIsPusher(event.getCreatorId() == pusherIdentityId)
-                   .attendees(attendees(event.getId(), pusherIdentityId, pusherAccountAddress))
+                   .attendees(attendees(roster, pusherIdentityId, pusherAccountAddress))
                    .recurrenceRule(event.getRecurrence() == null ? null : event.getRecurrence().getRrule())
                    .occurrenceId(occurrenceId(event))
                    .reminders(reminders(event.getId(), pusherIdentityId))
@@ -568,9 +570,108 @@ public class AgendaEventIcsMapper {
   }
 
   /**
-   * The roster, with the people whose address is not visible left off.
+   * The event's roster as agenda holds it, read once per mapping.
+   *
+   * <p>
+   * Read once and passed on, because two decisions need it now: who the copy
+   * names, and — since EXO-89775 — whether the event has anybody on it but its
+   * creator. Asking agenda twice for one render would double the cost of a sweep
+   * that already renders every copy it checks.
    *
    * @param eventId the agenda event
+   * @return the roster, never null
+   */
+  private List<EventAttendee> rosterOf(long eventId) {
+    List<EventAttendee> attendees = agendaEventAttendeeService.getEventAttendees(eventId).getEventAttendees();
+    return attendees == null ? List.of() : attendees;
+  }
+
+  /**
+   * Who the copy names as the meeting's organizer, or nobody.
+   *
+   * <p>
+   * <b>The one place the registry changes what eXo writes rather than what it
+   * notices.</b> A server declared to drop the organizer from an event with no
+   * other participants gets a copy with no {@code ORGANIZER} at all: BlueMind
+   * stores neither {@code ORGANIZER} nor {@code ATTENDEE} for such an event, so
+   * eXo wrote one, read back a copy without it, judged the copy altered and
+   * rewrote it — on every sweep, for ever (EXO-89775). Writing what the server
+   * will keep is the only thing that ends that, and it needs no comparison
+   * excusal beside it: the same mapping produces the push and the sweep's
+   * render, so once eXo omits it the two sides agree.
+   *
+   * <p>
+   * <b>Never global, and that was decided twice.</b> The golden corpus holds
+   * organizer-only events a real server stored <i>with</i> their organizer, so
+   * this is one server's behaviour and not CalDAV's; made global it would strip
+   * information from copies on servers that keep it happily, to buy a clean
+   * sweep on one.
+   *
+   * <p>
+   * <b>"No other participants" is decided on agenda's roster, by identity.</b>
+   * Not on addresses: the creator's own line is spelled with the address their
+   * CalDAV account answers to, which differs from their eXo profile address, so
+   * comparing the organizer's address against the roster's would answer "there
+   * is somebody else here" for an event with nobody else on it.
+   *
+   * <p>
+   * Every failure keeps the organizer, like the answer links above: an
+   * unresolvable registry, a deleted registration, a service not injected at
+   * all. A copy that names its organizer on a server that drops it costs one
+   * permanent divergence; a copy silently missing one on a server that keeps it
+   * loses information from somebody's calendar.
+   *
+   * @param event the agenda event being copied
+   * @param roster the event's attendees as agenda holds them
+   * @param pusherIdentityId the user whose calendar receives the copy
+   * @return the organizer to write, or null to write none
+   */
+  private IcsPerson organizerOf(Event event, List<EventAttendee> roster, long pusherIdentityId) {
+    IcsPerson organizer = personOf(event.getCreatorId());
+    if (organizer == null || !soloEvent(event, roster)) {
+      return organizer;
+    }
+    return omitsSoloOrganizer(pusherIdentityId) ? null : organizer;
+  }
+
+  /**
+   * Whether the event has nobody on it but the person who created it.
+   *
+   * @param event the agenda event
+   * @param roster the event's attendees as agenda holds them
+   * @return true when no attendee is anybody other than the creator
+   */
+  private boolean soloEvent(Event event, List<EventAttendee> roster) {
+    return roster.stream().noneMatch(attendee -> attendee.getIdentityId() != event.getCreatorId());
+  }
+
+  /**
+   * Whether the server this copy is going to has been declared to drop the
+   * organizer of an event with no other participants.
+   *
+   * @param pusherIdentityId the user whose calendar receives the copy
+   * @return true when eXo should leave the organizer out
+   */
+  private boolean omitsSoloOrganizer(long pusherIdentityId) {
+    try {
+      CaldavUserSetting account = caldavConnectorStorage == null ? null
+                                                                 : caldavConnectorStorage.getCaldavSetting(pusherIdentityId);
+      CaldavServer server = caldavServerService == null ? null
+                                                        : caldavServerService.resolveServer(account == null ? null
+                                                                                                            : account.getServerId());
+      return server != null && ServerQuirk.listMatches(server.getOmittedProperties(), ServerQuirk.SOLO_ORGANIZER);
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("No CalDAV registration could be resolved for identity {}; the copy keeps its organizer",
+                pusherIdentityId,
+                e);
+      return false;
+    }
+  }
+
+  /**
+   * The roster, with the people whose address is not visible left off.
+   *
+   * @param attendees the event's attendees as agenda holds them
    * @param pusherIdentityId the person this copy is being written for: theirs is
    *          the one line spelled the way their own account spells it
    * @param pusherAccountAddress the address that account answers to, put on
@@ -578,12 +679,8 @@ public class AgendaEventIcsMapper {
    *          itself rather than to a stranger. Left alone when blank.
    * @return the attendees that can be named truthfully
    */
-  private List<IcsPerson> attendees(long eventId, long pusherIdentityId, String pusherAccountAddress) {
+  private List<IcsPerson> attendees(List<EventAttendee> attendees, long pusherIdentityId, String pusherAccountAddress) {
     List<IcsPerson> people = new ArrayList<>();
-    List<EventAttendee> attendees = agendaEventAttendeeService.getEventAttendees(eventId).getEventAttendees();
-    if (attendees == null) {
-      return people;
-    }
     for (EventAttendee attendee : attendees) {
       IcsPerson person = personOf(attendee.getIdentityId());
       if (person != null && attendee.getIdentityId() == pusherIdentityId

@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.caldav.model.IcsDivergence;
+import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkDirection;
 
 /**
@@ -72,6 +73,9 @@ public class ServerQuirkExcusalTest {
 
   /** The conference line eXo renders, as the copy would carry it. */
   private static final String CONFERENCE  = "CONFERENCE;FEATURE=VIDEO;VALUE=URI:https://exo.test/meet/1\r\n";
+
+  /** The organizer line eXo renders. */
+  private static final String ORGANIZER   = "ORGANIZER;CN=The Boss:mailto:boss@acme.test\r\n";
 
   /** The invitation text eXo renders, answer link included. */
   private static final String DESCRIPTION = "DESCRIPTION:Bring the board. Accept: https://exo.test/a?t=s3cr3t";
@@ -309,6 +313,62 @@ public class ServerQuirkExcusalTest {
     ReflectionTestUtils.setField(judge, "droppedProperties", "CONFERENCE");
 
     assertEquals(IcsJudgement.Verdict.EQUIVALENT, judge.compare(without(CONFERENCE), EXO, OWNER).verdict());
+  }
+
+  // ------- the organizer of an event with nobody else on it (EXO-89775)
+
+  @Test
+  public void anOrganizerDroppedFromAnEventWithNobodyElseOnItIsOfferedAsItsOwnCase() {
+    // Named as a case rather than as a property, so the drawer can offer this
+    // one without ever offering "this server does not keep ORGANIZER" - which
+    // would stop a real organizer deletion being reported.
+    IcsJudgement judgement = judge.compare(without(ORGANIZER), EXO, OWNER, null, null);
+
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
+    assertTrue(judgement.divergences().contains(new IcsDivergence(ServerQuirk.SOLO_ORGANIZER,
+                                                                  ServerQuirkDirection.DROPPED)),
+               "the solo case must be offered by its own name: " + judgement.divergences());
+  }
+
+  @Test
+  public void anOrganizerDroppedFromARealMeetingStaysAnOrdinaryOrganizer() {
+    // The pair, and the one that matters: an organizer disappearing from a copy
+    // of a meeting other people are on is a real change, offered - if at all -
+    // as itself, and never as the appointment case.
+    String exo = EXO.replace("STATUS:CONFIRMED", "ATTENDEE;CN=Ann:mailto:ann@acme.test\r\nSTATUS:CONFIRMED");
+    String server = exo.replace(ORGANIZER, "");
+
+    IcsJudgement judgement = judge.compare(server, exo, OWNER, null, null);
+
+    assertTrue(judgement.divergences().contains(new IcsDivergence("ORGANIZER", ServerQuirkDirection.DROPPED)),
+               "a real meeting's organizer is reported as itself: " + judgement.divergences());
+    assertFalse(judgement.divergences().stream().anyMatch(d -> ServerQuirk.SOLO_ORGANIZER.equals(d.property())),
+                "and never as the appointment case");
+  }
+
+  @Test
+  public void theSoloOrganizerCaseCannotBeExcusedInTheComparisonAtAll() {
+    // It is answered by eXo writing less, not by eXo noticing less, so it must
+    // never be readable as an excusal: the token is not a property IcsWriter
+    // emits, and the excusal lists only accept those.
+    assertDifferent(without(ORGANIZER), EXO, ServerQuirk.SOLO_ORGANIZER, ServerQuirk.SOLO_ORGANIZER);
+  }
+
+  @Test
+  public void theCatalogueOffersNoEntryForAnOrdinaryMissingOrganizer() {
+    // Pins the decision EXO-89768 and EXO-89775 both made: nothing shipped here
+    // tolerates a missing ORGANIZER, and nothing here makes its value excusable.
+    assertTrue(ServerQuirk.describing("ORGANIZER", ServerQuirkDirection.DROPPED).isEmpty());
+    assertFalse(ServerQuirk.rewriteExcusable("ORGANIZER"));
+  }
+
+  @Test
+  public void onceExoStopsWritingTheOrganizerThereIsNothingLeftToExcuse() {
+    // The reason this addition ships no tolerance entry beside it. The same
+    // mapping produces the push and the sweep's render, so a render without an
+    // organizer meets a copy without one and the two simply agree - shipping an
+    // excusal as well would be excusing a difference that no longer exists.
+    assertEquivalent(without(ORGANIZER), without(ORGANIZER), null, null);
   }
 
   /**

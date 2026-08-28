@@ -73,7 +73,8 @@ public class ChangelogExecutionTest {
   private static final String ANSWER_LINKS_COLUMN = "ANSWER_LINKS_IN_COPY";
 
   /** The per-server excusal lists EXO-89771 appends, and the summary they are ticked from. */
-  private static final String[] QUIRK_COLUMNS = { "IGNORED_PROPERTIES", "DROPPED_PROPERTIES", "OBSERVED_QUIRKS" };
+  private static final String[] QUIRK_COLUMNS = { "IGNORED_PROPERTIES", "DROPPED_PROPERTIES", "OBSERVED_QUIRKS",
+      "OMITTED_PROPERTIES" };
 
   private Connection          connection;
 
