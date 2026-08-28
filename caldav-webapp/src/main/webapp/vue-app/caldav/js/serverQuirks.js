@@ -57,7 +57,7 @@ export function describeQuirk(quirk) {
   const property = properties[0];
   return {
     key: quirk.quirkId || `${quirk.direction}:${property}`,
-    patterns: quirk.patterns && quirk.patterns.length && quirk.patterns || properties,
+    patterns: quirk.patterns?.length && quirk.patterns || properties,
     direction: quirk.direction,
     effect: quirk.effect,
     // Ticking this one changes the document eXo writes into somebody's calendar
@@ -136,7 +136,7 @@ export function withPatterns(list, patterns, excused) {
  * @returns {Object} the same registration
  */
 export function applyExcusals(server, quirks) {
-  if (!quirks || !quirks.length) {
+  if (!quirks?.length) {
     return server;
   }
   let ignored = splitList(server.ignoredProperties);

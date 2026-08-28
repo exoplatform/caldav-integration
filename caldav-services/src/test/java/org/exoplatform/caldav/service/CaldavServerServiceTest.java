@@ -118,20 +118,19 @@ public class CaldavServerServiceTest {
   private String                   previousEnabledProperty;
 
   /**
-   * Keeps the JVM-wide legacy properties restorable: the seeding tests set
-   * them, and leaking a value into another test would fake a configured
-   * deployment.
+   * Two things one setup does, because JUnit orders sibling {@code @BeforeEach}
+   * methods arbitrarily and a reader should not have to wonder whether that
+   * matters here.
+   *
+   * <p>
+   * The decorator is passed through unchanged so a test reads the registration
+   * it stored rather than one an observation service rewrote; and the JVM-wide
+   * legacy properties are captured so they can be restored afterwards, since
+   * leaking a value into another test would fake a configured deployment.
    */
   @BeforeEach
-  public void passRegistrationsThroughTheDecorator() {
+  public void passRegistrationsThroughAndSaveLegacyProperties() {
     lenient().when(caldavServerQuirkService.decorate(any())).thenAnswer(invocation -> invocation.getArgument(0));
-  }
-
-  /**
-   * Keeps the JVM-wide legacy properties restorable.
-   */
-  @BeforeEach
-  public void saveLegacyProperties() {
     previousUrlProperty = System.getProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY);
     previousEnabledProperty = System.getProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY);
   }
