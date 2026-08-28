@@ -35,10 +35,12 @@ import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.IcsDivergence;
 import org.exoplatform.caldav.model.ObservedQuirk;
 import org.exoplatform.caldav.model.ServerQuirk;
+import org.exoplatform.caldav.model.ServerQuirkDirection;
 import org.exoplatform.caldav.model.ServerQuirkEffect;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.caldav.utils.ServerQuirkSummary;
 import org.exoplatform.caldav.utils.ServerQuirkSummary.Observation;
+import org.exoplatform.caldav.utils.ServerQuirkSummary.Retention;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -121,6 +123,22 @@ public class CaldavServerQuirkService {
   @Value("${exo.agenda.caldav.mirror.quirkRetentionDays:30}")
   private long                                      retentionDays;
 
+  /**
+   * How long a record survives after the case that replaces it has been excused.
+   *
+   * <p>
+   * <b>Why an excusal cannot simply erase it on sight.</b> An excusal never
+   * expires, so a rule with no grace would wipe a record of the superseded
+   * property on the first pass that did not happen to see it — and on a server
+   * excused for dropping the organizer of an appointment, that record is exactly
+   * an organizer vanishing from a real meeting, which EXO-89775 went out of its
+   * way to keep visible. A day is enough: a behaviour that is still happening
+   * refreshes its stamp every sweep it happens on and stays, while one frozen
+   * since before the reclassification never does.
+   */
+  @Value("${exo.agenda.caldav.mirror.quirkSupersededGraceDays:1}")
+  private long                                      supersededGraceDays;
+
   /** What has been seen since each server's summary was last written. */
   private final Map<Long, Map<Observation, Long>>   pending  = new ConcurrentHashMap<>();
 
@@ -179,11 +197,7 @@ public class CaldavServerQuirkService {
       return;
     }
     try {
-      caldavServerStorage.mergeObservedQuirks(serverId,
-                                              increments,
-                                              superseded(increments),
-                                              retentionDays,
-                                              LocalDate.now().toEpochDay());
+      caldavServerStorage.mergeObservedQuirks(serverId, increments, retention(serverId, increments));
     } catch (RuntimeException e) {
       // The summary is diagnostic. A row that cannot be written must never end
       // a sweep, and the next interval simply counts from where this one left
@@ -193,31 +207,94 @@ public class CaldavServerQuirkService {
   }
 
   /**
-   * The property names whose own stored records this batch has replaced.
+   * What this write is allowed to forget on one server.
    *
    * <p>
-   * <b>Read from what was actually seen, never from the catalogue alone.</b> A
-   * record only goes when the case that supersedes it is being observed on that
-   * very server: a deployment whose server has never shown the case keeps its
-   * older records untouched, which is what makes this safe to declare once on a
-   * catalogue entry rather than to reason about per deployment.
+   * <b>Two ways a record can be replaced, and they carry different weight.</b>
+   * A case <i>observed in this pass</i> replaces the older record of the same
+   * property at once — contemporaneous evidence, on this very server, and the
+   * property is demonstrably not being reported under its own name in the same
+   * breath. A case <i>excused</i> on the server replaces it only once that
+   * record has gone quiet, because an excusal is a permanent decision rather
+   * than an observation.
    *
    * <p>
-   * A property observed <b>in this same batch</b> is never superseded by it.
-   * Both can be true at once — a server can drop the organizer of an appointment
-   * and lose one from a real meeting — and without this the two would take turns
-   * erasing each other on every sweep.
+   * <b>The second exists because the first stops firing exactly when it
+   * works.</b> Excusing a case is what stops it being observed: eXo acts on it,
+   * the copies converge, the case falls silent — so supersession by observation
+   * alone could only clean up the old record <i>while the problem still
+   * existed</i>. Fix the problem and the stale entry outlived the fix by the
+   * whole retention window, all the while offering an administrator a broader,
+   * more dangerous excusal for something already solved. Every later
+   * reclassification would have had the same shape.
    *
+   * <p>
+   * <b>A property observed in this same batch is never superseded, by either
+   * route.</b> Both can be true at once — a server can drop the organizer of an
+   * appointment and lose one from a real meeting — and without this the two
+   * records would take turns erasing each other on every sweep.
+   *
+   * @param serverId the registration being written
    * @param increments what this batch saw
-   * @return the property names to forget, never null
+   * @return the rules for this write, never null
    */
-  private Set<String> superseded(Map<Observation, Long> increments) {
+  private Retention retention(long serverId, Map<Observation, Long> increments) {
     Set<String> seen = increments.keySet().stream().map(Observation::property).collect(Collectors.toSet());
-    return seen.stream()
-               .map(ServerQuirk::superseding)
-               .flatMap(Optional::stream)
-               .filter(property -> !seen.contains(property))
-               .collect(Collectors.toSet());
+    Set<String> observed = seen.stream()
+                               .map(ServerQuirk::superseding)
+                               .flatMap(Optional::stream)
+                               .filter(property -> !seen.contains(property))
+                               .collect(Collectors.toSet());
+    Set<String> settled = supersededByExcusal(serverId).stream()
+                                                       .filter(property -> !seen.contains(property))
+                                                       .collect(Collectors.toSet());
+    return new Retention(observed, settled, supersededGraceDays, retentionDays, LocalDate.now().toEpochDay());
+  }
+
+  /**
+   * The properties whose records a case already excused on this server replaces.
+   *
+   * <p>
+   * Read from the row rather than from the catalogue alone, for the same reason
+   * the observed route is: a deployment whose server has never shown the case,
+   * and whose administrator has therefore never excused it, keeps its older
+   * records untouched.
+   *
+   * @param serverId the registration
+   * @return the property names, never null
+   */
+  private Set<String> supersededByExcusal(long serverId) {
+    CaldavServer server = caldavServerStorage.getServerById(serverId);
+    if (server == null) {
+      return Set.of();
+    }
+    return Arrays.stream(ServerQuirk.values())
+                 .filter(quirk -> quirk.getSupersedes() != null && excusedOn(server, quirk))
+                 .map(ServerQuirk::getSupersedes)
+                 .collect(Collectors.toSet());
+  }
+
+  /**
+   * Whether one catalogue entry is ticked on a registration.
+   *
+   * <p>
+   * The list it would have been written into is decided the same way the drawer
+   * decides it — effect first, direction only then — so a tick and the reading
+   * of that tick cannot drift apart.
+   *
+   * @param server the registration, as stored
+   * @param quirk the catalogue entry
+   * @return true when the row carries it
+   */
+  private boolean excusedOn(CaldavServer server, ServerQuirk quirk) {
+    String list;
+    if (quirk.getEffect() == ServerQuirkEffect.OMIT) {
+      list = server.getOmittedProperties();
+    } else {
+      list = quirk.getDirection() == ServerQuirkDirection.ADDED ? server.getIgnoredProperties()
+                                                                : server.getDroppedProperties();
+    }
+    return quirk.getPatterns().stream().anyMatch(pattern -> ServerQuirk.listMatches(list, pattern));
   }
 
   /**
