@@ -1356,6 +1356,98 @@ public class CaldavPushServiceTest {
     verify(caldavSyncStorage).deleteObject(7778L);
   }
 
+  @Test
+  public void twoBindingsSharingOneCollectionDoNotDeleteTheObjectJustWritten() throws Exception {
+    // The trap the mirror rework arms. "Left behind" means the copy in the
+    // calendar the event moved OUT of, and the search for it walks the user's
+    // other pairs. Point the mirror at a calendar the user already synchronises
+    // and two pairs stand for the same collection: the sibling row is then not
+    // a previous home at all — it addresses the same physical href — and the
+    // cleanup that follows the write deletes the object the write has just put
+    // there. Silent data loss, one DELETE after one PUT, nothing logged as
+    // wrong.
+    givenAnAgendaEvent(114L, 0L);
+    givenPersonalCalendar(11L, "cal-anchor");
+    CalendarSync destination = boundPersonalPair();
+    destination.setId(6001L);
+    destination.setRemoteHref("/dav/calendars/john/shared");
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(destination);
+    when(agendaRemoteEventService.findRemoteEvent(114L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-114"));
+    when(caldavSyncStorage.getObjectByUid(6001L, "uid-114")).thenReturn(null);
+    // The mirror, pointed at the very same calendar. Spelled with a trailing
+    // slash, because two spellings of one collection are one collection.
+    CalendarSync sibling = boundPersonalPair();
+    sibling.setId(6002L);
+    sibling.setRemoteHref("/dav/calendars/john/shared/");
+    sibling.setOrigin(SyncOrigin.MIRROR);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(destination, sibling));
+    // It holds the same event. Lenient: with the guard in place these are never
+    // asked, and that is the point of the test.
+    ObjectSync sameObject = mapped("\"etag-old\"");
+    sameObject.setId(7779L);
+    sameObject.setCalendarSyncId(6002L);
+    sameObject.setRemoteHref("/dav/calendars/john/shared/uid-114.ics");
+    lenient().when(caldavSyncStorage.getObjectByEvent(6002L, 114L)).thenReturn(sameObject);
+    lenient().when(caldavSyncStorage.getObjectByUid(6002L, "uid-114")).thenReturn(sameObject);
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+        .thenReturn(new PutResult(201, "\"etag-new\"", null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 114L);
+
+    verify(calDavClient).putObject(any(), eq("/dav/calendars/john/shared/uid-114.ics"), anyString(), anyString(), anyString());
+    // A pair standing for the collection being written into is not "elsewhere"
+    // and is never even asked what it holds. Verified rather than inferred from
+    // the absence of a delete, because the delete is also refused by the second
+    // lock in removeWhatWasLeftBehind — and a pin that passes on either guard
+    // pins neither.
+    verify(caldavSyncStorage, never()).getObjectByEvent(eq(6002L), anyLong());
+    verify(caldavSyncStorage, never()).getObjectByUid(eq(6002L), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
+  }
+
+  @Test
+  public void aDeleteAddressingThePathJustWrittenIsRefusedWhateverTheMappingSays() throws Exception {
+    // The second lock. The guard above keeps such a row from being selected;
+    // this one refuses the delete even when one reaches here anyway — a row
+    // written while two pairs shared a collection and left behind after one of
+    // them was re-pointed says "elsewhere" while naming the path just written.
+    // The cost of the first guard being wrong is the user's event; the cost of
+    // this check is a string compare.
+    givenAnAgendaEvent(115L, 0L);
+    givenPersonalCalendar(12L, "cal-anchor");
+    CalendarSync destination = boundPersonalPair();
+    destination.setId(6001L);
+    destination.setRemoteHref("/dav/calendars/john/shared");
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(destination);
+    when(agendaRemoteEventService.findRemoteEvent(115L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-115"));
+    when(caldavSyncStorage.getObjectByUid(6001L, "uid-115")).thenReturn(null);
+    // A genuinely different collection, so the same-collection guard stays out
+    // of the way and this test is about the delete alone.
+    CalendarSync stale = boundPersonalPair();
+    stale.setId(6002L);
+    stale.setRemoteHref("/dav/calendars/john/somewhere-else");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(destination, stale));
+    // Its row nevertheless points at the object about to be written.
+    ObjectSync stale114 = mapped("\"etag-old\"");
+    stale114.setId(7780L);
+    stale114.setCalendarSyncId(6002L);
+    stale114.setRemoteHref("/dav/calendars/john/shared/uid-115.ics");
+    when(caldavSyncStorage.getObjectByEvent(6002L, 115L)).thenReturn(stale114);
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+        .thenReturn(new PutResult(201, "\"etag-new\"", null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, 115L);
+
+    verify(calDavClient).putObject(any(), eq("/dav/calendars/john/shared/uid-115.ics"), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
+  }
+
   /**
    * The mirror pair under a chosen identifier.
    *
