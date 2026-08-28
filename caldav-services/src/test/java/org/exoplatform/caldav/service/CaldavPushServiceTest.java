@@ -63,10 +63,12 @@ import org.exoplatform.caldav.client.MkCalendarResult;
 import org.exoplatform.caldav.client.PutResult;
 import org.exoplatform.caldav.ics.IcsMerger;
 import org.exoplatform.caldav.ics.IcsWriter;
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.IcsEvent;
+import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -98,6 +100,12 @@ public class CaldavPushServiceTest {
   /** The same collection as the storage records it: no trailing slash. */
   private static final String        CANONICAL_MIRROR = "/dav/calendars/john/exo-meetings";
 
+  /** A calendar of the account's own, the one a user would pick. */
+  private static final String        PERSONAL = "/dav/calendars/john/personal/";
+
+  /** A second one, so a test can prove the FIRST listed is not what is taken. */
+  private static final String        WORK     = "/dav/calendars/john/work/";
+
   @Mock
   private CalDavClient               calDavClient;
 
@@ -127,6 +135,9 @@ public class CaldavPushServiceTest {
 
   @Mock
   private CalDavEndpoint             endpoint;
+
+  @Mock
+  private CaldavServerService        caldavServerService;
 
   @InjectMocks
   private CaldavPushService          service;
@@ -298,6 +309,320 @@ public class CaldavPushServiceTest {
     CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
 
     assertEquals(CaldavPushService.CREATION_REFUSED, failure.getCode());
+  }
+
+  // ---- where the copies go: the per-server destination (EXO-89760) --------
+
+  /**
+   * A registration that predates this setting goes on copying meetings into
+   * eXo's own calendar, and asks the account nothing new to do it.
+   */
+  @Test
+  public void aServerThatSaysNothingKeepsWritingIntoExosOwnCalendar() {
+    // The converged case, and the one an upgrade produces: a registration that
+    // predates this setting resolves to DEDICATED_CALENDAR, and the account
+    // that already has its exo-meetings collection is answered from the
+    // listing with nothing created, adopted or refused.
+    givenAServerWriting(MirrorTargetKind.DEDICATED_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+                                                                                                            "Personal"),
+                                                                                                   calendar(MIRROR,
+                                                                                                            "eXo Meetings")));
+
+    MirrorTarget target = service.ensureMirror(USER);
+
+    assertEquals(MIRROR, target.href());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).discoverDefaultCalendar(any(), anyString(), anyString());
+  }
+
+  /**
+   * The account's own default calendar is the one the account names, not the
+   * first one it happens to list.
+   */
+  @Test
+  public void theAccountsOwnDefaultCalendarIsAskedForRatherThanGuessedAt() {
+    // The healthy case of the second kind: the account names a default
+    // calendar, its home lists it, and that is where the copies go. The
+    // listing deliberately holds another calendar FIRST — taking the first one
+    // listed is the guess this kind exists not to make.
+    givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work"),
+                                                                                                   calendar(PERSONAL,
+                                                                                                            "Personal")));
+    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(PERSONAL);
+
+    MirrorTarget target = service.ensureMirror(USER);
+
+    assertEquals(PERSONAL, target.href());
+    assertEquals("Personal", target.name());
+    assertFalse(target.adopted());
+    verify(caldavConnectorStorage).saveMirrorCalendarHref(PERSONAL, USER);
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  /**
+   * A default calendar the account's own home does not list is a claim, and a
+   * claim is not a destination.
+   */
+  @Test
+  public void aDefaultCalendarTheAccountDoesNotListIsNotBelieved() {
+    // Same discipline as MKCALENDAR: a path a server states is a claim until
+    // the account's own listing shows the collection. A stale
+    // schedule-default-calendar-URL pointing at a calendar the user deleted
+    // would otherwise become a destination every push writes into nothing.
+    givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work")));
+    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(PERSONAL);
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+
+    assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(caldavConnectorStorage, never()).saveMirrorCalendarHref(anyString(), anyLong());
+  }
+
+  /**
+   * An account that names no default calendar is refused rather than given one
+   * of eXo's making.
+   */
+  @Test
+  public void anAccountNamingNoDefaultCalendarIsRefusedRatherThanGivenOne() {
+    // The administrator asked for the account's own calendar. Creating one of
+    // eXo's instead would put the copies exactly where they stopped asking for
+    // them, and adopting the first listed would file somebody's meetings into
+    // a calendar nobody chose.
+    givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work"),
+                                                                                                   calendar(PERSONAL,
+                                                                                                            "Personal")));
+    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(null);
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+
+    assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  /**
+   * A registration that leaves the destination to the user writes nothing until
+   * they have named one.
+   */
+  @Test
+  public void noCopyIsWrittenUntilTheUserHasChosen() {
+    givenAServerWriting(MirrorTargetKind.USER_CHOICE);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+                                                                                                            "Personal")));
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+
+    assertEquals(CaldavPushService.CHOICE_PENDING, failure.getCode());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(caldavConnectorStorage, never()).saveMirrorCalendarHref(anyString(), anyLong());
+  }
+
+  /**
+   * A destination eXo established under an earlier setting is not a choice the
+   * user made.
+   */
+  @Test
+  public void aDedicatedCalendarLeftBehindIsNotMistakenForAChoice() {
+    // THE pin of this change. Switching a server to "the user picks" leaves
+    // every user who was already being copied with an exo-meetings collection
+    // on their account and its href recorded against them. Reading either as a
+    // choice would go on writing into the calendar the administrator had just
+    // stopped asking for — silently, and only for the users who were already
+    // working, which is exactly the set nobody tests.
+    givenAServerWriting(MirrorTargetKind.USER_CHOICE);
+    CaldavUserSetting stored = settings();
+    stored.setMirrorCalendarHref(MIRROR);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(stored);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+                                                                                                            "eXo Meetings")));
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+
+    assertEquals(CaldavPushService.CHOICE_PENDING, failure.getCode());
+  }
+
+  /**
+   * A user who has chosen is written to, and nothing is created for them.
+   */
+  @Test
+  public void aUserWhoHasChosenIsWrittenToWithoutAnythingBeingCreated() {
+    // The converged case of the third kind, and the one that must not be
+    // collateral damage of the refusal above: this user answered, their
+    // calendar is still there, and nothing about their pushes changes.
+    givenAServerWriting(MirrorTargetKind.USER_CHOICE);
+    CaldavUserSetting stored = settings();
+    stored.setChosenCalendarHref(WORK);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(stored);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+                                                                                                            "Personal"),
+                                                                                                   calendar(WORK, "Work")));
+
+    MirrorTarget target = service.ensureMirror(USER);
+
+    assertEquals(WORK, target.href());
+    assertEquals("Work", target.name());
+    verify(caldavConnectorStorage).saveMirrorCalendarHref(WORK, USER);
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  /**
+   * A chosen calendar that has been deleted puts the question back to the user
+   * rather than moving their meetings somewhere they did not pick.
+   */
+  @Test
+  public void aChosenCalendarThatIsGoneOwesAChoiceAgainRatherThanFallingBack() {
+    givenAServerWriting(MirrorTargetKind.USER_CHOICE);
+    CaldavUserSetting stored = settings();
+    stored.setChosenCalendarHref(WORK);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(stored);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+                                                                                                            "Personal")));
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+
+    assertEquals(CaldavPushService.CHOICE_PENDING, failure.getCode());
+  }
+
+  /**
+   * A registry that cannot be read is an incident about the registry, not a
+   * reason to strand every copy.
+   */
+  @Test
+  public void aRegistryThatCannotBeReadKeepsWritingWhereItAlwaysDid() {
+    // The opposite asymmetry from the refusal above, and deliberate: a registry
+    // that answers nothing is an incident about the registry, not a statement
+    // about where copies go. Refusing here would strand every copy of every
+    // user on it.
+    when(caldavServerService.resolveServer(SERVER)).thenThrow(new IllegalStateException("registry down"));
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+                                                                                                            "eXo Meetings")));
+
+    assertEquals(MIRROR, service.ensureMirror(USER).href());
+  }
+
+  /**
+   * Reading the destination and establishing it answer the same collection.
+   */
+  @Test
+  public void theSettingsScreenReadsTheSameDestinationTheNextPushWouldWrite() {
+    // currentMirror and ensureMirror ask one resolution. When they did not, the
+    // screen named a calendar the push would not have used - which is how a
+    // user is told their meetings are being copied somewhere they are not.
+    givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work"),
+                                                                                                   calendar(PERSONAL,
+                                                                                                            "Personal")));
+    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(PERSONAL);
+
+    assertEquals(PERSONAL, service.currentMirror(USER).href());
+    assertEquals(PERSONAL, service.ensureMirror(USER).href());
+  }
+
+  /**
+   * A pending choice is a state the settings can state, not a failure to be
+   * discovered.
+   */
+  @Test
+  public void aPendingChoiceIsSaidInTheSettingsRatherThanLeftToAFailedPush() {
+    givenAServerWriting(MirrorTargetKind.USER_CHOICE);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+                                                                                                            "Personal")));
+
+    MirrorState state = service.mirrorState(USER);
+
+    assertEquals(MirrorTargetKind.USER_CHOICE, state.kind());
+    assertTrue(state.choicePending(), "a user who was asked and has not answered must be asked again, not left guessing");
+    assertNull(state.destination());
+  }
+
+  /**
+   * An account nobody was ever asked about owes no choice.
+   */
+  @Test
+  public void asettledAccountOwesNoChoice() {
+    // The healthy case of the state endpoint: on a server writing into eXo's
+    // own calendar nobody is ever asked anything, and a screen must not offer
+    // a question that does not exist.
+    givenAServerWriting(MirrorTargetKind.DEDICATED_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+                                                                                                            "eXo Meetings")));
+
+    MirrorState state = service.mirrorState(USER);
+
+    assertEquals(MirrorTargetKind.DEDICATED_CALENDAR, state.kind());
+    assertFalse(state.choicePending());
+    assertEquals(MIRROR, state.destination().href());
+  }
+
+  /**
+   * An account that cannot be reached is not a user who failed to answer.
+   */
+  @Test
+  public void anUnreachableAccountIsNotReportedAsAPendingChoice() {
+    // A user who chose last week and whose server is down today must not be
+    // shown "choose a calendar": they did, and choosing again fixes nothing.
+    givenAServerWriting(MirrorTargetKind.USER_CHOICE);
+    CaldavUserSetting stored = settings();
+    stored.setChosenCalendarHref(WORK);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(stored);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenThrow(new CalDavException("unreachable"));
+
+    MirrorState state = service.mirrorState(USER);
+
+    assertFalse(state.choicePending());
+    assertNull(state.destination());
+  }
+
+  /**
+   * A choice is confirmed against the account's own listing before it is
+   * recorded.
+   */
+  @Test
+  public void aChosenCalendarIsConfirmedInTheListingBeforeItIsRecorded() {
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+                                                                                                            "Personal")));
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.chooseMirror(USER, WORK));
+
+    assertEquals(CaldavPushService.CALENDAR_NOT_ON_ACCOUNT, failure.getCode());
+    verify(caldavConnectorStorage, never()).saveChosenCalendarHref(anyString(), anyLong());
+  }
+
+  /**
+   * A confirmed choice is recorded, and answered with the name the account
+   * gives it.
+   */
+  @Test
+  public void aChoiceTheAccountHoldsIsRecordedAsTheAccountSpellsIt() {
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+                                                                                                            "Personal"),
+                                                                                                   calendar(WORK, "Work")));
+
+    MirrorTarget chosen = service.chooseMirror(USER, WORK);
+
+    assertEquals(WORK, chosen.href());
+    assertEquals("Work", chosen.name());
+    verify(caldavConnectorStorage).saveChosenCalendarHref(WORK, USER);
+  }
+
+  /**
+   * A push into an account that owes a choice writes nothing and binds nothing.
+   */
+  @Test
+  public void aFirstPushOnAnAccountThatOwesAChoiceWritesNothingAtAll() {
+    givenAServerWriting(MirrorTargetKind.USER_CHOICE);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+                                                                                                            "Personal")));
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.pushEvent(USER, event("evt-1")));
+
+    assertEquals(CaldavPushService.CHOICE_PENDING, failure.getCode());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
   }
 
   @Test
@@ -1561,6 +1886,22 @@ public class CaldavPushServiceTest {
     when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
                                                                                                             "eXo Meetings")));
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+  }
+
+  /**
+   * @return a connected account
+   */
+  /**
+   * Declares the registration this user's account resolves through, writing its
+   * copies where the given kind says.
+   *
+   * @param kind where the registration wants the meeting copies written
+   */
+  private void givenAServerWriting(MirrorTargetKind kind) {
+    CaldavServer server = new CaldavServer();
+    server.setId(SERVER);
+    server.setMirrorTarget(kind);
+    when(caldavServerService.resolveServer(SERVER)).thenReturn(server);
   }
 
   /**
