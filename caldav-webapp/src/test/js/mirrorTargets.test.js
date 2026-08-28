@@ -19,22 +19,37 @@ import {
   DEFAULT_MIRROR_TARGET,
   MIRROR_TARGET_DEDICATED_CALENDAR,
   MIRROR_TARGET_MAIN_CALENDAR,
-  MIRROR_TARGET_USER_CHOICE,
   mirrorTargetOf,
 } from '../../main/webapp/vue-app/caldav/js/mirrorTargets.js';
 
-describe('the three destinations a server can write its meeting copies to', () => {
+describe('the destinations a server can write its meeting copies to', () => {
 
-  it('spells the three values exactly as the registry stores them', () => {
+  it('offers exactly two, spelled exactly as the registry stores them', () => {
     // Not cosmetic. The value travels to the registry as a string and is read
     // back by MirrorTargetKind.of, which answers DEDICATED_CALENDAR for
     // anything it does not recognise - so a typo here would not fail, it would
     // silently re-point somebody's destination.
+    //
+    // Exactly two, and the list written out: there were three until a product
+    // review dropped "a calendar each user picks". MirrorTargetKind still
+    // carries USER_CHOICE, so nothing downstream stops it reappearing here by
+    // accident - this assertion is what makes putting it back a deliberate act
+    // rather than a merge nobody read.
     expect(MIRROR_TARGETS.map(target => target.value)).toEqual([
       'DEDICATED_CALENDAR',
       'MAIN_CALENDAR',
-      'USER_CHOICE',
     ]);
+  });
+
+  it('does not offer the destination that hands the decision to each user', () => {
+    // Dropped from the UI only. The enum value, the pending-choice path and the
+    // endpoints behind it are merged code and are not this control's business;
+    // what is this control's business is that no radio offers it.
+    expect(MIRROR_TARGETS.some(target => target.value === 'USER_CHOICE')).toBe(false);
+    expect(MIRROR_TARGETS.map(target => target.labelKey)).not.toContain(
+      'caldav.admin.servers.mirrorTarget.userChoice.label');
+    expect(MIRROR_TARGETS.map(target => target.consequenceKey)).not.toContain(
+      'caldav.admin.servers.mirrorTarget.userChoice.consequence');
   });
 
   it('carries a consequence key for every option, and no sentence of its own', () => {
@@ -48,10 +63,18 @@ describe('the three destinations a server can write its meeting copies to', () =
     });
   });
 
-  it('reads each stored value back as itself', () => {
+  it('reads each offered value back as itself', () => {
     expect(mirrorTargetOf(MIRROR_TARGET_DEDICATED_CALENDAR)).toBe(MIRROR_TARGET_DEDICATED_CALENDAR);
     expect(mirrorTargetOf(MIRROR_TARGET_MAIN_CALENDAR)).toBe(MIRROR_TARGET_MAIN_CALENDAR);
-    expect(mirrorTargetOf(MIRROR_TARGET_USER_CHOICE)).toBe(MIRROR_TARGET_USER_CHOICE);
+  });
+
+  it('resolves a row stored as the destination we stopped offering, rather than leaving it blank', () => {
+    // MirrorTargetKind still has USER_CHOICE and a row may already carry it -
+    // written before the option was dropped, or by hand. It has no radio here
+    // any more, so the control would show a group with nothing selected, which
+    // an administrator reads as a lost setting. It resolves to the dedicated
+    // calendar: a real option they can see and change.
+    expect(mirrorTargetOf('USER_CHOICE')).toBe(MIRROR_TARGET_DEDICATED_CALENDAR);
   });
 
   it('never answers nothing, whatever it is handed', () => {

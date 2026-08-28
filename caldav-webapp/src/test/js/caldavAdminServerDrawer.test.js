@@ -206,7 +206,7 @@ describe('CaldavAdminServerDrawer', () => {
     expect(wrapper.vm.server.omittedProperties).toBe('SOLO-ORGANIZER');
     expect(wrapper.vm.server.droppedProperties).toBe('');
   });
-  it('offers the three destinations, each with its consequence, inside the drawer that hosts them', async () => {
+  it('offers the two destinations, each with its consequence, inside the drawer that hosts them', async () => {
     // Through the component, not through the module: what a module test cannot
     // see is a control that never renders at all.
     const wrapper = mountDrawer();
@@ -218,7 +218,10 @@ describe('CaldavAdminServerDrawer', () => {
     expect(text).toContain('caldav.admin.servers.mirrorTarget.appliesTo');
     expect(text).toContain('caldav.admin.servers.mirrorTarget.dedicated.consequence');
     expect(text).toContain('caldav.admin.servers.mirrorTarget.main.consequence');
-    expect(text).toContain('caldav.admin.servers.mirrorTarget.userChoice.consequence');
+    // And no third one. Dropped from the UI by a product review; the enum still
+    // carries it, so this is the assertion that keeps it out of the drawer.
+    expect(text).not.toContain('caldav.admin.servers.mirrorTarget.userChoice.label');
+    expect(text).not.toContain('caldav.admin.servers.mirrorTarget.userChoice.consequence');
   });
 
   it('says the existing copies will move only once the destination actually changes', async () => {
@@ -237,7 +240,7 @@ describe('CaldavAdminServerDrawer', () => {
     const wrapper = mountDrawer();
 
     wrapper.vm.open();
-    wrapper.vm.server.mirrorTarget = 'USER_CHOICE';
+    wrapper.vm.server.mirrorTarget = 'MAIN_CALENDAR';
     await wrapper.vm.$nextTick();
 
     expect(wrapper.text()).not.toContain('caldav.admin.servers.mirrorTarget.moves');
@@ -271,10 +274,29 @@ describe('CaldavAdminServerDrawer', () => {
 
     wrapper.vm.open({...bluemind, mirrorTarget: 'DEDICATED_CALENDAR'});
     await wrapper.vm.$nextTick();
-    wrapper.vm.server.mirrorTarget = 'USER_CHOICE';
+    wrapper.vm.server.mirrorTarget = 'MAIN_CALENDAR';
     await wrapper.vm.saveServer();
 
-    expect(saved[0].payload.mirrorTarget).toBe('USER_CHOICE');
+    expect(saved[0].payload.mirrorTarget).toBe('MAIN_CALENDAR');
+  });
+
+  it('opens a row stored as the destination we stopped offering on the dedicated calendar', async () => {
+    // The row exists: the option was on offer until a product review dropped
+    // it, and MirrorTargetKind still stores the value. The drawer must show a
+    // real option rather than an empty radio group, and must not tell the
+    // administrator their copies are about to move when they open the row and
+    // save it unchanged.
+    const saved = [];
+    const wrapper = mountDrawer(saved);
+
+    wrapper.vm.open({...bluemind, mirrorTarget: 'USER_CHOICE'});
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.vm.server.mirrorTarget).toBe('DEDICATED_CALENDAR');
+    expect(wrapper.text()).not.toContain('caldav.admin.servers.mirrorTarget.moves');
+
+    await wrapper.vm.saveServer();
+    expect(saved[0].payload.mirrorTarget).toBe('DEDICATED_CALENDAR');
   });
 
   it('states a destination on a declaration too, rather than leaving the registry to guess', async () => {
