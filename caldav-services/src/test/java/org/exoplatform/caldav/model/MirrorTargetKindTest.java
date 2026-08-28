@@ -67,7 +67,31 @@ public class MirrorTargetKindTest {
   @Test
   public void anUnknownOrUntidyValueDegradesRatherThanThrows() {
     assertEquals(MirrorTargetKind.DEDICATED_CALENDAR, MirrorTargetKind.of("SOMETHING_A_LATER_VERSION_WROTE"));
-    assertEquals(MirrorTargetKind.USER_CHOICE, MirrorTargetKind.of(" user_choice "));
     assertEquals(MirrorTargetKind.MAIN_CALENDAR, MirrorTargetKind.of("Main_Calendar"));
+  }
+
+  /**
+   * <b>The migration pin of EXO-89793.</b> A row written while
+   * {@code USER_CHOICE} was a third kind (EXO-89760) still holds that string
+   * today, and it must read as the dedicated calendar rather than throw.
+   *
+   * <p>
+   * Asserted with the literal string and never an enum constant, deliberately:
+   * the constant does not exist any more, and a database does not care. This is
+   * the whole reason {@code MIRROR_TARGET} is mapped as a String rather than
+   * {@code @Enumerated} — a throw on read would not merely misplace one
+   * server's copies, it would make every registration behind that server
+   * unreadable and take down every account resolving through it.
+   *
+   * <p>
+   * It is also the reason no Liquibase data migration ships with the removal:
+   * the value is already read correctly, so rewriting the stored rows would add
+   * a write to a live table without adding any safety the reader does not
+   * already give.
+   */
+  @Test
+  public void aRowStoredAsTheWithdrawnUserChoiceReadsAsTheDedicatedCalendar() {
+    assertEquals(MirrorTargetKind.DEDICATED_CALENDAR, MirrorTargetKind.of("USER_CHOICE"));
+    assertEquals(MirrorTargetKind.DEDICATED_CALENDAR, MirrorTargetKind.of(" user_choice "));
   }
 }
