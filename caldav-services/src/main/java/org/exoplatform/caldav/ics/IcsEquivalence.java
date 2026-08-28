@@ -38,6 +38,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.caldav.model.IcsDivergence;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -164,12 +165,12 @@ import net.fortuna.ical4j.model.component.VTimeZone;
  * {@link #isServerSideRepetition}.
  *
  * <p>
- * <b>Two operator levers, pointing opposite ways.</b>
- * {@link #ignoredProperties} excuses an <i>unrecognised</i> property a server
- * adds; {@link #droppedProperties} excuses a property eXo emits that a server
- * declines to store — BlueMind keeps no {@code CONFERENCE}. Both are empty by
- * default, both can only ever excuse the presence or the absence of a
- * statement, and neither can make two differing values compare equal.
+ * <b>Two excusals, pointing opposite ways, declared per server.</b> One excuses
+ * an <i>unrecognised</i> property a server adds; the other a property eXo emits
+ * that a server declines to store — BlueMind keeps no {@code CONFERENCE}. Both
+ * are empty by default and neither can make two differing values compare equal,
+ * bar the one catalogue entry that says so. See {@link ServerExcusals}; the
+ * fields below are only the deployment-wide fallback.
  *
  * <p>
  * <b>What the parser settles before this sees it.</b> ical4j unfolds continued
@@ -542,6 +543,13 @@ public class IcsEquivalence {
    * no configuration of it can make a changed summary or a moved start time look
    * equal. Empty by default — nothing is ignored until somebody has read a log
    * line naming what to ignore.
+   *
+   * <p>
+   * <b>The fallback, not the lever, since EXO-89771.</b> Each server carries its
+   * own list now and this value decides only for a registration that has never
+   * been asked, which is what makes the change behaviour-neutral on upgrade. It
+   * stays read from configuration rather than being deleted: an operator who set
+   * it must not have it silently stop applying.
    */
   @Value("${exo.agenda.caldav.mirror.ignoredProperties:}")
   private String                           ignoredProperties        = "";
@@ -575,12 +583,14 @@ public class IcsEquivalence {
    * <b>What it does cost, stated plainly.</b> On a server named here, a client
    * <i>deleting</i> the property goes unnoticed — it is indistinguishable from
    * the server declining to store it, and on such a server that information
-   * genuinely is not available to eXo. And the lever is <b>global</b>: a
-   * deployment running BlueMind alongside a server that stores {@code CONFERENCE}
-   * faithfully gives up the detection on both. That is an interim. The proper
-   * home is a per-server list on {@code CaldavServer}, so each connection
-   * declares what its own server drops; that is a schema change and is
-   * deliberately not made here, where the loop is blocking other work.
+   * genuinely is not available to eXo.
+   *
+   * <p>
+   * <b>It is no longer global, and that was the interim this replaces.</b> A
+   * deployment running BlueMind alongside a server that stores
+   * {@code CONFERENCE} faithfully used to give up the detection on both
+   * (EXO-89771); this value is now only the fallback {@link #ignoredProperties}
+   * describes.
    *
    * <p>
    * Restricted to {@link #EVENT_PROPERTIES}, so it can only ever name a property
@@ -589,6 +599,24 @@ public class IcsEquivalence {
    */
   @Value("${exo.agenda.caldav.mirror.droppedProperties:}")
   private String                           droppedProperties        = "";
+
+  /**
+   * The fallback for a registration that has never been asked, adding side.
+   *
+   * @return the configured value, never null
+   */
+  public String getGlobalIgnoredProperties() {
+    return ignoredProperties;
+  }
+
+  /**
+   * The fallback for a registration that has never been asked, dropping side.
+   *
+   * @return the configured value, never null
+   */
+  public String getGlobalDroppedProperties() {
+    return droppedProperties;
+  }
 
   /**
    * Compares the object a server holds against the object eXo would write for
@@ -602,9 +630,44 @@ public class IcsEquivalence {
    *          the reason {@link #OWNER_ATTENDEE} records. May be null or empty,
    *          which simply means no attendee is treated as the owner.
    * @return the judgement, carrying what diverged when it is
-   *         {@link Verdict#DIFFERENT}
+   *         {@link IcsJudgement.Verdict#DIFFERENT}
    */
-  public Judgement compare(String serverIcs, String exoIcs, Collection<String> ownerAddresses) {
+  public IcsJudgement compare(String serverIcs, String exoIcs, Collection<String> ownerAddresses) {
+    return compare(serverIcs, exoIcs, ownerAddresses, null, null);
+  }
+
+  /**
+   * Compares the object a server holds against the object eXo would write for
+   * the same event now, excusing what <i>this</i> server has been declared to
+   * do.
+   *
+   * <p>
+   * The two lists arrive as arguments rather than being read once at boot,
+   * which is the whole point of EXO-89771: an administrator ticking a box in
+   * the drawer changes what the <i>next sweep</i> concludes, with no restart.
+   * {@link ServerExcusals} holds what each of them excuses, and why null and an
+   * empty string are different answers.
+   *
+   * @param serverIcs the calendar object as the server holds it
+   * @param exoIcs the calendar object eXo's engine renders for the event now
+   * @param ownerAddresses every address a copy on this account may name its own
+   *          owner by; may be null or empty
+   * @param serverIgnoredProperties patterns this server is excused for adding,
+   *          or null to fall back to the deployment-wide property
+   * @param serverDroppedProperties patterns this server is excused for not
+   *          keeping, or null to fall back to the deployment-wide property
+   * @return the judgement, carrying what diverged when it is
+   *         {@link IcsJudgement.Verdict#DIFFERENT}
+   */
+  public IcsJudgement compare(String serverIcs,
+                           String exoIcs,
+                           Collection<String> ownerAddresses,
+                           String serverIgnoredProperties,
+                           String serverDroppedProperties) {
+    ServerExcusals excusals = ServerExcusals.of(serverIgnoredProperties,
+                                               serverDroppedProperties,
+                                               ignoredProperties,
+                                               droppedProperties);
     Set<String> owner = ownerAddresses == null ? Set.of()
                                                : ownerAddresses.stream()
                                                                .filter(StringUtils::isNotBlank)
@@ -616,11 +679,11 @@ public class IcsEquivalence {
     } catch (IcsParseException e) {
       // eXo's own render is unreadable. That is a defect here, never evidence
       // about the user's calendar, so nothing is concluded from it.
-      return new Judgement(Verdict.UNJUDGEABLE, "the object eXo renders cannot be read: " + e.getMessage());
+      return new IcsJudgement(IcsJudgement.Verdict.UNJUDGEABLE, "the object eXo renders cannot be read: " + e.getMessage());
     }
     VEvent owned = singleEvent(exo);
     if (owned == null) {
-      return new Judgement(Verdict.UNJUDGEABLE, "the object eXo renders carries no single event");
+      return new IcsJudgement(IcsJudgement.Verdict.UNJUDGEABLE, "the object eXo renders carries no single event");
     }
     Calendar server;
     try {
@@ -629,18 +692,20 @@ public class IcsEquivalence {
       // The copy is there and cannot be read as iCalendar. Bounded rather than
       // silent: the repair will fail on the same parse and the pass gives up
       // after a few attempts, saying so — which is the honest outcome.
-      return new Judgement(Verdict.DIFFERENT, "the object the server holds cannot be read: " + e.getMessage());
+      return new IcsJudgement(IcsJudgement.Verdict.DIFFERENT, "the object the server holds cannot be read: " + e.getMessage());
     }
     String key = identityOf(owned, exo);
     VEvent counterpart = eventWithIdentity(server, key);
     if (counterpart == null) {
-      return new Judgement(Verdict.DIFFERENT, "the component " + key + " is not in the object any more");
+      return new IcsJudgement(IcsJudgement.Verdict.DIFFERENT, "the component " + key + " is not in the object any more");
     }
-    List<String> divergences = divergences(counterpart, server, owned, exo, owner);
-    if (divergences.isEmpty()) {
-      return new Judgement(Verdict.EQUIVALENT, null);
+    List<IcsDivergence> observed = new ArrayList<>();
+    List<String> reported = divergences(counterpart, server, owned, exo, owner, excusals, observed);
+    List<IcsDivergence> behaviours = IcsStatement.collapse(observed);
+    if (reported.isEmpty()) {
+      return new IcsJudgement(IcsJudgement.Verdict.EQUIVALENT, null, behaviours);
     }
-    return new Judgement(Verdict.DIFFERENT, String.join("; ", divergences));
+    return new IcsJudgement(IcsJudgement.Verdict.DIFFERENT, String.join("; ", reported), behaviours);
   }
 
   /**
@@ -654,21 +719,43 @@ public class IcsEquivalence {
    * @param ownerAddresses the bare addresses this account's owner may be named
    *          by, carried down so an attendee line naming them is compared as
    *          the owner rather than as whichever spelling each side chose
-   * @return the divergences, capped, empty when the two say the same thing
+   * @param excusals what this server has been declared to do
+   * @param observed the accumulator one entry per diverging property is added to
+   * @return the divergences worth reporting, capped
    */
   private List<String> divergences(VEvent serverEvent,
                                    Calendar serverCalendar,
                                    VEvent exoEvent,
                                    Calendar exoCalendar,
-                                   Set<String> ownerAddresses) {
+                                   Set<String> ownerAddresses,
+                                   ServerExcusals excusals,
+                                   List<IcsDivergence> observed) {
     List<String> divergences = new ArrayList<>();
-    diff(statementsOf(serverEvent, serverCalendar, EVENT_PROPERTIES, IGNORED_EVENT_PROPERTIES, ownerAddresses),
-         statementsOf(exoEvent, exoCalendar, EVENT_PROPERTIES, IGNORED_EVENT_PROPERTIES, ownerAddresses),
-         divergences);
+    diff(eventStatements(serverEvent, serverCalendar, ownerAddresses, excusals),
+         eventStatements(exoEvent, exoCalendar, ownerAddresses, excusals),
+         divergences,
+         observed,
+         excusals);
     if (divergences.isEmpty()) {
       diffExpansions(serverCalendar, serverEvent, exoCalendar, exoEvent, divergences);
     }
     return divergences;
+  }
+
+  /**
+   * The statements of one compared component, at the top level.
+   *
+   * @param event the component
+   * @param calendar the object it belongs to, for its zone definitions
+   * @param ownerAddresses the bare addresses naming the account's owner
+   * @param excusals what this server has been declared to do
+   * @return the statements, by canonical line and count
+   */
+  private Map<String, Integer> eventStatements(VEvent event,
+                                               Calendar calendar,
+                                               Set<String> ownerAddresses,
+                                               ServerExcusals excusals) {
+    return statementsOf(event, calendar, EVENT_PROPERTIES, IGNORED_EVENT_PROPERTIES, ownerAddresses, excusals, false);
   }
 
   /**
@@ -758,22 +845,35 @@ public class IcsEquivalence {
    * @param ownerAddresses the bare addresses naming the account's owner, passed
    *          on to each property and into every VALARM, so the owner exemption
    *          holds at every depth rather than only at the top level
+   * @param excusals what this server has been declared to do
+   * @param nested whether these are the statements of a component embedded in
+   *          another — a VALARM. An excused property is dropped here when it is,
+   *          and left for {@link #diff} when it is not; see
+   *          {@link #normaliseProperty} for why the two levels differ
    * @return the statements, by canonical line and count
    */
   private Map<String, Integer> statementsOf(net.fortuna.ical4j.model.Component component,
                                             Calendar calendar,
                                             Set<String> recognised,
                                             Set<String> ignored,
-                                            Set<String> ownerAddresses) {
+                                            Set<String> ownerAddresses,
+                                            ServerExcusals excusals,
+                                            boolean nested) {
     Map<String, Integer> statements = new TreeMap<>();
     for (Property property : component.getProperties()) {
-      for (String statement : normaliseProperty(property, calendar, recognised, ignored, ownerAddresses)) {
+      for (String statement : normaliseProperty(property, calendar, recognised, ignored, ownerAddresses, excusals, nested)) {
         statements.merge(statement, 1, Integer::sum);
       }
     }
     if (component instanceof VEvent event) {
       for (VAlarm alarm : event.getAlarms()) {
-        Map<String, Integer> inner = statementsOf(alarm, calendar, ALARM_PROPERTIES, IGNORED_ALARM_PROPERTIES, ownerAddresses);
+        Map<String, Integer> inner = statementsOf(alarm,
+                                                  calendar,
+                                                  ALARM_PROPERTIES,
+                                                  IGNORED_ALARM_PROPERTIES,
+                                                  ownerAddresses,
+                                                  excusals,
+                                                  true);
         statements.merge("VALARM{" + String.join("&", flatten(inner)) + "}", 1, Integer::sum);
       }
     }
@@ -808,13 +908,18 @@ public class IcsEquivalence {
    * @param ownerAddresses the bare addresses naming the account's owner: an
    *          ATTENDEE matching one of them collapses to {@link #OWNER_ATTENDEE},
    *          so the spelling the server chose for them cannot read as a change
+   * @param excusals what this server has been declared to do
+   * @param nested whether the component this property belongs to is embedded in
+   *          another
    * @return the canonical statements, possibly empty
    */
   private List<String> normaliseProperty(Property property,
                                          Calendar calendar,
                                          Set<String> recognised,
                                          Set<String> ignored,
-                                         Set<String> ownerAddresses) {
+                                         Set<String> ownerAddresses,
+                                         ServerExcusals excusals,
+                                         boolean nested) {
     String name = property.getName().toUpperCase(Locale.ROOT);
     if (ignored.contains(name) || STRUCTURAL_PROPERTIES.contains(name)) {
       return List.of();
@@ -831,10 +936,15 @@ public class IcsEquivalence {
       return List.of();
     }
     if (!recognised.contains(name)) {
-      if (isIgnoredByConfiguration(name)) {
+      if (nested && excusals.excusesAdding(name)) {
+        // Inside a VALARM the component is folded into one statement, so there
+        // is nothing left for diff to excuse — Thunderbird's X-MOZ-LASTACK and
+        // X-MOZ-SNOOZE-TIME live here. At the top level the statement stands and
+        // diff excuses it there, which is what lets one divergence be both
+        // excused and still shown as observed.
         return List.of();
       }
-      return List.of("UNRECOGNISED:" + name + "=" + value);
+      return List.of(IcsStatement.UNRECOGNISED + name + "=" + value);
     }
     if ("ATTENDEE".equals(name) && ownerAddresses.contains(bareAddress(value))) {
       return List.of(ownerStatement(property));
@@ -847,22 +957,6 @@ public class IcsEquivalence {
                    .collect(Collectors.toList());
     }
     return List.of(name + suffix + "=" + normaliseValue(name, value, calendar));
-  }
-
-  /**
-   * Whether a property name the recognised set does not carry has been declared
-   * uninteresting for this deployment.
-   *
-   * @param name the upper-cased property name
-   * @return true when the operator asked for it to be ignored
-   */
-  private boolean isIgnoredByConfiguration(String name) {
-    if (StringUtils.isBlank(ignoredProperties)) {
-      return false;
-    }
-    return Arrays.stream(ignoredProperties.split(","))
-                 .map(entry -> entry.trim().toUpperCase(Locale.ROOT))
-                 .anyMatch(name::equals);
   }
 
   /**
@@ -1096,20 +1190,41 @@ public class IcsEquivalence {
    * reading two truncated statements out of six and inferring the rest. At DEBUG
    * both sides are stated in full, so the answer is read rather than deduced.
    *
+   * <p>
+   * <b>Two answers per divergence, not one.</b> A divergence the operator's own
+   * list excuses is still <i>observed</i> — otherwise the very quirk an
+   * administrator excused would vanish from the list they excused it in. One a
+   * built-in rule tolerates is not: an owner line the server attaches, an
+   * attendee it declines to carry and a statement it repeats are normal CalDAV
+   * behaviour, and offering them as decisions would bury the ones that are.
+   *
    * @param serverStatements what the server's component says
    * @param exoStatements what eXo's component says
-   * @param divergences the accumulator the findings are added to
+   * @param divergences the accumulator the reported findings are added to
+   * @param observed the accumulator the server's behaviours are added to
+   * @param excusals what this server has been declared to do
    */
   private void diff(Map<String, Integer> serverStatements,
                     Map<String, Integer> exoStatements,
-                    List<String> divergences) {
+                    List<String> divergences,
+                    List<IcsDivergence> observed,
+                    ServerExcusals excusals) {
     Set<String> statements = new TreeSet<>(serverStatements.keySet());
     statements.addAll(exoStatements.keySet());
+    Set<String> exoProperties = exoStatements.keySet().stream().map(IcsStatement::observedPropertyOf).collect(Collectors.toSet());
     int reported = 0;
     for (String statement : statements) {
       int onServer = serverStatements.getOrDefault(statement, 0);
       int inExo = exoStatements.getOrDefault(statement, 0);
-      if (onServer == inExo || tolerated(statement, onServer, inExo)) {
+      if (onServer == inExo) {
+        continue;
+      }
+      boolean excused = excusals.excuse(statement, onServer, inExo, exoProperties, EVENT_PROPERTIES);
+      boolean rule = tolerated(statement, onServer, inExo);
+      if (excused || !rule) {
+        IcsStatement.observe(statement, onServer, inExo, observed);
+      }
+      if (excused || rule) {
         continue;
       }
       if (LOG.isDebugEnabled()) {
@@ -1176,22 +1291,17 @@ public class IcsEquivalence {
    * difference.
    *
    * <p>
-   * <b>The third rule is the operator's, and it is the same shape as the
-   * second.</b> A property named in {@link #droppedProperties} that eXo states
-   * and the copy does not carry is not evidence of a rewrite either — BlueMind
-   * drops {@code CONFERENCE} from every copy it stores, and no repair can put it
-   * back. It points the same way as the dropped-attendee rule, eXo's side, for
-   * the same reason; what separates them is that this one is configured rather
-   * than built in, because which properties a server declines to store is a fact
-   * about that deployment and not about calendars. Its cost is recorded on the
-   * field itself.
-   *
-   * <p>
-   * <b>The fourth rule is about how many times, not about what.</b> A server
+   * <b>The third rule is about how many times, not about what.</b> A server
    * that states something eXo also states, and then states it again, has said
    * nothing eXo did not — see {@link #isServerSideRepetition}. It points the
-   * server's way like the first rule, and it is the only one of the four that
+   * server's way like the first rule, and it is the only one of the three that
    * turns on the counts rather than on the statement.
+   *
+   * <p>
+   * <b>The operator's own rule is deliberately not here.</b> It used to be, as a
+   * fourth clause; it moved to {@link ServerExcusals#excuse} because
+   * {@link #diff} has to tell the two apart — what these three tolerate is never
+   * offered to an administrator, what an excusal covers must still be.
    *
    * @param statement the canonical statement that diverged
    * @param onServer how many times the server's copy states it
@@ -1205,10 +1315,7 @@ public class IcsEquivalence {
     if (isAttendee(statement) && inExo > onServer) {
       return true;
     }
-    if (isServerSideRepetition(statement, onServer, inExo)) {
-      return true;
-    }
-    return inExo > onServer && isDroppedByConfiguration(propertyNameOf(statement));
+    return isServerSideRepetition(statement, onServer, inExo);
   }
 
   /**
@@ -1244,7 +1351,7 @@ public class IcsEquivalence {
    * copy states once is a deletion on the copy's side, and deletions are not
    * this rule's business.</li>
    * <li><b>The name is one {@link IcsWriter} emits.</b> Same guard as
-   * {@link #isDroppedByConfiguration}, and it is what keeps
+   * {@link ServerExcusals#excuse}, and it is what keeps
    * {@link #OWNER_ATTENDEE} and the embedded {@code VALARM{…}} statements
    * outside: neither is an event property, so a repeated alarm or a repeated
    * owner line is still reported.</li>
@@ -1262,55 +1369,7 @@ public class IcsEquivalence {
    * @return true when the server has merely repeated itself
    */
   private boolean isServerSideRepetition(String statement, int onServer, int inExo) {
-    return inExo > 0 && onServer > inExo && EVENT_PROPERTIES.contains(propertyNameOf(statement));
-  }
-
-  /**
-   * The property name a canonical statement was built from: everything before
-   * its parameter suffix or its value.
-   *
-   * <p>
-   * Statements are written as {@code NAME[;PARAM=…]=VALUE}, so the name ends at
-   * the first {@code ;} or {@code =}, whichever comes first. A statement with
-   * neither — {@link #OWNER_ATTENDEE}, or an embedded {@code VALARM{…}} — yields
-   * its whole text, which matches no entry of {@link #EVENT_PROPERTIES} and so
-   * can never be excused by the operator's list.
-   *
-   * @param statement the canonical statement
-   * @return the property name it states, never null
-   */
-  private String propertyNameOf(String statement) {
-    int end = statement.length();
-    for (int index = 0; index < statement.length(); index++) {
-      char character = statement.charAt(index);
-      if (character == ';' || character == '=') {
-        end = index;
-        break;
-      }
-    }
-    return statement.substring(0, end);
-  }
-
-  /**
-   * Whether a property eXo emits has been declared one this deployment's servers
-   * may decline to store.
-   *
-   * <p>
-   * Guarded twice: the name must be one {@link IcsWriter} actually emits, so the
-   * list cannot be pointed at {@link #OWNER_ATTENDEE} or at an embedded alarm
-   * statement to hide an answer; and the caller has already established that the
-   * surplus is on eXo's side, so this can only ever excuse an absence.
-   *
-   * @param name the property name the statement was built from
-   * @return true when the operator asked for its absence to be excused
-   */
-  private boolean isDroppedByConfiguration(String name) {
-    if (StringUtils.isBlank(droppedProperties) || !EVENT_PROPERTIES.contains(name)) {
-      return false;
-    }
-    return Arrays.stream(droppedProperties.split(","))
-                 .map(entry -> entry.trim().toUpperCase(Locale.ROOT))
-                 .anyMatch(name::equals);
+    return inExo > 0 && onServer > inExo && EVENT_PROPERTIES.contains(IcsStatement.propertyNameOf(statement));
   }
 
   /**
@@ -1424,30 +1483,4 @@ public class IcsEquivalence {
     return UNREADABLE_ANCHOR;
   }
 
-  /** What a comparison can conclude. */
-  public enum Verdict {
-    /** The server's copy states what eXo would write. */
-    EQUIVALENT,
-    /** It does not, and the difference is one a repair would remove. */
-    DIFFERENT,
-    /** Nothing can be concluded, because eXo's own render is not usable. */
-    UNJUDGEABLE
-  }
-
-  /**
-   * A comparison's outcome.
-   *
-   * @param verdict what was concluded
-   * @param detail what diverged, or why nothing could be concluded; null when
-   *          the two objects state the same thing
-   */
-  public record Judgement(Verdict verdict, String detail) {
-
-    /**
-     * @return whether the server's copy is not what eXo would write
-     */
-    public boolean different() {
-      return verdict == Verdict.DIFFERENT;
-    }
-  }
 }

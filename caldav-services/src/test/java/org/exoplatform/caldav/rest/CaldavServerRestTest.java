@@ -347,7 +347,7 @@ public class CaldavServerRestTest {
    */
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
-    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true);
+    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null, null, null);
   }
 
   /**
