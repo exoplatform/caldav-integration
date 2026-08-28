@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
@@ -48,6 +49,7 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.ics.IcsEquivalence;
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.MirrorVerification;
@@ -226,6 +228,25 @@ public class CaldavMirrorVerificationServiceTest {
     assertEquals(0, result.missing());
     assertEquals(0, result.altered());
     verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+  }
+
+  @Test
+  public void aPassThatFoundNothingStillSettlesTheServersSummary() {
+    // The trigger the whole cleanup hangs from, and the one that was missing.
+    // This is the converged account: an unchanged ETag, no fetch, no
+    // comparison, no divergence - so nothing ever called into the summary and
+    // nothing was ever pruned. The record that most needs clearing lives on
+    // precisely this account, because clearing it is what made it converge.
+    CaldavServer server = new CaldavServer();
+    server.setId(SERVER);
+    when(caldavServerService.resolveServer(any())).thenReturn(server);
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+
+    service.verify(USER);
+
+    verify(caldavServerQuirkService).settle(SERVER);
+    verify(caldavServerQuirkService, never()).observe(anyLong(), anyList());
   }
 
   @Test
