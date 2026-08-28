@@ -23,6 +23,7 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,6 +39,7 @@ import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkEffect;
 import org.exoplatform.caldav.utils.ServerQuirkSummary;
 import org.exoplatform.caldav.utils.ServerQuirkSummary.Observation;
+import org.exoplatform.caldav.utils.ServerQuirkSummary.Tally;
 import org.exoplatform.commons.file.model.FileInfo;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
@@ -309,8 +311,8 @@ public class CaldavServerStorage {
   private List<ObservedQuirk> observedQuirks(String summary) {
     Map<String, ObservedQuirk> byBehaviour = new LinkedHashMap<>();
     ServerQuirkSummary.parse(summary)
-                      .forEach((observation, count) -> byBehaviour.merge(behaviourKey(observation),
-                                                                         observedQuirk(observation, count),
+                      .forEach((observation, tally) -> byBehaviour.merge(behaviourKey(observation),
+                                                                         observedQuirk(observation, tally.count()),
                                                                          CaldavServerStorage::mergeBehaviour));
     return byBehaviour.values()
                       .stream()
@@ -392,13 +394,27 @@ public class CaldavServerStorage {
   }
 
   /**
-   * Adds what a pass saw to a registration's rolling observation summary.
+   * Adds what a pass saw to a registration's rolling observation summary, and
+   * forgets what no longer belongs in it.
    *
    * <p>
-   * Read, merge and write in one transaction, and touching that one column
-   * only. This is the sweep talking, not an administrator: routing it through
-   * {@link #updateServer} would let a background pass overwrite a name or a URL
-   * somebody is editing in the drawer at the same moment.
+   * Read, merge, prune and write in one transaction, and touching that one
+   * column only. This is the sweep talking, not an administrator: routing it
+   * through {@link #updateServer} would let a background pass overwrite a name
+   * or a URL somebody is editing in the drawer at the same moment.
+   *
+   * <p>
+   * <b>The pruning is the service's decision and this method's mechanics.</b>
+   * What may be forgotten arrives as arguments — the properties a case has just
+   * replaced, and how long an unseen behaviour is kept — because deciding those
+   * is policy; applying them to a stored string is mapping.
+   *
+   * <p>
+   * <b>One record is never dropped, whatever the rules say: an excused one.</b>
+   * The excusal itself lives in the three lists on this row and would survive
+   * either way, which is precisely the danger — an excusal still in force with
+   * no entry in the drawer is one an administrator can neither see nor untick.
+   * Forgetting the evidence must never outlive the decision made from it.
    *
    * <p>
    * Two passes racing on one server can still lose an increment, and that is
@@ -408,18 +424,88 @@ public class CaldavServerStorage {
    * @param serverId technical identifier of the registration
    * @param increments how many times each behaviour was seen since the last
    *          write
+   * @param superseded property names whose own records a case has replaced
+   * @param retentionDays how many days a behaviour is kept after it was last
+   *          seen
+   * @param today the current epoch day
    */
   @Transactional
-  public void mergeObservedQuirks(long serverId, Map<Observation, Long> increments) {
+  public void mergeObservedQuirks(long serverId,
+                                  Map<Observation, Long> increments,
+                                  Set<String> superseded,
+                                  long retentionDays,
+                                  long today) {
     if (increments == null || increments.isEmpty()) {
       return;
     }
     caldavServerDAO.findById(serverId).ifPresent(entity -> {
-      Map<Observation, Long> merged = ServerQuirkSummary.parse(entity.getObservedQuirks());
-      increments.forEach((observation, seen) -> merged.merge(observation, seen, Long::sum));
+      Map<Observation, Tally> merged = new LinkedHashMap<>();
+      ServerQuirkSummary.parse(entity.getObservedQuirks())
+                        .forEach((observation, tally) -> merged.put(observation, tally.stamped(today)));
+      increments.forEach((observation, seen) -> merged.merge(observation,
+                                                             new Tally(seen, today),
+                                                             (stored, fresh) -> stored.seen(fresh.count(), today)));
+      merged.entrySet().removeIf(entry -> forgettable(entity, entry, superseded, retentionDays, today));
       entity.setObservedQuirks(ServerQuirkSummary.format(merged));
       caldavServerDAO.save(entity);
     });
+  }
+
+  /**
+   * Whether one stored observation no longer belongs in the summary.
+   *
+   * <p>
+   * Two reasons, and an absolute exemption. A record is <b>superseded</b> when a
+   * case the pass has just observed describes the same behaviour better — it
+   * would otherwise sit beside its own replacement, offering an excusal broader
+   * than the one the administrator now has words for. A record is <b>stale</b>
+   * when the server has not done it for longer than the deployment keeps such
+   * things, which is what stops a quirk that ended months ago being offered as a
+   * live decision. Neither applies to a behaviour whose excusal is in force: see
+   * {@link #mergeObservedQuirks}.
+   *
+   * <p>
+   * Nothing here is destructive. A behaviour the server still exhibits is
+   * observed again on the very next sweep that meets it and comes straight back,
+   * with its count starting over — which is the honest reading of a tally that
+   * says "how often, lately".
+   *
+   * @param entity the registration, for the excusals in force on it
+   * @param entry the stored observation
+   * @param superseded property names whose own records a case has replaced
+   * @param retentionDays how many days a behaviour is kept after it was last
+   *          seen
+   * @param today the current epoch day
+   * @return true when the record should go
+   */
+  private boolean forgettable(CaldavServerEntity entity,
+                              Map.Entry<Observation, Tally> entry,
+                              Set<String> superseded,
+                              long retentionDays,
+                              long today) {
+    if (excused(entity, entry.getKey().property())) {
+      return false;
+    }
+    return superseded != null && superseded.contains(entry.getKey().property())
+        || entry.getValue().staleOn(today, retentionDays);
+  }
+
+  /**
+   * Whether any list on the registration excuses a property today.
+   *
+   * <p>
+   * All three, because all three are decisions an administrator made from an
+   * entry in the drawer, and any of them left in force with its entry gone is
+   * one they can no longer see.
+   *
+   * @param entity the registration
+   * @param property the property or case name
+   * @return true when the row already carries a decision about it
+   */
+  private boolean excused(CaldavServerEntity entity, String property) {
+    return ServerQuirk.listMatches(entity.getIgnoredProperties(), property)
+        || ServerQuirk.listMatches(entity.getDroppedProperties(), property)
+        || ServerQuirk.listMatches(entity.getOmittedProperties(), property);
   }
 
   /**

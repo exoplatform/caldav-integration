@@ -33,6 +33,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.mockito.ArgumentCaptor;
@@ -49,6 +50,7 @@ import org.exoplatform.caldav.dao.CaldavServerDAO;
 import org.exoplatform.caldav.entity.CaldavServerEntity;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ObservedQuirk;
+import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkDirection;
 import org.exoplatform.caldav.utils.ServerQuirkSummary.Observation;
 import org.exoplatform.commons.file.model.FileInfo;
@@ -68,6 +70,12 @@ import org.exoplatform.upload.UploadService;
 public class CaldavServerStorageTest {
 
   private static final String PREFIX = "agenda.caldavCalendar";
+
+  /** A fixed "today", so a test never depends on the day it is run. */
+  private static final long   TODAY  = 20330L;
+
+  /** The window these tests share, matching the shipped default. */
+  private static final long   RETENTION_DAYS = 30L;
 
   @Mock
   private CaldavServerDAO     caldavServerDAO;
@@ -494,13 +502,78 @@ public class CaldavServerStorageTest {
 
   @Test
   public void shouldAddWhatAPassSawToWhatIsAlreadyStored() {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://bm/", true, null, null,
-                                                         true, null, null, null, "DROPPED:CONFERENCE=399");
+    CaldavServerEntity existing = observedOn("DROPPED:CONFERENCE=399@" + TODAY);
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
-    caldavServerStorage.mergeObservedQuirks(7L, Map.of(Observation.of(ServerQuirkDirection.DROPPED, "CONFERENCE"), 5L));
+    merge(existing, Map.of(Observation.of(ServerQuirkDirection.DROPPED, "CONFERENCE"), 5L), Set.of());
 
-    assertEquals("DROPPED:CONFERENCE=404", existing.getObservedQuirks());
+    assertEquals("DROPPED:CONFERENCE=404@" + TODAY, existing.getObservedQuirks());
+  }
+
+  // -------------------------- what a summary must forget (EXO-89771 follow-up)
+
+  @Test
+  public void shouldForgetARecordACaseHasSuperseded() {
+    // Live on the rig: BlueMind listed BOTH "drops the organizer of an event
+    // with no other participants" and the older, broader "does not keep
+    // ORGANIZER" - two checkboxes for one behaviour, and ticking the second
+    // would have written an excusal covering every missing organizer on that
+    // server, which is exactly what EXO-89775 avoided.
+    CaldavServerEntity existing = observedOn("DROPPED:ORGANIZER=4@" + TODAY);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing,
+          Map.of(Observation.of(ServerQuirkDirection.DROPPED, ServerQuirk.SOLO_ORGANIZER), 5L),
+          Set.of("ORGANIZER"));
+
+    assertEquals("DROPPED:SOLO-ORGANIZER=5@" + TODAY,
+                 existing.getObservedQuirks(),
+                 "the replaced record goes, and only it");
+  }
+
+  @Test
+  public void shouldForgetABehaviourTheServerHasStoppedExhibiting() {
+    // A quirk that ended months ago is not a decision anybody should be shown.
+    CaldavServerEntity existing = observedOn("ADDED:X-OLD=9@" + (TODAY - 40) + ";ADDED:X-RECENT=2@" + (TODAY - 3));
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing, Map.of(Observation.of(ServerQuirkDirection.ADDED, "X-NEW"), 1L), Set.of());
+
+    assertEquals("ADDED:X-RECENT=2@" + (TODAY - 3) + ";ADDED:X-NEW=1@" + TODAY, existing.getObservedQuirks());
+  }
+
+  @Test
+  public void shouldNeverForgetABehaviourTheAdministratorHasExcused() {
+    // The absolute exemption. The excusal lives in another column and would
+    // survive either way - which is the danger: one still in force with no entry
+    // in the drawer is one nobody can see or untick.
+    CaldavServerEntity existing = observedOn("DROPPED:ORGANIZER=4@" + (TODAY - 90) + ";ADDED:X-MOZ-LASTACK=1@" + (TODAY - 90));
+    existing.setIgnoredProperties("X-MICROSOFT-*,X-MOZ-*");
+    existing.setOmittedProperties(ServerQuirk.SOLO_ORGANIZER);
+    existing.setDroppedProperties("ORGANIZER");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing,
+          Map.of(Observation.of(ServerQuirkDirection.DROPPED, ServerQuirk.SOLO_ORGANIZER), 1L),
+          Set.of("ORGANIZER"));
+
+    assertTrue(existing.getObservedQuirks().contains("DROPPED:ORGANIZER=4"),
+               "an excused record survives supersession: " + existing.getObservedQuirks());
+    assertTrue(existing.getObservedQuirks().contains("ADDED:X-MOZ-LASTACK=1"),
+               "and staleness: " + existing.getObservedQuirks());
+  }
+
+  @Test
+  public void shouldGiveALegacyRecordItsFirstStampRatherThanDropIt() {
+    // Upgrade path: an entry written before stamps existed has no date, and
+    // wiping somebody's history to enforce a rule that post-dates it would be
+    // the wrong bias. It gets one, and the ordinary rule takes over.
+    CaldavServerEntity existing = observedOn("ADDED:X-LEGACY=9");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing, Map.of(Observation.of(ServerQuirkDirection.ADDED, "X-NEW"), 1L), Set.of());
+
+    assertEquals("ADDED:X-LEGACY=9@" + TODAY + ";ADDED:X-NEW=1@" + TODAY, existing.getObservedQuirks());
   }
 
   @Test
@@ -517,6 +590,28 @@ public class CaldavServerStorageTest {
 
     assertEquals("DROPPED:CONFERENCE=399", existing.getObservedQuirks());
     assertEquals("CONFERENCE", existing.getDroppedProperties(), "while the ticks an administrator made are stored");
+  }
+
+  /**
+   * A registration carrying a stored observation summary and nothing excused.
+   *
+   * @param summary the stored summary
+   * @return the entity
+   */
+  private CaldavServerEntity observedOn(String summary) {
+    return new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://bm/", true, null, null, true, null, null, null,
+                                  summary);
+  }
+
+  /**
+   * Merges one batch, with the retention window every test here shares.
+   *
+   * @param entity the registration
+   * @param increments what the pass saw
+   * @param superseded the property names a case has replaced
+   */
+  private void merge(CaldavServerEntity entity, Map<Observation, Long> increments, Set<String> superseded) {
+    caldavServerStorage.mergeObservedQuirks(entity.getId(), increments, superseded, RETENTION_DAYS, TODAY);
   }
 
   /**

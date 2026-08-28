@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
@@ -30,6 +31,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -94,7 +96,7 @@ public class CaldavServerQuirkServiceTest {
                             new IcsDivergence("X-MOZ-GENERATION", ServerQuirkDirection.ADDED)));
 
     ArgumentCaptor<Map<Observation, Long>> increments = ArgumentCaptor.forClass(Map.class);
-    verify(caldavServerStorage).mergeObservedQuirks(eq(SERVER), increments.capture());
+    verify(caldavServerStorage).mergeObservedQuirks(eq(SERVER), increments.capture(), anySet(), anyLong(), anyLong());
     assertEquals(1L, increments.getValue().get(Observation.of(ServerQuirkDirection.DROPPED, "CONFERENCE")));
     assertEquals(1L, increments.getValue().get(Observation.of(ServerQuirkDirection.ADDED, "X-MOZ-GENERATION")));
   }
@@ -111,7 +113,7 @@ public class CaldavServerQuirkServiceTest {
     service.observe(SERVER, seen);
     service.observe(SERVER, seen);
 
-    verify(caldavServerStorage, times(1)).mergeObservedQuirks(anyLong(), anyMap());
+    verify(caldavServerStorage, times(1)).mergeObservedQuirks(anyLong(), anyMap(), anySet(), anyLong(), anyLong());
   }
 
   @Test
@@ -126,7 +128,7 @@ public class CaldavServerQuirkServiceTest {
     service.observe(SERVER, seen);
 
     ArgumentCaptor<Map<Observation, Long>> increments = ArgumentCaptor.forClass(Map.class);
-    verify(caldavServerStorage, times(2)).mergeObservedQuirks(eq(SERVER), increments.capture());
+    verify(caldavServerStorage, times(2)).mergeObservedQuirks(eq(SERVER), increments.capture(), anySet(), anyLong(), anyLong());
     assertEquals(3L,
                  increments.getAllValues().get(1).get(Observation.of(ServerQuirkDirection.DROPPED, "CONFERENCE")),
                  "the three passes held back must arrive with the next write");
@@ -145,11 +147,12 @@ public class CaldavServerQuirkServiceTest {
   public void aRowThatCannotBeWrittenDoesNotEndThePass() {
     // The summary is diagnostic. Whatever the sweep is doing with this copy
     // must not depend on being able to record what it saw.
-    doThrow(new IllegalStateException("no database")).when(caldavServerStorage).mergeObservedQuirks(anyLong(), anyMap());
+    doThrow(new IllegalStateException("no database")).when(caldavServerStorage)
+                                                    .mergeObservedQuirks(anyLong(), anyMap(), anySet(), anyLong(), anyLong());
 
     service.observe(SERVER, List.of(new IcsDivergence("CONFERENCE", ServerQuirkDirection.DROPPED)));
 
-    verify(caldavServerStorage).mergeObservedQuirks(anyLong(), anyMap());
+    verify(caldavServerStorage).mergeObservedQuirks(anyLong(), anyMap(), anySet(), anyLong(), anyLong());
   }
 
   @Test
@@ -162,11 +165,46 @@ public class CaldavServerQuirkServiceTest {
     service.observe(SERVER, List.of(new IcsDivergence("X-BM-FOO", ServerQuirkDirection.ADDED)));
 
     ArgumentCaptor<Map<Observation, Long>> increments = ArgumentCaptor.forClass(Map.class);
-    verify(caldavServerStorage, times(2)).mergeObservedQuirks(eq(SERVER), increments.capture());
+    verify(caldavServerStorage, times(2)).mergeObservedQuirks(eq(SERVER), increments.capture(), anySet(), anyLong(), anyLong());
     assertFalse(increments.getAllValues()
                           .get(1)
                           .containsKey(Observation.of(ServerQuirkDirection.DROPPED, "CONFERENCE")),
                 "what was pending for the deleted row must not resurface");
+  }
+
+  @Test
+  public void aCaseObservedInAPassReplacesTheOlderRecordOfTheSameProperty() {
+    // The catalogue declares that the solo-organizer case replaces the plain
+    // ORGANIZER record; the pass is what makes it happen, and only on the server
+    // that actually showed the case.
+    service.observe(SERVER, List.of(new IcsDivergence(ServerQuirk.SOLO_ORGANIZER, ServerQuirkDirection.DROPPED)));
+
+    ArgumentCaptor<Set<String>> superseded = ArgumentCaptor.forClass(Set.class);
+    verify(caldavServerStorage).mergeObservedQuirks(eq(SERVER), anyMap(), superseded.capture(), anyLong(), anyLong());
+    assertEquals(Set.of("ORGANIZER"), superseded.getValue());
+  }
+
+  @Test
+  public void aPropertySeenInTheSameBatchIsNotSupersededByIt() {
+    // Both can be true at once: a server can drop the organizer of an
+    // appointment AND lose one from a real meeting. Without this the two records
+    // would take turns erasing each other on every sweep.
+    service.observe(SERVER,
+                    List.of(new IcsDivergence(ServerQuirk.SOLO_ORGANIZER, ServerQuirkDirection.DROPPED),
+                            new IcsDivergence("ORGANIZER", ServerQuirkDirection.DROPPED)));
+
+    ArgumentCaptor<Set<String>> superseded = ArgumentCaptor.forClass(Set.class);
+    verify(caldavServerStorage).mergeObservedQuirks(eq(SERVER), anyMap(), superseded.capture(), anyLong(), anyLong());
+    assertTrue(superseded.getValue().isEmpty(), "nothing is replaced while it is still being seen");
+  }
+
+  @Test
+  public void anOrdinaryBehaviourReplacesNothing() {
+    service.observe(SERVER, List.of(new IcsDivergence("CONFERENCE", ServerQuirkDirection.DROPPED)));
+
+    ArgumentCaptor<Set<String>> superseded = ArgumentCaptor.forClass(Set.class);
+    verify(caldavServerStorage).mergeObservedQuirks(eq(SERVER), anyMap(), superseded.capture(), anyLong(), anyLong());
+    assertTrue(superseded.getValue().isEmpty());
   }
 
   // --------------------------------------------------- telling the drawer
