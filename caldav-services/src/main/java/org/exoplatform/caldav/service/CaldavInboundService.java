@@ -57,6 +57,7 @@ import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.IcsEvent;
 import org.exoplatform.caldav.model.ObjectSync;
+import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
@@ -247,6 +248,12 @@ public class CaldavInboundService {
       LOG.debug("Object {} carries only overrides and is left for the occurrence pass", object.href());
       return false;
     }
+    if (isMirrorOwned(pair, master.getUid())) {
+      // A copy eXo wrote itself. Importing it would show the user a second,
+      // personal event standing for a space meeting they already see.
+      LOG.debug("Object {} is a copy eXo wrote into the mirror and is not imported back", object.href());
+      return false;
+    }
     ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), master.getUid());
     if (known != null && StringUtils.isNotBlank(known.getEtag()) && known.getEtag().equals(object.etag())) {
       // The server says nothing changed. Re-writing the event would bump its
@@ -258,6 +265,41 @@ public class CaldavInboundService {
       return update(userIdentityId, pair, calendar, object, master, known, parsed);
     }
     return create(userIdentityId, pair, calendar, object, master, parsed);
+  }
+
+  /**
+   * Whether this object is one eXo copied into the user's mirror, and so must
+   * never be imported back as an event of its own.
+   *
+   * <p>
+   * The rule that replaces "skip the whole mirror collection". That skip was
+   * protection by <em>location</em>: it worked only for as long as the mirror
+   * lived somewhere the inbound half never read. Point the mirror at a
+   * calendar the user also synchronises and the location says nothing, while
+   * the pair-scoped identity lookup below cannot help either — a mirror copy
+   * carries its mapping on the MIRROR pair, so this pair's lookup finds
+   * nothing, calls it new, and creates a duplicate personal event out of eXo's
+   * own copy of a space meeting.
+   *
+   * <p>
+   * Asked before the identity lookup rather than after, so it governs an
+   * update as well as a create: an object that is ours is not ours a little
+   * less because this pair happens to hold a stale row for the same UID.
+   *
+   * <p>
+   * The mirror pair itself is exempt. Reading the mirror back is not importing
+   * a foreign object, and answering true there would make the mirror unable to
+   * reconcile the copies it owns.
+   *
+   * @param pair the binding being read
+   * @param icsUid the object's iCalendar UID
+   * @return true when a mirror pair of this user already maps that UID
+   */
+  private boolean isMirrorOwned(CalendarSync pair, String icsUid) {
+    if (pair.getOrigin() == SyncOrigin.MIRROR) {
+      return false;
+    }
+    return caldavSyncStorage.isMirrorOwned(pair.getUserIdentityId(), pair.getServerId(), icsUid);
   }
 
   /**
