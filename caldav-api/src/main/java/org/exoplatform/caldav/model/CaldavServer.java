@@ -16,6 +16,7 @@
  */
 package org.exoplatform.caldav.model;
 
+import java.util.Date;
 import java.util.List;
 
 import lombok.AllArgsConstructor;
@@ -177,4 +178,30 @@ public class CaldavServer {
    * persisted from here; the storage keeps its own rolling summary.
    */
   private List<ObservedQuirk> observedQuirks;
+
+  /**
+   * When a setting of this registration that governs the <i>copies</i> last
+   * changed — the stamp a mirror compares its own against to know it owes the
+   * copies already on the server one full comparison (EXO-89759).
+   *
+   * <p>
+   * <b>Null means nothing to apply</b>, and that is what makes the mechanism
+   * behaviour-neutral on an upgrade: every registration that already exists
+   * starts unstamped, no mirror finds itself behind, and nothing happens until
+   * an administrator actually changes one of the settings concerned.
+   *
+   * <p>
+   * <b>Never accepted from a caller.</b> The write path recomputes it from the
+   * row it is about to overwrite, so a JSON body that carries a stamp — stale,
+   * invented, or copied from another server — cannot make every mirror in the
+   * deployment re-compare, nor stop one that should. Which settings move it is
+   * {@link org.exoplatform.caldav.utils.CopySettingsFingerprint}'s single
+   * decision.
+   *
+   * <p>
+   * Declared LAST on purpose, for the same reason as every field appended
+   * before it: the model is built positionally through its all-args
+   * constructor, and appending keeps every existing argument on its own field.
+   */
+  private Date    copySettingsUpdated;
 }

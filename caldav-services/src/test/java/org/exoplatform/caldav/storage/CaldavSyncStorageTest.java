@@ -229,7 +229,7 @@ public class CaldavSyncStorageTest {
    * @return the pair
    */
   private CalendarSync pair(Long id, String href, String anchor, SyncOrigin origin) {
-    return new CalendarSync(id, USER, SERVER, anchor, href, origin, null, null, CalendarSyncStatus.ACTIVE, null, null, 0);
+    return new CalendarSync(id, USER, SERVER, anchor, href, origin, null, null, CalendarSyncStatus.ACTIVE, null, null, 0, null);
   }
 
   /**
@@ -253,7 +253,7 @@ public class CaldavSyncStorageTest {
                                         CalendarSyncStatus.ACTIVE,
                                         null,
                                         null,
-                                        0);
+                                        0, null);
   }
 
   @Test

@@ -20,9 +20,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import io.meeds.common.ContainerTransactional;
+
 import org.exoplatform.caldav.service.CaldavSyncService;
 import org.exoplatform.caldav.service.CaldavTuningService;
-import org.exoplatform.commons.api.persistence.ExoTransactional;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -59,9 +60,19 @@ public class CaldavSyncSweepJob {
 
   /**
    * Synchronises the accounts that have gone longest without one.
+   *
+   * <p>
+   * <b>{@code @ContainerTransactional}, not the deprecated
+   * {@code @ExoTransactional}.</b> They are not two spellings of one thing. The
+   * legacy aspect <i>requires</i> a container already bound to the thread and
+   * throws when there is none; this one <i>establishes</i> it — it reads the
+   * current container, falls back to the portal container, and runs the request
+   * lifecycle around the call. A scheduler thread is exactly the case with
+   * nothing bound, which makes the legacy annotation the wrong one on a job by
+   * construction and the right one on nothing new at all.
    */
   @Scheduled(cron = "${exo.agenda.caldav.sync.sweep.cron:0 */5 * * * ?}")
-  @ExoTransactional
+  @ContainerTransactional
   public void sweep() {
     long start = System.currentTimeMillis();
     // Read at each run, not captured in a field: an administrator changing
