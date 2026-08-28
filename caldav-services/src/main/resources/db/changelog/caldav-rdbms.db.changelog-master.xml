@@ -532,4 +532,72 @@
     </addColumn>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-40">
+    <comment>
+      When a setting of this registration that governs the COPIES last changed
+      (EXO-89759).
+
+      The problem it answers: the mirror only ever converges towards what eXo
+      would render now when something moves the remote ETag, so an administrator
+      could change a setting that alters what eXo writes and nothing would happen
+      to the copies already on the server, for ever. This column is one half of
+      the pair that makes such a change reach them - the other is
+      COPY_SETTINGS_APPLIED on CALDAV_CALENDAR_SYNC, added next.
+
+      NULLABLE WITH NO DEFAULT, and that is the whole upgrade story. Null means
+      "nothing to apply": every row an existing deployment already holds starts
+      unstamped, so no mirror finds itself behind and no full comparison is ever
+      owed until an administrator actually changes one of the settings concerned.
+      A DEFAULT of the current timestamp added in an edit would, on the first
+      sweep after an upgrade, make every connected account in the deployment
+      fetch and compare every copy it holds at once.
+
+      Deliberately NOT numbered after 1.0.0-13: the ids up to 1.0.0-17 and from
+      1.0.0-20 to 1.0.0-24 are claimed by changes in flight on other branches,
+      and a changeset's identity is its file, its id and its author for every
+      database that has already run it. Starting at 40 leaves them room to land
+      without either side having to renumber - which is the one repair that does
+      not exist.
+
+      addColumn with deliberately NO modifySql, for the reason 1.0.0-3 records
+      and 1.0.0-13 recounts: the ENGINE/CHARSET append is only valid on CREATE
+      TABLE, and gluing it onto an ALTER TABLE is the MySQL-1064 failure that
+      takes the whole platform down through Liquibase.
+
+      No rollback is written because addColumn has an automatic one.
+    </comment>
+    <addColumn tableName="CALDAV_SERVER">
+      <column name="COPY_SETTINGS_UPDATED" type="TIMESTAMP"/>
+    </addColumn>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-41">
+    <comment>
+      The value of the server's COPY_SETTINGS_UPDATED that this pair has already
+      carried through one full comparison of its copies (EXO-89759).
+
+      Older than the server's stamp - null included - means the next verification
+      pass owes the copies already on the server one round that compares their
+      content instead of trusting an unchanged ETag. Equal means there is nothing
+      to apply, which is the state a converged pair sits in and the reason the
+      ordinary pass keeps costing one collection listing and nothing else.
+
+      It holds the server's value rather than the moment the round ran, on
+      purpose: a setting changed while a round is walking the pages must not be
+      swallowed by a stamp that happens to be later than it.
+
+      NULLABLE WITH NO DEFAULT, same reasoning as 1.0.0-40 above: an unstamped
+      pair against an unstamped server is "nothing to apply", which is where
+      every upgraded deployment starts. It is also what makes the round resumable
+      - a crash mid-round never reaches the stamp, so the next sweep re-runs a
+      comparison that rewrites nothing already converged.
+
+      addColumn with no modifySql, and no rollback written, for the reasons
+      1.0.0-40 gives.
+    </comment>
+    <addColumn tableName="CALDAV_CALENDAR_SYNC">
+      <column name="COPY_SETTINGS_APPLIED" type="TIMESTAMP"/>
+    </addColumn>
+  </changeSet>
+
 </databaseChangeLog>

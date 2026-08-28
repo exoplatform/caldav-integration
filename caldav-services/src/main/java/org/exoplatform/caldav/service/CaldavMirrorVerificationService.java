@@ -16,6 +16,7 @@
  */
 package org.exoplatform.caldav.service;
 
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -107,6 +108,40 @@ import org.exoplatform.services.log.Log;
  * flag deliberately: a copy the user answers on their phone moves its ETag, and
  * that copy is examined again and its answer read, because abandonment is a
  * statement about eXo's writing and never about the user's.
+ *
+ * <p>
+ * <b>And once, when a setting changes, it looks at everything.</b> Everything
+ * above converges towards the current render only when something moves the
+ * remote ETag — which is exactly what an administrator changing a setting does
+ * <i>not</i> do. Flip the answer-links switch and every copy already on the
+ * server keeps the links it was given, for ever, because no version ever moves
+ * and this pass never looks. So the registration carries a stamp of when a
+ * copy-affecting setting last changed, the mirror pair carries the value it has
+ * already applied, and a pair that is behind gets one round with the ETag gate
+ * removed: every mapped object is rendered, fetched and compared on its content.
+ * Which settings move that stamp is one decision in one place —
+ * {@link org.exoplatform.caldav.utils.CopySettingsFingerprint}.
+ *
+ * <p>
+ * <b>Compare then repair; never a mass re-push.</b> The round is this pass minus
+ * one gate, and nothing else. It does not write what it has not first found
+ * different: on a server that re-serialises or stamps what it stores — which is
+ * every server this add-on has met — an unconditional rewrite of everything is
+ * the churn incident of EXO-89716 and EXO-89756 back again, at the scale of a
+ * whole account at once. A converged mirror comes out of a settings round having
+ * written nothing at all, and the price it does pay is honest and bounded: one
+ * fetch per copy, once, instead of one listing.
+ *
+ * <p>
+ * <b>Idempotent and resumable by construction.</b> The stamp is written after
+ * the walk, so a crash halfway leaves it where it was and the next sweep re-runs
+ * a comparison that rewrites nothing already converged. The repair cap and the
+ * answer-before-repair ordering come for free, being the same code. Two things
+ * the round deliberately does not change: an abandoned copy at its settled
+ * version stays skipped — giving up is a statement about eXo's writing that a
+ * setting does not retract — and an answer is still only adopted off a copy
+ * whose ETag actually moved, because the direction rule is the ETag's other job
+ * and the round removes it only as a <i>gate</i>, never as evidence.
  */
 @Service
 public class CaldavMirrorVerificationService {
@@ -233,25 +268,48 @@ public class CaldavMirrorVerificationService {
       return MirrorVerification.nothing();
     }
     CaldavServer server = resolveServer(settings);
-    // Once per pass, whatever the pass finds. The summary's pruning rides on its
-    // write, the write on something having diverged - and a converged account
-    // diverges on nothing, moves no ETag, and never reaches the comparison at
-    // all. Without this the records that most need clearing are the ones on the
-    // servers that stopped producing them.
+    // Once per pass, whatever the pass finds, and before anything below can
+    // decline to walk the copies. The summary's pruning rides on its write, the
+    // write on something having diverged - and a converged account diverges on
+    // nothing, moves no ETag, and never reaches the comparison at all. Without
+    // this the records that most need clearing are the ones on the servers that
+    // stopped producing them.
     caldavServerQuirkService.settle(server == null ? null : server.getId());
-    return comparePages(userIdentityId, mirror, settings, etags, server);
+    Date owed = settingsRoundOwed(server, mirror);
+    if (owed != null) {
+      LOG.info("A copy setting of user {}'s server changed; every copy of theirs is compared once this round",
+               userIdentityId);
+    }
+    MirrorVerification verification = comparePages(userIdentityId, mirror, settings, etags, owed != null, server);
+    if (owed != null) {
+      // After the walk, never before. This is the whole of the resumability:
+      // anything that ends the round early — an exception out of the storage,
+      // the platform stopping — never reaches here, the pair stays behind, and
+      // the next sweep re-runs a comparison that rewrites nothing already
+      // converged.
+      stampSettingsApplied(mirror, owed);
+    }
+    return verification;
   }
 
   /**
-   * The registration the account is connected through, whose excusals decide
-   * what counts as unchanged on it.
+   * The registration the account is connected through: whose excusals decide
+   * what counts as unchanged on it, and whose stamp decides whether its copies
+   * are owed a full comparison.
    *
    * <p>
    * Resolved once per pass rather than once per copy: it is the same row for
    * every copy of one account, and a registry lookup per object would turn a
    * quiet sweep into a query storm. A registry that cannot answer leaves the
    * comparison on the deployment-wide fallback, which is exactly what a
-   * deployment that never opened the drawer runs on anyway.
+   * deployment that never opened the drawer runs on anyway — and leaves no
+   * settings round owed, which is the same neutral answer.
+   *
+   * <p>
+   * Resolved the same way every other read of an account's server resolves it —
+   * the row the account references, else the seed — so an account connected
+   * before the registry existed is neither excluded from the mechanism nor made
+   * to compare against a registration that is not its own.
    *
    * @param settings the connected account
    * @return the registration, or null when none can be resolved
@@ -266,12 +324,80 @@ public class CaldavMirrorVerificationService {
   }
 
   /**
+   * The server stamp this mirror still owes its copies a full comparison for,
+   * or null when it owes none.
+   *
+   * <p>
+   * Null on the server's side means no administrator has yet changed a setting
+   * that governs the copies, and that is what makes the mechanism
+   * behaviour-neutral on an upgrade: every registration and every pair starts
+   * unstamped, nothing is behind, and no round runs until somebody acts. A
+   * registration that could not be resolved at all answers the same way, which
+   * is the safe direction: no round rather than a round against a row that is
+   * not this account's.
+   *
+   * @param server the registration {@link #resolveServer} produced for this
+   *          pass, may be null
+   * @param mirror the binding standing for the mirror collection
+   * @return the server stamp the round would apply, or null when nothing is owed
+   */
+  private Date settingsRoundOwed(CaldavServer server, CalendarSync mirror) {
+    if (server == null || server.getCopySettingsUpdated() == null) {
+      return null;
+    }
+    Date applied = mirror.getCopySettingsApplied();
+    if (applied != null && !applied.before(server.getCopySettingsUpdated())) {
+      return null;
+    }
+    return server.getCopySettingsUpdated();
+  }
+
+  /**
+   * Records that this pair has carried the server's settings through one full
+   * comparison of its copies.
+   *
+   * <p>
+   * The <i>server's</i> value is written, not the moment the round finished. A
+   * round over a large calendar takes minutes, and an administrator who changes
+   * a second setting while it runs must not have that change swallowed by a
+   * stamp that happens to be later than it. Written this way, the next pass
+   * compares two server stamps and sees the second change plainly.
+   *
+   * <p>
+   * The row is read again immediately before the write rather than the one
+   * carried through the round: the sync pass writes the token, the ctag and the
+   * timestamps on the same row, and a round that started minutes ago holds a
+   * snapshot of every one of them. With {@code @DynamicUpdate} on the entity,
+   * only the columns that genuinely differ from the row as it now stands are in
+   * the UPDATE — which, after this re-read, is the stamp and nothing else.
+   *
+   * <p>
+   * A pair that has since been deleted is not recreated: there is nothing left
+   * to apply a setting to.
+   *
+   * @param mirror the binding standing for the mirror collection
+   * @param owed the server stamp the round has just applied
+   */
+  private void stampSettingsApplied(CalendarSync mirror, Date owed) {
+    CalendarSync pair = caldavSyncStorage.getPair(mirror.getId());
+    if (pair == null) {
+      LOG.debug("The mirror pair {} is gone; the settings round it just ran is not recorded", mirror.getId());
+      return;
+    }
+    pair.setCopySettingsApplied(owed);
+    caldavSyncStorage.savePair(pair);
+  }
+
+  /**
    * Walks the mapping rows of the mirror, a page at a time.
    *
    * @param userIdentityId identity of the user
    * @param mirror the binding standing for the mirror collection
    * @param settings the connected account
    * @param etags what the server currently holds, by href
+   * @param settingsRound whether this is the one round a settings change is
+   *          owed, in which case every mapped object is judged on its content
+   *          rather than on its version
    * @param server the registration the account is connected through, may be
    *          null — the comparison then falls back to the deployment-wide
    *          excusals
@@ -281,6 +407,7 @@ public class CaldavMirrorVerificationService {
                                           CalendarSync mirror,
                                           CaldavUserSetting settings,
                                           Map<String, String> etags,
+                                          boolean settingsRound,
                                           CaldavServer server) {
     int checked = 0;
     int missing = 0;
@@ -304,7 +431,7 @@ public class CaldavMirrorVerificationService {
           abandoned++;
           continue;
         }
-        Assessment assessment = judge(userIdentityId, object, settings, etags, server);
+        Assessment assessment = judge(userIdentityId, object, settings, etags, settingsRound, server);
         if (assessment.verdict() == Verdict.UNTOUCHED) {
           continue;
         }
@@ -415,10 +542,20 @@ public class CaldavMirrorVerificationService {
    * this pass costs one listing on a converged mirror rather than one fetch per
    * copy.
    *
+   * <p>
+   * <b>The settings round removes the gate and keeps the evidence.</b> When a
+   * setting that governs the copies has changed, an unchanged version is no
+   * longer a reason to skip the comparison — eXo's own render moved, and the
+   * server had no way to say so. What the version still decides is
+   * <i>direction</i>: it is passed on as {@code clientWrote}, so a copy whose
+   * version never moved is judged on its content and is still not treated as
+   * carrying the user's latest answer.
+   *
    * @param userIdentityId identity of the user
    * @param object the mapping row
    * @param settings the connected account
    * @param etags what the server currently holds, by href
+   * @param settingsRound whether the ETag gate is lifted for this round
    * @param server the registration the account is connected through, may be
    *          null
    * @return the verdict, carrying the fetched copy when there is one to act on
@@ -427,21 +564,25 @@ public class CaldavMirrorVerificationService {
                            ObjectSync object,
                            CaldavUserSetting settings,
                            Map<String, String> etags,
+                           boolean settingsRound,
                            CaldavServer server) {
     String etag = etagOf(object.getRemoteHref(), etags);
     if (etag == null) {
       return new Assessment(Verdict.MISSING, null);
     }
-    if (StringUtils.isBlank(object.getEtag()) || StringUtils.equals(normalise(etag), normalise(object.getEtag()))) {
-      // The same ETag, or a server that publishes none we can compare. Either
-      // way there is no reason to spend a fetch: an unchanged ETag is the
-      // server's own promise that nobody has written since eXo did. It is also
-      // the direction rule's other half: untouched since eXo wrote it, so any
+    // The same ETag, or a server that publishes none we can compare. Either way
+    // this is not the client's writing.
+    boolean clientWrote = StringUtils.isNotBlank(object.getEtag())
+        && !StringUtils.equals(normalise(etag), normalise(object.getEtag()));
+    if (!clientWrote && !settingsRound) {
+      // There is no reason to spend a fetch: an unchanged ETag is the server's
+      // own promise that nobody has written since eXo did. It is also the
+      // direction rule's other half: untouched since eXo wrote it, so any
       // difference with agenda is eXo-side and the ordinary push overwrites the
       // copy.
       return new Assessment(Verdict.UNTOUCHED, null);
     }
-    return assessContent(userIdentityId, object, settings, etag, server);
+    return assessContent(userIdentityId, object, settings, etag, clientWrote, server);
   }
 
   /**
@@ -488,6 +629,9 @@ public class CaldavMirrorVerificationService {
    * @param object the mapping row
    * @param settings the connected account
    * @param currentEtag the version the listing published for it
+   * @param clientWrote whether the version moved away from the one eXo
+   *          recorded, which is the only proof that the copy carries somebody
+   *          else's writing — and therefore an answer worth reading
    * @param server the registration the account is connected through, may be
    *          null
    * @return the verdict, carrying the fetched copy when there is one to act on
@@ -496,6 +640,7 @@ public class CaldavMirrorVerificationService {
                                    ObjectSync object,
                                    CaldavUserSetting settings,
                                    String currentEtag,
+                                   boolean clientWrote,
                                    CaldavServer server) {
     if (object.getLocalEventId() == null || object.getLocalEventId() <= 0) {
       // Nothing to compare against, nothing a repair could write, and no event
@@ -563,7 +708,12 @@ public class CaldavMirrorVerificationService {
       // with the verdict: the answer its writer left on it is read from there,
       // before any repair overwrites it.
       LOG.info("The copy at {} no longer states what eXo writes: {}", object.getRemoteHref(), judgement.detail());
-      return new Assessment(Verdict.ALTERED, remote);
+      // The copy travels with the verdict only when its version moved. In a
+      // settings round the difference is usually eXo's own — the render changed
+      // under a copy nobody touched — and handing that copy on would have the
+      // pass read eXo's own last writing back as though it were the user's
+      // latest answer, over whatever they have since said in eXo.
+      return new Assessment(Verdict.ALTERED, clientWrote ? remote : null);
     }
     if (judgement.verdict() == IcsJudgement.Verdict.UNJUDGEABLE) {
       LOG.debug("The copy at {} cannot be judged ({}); it is left alone", object.getRemoteHref(), judgement.detail());

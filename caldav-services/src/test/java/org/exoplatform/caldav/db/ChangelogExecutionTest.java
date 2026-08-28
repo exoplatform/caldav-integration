@@ -84,6 +84,12 @@ public class ChangelogExecutionTest {
   private static final String[] QUIRK_COLUMNS = { "IGNORED_PROPERTIES", "DROPPED_PROPERTIES", "OBSERVED_QUIRKS",
       "OMITTED_PROPERTIES" };
 
+  /** The stamp EXO-89759 puts on a registration when a copy-governing setting changes. */
+  private static final String SETTINGS_UPDATED_COLUMN = "COPY_SETTINGS_UPDATED";
+
+  /** And the one a mirror pair carries for the stamp it has already applied. */
+  private static final String SETTINGS_APPLIED_COLUMN = "COPY_SETTINGS_APPLIED";
+
   /** The index the platform builds its EntityManager from. */
   private static final String ENTITY_INDEX        = "jpa-entities.idx";
 
@@ -159,6 +165,8 @@ public class ChangelogExecutionTest {
     for (String column : QUIRK_COLUMNS) {
       assertTrue(columnExists("CALDAV_SERVER", column), "including " + column);
     }
+    assertTrue(columnExists("CALDAV_SERVER", SETTINGS_UPDATED_COLUMN), "including the copy-settings stamp");
+    assertTrue(columnExists("CALDAV_CALENDAR_SYNC", SETTINGS_APPLIED_COLUMN), "and the one the pair applies it with");
   }
 
   /**
@@ -195,6 +203,48 @@ public class ChangelogExecutionTest {
     for (String column : QUIRK_COLUMNS) {
       assertEquals(1, nullableFlag("CALDAV_SERVER", column), "and " + column + " must stay nullable");
     }
+  }
+
+  /**
+   * <b>A deployment that upgrades has nothing to apply.</b>
+   *
+   * <p>
+   * The two columns EXO-89759 adds are nullable with no default, and that is the
+   * whole upgrade story: null on the registration means no administrator has
+   * changed a copy-governing setting yet, null on the pair means it has applied
+   * none, and a pair that is not behind runs no round. A DEFAULT of the current
+   * timestamp added in an edit — the obvious-looking "so it is never null" —
+   * would, on the first sweep after an upgrade, have every connected account in
+   * the deployment fetch and compare every copy it holds at once. No Java test
+   * can see that; this one can.
+   *
+   * @throws Exception when a changeset cannot be applied or a row not written
+   */
+  @Test
+  public void anUpgradedDeploymentStartsWithNothingToApply() throws Exception {
+    update();
+
+    try (Statement statement = connection.createStatement()) {
+      statement.executeUpdate("INSERT INTO CALDAV_SERVER (ID, PROVIDER_NAME, NAME, SERVER_URL, ACTIVE) "
+          + "VALUES (3, 'agenda.caldavCalendar.3', 'Bluemind', 'https://caldav.example.invalid/dav/', TRUE)");
+      try (ResultSet rows = statement.executeQuery("SELECT " + SETTINGS_UPDATED_COLUMN
+          + " FROM CALDAV_SERVER WHERE ID = 3")) {
+        assertTrue(rows.next(), "the row must have been written");
+        rows.getTimestamp(1);
+        assertTrue(rows.wasNull(), "a server nobody has reconfigured owes its copies nothing");
+      }
+      statement.executeUpdate("INSERT INTO CALDAV_CALENDAR_SYNC "
+          + "(ID, USER_IDENTITY_ID, SERVER_ID, REMOTE_HREF, ORIGIN, STATUS) "
+          + "VALUES (3, 42, 3, '/dav/calendars/john/exo-meetings', 'MIRROR', 'ACTIVE')");
+      try (ResultSet rows = statement.executeQuery("SELECT " + SETTINGS_APPLIED_COLUMN
+          + " FROM CALDAV_CALENDAR_SYNC WHERE ID = 3")) {
+        assertTrue(rows.next(), "the pair must have been written");
+        rows.getTimestamp(1);
+        assertTrue(rows.wasNull(), "and a pair that has applied nothing must say so rather than claim a time");
+      }
+    }
+    assertEquals(1, nullableFlag("CALDAV_SERVER", SETTINGS_UPDATED_COLUMN), "the server stamp must stay nullable");
+    assertEquals(1, nullableFlag("CALDAV_CALENDAR_SYNC", SETTINGS_APPLIED_COLUMN), "and so must the applied one");
   }
 
   /**
