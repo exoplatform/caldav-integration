@@ -158,6 +158,9 @@ public class CaldavSyncService {
   private CaldavPendingInvitationService caldavPendingInvitationService;
 
   @Autowired
+  private CaldavEventPropagationService caldavEventPropagationService;
+
+  @Autowired
   private AgendaCalendarService       agendaCalendarService;
 
   /**
@@ -462,6 +465,13 @@ public class CaldavSyncService {
       // that throws must not cost the user the calendars they came for.
       try {
         if (verifyMirror) {
+          // What eXo already knows it owes, before anything is inspected or
+          // seeded. An edit whose push failed leaves a record on this side, and
+          // settling it first means the verification pass that follows judges a
+          // copy eXo has finished writing rather than one it is behind on
+          // (EXO-89773). On a converged account it is one index lookup that
+          // answers no rows.
+          caldavEventPropagationService.retryOwedPushes(userIdentityId);
           // Seed before verifying: a pending invitation pushed this round is
           // read back by the same discipline as every other copy from the
           // next round on (EXO-89681).
