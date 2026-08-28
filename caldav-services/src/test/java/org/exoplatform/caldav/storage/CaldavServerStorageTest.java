@@ -442,8 +442,54 @@ public class CaldavServerStorageTest {
 
     assertEquals(1, observed.size());
     assertNull(observed.get(0).quirkId(), "nothing describes it, so the drawer falls back to its generic wording");
-    assertEquals("X-BM-FOO", observed.get(0).property());
+    assertEquals(List.of("X-BM-FOO"), observed.get(0).properties());
     assertEquals(List.of("X-BM-FOO"), observed.get(0).patterns());
+  }
+
+  @Test
+  public void shouldOfferOneEntryPerBehaviourAndNotOnePerProperty() {
+    // Live on the rig: BlueMind stamped three Outlook/Thunderbird markers and
+    // the drawer rendered three identical checkboxes, each saying "seen once".
+    // They are one sentence about one habit, so they are one entry whose count
+    // is the sum of theirs - and it would only have got worse, since that entry
+    // matches by prefix and every new marker would have added another row.
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://bm/", true, null, null,
+                                                         true, null, null, null,
+                                                         "ADDED:X-MICROSOFT-CDO-BUSYSTATUS=1;ADDED:X-MICROSOFT-DISALLOW-COUNTER=1;"
+                                                             + "ADDED:X-MOZ-LASTACK=1;DROPPED:CONFERENCE=1;ADDED:X-ALT-DESC=1;"
+                                                             + "DROPPED:ORGANIZER=1");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    List<ObservedQuirk> observed = caldavServerStorage.getServerById(7L).getObservedQuirks();
+
+    assertEquals(4, observed.size(), "six observed properties, four behaviours: " + observed);
+    ObservedQuirk markers = observed.stream()
+                                    .filter(quirk -> "addsCompatibilityMarkers".equals(quirk.quirkId()))
+                                    .findFirst()
+                                    .orElseThrow();
+    assertEquals(3L, markers.count(), "and its count is the sum of what each marker contributed");
+    assertEquals(List.of("X-MICROSOFT-CDO-BUSYSTATUS", "X-MICROSOFT-DISALLOW-COUNTER", "X-MOZ-LASTACK"),
+                 markers.properties(),
+                 "every property it was built from is kept, so an existing excusal is still recognised");
+    assertEquals(List.of("X-MICROSOFT-*", "X-MOZ-*"),
+                 markers.patterns(),
+                 "and ticking it writes the whole family, not just the marker seen first");
+  }
+
+  @Test
+  public void shouldStillOfferOneEntryPerPropertyForABehaviourNothingDescribes() {
+    // The other half of the grouping rule. Where no catalogue entry says two
+    // properties are one habit, each of them genuinely is its own behaviour and
+    // folding them together would invent a decision nobody wrote.
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Odd", null, "https://odd/", true, null, null, true,
+                                                         null, null, null, "ADDED:X-BM-FOO=4;ADDED:X-BM-BAR=2");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    List<ObservedQuirk> observed = caldavServerStorage.getServerById(7L).getObservedQuirks();
+
+    assertEquals(2, observed.size(), "two unrelated properties are two behaviours: " + observed);
+    assertEquals(List.of("X-BM-FOO"), observed.get(0).properties());
+    assertEquals(List.of("X-BM-BAR"), observed.get(1).properties());
   }
 
   @Test

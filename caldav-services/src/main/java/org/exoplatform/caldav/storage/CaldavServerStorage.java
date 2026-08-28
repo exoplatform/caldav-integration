@@ -17,8 +17,10 @@
 package org.exoplatform.caldav.storage;
 
 import java.io.ByteArrayInputStream;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -282,40 +284,96 @@ public class CaldavServerStorage {
    * The stored observation summary as the entries the drawer lists.
    *
    * <p>
-   * Mapping, not judgement: each entry is named, counted and matched to the
-   * catalogue entry that describes it, and every entry the catalogue does not
-   * describe still comes through with its own property name — an administrator
-   * is never blocked by the list being incomplete. Whether an entry is
-   * <i>excused</i> is deliberately left false here and decided by the service,
-   * which is the layer that knows the deployment-wide fallback.
+   * <b>Grouped by behaviour, not by property.</b> A catalogue entry can cover a
+   * family — the Outlook and Thunderbird markers are one sentence about one
+   * server habit — and a live BlueMind account produced three of them, which
+   * rendered as three identical checkboxes each saying "seen once". They are one
+   * decision, so they become one entry whose count is the sum of theirs. It
+   * would only have got worse: that entry matches by prefix, so every new marker
+   * the server stamps would have added another identical row.
+   *
+   * <p>
+   * A behaviour nothing in the catalogue describes stays one entry per property,
+   * because there each property genuinely is a separate thing the server does —
+   * which is why the grouping key is the catalogue's identifier where there is
+   * one, and the direction and property where there is not.
+   *
+   * <p>
+   * Mapping, not judgement: whether an entry is <i>excused</i> is left false
+   * here and decided by the service, which is the layer that knows the
+   * deployment-wide fallback.
    *
    * @param summary the stored summary, may be null
    * @return the observed behaviours, largest counts first, never null
    */
   private List<ObservedQuirk> observedQuirks(String summary) {
-    return ServerQuirkSummary.parse(summary)
-                             .entrySet()
-                             .stream()
-                             .sorted(Comparator.<Map.Entry<Observation, Long>, Long>comparing(Map.Entry::getValue)
-                                               .reversed()
-                                               .thenComparing(entry -> entry.getKey().property()))
-                             .map(entry -> observedQuirk(entry.getKey(), entry.getValue()))
-                             .toList();
+    Map<String, ObservedQuirk> byBehaviour = new LinkedHashMap<>();
+    ServerQuirkSummary.parse(summary)
+                      .forEach((observation, count) -> byBehaviour.merge(behaviourKey(observation),
+                                                                         observedQuirk(observation, count),
+                                                                         CaldavServerStorage::mergeBehaviour));
+    return byBehaviour.values()
+                      .stream()
+                      .sorted(Comparator.comparingLong(ObservedQuirk::count)
+                                        .reversed()
+                                        .thenComparing(ObservedQuirk::property))
+                      .toList();
   }
 
   /**
-   * One stored observation as the entry the drawer lists.
+   * What makes two observations the same behaviour: the catalogue entry
+   * describing them, or — when none does — the property and the direction
+   * themselves.
+   *
+   * @param observation what was seen
+   * @return the grouping key
+   */
+  private String behaviourKey(Observation observation) {
+    return ServerQuirk.describing(observation.property(), observation.direction())
+                      .map(ServerQuirk::getId)
+                      .orElseGet(() -> observation.direction() + ":" + observation.property());
+  }
+
+  /**
+   * Folds a second observation of one behaviour into the entry already holding
+   * it: the counts add up, and the property that produced them is kept so the
+   * excusal can still be read from the list in force.
+   *
+   * @param first the entry built so far
+   * @param second the entry for the observation being folded in
+   * @return the combined entry
+   */
+  private static ObservedQuirk mergeBehaviour(ObservedQuirk first, ObservedQuirk second) {
+    List<String> properties = new ArrayList<>(first.properties());
+    second.properties().stream().filter(property -> !properties.contains(property)).forEach(properties::add);
+    return new ObservedQuirk(first.quirkId(),
+                             properties,
+                             first.direction(),
+                             first.effect(),
+                             first.count() + second.count(),
+                             false,
+                             first.patterns());
+  }
+
+  /**
+   * One stored observation as an entry of its own, before any other observation
+   * of the same behaviour is folded into it.
+   *
+   * <p>
+   * A described behaviour carries the catalogue's <b>own</b> direction rather
+   * than the observed one, so a family whose members were seen pointing
+   * different ways still reads — and is ticked — as the single behaviour it is.
    *
    * @param observation what was seen
    * @param count how many times
    * @return the entry, carrying the catalogue's identifier when one describes
-   *         it and the observed property name alone when none does
+   *         it and the observed property alone when none does
    */
   private ObservedQuirk observedQuirk(Observation observation, Long count) {
     return ServerQuirk.describing(observation.property(), observation.direction())
                       .map(quirk -> new ObservedQuirk(quirk.getId(),
-                                                      observation.property(),
-                                                      observation.direction(),
+                                                      List.of(observation.property()),
+                                                      quirk.getDirection(),
                                                       quirk.getEffect(),
                                                       count,
                                                       false,
@@ -325,7 +383,7 @@ public class CaldavServerStorage {
                       // comparison, but there is no rule to make eXo leave
                       // anything out of what it writes.
                       .orElseGet(() -> new ObservedQuirk(null,
-                                                         observation.property(),
+                                                         List.of(observation.property()),
                                                          observation.direction(),
                                                          ServerQuirkEffect.TOLERATE,
                                                          count,

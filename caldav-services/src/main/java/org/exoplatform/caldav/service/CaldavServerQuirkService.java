@@ -212,11 +212,11 @@ public class CaldavServerQuirkService {
     }
     return observed.stream()
                    .map(quirk -> new ObservedQuirk(quirk.quirkId(),
-                                                   quirk.property(),
+                                                   quirk.properties(),
                                                    quirk.direction(),
                                                    quirk.effect(),
                                                    quirk.count(),
-                                                   matches(listFor(quirk, ignored, dropped, omitted), quirk.property()),
+                                                   excused(quirk, listFor(quirk, ignored, dropped, omitted)),
                                                    quirk.patterns()))
                    .toList();
   }
@@ -246,6 +246,26 @@ public class CaldavServerQuirkService {
       case ADDED -> ignored;
       case DROPPED, REWRITTEN -> dropped;
     };
+  }
+
+  /**
+   * Whether the list in force already covers a behaviour.
+   *
+   * <p>
+   * Asked of every property the entry covers, not of one of them, because a
+   * grouped entry stands for a family: the list is read with the same matcher
+   * the comparison uses, so a family stored as {@code X-MOZ-*} and an older
+   * operator setting naming one member both read as "this is already excused".
+   *
+   * @param quirk the observed behaviour
+   * @param patterns the list in force, may be null or blank
+   * @return true when the list covers it
+   */
+  private boolean excused(ObservedQuirk quirk, String patterns) {
+    if (StringUtils.isBlank(patterns) || quirk.properties() == null) {
+      return false;
+    }
+    return quirk.properties().stream().anyMatch(property -> matches(patterns, property));
   }
 
   /**
