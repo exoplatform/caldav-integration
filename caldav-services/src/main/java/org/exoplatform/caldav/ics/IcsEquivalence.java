@@ -142,6 +142,28 @@ import net.fortuna.ical4j.model.component.VTimeZone;
  * EXO-89753 stay guarded.
  *
  * <p>
+ * <b>And a link a server wrote out twice.</b> BlueMind auto-linkifies: it
+ * appends every URI in a description a second time, in angle brackets,
+ * immediately after the one already there — the conference link, the event link
+ * and all three answer links at once. A bracketed URI is dropped only when it
+ * <b>exactly repeats the URI immediately before it</b>; anything else about the
+ * text is compared as before. It is a backreference, not a rule about angle
+ * brackets and not a relaxation of URI equality, so a link that differs by one
+ * character — a rewritten answer token above all — is still an edit. See
+ * {@link #LINKIFIED_URI_REPEAT}, and {@link #LINKIFIED_PROPERTIES} for why only
+ * the description is covered.
+ *
+ * <p>
+ * <b>And a property a server stored twice.</b> The same server keeps two
+ * identical {@code URL} lines where eXo wrote one. That is not a value
+ * difference but a cardinality one, so it gets its own rule: a statement eXo
+ * <i>also</i> makes, surplus on the server's side, on a property
+ * {@link IcsWriter} emits, is the server repeating itself. Every distinct
+ * statement is still compared exactly — a copy holding eXo's link twice and a
+ * link of its own still reports the second one. See
+ * {@link #isServerSideRepetition}.
+ *
+ * <p>
  * <b>Two operator levers, pointing opposite ways.</b>
  * {@link #ignoredProperties} excuses an <i>unrecognised</i> property a server
  * adds; {@link #droppedProperties} excuses a property eXo emits that a server
@@ -374,6 +396,73 @@ public class IcsEquivalence {
 
   /** A run of whitespace of any kind, including the line breaks a server folds on. */
   private static final Pattern             WHITESPACE_RUN           = Pattern.compile("\\s+");
+
+  /**
+   * The TEXT properties whose value a server is known to auto-linkify, and the
+   * only ones {@link #LINKIFIED_URI_REPEAT} is applied to.
+   *
+   * <p>
+   * <b>Only {@code DESCRIPTION}, deliberately.</b> BlueMind appends every URI it
+   * finds in a description a second time, in angle brackets, immediately after
+   * the one that is already there — captured on the rig on 2026-08-28, on the
+   * conference link, the event link and all three tokenised answer links at
+   * once:
+   *
+   * <pre>
+   * eXo writes  : Event link: http://host/portal/dw/agenda?eventId=981
+   * BlueMind has: Event link: http://host/portal/dw/agenda?eventId=981 &lt;http://host/portal/dw/agenda?eventId=981&gt;
+   * </pre>
+   *
+   * eXo judged the copy rewritten, repaired it, and the server linkified the
+   * repair — five copies, every five-minute sweep, for ever.
+   *
+   * <p>
+   * {@code SUMMARY} and {@code LOCATION} are the other two TEXT properties
+   * {@link IcsWriter} emits and are <b>not</b> here. Nothing has been observed
+   * linkifying either, and the exemption is not free: every property it covers
+   * is a property where a bracketed repetition of a link stops being reported.
+   * The two also differ in kind from the description — eXo <i>composes</i> the
+   * description and puts the links in it itself, so it carries a URI on every
+   * single event, where a summary or a location carries one only if a person
+   * typed it. Widening this set is one word, and wants the same thing that
+   * bought this entry: a divergence report naming the property.
+   */
+  private static final Set<String>         LINKIFIED_PROPERTIES     = Set.of("DESCRIPTION");
+
+  /**
+   * A URI immediately followed by a bracketed repetition of <b>itself</b>, as an
+   * auto-linkifying server appends it.
+   *
+   * <p>
+   * Every part of this is a restriction, and each one is what keeps the
+   * exemption from meaning more than it says:
+   *
+   * <ul>
+   * <li><b>A backreference, not a second URI.</b> The bracketed text must be
+   * character-for-character the token before it. {@code A &lt;B&gt;} matches
+   * nothing and is reported, so a client that swapped a link for another one
+   * inside the brackets is still an edit — and so, in particular, is a
+   * rewritten <i>token</i> in one of the answer links EXO-89753 writes, which
+   * is the case that must never pass: those links answer on somebody's behalf.
+   * </li>
+   * <li><b>Adjacency.</b> The repetition must sit immediately after the
+   * original, one space between them, which is what linkifying produces. A
+   * bracketed URI anywhere else in the text is left alone and compared.</li>
+   * <li><b>A URI, not any token.</b> The value must carry a scheme, so this
+   * cannot collapse {@code word &lt;word&gt;} in prose somebody wrote.</li>
+   * <li><b>The original survives.</b> Only the bracketed copy is dropped, so a
+   * copy that kept the brackets and lost the link — {@code Event link:
+   * &lt;http://…&gt;} — does not match and is reported.</li>
+   * </ul>
+   *
+   * <p>
+   * What it deliberately does not cover: angle brackets in general, a URI that
+   * differs from its neighbour in any way at all, and any relaxation of URI
+   * equality. Two links that are not the same string are still two different
+   * links here, exactly as before.
+   */
+  private static final Pattern             LINKIFIED_URI_REPEAT     =
+                                                                Pattern.compile("(^| )([a-zA-Z][a-zA-Z0-9+.\\-]*:[^\\s<>]+) <\\2>");
 
   /** Properties whose value is a date or date-time, normalised to an instant or a calendar day. */
   private static final Set<String>         DATE_PROPERTIES          = Set.of("DTSTART",
@@ -649,7 +738,9 @@ public class IcsEquivalence {
    * The statements a component makes, as a multiset of canonical lines: one per
    * meaningful property occurrence, plus one per VALARM, so property order,
    * parameter order and line folding cannot register as a difference while a
-   * repeated statement still counts.
+   * repeated statement still counts. Whether a repetition then <i>matters</i> is
+   * decided later and separately, in {@link #isServerSideRepetition}: the
+   * multiset is built faithfully here so that the rule has something to read.
    *
    * @param component the component to normalise
    * @param calendar the object it belongs to, for zone resolution
@@ -781,7 +872,14 @@ public class IcsEquivalence {
       // Folding is whitespace, and a server re-serialising a multi-line text
       // value has to fold it. See TEXT_PROPERTIES for why collapsing runs
       // cannot hide anything a user wrote.
-      return WHITESPACE_RUN.matcher(value).replaceAll(" ").trim();
+      String collapsed = WHITESPACE_RUN.matcher(value).replaceAll(" ").trim();
+      if (!LINKIFIED_PROPERTIES.contains(name)) {
+        return collapsed;
+      }
+      // Runs are collapsed first, on purpose: what a linkifying server appends
+      // is separated by whatever whitespace its own folding produced, and
+      // "immediately after" can only be read once that is one space.
+      return LINKIFIED_URI_REPEAT.matcher(collapsed).replaceAll("$1$2");
     }
     if ("ORGANIZER".equals(name) || "ATTENDEE".equals(name)) {
       // A calendar address is a URI: its scheme and its host are
@@ -1079,6 +1177,13 @@ public class IcsEquivalence {
    * about that deployment and not about calendars. Its cost is recorded on the
    * field itself.
    *
+   * <p>
+   * <b>The fourth rule is about how many times, not about what.</b> A server
+   * that states something eXo also states, and then states it again, has said
+   * nothing eXo did not — see {@link #isServerSideRepetition}. It points the
+   * server's way like the first rule, and it is the only one of the four that
+   * turns on the counts rather than on the statement.
+   *
    * @param statement the canonical statement that diverged
    * @param onServer how many times the server's copy states it
    * @param inExo how many times eXo's render states it
@@ -1091,7 +1196,64 @@ public class IcsEquivalence {
     if (isAttendee(statement) && inExo > onServer) {
       return true;
     }
+    if (isServerSideRepetition(statement, onServer, inExo)) {
+      return true;
+    }
     return inExo > onServer && isDroppedByConfiguration(propertyNameOf(statement));
+  }
+
+  /**
+   * Whether the divergence is the server holding a statement eXo also holds,
+   * and holding it more than once.
+   *
+   * <p>
+   * BlueMind stores {@code URL} twice, identically, where eXo wrote it once —
+   * {@code URL=… (server 2, eXo 1)} on every copy of a live account, captured on
+   * the rig on 2026-08-28. It is not a value difference, so neither the
+   * normalisation nor any of the other three rules touches it; it is a
+   * cardinality difference, and it kept five copies permanently "altered" on its
+   * own.
+   *
+   * <p>
+   * <b>Repeating a statement states nothing new.</b> Among the properties
+   * {@link IcsWriter} emits, none carries meaning in how many times it is
+   * written: the single-valued ones ({@code URL}, {@code SUMMARY},
+   * {@code STATUS}, …) may appear once by RFC 5545 and a reader takes one, and
+   * the repeatable ones name a set — the same person is one attendee however
+   * many lines carry them, the same date is one exclusion however many EXDATEs
+   * carry it. So a second identical copy of a line is the same class of
+   * server-side noise as re-ordering properties or filling in an RFC default.
+   *
+   * <p>
+   * <b>Three conditions, and each is load-bearing.</b>
+   * <ul>
+   * <li><b>eXo states it too</b> ({@code inExo > 0}). This can only ever excuse
+   * a <i>repetition</i>, never an appearance: a statement eXo does not make at
+   * all is a client addition and stays a difference however many times the
+   * server writes it.</li>
+   * <li><b>The surplus is the server's.</b> eXo stating something twice that the
+   * copy states once is a deletion on the copy's side, and deletions are not
+   * this rule's business.</li>
+   * <li><b>The name is one {@link IcsWriter} emits.</b> Same guard as
+   * {@link #isDroppedByConfiguration}, and it is what keeps
+   * {@link #OWNER_ATTENDEE} and the embedded {@code VALARM{…}} statements
+   * outside: neither is an event property, so a repeated alarm or a repeated
+   * owner line is still reported.</li>
+   * </ul>
+   *
+   * <p>
+   * What it cannot hide: every <i>distinct</i> statement is still compared
+   * exactly as before. A copy carrying eXo's link twice <b>and</b> a link of its
+   * own leaves that second link as a surplus of a statement eXo never made,
+   * which no rule here covers.
+   *
+   * @param statement the canonical statement that diverged
+   * @param onServer how many times the server's copy states it
+   * @param inExo how many times eXo's render states it
+   * @return true when the server has merely repeated itself
+   */
+  private boolean isServerSideRepetition(String statement, int onServer, int inExo) {
+    return inExo > 0 && onServer > inExo && EVENT_PROPERTIES.contains(propertyNameOf(statement));
   }
 
   /**
