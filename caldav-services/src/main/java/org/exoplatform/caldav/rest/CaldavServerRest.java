@@ -39,8 +39,10 @@ import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavSyncTuning;
+import org.exoplatform.caldav.service.CaldavMirrorReportService;
 import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.caldav.service.CaldavTuningService;
+import org.exoplatform.caldav.service.MirrorPassReport;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -70,6 +72,9 @@ public class CaldavServerRest {
 
   @Autowired
   private CaldavTuningService caldavTuningService;
+
+  @Autowired
+  private CaldavMirrorReportService caldavMirrorReportService;
 
   /**
    * How often and how widely eXo synchronises CalDAV accounts.
@@ -118,6 +123,33 @@ public class CaldavServerRest {
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
+  }
+
+  /**
+   * What the last pass over each connected user's meeting copies found and
+   * moved.
+   *
+   * <p>
+   * Administrators only, and for a reason the reads above do not have: a row
+   * here names a user and says something about the state of their calendar.
+   * Nothing in it is a credential, but it is not the sort of thing every
+   * authenticated caller has any business enumerating.
+   *
+   * <p>
+   * In memory and therefore empty after a restart, until each account
+   * synchronises again. That is stated in the screen rather than hidden here.
+   *
+   * @return the last pass of every user that has had one, newest first
+   */
+  @GetMapping("/mirror/reports")
+  @Secured("administrators")
+  @Operation(summary = "Reads the last mirror pass of every connected user", method = "GET",
+      description = "One tally per user: what the comparison of their meeting copies found, and what a change of "
+          + "destination moved. Kept in memory, so it is empty after a restart until the accounts synchronise again.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public List<MirrorPassReport> getMirrorReports() {
+    return caldavMirrorReportService.getReports();
   }
 
   /**

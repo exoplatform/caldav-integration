@@ -191,6 +191,9 @@ public class CaldavMirrorVerificationService {
   @Autowired
   private CaldavMirrorRelocationService caldavMirrorRelocationService;
 
+  @Autowired
+  private CaldavMirrorReportService    caldavMirrorReportService;
+
   /**
    * How many times one object may be repaired before the pass stops trying.
    * Three is enough to ride out a server having a bad minute and few enough
@@ -287,7 +290,11 @@ public class CaldavMirrorVerificationService {
       // it. Treating an unreachable server as "everything was deleted" would
       // re-push the user's whole history the moment it came back.
       LOG.warn("The mirror collection of user {} could not be listed; nothing is verified this round", userIdentityId, e);
-      return MirrorVerification.nothing();
+      // Recorded all the same. A pass that could not list the collection is
+      // exactly what an administrator watching a destination change needs to
+      // see - reporting only the passes that succeeded would show a change as
+      // quietly finished on the very accounts it never reached.
+      return record(userIdentityId, MirrorVerification.nothing(), relocation);
     }
     // Once per pass, whatever the pass finds, and before anything below can
     // decline to walk the copies. The summary's pruning rides on its write, the
@@ -314,6 +321,39 @@ public class CaldavMirrorVerificationService {
       // collection, is work this change still owes; stamping over it would tell
       // every later pass there is nothing to do and strand that copy for good.
       stampSettingsApplied(mirror, owed);
+    }
+    return record(userIdentityId, verification, relocation);
+  }
+
+  /**
+   * Keeps what this pass found and moved where an administrator can read it,
+   * and hands the verification straight back.
+   *
+   * <p>
+   * Returning its argument is what lets every exit of {@link #verify} record
+   * without an extra local and without a second return path to keep in step -
+   * the mistake this shape exists to make impossible is a pass that quietly
+   * reports nothing because somebody added a return above the recording.
+   *
+   * <p>
+   * Recorded only from the exits that ran against the account. The two early
+   * returns above - no connected account, nothing ever pushed - are not a pass
+   * with a poor result, they are no pass at all, and a row of zeroes for a user
+   * who has never had a copy written would be noise on a screen whose whole
+   * value is that a number on it means something.
+   *
+   * @param userIdentityId identity of the user the pass ran for
+   * @param verification what the comparison found
+   * @param relocation what the move did
+   * @return the verification, unchanged
+   */
+  private MirrorVerification record(long userIdentityId, MirrorVerification verification, MirrorRelocation relocation) {
+    try {
+      caldavMirrorReportService.record(userIdentityId, verification, relocation);
+    } catch (RuntimeException e) {
+      // An observability aid must never cost a pass its result. Nothing reads
+      // these reports, so losing one changes no behaviour at all.
+      LOG.debug("The result of the mirror pass of user {} could not be recorded", userIdentityId, e);
     }
     return verification;
   }
@@ -1003,6 +1043,10 @@ public class CaldavMirrorVerificationService {
     // user, and forgetting two of the three would leave a refused removal
     // silent after the very restart that is meant to say it again.
     caldavMirrorRelocationService.forget(userIdentityId);
+    // And the tally an administrator reads, for the plainest reason of the
+    // three: a number attributed to an account that no longer exists is not
+    // stale, it is wrong.
+    caldavMirrorReportService.forget(userIdentityId);
   }
 
   /**
