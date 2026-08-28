@@ -59,7 +59,7 @@ describe('CaldavAdminServerMirrorTargetSelect', () => {
     });
   }
 
-  it('offers the three destinations, each with the one line of consequence it carries', () => {
+  it('offers the two destinations, each with the one line of consequence it carries', () => {
     const wrapper = mountControl({value: 'DEDICATED_CALENDAR', storedValue: null});
 
     const text = wrapper.text();
@@ -67,8 +67,19 @@ describe('CaldavAdminServerMirrorTargetSelect', () => {
     expect(text).toContain('caldav.admin.servers.mirrorTarget.dedicated.consequence');
     expect(text).toContain('caldav.admin.servers.mirrorTarget.main.label');
     expect(text).toContain('caldav.admin.servers.mirrorTarget.main.consequence');
-    expect(text).toContain('caldav.admin.servers.mirrorTarget.userChoice.label');
-    expect(text).toContain('caldav.admin.servers.mirrorTarget.userChoice.consequence');
+    expect(wrapper.vm.options).toHaveLength(2);
+  });
+
+  it('offers no third destination, so putting one back has to be meant', () => {
+    // "A calendar each user picks" was dropped by a product review. The
+    // registry's enum still carries the value, so nothing under this control
+    // stops the radio coming back; this is what stops it coming back unnoticed.
+    const wrapper = mountControl({value: 'DEDICATED_CALENDAR', storedValue: null});
+
+    const text = wrapper.text();
+    expect(text).not.toContain('caldav.admin.servers.mirrorTarget.userChoice.label');
+    expect(text).not.toContain('caldav.admin.servers.mirrorTarget.userChoice.consequence');
+    expect(wrapper.vm.options.map(option => option.value)).toEqual(['DEDICATED_CALENDAR', 'MAIN_CALENDAR']);
   });
 
   it('states the condition on the field, where it cannot be read as a per-user admin control', () => {
@@ -106,16 +117,40 @@ describe('CaldavAdminServerMirrorTargetSelect', () => {
     const unchanged = mountControl({value: 'DEDICATED_CALENDAR', storedValue: 'DEDICATED_CALENDAR'});
     expect(unchanged.vm.changing).toBe(false);
 
-    const changed = mountControl({value: 'USER_CHOICE', storedValue: 'DEDICATED_CALENDAR'});
+    const changed = mountControl({value: 'MAIN_CALENDAR', storedValue: 'DEDICATED_CALENDAR'});
     expect(changed.vm.changing).toBe(true);
+  });
+
+  it('shows the dedicated calendar for a row stored as the destination we stopped offering', () => {
+    // A row written while "a calendar each user picks" was still on offer, or
+    // written by hand: MirrorTargetKind still accepts it. With no radio of its
+    // own it would leave the group with nothing selected - an administrator
+    // reads that as a setting that has been lost, and the first save would
+    // state whatever they then clicked. It shows the dedicated calendar
+    // instead, which is what a save from here would send.
+    const wrapper = mountControl({value: 'USER_CHOICE', storedValue: 'USER_CHOICE'});
+
+    expect(wrapper.vm.selected).toBe('DEDICATED_CALENDAR');
+    expect(wrapper.find('v-radio-group').attributes('value')).toBe('DEDICATED_CALENDAR');
+    // And it is not a change, so the drawer must not promise a move that the
+    // save is not going to make.
+    expect(wrapper.vm.changing).toBe(false);
+    expect(wrapper.text()).not.toContain('caldav.admin.servers.mirrorTarget.moves');
   });
 
   it('announces a stored value and never a blank one', () => {
     const wrapper = mountControl({value: 'DEDICATED_CALENDAR', storedValue: 'DEDICATED_CALENDAR'});
 
-    wrapper.vm.choose('USER_CHOICE');
+    wrapper.vm.choose('MAIN_CALENDAR');
     wrapper.vm.choose(null);
+    // A value the control no longer offers can only arrive from outside it, and
+    // leaves as the one the registry resolves it to - never as itself.
+    wrapper.vm.choose('USER_CHOICE');
 
-    expect(wrapper.emitted().input).toEqual([['USER_CHOICE'], ['DEDICATED_CALENDAR']]);
+    expect(wrapper.emitted().input).toEqual([
+      ['MAIN_CALENDAR'],
+      ['DEDICATED_CALENDAR'],
+      ['DEDICATED_CALENDAR'],
+    ]);
   });
 });
