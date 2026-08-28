@@ -29,7 +29,9 @@ import static org.mockito.Mockito.when;
 
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -90,6 +92,9 @@ public class AgendaEventIcsMapperTest {
 
   /** And how it names the other attendee. */
   private static final String               SOMEONE_REMOTE_ID = "user9";
+
+  /** What every answer link in a description has in it, and nothing else does. */
+  private static final String               ANSWER_LINK_MARK = "response/send";
 
   /** The link agenda mints for the event, of the shape NotificationUtils returns. */
   private static final String               EVENT_LINK  = "http://localhost:8080/portal/dw/agenda?eventId=1";
@@ -205,6 +210,7 @@ public class AgendaEventIcsMapperTest {
   @Test
   public void theDescriptionOffersTheThreeAnswerLinks() {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenAMeeting();
 
     try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
       agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
@@ -237,6 +243,7 @@ public class AgendaEventIcsMapperTest {
   public void aCopyCarriesOnlyItsOwnRecipientSAnswerLinks() {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
     givenIdentity(SOMEONE, "Jane Roe", "jane@example.test");
+    givenAMeeting();
     lenient().when(agendaEventReminderService.getEventReminders(1L, SOMEONE)).thenReturn(List.of());
 
     try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
@@ -274,6 +281,7 @@ public class AgendaEventIcsMapperTest {
   @Test
   public void twoRendersOfTheSameCopyProduceTheVerySameDescription() {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenAMeeting();
 
     try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
       agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
@@ -297,6 +305,7 @@ public class AgendaEventIcsMapperTest {
   @Test
   public void anOverrideOffersAnswersForItsSeries() {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenAMeeting();
     Event override = event();
     override.setParentId(77L);
 
@@ -323,6 +332,7 @@ public class AgendaEventIcsMapperTest {
   @Test
   public void anAnswerLinkWithNoTokenIsNotOffered() {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenAMeeting();
 
     try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
       agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
@@ -339,7 +349,7 @@ public class AgendaEventIcsMapperTest {
 
       String description = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
 
-      assertFalse(description.contains("response/send"), "a tokenless link must not be offered: " + description);
+      assertFalse(description.contains(ANSWER_LINK_MARK), "a tokenless link must not be offered: " + description);
     }
   }
 
@@ -366,11 +376,13 @@ public class AgendaEventIcsMapperTest {
       // string, so the property that actually matters is that the answer on
       // record makes no difference to the text.
       lenient().when(agendaEventAttendeeService.getEventAttendees(1L))
-               .thenReturn(new EventAttendeeList(List.of(new EventAttendee(1L, 1L, PUSHER, EventAttendeeResponse.NEEDS_ACTION))));
+               .thenReturn(new EventAttendeeList(List.of(new EventAttendee(1L, 1L, PUSHER, EventAttendeeResponse.NEEDS_ACTION),
+                                                         new EventAttendee(2L, 1L, SOMEONE, EventAttendeeResponse.NEEDS_ACTION))));
       String beforeAnswering = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
 
       lenient().when(agendaEventAttendeeService.getEventAttendees(1L))
-               .thenReturn(new EventAttendeeList(List.of(new EventAttendee(1L, 1L, PUSHER, EventAttendeeResponse.ACCEPTED))));
+               .thenReturn(new EventAttendeeList(List.of(new EventAttendee(1L, 1L, PUSHER, EventAttendeeResponse.ACCEPTED),
+                                                         new EventAttendee(2L, 1L, SOMEONE, EventAttendeeResponse.NEEDS_ACTION))));
       IcsEvent afterAccepting = mapper.toIcsEvent(event(), "uid-1", PUSHER);
 
       assertEquals(beforeAnswering,
@@ -733,6 +745,7 @@ public class AgendaEventIcsMapperTest {
   @Test
   public void noAnswerLinkIsWrittenWhenTheServerWasToldToOfferNone() {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenAMeeting();
     givenServer(7L, false);
 
     try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
@@ -741,7 +754,7 @@ public class AgendaEventIcsMapperTest {
 
       String description = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
 
-      assertFalse(description.contains("response/send"),
+      assertFalse(description.contains(ANSWER_LINK_MARK),
                   "the server was told to offer no answers: " + description);
       assertTrue(description.contains(EVENT_LINK),
                  "and the rest of the description must still be there: " + description);
@@ -755,6 +768,7 @@ public class AgendaEventIcsMapperTest {
   @Test
   public void theAnswerLinksAreWrittenWhenTheServerWantsThem() {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenAMeeting();
     givenServer(7L, true);
 
     try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
@@ -781,6 +795,7 @@ public class AgendaEventIcsMapperTest {
   @Test
   public void theLinksSurviveARegistryThatAnswersNothing() {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenAMeeting();
     CaldavUserSetting account = new CaldavUserSetting();
     account.setServerId(7L);
     lenient().when(caldavConnectorStorage.getCaldavSetting(PUSHER)).thenReturn(account);
@@ -811,6 +826,7 @@ public class AgendaEventIcsMapperTest {
   @Test
   public void theLinksSurviveARegistryThatFails() {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenAMeeting();
     CaldavUserSetting account = new CaldavUserSetting();
     account.setServerId(7L);
     lenient().when(caldavConnectorStorage.getCaldavSetting(PUSHER)).thenReturn(account);
@@ -900,6 +916,176 @@ public class AgendaEventIcsMapperTest {
     assertNotNull(mapper.toIcsEvent(event(), "uid-1", PUSHER).getOrganizer());
   }
 
+
+  // ------------- no answer to an invitation nobody sent (EXO-89797)
+
+  /**
+   * <b>An event with nobody on it but its creator offers no answers.</b>
+   *
+   * <p>
+   * Observed on the rig: an event created with no attendees, by the very user
+   * whose calendar receives the copy, arrived carrying Accept, Decline and
+   * Tentative. They are not decoration — the links are live and tokenised, so a
+   * click records an RSVP against an event with no attendee list to record it
+   * on. There is no question in front of those three controls.
+   *
+   * <p>
+   * The server here is one that <i>wants</i> the links, so a pass means the
+   * event's own shape silenced them and not the administrator's switch. The
+   * event link is asserted alongside, so a pass also means the description was
+   * really composed rather than having failed to build.
+   */
+  @Test
+  public void aSoloEventOffersNoAnswerLinksEvenOnAServerThatWantsThem() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenServer(7L, true);
+    givenAttendees();
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+      givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+
+      String description = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+
+      assertFalse(description.contains(ANSWER_LINK_MARK),
+                  "an event that invites nobody must offer no answer: " + description);
+      assertTrue(description.contains(EVENT_LINK),
+                 "and the rest of the description must still be there: " + description);
+    }
+  }
+
+  /**
+   * The other shape of the same event: agenda puts the creator on their own
+   * roster, so "nobody else" is a roster of one and not an empty one. Both are
+   * the same event to a person looking at it, and must be the same event here.
+   */
+  @Test
+  public void anEventWhoseOnlyAttendeeIsItsCreatorOffersNoAnswerLinksEither() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenServer(7L, true);
+    givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED));
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+      givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+
+      String description = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+
+      assertFalse(description.contains(ANSWER_LINK_MARK),
+                  "a roster holding only the creator is still nobody else: " + description);
+    }
+  }
+
+  /**
+   * And a real meeting goes on offering them — the guard must remove the case
+   * it was written for and no other.
+   */
+  @Test
+  public void aMeetingWithSomebodyElseOnItStillOffersItsAnswerLinks() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenServer(7L, true);
+    givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED),
+                   attendee(SOMEONE, EventAttendeeResponse.NEEDS_ACTION));
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+      givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+
+      String description = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+
+      assertTrue(description.contains(answerLink(1L, "pusher", EventAttendeeResponse.ACCEPTED)),
+                 "an event with somebody else on it is an invitation, and must offer its answers: " + description);
+    }
+  }
+
+  /**
+   * <b>The new check must not re-enable anything the switch had silenced.</b>
+   *
+   * <p>
+   * The two gates are independent questions and the copy needs both answered
+   * yes. Written as a loop over both roster shapes because the failure it
+   * guards against is a guard placed as an {@code else}: a solo event silenced
+   * by soloness, a meeting silenced by the switch, and one of the two paths
+   * quietly writing the links back.
+   */
+  @Test
+  public void theServerSwitchStillSilencesEveryShapeOfEvent() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenServer(7L, false);
+
+    for (List<EventAttendee> roster : List.of(List.<EventAttendee> of(),
+                                              List.of(attendee(PUSHER, EventAttendeeResponse.ACCEPTED)),
+                                              List.of(attendee(PUSHER, EventAttendeeResponse.ACCEPTED),
+                                                      attendee(SOMEONE, EventAttendeeResponse.NEEDS_ACTION)))) {
+      lenient().when(agendaEventAttendeeService.getEventAttendees(1L)).thenReturn(new EventAttendeeList(roster));
+
+      try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+        agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+        givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+
+        String description = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+
+        assertFalse(description.contains(ANSWER_LINK_MARK),
+                    "the switch is off, so no roster shape may offer an answer: " + roster.size() + " -> " + description);
+      }
+    }
+  }
+
+  /**
+   * <b>The actual deliverable: the two readings of one event agree.</b>
+   *
+   * <p>
+   * Whether an event is a meeting is asked twice about every copy — once to
+   * decide whether to name an ORGANIZER on a server declared to drop one
+   * (EXO-89775), once to decide whether to offer an answer to it (EXO-89797) —
+   * and this pins that the two can never answer differently. It is the property
+   * the fix exists for: not "solo events lose their links", but "an event is one
+   * thing, and the copy of it says one thing about that".
+   *
+   * <p>
+   * Read off a single render on a server that both declares the organizer quirk
+   * and wants the answer links, so a divergence has nowhere to hide: on that
+   * server a missing ORGANIZER <i>is</i> the soloness verdict, and the presence
+   * of the links is the other one. Asserted across every roster shape agenda can
+   * produce, because a guard that agrees on the obvious case and parts company
+   * on the roster-of-one is exactly the defect this is the third instance of.
+   */
+  @Test
+  public void theOrganizerAndTheAnswerLinksReadTheSameEventTheSameWay() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenIdentity(SOMEONE, "Jane Roe", "jane@example.test");
+    givenOmittingServer(9L);
+
+    Map<List<EventAttendee>, Boolean> rosters = new LinkedHashMap<>();
+    rosters.put(List.of(), true);
+    rosters.put(List.of(attendee(PUSHER, EventAttendeeResponse.ACCEPTED)), true);
+    rosters.put(List.of(attendee(SOMEONE, EventAttendeeResponse.NEEDS_ACTION)), false);
+    rosters.put(List.of(attendee(PUSHER, EventAttendeeResponse.ACCEPTED),
+                        attendee(SOMEONE, EventAttendeeResponse.NEEDS_ACTION)),
+                false);
+
+    for (Map.Entry<List<EventAttendee>, Boolean> shape : rosters.entrySet()) {
+      lenient().when(agendaEventAttendeeService.getEventAttendees(1L))
+               .thenReturn(new EventAttendeeList(shape.getKey()));
+
+      try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+        agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+        givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+
+        IcsEvent ics = mapper.toIcsEvent(event(), "uid-1", PUSHER);
+        boolean organizerSaysSolo = ics.getOrganizer() == null;
+        boolean linksSaySolo = !ics.getDescription().contains(ANSWER_LINK_MARK);
+
+        assertEquals(shape.getValue(),
+                     organizerSaysSolo,
+                     "the organizer must read this roster as the test says: " + shape.getKey());
+        assertEquals(organizerSaysSolo,
+                     linksSaySolo,
+                     "the organizer and the answer links must read one event the same way: " + shape.getKey());
+      }
+    }
+  }
+
   /**
    * Stubs the registration the pusher's stored account resolves to.
    *
@@ -931,6 +1117,23 @@ public class AgendaEventIcsMapperTest {
     server.setId(serverId);
     server.setOmittedProperties(ServerQuirk.SOLO_ORGANIZER);
     lenient().when(caldavServerService.resolveServer(serverId)).thenReturn(server);
+  }
+
+  /**
+   * Puts somebody other than the creator on the event, which is the whole of
+   * what makes it a meeting.
+   *
+   * <p>
+   * Called by every test below that expects a copy to offer an answer. Before
+   * EXO-89797 those tests said nothing about the roster at all and passed on
+   * the default empty one — so each of them was, unknowingly, asserting that an
+   * event nobody was invited to still offers three ways to answer it. The
+   * intent they were written with is unchanged; only the fixture now states the
+   * premise the intent always had.
+   */
+  private void givenAMeeting() {
+    givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED),
+                   attendee(SOMEONE, EventAttendeeResponse.NEEDS_ACTION));
   }
 
   /**
