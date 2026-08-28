@@ -98,6 +98,7 @@ public class IcsEquivalenceTest {
   public void aJudgeWithNothingIgnored() {
     judge = new IcsEquivalence();
     ReflectionTestUtils.setField(judge, "ignoredProperties", "");
+    ReflectionTestUtils.setField(judge, "droppedProperties", "");
   }
 
   // ---------------------------------------------------------------- DTSTAMP
@@ -850,6 +851,126 @@ public class IcsEquivalenceTest {
    */
   private void assertEquivalent(String onServer) {
     assertEquivalent(onServer, EXO);
+  }
+
+
+  // --------------------------------- the whitespace a server refolds (EXO-89756)
+
+  @Test
+  public void aBlankLineTheServerRefoldedIsNotAnEdit() {
+    // The residual BlueMind loop, byte for byte as the rig logged it: eXo
+    // writes "Chemistry.\n\nEvent link: ..." and the copy comes back as
+    // "Chemistry.\n Event link: ...". The blank line between the paragraphs
+    // returns as a newline and a continuation space — one whitespace character
+    // for another, nothing about the meeting touched. Left as a difference it
+    // rewrote every copy of a live account every five minutes.
+    String exo = EXO.replace("DESCRIPTION:Bring the board",
+                             "DESCRIPTION:Bring the board.\\n\\nEvent link: https://exo.test/a?t=s3cr3t");
+    String server = EXO.replace("DESCRIPTION:Bring the board",
+                                "DESCRIPTION:Bring the board.\\n Event link: https://exo.test/a?t=s3cr3t");
+    assertEquivalent(server, exo);
+  }
+
+  @Test
+  public void aRewrittenAnswerTokenIsStillAnEdit() {
+    // The pair, and the one that matters most. Since EXO-89753 the description
+    // carries the tokenised answer links, so collapsing whitespace must not
+    // un-guard them: a token is not whitespace, and rewriting one is an edit.
+    String exo = EXO.replace("DESCRIPTION:Bring the board",
+                             "DESCRIPTION:Bring the board.\\n\\nEvent link: https://exo.test/a?t=s3cr3t");
+    String server = EXO.replace("DESCRIPTION:Bring the board",
+                                "DESCRIPTION:Bring the board.\\n\\nEvent link: https://exo.test/a?t=f0rged");
+    assertDifferent(server, exo);
+  }
+
+  @Test
+  public void aDroppedParagraphIsStillAnEdit() {
+    // The other half of the pair: collapsing runs of whitespace must not make
+    // a paragraph the copy has lost look like layout.
+    String exo = EXO.replace("DESCRIPTION:Bring the board",
+                             "DESCRIPTION:Bring the board.\\n\\nEvent link: https://exo.test/a?t=s3cr3t");
+    String server = EXO.replace("DESCRIPTION:Bring the board", "DESCRIPTION:Bring the board.");
+    assertDifferent(server, exo);
+  }
+
+  @Test
+  public void aReindentedSummaryIsNotAnEdit() {
+    // The relaxation is over every TEXT property IcsWriter emits, not only the
+    // description, because folding is not description-specific.
+    assertEquivalent(EXO.replace("SUMMARY:Sprint review", "SUMMARY:Sprint\\n  review"),
+                     EXO.replace("SUMMARY:Sprint review", "SUMMARY:Sprint review"));
+  }
+
+  @Test
+  public void aRenamedMeetingIsStillAnEditDespiteWhitespaceFolding() {
+    assertDifferent(EXO.replace("SUMMARY:Sprint review", "SUMMARY:Sprint retrospective"));
+  }
+
+  // ------------------------- a property the server will not store (EXO-89756)
+
+  @Test
+  public void aConferenceTheServerDropsIsAnEditUntilTheOperatorSaysOtherwise() {
+    // Shipped default: nothing is excused. BlueMind drops CONFERENCE from every
+    // copy, and until somebody has read a log line naming it, eXo says so.
+    assertDifferent(withConference(""), withConference(CONFERENCE));
+  }
+
+  @Test
+  public void aConferenceTheOperatorDeclaredDroppedIsNotAnEdit() {
+    // The lever the rig runs on. Note it could not be the existing one:
+    // ignoredProperties is consulted only for a name outside the recognised
+    // set, and CONFERENCE is a property IcsWriter emits.
+    ReflectionTestUtils.setField(judge, "droppedProperties", "CONFERENCE");
+
+    assertEquivalent(withConference(""), withConference(CONFERENCE));
+  }
+
+  @Test
+  public void theOldLeverCannotExcuseAPropertyExoEmits() {
+    // Pins the boundary between the two levers, and the reason the second one
+    // had to exist at all.
+    ReflectionTestUtils.setField(judge, "ignoredProperties", "CONFERENCE");
+
+    assertDifferent(withConference(""), withConference(CONFERENCE));
+  }
+
+  @Test
+  public void aRewrittenConferenceIsStillAnEditWhileTheLeverIsOn() {
+    // The whole safety argument for the lever, in one case. eXo's value is
+    // excused as an absence, but the client's value arrives as a surplus on the
+    // SERVER's side, which no rule covers — so a rewritten video link is still
+    // reported even on a server declared to drop the property.
+    ReflectionTestUtils.setField(judge, "droppedProperties", "CONFERENCE");
+
+    assertDifferent(withConference("CONFERENCE;FEATURE=VIDEO;VALUE=URI:https://mallory.test/meet/1\r\n"),
+                    withConference(CONFERENCE));
+  }
+
+  @Test
+  public void theLeverCannotBePointedAtTheOwnersAnswer() {
+    // OWNER-ATTENDEE is a canonical statement, not a property IcsWriter emits,
+    // and the list is restricted to the recognised set precisely so it cannot
+    // be aimed at somebody's reply.
+    ReflectionTestUtils.setField(judge, "droppedProperties", "OWNER-ATTENDEE,ATTENDEE;PARTSTAT");
+
+    String exo = EXO.replace("END:VEVENT",
+                             "ATTENDEE;PARTSTAT=ACCEPTED:mailto:alice@stalwart.local\r\nEND:VEVENT");
+    assertDifferent(EXO, exo);
+  }
+
+  /**
+   * The conference line eXo renders for a video meeting.
+   */
+  private static final String CONFERENCE = "CONFERENCE;FEATURE=VIDEO;VALUE=URI:https://exo.test/meet/1\r\n";
+
+  /**
+   * The reference object with a conference line, or without one.
+   *
+   * @param conference the line to carry, empty for a copy that has none
+   * @return the object
+   */
+  private String withConference(String conference) {
+    return EXO.replace("STATUS:CONFIRMED\r\n", conference + "STATUS:CONFIRMED\r\n");
   }
 
   /**
