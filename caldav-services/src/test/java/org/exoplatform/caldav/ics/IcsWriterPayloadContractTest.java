@@ -108,6 +108,105 @@ public class IcsWriterPayloadContractTest {
   }
 
   /**
+   * EXO-89768 — the organizer written twice.
+   *
+   * <p>
+   * agenda puts the person who called a meeting on its own attendee list, so
+   * the copy used to name them as {@code ORGANIZER} <b>and</b> as an
+   * {@code ATTENDEE} carrying their answer. A server whose model holds an
+   * organizer and a list of attendees that excludes them cannot store that
+   * second line: read back over CalDAV, BlueMind returned the copy with the
+   * {@code ORGANIZER} alone, and the answer eXo had put on the dropped line
+   * became a statement eXo made and the copy did not — which the mirror
+   * called a rewrite, repaired, and had undone again on the next store, for
+   * ever.
+   *
+   * <p>
+   * Named on the address, not on a flag, because that is the comparison the
+   * server itself makes: the same person spelled two ways is two attendees to
+   * it, and the collision only happens when the two spellings coincide.
+   */
+  @Test
+  public void theOrganizerIsNotAlsoWrittenAsAnAttendee() {
+    IcsEvent event = meeting();
+    IcsPerson organiserAttending = new IcsPerson("The Organiser", "organiser@example.com", "ACCEPTED");
+    event.setAttendees(List.of(organiserAttending, new IcsPerson("A Guest", "guest@example.com", "ACCEPTED")));
+
+    List<String> attendees = properties(writer.write(event), "ATTENDEE");
+
+    assertEquals(1, attendees.size(), "the organizer must not be repeated on the roster: " + attendees);
+    assertTrue(attendees.get(0).contains(":mailto:guest@example.com"), attendees.get(0));
+  }
+
+  /**
+   * The same, for the spelling a real account produced.
+   *
+   * <p>
+   * The live collision was not a literal repeat: the copy names its own owner
+   * by the address their CalDAV account answers to, and on the rig that
+   * address had become the organizer's profile address too — {@code MAILTO:}
+   * against {@code mailto:}, and one of them upper-cased by the server. So the
+   * rule compares addresses the way a calendar server does, without the scheme
+   * and without the casing, and this pins that.
+   */
+  @Test
+  public void theOrganizerIsRecognisedWhateverTheirAddressIsSpelledLike() {
+    IcsEvent event = meeting();
+    event.setOrganizer(new IcsPerson("The Organiser", "Organiser@Example.com", null));
+    event.setAttendees(List.of(new IcsPerson("The Organiser", "mailto:organiser@EXAMPLE.com", "ACCEPTED"),
+                               new IcsPerson("A Guest", "guest@example.com", "ACCEPTED")));
+
+    List<String> attendees = properties(writer.write(event), "ATTENDEE");
+
+    assertEquals(1, attendees.size(), "one spelling of the organizer is still the organizer: " + attendees);
+    assertTrue(attendees.get(0).contains(":mailto:guest@example.com"), attendees.get(0));
+  }
+
+  /**
+   * The fence: everybody else stays, answer and all.
+   *
+   * <p>
+   * Written because the rule is a deletion, and a deletion that reached one
+   * attendee too far would empty the roster of the copy — which is what makes
+   * RSVP possible on the phone at all, and what EXO-89681 reads an answer back
+   * from.
+   */
+  @Test
+  public void everyOtherAttendeeIsStillWrittenWithTheirAnswer() {
+    IcsEvent event = meeting();
+    event.setAttendees(List.of(new IcsPerson("A Guest", "guest@example.com", "ACCEPTED"),
+                               new IcsPerson("Another", "other@example.com", "DECLINED")));
+
+    List<String> attendees = properties(writer.write(event), "ATTENDEE");
+
+    assertEquals(2, attendees.size(), attendees.toString());
+    assertTrue(attendees.stream().anyMatch(line -> line.contains("PARTSTAT=ACCEPTED")
+        && line.contains(":mailto:guest@example.com")), attendees.toString());
+    assertTrue(attendees.stream().anyMatch(line -> line.contains("PARTSTAT=DECLINED")
+        && line.contains(":mailto:other@example.com")), attendees.toString());
+  }
+
+  /**
+   * And the organizer is still named as the organizer.
+   *
+   * <p>
+   * The point of the change is that the duplicate goes, not the person: a copy
+   * that stopped saying who called the meeting would lose the attribution
+   * every client shows, and would contradict the golden corpus, whose write
+   * cases are events with an organizer and nobody else.
+   */
+  @Test
+  public void theOrganizerIsStillNamedWhenTheyAreTheOnlyParticipant() {
+    IcsEvent event = meeting();
+    event.setAttendees(List.of(new IcsPerson("The Organiser", "organiser@example.com", "ACCEPTED")));
+
+    String ics = writer.write(event);
+
+    assertNotNull(property(ics, "ORGANIZER"), "the copy must still say who called the meeting");
+    assertTrue(properties(ics, "ATTENDEE").isEmpty(), "nobody but the organizer is on the roster");
+  }
+
+  /**
    * Defect 3 — METHOD missing from the body.
    *
    * <p>
@@ -281,6 +380,26 @@ public class IcsWriterPayloadContractTest {
                      || line.startsWith(propertyName + ";"))
                  .findFirst()
                  .orElse(null);
+  }
+
+  /**
+   * Reads every occurrence of one property out of an iCalendar document,
+   * unfolded like {@link #property(String, String)}.
+   *
+   * <p>
+   * A sibling of that method rather than a replacement for it: the properties
+   * it reads are single-valued, where {@code ATTENDEE} names a set and the
+   * question asked of it is how many lines there are.
+   *
+   * @param ics the document
+   * @param propertyName the property name, without its parameters
+   * @return every matching property line, in document order, possibly empty
+   */
+  private List<String> properties(String ics, String propertyName) {
+    String unfolded = ics.replace("\r\n ", "").replace("\r\n\t", "").replace("\n ", "").replace("\n\t", "");
+    return Arrays.stream(unfolded.split("\\R"))
+                 .filter(line -> line.startsWith(propertyName + ":") || line.startsWith(propertyName + ";"))
+                 .toList();
   }
 
   /**
