@@ -375,7 +375,7 @@ public class CaldavServerUrlValidator {
         return true;
       }
       byte[] embedded = embeddedIpv4(bytes);
-      return embedded != null && isBlockedIpv4(embedded);
+      return embedded.length == 4 && isBlockedIpv4(embedded);
     }
     return false;
   }
@@ -405,18 +405,20 @@ public class CaldavServerUrlValidator {
    * IPv4-compatible ({@code ::a.b.c.d}) IPv6 address, when there is one.
    *
    * @param bytes the sixteen bytes of an IPv6 address
-   * @return the four embedded IPv4 bytes, or null when the address embeds none
+   * @return the four embedded IPv4 bytes, or an empty array when the address
+   *         embeds none — a real answer is always four bytes, so an empty one
+   *         is unambiguous
    */
   private byte[] embeddedIpv4(byte[] bytes) {
     for (int i = 0; i < 10; i++) {
       if (bytes[i] != 0) {
-        return null;
+        return new byte[0];
       }
     }
     boolean mapped = (bytes[10] & 0xFF) == 0xFF && (bytes[11] & 0xFF) == 0xFF;
     boolean compatible = bytes[10] == 0 && bytes[11] == 0;
     if (!mapped && !compatible) {
-      return null;
+      return new byte[0];
     }
     return new byte[] { bytes[12], bytes[13], bytes[14], bytes[15] };
   }

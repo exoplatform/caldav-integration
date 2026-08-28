@@ -277,22 +277,19 @@ public class CaldavServerServiceTest {
   public void shouldRefuseAServerAddressThePlatformMustNotConnectTo() {
     withUser(ADMIN_USER, true);
 
+    CaldavServer internal = server(0, null, "Internal", null, "https://10.1.2.3/dav/", true);
     IllegalArgumentException created =
                                     assertThrows(IllegalArgumentException.class,
-                                                 () -> caldavServerService.createServer(server(0, null, "Internal", null,
-                                                                                               "https://10.1.2.3/dav/", true),
-                                                                                        ADMIN_USER));
+                                                 () -> caldavServerService.createServer(internal, ADMIN_USER));
     assertEquals(CaldavServerUrlValidator.PRIVATE_ADDRESS_MESSAGE, created.getMessage());
 
     // The update path reads the stored row to see whether the address moved, so
     // the storage IS touched now - what must not happen is the write.
     when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, "Internal", null, SERVER_URL, true));
+    CaldavServer plainHttp = server(7, null, "Internal", null, "http://dav.example.org/dav/", true);
     IllegalArgumentException updated =
                                     assertThrows(IllegalArgumentException.class,
-                                                 () -> caldavServerService.updateServer(server(7, null, "Internal", null,
-                                                                                               "http://dav.example.org/dav/",
-                                                                                               true),
-                                                                                        ADMIN_USER));
+                                                 () -> caldavServerService.updateServer(plainHttp, ADMIN_USER));
     assertEquals(CaldavServerUrlValidator.SCHEME_NOT_ALLOWED_MESSAGE, updated.getMessage());
 
     verify(caldavServerStorage, never()).createServer(any(), anyString());
@@ -356,7 +353,7 @@ public class CaldavServerServiceTest {
    * of service has to stay possible whatever it holds.
    */
   @Test
-  public void shouldCheckTheAddressWhenActivatingButNotWhenDeactivating() throws Exception {
+  public void shouldCheckTheAddressWhenActivatingButNotWhenDeactivating() {
     withUser(ADMIN_USER, true);
     CaldavServer stored = server(7, "agenda.caldavCalendar.7", "Legacy", null, "http://localhost:8888/dav/cal/{username}/",
                                  false);
