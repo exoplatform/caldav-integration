@@ -60,6 +60,17 @@ public class CaldavPendingPushStorage {
    * a rewrite recorded after a removal would otherwise put back a meeting
    * somebody destroyed.
    *
+   * <p>
+   * <b>The lookup before the write is a check-then-act, and the database is what
+   * settles it.</b> Two listener threads carrying two edits of the same meeting
+   * can both read "nothing owed" before either has written, and the unique
+   * constraint on the mapping row is what makes the outcome one row rather than
+   * two — the loser's insert is refused and its caller says so. Nothing is lost
+   * by that: the winner's row already records the same instruction about the
+   * same copy. The only case where the two differ is an edit and a deletion of
+   * one meeting in the same instant, and there the refusal is visible in the log
+   * rather than silent.
+   *
    * @param objectSyncId the mapping row whose copy is behind
    * @param userIdentityId whose calendar the copy sits in
    * @param kind whether the copy has to be written again or removed
