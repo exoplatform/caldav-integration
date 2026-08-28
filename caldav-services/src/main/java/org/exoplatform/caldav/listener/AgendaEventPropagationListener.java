@@ -90,7 +90,7 @@ public abstract class AgendaEventPropagationListener extends Listener<AgendaEven
       // persistence writes that record what was pushed are rolled back as a
       // warning, and the copies would look carried out while nothing was.
       LOG.warn("Event {} changed but this listener is running with no portal container;"
-          + " its copies are left to the verification pass", modification.getEventId());
+          + " its copies are left stale and nothing records that they are", modification.getEventId());
       return;
     }
     CaldavEventPropagationService propagationService = getCaldavEventPropagationService();
@@ -101,8 +101,10 @@ public abstract class AgendaEventPropagationListener extends Listener<AgendaEven
       propagate(propagationService, modification);
     } catch (Exception | LinkageError e) {
       // The edit is recorded in eXo and that must stand whatever any calendar
-      // server says. Carrying it outward is a convenience the verification pass
-      // retries. LinkageError as well as Exception: one escaped a
+      // server says. What is owed to each copy has already been written down by
+      // then, so the sweep settles what this attempt did not (EXO-89773) — it
+      // used to say the verification pass would, which it never could.
+      // LinkageError as well as Exception: one escaped a
       // catch (RuntimeException) on this code path once and took a whole sweep
       // down with it.
       LOG.warn("The change to event {} could not be carried to the calendar copies of its attendees",
@@ -135,7 +137,8 @@ public abstract class AgendaEventPropagationListener extends Listener<AgendaEven
       try {
         caldavEventPropagationService = ExoContainerContext.getService(CaldavEventPropagationService.class);
       } catch (Exception | LinkageError e) {
-        LOG.debug("CalDAV propagation service not resolvable; the copies stay as they are until the next verification pass", e);
+        LOG.debug("CalDAV propagation service not resolvable; the copies stay as they are and nothing records that they should not",
+                  e);
       }
     }
     return caldavEventPropagationService;
