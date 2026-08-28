@@ -160,4 +160,35 @@ public class CaldavServerEntity {
   @Temporal(TemporalType.TIMESTAMP)
   @Column(name = "COPY_SETTINGS_UPDATED")
   private Date    copySettingsUpdated;
+
+  /**
+   * Where the meeting copies pushed to this server are written, as the name of
+   * a {@code MirrorTargetKind}.
+   *
+   * <p>
+   * <b>A String rather than an {@code @Enumerated} field, on purpose.</b> A
+   * mapped enum throws on a value the running code does not know, and it throws
+   * on the <i>read</i> — so a row written by a later version, or edited by hand,
+   * would not degrade a setting, it would make the registration unreadable and
+   * take every account resolving through it down with it. Read as text and
+   * mapped in the storage, an unknown value resolves to the behaviour every
+   * deployment already had.
+   *
+   * <p>
+   * NOT NULL with a DEFAULT, unlike every nullable column above it: those
+   * distinguish "never asked" from "answered nothing", because something else
+   * — a deployment-wide property, or a pair's own stamp — decides for a row
+   * nobody has touched. Nothing stands behind this one, so null would mean
+   * nothing that empty does not, and the column's own DEFAULT is what backfills
+   * every row an existing deployment already holds with the behaviour it
+   * already had. The initialiser says the same thing, so a row this code builds
+   * and one the database backfilled agree.
+   *
+   * <p>
+   * Declared LAST, after {@link #copySettingsUpdated}: the entity is built
+   * positionally through its all-args constructor, and this field is the final
+   * argument. The next column appended goes after it.
+   */
+  @Column(name = "MIRROR_TARGET", nullable = false)
+  private String  mirrorTarget = "DEDICATED_CALENDAR";
 }
