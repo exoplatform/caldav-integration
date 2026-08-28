@@ -451,7 +451,13 @@ public class CaldavServerStorage {
       merged.entrySet()
             .removeIf(entry -> !excused(entity, entry.getKey().property())
                 && retention.forgets(entry.getKey(), entry.getValue()));
-      merged.replaceAll((observation, tally) -> tally.stamped(today));
+      // Back-dated, never today. An entry carried across a write was not seen
+      // in it, and dating it now would make the oldest records in the row look
+      // like the freshest — holding off both supersession and ageing for a full
+      // window, on precisely the entries that should go first. One grace period
+      // and a day is the least that leaves it superseded-eligible immediately,
+      // and it keeps the rest of its ageing window.
+      merged.replaceAll((observation, tally) -> tally.stamped(today - retention.settledGraceDays() - 1));
       String summary = ServerQuirkSummary.format(merged);
       if (StringUtils.equals(summary, entity.getObservedQuirks())) {
         // Nothing to say. A settled server is swept every few minutes for ever,

@@ -180,11 +180,28 @@ public final class ServerQuirkSummary {
     /**
      * The same tally with a stamp, for an entry that had none.
      *
-     * @param today the current epoch day
+     * <p>
+     * <b>The day given must be in the past, and the caller is what decides how
+     * far.</b> Stamping a record with today says it was seen today, and nothing
+     * observed it — the record was merely carried across a write. Doing so once
+     * froze every entry written before stamping existed: each looked current,
+     * {@link #notSeenWithin} answered false for all of them, and both
+     * supersession and ageing were held off for the whole window, on exactly the
+     * records that had been sitting longest. It also contradicted the reading
+     * {@link #notSeenWithin} is built on, that a record with no stamp predates
+     * the mechanism and so cannot be evidence of anything current.
+     *
+     * <p>
+     * The migration therefore dates such a record far enough back to stay
+     * superseded-eligible at once, and no further, so what remains of its
+     * ageing window is preserved.
+     *
+     * @param migratedDay the epoch day to attribute to an entry that has no
+     *          stamp; must already be back-dated by the caller
      * @return the tally, stamped
      */
-    public Tally stamped(long today) {
-      return lastSeenDay == UNKNOWN_DAY ? new Tally(count, today) : this;
+    public Tally stamped(long migratedDay) {
+      return lastSeenDay == UNKNOWN_DAY ? new Tally(count, migratedDay) : this;
     }
   }
 
