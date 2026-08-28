@@ -222,6 +222,37 @@ public class CaldavSyncStorage {
   }
 
   /**
+   * Whether this iCalendar object is a copy eXo itself wrote into the user's
+   * mirror.
+   *
+   * <p>
+   * Ownership expressed per object rather than per collection. Until now a
+   * mirror copy was protected by <em>where</em> it lived — the inbound sweep
+   * skipped the dedicated collection wholesale — so pointing the mirror at a
+   * calendar the inbound half also reads would have removed the protection
+   * entirely, and eXo would have imported its own copies back as duplicate
+   * personal events.
+   *
+   * <p>
+   * The mapping table is the authority because its row is saved in the same
+   * flow as the PUT that created the object: by the time any inbound pass can
+   * see the object, the row exists. The one window it does not cover is an
+   * interruption between the two — the PUT went through and the row was never
+   * saved — which leaves an unowned copy the next push reconciles.
+   *
+   * @param userIdentityId identity of the user whose copies are asked about
+   * @param serverId the declared server registration
+   * @param icsUid the iCalendar UID being imported
+   * @return true when one of this user's mirror pairs already maps that UID
+   */
+  public boolean isMirrorOwned(long userIdentityId, long serverId, String icsUid) {
+    if (StringUtils.isBlank(icsUid)) {
+      return false;
+    }
+    return objectSyncDAO.countByOwnerAndOriginAndIcsUid(userIdentityId, serverId, SyncOrigin.MIRROR, icsUid) > 0;
+  }
+
+  /**
    * The mapping for one eXo event inside a pair.
    *
    * @param calendarSyncId the pair
