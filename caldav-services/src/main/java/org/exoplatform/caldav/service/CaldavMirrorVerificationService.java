@@ -123,6 +123,16 @@ import org.exoplatform.services.log.Log;
  * {@link org.exoplatform.caldav.utils.CopySettingsFingerprint}.
  *
  * <p>
+ * <b>And when the setting that changed was <i>where</i> the copies go, they are
+ * moved rather than stranded.</b> The destination is part of the same
+ * fingerprint, so the round a destination change owes is this one — and before
+ * a single content comparison runs, {@link CaldavMirrorRelocationService} points
+ * the pair at the new collection and carries the backlog across, object by
+ * object, reading any answer off a copy before the mapping stops watching it.
+ * The stamp is then written only if that finished: a copy the server would not
+ * let go of leaves the change owed, and the next sweep tries again.
+ *
+ * <p>
  * <b>Compare then repair; never a mass re-push.</b> The round is this pass minus
  * one gate, and nothing else. It does not write what it has not first found
  * different: on a server that re-serialises or stamps what it stores — which is
@@ -177,6 +187,9 @@ public class CaldavMirrorVerificationService {
 
   @Autowired
   private CaldavServerQuirkService     caldavServerQuirkService;
+
+  @Autowired
+  private CaldavMirrorRelocationService caldavMirrorRelocationService;
 
   /**
    * How many times one object may be repaired before the pass stops trying.
@@ -248,6 +261,15 @@ public class CaldavMirrorVerificationService {
       return MirrorVerification.nothing();
     }
     CalendarSync mirror = mirrors.get(0);
+    CaldavServer server = resolveServer(settings);
+    Date owed = settingsRoundOwed(server, mirror);
+    // Before the listing, deliberately. A setting that moved the destination
+    // moves this collection too, and listing first would spend the pass
+    // comparing the contents of a calendar the copies are about to leave.
+    MirrorRelocation relocation = relocate(userIdentityId, settings, mirror, owed);
+    if (relocation.applicable()) {
+      mirror.setRemoteHref(relocation.destination());
+    }
     Map<String, String> etags;
     try {
       CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
@@ -267,7 +289,6 @@ public class CaldavMirrorVerificationService {
       LOG.warn("The mirror collection of user {} could not be listed; nothing is verified this round", userIdentityId, e);
       return MirrorVerification.nothing();
     }
-    CaldavServer server = resolveServer(settings);
     // Once per pass, whatever the pass finds, and before anything below can
     // decline to walk the copies. The summary's pruning rides on its write, the
     // write on something having diverged - and a converged account diverges on
@@ -275,21 +296,60 @@ public class CaldavMirrorVerificationService {
     // this the records that most need clearing are the ones on the servers that
     // stopped producing them.
     caldavServerQuirkService.settle(server == null ? null : server.getId());
-    Date owed = settingsRoundOwed(server, mirror);
-    if (owed != null) {
-      LOG.info("A copy setting of user {}'s server changed; every copy of theirs is compared once this round",
-               userIdentityId);
-    }
-    MirrorVerification verification = comparePages(userIdentityId, mirror, settings, etags, owed != null, server);
-    if (owed != null) {
+    MirrorVerification verification = comparePages(userIdentityId,
+                                                   mirror,
+                                                   settings,
+                                                   etags,
+                                                   owed != null && relocation.applicable(),
+                                                   server);
+    if (owed != null && relocation.complete()) {
       // After the walk, never before. This is the whole of the resumability:
       // anything that ends the round early — an exception out of the storage,
       // the platform stopping — never reaches here, the pair stays behind, and
       // the next sweep re-runs a comparison that rewrites nothing already
       // converged.
+      //
+      // And only when the relocation of EXO-89761 finished. A copy the server
+      // would not let go of, or one that could not be written into the new
+      // collection, is work this change still owes; stamping over it would tell
+      // every later pass there is nothing to do and strand that copy for good.
       stampSettingsApplied(mirror, owed);
     }
     return verification;
+  }
+
+  /**
+   * Brings the copies already on the server to wherever the destination now
+   * says they go, when a setting has changed (EXO-89761).
+   *
+   * <p>
+   * Driven by the very stamp that drives the comparison round, because the two
+   * answer one question between them: the destination setting is in the
+   * fingerprint that moves the stamp, so the one moment a mirror can find itself
+   * pointing at the wrong collection is the moment it finds itself owing a
+   * comparison. On every other change — the answer-links switch, an excusal
+   * list — the destination resolves to the collection the pair already points
+   * at, nothing is pending, and this costs one resolution and one page read.
+   *
+   * <p>
+   * A pass owing nothing does not ask at all, and that is what keeps the
+   * ordinary sweep at one listing: the relocation is bounded to the rounds a
+   * settings change already pays for.
+   *
+   * @param userIdentityId identity of the user
+   * @param settings the connected account
+   * @param mirror the binding standing for the mirror collection
+   * @param owed the server stamp this round would apply, or null when none is
+   *          owed
+   * @return what the relocation moved, or a deferred one when nothing was owed
+   */
+  private MirrorRelocation relocate(long userIdentityId, CaldavUserSetting settings, CalendarSync mirror, Date owed) {
+    if (owed == null) {
+      return MirrorRelocation.deferred();
+    }
+    LOG.info("A copy setting of user {}'s server changed; every copy of theirs is compared once this round",
+             userIdentityId);
+    return caldavMirrorRelocationService.relocate(userIdentityId, settings, mirror);
   }
 
   /**
@@ -938,6 +998,11 @@ public class CaldavMirrorVerificationService {
   public void forgetRepairs(long userIdentityId) {
     repairs.keySet().removeIf(key -> key.startsWith(userIdentityId + "|"));
     settled.keySet().removeIf(key -> key.startsWith(userIdentityId + "|"));
+    // And what the relocation remembers about the same account, for the same
+    // reason: it is the third map of "what is going wrong right now" for this
+    // user, and forgetting two of the three would leave a refused removal
+    // silent after the very restart that is meant to say it again.
+    caldavMirrorRelocationService.forget(userIdentityId);
   }
 
   /**
