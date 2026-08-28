@@ -532,6 +532,43 @@
     </addColumn>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-25">
+    <comment>
+      Where the meeting copies pushed to this server are written (EXO-89760):
+      DEDICATED_CALENDAR - a calendar of eXo's own, the behaviour every
+      deployment has today - MAIN_CALENDAR, the calendar the account itself
+      calls its default, or USER_CHOICE, which writes nothing until the user has
+      named one.
+
+      NOT NULL with DEFAULT 'DEDICATED_CALENDAR', and the DEFAULT is the whole
+      upgrade story - it is the same DDL clause that backfills every row an
+      existing deployment already holds, so every server declared before this
+      setting existed goes on writing copies exactly where it writes them today.
+      Unlike the three excusal columns above there is no deployment-wide
+      property standing behind this one, so a NULL would say nothing an empty
+      value does not; collapsing them costs nothing here and saves every reader
+      a null check on a value that always has an answer.
+
+      A name rather than a number. A numeric ordinal is unreadable in a database
+      client and, worse, silently re-points every stored row the day somebody
+      inserts a value into the middle of the enum.
+
+      NVARCHAR(32) leaves room for a fourth kind without a second ALTER on a
+      table every account resolution reads.
+
+      addColumn with deliberately NO modifySql, for the reason 1.0.0-3 records:
+      the ENGINE/CHARSET append is only valid on CREATE TABLE, and gluing it
+      onto an ALTER TABLE is the MySQL-1064 failure that takes the whole
+      platform down through Liquibase. No rollback is written because addColumn
+      has an automatic one.
+    </comment>
+    <addColumn tableName="CALDAV_SERVER">
+      <column name="MIRROR_TARGET" type="NVARCHAR(32)" defaultValue="DEDICATED_CALENDAR">
+        <constraints nullable="false"/>
+      </column>
+    </addColumn>
+  </changeSet>
+
   <changeSet author="caldav" id="1.0.0-40">
     <comment>
       When a setting of this registration that governs the COPIES last changed

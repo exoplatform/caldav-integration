@@ -33,6 +33,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.exoplatform.caldav.dao.CaldavServerDAO;
 import org.exoplatform.caldav.entity.CaldavServerEntity;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.ObservedQuirk;
 import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkEffect;
@@ -191,6 +192,15 @@ public class CaldavServerStorage {
       // caller sent: the service recomputed it from this very row before
       // calling, which is the only place the rule of EXO-89759 is applied.
       entity.setCopySettingsUpdated(server.getCopySettingsUpdated());
+      // Only an explicit value moves this one, and the difference from the line
+      // above is deliberate: that stamp is recomputed server-side on every save,
+      // so it is always stated, while a drawer that does not carry this control
+      // sends no field at all - and reading that null as "reset it" would let
+      // every unrelated save silently put an administrator's destination back to
+      // eXo's own calendar.
+      if (server.getMirrorTarget() != null) {
+        entity.setMirrorTarget(server.getMirrorTarget().name());
+      }
       Long oldImageFileId = entity.getImageFileId();
       boolean imageRemoved = (server.getImageFileId() == null || server.getImageFileId() == 0)
           && oldImageFileId != null && oldImageFileId > 0;
@@ -285,7 +295,8 @@ public class CaldavServerStorage {
                             entity.getDroppedProperties(),
                             entity.getOmittedProperties(),
                             observedQuirks(entity.getObservedQuirks()),
-                            entity.getCopySettingsUpdated());
+                            entity.getCopySettingsUpdated(),
+                            MirrorTargetKind.of(entity.getMirrorTarget()));
   }
 
   /**
@@ -532,6 +543,11 @@ public class CaldavServerStorage {
     entity.setDroppedProperties(server.getDroppedProperties());
     entity.setOmittedProperties(server.getOmittedProperties());
     entity.setCopySettingsUpdated(server.getCopySettingsUpdated());
+    // A create that says nothing keeps the column's own default rather than
+    // writing a null into a NOT NULL column.
+    if (server.getMirrorTarget() != null) {
+      entity.setMirrorTarget(server.getMirrorTarget().name());
+    }
     return entity;
   }
 }
