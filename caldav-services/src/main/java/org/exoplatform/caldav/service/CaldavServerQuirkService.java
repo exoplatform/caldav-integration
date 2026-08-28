@@ -161,15 +161,48 @@ public class CaldavServerQuirkService {
    * @param divergences what the comparison saw, one entry per property
    */
   public void observe(Long serverId, List<IcsDivergence> divergences) {
-    if (serverId == null || serverId <= 0 || divergences == null || divergences.isEmpty()) {
+    if (serverId == null || serverId <= 0) {
       return;
     }
-    Map<Observation, Long> increments = pending.computeIfAbsent(serverId, key -> new ConcurrentHashMap<>());
-    for (IcsDivergence divergence : divergences) {
-      Observation observation = Observation.of(divergence.direction(), divergence.property());
-      if (observation != null) {
-        increments.merge(observation, 1L, Long::sum);
+    if (divergences != null && !divergences.isEmpty()) {
+      Map<Observation, Long> increments = pending.computeIfAbsent(serverId, key -> new ConcurrentHashMap<>());
+      for (IcsDivergence divergence : divergences) {
+        Observation observation = Observation.of(divergence.direction(), divergence.property());
+        if (observation != null) {
+          increments.merge(observation, 1L, Long::sum);
+        }
       }
+    }
+    settle(serverId);
+  }
+
+  /**
+   * Gives one server's summary its chance to be written and pruned, whether or
+   * not anything diverged.
+   *
+   * <p>
+   * <b>The cleanup must not depend on the problem still happening.</b> Pruning
+   * used to ride on the write, the write on a pending count, and the count on a
+   * divergence — and a copy that agrees with what eXo writes moves no ETag, so a
+   * converged account never even reaches the comparison. An account that is
+   * healthy, which is exactly the account whose stale records need clearing,
+   * therefore never wrote its row at all. That is the same failure one level
+   * down from the one supersession-by-excusal fixed: the mechanism could only
+   * act while the fault it cleans up after was still occurring.
+   *
+   * <p>
+   * So the pass calls this once per sweep for the server it swept, with nothing
+   * to report. The throttle below is what keeps that cheap — one read per server
+   * per interval, however many accounts are connected to it — and the write
+   * happens only when the summary actually changes, so a settled row stays
+   * untouched rather than being rewritten every five minutes for ever.
+   *
+   * @param serverId the registration the pass ran against, may be null for an
+   *          account predating the registry — there is no row to settle
+   */
+  public void settle(Long serverId) {
+    if (serverId == null || serverId <= 0) {
+      return;
     }
     flushIfDue(serverId);
   }
@@ -179,9 +212,10 @@ public class CaldavServerQuirkService {
    * passed since the last write.
    *
    * <p>
-   * The first observation after a restart always writes, because nothing has
-   * been flushed yet: a behaviour that started while eXo was down is in the
-   * drawer as soon as the first sweep sees it.
+   * The first pass after a restart always proceeds, because nothing has been
+   * flushed yet: a behaviour that started while eXo was down is in the drawer as
+   * soon as the first sweep sees it, and a record that should already have gone
+   * goes then too.
    *
    * @param serverId technical identifier of the registration
    */
@@ -192,9 +226,13 @@ public class CaldavServerQuirkService {
       return;
     }
     flushed.put(serverId, now);
+    // Never null, and deliberately allowed to be empty: an empty batch is what a
+    // converged account produces, and it is precisely the account whose summary
+    // most needs pruning. The storage writes only if the result differs from
+    // what is stored, so this costs a read and nothing else.
     Map<Observation, Long> increments = pending.remove(serverId);
-    if (increments == null || increments.isEmpty()) {
-      return;
+    if (increments == null) {
+      increments = Map.of();
     }
     try {
       caldavServerStorage.mergeObservedQuirks(serverId, increments, retention(serverId, increments));
