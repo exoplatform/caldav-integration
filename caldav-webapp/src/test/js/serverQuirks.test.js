@@ -145,9 +145,6 @@ describe('splitList and withPatterns', () => {
 
 describe('describeQuirk', () => {
 
-  /** A translate that echoes the key and its argument, so wording is visible. */
-  const translate = (key, args) => args && `${key}(${args[0]})` || key;
-
   it('keys a described behaviour by its quirk, so a family is one checkbox', () => {
     // Live on the rig: three Outlook/Thunderbird markers rendered as three
     // identical rows. One key means one row.
@@ -156,50 +153,61 @@ describe('describeQuirk', () => {
         patterns: ['X-MICROSOFT-*', 'X-MOZ-*']},
       {quirkId: 'addsCompatibilityMarkers', properties: ['X-MICROSOFT-CDO-BUSYSTATUS'], direction: 'ADDED', count: 1,
         patterns: ['X-MICROSOFT-*', 'X-MOZ-*']},
-    ].map(quirk => describeQuirk(quirk, translate));
+    ].map(quirk => describeQuirk(quirk));
 
     expect(rows[0].key).toBe(rows[1].key);
   });
 
   it('keys a behaviour nothing describes by its own property', () => {
-    const foo = describeQuirk({quirkId: null, properties: ['X-BM-FOO'], direction: 'ADDED', count: 1}, translate);
-    const bar = describeQuirk({quirkId: null, properties: ['X-BM-BAR'], direction: 'ADDED', count: 1}, translate);
+    const foo = describeQuirk({quirkId: null, properties: ['X-BM-FOO'], direction: 'ADDED', count: 1});
+    const bar = describeQuirk({quirkId: null, properties: ['X-BM-BAR'], direction: 'ADDED', count: 1});
 
     expect(foo.key).not.toBe(bar.key);
   });
 
   it('ticks the whole family the catalogue names, not the property seen first', () => {
     const row = describeQuirk({quirkId: 'addsCompatibilityMarkers', properties: ['X-MOZ-LASTACK'], direction: 'ADDED',
-      count: 3, patterns: ['X-MICROSOFT-*', 'X-MOZ-*']}, translate);
+      count: 3, patterns: ['X-MICROSOFT-*', 'X-MOZ-*']});
 
     expect(row.patterns).toEqual(['X-MICROSOFT-*', 'X-MOZ-*']);
   });
 
   it('falls back to the observed properties when no patterns arrived', () => {
-    const row = describeQuirk({quirkId: null, properties: ['X-BM-FOO'], direction: 'ADDED', count: 1}, translate);
+    const row = describeQuirk({quirkId: null, properties: ['X-BM-FOO'], direction: 'ADDED', count: 1});
 
     expect(row.patterns).toEqual(['X-BM-FOO']);
   });
 
-  it('counts in a sentence that agrees with itself', () => {
+  it('chooses a count wording that agrees with itself', () => {
     // "Seen 1 times" was on screen; a plural that does not agree reads as a
-    // defect in the thing it is counting.
-    expect(describeQuirk({properties: ['X'], direction: 'ADDED', count: 1}, translate).seen)
+    // defect in the thing it is counting. The key is chosen here and resolved in
+    // the template, which is where $t still has its receiver.
+    expect(describeQuirk({properties: ['X'], direction: 'ADDED', count: 1}).seenKey)
       .toBe('caldav.admin.servers.quirks.seen.once');
-    expect(describeQuirk({properties: ['X'], direction: 'ADDED', count: 3}, translate).seen)
-      .toBe('caldav.admin.servers.quirks.seen.many(3)');
+    expect(describeQuirk({properties: ['X'], direction: 'ADDED', count: 3}).seenKey)
+      .toBe('caldav.admin.servers.quirks.seen.many');
+  });
+
+  it('resolves no wording itself, so no translator has to cross the boundary', () => {
+    // The regression this shape exists to prevent: the drawer passed `this.$t`,
+    // a method torn off its receiver, and every entry threw on $i18n. Returning
+    // keys means there is no function to pass, correctly or otherwise.
+    const row = describeQuirk({quirkId: 'dropsConference', properties: ['CONFERENCE'], direction: 'DROPPED', count: 1});
+
+    expect(Object.values(row).some(value => typeof value === 'function')).toBe(false);
   });
 
   it('marks only a payload-changing behaviour as changing what eXo writes', () => {
     expect(describeQuirk({quirkId: 'omitsSoloOrganizer', properties: ['SOLO-ORGANIZER'], direction: 'DROPPED',
-      effect: 'OMIT', count: 1}, translate).changesWhatIsWritten).toBe(true);
+      effect: 'OMIT', count: 1}).changesWhatIsWritten).toBe(true);
     expect(describeQuirk({quirkId: 'dropsConference', properties: ['CONFERENCE'], direction: 'DROPPED',
-      effect: 'TOLERATE', count: 1}, translate).changesWhatIsWritten).toBe(false);
+      effect: 'TOLERATE', count: 1}).changesWhatIsWritten).toBe(false);
   });
 
   it('names an undescribed behaviour by its own property in the generic wording', () => {
-    const row = describeQuirk({quirkId: null, properties: ['X-BM-FOO'], direction: 'ADDED', count: 1}, translate);
+    const row = describeQuirk({quirkId: null, properties: ['X-BM-FOO'], direction: 'ADDED', count: 1});
 
-    expect(row.label).toBe('caldav.admin.servers.quirks.generic.added.label(X-BM-FOO)');
+    expect(row.labelKey).toBe('caldav.admin.servers.quirks.generic.added.label');
+    expect(row.property).toBe('X-BM-FOO');
   });
 });
