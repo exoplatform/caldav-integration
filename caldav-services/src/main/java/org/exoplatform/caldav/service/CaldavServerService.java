@@ -176,7 +176,7 @@ public class CaldavServerService {
     }
     boolean stalwartActive = !StringUtils.equalsIgnoreCase(System.getProperty(CALDAV_ENABLED_PROPERTY), "false");
     caldavServerStorage.createSeedServer(new CaldavServer(0, null, "Stalwart", null, stalwartUrl, stalwartActive, null, null,
-                                                          null, null, true, null, null, null),
+                                                          null, null, true, null, null, null, null),
                                          CALDAV_PROVIDER_NAME);
     // The kernel plugin only CREATES the provider when missing — an existing
     // one keeps whatever enabled state it holds (an admin may have disabled
@@ -184,11 +184,11 @@ public class CaldavServerService {
     // now, so its activation is pushed onto the provider explicitly; on a
     // fresh install both writes carry the same property-driven value.
     saveAgendaRemoteProvider(new CaldavServer(0, CALDAV_PROVIDER_NAME, "Stalwart", null, stalwartUrl, stalwartActive, null,
-                                              null, null, null, true, null, null, null));
+                                              null, null, null, true, null, null, null, null));
     LOG.info("Seeded the Stalwart CalDAV server ({})", stalwartUrl);
     CaldavServer bluemind = caldavServerStorage.createServer(new CaldavServer(0, null, "Bluemind", null, DEFAULT_BLUEMIND_URL,
                                                                               true, null, null, null, null, true, null,
-                                                                              null, null),
+                                                                              null, null, null),
                                                              CALDAV_PROVIDER_NAME);
     saveAgendaRemoteProvider(bluemind);
     LOG.info("Seeded the Bluemind CalDAV server ({})", DEFAULT_BLUEMIND_URL);
@@ -328,7 +328,7 @@ public class CaldavServerService {
     }
     saveAgendaRemoteProvider(new CaldavServer(server.getId(), server.getProviderName(), server.getName(),
                                               server.getDescription(), server.getServerUrl(), false, null, null, null, null,
-                                              server.isAnswerLinksInCopy(), null, null, null));
+                                              server.isAnswerLinksInCopy(), null, null, null, null));
     caldavServerStorage.deleteServer(serverId);
     caldavServerQuirkService.forget(serverId);
   }

@@ -51,6 +51,14 @@ import java.util.Optional;
  * and what the sweep excuses cannot drift apart.
  *
  * <p>
+ * <b>Two kinds of entry, and the difference is declared.</b> Most entries only
+ * change what eXo <i>notices</i>; one changes what eXo <i>writes</i> into a
+ * copy on somebody's calendar. {@link ServerQuirkEffect} carries that, it
+ * decides which stored list a tick is written into, and the drawer renders it —
+ * a payload-changing box that looks identical to a tolerance one is the kind of
+ * thing that reads fine today and surprises somebody in a year.
+ *
+ * <p>
  * <b>The URL duplication is deliberately absent.</b> BlueMind appends every URI
  * in a description a second time; eXo recognises and normalises that for every
  * server (EXO-89756). It is a correctness fix, not a preference, and an entry
@@ -64,21 +72,28 @@ public enum ServerQuirk {
    * comes back without it, which kept five copies of a live account in a
    * permanent repair loop.
    */
-  DROPS_CONFERENCE("dropsConference", ServerQuirkDirection.DROPPED, "CONFERENCE"),
+  DROPS_CONFERENCE("dropsConference", ServerQuirkDirection.DROPPED, ServerQuirkEffect.TOLERATE, "CONFERENCE"),
 
   /**
    * The server stamps the compatibility markers Outlook and Thunderbird read —
    * hidden fields that say nothing about the meeting. eXo writes none of them,
    * so they arrive as unrecognised properties on every copy.
    */
-  ADDS_COMPATIBILITY_MARKERS("addsCompatibilityMarkers", ServerQuirkDirection.ADDED, "X-MICROSOFT-*", "X-MOZ-*"),
+  ADDS_COMPATIBILITY_MARKERS("addsCompatibilityMarkers",
+                             ServerQuirkDirection.ADDED,
+                             ServerQuirkEffect.TOLERATE,
+                             "X-MICROSOFT-*",
+                             "X-MOZ-*"),
 
   /**
    * The server adds a rich-text duplicate of the invitation text. It is a
    * second rendering of the same words, not a second statement about the
    * meeting, and eXo goes on comparing the plain one.
    */
-  ADDS_FORMATTED_DESCRIPTION("addsFormattedDescription", ServerQuirkDirection.ADDED, "X-ALT-DESC"),
+  ADDS_FORMATTED_DESCRIPTION("addsFormattedDescription",
+                             ServerQuirkDirection.ADDED,
+                             ServerQuirkEffect.TOLERATE,
+                             "X-ALT-DESC"),
 
   /**
    * The server rewrites the invitation text itself.
@@ -94,16 +109,67 @@ public enum ServerQuirk {
    * absence, and it is the reason that tolerance is opt-in per entry rather
    * than granted to every excused property.
    */
-  REWRITES_DESCRIPTION("rewritesDescription", ServerQuirkDirection.REWRITTEN, "DESCRIPTION");
+  REWRITES_DESCRIPTION("rewritesDescription",
+                       ServerQuirkDirection.REWRITTEN,
+                       ServerQuirkEffect.TOLERATE,
+                       "DESCRIPTION"),
+
+  /**
+   * The server drops the organizer from an event with no other participants.
+   *
+   * <p>
+   * BlueMind stores neither {@code ORGANIZER} nor {@code ATTENDEE} on a copy of
+   * an event whose only participant is its creator. eXo writes an organizer,
+   * reads back a copy with none, judges it altered and rewrites it — on every
+   * sweep, for ever (EXO-89775).
+   *
+   * <p>
+   * <b>The one entry that changes what eXo writes rather than what it
+   * tolerates.</b> Ticking it stops eXo naming an organizer on those copies for
+   * this server; the copy and the render then say the same thing, so there is
+   * nothing left to excuse and no tolerance entry beside it. That is why its
+   * pattern, {@link #SOLO_ORGANIZER}, is deliberately not a property name eXo
+   * writes: it can never be read as an excusal by the comparison, whose lists
+   * are restricted to the properties {@code IcsWriter} emits.
+   *
+   * <p>
+   * <b>Per server, and it has to be.</b> The obvious global fix — never write an
+   * organizer when nobody else is invited — was rejected in EXO-89768 and again
+   * here: the golden corpus holds organizer-only events that a real server
+   * stored <i>with</i> their organizer, so this is one server's behaviour and
+   * not CalDAV's. Made global it would strip information from copies on servers
+   * that keep it happily, to buy a clean sweep on one.
+   */
+  OMITS_SOLO_ORGANIZER("omitsSoloOrganizer",
+                       ServerQuirkDirection.DROPPED,
+                       ServerQuirkEffect.OMIT,
+                       Patterns.SOLO_ORGANIZER);
+
+  /**
+   * The token standing for "the organizer of an event with no other
+   * participants".
+   *
+   * <p>
+   * Deliberately not {@code ORGANIZER}. It names a <b>case</b> and not a
+   * property, so it can never be mistaken for one: the comparison's excusal
+   * lists only ever accept a property {@code IcsWriter} emits, which means no
+   * setting of this can make a missing organizer on an ordinary meeting stop
+   * being reported. An organizer disappearing from a copy on a server that
+   * normally keeps it is a real change and stays one.
+   */
+  public static final String         SOLO_ORGANIZER = Patterns.SOLO_ORGANIZER;
 
   /** Suffix marking a pattern that matches by prefix rather than exactly. */
-  private static final String        WILDCARD = "*";
+  private static final String        WILDCARD       = "*";
 
   /** Stable identifier, carried to the browser and resolving its wording. */
   private final String               id;
 
   /** Which way the divergence this entry describes points. */
   private final ServerQuirkDirection direction;
+
+  /** Whether ticking it changes what eXo notices or what eXo writes. */
+  private final ServerQuirkEffect    effect;
 
   /** The property-name patterns ticking this entry writes into the server's list. */
   private final List<String>         patterns;
@@ -113,12 +179,23 @@ public enum ServerQuirk {
    *
    * @param entryId stable identifier, also the suffix of the entry's wording keys
    * @param entryDirection which way the divergence it describes points
+   * @param entryEffect whether ticking it changes what eXo notices or what eXo
+   *          writes
    * @param entryPatterns the property-name patterns the entry covers
    */
-  ServerQuirk(String entryId, ServerQuirkDirection entryDirection, String... entryPatterns) {
+  ServerQuirk(String entryId, ServerQuirkDirection entryDirection, ServerQuirkEffect entryEffect, String... entryPatterns) {
     this.id = entryId;
     this.direction = entryDirection;
+    this.effect = entryEffect;
     this.patterns = List.of(entryPatterns);
+  }
+
+  /**
+   * @return whether ticking this entry changes what eXo notices or what eXo
+   *         writes into copies on the server
+   */
+  public ServerQuirkEffect getEffect() {
+    return effect;
   }
 
   /**
@@ -175,6 +252,21 @@ public enum ServerQuirk {
   }
 
   /**
+   * Whether a stored list of patterns asks eXo to leave something out of the
+   * copies it writes to a server.
+   *
+   * @param patterns the server's stored omission list, may be null or blank
+   * @param property the case or property name to test
+   * @return true when one of the patterns names it
+   */
+  public static boolean listMatches(String patterns, String property) {
+    if (patterns == null || patterns.isBlank()) {
+      return false;
+    }
+    return Arrays.stream(patterns.split(",")).anyMatch(pattern -> patternMatches(pattern, property));
+  }
+
+  /**
    * Whether a stored pattern names a property.
    *
    * <p>
@@ -202,6 +294,28 @@ public enum ServerQuirk {
       return !prefix.isEmpty() && candidate.startsWith(prefix);
     }
     return trimmed.equals(candidate);
+  }
+
+  /**
+   * The pattern literals, in a holder so an entry above can name one.
+   *
+   * <p>
+   * An enum constant may not read a field of its own enum declared after it, and
+   * declaring the literal before the constants would put a pattern above the
+   * catalogue it belongs to. A nested holder is the ordinary way out, and it
+   * keeps one spelling of the token: {@link ServerQuirk#SOLO_ORGANIZER} is this
+   * field, so the entry and every reader agree by construction.
+   */
+  private static final class Patterns {
+
+    /** The organizer of an event with no other participants. */
+    private static final String SOLO_ORGANIZER = "SOLO-ORGANIZER";
+
+    /**
+     * Not instantiated: a holder for one literal.
+     */
+    private Patterns() {
+    }
   }
 
   /**
