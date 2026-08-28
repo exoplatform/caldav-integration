@@ -595,6 +595,44 @@ public class CaldavServerStorageTest {
   }
 
   @Test
+  public void shouldPruneAConvergedAccountThatObservedNothingAtAll() {
+    // The rig, in the state that survived two rounds of fixes. The quirk is
+    // ticked, so eXo omits the organizer, so the copies agree, so nothing
+    // diverges, so no ETag moves and the comparison is never even reached - and
+    // the pruning rode on a write that only a divergence could cause. The
+    // cleanup was gated on exactly the activity the fix removed.
+    //
+    // NOTHING is passed in here: no increments, no observation. If this test
+    // ever starts exercising the write path it has stopped testing the thing it
+    // was written for.
+    CaldavServerEntity existing = observedOn("DROPPED:SOLO-ORGANIZER=8@" + (TODAY - 4) + ";DROPPED:ORGANIZER=4");
+    existing.setOmittedProperties(ServerQuirk.SOLO_ORGANIZER);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing, Map.of(), Set.of(), Set.of("ORGANIZER"));
+
+    assertFalse(existing.getObservedQuirks().contains("ORGANIZER=4"),
+                "a converged account must still lose its replaced record: " + existing.getObservedQuirks());
+    assertTrue(existing.getObservedQuirks().contains("SOLO-ORGANIZER=8"),
+               "and keep the excused entry it was ticked on: " + existing.getObservedQuirks());
+    verify(caldavServerDAO).save(existing);
+  }
+
+  @Test
+  public void shouldNotRewriteASummaryThatHasNotChanged() {
+    // A settled server is swept every few minutes for ever. Rewriting the same
+    // row each time would make a column that should be quiet the busiest write
+    // in the add-on.
+    CaldavServerEntity existing = observedOn("DROPPED:CONFERENCE=399@" + TODAY);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing, Map.of(), Set.of(), Set.of());
+
+    assertEquals("DROPPED:CONFERENCE=399@" + TODAY, existing.getObservedQuirks());
+    verify(caldavServerDAO, never()).save(existing);
+  }
+
+  @Test
   public void shouldKeepARecordStillBeingSeenEvenWhenItsReplacementIsExcused() {
     // The guard that makes the rule above safe. An excusal never expires, so
     // without a grace period a genuine, current record would be wiped on the
