@@ -81,7 +81,7 @@ i18nPromise.finally(() => {
   // section was sorted against nothing and always landed last.
   extensionRegistry.registerExtension('agenda-admin-settings', 'sections', {
     id: 'caldavServers',
-    rank: 10,
+    rank: 20,
     vueComponent: Vue.options.components['caldav-admin-servers-section'],
   });
   document.dispatchEvent(new CustomEvent('agenda-admin-sections-refresh'));
