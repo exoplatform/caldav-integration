@@ -141,9 +141,12 @@ describe('CaldavAdminServerDrawer', () => {
     expect(wrapper.vm.observedQuirks.filter(quirk => quirk.changesWhatIsWritten)).toHaveLength(1);
   });
 
-  it('shows the sections around it, and no behaviours section when there is nothing to show', async () => {
-    // The Stalwart case: it opened correctly throughout the incident, so it is
-    // the control rather than the subject.
+  it('keeps the same shape for a server that has shown nothing, and says what the emptiness means', async () => {
+    // The Stalwart case. The section used to vanish entirely, and an
+    // administrator could not tell whether the feature did not apply, was
+    // unsupported, or simply had not happened yet - absence teaches nothing. It
+    // is now always there, with wording saying that nothing seen is the good
+    // outcome and not a pending one.
     const wrapper = mountDrawer();
 
     wrapper.vm.open({...bluemind, observedQuirks: []});
@@ -152,7 +155,20 @@ describe('CaldavAdminServerDrawer', () => {
     const text = wrapper.text();
     expect(text).toContain('caldav.admin.servers.copies.title');
     expect(text).toContain('caldav.admin.servers.url.reachabilityHint');
-    expect(text).not.toContain('caldav.admin.servers.quirks.title');
+    expect(text).toContain('caldav.admin.servers.quirks.title');
+    expect(text).toContain('caldav.admin.servers.quirks.none');
+    expect(text).not.toContain('caldav.admin.servers.quirks.subtitle');
+  });
+
+  it('replaces the empty wording with the instruction once there is something to tick', async () => {
+    const wrapper = mountDrawer();
+
+    wrapper.vm.open({...bluemind});
+    await wrapper.vm.$nextTick();
+
+    const text = wrapper.text();
+    expect(text).toContain('caldav.admin.servers.quirks.subtitle');
+    expect(text).not.toContain('caldav.admin.servers.quirks.none');
   });
 
   it('writes the ticks back into the lists the server is saved with', async () => {

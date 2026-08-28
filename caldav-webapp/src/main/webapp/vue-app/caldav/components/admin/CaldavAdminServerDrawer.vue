@@ -125,66 +125,66 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           </v-list-item-content>
         </v-list-item>
         <!--
-          Nothing to excuse until the sweep has seen something: an empty
-          section here would be an invitation to invent a quirk, which is
-          exactly what the text field this replaces allowed.
+          Always rendered, empty or not. Two drawers with different SHAPES teach
+          an administrator nothing: on a server that has shown nothing, a missing
+          section reads as "unsupported here" or "not implemented" rather than as
+          the good news it is. The empty state says which.
         -->
-        <template v-if="observedQuirks.length">
-          <v-list-item-title class="pa-0 mt-7 mb-2 text-header">
-            {{ $t('caldav.admin.servers.quirks.title') }}
-          </v-list-item-title>
-          <div class="text-caption text-sub-title mb-4">
-            {{ $t('caldav.admin.servers.quirks.subtitle') }}
-          </div>
-          <v-list-item
-            v-for="quirk in observedQuirks"
-            :key="quirk.key"
-            class="pa-0 mb-4"
-            dense>
-            <v-list-item-content class="py-0">
-              <div class="d-flex align-start">
-                <v-checkbox
-                  v-model="quirk.excused"
-                  :aria-label="$t(quirk.labelKey, {0: quirk.property})"
-                  class="ma-0 pa-0 me-2"
-                  hide-details />
-                <div class="flex-grow-1 text-start">
-                  <div :class="quirk.warning && 'error--text font-weight-bold' || ''">
-                    <v-icon
-                      v-if="quirk.warning"
-                      class="me-1"
-                      color="error"
-                      size="16">
-                      fas fa-exclamation-triangle
-                    </v-icon>
-                    {{ $t(quirk.labelKey, {0: quirk.property}) }}
-                  </div>
-                  <div
-                    :class="quirk.warning && 'error--text' || 'text-sub-title'"
-                    class="text-caption mt-1">
-                    {{ $t(quirk.costKey, {0: quirk.property}) }}
-                  </div>
-                  <!--
-                    A quirk that changes what eXo WRITES says so, in its own
-                    line, above the count. Most boxes here only change what eXo
-                    notices and are reversible with no trace; this one alters the
-                    document that lands in somebody's calendar, and a box that
-                    does that must not look like a box that does not.
-                  -->
-                  <div
-                    v-if="quirk.changesWhatIsWritten"
-                    class="text-caption font-weight-bold mt-1">
-                    <v-icon class="me-1" size="14">fas fa-pen</v-icon>
-                    {{ $t('caldav.admin.servers.quirks.changesWhatIsWritten') }}
-                  </div>
-                  <div class="text-caption text-sub-title mt-1">
-                    {{ $t(quirk.seenKey, {0: quirk.count}) }}
-                  </div>
+        <v-list-item-title class="pa-0 mt-7 mb-2 text-header">
+          {{ $t('caldav.admin.servers.quirks.title') }}
+        </v-list-item-title>
+        <div class="text-caption text-sub-title mb-4">
+          {{ observedQuirks.length && $t('caldav.admin.servers.quirks.subtitle')
+            || $t('caldav.admin.servers.quirks.none') }}
+        </div>
+        <v-list-item
+          v-for="quirk in observedQuirks"
+          :key="quirk.key"
+          class="pa-0 mb-4"
+          dense>
+          <v-list-item-content class="py-0">
+            <div class="d-flex align-start">
+              <v-checkbox
+                v-model="quirk.excused"
+                :aria-label="$t(quirk.labelKey, {0: quirk.property})"
+                class="ma-0 pa-0 me-2"
+                hide-details />
+              <div class="flex-grow-1 text-start">
+                <div :class="quirk.warning && 'error--text font-weight-bold' || ''">
+                  <v-icon
+                    v-if="quirk.warning"
+                    class="me-1"
+                    color="error"
+                    size="16">
+                    fas fa-exclamation-triangle
+                  </v-icon>
+                  {{ $t(quirk.labelKey, {0: quirk.property}) }}
+                </div>
+                <div
+                  :class="quirk.warning && 'error--text' || 'text-sub-title'"
+                  class="text-caption mt-1">
+                  {{ $t(quirk.costKey, {0: quirk.property}) }}
+                </div>
+                <!--
+                  A quirk that changes what eXo WRITES says so, in its own
+                  line, above the count. Most boxes here only change what eXo
+                  notices and are reversible with no trace; this one alters the
+                  document that lands in somebody's calendar, and a box that
+                  does that must not look like a box that does not.
+                -->
+                <div
+                  v-if="quirk.changesWhatIsWritten"
+                  class="text-caption font-weight-bold mt-1">
+                  <v-icon class="me-1" size="14">fas fa-pen</v-icon>
+                  {{ $t('caldav.admin.servers.quirks.changesWhatIsWritten') }}
+                </div>
+                <div class="text-caption text-sub-title mt-1">
+                  {{ $t(quirk.seenKey, {0: quirk.count}) }}
                 </div>
               </div>
-            </v-list-item-content>
-          </v-list-item>
-        </template>
+            </div>
+          </v-list-item-content>
+        </v-list-item>
       </form>
     </template>
     <template #footer>

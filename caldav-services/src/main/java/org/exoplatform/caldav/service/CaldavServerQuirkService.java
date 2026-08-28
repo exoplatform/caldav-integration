@@ -16,10 +16,14 @@
  */
 package org.exoplatform.caldav.service;
 
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -95,6 +99,28 @@ public class CaldavServerQuirkService {
   @Value("${exo.agenda.caldav.mirror.quirkFlushSeconds:300}")
   private long                                      flushSeconds;
 
+  /**
+   * How many days a behaviour stays on the list after the last time a server was
+   * seen doing it.
+   *
+   * <p>
+   * <b>Why a summary has to forget at all.</b> It only ever grew. A server that
+   * stopped doing something went on offering it as a live decision for ever, and
+   * — the case a live account showed — a behaviour the comparison learned to
+   * classify differently was listed twice: once under its new description, and
+   * once under the older, broader one it had been recorded as, whose excusal
+   * would have covered far more than the administrator intended.
+   *
+   * <p>
+   * A month, because the number is read as "does this server do this", and a
+   * behaviour nothing has seen for a month is not something to decide about
+   * today. Short enough to clear what has ended, long enough that a quiet
+   * fortnight does not erase a real finding — and if it does, the next sweep
+   * that meets it puts it straight back.
+   */
+  @Value("${exo.agenda.caldav.mirror.quirkRetentionDays:30}")
+  private long                                      retentionDays;
+
   /** What has been seen since each server's summary was last written. */
   private final Map<Long, Map<Observation, Long>>   pending  = new ConcurrentHashMap<>();
 
@@ -153,13 +179,45 @@ public class CaldavServerQuirkService {
       return;
     }
     try {
-      caldavServerStorage.mergeObservedQuirks(serverId, increments);
+      caldavServerStorage.mergeObservedQuirks(serverId,
+                                              increments,
+                                              superseded(increments),
+                                              retentionDays,
+                                              LocalDate.now().toEpochDay());
     } catch (RuntimeException e) {
       // The summary is diagnostic. A row that cannot be written must never end
       // a sweep, and the next interval simply counts from where this one left
       // off — minus what this attempt was holding, which nothing depends on.
       LOG.debug("The observed behaviours of CalDAV server {} could not be recorded", serverId, e);
     }
+  }
+
+  /**
+   * The property names whose own stored records this batch has replaced.
+   *
+   * <p>
+   * <b>Read from what was actually seen, never from the catalogue alone.</b> A
+   * record only goes when the case that supersedes it is being observed on that
+   * very server: a deployment whose server has never shown the case keeps its
+   * older records untouched, which is what makes this safe to declare once on a
+   * catalogue entry rather than to reason about per deployment.
+   *
+   * <p>
+   * A property observed <b>in this same batch</b> is never superseded by it.
+   * Both can be true at once — a server can drop the organizer of an appointment
+   * and lose one from a real meeting — and without this the two would take turns
+   * erasing each other on every sweep.
+   *
+   * @param increments what this batch saw
+   * @return the property names to forget, never null
+   */
+  private Set<String> superseded(Map<Observation, Long> increments) {
+    Set<String> seen = increments.keySet().stream().map(Observation::property).collect(Collectors.toSet());
+    return seen.stream()
+               .map(ServerQuirk::superseding)
+               .flatMap(Optional::stream)
+               .filter(property -> !seen.contains(property))
+               .collect(Collectors.toSet());
   }
 
   /**
