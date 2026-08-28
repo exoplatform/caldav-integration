@@ -70,10 +70,21 @@ public class CaldavServerEntity {
 
   /**
    * Identifier of the uploaded image in FileService, when an administrator
-   * uploaded one; null otherwise. Declared LAST on purpose: the entity is
-   * built positionally through its all-args constructor, and appending keeps
-   * every existing argument on its own field.
+   * uploaded one; null otherwise.
    */
   @Column(name = "IMAGE_FILE_ID")
   private Long    imageFileId;
+
+  /**
+   * Whether eXo writes its Accept / Decline / Tentative links into the
+   * description of every meeting copy pushed to this server.
+   *
+   * <p>
+   * Declared LAST on purpose: the entity is built positionally through its
+   * all-args constructor, and appending keeps every existing argument on its
+   * own field. The initialiser mirrors the column's own DEFAULT TRUE, so a row
+   * this code builds and one the database backfilled say the same thing.
+   */
+  @Column(name = "ANSWER_LINKS_IN_COPY", nullable = false)
+  private boolean answerLinksInCopy = true;
 }

@@ -153,8 +153,9 @@ public class CaldavServerStorage {
 
   /**
    * Updates the user-editable fields of a registration: name, description,
-   * URL and activation. The provider name never changes — it is the join key
-   * user settings and agenda rows hang from.
+   * URL, activation and whether the copies pushed to this server carry answer
+   * links. The provider name never changes — it is the join key user settings
+   * and agenda rows hang from.
    *
    * @param server registration carrying the id to update and the new values
    * @return the updated registration, or null when the row does not exist
@@ -167,6 +168,7 @@ public class CaldavServerStorage {
       entity.setServerUrl(server.getServerUrl());
       entity.setActive(server.isActive());
       entity.setIcon(server.getIcon());
+      entity.setAnswerLinksInCopy(server.isAnswerLinksInCopy());
       Long oldImageFileId = entity.getImageFileId();
       boolean imageRemoved = (server.getImageFileId() == null || server.getImageFileId() == 0)
           && oldImageFileId != null && oldImageFileId > 0;
@@ -255,7 +257,8 @@ public class CaldavServerStorage {
                             entity.getIcon(),
                             entity.getImageFileId(),
                             null,
-                            getImageUrl(entity.getImageFileId(), entity.getId(), imageLastModified));
+                            getImageUrl(entity.getImageFileId(), entity.getId(), imageLastModified),
+                            entity.isAnswerLinksInCopy());
   }
 
   /**
@@ -291,6 +294,7 @@ public class CaldavServerStorage {
     entity.setActive(server.isActive());
     entity.setIcon(server.getIcon());
     entity.setImageFileId(server.getImageFileId());
+    entity.setAnswerLinksInCopy(server.isAnswerLinksInCopy());
     return entity;
   }
 }
