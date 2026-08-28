@@ -18,7 +18,8 @@ package org.exoplatform.caldav.service;
 
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
-import java.util.HashSet;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -31,8 +32,11 @@ import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.model.EventAttendee;
+import org.exoplatform.agenda.model.EventAttendeeList;
 import org.exoplatform.agenda.model.EventFilter;
 import org.exoplatform.agenda.service.AgendaCalendarService;
+import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.agenda.service.AgendaUserSettingsService;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
@@ -55,84 +59,175 @@ import org.exoplatform.services.log.Log;
  * <p>
  * It seeds; it does not maintain. An event that already has a mapping row is
  * left to the machinery that owns it — the browser-triggered push for edits,
- * the verification pass for drift and answers. And it only writes meetings:
- * events of the user's own calendars belong to their own collections and to
- * the flow that fills those, never to the mirror.
+ * the verification pass for drift and answers.
+ *
+ * <h2>What it seeds, and why that is not only meetings (EXO-89796)</h2>
+ *
+ * <p>
+ * It used to be only meetings: the pass listed the events the user is an
+ * <i>attendee</i> of, and refused any event living in a calendar the user
+ * owns. Both halves of that were wrong, and together they made the add-on
+ * answer two different questions depending on when an event had been created.
+ *
+ * <p>
+ * An event a user creates in their own calendar with nobody invited has
+ * <b>no attendee row at all</b> — agenda writes attendee rows only for the
+ * attendees it is given ({@code AgendaEventServiceImpl.createEvent} saves them
+ * under {@code if (attendees != null && !attendees.isEmpty())}) — and agenda's
+ * window query joins on those rows ({@code EventDAO.getEventIds} does
+ * {@code INNER JOIN ev.attendees att ... AND att.identityId IN (:attendeeIds)}).
+ * So such an event was invisible to this pass whatever response the filter
+ * asked for, and the own-calendar refusal would have turned it away even if it
+ * had been listed. Created <i>while</i> the account was connected it was copied
+ * anyway, by the browser's own push on save; created before, it was copied by
+ * nothing, for ever. The same event, copied or not according only to when it
+ * came into being.
+ *
+ * <p>
+ * So the pass now asks two questions — the events the user attends, and the
+ * events of the user's own calendars — and stops refusing the second. Nothing
+ * is mixed by that: {@link CaldavPushService#pushAgendaEvent(long, long)} is
+ * what routes an event, and it sends an event of the user's own calendar to
+ * that calendar's own collection, never to the mirror, answering null when
+ * there is no collection to write into.
+ *
+ * <h2>The one question both paths ask</h2>
+ *
+ * <p>
+ * {@link #seedOne(long, long)} is the whole decision, and it is deliberately
+ * the only one: the background pass reaches it through
+ * {@link #pushUpcomingMeetings(long)} and the creation listener reaches it
+ * through {@link #seedMeeting(long, long)}, so an event that would be copied
+ * were it created now is the same event this pass backfills. The listing above
+ * is candidate selection and nothing more — a cheap way to name events, never
+ * a second set of rules. That is why the "not DECLINED" rule lives in
+ * {@code seedOne} and not only in the query.
  */
 @Service
 public class CaldavPendingInvitationService {
 
-  private static final Log          LOG = ExoLogger.getLogger(CaldavPendingInvitationService.class);
-
-  @Autowired
-  private AgendaEventService        agendaEventService;
-
-  @Autowired
-  private AgendaCalendarService     agendaCalendarService;
-
-  @Autowired
-  private AgendaUserSettingsService agendaUserSettingsService;
-
-  @Autowired
-  private CaldavPushService         caldavPushService;
-
-  @Autowired
-  private CaldavSyncStorage         caldavSyncStorage;
+  private static final Log                         LOG          =
+                                                       ExoLogger.getLogger(CaldavPendingInvitationService.class);
 
   /**
-   * How far ahead the pass looks for meetings to seed. Far enough that an
+   * The answers that keep an event on the user's plate — every response except
+   * {@link EventAttendeeResponse#DECLINED}.
+   *
+   * <p>
+   * Derived from the enum rather than written out, and that is the point. Named
+   * as a list of the three responses that exist today, it silently dropped
+   * every event carrying a response agenda might add tomorrow — the same shape
+   * of defect as the one this class was fixed for. What is being said is
+   * "not declined", so that is what is written.
+   *
+   * <p>
+   * A declined meeting has no business appearing in the user's calendar, and
+   * the answer flow removes its copy. Asked of agenda this is an exact
+   * complement: {@code EventAttendeeEntity.RESPONSE} is
+   * {@code nullable = false}, so an attendee row always carries one of the
+   * four responses and never none.
+   */
+  private static final List<EventAttendeeResponse> NOT_DECLINED =
+                                                                Arrays.stream(EventAttendeeResponse.values())
+                                                                      .filter(response -> response != EventAttendeeResponse.DECLINED)
+                                                                      .toList();
+
+  @Autowired
+  private AgendaEventService                       agendaEventService;
+
+  @Autowired
+  private AgendaCalendarService                    agendaCalendarService;
+
+  @Autowired
+  private AgendaEventAttendeeService               agendaEventAttendeeService;
+
+  @Autowired
+  private AgendaUserSettingsService                agendaUserSettingsService;
+
+  @Autowired
+  private CaldavPushService                        caldavPushService;
+
+  @Autowired
+  private CaldavSyncStorage                        caldavSyncStorage;
+
+  /**
+   * How far ahead the pass looks for events to seed. Far enough that an
    * invitation sent well in advance still shows up while the user decides,
-   * near enough that one pass stays one agenda query and a handful of writes.
+   * near enough that one pass stays a couple of agenda queries and a handful
+   * of writes.
+   *
+   * <h2>Why the window starts at now, and the past is never backfilled</h2>
+   *
+   * <p>
+   * Stated as a decision rather than left as a consequence of writing
+   * {@code now} (EXO-89796). A copy exists so the user can see a commitment on
+   * their phone and answer it there; an event that has already finished offers
+   * neither, so writing it buys the user nothing and costs three network round
+   * trips. And history is unbounded in a way the future is not: a user
+   * connecting an account after two years of eXo would have those two years
+   * written to their device on the first sweeps, spending {@link #seedLimit} on
+   * events nobody will look at while the meeting they are being asked about
+   * this afternoon waits behind them.
+   *
+   * <p>
+   * "The past" here means <b>finished</b>, not "started before now": agenda
+   * keeps an event whose {@code endDate} is still ahead
+   * ({@code EventDAO.getEventIds} asks for
+   * {@code ev.endDate IS NULL OR ev.endDate >= :start}), so a meeting running
+   * right now is inside the window and is seeded.
+   *
+   * <p>
+   * The cost is accepted and worth saying out loud: an event that was never
+   * copied and then ends is never copied at all — no later pass reaches back
+   * for it. Backfilling history would need a bounded, one-off pass keyed on
+   * when the account was connected, which is a different feature from this one.
    */
   @Value("${exo.agenda.caldav.mirror.seedDays:60}")
-  private int                       seedDays;
+  private int                                      seedDays;
 
   /**
-   * How many events one pass reads from agenda. A bound, not a page: a user
-   * with more upcoming meetings than this gets the rest on the next pass,
-   * once these are mapped.
+   * How many events one question puts to agenda. A bound, not a page: a user
+   * with more upcoming events than this gets the rest on the next pass, once
+   * these are mapped.
+   *
+   * <p>
+   * Two questions are asked per pass — what the user attends, and what their
+   * own calendars hold — so a pass reads at most twice this many events. The
+   * bound is per question rather than over the merged answer on purpose: a
+   * shared budget would let whichever question was asked first starve the
+   * other, and which events a user gets would then depend on the order of two
+   * lines of code.
    */
   @Value("${exo.agenda.caldav.mirror.seedLimit:200}")
-  private int                       seedLimit;
+  private int                                      seedLimit;
 
   /**
-   * Copies the user's upcoming meetings — pending ones included — into their
-   * connected account, skipping everything a copy already exists for.
+   * Copies the user's upcoming events — meetings they have not answered yet
+   * and events of their own calendars alike — into their connected account,
+   * skipping everything a copy already exists for.
+   *
+   * <p>
+   * Two questions, because agenda cannot answer them as one: its window query
+   * ANDs the calendar-owner predicate with the attendee predicate rather than
+   * ORing them ({@code EventDAO.getEventIds}), so "events I attend or events in
+   * my calendars" is two calls. Their answers are merged and asked about once.
    *
    * @param userIdentityId identity of the user whose account receives copies
-   * @return how many meetings were written this pass
+   * @return how many events were written this pass
    */
   public int pushUpcomingMeetings(long userIdentityId) {
     if (!copiesEnabled(userIdentityId)) {
       return 0;
     }
-    List<Event> upcoming;
-    try {
-      ZonedDateTime now = ZonedDateTime.now(ZoneOffset.UTC);
-      // The three answers that keep a meeting on the user's plate. DECLINED
-      // is deliberately absent: a declined meeting has no business appearing
-      // in the user's calendar, and the answer flow removes its copy.
-      EventFilter filter = new EventFilter(userIdentityId,
-                                           null,
-                                           List.of(EventAttendeeResponse.ACCEPTED,
-                                                   EventAttendeeResponse.TENTATIVE,
-                                                   EventAttendeeResponse.NEEDS_ACTION),
-                                           now,
-                                           now.plusDays(seedDays),
-                                           seedLimit);
-      upcoming = agendaEventService.getEvents(filter, ZoneOffset.UTC, userIdentityId);
-    } catch (Exception e) { // NOSONAR agenda declares a checked exception here
-      LOG.warn("The upcoming meetings of user {} could not be listed; nothing is seeded this round", userIdentityId, e);
-      return 0;
-    }
+    ZonedDateTime now = ZonedDateTime.now(ZoneOffset.UTC);
+    ZonedDateTime until = now.plusDays(seedDays);
     // The series behind each occurrence, once each and in the order the window
     // returned them.
     Set<Long> candidates = new LinkedHashSet<>();
-    for (Event occurrence : upcoming) {
-      long eventId = occurrence.getParentId() > 0 ? occurrence.getParentId() : occurrence.getId();
-      if (eventId > 0) {
-        candidates.add(eventId);
-      }
+    collectSeries(candidates, attendedBy(userIdentityId, now, until));
+    collectSeries(candidates, ownedBy(userIdentityId, now, until));
+    if (candidates.isEmpty()) {
+      return 0;
     }
     // Asked once for the whole window, and asked FIRST. In the steady state
     // every meeting in the window already has a copy, so this is the answer
@@ -151,9 +246,97 @@ public class CaldavPendingInvitationService {
       }
     }
     if (pushed > 0) {
-      LOG.info("Seeded {} upcoming meeting(s) into the calendar account of user {}", pushed, userIdentityId);
+      LOG.info("Seeded {} upcoming event(s) into the calendar account of user {}", pushed, userIdentityId);
     }
     return pushed;
+  }
+
+  /**
+   * The events in the window this user is an attendee of, declined ones aside.
+   *
+   * <p>
+   * The response filter is a pre-filter and nothing more — {@code seedOne}
+   * asks the same question again of every candidate, whichever list named it.
+   * It is kept here because it is free: without it a meeting the user declined
+   * would be listed, refused, and listed again on every pass for as long as it
+   * stays in the window, never converging.
+   *
+   * @param userIdentityId identity of the user
+   * @param from start of the window
+   * @param to end of the window
+   * @return what agenda answers, or nothing when it could not be asked
+   */
+  private List<Event> attendedBy(long userIdentityId, ZonedDateTime from, ZonedDateTime to) {
+    return listed(userIdentityId,
+                  new EventFilter(userIdentityId, null, NOT_DECLINED, from, to, seedLimit),
+                  "the meetings they attend");
+  }
+
+  /**
+   * The events in the window that live in a calendar this user owns.
+   *
+   * <p>
+   * Asked by owner rather than by attendee, and that is the whole of what it
+   * adds: an event a user creates for themselves alone carries no attendee row
+   * for anybody, so no attendee-keyed question can ever name it (EXO-89796).
+   *
+   * <p>
+   * No response filter here, because there is no attendee predicate for one to
+   * apply to; the declined case is caught in {@code seedOne} instead, which is
+   * where it holds for both lists at once.
+   *
+   * @param userIdentityId identity of the user
+   * @param from start of the window
+   * @param to end of the window
+   * @return what agenda answers, or nothing when it could not be asked
+   */
+  private List<Event> ownedBy(long userIdentityId, ZonedDateTime from, ZonedDateTime to) {
+    return listed(userIdentityId,
+                  new EventFilter(0, List.of(userIdentityId), null, from, to, seedLimit),
+                  "the events of their own calendars");
+  }
+
+  /**
+   * Puts one window question to agenda, absorbing a failure to answer it.
+   *
+   * <p>
+   * One list failing must not cost the user the other: an account whose space
+   * memberships cannot be resolved still has its own calendar seeded, and the
+   * other way round.
+   *
+   * @param userIdentityId identity of the user the window is read for
+   * @param filter what is being asked
+   * @param what names the question in the warning, read as "... of user 42"
+   * @return what agenda answers, or nothing when it could not be asked
+   */
+  private List<Event> listed(long userIdentityId, EventFilter filter, String what) {
+    try {
+      List<Event> events = agendaEventService.getEvents(filter, ZoneOffset.UTC, userIdentityId);
+      return events == null ? List.of() : events;
+    } catch (Exception e) { // NOSONAR agenda declares a checked exception here
+      LOG.warn("Listing {} of user {} failed; that list is not seeded this round", what, userIdentityId, e);
+      return List.of();
+    }
+  }
+
+  /**
+   * Adds the series behind each listed occurrence to the candidate set.
+   *
+   * <p>
+   * A window query expands a series into its occurrences and the copy is one
+   * object under the master, so the master is what a candidate names — once,
+   * however many of its occurrences the window returned.
+   *
+   * @param candidates the set being built, in the order the windows answered
+   * @param events one window's answer
+   */
+  private void collectSeries(Set<Long> candidates, Collection<Event> events) {
+    for (Event occurrence : events) {
+      long eventId = occurrence.getParentId() > 0 ? occurrence.getParentId() : occurrence.getId();
+      if (eventId > 0) {
+        candidates.add(eventId);
+      }
+    }
   }
 
   /**
@@ -172,10 +355,9 @@ public class CaldavPendingInvitationService {
    * Every refusal the pass makes is made here too, and that is the point of
    * routing through this service rather than calling the push directly: the
    * account has to be connected with copies enabled, the meeting has to be
-   * CONFIRMED, an event of the user's own calendars is none of this flow's
-   * business, and a meeting that already has a copy is left to the machinery
-   * that owns it. That last one is what makes a second trigger on the same
-   * creation write nothing.
+   * CONFIRMED, the user must not have declined it, and a meeting that already
+   * has a copy is left to the machinery that owns it. That last one is what
+   * makes a second trigger on the same creation write nothing.
    *
    * @param userIdentityId identity of the user whose account receives the copy
    * @param eventId the agenda event — a series master or a single event
@@ -189,7 +371,15 @@ public class CaldavPendingInvitationService {
   }
 
   /**
-   * Writes the copy of one meeting, when it is one this pass owns writing.
+   * Writes the copy of one event, when it is one this pass owns writing.
+   *
+   * <p>
+   * <b>The single place the question is answered.</b> The background pass and
+   * the creation listener both arrive here, so whatever this refuses is
+   * refused on both, and whatever it writes is written on both. An event that
+   * would be copied were it created now is therefore exactly an event this
+   * backfills — which is the equivalence EXO-89796 restored, and the reason no
+   * rule of substance is allowed to live in the window queries.
    *
    * @param userIdentityId identity of the user
    * @param eventId the agenda event — a series master or a single event
@@ -203,10 +393,17 @@ public class CaldavPendingInvitationService {
       return false;
     }
     Calendar calendar = agendaCalendarService.getCalendarById(event.getCalendarId());
-    if (calendar == null || calendar.getOwnerId() == userIdentityId) {
-      // The user's own calendars have collections and a flow of their own;
-      // filing their events among the meeting copies is the mixing the
-      // mirror refuses.
+    if (calendar == null) {
+      // No calendar, no routing: which collection an event belongs in is read
+      // from the calendar it lives in, so an event whose calendar cannot be
+      // loaded has no destination anybody can name.
+      //
+      // What is deliberately NOT refused here any more is an event of a
+      // calendar the user owns (EXO-89796). Routing is CaldavPushService's
+      // question, and it answers it correctly: an own-calendar event goes to
+      // that calendar's own collection, or nowhere. Refusing it here meant an
+      // event a user made for themselves was copied when they created it in a
+      // browser and never copied when it predated the connection.
       return false;
     }
     if (!caldavSyncStorage.mappedEventIds(userIdentityId, List.of(eventId)).isEmpty()) {
@@ -219,6 +416,20 @@ public class CaldavPendingInvitationService {
       // attendee list, and each of them needs a copy of their own. The
       // unscoped question let whichever attendee was copied first answer for
       // all the rest, who were skipped and never got theirs.
+      return false;
+    }
+    if (hasDeclined(userIdentityId, eventId)) {
+      // A meeting somebody said no to has no business appearing in their
+      // calendar, and the answer flow removes the copy of one they decline
+      // later. Stated here rather than only in the window query, because the
+      // own-calendar list has no attendee predicate for a query filter to ride
+      // on, and because the creation listener never goes through a query at
+      // all.
+      //
+      // Last of the refusals, because it is the only one that costs a query
+      // agenda has not already been asked: everything already copied — which
+      // in the steady state is everything — is turned away above it without
+      // paying for it.
       return false;
     }
     try {
@@ -242,6 +453,41 @@ public class CaldavPendingInvitationService {
       // reaches a user's calendar is invisible to them and, at debug, to
       // everyone else too.
       LOG.warn("Event {} could not be seeded into the account of user {}", eventId, userIdentityId, e);
+      return false;
+    }
+  }
+
+  /**
+   * Whether this user has answered no to this event.
+   *
+   * <p>
+   * Asked of agenda's declined attendees rather than of the whole list, so the
+   * answer is a membership test and the question carries what it means. A user
+   * invited only through a space they belong to has no attendee row of their
+   * own and so has declined nothing — which is right: they have not been asked
+   * individually, and an unanswered invitation is exactly what this pass
+   * exists to make visible.
+   *
+   * @param userIdentityId identity of the user
+   * @param eventId the agenda event — a series master or a single event
+   * @return true when the user is a declined attendee of it
+   */
+  private boolean hasDeclined(long userIdentityId, long eventId) {
+    try {
+      EventAttendeeList declined = agendaEventAttendeeService.getEventAttendees(eventId, EventAttendeeResponse.DECLINED);
+      List<EventAttendee> attendees = declined == null ? null : declined.getEventAttendees();
+      if (attendees == null) {
+        return false;
+      }
+      return attendees.stream().anyMatch(attendee -> attendee.getIdentityId() == userIdentityId);
+    } catch (Exception | LinkageError e) { // NOSONAR one unreadable answer must not stop the pass
+      // Unreadable is not declined. Treating it as declined would silently
+      // stop copying for a user whose attendee rows agenda cannot answer for,
+      // which is the failure this class keeps being fixed for.
+      LOG.debug("The answer of user {} to event {} could not be read; the event is treated as not declined",
+                userIdentityId,
+                eventId,
+                e);
       return false;
     }
   }
