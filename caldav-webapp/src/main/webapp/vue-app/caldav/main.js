@@ -72,9 +72,16 @@ document.addEventListener('open-caldav-connector-settings-drawer',function(event
 // after the admin app is created, and whichever side arrives second finds
 // the other.
 i18nPromise.finally(() => {
+  // Ranked first on the page, ahead of agenda's own built-in sections (the
+  // connectors table at 20, the embed-map settings at 30): the connectors
+  // table's CalDAV rows are DERIVED from this registry, so declaring the
+  // servers comes before enabling them. This rank only orders anything
+  // because agenda stopped hardcoding its two sections before the extension
+  // loop and gave them ranks of their own (EXO-89757) — before that, this
+  // section was sorted against nothing and always landed last.
   extensionRegistry.registerExtension('agenda-admin-settings', 'sections', {
     id: 'caldavServers',
-    rank: 20,
+    rank: 10,
     vueComponent: Vue.options.components['caldav-admin-servers-section'],
   });
   document.dispatchEvent(new CustomEvent('agenda-admin-sections-refresh'));
