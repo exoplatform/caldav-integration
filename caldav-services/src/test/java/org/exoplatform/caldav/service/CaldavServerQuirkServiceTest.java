@@ -246,6 +246,49 @@ public class CaldavServerQuirkServiceTest {
     return retention.getValue();
   }
 
+  @Test
+  public void aSweepThatSawNothingStillGivesTheSummaryItsChance() {
+    // The trigger, not the rule. A converged account observes nothing, so the
+    // old path never wrote and never pruned - the cleanup was gated on the very
+    // activity the excusal had removed.
+    CaldavServer server = new CaldavServer();
+    server.setId(SERVER);
+    server.setOmittedProperties(ServerQuirk.SOLO_ORGANIZER);
+    when(caldavServerStorage.getServerById(SERVER)).thenReturn(server);
+
+    service.settle(SERVER);
+
+    ArgumentCaptor<Map<Observation, Long>> increments = ArgumentCaptor.forClass(Map.class);
+    ArgumentCaptor<Retention> retention = ArgumentCaptor.forClass(Retention.class);
+    verify(caldavServerStorage).mergeObservedQuirks(eq(SERVER), increments.capture(), retention.capture());
+    assertTrue(increments.getValue().isEmpty(), "nothing was seen, and that is the point");
+    assertEquals(Set.of("ORGANIZER"), retention.getValue().supersededWhenSettled());
+  }
+
+  @Test
+  public void settlingIsThrottledLikeAnyOtherWrite() {
+    // It now runs once per sweep per ACCOUNT, so without the throttle a server
+    // with five hundred connected users would be read five hundred times every
+    // five minutes to conclude nothing.
+    ReflectionTestUtils.setField(service, "flushSeconds", 3600L);
+    CaldavServer server = new CaldavServer();
+    server.setId(SERVER);
+    when(caldavServerStorage.getServerById(SERVER)).thenReturn(server);
+
+    service.settle(SERVER);
+    service.settle(SERVER);
+    service.settle(SERVER);
+
+    verify(caldavServerStorage, times(1)).mergeObservedQuirks(anyLong(), anyMap(), any(Retention.class));
+  }
+
+  @Test
+  public void anAccountPredatingTheRegistryHasNothingToSettle() {
+    service.settle(null);
+
+    verifyNoInteractions(caldavServerStorage);
+  }
+
   // --------------------------------------------------- telling the drawer
 
   @Test

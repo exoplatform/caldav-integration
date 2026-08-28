@@ -425,28 +425,47 @@ public class CaldavServerStorage {
    * happen once", and no decision is made from its exact value.
    *
    * @param serverId technical identifier of the registration
+   * <p>
+   * <b>An empty batch is not a reason to do nothing.</b> A converged account
+   * observes no divergence at all, which is exactly the account whose stale
+   * records want clearing; gating the whole method on having something to add
+   * meant the cleanup only ever ran on servers that were still misbehaving. It
+   * reads and prunes regardless, and writes only when the result differs from
+   * what is stored — so a settled row costs one read per interval and no write.
+   *
    * @param increments how many times each behaviour was seen since the last
-   *          write
+   *          write, empty when the pass found nothing
    * @param retention what this write is allowed to forget
    */
   @Transactional
   public void mergeObservedQuirks(long serverId, Map<Observation, Long> increments, Retention retention) {
-    if (increments == null || increments.isEmpty()) {
-      return;
-    }
+    Map<Observation, Long> seen = increments == null ? Map.of() : increments;
     caldavServerDAO.findById(serverId).ifPresent(entity -> {
       long today = retention.today();
       Map<Observation, Tally> merged = new LinkedHashMap<>();
       ServerQuirkSummary.parse(entity.getObservedQuirks())
                         .forEach((observation, tally) -> merged.put(observation, tally));
-      increments.forEach((observation, seen) -> merged.merge(observation,
-                                                             new Tally(seen, today),
-                                                             (stored, fresh) -> stored.seen(fresh.count(), today)));
+      seen.forEach((observation, times) -> merged.merge(observation,
+                                                        new Tally(times, today),
+                                                        (stored, fresh) -> stored.seen(fresh.count(), today)));
       merged.entrySet()
             .removeIf(entry -> !excused(entity, entry.getKey().property())
                 && retention.forgets(entry.getKey(), entry.getValue()));
-      merged.replaceAll((observation, tally) -> tally.stamped(today));
-      entity.setObservedQuirks(ServerQuirkSummary.format(merged));
+      // Back-dated, never today. An entry carried across a write was not seen
+      // in it, and dating it now would make the oldest records in the row look
+      // like the freshest — holding off both supersession and ageing for a full
+      // window, on precisely the entries that should go first. One grace period
+      // and a day is the least that leaves it superseded-eligible immediately,
+      // and it keeps the rest of its ageing window.
+      merged.replaceAll((observation, tally) -> tally.stamped(today - retention.settledGraceDays() - 1));
+      String summary = ServerQuirkSummary.format(merged);
+      if (StringUtils.equals(summary, entity.getObservedQuirks())) {
+        // Nothing to say. A settled server is swept every few minutes for ever,
+        // and rewriting an identical row each time would turn a column that
+        // should be quiet into the busiest write in the add-on.
+        return;
+      }
+      entity.setObservedQuirks(summary);
       caldavServerDAO.save(entity);
     });
   }
