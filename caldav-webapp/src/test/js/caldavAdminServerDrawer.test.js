@@ -20,6 +20,7 @@ import {shallowMount} from '@vue/test-utils';
 import CaldavAdminServerDrawer from '../../main/webapp/vue-app/caldav/components/admin/CaldavAdminServerDrawer.vue';
 import CaldavAdminServerMirrorTargetSelect
   from '../../main/webapp/vue-app/caldav/components/admin/CaldavAdminServerMirrorTargetSelect.vue';
+import {presetValues, presetUrlPlaceholder, PRESET_NONE} from '../../main/webapp/vue-app/caldav/js/serverPresets.js';
 
 /**
  * The admin drawer, opened on a real registration.
@@ -278,6 +279,46 @@ describe('CaldavAdminServerDrawer', () => {
     await wrapper.vm.saveServer();
 
     expect(saved[0].payload.mirrorTarget).toBe('MAIN_CALENDAR');
+  });
+
+  it('carries a preset\'s copy settings into the form the administrator is looking at', async () => {
+    // Through the drawer, not through the module: what the module test cannot
+    // see is a preset value that arrives and is then overwritten by the
+    // drawer's own default before anybody reads it.
+    const wrapper = mountDrawer();
+
+    wrapper.vm.open();
+    wrapper.vm.applyPreset({
+      values: presetValues('bluemind'),
+      urlPlaceholder: presetUrlPlaceholder('bluemind'),
+    });
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.vm.server.mirrorTarget).toBe('MAIN_CALENDAR');
+    expect(wrapper.vm.server.answerLinksInCopy).toBe(true);
+    // And the control shows it, rather than the form quietly holding one value
+    // while the radios show another.
+    expect(wrapper.find('v-radio-group').attributes('value')).toBe('MAIN_CALENDAR');
+    // A declaration still promises no move: there are no copies to move.
+    expect(wrapper.text()).not.toContain('caldav.admin.servers.mirrorTarget.moves');
+  });
+
+  it('leaves both copy settings alone when the server is one we have not characterised', async () => {
+    const wrapper = mountDrawer();
+
+    wrapper.vm.open();
+    wrapper.vm.server.mirrorTarget = 'MAIN_CALENDAR';
+    wrapper.vm.server.answerLinksInCopy = false;
+    wrapper.vm.applyPreset({
+      values: presetValues(PRESET_NONE),
+      urlPlaceholder: presetUrlPlaceholder(PRESET_NONE),
+    });
+    await wrapper.vm.$nextTick();
+
+    // Not knowing a server is not the same statement as knowing what it does,
+    // exactly as for the excusal lists beside them.
+    expect(wrapper.vm.server.mirrorTarget).toBe('MAIN_CALENDAR');
+    expect(wrapper.vm.server.answerLinksInCopy).toBe(false);
   });
 
   it('opens a row stored as the destination we stopped offering on the dedicated calendar', async () => {
