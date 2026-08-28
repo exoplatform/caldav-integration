@@ -202,6 +202,16 @@ public class NormalisingServerMirrorTest {
     ReflectionTestUtils.setField(verification, "caldavPushService", push);
     ReflectionTestUtils.setField(verification, "icsEquivalence", icsEquivalence);
     ReflectionTestUtils.setField(verification, "caldavAnswerAdoptionService", caldavAnswerAdoptionService);
+    // EXO-89771 gave the pass a registry to ask what this server is excused for
+    // and a place to record what it saw. Both are stubbed: this class connects a
+    // fake server with no registration behind it, so the comparison runs on the
+    // deployment-wide fallback the ReflectionTestUtils calls below still set.
+    ReflectionTestUtils.setField(verification,
+                                 "caldavServerService",
+                                 org.mockito.Mockito.mock(CaldavServerService.class));
+    ReflectionTestUtils.setField(verification,
+                                 "caldavServerQuirkService",
+                                 org.mockito.Mockito.mock(CaldavServerQuirkService.class));
     lenient().when(caldavAnswerAdoptionService.adoptAnswer(anyLong(), anyLong(), anyString()))
              .thenReturn(CaldavAnswerAdoptionService.Outcome.NOTHING);
     ReflectionTestUtils.setField(icsEquivalence, "ignoredProperties", "");

@@ -30,6 +30,8 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.ics.IcsEquivalence;
+import org.exoplatform.caldav.ics.IcsJudgement;
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.MirrorVerification;
@@ -135,6 +137,12 @@ public class CaldavMirrorVerificationService {
   @Autowired
   private CaldavAnswerAdoptionService  caldavAnswerAdoptionService;
 
+  @Autowired
+  private CaldavServerService          caldavServerService;
+
+  @Autowired
+  private CaldavServerQuirkService     caldavServerQuirkService;
+
   /**
    * How many times one object may be repaired before the pass stops trying.
    * Three is enough to ride out a server having a bad minute and few enough
@@ -224,7 +232,30 @@ public class CaldavMirrorVerificationService {
       LOG.warn("The mirror collection of user {} could not be listed; nothing is verified this round", userIdentityId, e);
       return MirrorVerification.nothing();
     }
-    return comparePages(userIdentityId, mirror, settings, etags);
+    return comparePages(userIdentityId, mirror, settings, etags, resolveServer(settings));
+  }
+
+  /**
+   * The registration the account is connected through, whose excusals decide
+   * what counts as unchanged on it.
+   *
+   * <p>
+   * Resolved once per pass rather than once per copy: it is the same row for
+   * every copy of one account, and a registry lookup per object would turn a
+   * quiet sweep into a query storm. A registry that cannot answer leaves the
+   * comparison on the deployment-wide fallback, which is exactly what a
+   * deployment that never opened the drawer runs on anyway.
+   *
+   * @param settings the connected account
+   * @return the registration, or null when none can be resolved
+   */
+  private CaldavServer resolveServer(CaldavUserSetting settings) {
+    try {
+      return caldavServerService.resolveServer(settings.getServerId());
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("No CalDAV registration could be resolved for the account; the deployment-wide excusals decide", e);
+      return null;
+    }
   }
 
   /**
@@ -234,12 +265,16 @@ public class CaldavMirrorVerificationService {
    * @param mirror the binding standing for the mirror collection
    * @param settings the connected account
    * @param etags what the server currently holds, by href
+   * @param server the registration the account is connected through, may be
+   *          null — the comparison then falls back to the deployment-wide
+   *          excusals
    * @return the tally
    */
   private MirrorVerification comparePages(long userIdentityId,
                                           CalendarSync mirror,
                                           CaldavUserSetting settings,
-                                          Map<String, String> etags) {
+                                          Map<String, String> etags,
+                                          CaldavServer server) {
     int checked = 0;
     int missing = 0;
     int altered = 0;
@@ -262,7 +297,7 @@ public class CaldavMirrorVerificationService {
           abandoned++;
           continue;
         }
-        Assessment assessment = judge(userIdentityId, object, settings, etags);
+        Assessment assessment = judge(userIdentityId, object, settings, etags, server);
         if (assessment.verdict() == Verdict.UNTOUCHED) {
           continue;
         }
@@ -377,12 +412,15 @@ public class CaldavMirrorVerificationService {
    * @param object the mapping row
    * @param settings the connected account
    * @param etags what the server currently holds, by href
+   * @param server the registration the account is connected through, may be
+   *          null
    * @return the verdict, carrying the fetched copy when there is one to act on
    */
   private Assessment judge(long userIdentityId,
                            ObjectSync object,
                            CaldavUserSetting settings,
-                           Map<String, String> etags) {
+                           Map<String, String> etags,
+                           CaldavServer server) {
     String etag = etagOf(object.getRemoteHref(), etags);
     if (etag == null) {
       return new Assessment(Verdict.MISSING, null);
@@ -396,7 +434,7 @@ public class CaldavMirrorVerificationService {
       // copy.
       return new Assessment(Verdict.UNTOUCHED, null);
     }
-    return assessContent(userIdentityId, object, settings, etag);
+    return assessContent(userIdentityId, object, settings, etag, server);
   }
 
   /**
@@ -443,12 +481,15 @@ public class CaldavMirrorVerificationService {
    * @param object the mapping row
    * @param settings the connected account
    * @param currentEtag the version the listing published for it
+   * @param server the registration the account is connected through, may be
+   *          null
    * @return the verdict, carrying the fetched copy when there is one to act on
    */
   private Assessment assessContent(long userIdentityId,
                                    ObjectSync object,
                                    CaldavUserSetting settings,
-                                   String currentEtag) {
+                                   String currentEtag,
+                                   CaldavServer server) {
     if (object.getLocalEventId() == null || object.getLocalEventId() <= 0) {
       // Nothing to compare against, nothing a repair could write, and no event
       // to record an answer against either.
@@ -490,15 +531,24 @@ public class CaldavMirrorVerificationService {
       // it to read.
       return new Assessment(Verdict.ALTERED, null);
     }
-    IcsEquivalence.Judgement judgement;
+    IcsJudgement judgement;
     try {
       judgement = icsEquivalence.compare(remote.calendarData(),
                                          rendered,
-                                         caldavPushService.addressesNaming(userIdentityId, settings));
+                                         caldavPushService.addressesNaming(userIdentityId, settings),
+                                         server == null ? null : server.getIgnoredProperties(),
+                                         server == null ? null : server.getDroppedProperties());
     } catch (RuntimeException | LinkageError e) {
       LOG.debug("The copy at {} could not be judged; it is left alone", object.getRemoteHref(), e);
       return new Assessment(Verdict.UNTOUCHED, null);
     }
+    // Recorded whatever the verdict is, and that is the point: a divergence
+    // this server's administrator has already excused is still reported by the
+    // comparison, so it goes on being counted and goes on appearing in the
+    // drawer with its box ticked. Recorded only when it changes nothing about
+    // what happens next — the summary is what an administrator decides from,
+    // never what this pass decides from.
+    caldavServerQuirkService.observe(server == null ? null : server.getId(), judgement.divergences());
     if (judgement.different()) {
       // Named, not counted. A pass that keeps finding the same divergence is
       // the failure this design is answering, and the only way anyone can see
@@ -508,7 +558,7 @@ public class CaldavMirrorVerificationService {
       LOG.info("The copy at {} no longer states what eXo writes: {}", object.getRemoteHref(), judgement.detail());
       return new Assessment(Verdict.ALTERED, remote);
     }
-    if (judgement.verdict() == IcsEquivalence.Verdict.UNJUDGEABLE) {
+    if (judgement.verdict() == IcsJudgement.Verdict.UNJUDGEABLE) {
       LOG.debug("The copy at {} cannot be judged ({}); it is left alone", object.getRemoteHref(), judgement.detail());
       return new Assessment(Verdict.UNTOUCHED, null);
     }

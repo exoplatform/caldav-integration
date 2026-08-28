@@ -17,8 +17,10 @@
 package org.exoplatform.caldav.storage;
 
 import java.io.ByteArrayInputStream;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,6 +31,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.exoplatform.caldav.dao.CaldavServerDAO;
 import org.exoplatform.caldav.entity.CaldavServerEntity;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.ObservedQuirk;
+import org.exoplatform.caldav.model.ServerQuirk;
+import org.exoplatform.caldav.utils.ServerQuirkSummary;
+import org.exoplatform.caldav.utils.ServerQuirkSummary.Observation;
 import org.exoplatform.commons.file.model.FileInfo;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
@@ -153,9 +159,12 @@ public class CaldavServerStorage {
 
   /**
    * Updates the user-editable fields of a registration: name, description,
-   * URL, activation and whether the copies pushed to this server carry answer
-   * links. The provider name never changes — it is the join key user settings
-   * and agenda rows hang from.
+   * URL, activation, whether the copies pushed to this server carry answer
+   * links, and the two lists of behaviours this server is excused for. The
+   * provider name never changes — it is the join key user settings and agenda
+   * rows hang from, and neither is the rolling observation summary, which is
+   * the sweep's to write (see {@link #mergeObservedQuirks}) and would otherwise
+   * be erased by every administrator save.
    *
    * @param server registration carrying the id to update and the new values
    * @return the updated registration, or null when the row does not exist
@@ -169,6 +178,8 @@ public class CaldavServerStorage {
       entity.setActive(server.isActive());
       entity.setIcon(server.getIcon());
       entity.setAnswerLinksInCopy(server.isAnswerLinksInCopy());
+      entity.setIgnoredProperties(server.getIgnoredProperties());
+      entity.setDroppedProperties(server.getDroppedProperties());
       Long oldImageFileId = entity.getImageFileId();
       boolean imageRemoved = (server.getImageFileId() == null || server.getImageFileId() == 0)
           && oldImageFileId != null && oldImageFileId > 0;
@@ -258,7 +269,90 @@ public class CaldavServerStorage {
                             entity.getImageFileId(),
                             null,
                             getImageUrl(entity.getImageFileId(), entity.getId(), imageLastModified),
-                            entity.isAnswerLinksInCopy());
+                            entity.isAnswerLinksInCopy(),
+                            entity.getIgnoredProperties(),
+                            entity.getDroppedProperties(),
+                            observedQuirks(entity.getObservedQuirks()));
+  }
+
+  /**
+   * The stored observation summary as the entries the drawer lists.
+   *
+   * <p>
+   * Mapping, not judgement: each entry is named, counted and matched to the
+   * catalogue entry that describes it, and every entry the catalogue does not
+   * describe still comes through with its own property name — an administrator
+   * is never blocked by the list being incomplete. Whether an entry is
+   * <i>excused</i> is deliberately left false here and decided by the service,
+   * which is the layer that knows the deployment-wide fallback.
+   *
+   * @param summary the stored summary, may be null
+   * @return the observed behaviours, largest counts first, never null
+   */
+  private List<ObservedQuirk> observedQuirks(String summary) {
+    return ServerQuirkSummary.parse(summary)
+                             .entrySet()
+                             .stream()
+                             .sorted(Comparator.<Map.Entry<Observation, Long>, Long> comparing(Map.Entry::getValue)
+                                               .reversed()
+                                               .thenComparing(entry -> entry.getKey().property()))
+                             .map(entry -> observedQuirk(entry.getKey(), entry.getValue()))
+                             .toList();
+  }
+
+  /**
+   * One stored observation as the entry the drawer lists.
+   *
+   * @param observation what was seen
+   * @param count how many times
+   * @return the entry, carrying the catalogue's identifier when one describes
+   *         it and the observed property name alone when none does
+   */
+  private ObservedQuirk observedQuirk(Observation observation, Long count) {
+    return ServerQuirk.describing(observation.property(), observation.direction())
+                      .map(quirk -> new ObservedQuirk(quirk.getId(),
+                                                      observation.property(),
+                                                      observation.direction(),
+                                                      count,
+                                                      false,
+                                                      quirk.getPatterns()))
+                      .orElseGet(() -> new ObservedQuirk(null,
+                                                         observation.property(),
+                                                         observation.direction(),
+                                                         count,
+                                                         false,
+                                                         List.of(observation.property())));
+  }
+
+  /**
+   * Adds what a pass saw to a registration's rolling observation summary.
+   *
+   * <p>
+   * Read, merge and write in one transaction, and touching that one column
+   * only. This is the sweep talking, not an administrator: routing it through
+   * {@link #updateServer} would let a background pass overwrite a name or a URL
+   * somebody is editing in the drawer at the same moment.
+   *
+   * <p>
+   * Two passes racing on one server can still lose an increment, and that is
+   * accepted: the number answers "does this server always do this, or did it
+   * happen once", and no decision is made from its exact value.
+   *
+   * @param serverId technical identifier of the registration
+   * @param increments how many times each behaviour was seen since the last
+   *          write
+   */
+  @Transactional
+  public void mergeObservedQuirks(long serverId, Map<Observation, Long> increments) {
+    if (increments == null || increments.isEmpty()) {
+      return;
+    }
+    caldavServerDAO.findById(serverId).ifPresent(entity -> {
+      Map<Observation, Long> merged = ServerQuirkSummary.parse(entity.getObservedQuirks());
+      increments.forEach((observation, seen) -> merged.merge(observation, seen, Long::sum));
+      entity.setObservedQuirks(ServerQuirkSummary.format(merged));
+      caldavServerDAO.save(entity);
+    });
   }
 
   /**
@@ -295,6 +389,8 @@ public class CaldavServerStorage {
     entity.setIcon(server.getIcon());
     entity.setImageFileId(server.getImageFileId());
     entity.setAnswerLinksInCopy(server.isAnswerLinksInCopy());
+    entity.setIgnoredProperties(server.getIgnoredProperties());
+    entity.setDroppedProperties(server.getDroppedProperties());
     return entity;
   }
 }
