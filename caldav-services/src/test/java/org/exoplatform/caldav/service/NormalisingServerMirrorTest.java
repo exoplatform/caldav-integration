@@ -547,6 +547,71 @@ public class NormalisingServerMirrorTest {
   }
 
   @Test
+  public void anOwnerWhoOrganisedTheMeetingDoesNotMakeTheirCopyLoopForEver() {
+    // EXO-89768, as the live rig stated it: "OWNER-ATTENDEE;PARTSTAT=ACCEPTED
+    // (server 0, eXo 1)" on three copies of a production BlueMind account,
+    // every sweep from 09:15, unchanged by three separate fixes, ending in the
+    // copies being abandoned — and an abandoned copy is no longer watched, so
+    // EXO-89681 stops reading answers off it too.
+    //
+    // The cause, established by reading the object back over CalDAV rather
+    // than reasoned: agenda puts the person who called a meeting on its own
+    // attendee list, so eXo wrote them twice — as ORGANIZER and as an ATTENDEE
+    // carrying their answer — and the server keeps no attendee line for its
+    // organizer. Four passes, because one proves nothing about a loop.
+    server = new FakeCalDavServer(Normalisation.RESERIALISE_AND_DROP_THE_ORGANIZERS_ATTENDEE_LINE);
+    inject(push);
+    inject(verification);
+    when(agendaEventIcsMapper.addressOf(USER)).thenReturn(OWNER);
+    IcsEvent own = event();
+    own.setOrganizer(person(OWNER, "John"));
+    IcsPerson accepted = person(OWNER, "John");
+    accepted.setResponse("ACCEPTED");
+    own.setAttendees(List.of(accepted, person("guest@acme.test", "A Guest")));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(own);
+
+    push.writeInto(USER, mirror, own, EVENT);
+
+    for (int pass = 0; pass < 4; pass++) {
+      MirrorVerification result = verification.verify(USER);
+
+      assertEquals(1, result.checked(), "pass " + pass);
+      assertEquals(0, result.altered(), "pass " + pass);
+      assertEquals(0, result.repaired(), "pass " + pass);
+    }
+  }
+
+  @Test
+  public void theGuestsAnswerStillReachesACopyOnThatServer() {
+    // The fence, and the reason the rule is about the organizer's own line and
+    // nothing else. On the same live account fifteen copies whose owner is an
+    // ordinary invitee carry the PARTSTAT eXo wrote, kept by the same server —
+    // so the outward half of EXO-89715 works there, and a change made for the
+    // organizer's line must not touch it.
+    server = new FakeCalDavServer(Normalisation.RESERIALISE_AND_DROP_THE_ORGANIZERS_ATTENDEE_LINE);
+    inject(push);
+    inject(verification);
+    when(agendaEventIcsMapper.addressOf(USER)).thenReturn(OWNER);
+    IcsEvent invited = event();
+    invited.setOrganizer(person("boss@acme.test", "The Boss"));
+    invited.setAttendees(List.of(person(OWNER, "John")));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(invited);
+    push.writeInto(USER, mirror, invited, EVENT);
+    assertEquals(0, verification.verify(USER).altered());
+
+    IcsEvent answered = event();
+    answered.setOrganizer(person("boss@acme.test", "The Boss"));
+    IcsPerson accepted = person(OWNER, "John");
+    accepted.setResponse("ACCEPTED");
+    answered.setAttendees(List.of(accepted));
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(answered);
+
+    assertTrue(push.pushAnswer(USER, EVENT, "ACCEPTED"), "the answer should have reached the copy");
+    assertTrue(server.stored(HREF).contains("PARTSTAT=ACCEPTED"), server.stored(HREF));
+    assertEquals(0, verification.verify(USER).altered());
+  }
+
+  @Test
   public void aServerThatCannotBeReadLeavesItsCopiesAlone() {
     // Unreadable is not the same as rewritten. A re-push here would overwrite
     // whatever is on the user's calendar on the strength of a network error,
@@ -889,6 +954,9 @@ public class NormalisingServerMirrorTest {
       if (normalisation == Normalisation.RESERIALISE_AND_ATTACH_OWNER) {
         attachOwner(event);
       }
+      if (normalisation == Normalisation.RESERIALISE_AND_DROP_THE_ORGANIZERS_ATTENDEE_LINE) {
+        dropTheOrganizersAttendeeLine(event);
+      }
       net.fortuna.ical4j.model.TimeZone zone =
           net.fortuna.ical4j.model.TimeZoneRegistryFactory.getInstance().createRegistry().getTimeZone(ZONE);
       if (calendar.getComponent(net.fortuna.ical4j.model.Component.VTIMEZONE) == null) {
@@ -958,6 +1026,49 @@ public class NormalisingServerMirrorTest {
       parameters.add(new net.fortuna.ical4j.model.parameter.Dir(java.net.URI.create("bm://19d43a7c-dead-beef")));
       event.getProperties()
            .add(new net.fortuna.ical4j.model.property.Attendee(parameters, java.net.URI.create("mailto:" + OWNER)));
+    }
+
+    /**
+     * Discards any ATTENDEE line naming the component's own organizer, which
+     * is what a server holding an organizer and a list of attendees that
+     * excludes them does with such a line.
+     *
+     * <p>
+     * Captured from BlueMind on 2026-08-28 by reading the object back over
+     * CalDAV: a copy eXo had written carrying
+     * {@code ORGANIZER:mailto:x} and
+     * {@code ATTENDEE;PARTSTAT=ACCEPTED:mailto:x} came back holding the
+     * ORGANIZER alone. Applied on every store, like the other behaviours here,
+     * because that is what makes it a loop rather than a one-off: a repair
+     * writes the line back and the very next store removes it again.
+     *
+     * @param event the component being stored
+     */
+    private void dropTheOrganizersAttendeeLine(net.fortuna.ical4j.model.component.VEvent event) {
+      net.fortuna.ical4j.model.Property organizer =
+          event.getProperty(net.fortuna.ical4j.model.Property.ORGANIZER);
+      if (organizer == null) {
+        return;
+      }
+      String organizerAddress = bare(organizer.getValue());
+      List<net.fortuna.ical4j.model.Property> dropped = new ArrayList<>();
+      for (Object candidate : event.getProperties(net.fortuna.ical4j.model.Property.ATTENDEE)) {
+        net.fortuna.ical4j.model.Property attendee = (net.fortuna.ical4j.model.Property) candidate;
+        if (organizerAddress.equals(bare(attendee.getValue()))) {
+          dropped.add(attendee);
+        }
+      }
+      dropped.forEach(event.getProperties()::remove);
+    }
+
+    /**
+     * A calendar address without its scheme or its casing.
+     *
+     * @param value the property value
+     * @return the comparable form
+     */
+    private String bare(String value) {
+      return value == null ? "" : value.replaceFirst("(?i)^mailto:", "").toLowerCase(java.util.Locale.ROOT);
     }
 
     /**
@@ -1171,6 +1282,11 @@ public class NormalisingServerMirrorTest {
      * in it, naming them from its own directory — which is what BlueMind does,
      * and what made all 20 copies of a live account altered on every sweep.
      */
-    RESERIALISE_AND_ATTACH_OWNER
+    RESERIALISE_AND_ATTACH_OWNER,
+    /**
+     * The same, and refuses to store an ATTENDEE line naming the meeting's own
+     * organizer — which is what BlueMind does, and what EXO-89768 is.
+     */
+    RESERIALISE_AND_DROP_THE_ORGANIZERS_ATTENDEE_LINE
   }
 }
