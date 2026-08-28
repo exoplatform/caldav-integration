@@ -157,6 +157,38 @@ public class CaldavPendingInvitationService {
   }
 
   /**
+   * Writes the copy of one named meeting into one user's account, for a caller
+   * that already knows which meeting and which user.
+   *
+   * <p>
+   * The same decision as the pass above, asked one meeting at a time. It exists
+   * because a meeting being created is a fact the platform already tells us
+   * ({@code exo.agenda.event.created}, EXO-89754), and waiting for the next
+   * sweep to rediscover it by listing a 60-day window is both slower and
+   * narrower: the window is where a meeting further out, or created in the past,
+   * used to fall through and never get a copy at all.
+   *
+   * <p>
+   * Every refusal the pass makes is made here too, and that is the point of
+   * routing through this service rather than calling the push directly: the
+   * account has to be connected with copies enabled, the meeting has to be
+   * CONFIRMED, an event of the user's own calendars is none of this flow's
+   * business, and a meeting that already has a copy is left to the machinery
+   * that owns it. That last one is what makes a second trigger on the same
+   * creation write nothing.
+   *
+   * @param userIdentityId identity of the user whose account receives the copy
+   * @param eventId the agenda event — a series master or a single event
+   * @return true when a copy was written
+   */
+  public boolean seedMeeting(long userIdentityId, long eventId) {
+    if (userIdentityId <= 0 || eventId <= 0 || !copiesEnabled(userIdentityId)) {
+      return false;
+    }
+    return seedOne(userIdentityId, eventId);
+  }
+
+  /**
    * Writes the copy of one meeting, when it is one this pass owns writing.
    *
    * @param userIdentityId identity of the user
@@ -202,15 +234,6 @@ public class CaldavPendingInvitationService {
   }
 
   /**
-   * Whether this user receives copies at all — the same per-account switch
-   * the browser flow honours, read from agenda's settings for this add-on's
-   * provider. A user who turned copies off has said no to everything this
-   * pass does, the seeded pending invitations included.
-   *
-   * @param userIdentityId identity of the user
-   * @return true when the connected CalDAV account accepts copies
-   */
-  /**
    * Whether a connected account's provider is one of this add-on's.
    *
    * <p>
@@ -231,6 +254,20 @@ public class CaldavPendingInvitationService {
             || providerName.startsWith(CaldavPushService.CONNECTOR_NAME + "."));
   }
 
+  /**
+   * Whether this user receives copies at all — the same per-account switch the
+   * browser flow honours, read from agenda's settings for this add-on's
+   * provider. A user who turned copies off has said no to everything this
+   * service does, the seeded pending invitations included.
+   *
+   * <p>
+   * Its documentation used to sit above {@link #isCaldavConnector} instead,
+   * where the javadoc tool attributed it to that method and this one was
+   * generated undocumented.
+   *
+   * @param userIdentityId identity of the user
+   * @return true when the connected CalDAV account accepts copies
+   */
   private boolean copiesEnabled(long userIdentityId) {
     try {
       var settings = agendaUserSettingsService.getAgendaUserSettings(userIdentityId);
