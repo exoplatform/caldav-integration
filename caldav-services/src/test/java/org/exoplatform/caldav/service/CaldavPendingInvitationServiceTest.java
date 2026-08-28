@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
@@ -30,6 +31,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.ArrayList;
 import java.util.Set;
 import java.util.List;
 
@@ -41,13 +43,17 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.AgendaConnectorAccount;
 import org.exoplatform.agenda.model.AgendaUserSettings;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.model.EventAttendee;
+import org.exoplatform.agenda.model.EventAttendeeList;
 import org.exoplatform.agenda.model.EventFilter;
 import org.exoplatform.agenda.service.AgendaCalendarService;
+import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.agenda.service.AgendaUserSettingsService;
 import org.exoplatform.caldav.model.ObjectSync;
@@ -61,8 +67,17 @@ import org.exoplatform.caldav.storage.CaldavSyncStorage;
  *
  * <p>
  * The refusals matter as much as the writes: a user who turned copies off has
- * said no to all of this, a date poll is not a meeting, and the user's own
- * calendars belong to their own flow.
+ * said no to all of this, a date poll is not a meeting, and a meeting somebody
+ * declined is not put back in front of them.
+ *
+ * <p>
+ * And since EXO-89796 the pass covers the user's own calendars too, because
+ * the two paths that copy an event — the creation listener and this backfill —
+ * have to answer the same question. They did not: an event a user made for
+ * themselves alone carries no attendee row, so no attendee-keyed window could
+ * name it, and the pass refused it a second time for living in a calendar the
+ * user owns. Created while connected it was copied by the browser; created
+ * before, it was copied by nothing at all.
  */
 @ExtendWith(MockitoExtension.class)
 public class CaldavPendingInvitationServiceTest {
@@ -71,11 +86,16 @@ public class CaldavPendingInvitationServiceTest {
 
   private static final long              SPACE = 900L;
 
+  private static final long              MINE  = 800L;
+
   @Mock
   private AgendaEventService             agendaEventService;
 
   @Mock
   private AgendaCalendarService          agendaCalendarService;
+
+  @Mock
+  private AgendaEventAttendeeService     agendaEventAttendeeService;
 
   @Mock
   private AgendaUserSettingsService      agendaUserSettingsService;
@@ -145,15 +165,147 @@ public class CaldavPendingInvitationServiceTest {
     verify(caldavSyncStorage, never()).isEventMapped(anyLong());
   }
 
+  /**
+   * The reported defect, EXO-89796: a future event a user made for themselves
+   * alone, in their own calendar, before they connected an account.
+   *
+   * <p>
+   * It has no attendee row of any kind — agenda writes those only for the
+   * attendees it is given — so the attendee-keyed window cannot name it, and
+   * the pass used to refuse it a second time for living in a calendar the user
+   * owns. Created after the connection it was copied all the same, by the
+   * browser's push on save; created before, it was copied by nothing, for
+   * ever. Both halves are what this asserts away: an empty attendee window,
+   * and a calendar owned by the user.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
   @Test
-  public void theUsersOwnCalendarsAreNotSeeded() throws Exception {
-    // Their events have collections and a flow of their own; filing them
-    // among the meeting copies is the mixing the mirror refuses.
-    givenUpcoming(event(5L, 0, 800L, EventStatus.CONFIRMED));
-    givenCalendar(800L, USER);
+  public void anEventOfTheUsersOwnCalendarWithNoAttendeesIsSeeded() throws Exception {
+    givenUpcoming();
+    givenInOwnCalendars(event(5L, 0, MINE, EventStatus.CONFIRMED));
+    givenCalendar(MINE, USER);
+    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L))).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.pushUpcomingMeetings(USER));
+    verify(caldavPushService).pushAgendaEvent(USER, 5L);
+  }
+
+  /**
+   * Where an own-calendar event goes is not this service's question.
+   *
+   * <p>
+   * {@code CaldavPushService} routes it into the collection paired with that
+   * calendar, and answers null when the calendar has none — nothing is filed
+   * among the meeting copies, which is the mixing the old refusal was written
+   * to prevent and which the routing prevents properly. Null must read as
+   * "nothing was pushed" rather than as a write.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
+  @Test
+  public void anOwnCalendarWithNoCollectionYieldsNoCopyAndNoMixing() throws Exception {
+    givenUpcoming();
+    givenInOwnCalendars(event(5L, 0, MINE, EventStatus.CONFIRMED));
+    givenCalendar(MINE, USER);
+    when(caldavPushService.pushAgendaEvent(eq(USER), eq(5L))).thenReturn(null);
+
+    assertEquals(0, service.pushUpcomingMeetings(USER));
+  }
+
+  /**
+   * The guard, kept: a meeting the user answered no to stays out.
+   *
+   * <p>
+   * Asserted through the own-calendar window on purpose. The attendee-keyed
+   * window filters declined answers out in SQL, so a pin riding on it would
+   * pass whatever the service did afterwards; the owner-keyed window has no
+   * attendee predicate at all, so this is the path where the refusal has to be
+   * made in code — and it is the path the widening opened.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
+  @Test
+  public void aDeclinedMeetingIsNotSeeded() throws Exception {
+    givenUpcoming();
+    givenInOwnCalendars(event(5L, 0, MINE, EventStatus.CONFIRMED));
+    givenCalendar(MINE, USER);
+    givenDeclined(5L);
 
     assertEquals(0, service.pushUpcomingMeetings(USER));
     verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+  }
+
+  /**
+   * The equivalence this defect was, stated as one assertion over four shapes
+   * of event.
+   *
+   * <p>
+   * The creation listener reaches {@link CaldavPendingInvitationService#seedMeeting}
+   * and the background pass reaches {@code pushUpcomingMeetings}; an event that
+   * one copies must be an event the other copies. Held over: an own-calendar
+   * event nobody attends (the reported defect), an ordinary space meeting, a
+   * declined meeting, and a date poll. Comparing the two sets rather than
+   * asserting each in isolation is what makes this a pin on the agreement
+   * instead of two pins that can drift apart.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
+  @Test
+  public void theBackfillCopiesExactlyWhatTheCreationPathCopies() throws Exception {
+    givenUpcoming(event(6L, 0, SPACE, EventStatus.CONFIRMED), event(7L, 0, SPACE, EventStatus.CONFIRMED));
+    givenInOwnCalendars(event(5L, 0, MINE, EventStatus.CONFIRMED), event(8L, 0, MINE, EventStatus.TENTATIVE));
+    givenCalendar(MINE, USER);
+    givenCalendar(SPACE, 7L);
+    givenDeclined(7L);
+    when(caldavPushService.pushAgendaEvent(eq(USER), anyLong())).thenReturn(new ObjectSync());
+
+    List<Long> seededOnCreation = new ArrayList<>();
+    for (long eventId : List.of(5L, 6L, 7L, 8L)) {
+      if (service.seedMeeting(USER, eventId)) {
+        seededOnCreation.add(eventId);
+      }
+    }
+    // The own-calendar event and the ordinary meeting; not the declined one,
+    // not the date poll.
+    assertEquals(List.of(5L, 6L), seededOnCreation);
+
+    assertEquals(seededOnCreation.size(), service.pushUpcomingMeetings(USER));
+    for (Long eventId : seededOnCreation) {
+      verify(caldavPushService, atLeastOnce()).pushAgendaEvent(USER, eventId);
+    }
+    verify(caldavPushService, never()).pushAgendaEvent(USER, 7L);
+    verify(caldavPushService, never()).pushAgendaEvent(USER, 8L);
+  }
+
+  /**
+   * The converged account: everything in both windows already has a copy.
+   *
+   * <p>
+   * The failure mode this codebase keeps repeating is logic exercised only on
+   * the broken path, so the pass that finds nothing to do is asserted too —
+   * and asserted to be cheap, which is a claim about the batch question asked
+   * once for the whole window. Nothing is pushed and <b>no event is even
+   * loaded</b>: a pass that had to load each event before discovering it had
+   * nothing to do would make the cost of a converged account grow with how
+   * much had already been done, on a pass that repeats for ever.
+   *
+   * <p>
+   * Both windows answer, so this also covers the one the widening added — the
+   * cheapness has to hold for the own-calendar events too, not only for the
+   * meetings.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
+  @Test
+  public void aConvergedAccountPushesNothing() throws Exception {
+    givenUpcoming(event(6L, 0, SPACE, EventStatus.CONFIRMED));
+    givenInOwnCalendars(event(5L, 0, MINE, EventStatus.CONFIRMED));
+    when(caldavSyncStorage.mappedEventIds(eq(USER), any())).thenReturn(Set.of(5L, 6L));
+
+    assertEquals(0, service.pushUpcomingMeetings(USER));
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+    verify(agendaEventService, never()).getEventById(anyLong());
   }
 
   @Test
@@ -287,11 +439,60 @@ public class CaldavPendingInvitationServiceTest {
   }
 
   /**
-   * @param events what the window query answers
+   * What the attendee-keyed window answers: the meetings this user is an
+   * attendee of.
+   *
+   * <p>
+   * Matched on the filter carrying the user as its attendee, because the pass
+   * puts two questions to agenda and they are not interchangeable — this one
+   * can only ever name an event the user has an attendee row on.
+   *
+   * @param events what that window answers
    * @throws IllegalAccessException never — the mock declares it
    */
   private void givenUpcoming(Event... events) throws IllegalAccessException {
-    when(agendaEventService.getEvents(any(EventFilter.class), any(), eq(USER))).thenReturn(List.of(events));
+    when(agendaEventService.getEvents(argThat(filter -> filter != null && filter.getAttendeeId() == USER),
+                                      any(),
+                                      eq(USER))).thenReturn(List.of(events));
+  }
+
+  /**
+   * What the owner-keyed window answers: the events living in a calendar this
+   * user owns, whether or not anybody is an attendee of them.
+   *
+   * @param events what that window answers
+   * @throws IllegalAccessException never — the mock declares it
+   */
+  private void givenInOwnCalendars(Event... events) throws IllegalAccessException {
+    when(agendaEventService.getEvents(argThat(filter -> filter != null
+        && filter.getOwnerIds() != null
+        && filter.getOwnerIds().contains(USER)),
+                                      any(),
+                                      eq(USER))).thenReturn(List.of(events));
+  }
+
+  /**
+   * Makes this user a declined attendee of these events, and of no other.
+   *
+   * @param eventIds the events the user said no to
+   */
+  private void givenDeclined(long... eventIds) {
+    List<Long> declined = new ArrayList<>();
+    for (long eventId : eventIds) {
+      declined.add(eventId);
+    }
+    lenient().when(agendaEventAttendeeService.getEventAttendees(anyLong(), eq(EventAttendeeResponse.DECLINED)))
+             .thenAnswer(invocation -> declined.contains(invocation.getArgument(0, Long.class))
+                                                                                               ? oneAttendee(USER)
+                                                                                               : EventAttendeeList.EMPTY_ATTENDEE_LIST);
+  }
+
+  /**
+   * @param identityId who the single attendee is
+   * @return an attendee list holding only them, as a declined answer
+   */
+  private EventAttendeeList oneAttendee(long identityId) {
+    return new EventAttendeeList(List.of(new EventAttendee(1L, identityId, EventAttendeeResponse.DECLINED)));
   }
 
   /**
