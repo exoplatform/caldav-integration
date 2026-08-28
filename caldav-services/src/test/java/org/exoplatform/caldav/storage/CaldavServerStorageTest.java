@@ -31,7 +31,9 @@ import static org.mockito.Mockito.when;
 
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.mockito.ArgumentCaptor;
@@ -47,6 +49,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.exoplatform.caldav.dao.CaldavServerDAO;
 import org.exoplatform.caldav.entity.CaldavServerEntity;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.ObservedQuirk;
+import org.exoplatform.caldav.model.ServerQuirk;
+import org.exoplatform.caldav.model.ServerQuirkDirection;
+import org.exoplatform.caldav.utils.ServerQuirkSummary.Observation;
 import org.exoplatform.commons.file.model.FileInfo;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
@@ -64,6 +70,12 @@ import org.exoplatform.upload.UploadService;
 public class CaldavServerStorageTest {
 
   private static final String PREFIX = "agenda.caldavCalendar";
+
+  /** A fixed "today", so a test never depends on the day it is run. */
+  private static final long   TODAY  = 20330L;
+
+  /** The window these tests share, matching the shipped default. */
+  private static final long   RETENTION_DAYS = 30L;
 
   @Mock
   private CaldavServerDAO     caldavServerDAO;
@@ -130,7 +142,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldUpdateEverythingButTheProviderName() {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null, true);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null, true, null, null, null, null);
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     CaldavServer updated = caldavServerStorage.updateServer(server(7, "hijacked.name", "New", "desc",
@@ -189,7 +201,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldPersistIconAndDropRemovedImageOnUpdate() {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true, null, null, null, null);
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     CaldavServer payload = server(7, null, "New", null, "https://new/", true);
@@ -208,7 +220,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldDeleteRowAndItsImage() {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true, null, null, null, null);
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     assertEquals(true, caldavServerStorage.deleteServer(7L));
@@ -228,9 +240,9 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldListServersOrderedById() {
-    CaldavServerEntity seed = new CaldavServerEntity(1L, PREFIX, "Stalwart", null, "https://seed/", true, null, null, true);
+    CaldavServerEntity seed = new CaldavServerEntity(1L, PREFIX, "Stalwart", null, "https://seed/", true, null, null, true, null, null, null, null);
     CaldavServerEntity declared = new CaldavServerEntity(7L, PREFIX + ".7", "Nextcloud", null, "https://declared/", false, null,
-                                                         null, true);
+                                                         null, true, null, null, null, null);
     ArgumentCaptor<Sort> sort = ArgumentCaptor.forClass(Sort.class);
     when(caldavServerDAO.findAll(sort.capture())).thenReturn(List.of(seed, declared));
 
@@ -250,7 +262,7 @@ public class CaldavServerStorageTest {
   @Test
   public void shouldReadOneServerByIdOrAnswerNull() {
     CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Nextcloud", "desc", "https://declared/", true,
-                                                         null, null, true);
+                                                         null, null, true, null, null, null, null);
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
     when(caldavServerDAO.findById(99L)).thenReturn(Optional.empty());
 
@@ -268,7 +280,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldReadOneServerByProviderNameOrAnswerNull() {
-    CaldavServerEntity seed = new CaldavServerEntity(1L, PREFIX, "Stalwart", null, "https://seed/", true, null, null, true);
+    CaldavServerEntity seed = new CaldavServerEntity(1L, PREFIX, "Stalwart", null, "https://seed/", true, null, null, true, null, null, null, null);
     when(caldavServerDAO.findByProviderName(PREFIX)).thenReturn(Optional.of(seed));
     when(caldavServerDAO.findByProviderName("unknown")).thenReturn(Optional.empty());
 
@@ -299,7 +311,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldUpdateTheStoredFileWhenReplacingTheImage() throws Exception {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true, null, null, null, null);
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
     java.io.File upload = java.io.File.createTempFile("caldav-icon", ".png");
     upload.deleteOnExit();
@@ -338,7 +350,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldDeleteAnImagelessRowWithoutTouchingFileStorage() {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null, true);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null, true, null, null, null, null);
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     assertEquals(true, caldavServerStorage.deleteServer(7L));
@@ -354,7 +366,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldTreatAZeroImageFileIdAsNoImage() {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 0L, true);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 0L, true, null, null, null, null);
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     CaldavServer server = caldavServerStorage.getServerById(7L);
@@ -369,7 +381,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldDropTheRemovedImageWhenReportedAsZero() {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true, null, null, null, null);
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     CaldavServer payload = server(7, null, "Old", null, "https://old/", true);
@@ -405,6 +417,203 @@ public class CaldavServerStorageTest {
     assertNull(created.getImageUrl());
   }
 
+  // ------------------------- what the server has been seen doing (EXO-89771)
+
+  @Test
+  public void shouldMapTheStoredSummaryIntoWhatTheDrawerLists() {
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://bm/", true, null, null,
+                                                         true, null, null, null,
+                                                         "DROPPED:CONFERENCE=399;ADDED:X-MOZ-GENERATION=41");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    List<ObservedQuirk> observed = caldavServerStorage.getServerById(7L).getObservedQuirks();
+
+    assertEquals(2, observed.size(), "largest count first, so the drawer leads with what the server always does");
+    assertEquals("dropsConference", observed.get(0).quirkId());
+    assertEquals(399L, observed.get(0).count());
+    assertEquals(List.of("CONFERENCE"), observed.get(0).patterns());
+    assertEquals("addsCompatibilityMarkers", observed.get(1).quirkId());
+    assertEquals(List.of("X-MICROSOFT-*", "X-MOZ-*"),
+                 observed.get(1).patterns(),
+                 "ticking a family excuses the family the sentence names, not only the marker seen first");
+  }
+
+  @Test
+  public void shouldStillListABehaviourNothingInTheCatalogueDescribes() {
+    // The catalogue is code and deliberately incomplete; an administrator meeting
+    // a server nobody here has seen must still be able to excuse what it does.
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Odd", null, "https://odd/", true, null, null, true,
+                                                         null, null, null, "ADDED:X-BM-FOO=3");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    List<ObservedQuirk> observed = caldavServerStorage.getServerById(7L).getObservedQuirks();
+
+    assertEquals(1, observed.size());
+    assertNull(observed.get(0).quirkId(), "nothing describes it, so the drawer falls back to its generic wording");
+    assertEquals(List.of("X-BM-FOO"), observed.get(0).properties());
+    assertEquals(List.of("X-BM-FOO"), observed.get(0).patterns());
+  }
+
+  @Test
+  public void shouldOfferOneEntryPerBehaviourAndNotOnePerProperty() {
+    // Live on the rig: BlueMind stamped three Outlook/Thunderbird markers and
+    // the drawer rendered three identical checkboxes, each saying "seen once".
+    // They are one sentence about one habit, so they are one entry whose count
+    // is the sum of theirs - and it would only have got worse, since that entry
+    // matches by prefix and every new marker would have added another row.
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://bm/", true, null, null,
+                                                         true, null, null, null,
+                                                         "ADDED:X-MICROSOFT-CDO-BUSYSTATUS=1;ADDED:X-MICROSOFT-DISALLOW-COUNTER=1;"
+                                                             + "ADDED:X-MOZ-LASTACK=1;DROPPED:CONFERENCE=1;ADDED:X-ALT-DESC=1;"
+                                                             + "DROPPED:ORGANIZER=1");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    List<ObservedQuirk> observed = caldavServerStorage.getServerById(7L).getObservedQuirks();
+
+    assertEquals(4, observed.size(), "six observed properties, four behaviours: " + observed);
+    ObservedQuirk markers = observed.stream()
+                                    .filter(quirk -> "addsCompatibilityMarkers".equals(quirk.quirkId()))
+                                    .findFirst()
+                                    .orElseThrow();
+    assertEquals(3L, markers.count(), "and its count is the sum of what each marker contributed");
+    assertEquals(List.of("X-MICROSOFT-CDO-BUSYSTATUS", "X-MICROSOFT-DISALLOW-COUNTER", "X-MOZ-LASTACK"),
+                 markers.properties(),
+                 "every property it was built from is kept, so an existing excusal is still recognised");
+    assertEquals(List.of("X-MICROSOFT-*", "X-MOZ-*"),
+                 markers.patterns(),
+                 "and ticking it writes the whole family, not just the marker seen first");
+  }
+
+  @Test
+  public void shouldStillOfferOneEntryPerPropertyForABehaviourNothingDescribes() {
+    // The other half of the grouping rule. Where no catalogue entry says two
+    // properties are one habit, each of them genuinely is its own behaviour and
+    // folding them together would invent a decision nobody wrote.
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Odd", null, "https://odd/", true, null, null, true,
+                                                         null, null, null, "ADDED:X-BM-FOO=4;ADDED:X-BM-BAR=2");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    List<ObservedQuirk> observed = caldavServerStorage.getServerById(7L).getObservedQuirks();
+
+    assertEquals(2, observed.size(), "two unrelated properties are two behaviours: " + observed);
+    assertEquals(List.of("X-BM-FOO"), observed.get(0).properties());
+    assertEquals(List.of("X-BM-BAR"), observed.get(1).properties());
+  }
+
+  @Test
+  public void shouldAddWhatAPassSawToWhatIsAlreadyStored() {
+    CaldavServerEntity existing = observedOn("DROPPED:CONFERENCE=399@" + TODAY);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing, Map.of(Observation.of(ServerQuirkDirection.DROPPED, "CONFERENCE"), 5L), Set.of());
+
+    assertEquals("DROPPED:CONFERENCE=404@" + TODAY, existing.getObservedQuirks());
+  }
+
+  // -------------------------- what a summary must forget (EXO-89771 follow-up)
+
+  @Test
+  public void shouldForgetARecordACaseHasSuperseded() {
+    // Live on the rig: BlueMind listed BOTH "drops the organizer of an event
+    // with no other participants" and the older, broader "does not keep
+    // ORGANIZER" - two checkboxes for one behaviour, and ticking the second
+    // would have written an excusal covering every missing organizer on that
+    // server, which is exactly what EXO-89775 avoided.
+    CaldavServerEntity existing = observedOn("DROPPED:ORGANIZER=4@" + TODAY);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing,
+          Map.of(Observation.of(ServerQuirkDirection.DROPPED, ServerQuirk.SOLO_ORGANIZER), 5L),
+          Set.of("ORGANIZER"));
+
+    assertEquals("DROPPED:SOLO-ORGANIZER=5@" + TODAY,
+                 existing.getObservedQuirks(),
+                 "the replaced record goes, and only it");
+  }
+
+  @Test
+  public void shouldForgetABehaviourTheServerHasStoppedExhibiting() {
+    // A quirk that ended months ago is not a decision anybody should be shown.
+    CaldavServerEntity existing = observedOn("ADDED:X-OLD=9@" + (TODAY - 40) + ";ADDED:X-RECENT=2@" + (TODAY - 3));
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing, Map.of(Observation.of(ServerQuirkDirection.ADDED, "X-NEW"), 1L), Set.of());
+
+    assertEquals("ADDED:X-RECENT=2@" + (TODAY - 3) + ";ADDED:X-NEW=1@" + TODAY, existing.getObservedQuirks());
+  }
+
+  @Test
+  public void shouldNeverForgetABehaviourTheAdministratorHasExcused() {
+    // The absolute exemption. The excusal lives in another column and would
+    // survive either way - which is the danger: one still in force with no entry
+    // in the drawer is one nobody can see or untick.
+    CaldavServerEntity existing = observedOn("DROPPED:ORGANIZER=4@" + (TODAY - 90) + ";ADDED:X-MOZ-LASTACK=1@" + (TODAY - 90));
+    existing.setIgnoredProperties("X-MICROSOFT-*,X-MOZ-*");
+    existing.setOmittedProperties(ServerQuirk.SOLO_ORGANIZER);
+    existing.setDroppedProperties("ORGANIZER");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing,
+          Map.of(Observation.of(ServerQuirkDirection.DROPPED, ServerQuirk.SOLO_ORGANIZER), 1L),
+          Set.of("ORGANIZER"));
+
+    assertTrue(existing.getObservedQuirks().contains("DROPPED:ORGANIZER=4"),
+               "an excused record survives supersession: " + existing.getObservedQuirks());
+    assertTrue(existing.getObservedQuirks().contains("ADDED:X-MOZ-LASTACK=1"),
+               "and staleness: " + existing.getObservedQuirks());
+  }
+
+  @Test
+  public void shouldGiveALegacyRecordItsFirstStampRatherThanDropIt() {
+    // Upgrade path: an entry written before stamps existed has no date, and
+    // wiping somebody's history to enforce a rule that post-dates it would be
+    // the wrong bias. It gets one, and the ordinary rule takes over.
+    CaldavServerEntity existing = observedOn("ADDED:X-LEGACY=9");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing, Map.of(Observation.of(ServerQuirkDirection.ADDED, "X-NEW"), 1L), Set.of());
+
+    assertEquals("ADDED:X-LEGACY=9@" + TODAY + ";ADDED:X-NEW=1@" + TODAY, existing.getObservedQuirks());
+  }
+
+  @Test
+  public void shouldNotLetAnAdministratorSaveEraseWhatTheSweepRecorded() {
+    // The summary is the sweep's column. Routed through the ordinary update it
+    // would be wiped by every save from a drawer that never carried it.
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://bm/", true, null, null,
+                                                         true, null, null, null, "DROPPED:CONFERENCE=399");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+    CaldavServer edited = server(7L, PREFIX + ".7", "Bluemind renamed", null, "https://bm/", true);
+    edited.setDroppedProperties("CONFERENCE");
+
+    caldavServerStorage.updateServer(edited);
+
+    assertEquals("DROPPED:CONFERENCE=399", existing.getObservedQuirks());
+    assertEquals("CONFERENCE", existing.getDroppedProperties(), "while the ticks an administrator made are stored");
+  }
+
+  /**
+   * A registration carrying a stored observation summary and nothing excused.
+   *
+   * @param summary the stored summary
+   * @return the entity
+   */
+  private CaldavServerEntity observedOn(String summary) {
+    return new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://bm/", true, null, null, true, null, null, null,
+                                  summary);
+  }
+
+  /**
+   * Merges one batch, with the retention window every test here shares.
+   *
+   * @param entity the registration
+   * @param increments what the pass saw
+   * @param superseded the property names a case has replaced
+   */
+  private void merge(CaldavServerEntity entity, Map<Observation, Long> increments, Set<String> superseded) {
+    caldavServerStorage.mergeObservedQuirks(entity.getId(), increments, superseded, RETENTION_DAYS, TODAY);
+  }
+
   /**
    * Builds a registration with the six identity fields — the icon/image
    * fields default to null, exactly as a fresh REST payload leaves them.
@@ -419,6 +628,6 @@ public class CaldavServerStorageTest {
    */
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
-    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true);
+    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null, null, null, null);
   }
 }

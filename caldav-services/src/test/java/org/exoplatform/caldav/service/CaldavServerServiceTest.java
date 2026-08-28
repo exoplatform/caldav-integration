@@ -102,6 +102,14 @@ public class CaldavServerServiceTest {
   @Mock
   private PortalContainer         portalContainer;
 
+  /**
+   * The decorator that fills in what each server has been seen doing. Stubbed
+   * to hand back what it was given, so every assertion in this class goes on
+   * measuring the registry rather than the enrichment, which has its own test.
+   */
+  @Mock
+  private CaldavServerQuirkService caldavServerQuirkService;
+
   @InjectMocks
   private CaldavServerService      caldavServerService;
 
@@ -110,12 +118,19 @@ public class CaldavServerServiceTest {
   private String                   previousEnabledProperty;
 
   /**
-   * Keeps the JVM-wide legacy properties restorable: the seeding tests set
-   * them, and leaking a value into another test would fake a configured
-   * deployment.
+   * Two things one setup does, because JUnit orders sibling {@code @BeforeEach}
+   * methods arbitrarily and a reader should not have to wonder whether that
+   * matters here.
+   *
+   * <p>
+   * The decorator is passed through unchanged so a test reads the registration
+   * it stored rather than one an observation service rewrote; and the JVM-wide
+   * legacy properties are captured so they can be restored afterwards, since
+   * leaking a value into another test would fake a configured deployment.
    */
   @BeforeEach
-  public void saveLegacyProperties() {
+  public void passRegistrationsThroughAndSaveLegacyProperties() {
+    lenient().when(caldavServerQuirkService.decorate(any())).thenAnswer(invocation -> invocation.getArgument(0));
     previousUrlProperty = System.getProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY);
     previousEnabledProperty = System.getProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY);
   }
@@ -716,6 +731,6 @@ public class CaldavServerServiceTest {
    */
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
-    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true);
+    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null, null, null, null);
   }
 }

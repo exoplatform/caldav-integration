@@ -17,8 +17,13 @@
 package org.exoplatform.caldav.storage;
 
 import java.io.ByteArrayInputStream;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,6 +34,12 @@ import org.springframework.transaction.annotation.Transactional;
 import org.exoplatform.caldav.dao.CaldavServerDAO;
 import org.exoplatform.caldav.entity.CaldavServerEntity;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.ObservedQuirk;
+import org.exoplatform.caldav.model.ServerQuirk;
+import org.exoplatform.caldav.model.ServerQuirkEffect;
+import org.exoplatform.caldav.utils.ServerQuirkSummary;
+import org.exoplatform.caldav.utils.ServerQuirkSummary.Observation;
+import org.exoplatform.caldav.utils.ServerQuirkSummary.Tally;
 import org.exoplatform.commons.file.model.FileInfo;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
@@ -153,9 +164,12 @@ public class CaldavServerStorage {
 
   /**
    * Updates the user-editable fields of a registration: name, description,
-   * URL, activation and whether the copies pushed to this server carry answer
-   * links. The provider name never changes — it is the join key user settings
-   * and agenda rows hang from.
+   * URL, activation, whether the copies pushed to this server carry answer
+   * links, and the two lists of behaviours this server is excused for. The
+   * provider name never changes — it is the join key user settings and agenda
+   * rows hang from, and neither is the rolling observation summary, which is
+   * the sweep's to write (see {@link #mergeObservedQuirks}) and would otherwise
+   * be erased by every administrator save.
    *
    * @param server registration carrying the id to update and the new values
    * @return the updated registration, or null when the row does not exist
@@ -169,6 +183,9 @@ public class CaldavServerStorage {
       entity.setActive(server.isActive());
       entity.setIcon(server.getIcon());
       entity.setAnswerLinksInCopy(server.isAnswerLinksInCopy());
+      entity.setIgnoredProperties(server.getIgnoredProperties());
+      entity.setDroppedProperties(server.getDroppedProperties());
+      entity.setOmittedProperties(server.getOmittedProperties());
       Long oldImageFileId = entity.getImageFileId();
       boolean imageRemoved = (server.getImageFileId() == null || server.getImageFileId() == 0)
           && oldImageFileId != null && oldImageFileId > 0;
@@ -258,7 +275,237 @@ public class CaldavServerStorage {
                             entity.getImageFileId(),
                             null,
                             getImageUrl(entity.getImageFileId(), entity.getId(), imageLastModified),
-                            entity.isAnswerLinksInCopy());
+                            entity.isAnswerLinksInCopy(),
+                            entity.getIgnoredProperties(),
+                            entity.getDroppedProperties(),
+                            entity.getOmittedProperties(),
+                            observedQuirks(entity.getObservedQuirks()));
+  }
+
+  /**
+   * The stored observation summary as the entries the drawer lists.
+   *
+   * <p>
+   * <b>Grouped by behaviour, not by property.</b> A catalogue entry can cover a
+   * family — the Outlook and Thunderbird markers are one sentence about one
+   * server habit — and a live BlueMind account produced three of them, which
+   * rendered as three identical checkboxes each saying "seen once". They are one
+   * decision, so they become one entry whose count is the sum of theirs. It
+   * would only have got worse: that entry matches by prefix, so every new marker
+   * the server stamps would have added another identical row.
+   *
+   * <p>
+   * A behaviour nothing in the catalogue describes stays one entry per property,
+   * because there each property genuinely is a separate thing the server does —
+   * which is why the grouping key is the catalogue's identifier where there is
+   * one, and the direction and property where there is not.
+   *
+   * <p>
+   * Mapping, not judgement: whether an entry is <i>excused</i> is left false
+   * here and decided by the service, which is the layer that knows the
+   * deployment-wide fallback.
+   *
+   * @param summary the stored summary, may be null
+   * @return the observed behaviours, largest counts first, never null
+   */
+  private List<ObservedQuirk> observedQuirks(String summary) {
+    Map<String, ObservedQuirk> byBehaviour = new LinkedHashMap<>();
+    ServerQuirkSummary.parse(summary)
+                      .forEach((observation, tally) -> byBehaviour.merge(behaviourKey(observation),
+                                                                         observedQuirk(observation, tally.count()),
+                                                                         CaldavServerStorage::mergeBehaviour));
+    return byBehaviour.values()
+                      .stream()
+                      .sorted(Comparator.comparingLong(ObservedQuirk::count)
+                                        .reversed()
+                                        .thenComparing(ObservedQuirk::property))
+                      .toList();
+  }
+
+  /**
+   * What makes two observations the same behaviour: the catalogue entry
+   * describing them, or — when none does — the property and the direction
+   * themselves.
+   *
+   * @param observation what was seen
+   * @return the grouping key
+   */
+  private String behaviourKey(Observation observation) {
+    return ServerQuirk.describing(observation.property(), observation.direction())
+                      .map(ServerQuirk::getId)
+                      .orElseGet(() -> observation.direction() + ":" + observation.property());
+  }
+
+  /**
+   * Folds a second observation of one behaviour into the entry already holding
+   * it: the counts add up, and the property that produced them is kept so the
+   * excusal can still be read from the list in force.
+   *
+   * @param first the entry built so far
+   * @param second the entry for the observation being folded in
+   * @return the combined entry
+   */
+  private static ObservedQuirk mergeBehaviour(ObservedQuirk first, ObservedQuirk second) {
+    List<String> properties = new ArrayList<>(first.properties());
+    second.properties().stream().filter(property -> !properties.contains(property)).forEach(properties::add);
+    return new ObservedQuirk(first.quirkId(),
+                             properties,
+                             first.direction(),
+                             first.effect(),
+                             first.count() + second.count(),
+                             false,
+                             first.patterns());
+  }
+
+  /**
+   * One stored observation as an entry of its own, before any other observation
+   * of the same behaviour is folded into it.
+   *
+   * <p>
+   * A described behaviour carries the catalogue's <b>own</b> direction rather
+   * than the observed one, so a family whose members were seen pointing
+   * different ways still reads — and is ticked — as the single behaviour it is.
+   *
+   * @param observation what was seen
+   * @param count how many times
+   * @return the entry, carrying the catalogue's identifier when one describes
+   *         it and the observed property alone when none does
+   */
+  private ObservedQuirk observedQuirk(Observation observation, Long count) {
+    return ServerQuirk.describing(observation.property(), observation.direction())
+                      .map(quirk -> new ObservedQuirk(quirk.getId(),
+                                                      List.of(observation.property()),
+                                                      quirk.getDirection(),
+                                                      quirk.getEffect(),
+                                                      count,
+                                                      false,
+                                                      quirk.getPatterns()))
+                      // TOLERATE for a behaviour nothing describes, and never
+                      // OMIT: an entry nobody has written a rule for can relax a
+                      // comparison, but there is no rule to make eXo leave
+                      // anything out of what it writes.
+                      .orElseGet(() -> new ObservedQuirk(null,
+                                                         List.of(observation.property()),
+                                                         observation.direction(),
+                                                         ServerQuirkEffect.TOLERATE,
+                                                         count,
+                                                         false,
+                                                         List.of(observation.property())));
+  }
+
+  /**
+   * Adds what a pass saw to a registration's rolling observation summary, and
+   * forgets what no longer belongs in it.
+   *
+   * <p>
+   * Read, merge, prune and write in one transaction, and touching that one
+   * column only. This is the sweep talking, not an administrator: routing it
+   * through {@link #updateServer} would let a background pass overwrite a name
+   * or a URL somebody is editing in the drawer at the same moment.
+   *
+   * <p>
+   * <b>The pruning is the service's decision and this method's mechanics.</b>
+   * What may be forgotten arrives as arguments — the properties a case has just
+   * replaced, and how long an unseen behaviour is kept — because deciding those
+   * is policy; applying them to a stored string is mapping.
+   *
+   * <p>
+   * <b>One record is never dropped, whatever the rules say: an excused one.</b>
+   * The excusal itself lives in the three lists on this row and would survive
+   * either way, which is precisely the danger — an excusal still in force with
+   * no entry in the drawer is one an administrator can neither see nor untick.
+   * Forgetting the evidence must never outlive the decision made from it.
+   *
+   * <p>
+   * Two passes racing on one server can still lose an increment, and that is
+   * accepted: the number answers "does this server always do this, or did it
+   * happen once", and no decision is made from its exact value.
+   *
+   * @param serverId technical identifier of the registration
+   * @param increments how many times each behaviour was seen since the last
+   *          write
+   * @param superseded property names whose own records a case has replaced
+   * @param retentionDays how many days a behaviour is kept after it was last
+   *          seen
+   * @param today the current epoch day
+   */
+  @Transactional
+  public void mergeObservedQuirks(long serverId,
+                                  Map<Observation, Long> increments,
+                                  Set<String> superseded,
+                                  long retentionDays,
+                                  long today) {
+    if (increments == null || increments.isEmpty()) {
+      return;
+    }
+    caldavServerDAO.findById(serverId).ifPresent(entity -> {
+      Map<Observation, Tally> merged = new LinkedHashMap<>();
+      ServerQuirkSummary.parse(entity.getObservedQuirks())
+                        .forEach((observation, tally) -> merged.put(observation, tally.stamped(today)));
+      increments.forEach((observation, seen) -> merged.merge(observation,
+                                                             new Tally(seen, today),
+                                                             (stored, fresh) -> stored.seen(fresh.count(), today)));
+      merged.entrySet().removeIf(entry -> forgettable(entity, entry, superseded, retentionDays, today));
+      entity.setObservedQuirks(ServerQuirkSummary.format(merged));
+      caldavServerDAO.save(entity);
+    });
+  }
+
+  /**
+   * Whether one stored observation no longer belongs in the summary.
+   *
+   * <p>
+   * Two reasons, and an absolute exemption. A record is <b>superseded</b> when a
+   * case the pass has just observed describes the same behaviour better — it
+   * would otherwise sit beside its own replacement, offering an excusal broader
+   * than the one the administrator now has words for. A record is <b>stale</b>
+   * when the server has not done it for longer than the deployment keeps such
+   * things, which is what stops a quirk that ended months ago being offered as a
+   * live decision. Neither applies to a behaviour whose excusal is in force: see
+   * {@link #mergeObservedQuirks}.
+   *
+   * <p>
+   * Nothing here is destructive. A behaviour the server still exhibits is
+   * observed again on the very next sweep that meets it and comes straight back,
+   * with its count starting over — which is the honest reading of a tally that
+   * says "how often, lately".
+   *
+   * @param entity the registration, for the excusals in force on it
+   * @param entry the stored observation
+   * @param superseded property names whose own records a case has replaced
+   * @param retentionDays how many days a behaviour is kept after it was last
+   *          seen
+   * @param today the current epoch day
+   * @return true when the record should go
+   */
+  private boolean forgettable(CaldavServerEntity entity,
+                              Map.Entry<Observation, Tally> entry,
+                              Set<String> superseded,
+                              long retentionDays,
+                              long today) {
+    if (excused(entity, entry.getKey().property())) {
+      return false;
+    }
+    return superseded != null && superseded.contains(entry.getKey().property())
+        || entry.getValue().staleOn(today, retentionDays);
+  }
+
+  /**
+   * Whether any list on the registration excuses a property today.
+   *
+   * <p>
+   * All three, because all three are decisions an administrator made from an
+   * entry in the drawer, and any of them left in force with its entry gone is
+   * one they can no longer see.
+   *
+   * @param entity the registration
+   * @param property the property or case name
+   * @return true when the row already carries a decision about it
+   */
+  private boolean excused(CaldavServerEntity entity, String property) {
+    return ServerQuirk.listMatches(entity.getIgnoredProperties(), property)
+        || ServerQuirk.listMatches(entity.getDroppedProperties(), property)
+        || ServerQuirk.listMatches(entity.getOmittedProperties(), property);
   }
 
   /**
@@ -295,6 +542,9 @@ public class CaldavServerStorage {
     entity.setIcon(server.getIcon());
     entity.setImageFileId(server.getImageFileId());
     entity.setAnswerLinksInCopy(server.isAnswerLinksInCopy());
+    entity.setIgnoredProperties(server.getIgnoredProperties());
+    entity.setDroppedProperties(server.getDroppedProperties());
+    entity.setOmittedProperties(server.getOmittedProperties());
     return entity;
   }
 }

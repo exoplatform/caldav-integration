@@ -621,13 +621,13 @@ public class IcsEquivalenceTest {
     // The exemption is not a property of ATTENDEE lines, it is a property of
     // one known person. Told about nobody, the comparison is as strict as it
     // was before the relaxation existed.
-    IcsEquivalence.Judgement judgement =
+    IcsJudgement judgement =
         judge.compare(EXO.replace("STATUS:CONFIRMED",
                                   "ATTENDEE;CN=FRANCOIS:mailto:alice@stalwart.local\r\nSTATUS:CONFIRMED"),
                       EXO,
                       java.util.List.of());
 
-    assertEquals(IcsEquivalence.Verdict.DIFFERENT, judgement.verdict());
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
   }
 
   @Test
@@ -710,7 +710,7 @@ public class IcsEquivalenceTest {
     // proprietary hints nobody could have anticipated, which is exactly what
     // the operator's ignoredProperties lever is for — a decision somebody makes
     // after reading a log line, not one this class makes for them.
-    IcsEquivalence.Judgement judgement =
+    IcsJudgement judgement =
         judge.compare(EXO.replace("BEGIN:VEVENT\r\n", "BEGIN:VEVENT\r\nVERSION:2.0\r\n")
                          .replace("STATUS:CONFIRMED",
                                   "X-MICROSOFT-CDO-BUSYSTATUS:BUSY\r\nX-MICROSOFT-DISALLOW-COUNTER:false\r\n"
@@ -718,7 +718,7 @@ public class IcsEquivalenceTest {
                       EXO,
                       OWNER);
 
-    assertEquals(IcsEquivalence.Verdict.DIFFERENT, judgement.verdict());
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
     // And the line names them and nothing else — the VERSION that used to lead
     // it is gone, so whoever reads the log sees only what is still undecided.
     assertEquals("UNRECOGNISED:X-MICROSOFT-CDO-BUSYSTATUS=BUSY (server 1, eXo 0); "
@@ -805,9 +805,9 @@ public class IcsEquivalenceTest {
     // Bounded rather than silent: a repair would fail on the same parse and the
     // pass gives up after a few attempts, saying so in the log — which is the
     // honest outcome for a copy nobody can read.
-    IcsEquivalence.Judgement judgement = judge.compare("this is not a calendar object at all", EXO, OWNER);
+    IcsJudgement judgement = judge.compare("this is not a calendar object at all", EXO, OWNER);
 
-    assertEquals(IcsEquivalence.Verdict.DIFFERENT, judgement.verdict());
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
     assertNotNull(judgement.detail());
   }
 
@@ -815,12 +815,12 @@ public class IcsEquivalenceTest {
   public void anExoRenderThatCannotBeReadConcludesNothing() {
     // A defect on this side is never evidence about the user's calendar. The
     // caller leaves the copy exactly as it is.
-    assertEquals(IcsEquivalence.Verdict.UNJUDGEABLE, judge.compare(EXO, "not a calendar object", OWNER).verdict());
+    assertEquals(IcsJudgement.Verdict.UNJUDGEABLE, judge.compare(EXO, "not a calendar object", OWNER).verdict());
   }
 
   @Test
   public void anExoRenderCarryingNoEventConcludesNothing() {
-    assertEquals(IcsEquivalence.Verdict.UNJUDGEABLE,
+    assertEquals(IcsJudgement.Verdict.UNJUDGEABLE,
                  judge.compare(EXO,
                                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//y//EN\r\nEND:VCALENDAR\r\n",
                                OWNER)
@@ -1131,8 +1131,8 @@ public class IcsEquivalenceTest {
    * @param inExo the object eXo renders
    */
   private void assertEquivalent(String onServer, String inExo) {
-    IcsEquivalence.Judgement judgement = judge.compare(onServer, inExo, OWNER);
-    assertEquals(IcsEquivalence.Verdict.EQUIVALENT, judgement.verdict(), String.valueOf(judgement.detail()));
+    IcsJudgement judgement = judge.compare(onServer, inExo, OWNER);
+    assertEquals(IcsJudgement.Verdict.EQUIVALENT, judgement.verdict(), String.valueOf(judgement.detail()));
   }
 
   /**
@@ -1152,8 +1152,8 @@ public class IcsEquivalenceTest {
    * @param inExo the object eXo renders
    */
   private void assertDifferent(String onServer, String inExo) {
-    IcsEquivalence.Judgement judgement = judge.compare(onServer, inExo, OWNER);
-    assertEquals(IcsEquivalence.Verdict.DIFFERENT, judgement.verdict());
+    IcsJudgement judgement = judge.compare(onServer, inExo, OWNER);
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
     assertNotNull(judgement.detail(), "a difference must say what it is, or nobody can act on the log line");
   }
 }

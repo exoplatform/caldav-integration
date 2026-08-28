@@ -77,10 +77,29 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               {{ $t('caldav.admin.servers.url.hint') }}
             </div>
             <div class="text-caption text-sub-title mb-2">
-              {{ $t('caldav.admin.servers.url.corsHint') }}
+              {{ $t('caldav.admin.servers.url.reachabilityHint') }}
             </div>
           </v-list-item-content>
         </v-list-item>
+        <v-list-item class="pa-0" dense>
+          <v-list-item-content class="py-0">
+            <v-list-item-title class="my-0">
+              {{ $t('caldav.admin.servers.description') }}
+            </v-list-item-title>
+            <v-text-field
+              v-model="server.description"
+              :aria-label="$t('caldav.admin.servers.description')"
+              :placeholder="$t('caldav.admin.servers.description.placeholder')"
+              class="pt-3"
+              type="text"
+              maxlength="500"
+              outlined
+              dense />
+          </v-list-item-content>
+        </v-list-item>
+        <v-list-item-title class="pa-0 mt-7 mb-4 text-header">
+          {{ $t('caldav.admin.servers.copies.title') }}
+        </v-list-item-title>
         <v-list-item class="pa-0 mb-5" dense>
           <v-list-item-content class="py-0">
             <div class="d-flex align-center">
@@ -105,20 +124,65 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </div>
           </v-list-item-content>
         </v-list-item>
-        <v-list-item class="pa-0" dense>
+        <!--
+          Always rendered, empty or not. Two drawers with different SHAPES teach
+          an administrator nothing: on a server that has shown nothing, a missing
+          section reads as "unsupported here" or "not implemented" rather than as
+          the good news it is. The empty state says which.
+        -->
+        <v-list-item-title class="pa-0 mt-7 mb-2 text-header">
+          {{ $t('caldav.admin.servers.quirks.title') }}
+        </v-list-item-title>
+        <div class="text-caption text-sub-title mb-4">
+          {{ observedQuirks.length && $t('caldav.admin.servers.quirks.subtitle')
+            || $t('caldav.admin.servers.quirks.none') }}
+        </div>
+        <v-list-item
+          v-for="quirk in observedQuirks"
+          :key="quirk.key"
+          class="pa-0 mb-4"
+          dense>
           <v-list-item-content class="py-0">
-            <v-list-item-title class="my-0">
-              {{ $t('caldav.admin.servers.description') }}
-            </v-list-item-title>
-            <v-text-field
-              v-model="server.description"
-              :aria-label="$t('caldav.admin.servers.description')"
-              :placeholder="$t('caldav.admin.servers.description.placeholder')"
-              class="pt-3"
-              type="text"
-              maxlength="500"
-              outlined
-              dense />
+            <div class="d-flex align-start">
+              <v-checkbox
+                v-model="quirk.excused"
+                :aria-label="$t(quirk.labelKey, {0: quirk.property})"
+                class="ma-0 pa-0 me-2"
+                hide-details />
+              <div class="flex-grow-1 text-start">
+                <div :class="quirk.warning && 'error--text font-weight-bold' || ''">
+                  <v-icon
+                    v-if="quirk.warning"
+                    class="me-1"
+                    color="error"
+                    size="16">
+                    fas fa-exclamation-triangle
+                  </v-icon>
+                  {{ $t(quirk.labelKey, {0: quirk.property}) }}
+                </div>
+                <div
+                  :class="quirk.warning && 'error--text' || 'text-sub-title'"
+                  class="text-caption mt-1">
+                  {{ $t(quirk.costKey, {0: quirk.property}) }}
+                </div>
+                <!--
+                  A quirk that changes what eXo WRITES says so, in its own
+                  line, above the count. Most boxes here only change what eXo
+                  notices and are reversible with no trace; this one alters the
+                  document that lands in somebody's calendar, and a box that
+                  does that must not look like a box that does not.
+                -->
+                <div
+                  v-if="quirk.changesWhatIsWritten"
+                  class="text-caption font-weight-bold mt-1">
+                  <v-icon class="me-1" size="14">fas fa-pen</v-icon>
+                  {{ $t('caldav.admin.servers.quirks.changesWhatIsWritten') }}
+                </div>
+                <div class="text-caption text-sub-title mt-1">
+                  {{ $t(quirk.seenKey, {0: quirk.count}) }}
+                </div>
+              </div>
+            </div>
           </v-list-item-content>
         </v-list-item>
       </form>
@@ -143,6 +207,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import {applyExcusals, describeQuirk} from '../../js/serverQuirks.js';
+
 export default {
   data: () => ({
     caldavServerDrawer: false,
@@ -160,7 +226,15 @@ export default {
       // On by default, matching the registry: a server declared here writes
       // the answer links unless its administrator says otherwise.
       answerLinksInCopy: true,
-    }
+      ignoredProperties: null,
+      droppedProperties: null,
+      omittedProperties: null,
+      observedQuirks: [],
+    },
+    // The behaviours this server has been seen doing, as the drawer edits
+    // them. Copied out of the row on open so an abandoned drawer leaves the
+    // registration untouched, exactly like every other field here.
+    observedQuirks: [],
   }),
   computed: {
     disabled() {
@@ -192,7 +266,21 @@ export default {
       if (server) {
         this.server = { ...server };
       }
+      this.observedQuirks = (this.server.observedQuirks || []).map(describeQuirk);
       this.$refs.caldavServerDrawer.open();
+    },
+    /**
+     * Folds the drawer's ticks back into the lists the registration is saved
+     * with.
+     *
+     * <p>A method of its own so the round trip can be exercised through the
+     * component - the layer where the last regression lived - and not only
+     * through the module underneath it.</p>
+     *
+     * @returns {void}
+     */
+    applyTicks() {
+      applyExcusals(this.server, this.observedQuirks);
     },
     /**
      * Closes the drawer, dropping whatever was typed.
@@ -211,7 +299,12 @@ export default {
         imageFileId: null,
         imageUrl: null,
         answerLinksInCopy: true,
+        ignoredProperties: null,
+        droppedProperties: null,
+        omittedProperties: null,
+        observedQuirks: [],
       };
+      this.observedQuirks = [];
       this.$refs.caldavServerDrawer.close();
     },
     /**
@@ -235,12 +328,18 @@ export default {
      */
     async saveServer() {
       this.loading = true;
+      this.applyTicks();
       const isNew = !this.server.id;
+      // What the sweep observed is not an administrator's input and the server
+      // keeps its own record of it, so it is not sent back: a payload carrying
+      // it would be asking the registry to accept the evidence it produced.
+      const payload = {...this.server};
+      delete payload.observedQuirks;
       try {
         if (isNew) {
-          await this.$agendaCaldavService.createCaldavServer(this.server);
+          await this.$agendaCaldavService.createCaldavServer(payload);
         } else {
-          await this.$agendaCaldavService.updateCaldavServer(this.server);
+          await this.$agendaCaldavService.updateCaldavServer(payload);
         }
         if (isNew) {
           this.$root.$emit('alert-message', this.$t('caldav.admin.servers.drawer.add.success'), 'success');

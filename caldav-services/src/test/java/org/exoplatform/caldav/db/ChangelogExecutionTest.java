@@ -72,6 +72,10 @@ public class ChangelogExecutionTest {
   /** The column EXO-89757 appends, and the reason this test was finally written. */
   private static final String ANSWER_LINKS_COLUMN = "ANSWER_LINKS_IN_COPY";
 
+  /** The per-server excusal lists EXO-89771 appends, and the summary they are ticked from. */
+  private static final String[] QUIRK_COLUMNS = { "IGNORED_PROPERTIES", "DROPPED_PROPERTIES", "OBSERVED_QUIRKS",
+      "OMITTED_PROPERTIES" };
+
   private Connection          connection;
 
   /**
@@ -141,6 +145,45 @@ public class ChangelogExecutionTest {
 
     assertTrue(tableExists("CALDAV_SERVER"), "and re-applying from nothing must rebuild it");
     assertTrue(columnExists("CALDAV_SERVER", ANSWER_LINKS_COLUMN), "with every column it carries");
+    for (String column : QUIRK_COLUMNS) {
+      assertTrue(columnExists("CALDAV_SERVER", column), "including " + column);
+    }
+  }
+
+  /**
+   * <b>A row that says nothing about this server's behaviour defers to the
+   * deployment.</b>
+   *
+   * <p>
+   * The three columns EXO-89771 adds are nullable with no default, and that is
+   * what makes the change behaviour-neutral: NULL means "this row has never been
+   * asked", and the deployment-wide
+   * {@code exo.agenda.caldav.mirror.ignoredProperties} /
+   * {@code ...droppedProperties} go on deciding for it. A DEFAULT '' added in an
+   * edit would collapse null and empty into one answer and silence the global
+   * lever on every upgraded instance — which, on the rig, brings the BlueMind
+   * repair loop straight back. No Java test can see that; this one can.
+   *
+   * @throws Exception when a changeset cannot be applied or the row not written
+   */
+  @Test
+  public void aServerRowSaysNothingAboutItsBehaviourUntilItIsAsked() throws Exception {
+    update();
+
+    try (Statement statement = connection.createStatement()) {
+      statement.executeUpdate("INSERT INTO CALDAV_SERVER (ID, PROVIDER_NAME, NAME, SERVER_URL, ACTIVE) "
+          + "VALUES (2, 'agenda.caldavCalendar.2', 'Bluemind', 'https://caldav.example.invalid/dav/', TRUE)");
+      for (String column : QUIRK_COLUMNS) {
+        try (ResultSet rows = statement.executeQuery("SELECT " + column + " FROM CALDAV_SERVER WHERE ID = 2")) {
+          assertTrue(rows.next(), "the row must have been written");
+          rows.getString(1);
+          assertTrue(rows.wasNull(), column + " must start null, so the deployment-wide setting still decides");
+        }
+      }
+    }
+    for (String column : QUIRK_COLUMNS) {
+      assertEquals(1, nullableFlag("CALDAV_SERVER", column), "and " + column + " must stay nullable");
+    }
   }
 
   /**

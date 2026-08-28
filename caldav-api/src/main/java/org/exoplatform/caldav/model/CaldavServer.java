@@ -16,6 +16,8 @@
  */
 package org.exoplatform.caldav.model;
 
+import java.util.List;
+
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -112,4 +114,67 @@ public class CaldavServer {
    * links rather than silently dropping them.
    */
   private boolean answerLinksInCopy = true;
+
+  /**
+   * The property-name patterns this server is excused for <b>adding</b> to the
+   * copies it stores — proprietary hints eXo never writes and does not need to
+   * understand.
+   *
+   * <p>
+   * <b>Null and empty say different things, and the difference is the whole
+   * upgrade story.</b> Null means the row has never been asked, so the
+   * deployment-wide {@code exo.agenda.caldav.mirror.ignoredProperties} still
+   * decides — which is why upgrading changes nothing. An empty string means an
+   * administrator opened the drawer and excused nothing, and it must not fall
+   * back to the global list, or unticking the last box would be a no-op.
+   *
+   * <p>
+   * Written by ticking, never typed: the drawer offers what the sweep has seen
+   * and writes the patterns {@link ServerQuirk} declares for it, so no
+   * mistyped name can reach here from the UI.
+   */
+  private String  ignoredProperties;
+
+  /**
+   * The property-name patterns this server is excused for <b>not keeping</b>
+   * faithfully — a property eXo writes that the copy comes back without, and,
+   * for the one catalogue entry that declares it, a property whose value the
+   * server rewrites.
+   *
+   * <p>
+   * Same null-versus-empty rule as {@link #ignoredProperties}, falling back to
+   * {@code exo.agenda.caldav.mirror.droppedProperties}.
+   */
+  private String  droppedProperties;
+
+  /**
+   * What eXo <b>leaves out</b> of the copies it writes to this server.
+   *
+   * <p>
+   * The third list, and the one that is not like the other two. Those change
+   * what eXo <i>notices</i>; this one changes what eXo <i>writes into somebody's
+   * calendar</i>, so it is stored apart from them rather than folded in — a
+   * reader of the row, like an administrator reading the drawer, must be able to
+   * see which decision is which.
+   *
+   * <p>
+   * It carries cases rather than property names — {@code SOLO-ORGANIZER}, the
+   * organizer of an event with no other participants — precisely so that it can
+   * never be read as an excusal by the comparison, whose lists only accept a
+   * property eXo actually writes.
+   *
+   * <p>
+   * Same null-versus-empty rule as the two above, except that nothing global
+   * ever stood here: there is no deployment-wide property to fall back to, so
+   * null and empty both mean "eXo writes everything it writes".
+   */
+  private String  omittedProperties;
+
+  /**
+   * Transient, outbound only: what this server has actually been seen doing,
+   * with how often and whether it is excused today. Never accepted on a write
+   * — it is the sweep's observation, not an administrator's input — and never
+   * persisted from here; the storage keeps its own rolling summary.
+   */
+  private List<ObservedQuirk> observedQuirks;
 }
