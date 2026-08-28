@@ -43,6 +43,7 @@ import org.springframework.http.MediaType;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.caldav.service.CaldavTuningService;
 import org.exoplatform.caldav.model.CaldavSyncTuning;
@@ -348,7 +349,7 @@ public class CaldavServerRestTest {
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
     return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null,
-                            null, null, null, null);
+                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR);
   }
 
   /**

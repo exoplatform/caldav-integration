@@ -54,6 +54,7 @@ import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavRelayRequest;
 import org.exoplatform.caldav.model.CaldavRelayedResponse;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
@@ -127,7 +128,7 @@ public class CaldavRelayServiceTest {
    */
   private CaldavServer server(long id, boolean active) {
     return new CaldavServer(id, "agenda.caldavCalendar." + id, "Server " + id, null, SERVER_URL, active, null, null, null,
-                            null, true, null, null, null, null, null);
+                            null, true, null, null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR);
   }
 
   /**
