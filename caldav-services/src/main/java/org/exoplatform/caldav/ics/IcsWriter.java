@@ -22,6 +22,9 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
@@ -304,23 +307,101 @@ public class IcsWriter {
     }
     vEvent.getProperties().add(organizerProperty);
 
-    if (event.getAttendees() == null) {
-      return;
-    }
-    for (IcsPerson attendee : event.getAttendees()) {
-      // Attendees without a visible address — spaces, and users whose profile
-      // hides their email — are left off for the same no-invented-address
-      // reason. The roster on the phone may therefore be shorter than the one
-      // in eXo, which the URL property links to in full.
-      if (attendee == null || StringUtils.isBlank(attendee.getEmail())) {
-        continue;
-      }
+    for (IcsPerson attendee : guests(event, organizer)) {
       Attendee attendeeProperty = new Attendee(mailto(attendee.getEmail()));
       addCn(attendeeProperty.getParameters(), attendee.getDisplayName());
       attendeeProperty.getParameters().add(new PartStat(IcsText.partStat(attendee.getResponse())));
       attendeeProperty.getParameters().add(new ScheduleAgent(CLIENT_AGENT));
       vEvent.getProperties().add(attendeeProperty);
     }
+  }
+
+  /**
+   * The people this component names as attendees: everyone with a visible
+   * address, <b>except the organizer</b>.
+   *
+   * <p>
+   * Attendees without a visible address — spaces, and users whose profile
+   * hides their email — are left off for the no-invented-address reason
+   * {@link #addPeople} records. The roster on the phone may therefore be
+   * shorter than the one in eXo, which the {@code URL} property links to in
+   * full.
+   *
+   * <p>
+   * <b>Why the organizer is not among them, and it was measured rather than
+   * reasoned (EXO-89768).</b> agenda puts the person who called a meeting on
+   * its own attendee list, so eXo used to write them twice: once as
+   * {@code ORGANIZER} and once as an {@code ATTENDEE} carrying their answer.
+   * A server whose model holds an organizer and a list of attendees that
+   * excludes them cannot store that second line, and BlueMind does not: read
+   * back over CalDAV, a copy eXo had just written as
+   *
+   * <pre>
+   * ORGANIZER;CN=Root Root:mailto:anais.francois&#64;example.org
+   * ATTENDEE;CN=Root Root;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:mailto:anais.francois&#64;example.org
+   * </pre>
+   *
+   * came back holding the {@code ORGANIZER} alone. The answer on the dropped
+   * line was then a statement eXo made and the copy did not, so the mirror
+   * called the copy rewritten, repaired it, and the server dropped the line
+   * again — a loop no repair could ever close, ending in the copy being
+   * abandoned and so no longer watched at all.
+   *
+   * <p>
+   * <b>Only the duplicate goes, and the ORGANIZER stays even when nothing is
+   * left beside it.</b> That second question is settled by the golden corpus,
+   * not by taste: its write cases are events with an organizer and no
+   * attendees at all, captured from the browser connector and stored by a real
+   * server, so an eXo render that dropped the {@code ORGANIZER} there would
+   * contradict what the connector is pinned to produce. A server that declines
+   * to keep an organizer with nobody to organize is a different behaviour from
+   * this one and is not this method's business.
+   *
+   * <p>
+   * <b>What this does not give up.</b> The person is still named, as the
+   * organizer, which is what they are; no client offers to answer a meeting
+   * you called yourself, so there is no answer of theirs a copy could carry
+   * that anybody could change. And it is the duplicate that goes, not the
+   * roster: on the same live account, fifteen copies whose owner is an
+   * ordinary invitee carry the {@code PARTSTAT=ACCEPTED} eXo wrote, kept by
+   * the same server — so an answer <i>does</i> reach a copy, and this is only
+   * the one line no server with that model was ever going to keep.
+   *
+   * @param event the event being written
+   * @param organizer the person who called the meeting, address non-blank
+   * @return the attendees to write, in order, possibly empty
+   */
+  private List<IcsPerson> guests(IcsEvent event, IcsPerson organizer) {
+    List<IcsPerson> guests = new ArrayList<>();
+    if (event.getAttendees() == null) {
+      return guests;
+    }
+    String organizerAddress = bareAddress(organizer.getEmail());
+    for (IcsPerson attendee : event.getAttendees()) {
+      if (attendee == null || StringUtils.isBlank(attendee.getEmail())
+          || organizerAddress.equals(bareAddress(attendee.getEmail()))) {
+        continue;
+      }
+      guests.add(attendee);
+    }
+    return guests;
+  }
+
+  /**
+   * A calendar address reduced to what two spellings of the same person
+   * compare as: no {@code mailto:} scheme, no casing.
+   *
+   * <p>
+   * The local part of a mailbox is technically case-sensitive; no calendar
+   * server this connector writes to treats it as such, and the comparison
+   * that matters here is the server's own — it is the one deciding whether an
+   * attendee line names its organizer.
+   *
+   * @param email an address, possibly carrying a scheme, never null here
+   * @return the comparable form
+   */
+  private String bareAddress(String email) {
+    return StringUtils.removeStart(StringUtils.trimToEmpty(email).toLowerCase(Locale.ROOT), "mailto:");
   }
 
   /**
