@@ -131,6 +131,9 @@ public class CaldavMirrorVerificationServiceTest {
       + "END:VEVENT\r\n"
       + "END:VCALENDAR\r\n";
 
+  /** The same copy after a client rewrote the one thing eXo cannot let stand. */
+  private static final String                HIJACKED = ICS.replace("SUMMARY:Sprint review", "SUMMARY:Hijacked");
+
   @Mock
   private CalDavClient                       calDavClient;
 
@@ -591,6 +594,95 @@ public class CaldavMirrorVerificationServiceTest {
    */
   private void givenServerHolds(Map<String, String> etags) {
     when(calDavClient.listResourceEtags(any(), anyString(), anyString(), anyString())).thenReturn(etags);
+  }
+
+
+  // ------------- what giving up must stop doing as well as writing (EXO-89756)
+
+  @Test
+  public void anAbandonedCopyIsNotFetchedAndComparedAllOverAgainEveryPass() {
+    // Giving up used to stop the writing and nothing else: the check sat after
+    // the copy had already been fetched, re-rendered, compared and named in an
+    // INFO line, so an abandoned copy went on costing a round trip and a log
+    // line every five minutes for ever. On the rig that was four copies against
+    // a live BlueMind account, 399 times in one day.
+    givenAnUnwinnableFight();
+
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+    MirrorVerification afterAbandonment = service.verify(USER);
+
+    assertEquals(1, afterAbandonment.checked());
+    assertEquals(1, afterAbandonment.abandoned());
+    assertEquals(0, afterAbandonment.altered(), "an unexamined copy must not be reported as judged");
+    verify(calDavClient, times(4)).fetchObject(any(), eq(HREF), anyString(), anyString());
+  }
+
+  @Test
+  public void anAbandonedCopyTheUserAnswersOnTheirPhoneIsStillReadBack() {
+    // The pair, and the reason the settled state records the version rather
+    // than a flag. Abandonment is a statement about eXo's writing, never about
+    // the user's: the copy still sits in their calendar and they can still
+    // accept the meeting on it. An ETag that moves away from the settled one is
+    // the server saying somebody wrote, and the pass looks again.
+    givenAnUnwinnableFight();
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+
+    givenServerHolds(Map.of(HREF, "\"etag-9\""));
+    service.verify(USER);
+
+    verify(calDavClient, times(5)).fetchObject(any(), eq(HREF), anyString(), anyString());
+  }
+
+  @Test
+  public void anAbandonedCopyThatSettlesAgainStopsCostingAFetchAgain() {
+    // The version has to be re-recorded when the pass does look again, or the
+    // saving lasts exactly one sweep and the loop comes back.
+    givenAnUnwinnableFight();
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+    givenServerHolds(Map.of(HREF, "\"etag-9\""));
+    service.verify(USER);
+
+    service.verify(USER);
+
+    verify(calDavClient, times(5)).fetchObject(any(), eq(HREF), anyString(), anyString());
+  }
+
+  @Test
+  public void forgettingAnAccountAlsoForgetsWhatItsCopiesSettledAt() {
+    // A restart forgives, and forgiving must reach both halves of the state:
+    // a settled version left behind would keep a no-longer-abandoned copy
+    // unexamined.
+    givenAnUnwinnableFight();
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+
+    service.forgetRepairs(USER);
+    MirrorVerification afterForgetting = service.verify(USER);
+
+    assertEquals(1, afterForgetting.altered());
+    assertEquals(1, afterForgetting.repaired());
+  }
+
+  /**
+   * A copy the server rewrites back to something else however often eXo
+   * repairs it: the listing never moves off its own version, the fetch always
+   * returns a different meeting, and the repair never makes any difference.
+   * Four passes of this abandon it.
+   */
+  private void givenAnUnwinnableFight() {
+    givenServerHolds(Map.of(HREF, "\"etag-2\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                                            .thenReturn(new CalendarObject(HREF,
+                                                                                                           "\"etag-2\"",
+                                                                                                           HIJACKED));
   }
 
   /**
