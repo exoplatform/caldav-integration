@@ -656,9 +656,8 @@ public class AgendaEventIcsMapper {
     try {
       CaldavUserSetting account = caldavConnectorStorage == null ? null
                                                                  : caldavConnectorStorage.getCaldavSetting(pusherIdentityId);
-      CaldavServer server = caldavServerService == null ? null
-                                                        : caldavServerService.resolveServer(account == null ? null
-                                                                                                            : account.getServerId());
+      Long serverId = account == null ? null : account.getServerId();
+      CaldavServer server = caldavServerService == null ? null : caldavServerService.resolveServer(serverId);
       return server != null && ServerQuirk.listMatches(server.getOmittedProperties(), ServerQuirk.SOLO_ORGANIZER);
     } catch (RuntimeException | LinkageError e) {
       LOG.debug("No CalDAV registration could be resolved for identity {}; the copy keeps its organizer",
