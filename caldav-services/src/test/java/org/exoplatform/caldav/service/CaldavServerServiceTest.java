@@ -102,6 +102,14 @@ public class CaldavServerServiceTest {
   @Mock
   private PortalContainer         portalContainer;
 
+  /**
+   * The decorator that fills in what each server has been seen doing. Stubbed
+   * to hand back what it was given, so every assertion in this class goes on
+   * measuring the registry rather than the enrichment, which has its own test.
+   */
+  @Mock
+  private CaldavServerQuirkService caldavServerQuirkService;
+
   @InjectMocks
   private CaldavServerService      caldavServerService;
 
@@ -113,6 +121,14 @@ public class CaldavServerServiceTest {
    * Keeps the JVM-wide legacy properties restorable: the seeding tests set
    * them, and leaking a value into another test would fake a configured
    * deployment.
+   */
+  @BeforeEach
+  public void passRegistrationsThroughTheDecorator() {
+    lenient().when(caldavServerQuirkService.decorate(any())).thenAnswer(invocation -> invocation.getArgument(0));
+  }
+
+  /**
+   * Keeps the JVM-wide legacy properties restorable.
    */
   @BeforeEach
   public void saveLegacyProperties() {
@@ -716,6 +732,6 @@ public class CaldavServerServiceTest {
    */
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
-    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true);
+    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null, null, null);
   }
 }
