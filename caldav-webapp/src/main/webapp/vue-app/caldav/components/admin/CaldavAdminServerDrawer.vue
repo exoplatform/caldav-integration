@@ -145,7 +145,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               <div class="d-flex align-start">
                 <v-checkbox
                   v-model="quirk.excused"
-                  :aria-label="quirk.label"
+                  :aria-label="$t(quirk.labelKey, {0: quirk.property})"
                   class="ma-0 pa-0 me-2"
                   hide-details />
                 <div class="flex-grow-1 text-start">
@@ -157,12 +157,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                       size="16">
                       fas fa-exclamation-triangle
                     </v-icon>
-                    {{ quirk.label }}
+                    {{ $t(quirk.labelKey, {0: quirk.property}) }}
                   </div>
                   <div
                     :class="quirk.warning && 'error--text' || 'text-sub-title'"
                     class="text-caption mt-1">
-                    {{ quirk.cost }}
+                    {{ $t(quirk.costKey, {0: quirk.property}) }}
                   </div>
                   <!--
                     A quirk that changes what eXo WRITES says so, in its own
@@ -178,7 +178,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                     {{ $t('caldav.admin.servers.quirks.changesWhatIsWritten') }}
                   </div>
                   <div class="text-caption text-sub-title mt-1">
-                    {{ quirk.seen }}
+                    {{ $t(quirk.seenKey, {0: quirk.count}) }}
                   </div>
                 </div>
               </div>
@@ -266,8 +266,21 @@ export default {
       if (server) {
         this.server = { ...server };
       }
-      this.observedQuirks = (this.server.observedQuirks || []).map(quirk => describeQuirk(quirk, this.$t));
+      this.observedQuirks = (this.server.observedQuirks || []).map(describeQuirk);
       this.$refs.caldavServerDrawer.open();
+    },
+    /**
+     * Folds the drawer's ticks back into the lists the registration is saved
+     * with.
+     *
+     * <p>A method of its own so the round trip can be exercised through the
+     * component - the layer where the last regression lived - and not only
+     * through the module underneath it.</p>
+     *
+     * @returns {void}
+     */
+    applyTicks() {
+      applyExcusals(this.server, this.observedQuirks);
     },
     /**
      * Closes the drawer, dropping whatever was typed.
@@ -315,7 +328,7 @@ export default {
      */
     async saveServer() {
       this.loading = true;
-      applyExcusals(this.server, this.observedQuirks);
+      this.applyTicks();
       const isNew = !this.server.id;
       // What the sweep observed is not an administrator's input and the server
       // keeps its own record of it, so it is not sent back: a payload carrying
