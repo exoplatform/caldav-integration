@@ -893,7 +893,7 @@ public class CaldavSyncService {
     }
     List<CalendarSync> known = caldavSyncStorage.getPairs(userIdentityId, serverId);
     for (CalendarCollection collection : collections) {
-      if (isAlreadyOurs(collection, known, settings)) {
+      if (isAlreadyOurs(collection, known)) {
         reviveIfMarkedGone(known, collection);
         continue;
       }
@@ -924,17 +924,16 @@ public class CaldavSyncService {
    * features each behaving correctly, multiplying calendars on both sides.
    *
    * <p>
-   * The mirror is skipped because its contents are copies of events eXo
-   * already shows, and a pair of any kind means the collection is accounted
-   * for — including a tombstone, which is exactly what stops a calendar the
-   * user deleted in eXo from coming straight back.
+   * The <em>dedicated</em> mirror is skipped because its contents are copies
+   * of events eXo already shows, and a pair of any kind means the collection
+   * is accounted for — including a tombstone, which is exactly what stops a
+   * calendar the user deleted in eXo from coming straight back.
    *
    * @param collection the listed collection
    * @param known every pair this user holds on this server
-   * @param settings the connected account, for the recorded mirror href
    * @return true when nothing should be created for it
    */
-  private boolean isAlreadyOurs(CalendarCollection collection, List<CalendarSync> known, CaldavUserSetting settings) {
+  private boolean isAlreadyOurs(CalendarCollection collection, List<CalendarSync> known) {
     String href = CaldavSyncStorage.canonicalHref(collection.href());
     if (StringUtils.isBlank(href)) {
       // A collection with no path is nothing we can bind to, name, or find
@@ -943,14 +942,47 @@ public class CaldavSyncService {
       // and be materialised as a calendar whose name is the blank path too.
       return true;
     }
-    if (href.equals(CaldavSyncStorage.canonicalHref(settings.getMirrorCalendarHref()))
-        || href.endsWith("/" + CaldavPushService.MIRROR_COLLECTION_SLUG)) {
+    if (isDedicatedMirror(href)) {
       return true;
     }
     if (isExoCreated(href)) {
       return true;
     }
     return known.stream().anyMatch(pair -> href.equals(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())));
+  }
+
+  /**
+   * Whether this collection is the dedicated calendar eXo copies space
+   * meetings into.
+   *
+   * <p>
+   * Judged from the path eXo mints — <code>exo-meetings</code> — and from
+   * nothing else, deliberately. It used to also skip whatever collection the
+   * account happened to have <em>recorded</em> as its mirror, which is a
+   * different and much wider statement: point the mirror at an ordinary
+   * calendar the user also synchronises, and that calendar stopped being
+   * materialised at all. The user's own primary calendar simply never appeared
+   * in eXo — the connector's core feature, lost to a guard meant to protect a
+   * handful of copies.
+   *
+   * <p>
+   * So the skip is scoped back to the case it was written for: a collection
+   * eXo created for its own copies and nothing else keeps events in. Any other
+   * mirror destination is materialised like the ordinary calendar it is, and
+   * the copies inside it are protected one object at a time, by the mapping
+   * table, where ownership actually lives.
+   *
+   * <p>
+   * The path rather than this user's recorded href, for the same reason
+   * {@link #isExoCreated(String)} reads the path: a CalDAV account can be
+   * shared, and another eXo user's dedicated mirror must not be materialised
+   * as this user's calendar either.
+   *
+   * @param href the collection path, canonical
+   * @return true when the path is the dedicated mirror's
+   */
+  private boolean isDedicatedMirror(String href) {
+    return href.endsWith("/" + CaldavPushService.MIRROR_COLLECTION_SLUG);
   }
 
   /**

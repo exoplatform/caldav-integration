@@ -333,7 +333,7 @@ public class CaldavPushService {
     // Last, and only once the destination holds the event: a move that failed
     // here would otherwise take the copy away without having written the new
     // one, which loses the user's event rather than tidying it.
-    removeWhatWasLeftBehind(userIdentityId, leftBehind, endpoint, settings);
+    removeWhatWasLeftBehind(userIdentityId, leftBehind, href, endpoint, settings);
     return saved;
   }
 
@@ -358,8 +358,18 @@ public class CaldavPushService {
    *         first write
    */
   private ObjectSync mappingElsewhere(long userIdentityId, CalendarSync destination, String icsUid, Long localEventId) {
+    String into = CaldavSyncStorage.canonicalHref(destination.getRemoteHref());
     for (CalendarSync other : caldavSyncStorage.getPairs(userIdentityId, destination.getServerId())) {
       if (Objects.equals(other.getId(), destination.getId())) {
+        continue;
+      }
+      if (StringUtils.isNotBlank(into) && into.equals(CaldavSyncStorage.canonicalHref(other.getRemoteHref()))) {
+        // A different pair, the same collection — which two pairs sharing a
+        // calendar is exactly what pointing the mirror at an ordinary calendar
+        // produces. "Elsewhere" then means the very place just written to, and
+        // the row it hands back points at the same physical object: the
+        // cleanup below would delete what the write has just put there. This
+        // is not a move, and there is nothing left behind.
         continue;
       }
       // By the eXo event first, and the iCalendar UID only after. The UID is
@@ -391,16 +401,32 @@ public class CaldavPushService {
    * stray eXo still knows about is a much smaller problem than one it has
    * forgotten, and the next write can try again.
    *
+   * <p>
+   * A delete addressing the path just written is refused outright, whatever
+   * the mapping says. The two are the same object the moment two pairs share a
+   * collection, and the sequence — write, then delete — would leave the user
+   * with nothing where their event had just been put. The guard in
+   * {@link #mappingElsewhere} already keeps such a row from being selected;
+   * this one is the second lock, because the cost of the first one ever being
+   * wrong is silent data loss and the cost of this check is a string compare.
+   *
    * @param userIdentityId identity of the user, for the log
    * @param leftBehind the mapping in the old collection, may be null
+   * @param writtenHref the path the event was just written to, never deleted
    * @param endpoint where the account lives
    * @param settings the connected account
    */
   private void removeWhatWasLeftBehind(long userIdentityId,
                                        ObjectSync leftBehind,
+                                       String writtenHref,
                                        CalDavEndpoint endpoint,
                                        CaldavUserSetting settings) {
     if (leftBehind == null) {
+      return;
+    }
+    String written = CaldavSyncStorage.canonicalHref(writtenHref);
+    if (StringUtils.isNotBlank(written) && written.equals(CaldavSyncStorage.canonicalHref(leftBehind.getRemoteHref()))) {
+      LOG.debug("The copy said to be left behind at {} is the object just written there; it is kept", writtenHref);
       return;
     }
     try {
