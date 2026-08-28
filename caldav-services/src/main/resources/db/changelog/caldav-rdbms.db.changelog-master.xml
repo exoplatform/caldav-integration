@@ -286,4 +286,34 @@
     </rollback>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-13">
+    <comment>
+      Whether eXo writes its Accept / Decline / Tentative links into the
+      description of the meeting copies pushed to this server (EXO-89757).
+
+      Per server rather than global: one deployment can connect BlueMind and
+      Stalwart at once and want different answers for each, because whether a
+      calendar client offers its own RSVP control is a property of the clients
+      used against that server and of nothing else.
+
+      DEFAULT TRUE and NOT NULL, so every row that already exists keeps
+      writing the links it writes today - the setting ships behaviour-neutral.
+      The asymmetry is deliberate: redundant links are a mild annoyance,
+      missing links leave a user unable to answer at all.
+
+      addColumn with deliberately NO modifySql, for the reason 1.0.0-3 records
+      and 1.0.0-2 recounts: the ENGINE/CHARSET append is only valid on CREATE
+      TABLE, and gluing it onto an ALTER TABLE is the MySQL-1064 failure that
+      takes the whole platform down through Liquibase.
+
+      No rollback is written because addColumn has an automatic one - unlike
+      the dropColumn above, which needed its own.
+    </comment>
+    <addColumn tableName="CALDAV_SERVER">
+      <column name="ANSWER_LINKS_IN_COPY" type="BOOLEAN" defaultValueBoolean="true">
+        <constraints nullable="false"/>
+      </column>
+    </addColumn>
+  </changeSet>
+
 </databaseChangeLog>

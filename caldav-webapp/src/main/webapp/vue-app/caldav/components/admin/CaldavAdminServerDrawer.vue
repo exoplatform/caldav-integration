@@ -81,6 +81,30 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </div>
           </v-list-item-content>
         </v-list-item>
+        <v-list-item class="pa-0 mb-5" dense>
+          <v-list-item-content class="py-0">
+            <div class="d-flex align-center">
+              <div class="flex-grow-1 text-start">
+                {{ $t('caldav.admin.servers.answerLinks.label') }}
+              </div>
+              <v-switch
+                v-model="server.answerLinksInCopy"
+                :aria-label="$t('caldav.admin.servers.answerLinks.label')"
+                class="ma-0 pa-0"
+                hide-details />
+            </div>
+            <!--
+              The hint says what to weigh, not what the switch does: whether a
+              client shows its own Accept button is the client's decision and
+              can never be derived here, so the administrator is the only one
+              who can answer it — and is told what happens when neither side
+              offers anything.
+            -->
+            <div class="text-caption text-sub-title mt-2">
+              {{ $t('caldav.admin.servers.answerLinks.hint') }}
+            </div>
+          </v-list-item-content>
+        </v-list-item>
         <v-list-item class="pa-0" dense>
           <v-list-item-content class="py-0">
             <v-list-item-title class="my-0">
@@ -133,6 +157,9 @@ export default {
       imageUploadId: null,
       imageFileId: null,
       imageUrl: null,
+      // On by default, matching the registry: a server declared here writes
+      // the answer links unless its administrator says otherwise.
+      answerLinksInCopy: true,
     }
   }),
   computed: {
@@ -183,6 +210,7 @@ export default {
         imageUploadId: null,
         imageFileId: null,
         imageUrl: null,
+        answerLinksInCopy: true,
       };
       this.$refs.caldavServerDrawer.close();
     },

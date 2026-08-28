@@ -54,7 +54,10 @@ import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventConferenceService;
 import org.exoplatform.agenda.service.AgendaEventReminderService;
 import org.exoplatform.agenda.util.NotificationUtils;
+import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.IcsEvent;
+import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
 import org.exoplatform.social.core.manager.IdentityManager;
@@ -112,6 +115,12 @@ public class AgendaEventIcsMapperTest {
 
   @Mock
   private SpaceService                        spaceService;
+
+  @Mock
+  private CaldavConnectorStorage              caldavConnectorStorage;
+
+  @Mock
+  private CaldavServerService                 caldavServerService;
 
   @InjectMocks
   private AgendaEventIcsMapper               mapper;
@@ -704,6 +713,135 @@ public class AgendaEventIcsMapperTest {
     }
     identity.setProfile(profile);
     lenient().when(identityManager.getIdentity(identityId)).thenReturn(identity);
+  }
+
+  /**
+   * <b>An administrator can turn the answer links off, per server.</b>
+   *
+   * <p>
+   * The gate lives in {@code rsvpLinks} and nowhere else, so it applies to
+   * every render a copy can get — the browser push, the background sweep's
+   * repair and the comparison baseline the mirror judges against — and those
+   * three cannot come to different conclusions about one server (EXO-89757).
+   *
+   * <p>
+   * The description is still asserted to carry the event link, so a passing
+   * test means the text was really composed and the links were really left
+   * out of it, rather than the whole description having failed to build.
+   */
+  @Test
+  public void noAnswerLinkIsWrittenWhenTheServerWasToldToOfferNone() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenServer(7L, false);
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+      givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+
+      String description = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+
+      assertFalse(description.contains("response/send"),
+                  "the server was told to offer no answers: " + description);
+      assertTrue(description.contains(EVENT_LINK),
+                 "and the rest of the description must still be there: " + description);
+    }
+  }
+
+  /**
+   * The same server with the switch on writes them, which is the shipped
+   * default and today's behaviour.
+   */
+  @Test
+  public void theAnswerLinksAreWrittenWhenTheServerWantsThem() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenServer(7L, true);
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+      givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+
+      String description = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+
+      assertTrue(description.contains(answerLink(1L, "pusher", EventAttendeeResponse.ACCEPTED)),
+                 "accept must be offered: " + description);
+    }
+  }
+
+  /**
+   * <b>A registry that answers nothing keeps the links.</b>
+   *
+   * <p>
+   * The failure modes are asymmetric, and the guard is written to fail toward
+   * the default: a redundant Accept link beside a client's own button is a
+   * mild annoyance, while a copy silently stripped of its links leaves a user
+   * with no way to answer at all. So a deleted registration, an unstored
+   * account, and a registry that throws all read as "on".
+   */
+  @Test
+  public void theLinksSurviveARegistryThatAnswersNothing() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    CaldavUserSetting account = new CaldavUserSetting();
+    account.setServerId(7L);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(PUSHER)).thenReturn(account);
+    lenient().when(caldavServerService.resolveServer(7L)).thenReturn(null);
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+      givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+
+      String description = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+
+      assertTrue(description.contains(answerLink(1L, "pusher", EventAttendeeResponse.ACCEPTED)),
+                 "an unresolvable server must keep the links: " + description);
+    }
+  }
+
+  /**
+   * And a registry that fails outright keeps them too — whether a copy offers
+   * an answer must never turn on whether a lookup succeeded.
+   *
+   * <p>
+   * The failure is injected into the registry read, which is the lookup
+   * EXO-89757 added and the only one this guard owns. The account read beside
+   * it is deliberately left alone: it was already unguarded before this
+   * change, and pretending otherwise here would pin a property the code does
+   * not have.
+   */
+  @Test
+  public void theLinksSurviveARegistryThatFails() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    CaldavUserSetting account = new CaldavUserSetting();
+    account.setServerId(7L);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(PUSHER)).thenReturn(account);
+    lenient().when(caldavServerService.resolveServer(7L))
+             .thenThrow(new IllegalStateException("the registry is not readable here"));
+
+    try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+      agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+      givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+
+      String description = mapper.toIcsEvent(event(), "uid-1", PUSHER).getDescription();
+
+      assertTrue(description.contains(answerLink(1L, "pusher", EventAttendeeResponse.ACCEPTED)),
+                 "a failing registry must keep the links: " + description);
+    }
+  }
+
+  /**
+   * Stubs the registration the pusher's stored account resolves to.
+   *
+   * @param serverId identifier the account references
+   * @param answerLinksInCopy whether that registration wants the answer links
+   *          written into its copies
+   */
+  private void givenServer(long serverId, boolean answerLinksInCopy) {
+    CaldavUserSetting account = new CaldavUserSetting();
+    account.setServerId(serverId);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(PUSHER)).thenReturn(account);
+    CaldavServer server = new CaldavServer();
+    server.setId(serverId);
+    server.setAnswerLinksInCopy(answerLinksInCopy);
+    lenient().when(caldavServerService.resolveServer(serverId)).thenReturn(server);
   }
 
   /**
