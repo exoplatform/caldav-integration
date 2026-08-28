@@ -248,6 +248,15 @@ public class IcsEquivalence {
    * that copy untouched. It is compared like any other property the writer
    * emits.
    */
+  /**
+   * The invitation text, named once because four separate rules reach for it:
+   * it is a recognised event property, it is carried on an alarm, it is
+   * compared as text, and it is the only property whose links a server is
+   * known to rewrite. Naming it keeps those four in step - a rename that
+   * missed one would silently change what is compared.
+   */
+  private static final String              DESCRIPTION              = "DESCRIPTION";
+
   private static final Set<String>         IGNORED_EVENT_PROPERTIES = Set.of("DTSTAMP", "CREATED", "LAST-MODIFIED");
 
   /**
@@ -259,7 +268,7 @@ public class IcsEquivalence {
                                                                              "DTSTART",
                                                                              "DTEND",
                                                                              "LOCATION",
-                                                                             "DESCRIPTION",
+                                                                             DESCRIPTION,
                                                                              "URL",
                                                                              "CONFERENCE",
                                                                              "ORGANIZER",
@@ -271,7 +280,7 @@ public class IcsEquivalence {
                                                                              "EXDATE");
 
   /** The VALARM properties {@link IcsWriter} emits. */
-  private static final Set<String>         ALARM_PROPERTIES         = Set.of("ACTION", "DESCRIPTION", "TRIGGER");
+  private static final Set<String>         ALARM_PROPERTIES         = Set.of("ACTION", DESCRIPTION, "TRIGGER");
 
   /**
    * Properties of a VALARM that are read but never compared.
@@ -392,7 +401,7 @@ public class IcsEquivalence {
    * the ability to notice that somebody re-indented a description, which is not
    * a fact about a meeting.
    */
-  private static final Set<String>         TEXT_PROPERTIES          = Set.of("SUMMARY", "DESCRIPTION", "LOCATION");
+  private static final Set<String>         TEXT_PROPERTIES          = Set.of("SUMMARY", DESCRIPTION, "LOCATION");
 
   /** A run of whitespace of any kind, including the line breaks a server folds on. */
   private static final Pattern             WHITESPACE_RUN           = Pattern.compile("\\s+");
@@ -427,7 +436,7 @@ public class IcsEquivalence {
    * typed it. Widening this set is one word, and wants the same thing that
    * bought this entry: a divergence report naming the property.
    */
-  private static final Set<String>         LINKIFIED_PROPERTIES     = Set.of("DESCRIPTION");
+  private static final Set<String>         LINKIFIED_PROPERTIES     = Set.of(DESCRIPTION);
 
   /**
    * A URI immediately followed by a bracketed repetition of <b>itself</b>, as an
