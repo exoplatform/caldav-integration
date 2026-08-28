@@ -1211,7 +1211,15 @@ public class IcsEquivalence {
                     ServerExcusals excusals) {
     Set<String> statements = new TreeSet<>(serverStatements.keySet());
     statements.addAll(exoStatements.keySet());
-    Set<String> exoProperties = exoStatements.keySet().stream().map(IcsStatement::observedPropertyOf).collect(Collectors.toSet());
+    Set<String> exoProperties = exoStatements.keySet()
+                                             .stream()
+                                             .map(IcsStatement::observedPropertyOf)
+                                             .collect(Collectors.toSet());
+    // Whether eXo's render names anybody but the account's own owner, which is
+    // what tells an organizer somebody deleted from an ordinary meeting apart
+    // from the shape a server gives an appointment. Read off the render rather
+    // than off agenda, because the render is what the copy is compared against.
+    boolean soloEvent = exoStatements.keySet().stream().noneMatch(this::isAttendee);
     int reported = 0;
     for (String statement : statements) {
       int onServer = serverStatements.getOrDefault(statement, 0);
@@ -1222,7 +1230,7 @@ public class IcsEquivalence {
       boolean excused = excusals.excuse(statement, onServer, inExo, exoProperties, EVENT_PROPERTIES);
       boolean rule = tolerated(statement, onServer, inExo);
       if (excused || !rule) {
-        IcsStatement.observe(statement, onServer, inExo, observed);
+        IcsStatement.observe(statement, onServer, inExo, observed, soloEvent);
       }
       if (excused || rule) {
         continue;

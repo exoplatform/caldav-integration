@@ -148,6 +148,29 @@ public class CaldavServer {
   private String  droppedProperties;
 
   /**
+   * What eXo <b>leaves out</b> of the copies it writes to this server.
+   *
+   * <p>
+   * The third list, and the one that is not like the other two. Those change
+   * what eXo <i>notices</i>; this one changes what eXo <i>writes into somebody's
+   * calendar</i>, so it is stored apart from them rather than folded in — a
+   * reader of the row, like an administrator reading the drawer, must be able to
+   * see which decision is which.
+   *
+   * <p>
+   * It carries cases rather than property names — {@code SOLO-ORGANIZER}, the
+   * organizer of an event with no other participants — precisely so that it can
+   * never be read as an excusal by the comparison, whose lists only accept a
+   * property eXo actually writes.
+   *
+   * <p>
+   * Same null-versus-empty rule as the two above, except that nothing global
+   * ever stood here: there is no deployment-wide property to fall back to, so
+   * null and empty both mean "eXo writes everything it writes".
+   */
+  private String  omittedProperties;
+
+  /**
    * Transient, outbound only: what this server has actually been seen doing,
    * with how often and whether it is excused today. Never accepted on a write
    * — it is the sweep's observation, not an administrator's input — and never

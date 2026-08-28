@@ -28,6 +28,34 @@ describe('applyExcusals', () => {
   const markers = {direction: 'ADDED', patterns: ['X-MICROSOFT-*', 'X-MOZ-*'], excused: false};
   const description = {direction: 'REWRITTEN', patterns: ['DESCRIPTION'], excused: false};
 
+  const soloOrganizer = {direction: 'DROPPED', effect: 'OMIT', patterns: ['SOLO-ORGANIZER'], excused: false};
+
+  it('writes a payload-changing behaviour into the omission list and into neither tolerance', () => {
+    // The two kinds of decision are stored apart on purpose: one stops eXo
+    // noticing something, the other stops eXo writing it into somebody's
+    // calendar, and a reader of either list must be able to tell which is which.
+    const server = {ignoredProperties: '', droppedProperties: '', omittedProperties: ''};
+
+    applyExcusals(server, [{...soloOrganizer, excused: true}]);
+
+    expect(server.omittedProperties).toBe('SOLO-ORGANIZER');
+    expect(server.droppedProperties).toBe('');
+    expect(server.ignoredProperties).toBe('');
+  });
+
+  it('does not let the direction alone route a payload-changing behaviour', () => {
+    // Its direction is DROPPED, like the conference entry; only its effect
+    // separates them. Routing on direction would file a payload decision in a
+    // tolerance list, where the writer never reads it and the box would do
+    // nothing at all.
+    const server = {ignoredProperties: '', droppedProperties: '', omittedProperties: ''};
+
+    applyExcusals(server, [{...soloOrganizer, excused: true}, {...conference, excused: true}]);
+
+    expect(server.omittedProperties).toBe('SOLO-ORGANIZER');
+    expect(server.droppedProperties).toBe('CONFERENCE');
+  });
+
   it('writes a ticked behaviour into the list its direction belongs to', () => {
     const server = {ignoredProperties: '', droppedProperties: ''};
 
@@ -80,12 +108,13 @@ describe('applyExcusals', () => {
   it('leaves a registration nothing has been observed on exactly as it arrived', () => {
     // Declaring a server, or renaming one, must not freeze today's
     // deployment-wide list onto it.
-    const server = {ignoredProperties: null, droppedProperties: null};
+    const server = {ignoredProperties: null, droppedProperties: null, omittedProperties: null};
 
     applyExcusals(server, []);
 
     expect(server.ignoredProperties).toBeNull();
     expect(server.droppedProperties).toBeNull();
+    expect(server.omittedProperties).toBeNull();
   });
 });
 

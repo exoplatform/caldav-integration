@@ -108,6 +108,18 @@ public class CaldavServerEntity {
   private String  droppedProperties;
 
   /**
+   * The cases eXo leaves out of the copies it writes to this server.
+   *
+   * <p>
+   * Its own column rather than a third meaning stacked onto
+   * {@link #droppedProperties}: those two say what eXo tolerates, this one says
+   * what eXo writes, and a single column holding both kinds of decision is a
+   * column nobody can read.
+   */
+  @Column(name = "OMITTED_PROPERTIES")
+  private String  omittedProperties;
+
+  /**
    * The rolling summary of what this server has been seen doing, as
    * {@code DIRECTION:PROPERTY=COUNT} entries separated by {@code ;}.
    *

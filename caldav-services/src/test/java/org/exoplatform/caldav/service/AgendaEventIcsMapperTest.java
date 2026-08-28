@@ -55,6 +55,7 @@ import org.exoplatform.agenda.service.AgendaEventConferenceService;
 import org.exoplatform.agenda.service.AgendaEventReminderService;
 import org.exoplatform.agenda.util.NotificationUtils;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.IcsEvent;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -827,6 +828,78 @@ public class AgendaEventIcsMapperTest {
     }
   }
 
+  // ------------- the organizer of an event with nobody else on it (EXO-89775)
+
+  @Test
+  public void aServerDeclaredToDropTheOrganizerOfASoloEventGetsACopyWithoutOne() {
+    // BlueMind stores neither ORGANIZER nor ATTENDEE for an event whose only
+    // participant is its creator, so eXo wrote one, read back a copy without it,
+    // and rewrote that copy on every sweep for ever. Writing what the server
+    // will keep is the only thing that ends it - and, because the same mapping
+    // produces the push and the sweep's render, nothing has to be excused
+    // afterwards: the two sides simply agree.
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenOmittingServer(9L);
+    givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED));
+
+    assertNull(mapper.toIcsEvent(event(), "uid-1", PUSHER).getOrganizer(),
+               "the copy must carry no organizer on a server declared to drop it");
+  }
+
+  @Test
+  public void aSoloEventStillNamesItsOrganizerOnAServerThatWasNotDeclaredToDropIt() {
+    // The reason this is per server and never global: the golden corpus holds
+    // organizer-only events a real server stored WITH their organizer. A global
+    // change would strip information from copies on servers that keep it
+    // happily, to buy a clean sweep on one.
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenServer(9L, true);
+    givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED));
+
+    assertNotNull(mapper.toIcsEvent(event(), "uid-1", PUSHER).getOrganizer(),
+                  "an undeclared server must go on receiving the organizer");
+  }
+
+  @Test
+  public void ameetingWithSomebodyElseOnItKeepsItsOrganizerEvenOnADeclaredServer() {
+    // The entry says "an event with no other participants" and means it. A copy
+    // of a real meeting that lost its organizer would leave every client unable
+    // to say who called it.
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenIdentity(77L, "Jane Roe", "jane@example.test");
+    givenOmittingServer(9L);
+    givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED),
+                   attendee(77L, EventAttendeeResponse.NEEDS_ACTION));
+
+    assertNotNull(mapper.toIcsEvent(event(), "uid-1", PUSHER).getOrganizer(),
+                  "a meeting with other participants keeps its organizer");
+  }
+
+  @Test
+  public void anEventWithNoRosterAtAllIsSoloToo() {
+    // Nobody on it is not somebody else on it.
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenOmittingServer(9L);
+    givenAttendees();
+
+    assertNull(mapper.toIcsEvent(event(), "uid-1", PUSHER).getOrganizer());
+  }
+
+  @Test
+  public void aFailingRegistryKeepsTheOrganizer() {
+    // The asymmetry that decides every fallback here: a copy naming its
+    // organizer on a server that drops it costs one permanent divergence, while
+    // a copy silently missing one loses information from somebody's calendar.
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    CaldavUserSetting account = new CaldavUserSetting();
+    account.setServerId(9L);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(PUSHER)).thenReturn(account);
+    lenient().when(caldavServerService.resolveServer(9L)).thenThrow(new IllegalStateException("no registry"));
+    givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED));
+
+    assertNotNull(mapper.toIcsEvent(event(), "uid-1", PUSHER).getOrganizer());
+  }
+
   /**
    * Stubs the registration the pusher's stored account resolves to.
    *
@@ -841,6 +914,22 @@ public class AgendaEventIcsMapperTest {
     CaldavServer server = new CaldavServer();
     server.setId(serverId);
     server.setAnswerLinksInCopy(answerLinksInCopy);
+    lenient().when(caldavServerService.resolveServer(serverId)).thenReturn(server);
+  }
+
+  /**
+   * Stubs a registration declared to drop the organizer of an event with no
+   * other participants.
+   *
+   * @param serverId identifier the account references
+   */
+  private void givenOmittingServer(long serverId) {
+    CaldavUserSetting account = new CaldavUserSetting();
+    account.setServerId(serverId);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(PUSHER)).thenReturn(account);
+    CaldavServer server = new CaldavServer();
+    server.setId(serverId);
+    server.setOmittedProperties(ServerQuirk.SOLO_ORGANIZER);
     lenient().when(caldavServerService.resolveServer(serverId)).thenReturn(server);
   }
 

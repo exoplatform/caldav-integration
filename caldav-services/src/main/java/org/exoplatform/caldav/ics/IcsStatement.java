@@ -24,6 +24,7 @@ import java.util.TreeMap;
 import org.apache.commons.lang3.StringUtils;
 
 import org.exoplatform.caldav.model.IcsDivergence;
+import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkDirection;
 
 /**
@@ -45,6 +46,9 @@ final class IcsStatement {
    * that does not carry it.
    */
   static final String UNRECOGNISED = "UNRECOGNISED:";
+
+  /** The property naming the meeting's organizer. */
+  private static final String ORGANIZER = "ORGANIZER";
 
   /**
    * Not instantiated: a grammar, not an object.
@@ -108,18 +112,35 @@ final class IcsStatement {
   /**
    * Records what a divergence says the server does, for the drawer to offer.
    *
+   * <p>
+   * <b>One divergence is reported as a case rather than as a property.</b> An
+   * organizer the copy does not carry means two different things: on an ordinary
+   * meeting it is an organizer somebody removed, which must stay reported and
+   * must stay un-excusable; on an event with nobody but its creator it is one
+   * server's own shape for an appointment, and the answer to that is that eXo
+   * stops writing one (EXO-89775). Naming the second case
+   * {@link ServerQuirk#SOLO_ORGANIZER} is what lets the drawer offer the second
+   * without ever offering the first — and, because that token is not a property
+   * {@link IcsWriter} emits, no excusal list can be pointed at it either.
+   *
    * @param statement the canonical statement that diverged
    * @param onServer how many times the server's copy states it
    * @param inExo how many times eXo's render states it
    * @param observed the accumulator
+   * @param soloEvent whether eXo's render names no participant other than the
+   *          account's own owner
    */
-  static void observe(String statement, int onServer, int inExo, List<IcsDivergence> observed) {
+  static void observe(String statement, int onServer, int inExo, List<IcsDivergence> observed, boolean soloEvent) {
     String property = observedPropertyOf(statement);
     if (StringUtils.isBlank(property)) {
       return;
     }
-    observed.add(new IcsDivergence(property,
-                                   onServer > inExo ? ServerQuirkDirection.ADDED : ServerQuirkDirection.DROPPED));
+    ServerQuirkDirection direction = onServer > inExo ? ServerQuirkDirection.ADDED : ServerQuirkDirection.DROPPED;
+    if (soloEvent && direction == ServerQuirkDirection.DROPPED && ORGANIZER.equals(property)) {
+      observed.add(new IcsDivergence(ServerQuirk.SOLO_ORGANIZER, direction));
+      return;
+    }
+    observed.add(new IcsDivergence(property, direction));
   }
 
   /**

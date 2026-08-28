@@ -33,6 +33,7 @@ import org.exoplatform.caldav.entity.CaldavServerEntity;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ObservedQuirk;
 import org.exoplatform.caldav.model.ServerQuirk;
+import org.exoplatform.caldav.model.ServerQuirkEffect;
 import org.exoplatform.caldav.utils.ServerQuirkSummary;
 import org.exoplatform.caldav.utils.ServerQuirkSummary.Observation;
 import org.exoplatform.commons.file.model.FileInfo;
@@ -180,6 +181,7 @@ public class CaldavServerStorage {
       entity.setAnswerLinksInCopy(server.isAnswerLinksInCopy());
       entity.setIgnoredProperties(server.getIgnoredProperties());
       entity.setDroppedProperties(server.getDroppedProperties());
+      entity.setOmittedProperties(server.getOmittedProperties());
       Long oldImageFileId = entity.getImageFileId();
       boolean imageRemoved = (server.getImageFileId() == null || server.getImageFileId() == 0)
           && oldImageFileId != null && oldImageFileId > 0;
@@ -272,6 +274,7 @@ public class CaldavServerStorage {
                             entity.isAnswerLinksInCopy(),
                             entity.getIgnoredProperties(),
                             entity.getDroppedProperties(),
+                            entity.getOmittedProperties(),
                             observedQuirks(entity.getObservedQuirks()));
   }
 
@@ -293,7 +296,7 @@ public class CaldavServerStorage {
     return ServerQuirkSummary.parse(summary)
                              .entrySet()
                              .stream()
-                             .sorted(Comparator.<Map.Entry<Observation, Long>, Long> comparing(Map.Entry::getValue)
+                             .sorted(Comparator.<Map.Entry<Observation, Long>, Long>comparing(Map.Entry::getValue)
                                                .reversed()
                                                .thenComparing(entry -> entry.getKey().property()))
                              .map(entry -> observedQuirk(entry.getKey(), entry.getValue()))
@@ -313,12 +316,18 @@ public class CaldavServerStorage {
                       .map(quirk -> new ObservedQuirk(quirk.getId(),
                                                       observation.property(),
                                                       observation.direction(),
+                                                      quirk.getEffect(),
                                                       count,
                                                       false,
                                                       quirk.getPatterns()))
+                      // TOLERATE for a behaviour nothing describes, and never
+                      // OMIT: an entry nobody has written a rule for can relax a
+                      // comparison, but there is no rule to make eXo leave
+                      // anything out of what it writes.
                       .orElseGet(() -> new ObservedQuirk(null,
                                                          observation.property(),
                                                          observation.direction(),
+                                                         ServerQuirkEffect.TOLERATE,
                                                          count,
                                                          false,
                                                          List.of(observation.property())));
@@ -391,6 +400,7 @@ public class CaldavServerStorage {
     entity.setAnswerLinksInCopy(server.isAnswerLinksInCopy());
     entity.setIgnoredProperties(server.getIgnoredProperties());
     entity.setDroppedProperties(server.getDroppedProperties());
+    entity.setOmittedProperties(server.getOmittedProperties());
     return entity;
   }
 }
