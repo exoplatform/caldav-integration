@@ -232,7 +232,14 @@ public class CaldavMirrorVerificationService {
       LOG.warn("The mirror collection of user {} could not be listed; nothing is verified this round", userIdentityId, e);
       return MirrorVerification.nothing();
     }
-    return comparePages(userIdentityId, mirror, settings, etags, resolveServer(settings));
+    CaldavServer server = resolveServer(settings);
+    // Once per pass, whatever the pass finds. The summary's pruning rides on its
+    // write, the write on something having diverged - and a converged account
+    // diverges on nothing, moves no ETag, and never reaches the comparison at
+    // all. Without this the records that most need clearing are the ones on the
+    // servers that stopped producing them.
+    caldavServerQuirkService.settle(server == null ? null : server.getId());
+    return comparePages(userIdentityId, mirror, settings, etags, server);
   }
 
   /**
