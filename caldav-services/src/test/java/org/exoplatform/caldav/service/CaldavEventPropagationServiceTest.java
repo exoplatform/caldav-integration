@@ -17,31 +17,42 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.EnumSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.agenda.constant.AgendaEventModificationType;
 import org.exoplatform.agenda.model.Event;
@@ -51,6 +62,9 @@ import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.ObjectSync;
+import org.exoplatform.caldav.model.PendingPush;
+import org.exoplatform.caldav.model.PendingPushKind;
+import org.exoplatform.caldav.storage.CaldavPendingPushStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvider;
@@ -86,6 +100,9 @@ public class CaldavEventPropagationServiceTest {
    */
   private static final long                     AUTHOR    = 44L;
 
+  /** How many refusals the retry argues with before it gives up, under test. */
+  private static final int                      MAX_ATTEMPTS = 3;
+
   private static final Set<AgendaEventModificationType> A_REAL_EDIT =
                                                                     EnumSet.of(AgendaEventModificationType.UPDATED,
                                                                                AgendaEventModificationType.START_DATE_UPDATED);
@@ -108,6 +125,20 @@ public class CaldavEventPropagationServiceTest {
   @Mock
   private CaldavPendingInvitationService        caldavPendingInvitationService;
 
+  /**
+   * A real store rather than a mock, and that is the point of these tests.
+   *
+   * <p>
+   * What has to be proved is that a copy converges <b>after</b> a push has
+   * failed — that the failure leaves something behind, and that a later pass
+   * finds that something and acts on it. A mocked store would have the test
+   * hand the retry the very record it is supposed to have found, which proves
+   * that the retry can read a list. The two halves have to meet in state
+   * nobody staged.
+   */
+  @Spy
+  private CaldavPendingPushStorage              caldavPendingPushStorage = new InMemoryPendingPushStorage();
+
   @InjectMocks
   private CaldavEventPropagationService         service;
 
@@ -121,6 +152,9 @@ public class CaldavEventPropagationServiceTest {
     event.setId(EVENT);
     event.setParentId(0);
     lenient().when(agendaEventService.getEventById(EVENT)).thenReturn(event);
+    // The property is @Value-injected in production and zero here, which would
+    // make every obligation look already abandoned.
+    ReflectionTestUtils.setField(service, "maxPushAttempts", MAX_ATTEMPTS);
   }
 
   /**
@@ -553,6 +587,328 @@ public class CaldavEventPropagationServiceTest {
     verify(caldavPendingInvitationService, never()).seedMeeting(anyLong(), anyLong());
   }
 
+  // ------------------------------------------- EXO-89773: a failed push converges
+
+  /**
+   * The defect, stated as the only test that can prove it is fixed: a push that
+   * <b>fails</b>, and a copy that is right afterwards anyway.
+   *
+   * <p>
+   * A test showing that a working push works proves nothing here. What was
+   * broken is what happened next — nothing. The log said the verification pass
+   * would retry; that pass compares the version the server publishes against
+   * the version eXo recorded, and an edit that never reached the server does not
+   * move the server's version, so the copy was judged untouched before anything
+   * was fetched and stayed wrong for ever.
+   */
+  @Test
+  public void aPushThatFailsIsMadeAgainByALaterPass() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT))
+                                                        .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                           "alice's server is down"))
+                                                        .thenReturn(new ObjectSync());
+
+    assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT), "the edit did not reach the copy");
+    assertEquals(1, caldavPendingPushStorage.owed(ALICE), "the failure has to leave a record, or nothing can find it");
+
+    assertEquals(1, service.retryOwedPushes(ALICE), "a later pass writes the copy the edit never reached");
+
+    verify(caldavPushService, times(2)).pushAgendaEvent(ALICE, EVENT);
+    assertEquals(0, caldavPendingPushStorage.owed(ALICE), "a copy that has been written is owed nothing");
+  }
+
+  /**
+   * The obligation is written down <b>before</b> the write is attempted.
+   *
+   * <p>
+   * This is what a {@code catch} block cannot do. A PUT that times out
+   * ambiguously, a thread killed halfway through fifty attendees and a platform
+   * restarted between two of them all leave no exception for anybody to catch —
+   * and all of them leave the record standing. The order is the assertion.
+   */
+  @Test
+  public void whatIsOwedIsRecordedBeforeTheWriteIsAttempted() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
+
+    service.propagateUpdate(EVENT, A_REAL_EDIT);
+
+    InOrder order = inOrder(caldavPendingPushStorage, caldavPushService);
+    order.verify(caldavPendingPushStorage).owe(1L, ALICE, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    order.verify(caldavPushService).pushAgendaEvent(ALICE, EVENT);
+  }
+
+  /**
+   * Every holder is recorded before any of them is written to, so a thread that
+   * dies at the third of fifty attendees leaves the other forty-seven owed.
+   */
+  @Test
+  public void everyHolderIsRecordedBeforeTheFirstOneIsWrittenTo() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    when(caldavPushService.pushAgendaEvent(anyLong(), eq(EVENT))).thenReturn(new ObjectSync());
+
+    service.propagateUpdate(EVENT, A_REAL_EDIT);
+
+    InOrder order = inOrder(caldavPendingPushStorage, caldavPushService);
+    order.verify(caldavPendingPushStorage).owe(eq(1L), eq(ALICE), any(), any(), anyString());
+    order.verify(caldavPendingPushStorage).owe(eq(2L), eq(BOB), any(), any(), anyString());
+    order.verify(caldavPushService).pushAgendaEvent(anyLong(), eq(EVENT));
+  }
+
+  /**
+   * A removal that fails is retried too, and this is the case with <b>no other
+   * safety net at all</b>.
+   *
+   * <p>
+   * A destroyed event renders to nothing, and the verification pass
+   * deliberately refuses to conclude anything from an empty render — so before
+   * this record existed, nothing in eXo would ever have taken that meeting out
+   * of the attendee's calendar. They kept a meeting that no longer exists.
+   */
+  @Test
+  public void aRemovalThatFailsIsMadeAgainByALaterPass() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    org.mockito.Mockito.doThrow(new CaldavPushException(CaldavPushService.SAVE, "alice's server is down"))
+                       .doNothing()
+                       .when(caldavPushService)
+                       .deleteEvent(ALICE, "uid-8801");
+
+    assertEquals(0, service.propagateDeletion(EVENT), "the removal did not reach the copy");
+    PendingPush owed = onlyObligationOf(ALICE);
+    assertEquals(PendingPushKind.REMOVE, owed.getKind(), "a removal must not be recorded as a rewrite");
+
+    assertEquals(1, service.retryOwedPushes(ALICE), "a later pass removes the copy the deletion never reached");
+
+    verify(caldavPushService, times(2)).deleteEvent(ALICE, "uid-8801");
+    assertEquals(0, caldavPendingPushStorage.owed(ALICE));
+  }
+
+  /**
+   * The kind is read from the record and never re-derived, because by the time
+   * the retry runs there is nothing left to derive it from: the event was
+   * destroyed, so anything asking agenda "should this copy be rewritten or
+   * removed?" is asking about a row that no longer exists. Getting it wrong
+   * puts a cancelled meeting back into somebody's calendar.
+   */
+  @Test
+  public void aRetriedRemovalIsRemovedAndNeverRewritten() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    org.mockito.Mockito.doThrow(new CaldavPushException(CaldavPushService.SAVE, "alice's server is down"))
+                       .when(caldavPushService)
+                       .deleteEvent(ALICE, "uid-8801");
+
+    service.propagateDeletion(EVENT);
+    service.retryOwedPushes(ALICE);
+
+    // Both halves, because either alone passes against a retry that does
+    // nothing at all: the removal was attempted again, and no rewrite was.
+    verify(caldavPushService, times(2)).deleteEvent(ALICE, "uid-8801");
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+  }
+
+  /**
+   * A server that is never going to change its mind is argued with a few times
+   * and then left alone.
+   *
+   * <p>
+   * Unbounded retrying is the failure this mechanism could easily have become:
+   * one refusing account, three network round trips, every five minutes, for as
+   * long as the account exists. The record is kept rather than deleted — it is
+   * the only place anybody can see that a copy is wrong and that eXo has
+   * stopped putting it right — but it is not read again.
+   */
+  @Test
+  public void aServerThatKeepsRefusingIsNotRetriedForEver() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT))
+                                                        .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                           "this server will never take it"));
+
+    service.propagateUpdate(EVENT, A_REAL_EDIT);
+    for (int sweep = 0; sweep < MAX_ATTEMPTS + 5; sweep++) {
+      service.retryOwedPushes(ALICE);
+    }
+
+    // One write from the edit itself, then exactly MAX_ATTEMPTS retries: the
+    // sweeps after that read nothing and write nothing.
+    verify(caldavPushService, times(MAX_ATTEMPTS + 1)).pushAgendaEvent(ALICE, EVENT);
+    assertEquals(1,
+                 caldavPendingPushStorage.owed(ALICE),
+                 "an abandoned obligation stays as the record that this copy is wrong");
+  }
+
+  /**
+   * A copy that is genuinely up to date is not re-pushed, on this sweep or any
+   * other.
+   *
+   * <p>
+   * The obvious wrong fix to EXO-89773 is to have the sweep re-render and
+   * re-push everything so that nothing can be missed. That is exactly the churn
+   * EXO-89716 and EXO-89756 spent two days removing — nineteen copies rewritten
+   * every five minutes, for ever — and re-introducing it would be a worse defect
+   * than the one being fixed. So a copy nobody owes anything to is not read, not
+   * rendered and not written.
+   */
+  @Test
+  public void aCopyThatIsUpToDateIsNeverRePushed() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
+    assertEquals(0, service.retryOwedPushes(ALICE), "nothing is owed once the write has landed");
+    assertEquals(0, service.retryOwedPushes(ALICE));
+
+    verify(caldavPushService, times(1)).pushAgendaEvent(ALICE, EVENT);
+  }
+
+  /**
+   * An account nothing ever went wrong on costs the sweep nothing: no
+   * obligation, no mapping read, no render, no write.
+   */
+  @Test
+  public void anAccountThatIsOwedNothingCostsTheSweepNoWrite() {
+    assertEquals(0, service.retryOwedPushes(ALICE));
+
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
+    verify(caldavSyncStorage, never()).getObjectsByEvent(anyLong(), anyInt(), anyInt());
+  }
+
+  /**
+   * One unreachable server leaves the others' copies written <b>and</b> its own
+   * recorded — the isolation that already existed, now with a consequence.
+   */
+  @Test
+  public void theHolderWhoseServerFailedIsTheOnlyOneStillOwedAWrite() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT))
+                                                        .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                           "alice's server is down"));
+    when(caldavPushService.pushAgendaEvent(BOB, EVENT)).thenReturn(new ObjectSync());
+
+    service.propagateUpdate(EVENT, A_REAL_EDIT);
+
+    assertEquals(1, caldavPendingPushStorage.owed(ALICE));
+    assertEquals(0, caldavPendingPushStorage.owed(BOB), "a copy that was written is owed nothing");
+  }
+
+  /**
+   * A conflict is the one failure the verification pass genuinely does cover, so
+   * it is struck off rather than retried.
+   *
+   * <p>
+   * A conflict means the server's version moved away from the one eXo recorded
+   * — which is precisely the gate that pass opens on, so it will fetch, compare
+   * and reconcile. Retrying here instead would fight the same conditional write
+   * to the same refusal, three times, and then report a copy as abandoned that
+   * nothing was ever wrong with.
+   */
+  @Test
+  public void aConflictIsLeftToTheVerificationPassRatherThanRetried() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT))
+                                                        .thenThrow(new CaldavPushException(CaldavPushService.CONFLICT,
+                                                                                           "somebody wrote it first"));
+
+    service.propagateUpdate(EVENT, A_REAL_EDIT);
+
+    assertEquals(0, caldavPendingPushStorage.owed(ALICE), "a conflict is not an arrear");
+  }
+
+  /**
+   * Five edits in a minute owe the copy one write, not five. The obligation
+   * describes the copy — "this does not yet show what eXo holds" — rather than
+   * queueing the events that made it true.
+   */
+  @Test
+  public void aCopyEditedRepeatedlyIsOwedOneWriteAndNotFive() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT))
+                                                        .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                           "alice's server is down"));
+
+    service.propagateUpdate(EVENT, A_REAL_EDIT);
+    service.propagateUpdate(EVENT, A_REAL_EDIT);
+    service.propagateUpdate(EVENT, A_REAL_EDIT);
+
+    assertEquals(1, caldavPendingPushStorage.owed(ALICE));
+  }
+
+  /**
+   * A new edit renews the patience: the attempt count goes back to zero, so a
+   * copy abandoned last week is tried again when the meeting moves.
+   */
+  @Test
+  public void aFreshEditGivesAnAbandonedCopyAnotherChance() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT))
+                                                        .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                           "down for the afternoon"));
+
+    service.propagateUpdate(EVENT, A_REAL_EDIT);
+    for (int sweep = 0; sweep < MAX_ATTEMPTS + 2; sweep++) {
+      service.retryOwedPushes(ALICE);
+    }
+    assertEquals(0, service.retryOwedPushes(ALICE), "the copy has been given up on");
+
+    service.propagateUpdate(EVENT, A_REAL_EDIT);
+    assertEquals(0, onlyObligationOf(ALICE).getAttempts(), "a new edit is a new obligation, with its own patience");
+  }
+
+  /**
+   * The retry is wider than the verification pass on purpose: that pass scopes
+   * to the MIRROR pair, so a copy sitting in one of the user's own calendars was
+   * outside it entirely. An obligation names the copy, whichever collection it
+   * lives in.
+   */
+  @Test
+  public void aCopyOutsideTheMirrorIsSettledToo() {
+    ObjectSync inPersonalCalendar = mapping(1L, 101L, "uid-8801", "/dav/alice/personal/uid-8801.ics");
+    givenHolders(inPersonalCalendar);
+    givenPair(101L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT))
+                                                        .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                           "alice's server is down"))
+                                                        .thenReturn(new ObjectSync());
+
+    service.propagateUpdate(EVENT, A_REAL_EDIT);
+
+    assertEquals(1, service.retryOwedPushes(ALICE));
+  }
+
+  /**
+   * Bookkeeping that cannot be written is said out loud and does not stop the
+   * write it was recorded for. A copy nobody can retry is bad; a copy nobody
+   * even tried to write is worse.
+   */
+  @Test
+  public void aRecordThatCannotBeWrittenDoesNotStopTheWrite() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    org.mockito.Mockito.doThrow(new IllegalStateException("the database is unhappy"))
+                       .when(caldavPendingPushStorage)
+                       .owe(anyLong(), anyLong(), any(), any(), anyString());
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
+  }
+
   // ---------------------------------------------------------------- fixtures
 
   /**
@@ -676,5 +1032,97 @@ public class CaldavEventPropagationServiceTest {
     mapping.setEtag("\"v1\"");
     mapping.setLastSync(new Date());
     return mapping;
+  }
+
+  /**
+   * The single obligation an account carries, failing loudly when there is not
+   * exactly one — a test that asserted on "the first of however many" would
+   * pass against a store that queued duplicates.
+   *
+   * @param userIdentityId whose obligations are read
+   * @return the one obligation recorded against that account
+   */
+  private PendingPush onlyObligationOf(long userIdentityId) {
+    List<PendingPush> owed = caldavPendingPushStorage.attemptable(userIdentityId, Integer.MAX_VALUE, 10);
+    assertEquals(1, owed.size(), "exactly one obligation was expected");
+    PendingPush only = owed.get(0);
+    assertNotNull(only.getKind(), "an obligation says what is owed");
+    return only;
+  }
+
+  /**
+   * The obligation store, in memory, behaving as the persisted one does.
+   *
+   * <p>
+   * One record per copy — the unique constraint the schema carries — replaced
+   * rather than queued when it is recorded again, with the attempt count reset,
+   * and read back oldest first while it is still worth attempting.
+   */
+  private static class InMemoryPendingPushStorage extends CaldavPendingPushStorage {
+
+    private final Map<Long, PendingPush> byObject = new LinkedHashMap<>();
+
+    private long                         sequence;
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public PendingPush owe(long objectSyncId, long userIdentityId, PendingPushKind kind, Long localEventId, String icsUid) {
+      PendingPush existing = byObject.get(objectSyncId);
+      PendingPush recorded = new PendingPush(existing == null ? ++sequence : existing.getId(),
+                                             objectSyncId,
+                                             userIdentityId,
+                                             kind,
+                                             localEventId,
+                                             icsUid,
+                                             0,
+                                             existing == null ? new Date() : existing.getSince());
+      byObject.put(objectSyncId, recorded);
+      return recorded;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void settled(long objectSyncId) {
+      byObject.remove(objectSyncId);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void refused(long id) {
+      byObject.replaceAll((objectSyncId, pending) -> {
+        if (pending.getId() != null && pending.getId() == id) {
+          pending.setAttempts(pending.getAttempts() + 1);
+        }
+        return pending;
+      });
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public List<PendingPush> attemptable(long userIdentityId, int maxAttempts, int limit) {
+      return byObject.values()
+                     .stream()
+                     .filter(pending -> pending.getUserIdentityId() == userIdentityId)
+                     .filter(pending -> pending.getAttempts() < maxAttempts)
+                     .sorted(Comparator.comparing(PendingPush::getId))
+                     .limit(limit)
+                     .toList();
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public long owed(long userIdentityId) {
+      return byObject.values().stream().filter(pending -> pending.getUserIdentityId() == userIdentityId).count();
+    }
   }
 }
