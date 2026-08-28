@@ -14,6 +14,9 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
+import fs from 'fs';
+import path from 'path';
+
 import {
   SERVER_PRESETS,
   PRESET_NONE,
@@ -40,8 +43,33 @@ function blankDeclaration() {
     serverUrl: '',
     active: true,
     icon: '',
+    // The drawer's own initial state for the two copy settings: links on, and
+    // a destination stated rather than absent.
     answerLinksInCopy: true,
+    mirrorTarget: 'DEDICATED_CALENDAR',
   };
+}
+
+/**
+ * The English bundle the drawer reads its sentences from, as a map.
+ *
+ * <p>Read from the file rather than mocked, because the assertion below is
+ * about the SENTENCE an administrator gets shown — a mock of it would assert
+ * that this test file says what this test file says.</p>
+ *
+ * @returns {Object} every key of the _en bundle against its value
+ */
+function englishBundle() {
+  const bundle = fs.readFileSync(
+    path.join(__dirname, '../../main/resources/locale/portlet/Caldav_en.properties'), 'utf8');
+  const messages = {};
+  bundle.split('\n').forEach(line => {
+    const separator = line.indexOf('=');
+    if (separator > 0 && !line.startsWith('#')) {
+      messages[line.slice(0, separator).trim()] = line.slice(separator + 1);
+    }
+  });
+  return messages;
 }
 
 describe('choosing a preset fills what an administrator could not have known', () => {
@@ -142,6 +170,28 @@ describe('a preset is a starting point, not a lock', () => {
     expect(server.droppedProperties).toBe('');
   });
 
+  it('keeps an administrator\'s disagreement with the two copy settings', () => {
+    // The same rule as the excusal lists, and it matters more here: these two
+    // change the document landing in a user's calendar and where it lands. An
+    // administrator who overrules BlueMind's destination, or turns Stalwart's
+    // answer links back on, is not corrected by anything.
+    const bluemind = applyPreset(blankDeclaration(), 'bluemind');
+    bluemind.mirrorTarget = 'DEDICATED_CALENDAR';
+    expect(bluemind.mirrorTarget).toBe('DEDICATED_CALENDAR');
+
+    const stalwart = applyPreset(blankDeclaration(), 'stalwart');
+    stalwart.answerLinksInCopy = true;
+    expect(stalwart.answerLinksInCopy).toBe(true);
+  });
+
+  it('replaces one characterised server\'s copy settings with the other\'s', () => {
+    const server = applyPreset(blankDeclaration(), 'bluemind');
+    applyPreset(server, 'stalwart');
+
+    expect(server.mirrorTarget).toBe('DEDICATED_CALENDAR');
+    expect(server.answerLinksInCopy).toBe(false);
+  });
+
   it('replaces the previous preset rather than merging with it', () => {
     const server = applyPreset(blankDeclaration(), 'bluemind');
     applyPreset(server, 'stalwart');
@@ -164,6 +214,126 @@ describe('a preset is a starting point, not a lock', () => {
   });
 });
 
+describe('a preset states the two copy settings a server has a known answer for', () => {
+
+  it('turns Stalwart\'s answer links off, and keeps the dedicated calendar', () => {
+    const server = applyPreset(blankDeclaration(), 'stalwart');
+
+    // Stalwart accepts an answer sent from any calendar, so the calendar
+    // client's own Accept and Decline already work on a copy wherever it sits.
+    // eXo's links would add text to every copy and buy nothing.
+    expect(server.answerLinksInCopy).toBe(false);
+    // Nothing here records Stalwart treating a dedicated calendar differently
+    // from any other, so the destination stays the one eXo makes for itself.
+    expect(server.mirrorTarget).toBe('DEDICATED_CALENDAR');
+  });
+
+  it('sends BlueMind\'s copies to the account main calendar, and keeps the answer links on', () => {
+    const server = applyPreset(blankDeclaration(), 'bluemind');
+
+    // BlueMind's dedicated calendar is known deficient: excluded from the
+    // account's free/busy, so colleagues booking around the user see eXo
+    // meeting times as free, and carrying no answer buttons.
+    expect(server.mirrorTarget).toBe('MAIN_CALENDAR');
+    // On BlueMind the answer buttons are the default calendar's only, so the
+    // links in the description are what covers anything else.
+    expect(server.answerLinksInCopy).toBe(true);
+  });
+
+  it('states them as values, not as a truthiness that would swallow the one that is false', () => {
+    // The trap this guards: `false` is a statement here, and a preset field
+    // tested for truth rather than for presence would turn Stalwart's answer
+    // links from "off" into "unstated" - which the drawer would then leave on.
+    const stalwart = presetValues('stalwart');
+    expect(Object.prototype.hasOwnProperty.call(stalwart, 'answerLinksInCopy')).toBe(true);
+    expect(stalwart.answerLinksInCopy).toBe(false);
+  });
+});
+
+describe('a server we have not characterised gets no opinion about its copies either', () => {
+
+  it('writes neither copy setting, so what the form carried survives', () => {
+    // The same reasoning that leaves the excusal lists unset. And here it has
+    // to be the KEYS that are absent, not nulls: a null answerLinksInCopy reads
+    // as "no links" and a null mirrorTarget as the default destination, so
+    // stating either would be an opinion about a server nobody has run.
+    const values = presetValues(PRESET_NONE);
+
+    expect(Object.prototype.hasOwnProperty.call(values, 'answerLinksInCopy')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(values, 'mirrorTarget')).toBe(false);
+  });
+
+  it('leaves what the administrator already chose exactly where it was', () => {
+    // The assertion the key test above cannot make on its own: an undefined
+    // value assigned over a field still overwrites it.
+    const server = blankDeclaration();
+    server.answerLinksInCopy = false;
+    server.mirrorTarget = 'MAIN_CALENDAR';
+
+    applyPreset(server, PRESET_NONE);
+
+    expect(server.answerLinksInCopy).toBe(false);
+    expect(server.mirrorTarget).toBe('MAIN_CALENDAR');
+  });
+
+  it('does not put back what a characterised preset chose a moment earlier', () => {
+    // Deliberate, and the asymmetry is the point: what BlueMind stated stays on
+    // a control the administrator can read and change, which beats a shortcut
+    // silently restoring a destination nobody chose either.
+    const server = applyPreset(blankDeclaration(), 'bluemind');
+    applyPreset(server, PRESET_NONE);
+
+    expect(server.name).toBe('');
+    expect(server.mirrorTarget).toBe('MAIN_CALENDAR');
+  });
+});
+
+describe('a preset says what it chose about the copies', () => {
+
+  const messages = englishBundle();
+
+  it('states both copy settings in the summary of every preset that states them', () => {
+    // A shortcut that silently turns something off, or silently picks the more
+    // demanding destination, is worse than one that touches neither: the
+    // administrator meets the choice later, as a symptom, with nothing to
+    // connect it to. So a preset may only state these where its summary says
+    // so - which is what this loop enforces for any preset added later too.
+    SERVER_PRESETS.forEach(preset => {
+      const values = presetValues(preset.id);
+      const states = Object.prototype.hasOwnProperty.call(values, 'mirrorTarget')
+          || Object.prototype.hasOwnProperty.call(values, 'answerLinksInCopy');
+      if (states) {
+        const summary = messages[`caldav.admin.servers.preset.${preset.id}.summary`];
+        expect(summary).toBeDefined();
+        expect(summary).toMatch(/answer links/i);
+        expect(summary).toMatch(/calendar/i);
+      }
+    });
+  });
+
+  it('says that BlueMind gets the main calendar, why, and that it is still worth watching', () => {
+    // The honest tension. The main-calendar option's own consequence line says
+    // to choose it only once copies synchronise cleanly, and this preset
+    // chooses it up front - so the summary is where the two are reconciled,
+    // rather than by softening a caution that is right for the general case.
+    const summary = messages['caldav.admin.servers.preset.bluemind.summary'];
+
+    expect(summary).toMatch(/main calendar/i);
+    expect(summary).toMatch(/availability/i);
+    expect(summary).toMatch(/no answer buttons/i);
+    expect(summary).toMatch(/watch the first synchronisations/i);
+    expect(summary).toMatch(/answer links are left on/i);
+  });
+
+  it('says that Stalwart\'s answer links are off, and why that costs nothing', () => {
+    const summary = messages['caldav.admin.servers.preset.stalwart.summary'];
+
+    expect(summary).toMatch(/answer links are turned off/i);
+    expect(summary).toMatch(/any calendar/i);
+    expect(summary).toMatch(/dedicated eXo Meetings calendar/i);
+  });
+});
+
 describe('a preset is copied into the row, never linked to it', () => {
 
   it('writes no reference to the preset it came from', () => {
@@ -179,6 +349,7 @@ describe('a preset is copied into the row, never linked to it', () => {
       'icon',
       'id',
       'ignoredProperties',
+      'mirrorTarget',
       'name',
       'omittedProperties',
       'serverUrl',
