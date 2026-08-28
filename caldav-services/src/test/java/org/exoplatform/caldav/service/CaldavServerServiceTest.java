@@ -47,11 +47,14 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import java.io.InputStream;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.Date;
 import java.util.List;
 
@@ -113,12 +116,43 @@ public class CaldavServerServiceTest {
   @Mock
   private CaldavServerQuirkService caldavServerQuirkService;
 
+  /**
+   * The address check, REAL rather than mocked, so these tests keep measuring
+   * what the registry actually refuses (EXO-89774). Its name resolution is a
+   * table, not the machine's resolver: {@code dav.example.org} answers a public
+   * address, everything else is unknown — which is also what makes the seeding
+   * warning path exercised here reach its refusal branch without a DNS query.
+   */
+  @Spy
+  private CaldavServerUrlValidator caldavServerUrlValidator =
+                                                            new CaldavServerUrlValidator("https", "80,443", "", false,
+                                                                                         CaldavServerServiceTest::resolve);
+
   @InjectMocks
   private CaldavServerService      caldavServerService;
 
   private String                   previousUrlProperty;
 
   private String                   previousEnabledProperty;
+
+  /**
+   * The table the address check resolves through in this class: one public
+   * name, one private literal, and nothing else — which is all these tests
+   * need, and is what keeps them off the network.
+   *
+   * @param host host of a declared URL
+   * @return the addresses it points at
+   * @throws UnknownHostException when the table holds no answer for the host
+   */
+  private static InetAddress[] resolve(String host) throws UnknownHostException {
+    if ("dav.example.org".equals(host)) {
+      return new InetAddress[] { InetAddress.getByAddress(host, new byte[] { (byte) 203, (byte) 0, (byte) 113, (byte) 10 }) };
+    }
+    if ("10.1.2.3".equals(host)) {
+      return new InetAddress[] { InetAddress.getByAddress(host, new byte[] { (byte) 10, (byte) 1, (byte) 2, (byte) 3 }) };
+    }
+    throw new UnknownHostException(host);
+  }
 
   /**
    * Two things one setup does, because JUnit orders sibling {@code @BeforeEach}
@@ -230,6 +264,110 @@ public class CaldavServerServiceTest {
 
     verifyNoInteractions(caldavServerStorage);
     verifyNoInteractions(agendaRemoteEventService);
+  }
+
+  /**
+   * The address check is part of what a declaration must pass, on create and
+   * on update alike (EXO-89774). What is pinned here is the WIRING — that the
+   * registry refuses an address the platform must not be driven to, and stores
+   * nothing when it does. Which addresses those are, and why, is
+   * CaldavServerUrlValidatorTest's subject.
+   */
+  @Test
+  public void shouldRefuseAServerAddressThePlatformMustNotConnectTo() {
+    withUser(ADMIN_USER, true);
+
+    CaldavServer internal = server(0, null, "Internal", null, "https://10.1.2.3/dav/", true);
+    IllegalArgumentException created =
+                                    assertThrows(IllegalArgumentException.class,
+                                                 () -> caldavServerService.createServer(internal, ADMIN_USER));
+    assertEquals(CaldavServerUrlValidator.PRIVATE_ADDRESS_MESSAGE, created.getMessage());
+
+    // The update path reads the stored row to see whether the address moved, so
+    // the storage IS touched now - what must not happen is the write.
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, "Internal", null, SERVER_URL, true));
+    CaldavServer plainHttp = server(7, null, "Internal", null, "http://dav.example.org/dav/", true);
+    IllegalArgumentException updated =
+                                    assertThrows(IllegalArgumentException.class,
+                                                 () -> caldavServerService.updateServer(plainHttp, ADMIN_USER));
+    assertEquals(CaldavServerUrlValidator.SCHEME_NOT_ALLOWED_MESSAGE, updated.getMessage());
+
+    verify(caldavServerStorage, never()).createServer(any(), anyString());
+    verify(caldavServerStorage, never()).updateServer(any());
+    verifyNoInteractions(agendaRemoteEventService);
+  }
+
+  /**
+   * An address that has not moved is not re-judged.
+   *
+   * <p>
+   * <b>Refusing this save would buy no safety and cost an administrator their
+   * settings.</b> The row is already declared and already dialled by every
+   * sweep, so blocking the edit stops not one request - it only makes a server
+   * unrenameable on a deployment whose CalDAV host has always been internal,
+   * which is the ordinary shape of an on-premises install. Those are precisely
+   * the administrators who changed nothing.
+   */
+  @Test
+  public void anUnchangedAddressIsNotRejudgedWhenSomethingElseIsEdited() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Internal", null, "https://10.1.2.3/dav/", true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    CaldavServer renamed = server(7, null, "Internal renamed", null, "https://10.1.2.3/dav/", true);
+    when(caldavServerStorage.updateServer(renamed)).thenReturn(renamed);
+    when(caldavServerQuirkService.decorate(renamed)).thenReturn(renamed);
+
+    CaldavServer result = assertDoesNotThrow(() -> caldavServerService.updateServer(renamed, ADMIN_USER));
+
+    assertEquals("Internal renamed", result.getName());
+    verify(caldavServerStorage).updateServer(renamed);
+  }
+
+  /**
+   * Moving the address IS judged, on a row that already existed.
+   *
+   * <p>
+   * The exemption above is scoped to an address that did not change; it is not
+   * a licence to point an existing row anywhere. A hostile address cannot be
+   * introduced without editing the field, and editing the field is what is
+   * checked.
+   */
+  @Test
+  public void aChangedAddressIsJudgedEvenOnARowThatAlreadyExisted() {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, "Public", null, SERVER_URL, true));
+    CaldavServer moved = server(7, null, "Public", null, "https://10.1.2.3/dav/", true);
+
+    IllegalArgumentException thrown =
+                                   assertThrows(IllegalArgumentException.class,
+                                                () -> caldavServerService.updateServer(moved, ADMIN_USER));
+
+    assertEquals(CaldavServerUrlValidator.PRIVATE_ADDRESS_MESSAGE, thrown.getMessage());
+    verify(caldavServerStorage, never()).updateServer(any());
+  }
+
+  /**
+   * Switching a row back ON is a declaration too: a registration stored before
+   * the address check existed, or a seeded default, must not be re-activated
+   * unexamined. Switching one OFF is never checked — taking a bad address out
+   * of service has to stay possible whatever it holds.
+   */
+  @Test
+  public void shouldCheckTheAddressWhenActivatingButNotWhenDeactivating() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, "agenda.caldavCalendar.7", "Legacy", null, "http://localhost:8888/dav/cal/{username}/",
+                                 false);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.setServerActive(7, true, ADMIN_USER));
+    assertEquals(CaldavServerUrlValidator.SCHEME_NOT_ALLOWED_MESSAGE, refusal.getMessage());
+    verify(caldavServerStorage, never()).updateServer(any());
+    verifyNoInteractions(agendaRemoteEventService);
+
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    assertDoesNotThrow(() -> caldavServerService.setServerActive(7, false, ADMIN_USER));
+    verify(agendaRemoteEventService).saveRemoteProvider(any());
   }
 
   /**
