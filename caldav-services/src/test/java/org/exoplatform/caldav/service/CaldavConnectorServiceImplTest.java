@@ -42,6 +42,7 @@ import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.container.ExoContainerContext;
@@ -150,7 +151,8 @@ public class CaldavConnectorServiceImplTest {
     when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(stored);
     when(registry.resolveServer(7L)).thenReturn(new CaldavServer(7, "agenda.caldavCalendar.7", "Declared", null,
                                                                  "https://declared.example.org/cal/{username}/", true, null,
-                                                                 null, null, null, true, null, null, null, null, null));
+                                                                 null, null, null, true, null, null, null, null, null,
+                                                                 MirrorTargetKind.DEDICATED_CALENDAR));
 
     CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
 
@@ -174,7 +176,7 @@ public class CaldavConnectorServiceImplTest {
     when(registry.resolveServer(null)).thenReturn(new CaldavServer(1, "agenda.caldavCalendar", "Seed", null,
                                                                    "https://seed.example.org/cal/{username}/", true, null,
                                                                    null, null, null, true, null, null, null, null,
-                                                                   null));
+                                                                   null, MirrorTargetKind.DEDICATED_CALENDAR));
 
     CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
 
@@ -355,7 +357,8 @@ public class CaldavConnectorServiceImplTest {
     when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(new CaldavUserSetting());
     when(registry.resolveServer(null)).thenReturn(new CaldavServer(1, "agenda.caldavCalendar", "Seed", null,
                                                                    "https://seed.example.org/", true, null, null, null,
-                                                                   null, true, null, null, null, null, null));
+                                                                   null, true, null, null, null, null, null,
+                                                                   MirrorTargetKind.DEDICATED_CALENDAR));
 
     CaldavUserSetting setting = service.getCaldavSetting(USER_IDENTITY_ID);
 

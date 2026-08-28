@@ -90,6 +90,9 @@ public class ChangelogExecutionTest {
   /** And the one a mirror pair carries for the stamp it has already applied. */
   private static final String SETTINGS_APPLIED_COLUMN = "COPY_SETTINGS_APPLIED";
 
+  /** The per-server destination EXO-89760 appends. */
+  private static final String MIRROR_TARGET_COLUMN = "MIRROR_TARGET";
+
   /** The index the platform builds its EntityManager from. */
   private static final String ENTITY_INDEX        = "jpa-entities.idx";
 
@@ -167,6 +170,7 @@ public class ChangelogExecutionTest {
     }
     assertTrue(columnExists("CALDAV_SERVER", SETTINGS_UPDATED_COLUMN), "including the copy-settings stamp");
     assertTrue(columnExists("CALDAV_CALENDAR_SYNC", SETTINGS_APPLIED_COLUMN), "and the one the pair applies it with");
+    assertTrue(columnExists("CALDAV_SERVER", MIRROR_TARGET_COLUMN), "and " + MIRROR_TARGET_COLUMN);
   }
 
   /**
@@ -274,6 +278,38 @@ public class ChangelogExecutionTest {
       }
     }
     assertEquals(0, nullableFlag("CALDAV_SERVER", ANSWER_LINKS_COLUMN), "and the column must be NOT NULL");
+  }
+
+  /**
+   * <b>A server row that says nothing about its destination writes copies where
+   * it has always written them.</b>
+   *
+   * <p>
+   * The column EXO-89760 appends is NOT NULL DEFAULT 'DEDICATED_CALENDAR', and
+   * that DEFAULT is the whole upgrade story: it is the same DDL clause that
+   * backfills every row an existing deployment already holds, so every server
+   * declared before this setting existed goes on copying meetings into eXo's
+   * own calendar. A DEFAULT lost in an edit would either fail the ALTER on a
+   * populated table or, worse on a database that tolerates it, leave every
+   * upgraded row with no destination at all — and no Java test can see either.
+   *
+   * @throws Exception when a changeset cannot be applied or the row not written
+   */
+  @Test
+  public void aServerRowDefaultsToTheDedicatedCalendar() throws Exception {
+    update();
+
+    try (Statement statement = connection.createStatement()) {
+      statement.executeUpdate("INSERT INTO CALDAV_SERVER (ID, PROVIDER_NAME, NAME, SERVER_URL, ACTIVE) "
+          + "VALUES (3, 'agenda.caldavCalendar.3', 'Legacy', 'https://legacy.example.invalid/dav/', TRUE)");
+      try (ResultSet rows = statement.executeQuery("SELECT " + MIRROR_TARGET_COLUMN + " FROM CALDAV_SERVER WHERE ID = 3")) {
+        assertTrue(rows.next(), "the row must have been written");
+        assertEquals("DEDICATED_CALENDAR",
+                     rows.getString(1),
+                     "a row that says nothing about its destination must copy meetings where it always did");
+      }
+    }
+    assertEquals(0, nullableFlag("CALDAV_SERVER", MIRROR_TARGET_COLUMN), "and the column must be NOT NULL");
   }
 
   /**
