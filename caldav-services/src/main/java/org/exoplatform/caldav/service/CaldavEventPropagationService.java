@@ -25,6 +25,7 @@ import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Service;
 
@@ -36,6 +37,9 @@ import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.ObjectSync;
+import org.exoplatform.caldav.model.PendingPush;
+import org.exoplatform.caldav.model.PendingPushKind;
+import org.exoplatform.caldav.storage.CaldavPendingPushStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -100,6 +104,51 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * thread, deliberately: a thread of its own would leave the kernel's container
  * behind, and the transactional write that records what was pushed would then
  * fail as a warning nobody reads.
+ *
+ * <h2>What happens when a write does not land (EXO-89773)</h2>
+ *
+ * <p>
+ * It is recorded, and tried again. Before this, a push that failed left nothing
+ * behind but a log line saying the verification pass would retry — and that
+ * pass never could. Its first gate compares the version the server publishes
+ * for a copy against the version eXo recorded, and <b>an edit that never
+ * reached the server does not move the server's version</b>, so the copy was
+ * judged untouched before anything was fetched or compared. The copy stayed
+ * wrong for ever, and nothing said so. A failed <i>removal</i> had no safety net
+ * at all: a destroyed event renders to nothing, and the verification pass
+ * deliberately concludes nothing from an empty render, so no pass would ever
+ * take that meeting out of somebody's calendar.
+ *
+ * <p>
+ * It was masked until this week by the same accident that masked the missing
+ * listeners: BlueMind moved every ETag, so every copy looked altered and the
+ * repair pass delivered pending edits as a side effect. EXO-89716 and
+ * EXO-89756 removed that churn, correctly, and with it a safety net nobody knew
+ * was load-bearing.
+ *
+ * <p>
+ * So the obligation is written down on eXo's own side, <b>before</b> the write
+ * is attempted, as a row of {@code CALDAV_PENDING_PUSH}: this copy does not yet
+ * show what eXo holds. A write that lands deletes it. A write that does not
+ * leaves it, and {@link #retryOwedPushes} — run by the background sweep, one
+ * account at a time — attempts it again, up to a bound, so a server that
+ * refuses for ever is argued with a few times and then left alone and said out
+ * loud.
+ *
+ * <p>
+ * Recorded before rather than after, and that ordering is the whole of what it
+ * buys over a {@code catch} block: a PUT that times out ambiguously, a thread
+ * killed mid-fan-out and a platform restarted between two attendees all leave
+ * no exception for anybody to catch, and all of them leave the obligation
+ * standing. The cost is one small write per holder per edit on the happy path,
+ * against the three network round trips that holder already costs.
+ *
+ * <p>
+ * <b>What it deliberately does not do.</b> It does not re-render every copy on
+ * every sweep to find out which are behind — that is precisely the churn
+ * EXO-89716 and EXO-89756 spent two days removing. A converged account has an
+ * empty obligation table and the retry costs it one index lookup that answers
+ * no rows.
  */
 @Service
 public class CaldavEventPropagationService {
@@ -109,6 +158,18 @@ public class CaldavEventPropagationService {
 
   /** How many mappings are read at a time; the fan-out is walked in slices. */
   private static final int                                     SLICE               = 50;
+
+  /**
+   * How many owed writes one account's retry pass takes on.
+   *
+   * <p>
+   * A bound rather than "everything owed", for the reason every listing in this
+   * add-on is bounded: a backlog is somebody's calendar having gone wrong at
+   * scale, and the pass that drains it must not be the one that also stalls the
+   * sweep behind it. What is left over waits for the next sweep, which is
+   * minutes away.
+   */
+  private static final int                                     RETRY_BATCH         = 200;
 
   /**
    * The modifications a copy cannot show, so no copy is rewritten for them
@@ -157,6 +218,23 @@ public class CaldavEventPropagationService {
 
   @Autowired
   private CaldavPendingInvitationService                       caldavPendingInvitationService;
+
+  @Autowired
+  private CaldavPendingPushStorage                             caldavPendingPushStorage;
+
+  /**
+   * How many times the retry may be refused before it stops arguing.
+   *
+   * <p>
+   * It counts the <b>retries</b> and not the write that failed first: that
+   * write is the reason the record exists, so counting it as an attempt would
+   * make the bound mean one thing on the listener's path and another on the
+   * sweep's. Five is enough to ride out a server having a bad afternoon at a
+   * five-minute cadence, and few enough that a permanently refusing one is
+   * given up on inside half an hour rather than argued with for ever.
+   */
+  @Value("${exo.agenda.caldav.push.maxAttempts:5}")
+  private int                                                  maxPushAttempts;
 
   /**
    * Copies a meeting that has just been created into the calendar of everybody
@@ -356,9 +434,16 @@ public class CaldavEventPropagationService {
       LOG.debug("Event {} was edited but nobody holds a copy of it; nothing to carry out", eventId);
       return 0;
     }
+    // Every obligation first, then every write. Not interleaved, deliberately:
+    // a thread killed at the third of fifty attendees must leave the other
+    // forty-seven recorded as owed, and interleaving would leave them looking
+    // as though nobody had ever intended to write to them.
+    for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
+      owe(holder.getValue(), holder.getKey(), PendingPushKind.REWRITE, eventId);
+    }
     int carried = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
-      if (rewriteOne(holder.getKey(), eventId)) {
+      if (rewriteOne(holder.getKey(), eventId, holder.getValue().getId())) {
         carried++;
       }
     }
@@ -393,9 +478,18 @@ public class CaldavEventPropagationService {
       LOG.debug("Event {} was deleted but nobody holds a copy of it; nothing to carry out", eventId);
       return 0;
     }
+    // Recorded before any of them is attempted, for the reason propagateUpdate
+    // gives — and it matters more here: a removal that is not carried out has
+    // no other safety net at all, so this record is the only thing standing
+    // between a failure and a meeting that stays in somebody's calendar after
+    // it was destroyed.
+    for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
+      owe(holder.getValue(), holder.getKey(), PendingPushKind.REMOVE, null);
+    }
     int removed = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
-      if (removeOne(holder.getKey(), holder.getValue())) {
+      ObjectSync mapping = holder.getValue();
+      if (removeOne(holder.getKey(), mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref())) {
         removed++;
       }
     }
@@ -510,25 +604,43 @@ public class CaldavEventPropagationService {
    * {@code catch (RuntimeException)} on this very code path once and took a
    * whole sweep down with it.
    *
+   * <p>
+   * <b>Contained is not the same as forgotten.</b> A failure here leaves the
+   * obligation recorded against the copy standing, so {@link #retryOwedPushes}
+   * comes back to it. This used to say the verification pass would retry, which
+   * it could not: an edit that never reached the server does not move the
+   * server's version, and an unmoved version is exactly what makes that pass
+   * decide there is nothing to look at.
+   *
    * @param userIdentityId the holder
    * @param eventId the agenda event to write again
+   * @param objectSyncId the mapping row the copy is recorded under, null when
+   *          the caller has no row to settle an obligation against
    * @return true when the copy was rewritten
    */
-  private boolean rewriteOne(long userIdentityId, long eventId) {
+  private boolean rewriteOne(long userIdentityId, long eventId, Long objectSyncId) {
     try {
-      return caldavPushService.pushAgendaEvent(userIdentityId, eventId) != null;
+      boolean written = caldavPushService.pushAgendaEvent(userIdentityId, eventId) != null;
+      if (written) {
+        settled(objectSyncId);
+      }
+      return written;
     } catch (CaldavPushException e) {
       if (CaldavPushService.CONFLICT.equals(e.getCode())) {
         // Somebody wrote that object between the read and the write — very
         // often the editor's own browser, which still pushes their own copy on
-        // save. Not an incident: the conditional write did exactly its job, and
-        // the verification pass is what looks before it writes.
+        // save. Not an incident, and the one failure the verification pass
+        // genuinely does cover: a conflict means the server's version moved
+        // away from the one eXo recorded, which is precisely the gate that pass
+        // opens on. So the obligation is cleared rather than retried — retrying
+        // it would fight the same conditional write to the same refusal.
         LOG.debug("The copy of event {} held by user {} changed under the rewrite; the verification pass will reconcile it",
                   eventId,
                   userIdentityId,
                   e);
+        settled(objectSyncId);
       } else {
-        LOG.warn("The edit of event {} could not be carried to the copy held by user {} ({}); the verification pass will retry",
+        LOG.warn("The edit of event {} could not be carried to the copy held by user {} ({}); it stays owed and is retried",
                  eventId,
                  userIdentityId,
                  e.getCode(),
@@ -536,7 +648,7 @@ public class CaldavEventPropagationService {
       }
       return false;
     } catch (Exception | LinkageError e) {
-      LOG.warn("The edit of event {} could not be carried to the copy held by user {}; the verification pass will retry",
+      LOG.warn("The edit of event {} could not be carried to the copy held by user {}; it stays owed and is retried",
                eventId,
                userIdentityId,
                e);
@@ -547,27 +659,222 @@ public class CaldavEventPropagationService {
   /**
    * Removes one holder's copy, absorbing whatever that one account does to it.
    *
+   * <p>
+   * A failure leaves the obligation standing, and here that is the whole
+   * safety net: the event is gone from eXo, so it renders to nothing, and the
+   * verification pass refuses to conclude anything from an empty render.
+   * Nothing but the record written before this ran will ever take that meeting
+   * out of the attendee's calendar.
+   *
    * @param userIdentityId the holder
-   * @param mapping their mapping of the destroyed event, which is where the
-   *          iCalendar identity comes from — agenda no longer has it
+   * @param icsUid the iCalendar identity of the object to remove, which is
+   *          where a removal has to address it from — agenda no longer holds
+   *          the event
+   * @param objectSyncId the mapping row the copy is recorded under, null when
+   *          the caller has no row to settle an obligation against
+   * @param remoteHref where the copy sits, for the log only; may be null
    * @return true when the copy was removed
    */
-  private boolean removeOne(long userIdentityId, ObjectSync mapping) {
-    if (StringUtils.isBlank(mapping.getIcsUid())) {
+  private boolean removeOne(long userIdentityId, String icsUid, Long objectSyncId, String remoteHref) {
+    if (StringUtils.isBlank(icsUid)) {
       LOG.warn("Mapping {} of user {} carries no iCalendar identity; the copy it names cannot be removed",
-               mapping.getId(),
+               objectSyncId,
                userIdentityId);
       return false;
     }
     try {
-      caldavPushService.deleteEvent(userIdentityId, mapping.getIcsUid());
+      caldavPushService.deleteEvent(userIdentityId, icsUid);
+      settled(objectSyncId);
       return true;
     } catch (Exception | LinkageError e) {
-      LOG.warn("The copy of the deleted event held by user {} at {} could not be removed; it stays until a sweep clears it",
+      LOG.warn("The copy of the deleted event held by user {} at {} could not be removed; it stays owed and is retried",
+               userIdentityId,
+               remoteHref,
+               e);
+      return false;
+    }
+  }
+
+  /**
+   * Writes down that eXo owes one copy a write, before trying to make it.
+   *
+   * <p>
+   * Never allowed to break the fan-out. A bookkeeping row that cannot be
+   * written is a copy that will not be retried — bad, and said out loud — but
+   * it is not a reason the other forty-nine attendees keep a stale meeting,
+   * and it is not a reason to skip the write this row was recorded for.
+   *
+   * @param mapping the mapping row whose copy is behind
+   * @param userIdentityId whose calendar the copy sits in
+   * @param kind whether the copy has to be written again or removed
+   * @param localEventId the agenda event to render, null for a removal whose
+   *          event no longer exists
+   */
+  private void owe(ObjectSync mapping, long userIdentityId, PendingPushKind kind, Long localEventId) {
+    if (mapping.getId() == null || mapping.getId() <= 0) {
+      // A mapping that has never been persisted names no copy anything could
+      // be owed to. Nothing storage answers looks like this; a caller that
+      // built one by hand would.
+      return;
+    }
+    if (kind == PendingPushKind.REMOVE && StringUtils.isBlank(mapping.getIcsUid())) {
+      // A removal addresses the object by its iCalendar identity and by
+      // nothing else, so an obligation without one could never be satisfied —
+      // it would be attempted, refused and abandoned, five times, to say what
+      // removeOne says once. The copy is genuinely unreachable, and that is
+      // reported there rather than queued here.
+      return;
+    }
+    try {
+      caldavPendingPushStorage.owe(mapping.getId(), userIdentityId, kind, localEventId, mapping.getIcsUid());
+    } catch (Exception | LinkageError e) {
+      LOG.warn("What eXo owes the copy of user {} at {} could not be recorded; a failed write there will not be retried",
                userIdentityId,
                mapping.getRemoteHref(),
                e);
-      return false;
+    }
+  }
+
+  /**
+   * Forgets what was owed to a copy, because the write landed.
+   *
+   * <p>
+   * Contained for the same reason {@link #owe} is, and failing the other way
+   * round: an obligation that cannot be cleared makes the next sweep write a
+   * copy that is already correct, which costs three round trips and changes
+   * nothing. That is the cheaper of the two mistakes, and the reason this is a
+   * warning rather than a failure.
+   *
+   * @param objectSyncId the mapping row whose copy was written; null when the
+   *          caller had no row, in which case there is nothing to forget
+   */
+  private void settled(Long objectSyncId) {
+    if (objectSyncId == null || objectSyncId <= 0) {
+      return;
+    }
+    try {
+      caldavPendingPushStorage.settled(objectSyncId);
+    } catch (Exception | LinkageError e) {
+      LOG.warn("The write owed to mapping {} landed but could not be struck off; the next sweep writes it again",
+               objectSyncId,
+               e);
+    }
+  }
+
+  /**
+   * Makes the writes eXo owes one account's copies and has not managed to
+   * make.
+   *
+   * <p>
+   * The half of the fix that converges. The listeners are the only delivery
+   * path there is, and a listener is a single attempt against somebody else's
+   * server: this is what turns that attempt into an outcome. It reads what is
+   * owed rather than deciding it — the obligation was recorded when the meeting
+   * changed, by whoever was carrying the change out — so a copy nobody owes
+   * anything to is not read, not rendered and not written, on this pass or any
+   * other.
+   *
+   * <p>
+   * <b>What it costs a converged account: one index lookup, answering nothing.</b>
+   * That is the whole reason the obligation is a row in a table of its own
+   * rather than a column on the mapping row or a comparison the sweep makes
+   * for itself. Re-rendering every copy on every pass to find out which are
+   * behind is the churn EXO-89716 and EXO-89756 removed, and re-introducing it
+   * would be a worse defect than the one this fixes.
+   *
+   * <p>
+   * Wider than the verification pass on purpose: that pass scopes to the MIRROR
+   * pair, so a copy sitting in one of the user's own calendars was outside it
+   * entirely. An obligation names the copy, whichever collection it lives in.
+   *
+   * @param userIdentityId whose calendar's copies are settled
+   * @return how many owed writes landed this pass
+   */
+  public int retryOwedPushes(long userIdentityId) {
+    List<PendingPush> owed;
+    try {
+      owed = caldavPendingPushStorage.attemptable(userIdentityId, maxPushAttempts, RETRY_BATCH);
+    } catch (Exception | LinkageError e) {
+      LOG.warn("What eXo owes the copies of user {} could not be read; nothing is retried this round", userIdentityId, e);
+      return 0;
+    }
+    if (owed.isEmpty()) {
+      return 0;
+    }
+    int landed = 0;
+    for (PendingPush pending : owed) {
+      if (settleOwed(userIdentityId, pending)) {
+        landed++;
+      }
+    }
+    LOG.info("User {} was owed {} calendar write(s); {} landed this round", userIdentityId, owed.size(), landed);
+    return landed;
+  }
+
+  /**
+   * Makes one owed write, and records the refusal when it does not land.
+   *
+   * <p>
+   * The kind is read from the record rather than worked out here, and that is
+   * the point of recording it: by the time this runs, a removal's event has
+   * been destroyed and there is nothing left to look at that would say the copy
+   * has to go rather than be rewritten.
+   *
+   * @param userIdentityId whose calendar the copy sits in
+   * @param pending what is owed to it
+   * @return true when the write landed
+   */
+  private boolean settleOwed(long userIdentityId, PendingPush pending) {
+    boolean landed;
+    if (pending.getKind() == PendingPushKind.REMOVE) {
+      landed = removeOne(userIdentityId, pending.getIcsUid(), pending.getObjectSyncId(), null);
+    } else if (pending.getLocalEventId() == null || pending.getLocalEventId() <= 0) {
+      // A rewrite with no event to render is one nothing can ever satisfy.
+      // Counted as a refusal rather than skipped, so the bound below takes it
+      // off the pass instead of it being read for ever.
+      LOG.warn("The copy of user {} is owed a rewrite that names no event; there is nothing to render for it",
+               userIdentityId);
+      landed = false;
+    } else {
+      landed = rewriteOne(userIdentityId, pending.getLocalEventId(), pending.getObjectSyncId());
+    }
+    if (!landed) {
+      refuse(userIdentityId, pending);
+    }
+    return landed;
+  }
+
+  /**
+   * Counts one more refusal against an owed write, and says so once when that
+   * is the last one.
+   *
+   * <p>
+   * Bounded because the alternative is arguing with a server that is not going
+   * to change its mind, every five minutes, for as long as the account exists.
+   * The record is left where it is rather than deleted: it is the only place
+   * anybody can see that a copy is wrong and that eXo has stopped trying to
+   * put it right.
+   *
+   * @param userIdentityId whose calendar the copy sits in, for the log
+   * @param pending what is owed to it, carrying the count as it stood
+   */
+  private void refuse(long userIdentityId, PendingPush pending) {
+    try {
+      caldavPendingPushStorage.refused(pending.getId());
+    } catch (Exception | LinkageError e) {
+      LOG.warn("A refused write owed to mapping {} could not be counted; it will be attempted again",
+               pending.getObjectSyncId(),
+               e);
+      return;
+    }
+    if (pending.getAttempts() + 1 >= maxPushAttempts) {
+      // Once, on the attempt that reaches the bound, and never again: the next
+      // pass does not read this record at all. Said at WARN because it is the
+      // one state in this whole mechanism a human has to know about — a
+      // calendar copy that is wrong and is going to stay wrong.
+      LOG.warn("The copy of user {} has refused the write eXo owes it {} times; eXo stops trying to settle it",
+               userIdentityId,
+               maxPushAttempts);
     }
   }
 }
