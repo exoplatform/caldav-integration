@@ -909,6 +909,163 @@ public class CaldavEventPropagationServiceTest {
     assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
   }
 
+  // ------------------------- EXO-89773: the paths that would be silent if wrong
+
+  /**
+   * A push that writes <b>nothing</b> leaves the copy owed a write.
+   *
+   * <p>
+   * {@code pushAgendaEvent} answers null rather than throwing when the event
+   * belongs to one of the user's own calendars that has no collection to write
+   * into. Nothing failed, so nothing is logged — and if that were taken for
+   * success the record would be struck off and the copy left behind in exactly
+   * the silence this whole change exists to end. It is the one non-exception
+   * way for a write not to land.
+   */
+  @Test
+  public void aPushThatWritesNothingLeavesTheCopyStillOwedAWrite() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(null);
+
+    assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT), "nothing was written");
+    assertEquals(1, caldavPendingPushStorage.owed(ALICE), "so the copy is still owed a write");
+  }
+
+  /**
+   * An obligation naming no event is counted as a refusal rather than read for
+   * ever.
+   *
+   * <p>
+   * Nothing can render a rewrite with no event behind it, so attempting it will
+   * never succeed. Skipping it would leave a row the due query keeps answering
+   * and the pass keeps ignoring — work that repeats for ever and changes
+   * nothing. Counting it as a refusal is what lets the bound retire it.
+   */
+  @Test
+  public void aRewriteOwedForNoEventIsRefusedRatherThanReadForEver() {
+    caldavPendingPushStorage.owe(1L, ALICE, PendingPushKind.REWRITE, null, "uid-8801");
+
+    assertEquals(0, service.retryOwedPushes(ALICE));
+
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+    assertEquals(1, onlyObligationOf(ALICE).getAttempts(), "counted, so the bound will eventually retire it");
+  }
+
+  /**
+   * Arrears that cannot be read do not bring the sweep down with them.
+   *
+   * <p>
+   * This runs inside {@code CaldavSyncService.sync}, before the seeding and the
+   * verification pass. An exception escaping here would be caught up there as
+   * "the copies could not be verified" and would cost the account both of the
+   * passes that follow — a database hiccup on one query silently stopping three
+   * unrelated pieces of work.
+   */
+  @Test
+  public void arrearsThatCannotBeReadDoNotBringTheSweepDown() {
+    org.mockito.Mockito.doThrow(new IllegalStateException("the database is unhappy"))
+                       .when(caldavPendingPushStorage)
+                       .attemptable(anyLong(), anyInt(), anyInt());
+
+    assertEquals(0, service.retryOwedPushes(ALICE));
+  }
+
+  /**
+   * A write that landed but could not be struck off still counts as landed.
+   *
+   * <p>
+   * The two mistakes here are not the same size. An obligation left standing
+   * costs one needless re-push on the next sweep; an exception escaping the
+   * bookkeeping would abandon the rest of the fan-out, so the attendees after
+   * this one would never be written to at all.
+   */
+  @Test
+  public void aWriteThatLandedCountsEvenWhenItCannotBeStruckOff() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    org.mockito.Mockito.doThrow(new IllegalStateException("the database is unhappy"))
+                       .when(caldavPendingPushStorage)
+                       .settled(anyLong());
+    when(caldavPushService.pushAgendaEvent(anyLong(), eq(EVENT))).thenReturn(new ObjectSync());
+
+    assertEquals(2, service.propagateUpdate(EVENT, A_REAL_EDIT), "both copies were written");
+
+    verify(caldavPushService).pushAgendaEvent(BOB, EVENT);
+  }
+
+  /**
+   * A refusal that cannot be counted does not stop the rest of the batch.
+   *
+   * <p>
+   * The bound is a convenience; the other accounts' copies are not. An
+   * exception from the counter would leave every obligation after this one
+   * unattempted, which turns a bookkeeping failure into a delivery failure.
+   */
+  @Test
+  public void aRefusalThatCannotBeCountedDoesNotStopTheRestOfTheBatch() {
+    caldavPendingPushStorage.owe(1L, ALICE, PendingPushKind.REWRITE, EVENT, "uid-a");
+    caldavPendingPushStorage.owe(2L, ALICE, PendingPushKind.REWRITE, 9902L, "uid-b");
+    org.mockito.Mockito.doThrow(new IllegalStateException("the database is unhappy"))
+                       .doNothing()
+                       .when(caldavPendingPushStorage)
+                       .refused(anyLong());
+    when(caldavPushService.pushAgendaEvent(anyLong(), anyLong()))
+                                                                .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                                   "the server is down"));
+
+    assertEquals(0, service.retryOwedPushes(ALICE));
+
+    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT);
+    verify(caldavPushService).pushAgendaEvent(ALICE, 9902L);
+  }
+
+  /**
+   * A mapping that has never been persisted is not owed anything — and the write
+   * to it is still attempted.
+   *
+   * <p>
+   * Nothing the storage answers looks like this, so the guard is against a
+   * caller that built a mapping by hand. It fails towards writing: a copy
+   * nobody can retry is bad, a copy nobody even tried to write is worse.
+   */
+  @Test
+  public void aMappingThatWasNeverPersistedIsNotOwedAnythingAndIsStillWrittenTo() {
+    ObjectSync unpersisted = mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics");
+    unpersisted.setId(null);
+    givenHolders(unpersisted);
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPendingPushStorage, never()).owe(anyLong(), anyLong(), any(), any(), anyString());
+  }
+
+  /**
+   * A copy with no iCalendar identity is not queued for a removal nothing could
+   * ever carry out.
+   *
+   * <p>
+   * A removal addresses the object by its UID and by nothing else, so an
+   * obligation without one is unsatisfiable by construction. Queued, it would be
+   * attempted, refused and abandoned — five sweeps and three round trips each,
+   * ending in a warning saying eXo has given up on a copy it was never able to
+   * reach. That is said once, where the copy is found, instead.
+   */
+  @Test
+  public void aCopyWithNoICalendarIdentityIsNotQueuedForARemoval() {
+    givenHolders(mapping(1L, 100L, null, "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+
+    assertEquals(0, service.propagateDeletion(EVENT));
+
+    assertEquals(0, caldavPendingPushStorage.owed(ALICE), "an unsatisfiable obligation is not recorded");
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
+  }
+
   // ---------------------------------------------------------------- fixtures
 
   /**
