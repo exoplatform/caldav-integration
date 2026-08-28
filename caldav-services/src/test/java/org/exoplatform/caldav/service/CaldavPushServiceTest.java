@@ -337,6 +337,59 @@ public class CaldavPushServiceTest {
   }
 
   /**
+   * Going back to eXo's own calendar goes back to eXo's own calendar, and not to
+   * whichever collection the setting it is leaving happened to record.
+   */
+  @Test
+  public void aReturnToExosOwnCalendarIsNotAnsweredByTheDestinationBeingLeft() {
+    // The escape hatch of EXO-89761, and it was broken by the record every kind
+    // keeps of where its copies currently go: an account that spent a while on
+    // MAIN_CALENDAR has its main calendar in mirrorCalendarHref, so a return to
+    // DEDICATED_CALENDAR matched both that href and the derived path, and
+    // answered whichever the server listed first. Here the main calendar is
+    // listed FIRST and recorded — taking it would leave the copies exactly where
+    // the administrator has just said they should stop going.
+    givenAServerWriting(MirrorTargetKind.DEDICATED_CALENDAR);
+    CaldavUserSetting onTheMainCalendar = settings();
+    onTheMainCalendar.setMirrorCalendarHref(PERSONAL);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(onTheMainCalendar);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+                                                                                                            "Personal"),
+                                                                                                   calendar(MIRROR,
+                                                                                                            "eXo Meetings")));
+
+    MirrorTarget target = service.ensureMirror(USER);
+
+    assertEquals(MIRROR, target.href());
+    verify(caldavConnectorStorage).saveMirrorCalendarHref(MIRROR, USER);
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  /**
+   * An adopted calendar is still found when the account holds no collection at
+   * the derived path.
+   */
+  @Test
+  public void theRecordedHrefStillAnswersForAnAccountWhoseCalendarWasAdopted() {
+    // The other half of the ordering above, so it cannot be read as "the
+    // recorded href no longer counts". A server that refused MKCALENDAR left the
+    // copies in a calendar the account already had, and nothing derives its
+    // path: the recorded href is the only name it has.
+    givenAServerWriting(MirrorTargetKind.DEDICATED_CALENDAR);
+    CaldavUserSetting adopted = settings();
+    adopted.setMirrorCalendarHref(PERSONAL);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(adopted);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work"),
+                                                                                                   calendar(PERSONAL,
+                                                                                                            "Personal")));
+
+    MirrorTarget target = service.ensureMirror(USER);
+
+    assertEquals(PERSONAL, target.href());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  /**
    * The account's own default calendar is the one the account names, not the
    * first one it happens to list.
    */
