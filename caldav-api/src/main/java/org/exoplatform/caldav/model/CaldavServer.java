@@ -207,9 +207,8 @@ public class CaldavServer {
 
   /**
    * Where the meeting copies pushed to this server are written:
-   * {@link MirrorTargetKind#DEDICATED_CALENDAR} — a calendar of eXo's own —
-   * {@link MirrorTargetKind#MAIN_CALENDAR}, or
-   * {@link MirrorTargetKind#USER_CHOICE}.
+   * {@link MirrorTargetKind#DEDICATED_CALENDAR} — a calendar of eXo's own — or
+   * {@link MirrorTargetKind#MAIN_CALENDAR}.
    *
    * <p>
    * Declared LAST — after {@link #copySettingsUpdated}, which EXO-89759
