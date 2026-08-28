@@ -83,6 +83,46 @@ public interface CalDavClient {
   String discoverCalendarHome(CalDavEndpoint endpoint, String username, String password);
 
   /**
+   * Asks the account which of its calendars it treats as the default one —
+   * the collection a scheduling client files an invitation into when nobody
+   * says otherwise.
+   *
+   * <p>
+   * Two hops, both of them questions rather than guesses: the principal names
+   * its scheduling inbox ({@code schedule-inbox-URL}), and the inbox names the
+   * default calendar ({@code schedule-default-calendar-URL}) — the RFC 6638
+   * property that exists precisely so a client does not have to invent one.
+   * Guessing from the home listing instead (the first collection, the one
+   * called "Calendar", the one whose path ends in the username) is what this
+   * method exists not to do: each of those is right on one server and wrong on
+   * the next, and being wrong means writing somebody's meetings into a calendar
+   * nobody was looking at.
+   *
+   * <p>
+   * <b>A server naming none is an answer, not a fault.</b> Scheduling is an
+   * extension, and plenty of CalDAV servers implement none of it; that is a
+   * null here rather than an exception, and the caller decides what to do with
+   * a destination it cannot establish. Credentials being refused, or the server
+   * being unreachable, still raise — those are not "there is no default
+   * calendar".
+   *
+   * <p>
+   * The path it answers is a <b>claim</b>, in the sense
+   * {@link #mkCalendar} documents: the collection is only real once the caller
+   * has seen it in a listing of the account's own home.
+   *
+   * @param endpoint the declared server
+   * @param username the account to authenticate as
+   * @param password that account's password
+   * @return the default calendar's server-absolute raw path, or null when the
+   *         account names none
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached or answers no
+   *           principal at all
+   */
+  String discoverDefaultCalendar(CalDavEndpoint endpoint, String username, String password);
+
+  /**
    * Lists the calendar collections of a home with every property the sync
    * engine binds on: display name, resource type, ctag, sync token,
    * supported reports, the user's privileges, and the calendar colour.

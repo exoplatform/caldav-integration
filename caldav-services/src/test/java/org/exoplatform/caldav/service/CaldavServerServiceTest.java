@@ -56,6 +56,7 @@ import java.util.Date;
 import java.util.List;
 
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
@@ -823,6 +824,6 @@ public class CaldavServerServiceTest {
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
     return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null,
-                            null, null, null, null);
+                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR);
   }
 }

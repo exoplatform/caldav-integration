@@ -204,4 +204,32 @@ public class CaldavServer {
    * constructor, and appending keeps every existing argument on its own field.
    */
   private Date    copySettingsUpdated;
+
+  /**
+   * Where the meeting copies pushed to this server are written:
+   * {@link MirrorTargetKind#DEDICATED_CALENDAR} — a calendar of eXo's own —
+   * {@link MirrorTargetKind#MAIN_CALENDAR}, or
+   * {@link MirrorTargetKind#USER_CHOICE}.
+   *
+   * <p>
+   * Declared LAST — after {@link #copySettingsUpdated}, which EXO-89759
+   * appended to the same end of the same class — for the reason
+   * {@link #answerLinksInCopy} records: the model is built positionally through
+   * its all-args constructor, so appending keeps every existing argument on its
+   * own field. Two branches each appending "last" is exactly how a positional
+   * constructor silently re-points every argument after the join, so the order
+   * is stated here rather than left to whoever merges next: this field is the
+   * final one, and the next field appended goes after it. The initialiser is
+   * what makes the default a real one — a row built through the no-args
+   * constructor, or a JSON body that never mentioned the field, resolves the way
+   * every deployment already did.
+   *
+   * <p>
+   * <b>Null means "not stated", and that is deliberate on the way IN.</b> The
+   * administrator drawer that carries this control ships separately, so a save
+   * from a drawer that does not know the field arrives here as null — and the
+   * storage leaves the stored value alone rather than resetting it. Only an
+   * explicit value changes the row.
+   */
+  private MirrorTargetKind mirrorTarget = MirrorTargetKind.DEDICATED_CALENDAR;
 }

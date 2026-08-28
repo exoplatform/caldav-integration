@@ -191,6 +191,58 @@ public class CaldavConnectorStorageTest {
   }
 
   /**
+   * A user's own choice of destination is stored under a key of its own, and
+   * not over the href eXo records for where it is writing.
+   *
+   * <p>
+   * The two answer different questions — "where are the copies going" and "did
+   * a human say so" — and only the second can tell a user who has chosen from
+   * one who has not yet been asked. Writing one over the other would make an
+   * href eXo left behind read as a choice.
+   */
+  @Test
+  public void shouldStoreAChosenCalendarUnderItsOwnKey() {
+    caldavConnectorStorage.saveChosenCalendarHref("/dav/calendars/john/work/", USER_IDENTITY_ID);
+
+    Context userContext = Context.USER.id(String.valueOf(USER_IDENTITY_ID));
+    verify(settingService).set(eq(userContext), eq(CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE),
+                               eq(CaldavConnectorUtils.CALDAV_CHOSEN_CALENDAR_KEY), settingValueCaptor.capture());
+    assertEquals("/dav/calendars/john/work/", settingValueCaptor.getValue().getValue());
+    verify(settingService, never()).set(eq(userContext), eq(CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE),
+                                        eq(CaldavConnectorUtils.CALDAV_MIRROR_CALENDAR_KEY), any());
+  }
+
+  /**
+   * Clearing a choice removes it rather than storing a blank one, so the
+   * account goes back to owing a choice instead of holding one that resolves
+   * to nothing.
+   */
+  @Test
+  public void shouldClearAChosenCalendarRatherThanStoreAnEmptyOne() {
+    caldavConnectorStorage.saveChosenCalendarHref("  ", USER_IDENTITY_ID);
+
+    Context userContext = Context.USER.id(String.valueOf(USER_IDENTITY_ID));
+    verify(settingService).remove(userContext, CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                  CaldavConnectorUtils.CALDAV_CHOSEN_CALENDAR_KEY);
+    verify(settingService, never()).set(eq(userContext), eq(CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE),
+                                        eq(CaldavConnectorUtils.CALDAV_CHOSEN_CALENDAR_KEY), any());
+  }
+
+  /**
+   * Disconnecting takes the choice with the account it was made on: the
+   * collection lives on that account, and keeping the href would let a stale
+   * path read as a choice already made on the next one.
+   */
+  @Test
+  public void shouldForgetTheChosenCalendarOnDisconnection() {
+    caldavConnectorStorage.deleteCaldavSetting(USER_IDENTITY_ID);
+
+    verify(settingService).remove(Context.USER.id(String.valueOf(USER_IDENTITY_ID)),
+                                  CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                  CaldavConnectorUtils.CALDAV_CHOSEN_CALENDAR_KEY);
+  }
+
+  /**
    * The settings read back whole: username as stored, password DECODED back
    * to what the user typed (the connector authenticates with it), and the
    * server reference parsed to its number.
