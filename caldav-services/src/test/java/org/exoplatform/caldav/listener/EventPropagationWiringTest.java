@@ -246,7 +246,7 @@ public class EventPropagationWiringTest {
    * that records what was pushed would be rolled back as a warning, and the
    * copies would look carried out while nothing was.
    *
-   * <h2>Why the absence is mocked rather than arranged</h2>
+   * <b>Why the absence is mocked rather than arranged.</b>
    *
    * <p>
    * {@code setCurrentContainer(null)} does not establish this condition, which
