@@ -27,12 +27,27 @@ import java.util.List;
  * administrator ticks from evidence the sweep gathered rather than from a log
  * line they had to find and a name they had to type correctly.
  *
+ * <p>
+ * <b>One entry per behaviour, not per property.</b> A catalogue entry can cover
+ * a family — {@code X-MICROSOFT-*} and {@code X-MOZ-*} are one sentence about
+ * one server habit — and a live BlueMind account produced three of those
+ * markers, which rendered as three identical checkboxes each saying "seen
+ * once". They are one decision, so they are one entry, and its count is the sum
+ * of what each property contributed. A behaviour the catalogue does not
+ * describe is its own entry per property, because there each property genuinely
+ * is a separate thing the server does.
+ *
  * @param quirkId identifier of the {@link ServerQuirk} that describes this
  *          behaviour, or null when nothing in the catalogue does — in which
  *          case the drawer describes it generically by its property name, so
  *          an incomplete catalogue never blocks an administrator
- * @param property the property name the sweep saw diverge
- * @param direction which way the divergence pointed
+ * @param properties the property names the sweep saw diverge and this entry
+ *          covers — several when a catalogue entry names a family, exactly one
+ *          when nothing describes it
+ * @param direction which way the behaviour points. The catalogue entry's own
+ *          direction when one describes it, so a family whose members were seen
+ *          pointing different ways still reads as the one behaviour it is; the
+ *          observed direction otherwise
  * @param effect whether ticking it changes what eXo notices or what eXo writes
  *          into copies on this server — the drawer says which, because they are
  *          not the same kind of decision. {@link ServerQuirkEffect#TOLERATE}
@@ -48,10 +63,20 @@ import java.util.List;
  *          it, the observed property alone otherwise
  */
 public record ObservedQuirk(String quirkId,
-                            String property,
+                            List<String> properties,
                             ServerQuirkDirection direction,
                             ServerQuirkEffect effect,
                             long count,
                             boolean excused,
                             List<String> patterns) {
+
+  /**
+   * The property name this entry is described by when nothing in the catalogue
+   * describes it — the one the drawer's generic wording renders.
+   *
+   * @return the first property covered, or null when there is none
+   */
+  public String property() {
+    return properties == null || properties.isEmpty() ? null : properties.get(0);
+  }
 }

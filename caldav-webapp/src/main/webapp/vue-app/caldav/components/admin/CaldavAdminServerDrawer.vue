@@ -77,10 +77,29 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               {{ $t('caldav.admin.servers.url.hint') }}
             </div>
             <div class="text-caption text-sub-title mb-2">
-              {{ $t('caldav.admin.servers.url.corsHint') }}
+              {{ $t('caldav.admin.servers.url.reachabilityHint') }}
             </div>
           </v-list-item-content>
         </v-list-item>
+        <v-list-item class="pa-0" dense>
+          <v-list-item-content class="py-0">
+            <v-list-item-title class="my-0">
+              {{ $t('caldav.admin.servers.description') }}
+            </v-list-item-title>
+            <v-text-field
+              v-model="server.description"
+              :aria-label="$t('caldav.admin.servers.description')"
+              :placeholder="$t('caldav.admin.servers.description.placeholder')"
+              class="pt-3"
+              type="text"
+              maxlength="500"
+              outlined
+              dense />
+          </v-list-item-content>
+        </v-list-item>
+        <v-list-item-title class="pa-0 mt-7 mb-4 text-header">
+          {{ $t('caldav.admin.servers.copies.title') }}
+        </v-list-item-title>
         <v-list-item class="pa-0 mb-5" dense>
           <v-list-item-content class="py-0">
             <div class="d-flex align-center">
@@ -103,22 +122,6 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <div class="text-caption text-sub-title mt-2">
               {{ $t('caldav.admin.servers.answerLinks.hint') }}
             </div>
-          </v-list-item-content>
-        </v-list-item>
-        <v-list-item class="pa-0" dense>
-          <v-list-item-content class="py-0">
-            <v-list-item-title class="my-0">
-              {{ $t('caldav.admin.servers.description') }}
-            </v-list-item-title>
-            <v-text-field
-              v-model="server.description"
-              :aria-label="$t('caldav.admin.servers.description')"
-              :placeholder="$t('caldav.admin.servers.description.placeholder')"
-              class="pt-3"
-              type="text"
-              maxlength="500"
-              outlined
-              dense />
           </v-list-item-content>
         </v-list-item>
         <!--
@@ -175,7 +178,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                     {{ $t('caldav.admin.servers.quirks.changesWhatIsWritten') }}
                   </div>
                   <div class="text-caption text-sub-title mt-1">
-                    {{ $t('caldav.admin.servers.quirks.seen', {0: quirk.count}) }}
+                    {{ quirk.seen }}
                   </div>
                 </div>
               </div>
@@ -204,7 +207,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
-import {applyExcusals} from '../../js/serverQuirks.js';
+import {applyExcusals, describeQuirk} from '../../js/serverQuirks.js';
 
 export default {
   data: () => ({
@@ -263,41 +266,8 @@ export default {
       if (server) {
         this.server = { ...server };
       }
-      this.observedQuirks = (this.server.observedQuirks || []).map(quirk => this.describeQuirk(quirk));
+      this.observedQuirks = (this.server.observedQuirks || []).map(quirk => describeQuirk(quirk, this.$t));
       this.$refs.caldavServerDrawer.open();
-    },
-    /**
-     * One observed behaviour as the drawer shows it: the sentence written in
-     * the catalogue when one describes it, a generic sentence naming the
-     * property when none does — so an administrator is never blocked by the
-     * catalogue being incomplete.
-     *
-     * @param {Object} quirk the observed behaviour as the server sent it
-     * @returns {Object} the same behaviour, with its wording and its tick
-     */
-    describeQuirk(quirk) {
-      // The catalogue's own sentence when it has one, a sentence built from the
-      // direction and the property name when it has not — so a server nobody
-      // here has seen is still described, and an administrator is never blocked
-      // by the catalogue being incomplete.
-      const wording = quirk.quirkId || `generic.${(quirk.direction || 'ADDED').toLowerCase()}`;
-      return {
-        key: `${quirk.direction}:${quirk.property}`,
-        patterns: quirk.patterns && quirk.patterns.length && quirk.patterns || [quirk.property],
-        direction: quirk.direction,
-        effect: quirk.effect,
-        // Ticking this one changes the document eXo writes into somebody's
-        // calendar rather than only what eXo notices about it.
-        changesWhatIsWritten: quirk.effect === 'OMIT',
-        count: quirk.count,
-        excused: !!quirk.excused,
-        // The invitation text is the one entry that must not read as another
-        // tick-box: excusing it stops the text of every copy being compared,
-        // answer links included.
-        warning: quirk.quirkId === 'rewritesDescription',
-        label: this.$t(`caldav.admin.servers.quirks.${wording}.label`, {0: quirk.property}),
-        cost: this.$t(`caldav.admin.servers.quirks.${wording}.cost`, {0: quirk.property}),
-      };
     },
     /**
      * Closes the drawer, dropping whatever was typed.

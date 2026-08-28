@@ -320,6 +320,6 @@ public class CaldavServerQuirkServiceTest {
    * @return the behaviour, not yet excused
    */
   private ObservedQuirk quirk(String quirkId, String property, ServerQuirkDirection direction, ServerQuirkEffect effect) {
-    return new ObservedQuirk(quirkId, property, direction, effect, 12L, false, List.of(property));
+    return new ObservedQuirk(quirkId, List.of(property), direction, effect, 12L, false, List.of(property));
   }
 }
