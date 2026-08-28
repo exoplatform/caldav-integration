@@ -72,7 +72,7 @@ public enum ServerQuirk {
    * comes back without it, which kept five copies of a live account in a
    * permanent repair loop.
    */
-  DROPS_CONFERENCE("dropsConference", ServerQuirkDirection.DROPPED, ServerQuirkEffect.TOLERATE, "CONFERENCE"),
+  DROPS_CONFERENCE("dropsConference", ServerQuirkDirection.DROPPED, ServerQuirkEffect.TOLERATE, null, "CONFERENCE"),
 
   /**
    * The server stamps the compatibility markers Outlook and Thunderbird read —
@@ -82,6 +82,7 @@ public enum ServerQuirk {
   ADDS_COMPATIBILITY_MARKERS("addsCompatibilityMarkers",
                              ServerQuirkDirection.ADDED,
                              ServerQuirkEffect.TOLERATE,
+                             null,
                              "X-MICROSOFT-*",
                              "X-MOZ-*"),
 
@@ -93,6 +94,7 @@ public enum ServerQuirk {
   ADDS_FORMATTED_DESCRIPTION("addsFormattedDescription",
                              ServerQuirkDirection.ADDED,
                              ServerQuirkEffect.TOLERATE,
+                             null,
                              "X-ALT-DESC"),
 
   /**
@@ -112,6 +114,7 @@ public enum ServerQuirk {
   REWRITES_DESCRIPTION("rewritesDescription",
                        ServerQuirkDirection.REWRITTEN,
                        ServerQuirkEffect.TOLERATE,
+                       null,
                        "DESCRIPTION"),
 
   /**
@@ -143,6 +146,7 @@ public enum ServerQuirk {
   OMITS_SOLO_ORGANIZER("omitsSoloOrganizer",
                        ServerQuirkDirection.DROPPED,
                        ServerQuirkEffect.OMIT,
+                       Patterns.ORGANIZER,
                        Patterns.SOLO_ORGANIZER);
 
   /**
@@ -171,22 +175,49 @@ public enum ServerQuirk {
   /** Whether ticking it changes what eXo notices or what eXo writes. */
   private final ServerQuirkEffect    effect;
 
+  /**
+   * The property whose own record this entry replaces once it is being
+   * observed, or null when it replaces nothing.
+   *
+   * <p>
+   * <b>Why an entry declares this itself.</b> When the comparison learns to
+   * report a situation as a case rather than as a bare property, every record
+   * already stored under that property describes the same behaviour in the
+   * older, broader way — and a live BlueMind account showed both at once, the
+   * older one offering an excusal that would have covered far more than the
+   * administrator intended. Declared here, beside the patterns, it is the one
+   * place somebody adding a case would think to look; declared in a table of
+   * its own it would be the one place they would not.
+   */
+  private final String               supersedes;
+
   /** The property-name patterns ticking this entry writes into the server's list. */
   private final List<String>         patterns;
 
   /**
    * Declares one catalogue entry.
    *
+   * <p>
+   * One constructor rather than two, so every entry states in as many words
+   * whether it replaces an older record. A default would make the interesting
+   * case the invisible one.
+   *
    * @param entryId stable identifier, also the suffix of the entry's wording keys
    * @param entryDirection which way the divergence it describes points
    * @param entryEffect whether ticking it changes what eXo notices or what eXo
    *          writes
+   * @param entrySupersedes the property whose own record this entry replaces
    * @param entryPatterns the property-name patterns the entry covers
    */
-  ServerQuirk(String entryId, ServerQuirkDirection entryDirection, ServerQuirkEffect entryEffect, String... entryPatterns) {
+  ServerQuirk(String entryId,
+              ServerQuirkDirection entryDirection,
+              ServerQuirkEffect entryEffect,
+              String entrySupersedes,
+              String... entryPatterns) {
     this.id = entryId;
     this.direction = entryDirection;
     this.effect = entryEffect;
+    this.supersedes = entrySupersedes;
     this.patterns = List.of(entryPatterns);
   }
 
@@ -196,6 +227,25 @@ public enum ServerQuirk {
    */
   public ServerQuirkEffect getEffect() {
     return effect;
+  }
+
+  /**
+   * The property whose stored record is replaced once a behaviour is observed.
+   *
+   * <p>
+   * Asked of what a pass actually saw, so nothing is forgotten on the strength
+   * of the catalogue alone: a record only goes when the case that replaces it is
+   * being observed on that very server.
+   *
+   * @param property the property or case name a pass reported
+   * @return the property whose record it replaces, or empty when it replaces
+   *         none
+   */
+  public static Optional<String> superseding(String property) {
+    return Arrays.stream(values())
+                 .filter(quirk -> quirk.supersedes != null && quirk.matches(property))
+                 .map(quirk -> quirk.supersedes)
+                 .findFirst();
   }
 
   /**
@@ -310,6 +360,9 @@ public enum ServerQuirk {
 
     /** The organizer of an event with no other participants. */
     private static final String SOLO_ORGANIZER = "SOLO-ORGANIZER";
+
+    /** The property the case above replaces the record of. */
+    private static final String ORGANIZER      = "ORGANIZER";
 
     /**
      * Not instantiated: a holder for one literal.
