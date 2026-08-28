@@ -20,6 +20,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
@@ -140,7 +141,29 @@ public final class ServerQuirkSummary {
      * @return true when it should be forgotten
      */
     public boolean staleOn(long today, long retentionDays) {
-      return lastSeenDay != UNKNOWN_DAY && today - lastSeenDay > retentionDays;
+      return lastSeenDay != UNKNOWN_DAY && notSeenWithin(today, retentionDays);
+    }
+
+    /**
+     * Whether nothing has been seen of this behaviour within a number of days.
+     *
+     * <p>
+     * <b>An entry with no stamp answers true here and false in
+     * {@link #staleOn}, and the difference is not an inconsistency.</b> They ask
+     * different questions of the same silence. Ageing asks "has this server
+     * stopped doing it", where an unknown date must not be allowed to condemn a
+     * record nobody has evidence about. Supersession asks "is this record older
+     * than the way the comparison now describes the behaviour", and there an
+     * unknown date is not missing evidence — it is the evidence: a record with
+     * no stamp was written before this mechanism existed, so it cannot be an
+     * observation of anything current.
+     *
+     * @param today the current epoch day
+     * @param days the number of days
+     * @return true when it has not been seen within them
+     */
+    public boolean notSeenWithin(long today, long days) {
+      return lastSeenDay == UNKNOWN_DAY || today - lastSeenDay > days;
     }
 
     /**
@@ -162,6 +185,85 @@ public final class ServerQuirkSummary {
      */
     public Tally stamped(long today) {
       return lastSeenDay == UNKNOWN_DAY ? new Tally(count, today) : this;
+    }
+  }
+
+  /**
+   * What a summary is allowed to forget on one write.
+   *
+   * <p>
+   * Built by the service, which knows the deployment's windows and the
+   * catalogue, and applied by the storage, which knows the row. The rules live
+   * here, together, because reading them apart is how the gap below went
+   * unnoticed.
+   *
+   * <p>
+   * <b>Two strengths of supersession, and they are not interchangeable.</b> A
+   * case <i>observed in this very pass</i> replaces the older record of the same
+   * property at once: that is contemporaneous evidence, and the property is
+   * demonstrably not being reported under its own name in the same breath. A
+   * case merely <i>excused</i> on the server is a permanent statement rather
+   * than an observation — somebody decided it, and it stays decided — so it
+   * cannot be allowed to erase a record on sight. It replaces the older record
+   * only once that record has itself gone quiet for
+   * {@link #settledGraceDays}.
+   *
+   * <p>
+   * <b>Why the second strength had to exist at all.</b> Supersession originally
+   * fired only from observation, and an excusal is precisely what stops the case
+   * being observed: eXo acts on it, the copies converge, and the case falls
+   * silent. So the older record could only ever be cleaned up while the problem
+   * still existed — fix the problem and the stale entry outlived the fix by the
+   * whole retention window, all the while offering an administrator a broader,
+   * more dangerous excusal for something already solved. Every reclassification
+   * shipped from now on would have had the same shape.
+   *
+   * <p>
+   * <b>Why the grace period is what keeps that safe.</b> An excusal never
+   * expires, so without it a genuine, current record of the superseded property
+   * would be wiped on the first pass that did not happen to see it — and on a
+   * server excused for dropping the organizer of an appointment, that record is
+   * exactly the organizer vanishing from a real meeting, which EXO-89775 went
+   * out of its way to keep visible. With it, a behaviour that is still happening
+   * refreshes its stamp and stays; one frozen since before the reclassification
+   * does not.
+   *
+   * @param supersededNow properties whose records a case observed in this pass
+   *          replaces, at once
+   * @param supersededWhenSettled properties whose records a case excused on this
+   *          server replaces, once they have gone quiet
+   * @param settledGraceDays how long a record survives after the case that
+   *          replaces it was excused
+   * @param retentionDays how long any behaviour is kept after it was last seen
+   * @param today the current epoch day
+   */
+  public record Retention(Set<String> supersededNow,
+                          Set<String> supersededWhenSettled,
+                          long settledGraceDays,
+                          long retentionDays,
+                          long today) {
+
+    /**
+     * Whether one stored observation no longer belongs in the summary.
+     *
+     * <p>
+     * Says nothing about an excusal in force: that exemption is the row's, and
+     * the caller applies it before asking — see the storage's own merge.
+     *
+     * @param observation what was seen
+     * @param tally how often, and when last
+     * @return true when the record should go
+     */
+    public boolean forgets(Observation observation, Tally tally) {
+      String property = observation.property();
+      if (supersededNow != null && supersededNow.contains(property)) {
+        return true;
+      }
+      if (supersededWhenSettled != null && supersededWhenSettled.contains(property)
+          && tally.notSeenWithin(today, settledGraceDays)) {
+        return true;
+      }
+      return tally.staleOn(today, retentionDays);
     }
   }
 

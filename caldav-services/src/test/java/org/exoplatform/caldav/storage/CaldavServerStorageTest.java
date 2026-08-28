@@ -19,6 +19,7 @@
 package org.exoplatform.caldav.storage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -53,6 +54,7 @@ import org.exoplatform.caldav.model.ObservedQuirk;
 import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkDirection;
 import org.exoplatform.caldav.utils.ServerQuirkSummary.Observation;
+import org.exoplatform.caldav.utils.ServerQuirkSummary.Retention;
 import org.exoplatform.commons.file.model.FileInfo;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
@@ -76,6 +78,9 @@ public class CaldavServerStorageTest {
 
   /** The window these tests share, matching the shipped default. */
   private static final long   RETENTION_DAYS = 30L;
+
+  /** How long a record survives once the case replacing it has been excused. */
+  private static final long   GRACE_DAYS     = 1L;
 
   @Mock
   private CaldavServerDAO     caldavServerDAO;
@@ -564,6 +569,69 @@ public class CaldavServerStorageTest {
   }
 
   @Test
+  public void shouldForgetARecordWhoseReplacementHasBeenExcusedAndThereforeStoppedBeingSeen() {
+    // The rig, exactly. The administrator ticked the solo-organizer quirk, so
+    // eXo stopped writing the organizer, those copies converged and the case
+    // stopped being observed - its count frozen at 8. Supersession by
+    // observation can therefore never fire again, and the old broad record
+    // survived: an UNTICKED entry offering to stop reporting EVERY missing
+    // organizer, including one vanishing from a real meeting, to solve a problem
+    // already solved.
+    CaldavServerEntity existing = observedOn("DROPPED:SOLO-ORGANIZER=8@" + (TODAY - 4) + ";DROPPED:ORGANIZER=4");
+    existing.setOmittedProperties(ServerQuirk.SOLO_ORGANIZER);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    // Nothing observes the case any more; some unrelated behaviour is what keeps
+    // the sweep writing at all.
+    merge(existing,
+          Map.of(Observation.of(ServerQuirkDirection.ADDED, "X-ALT-DESC"), 1L),
+          Set.of(),
+          Set.of("ORGANIZER"));
+
+    assertFalse(existing.getObservedQuirks().contains("ORGANIZER=4"),
+                "the replaced record must go once its replacement is excused: " + existing.getObservedQuirks());
+    assertTrue(existing.getObservedQuirks().contains("SOLO-ORGANIZER=8"),
+               "and the excused entry itself must stay, ticked: " + existing.getObservedQuirks());
+  }
+
+  @Test
+  public void shouldKeepARecordStillBeingSeenEvenWhenItsReplacementIsExcused() {
+    // The guard that makes the rule above safe. An excusal never expires, so
+    // without a grace period a genuine, current record would be wiped on the
+    // first pass that did not happen to see it - and here that record is an
+    // organizer vanishing from a real meeting, which EXO-89775 kept visible on
+    // purpose.
+    CaldavServerEntity existing = observedOn("DROPPED:ORGANIZER=4@" + TODAY);
+    existing.setOmittedProperties(ServerQuirk.SOLO_ORGANIZER);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing,
+          Map.of(Observation.of(ServerQuirkDirection.ADDED, "X-ALT-DESC"), 1L),
+          Set.of(),
+          Set.of("ORGANIZER"));
+
+    assertTrue(existing.getObservedQuirks().contains("DROPPED:ORGANIZER=4"),
+               "a behaviour still happening keeps its place: " + existing.getObservedQuirks());
+  }
+
+  @Test
+  public void shouldNotForgetAPropertySeenInTheVeryBatchThatWouldReplaceIt() {
+    // Both can be true at once, and without this the two records would take
+    // turns erasing each other on every sweep.
+    CaldavServerEntity existing = observedOn("DROPPED:ORGANIZER=4");
+    existing.setOmittedProperties(ServerQuirk.SOLO_ORGANIZER);
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    merge(existing,
+          Map.of(Observation.of(ServerQuirkDirection.DROPPED, "ORGANIZER"), 1L),
+          Set.of(),
+          Set.of());
+
+    assertTrue(existing.getObservedQuirks().contains("DROPPED:ORGANIZER=5@" + TODAY),
+               "seen again in this batch, so kept and counted: " + existing.getObservedQuirks());
+  }
+
+  @Test
   public void shouldGiveALegacyRecordItsFirstStampRatherThanDropIt() {
     // Upgrade path: an entry written before stamps existed has no date, and
     // wiping somebody's history to enforce a rule that post-dates it would be
@@ -611,7 +679,29 @@ public class CaldavServerStorageTest {
    * @param superseded the property names a case has replaced
    */
   private void merge(CaldavServerEntity entity, Map<Observation, Long> increments, Set<String> superseded) {
-    caldavServerStorage.mergeObservedQuirks(entity.getId(), increments, superseded, RETENTION_DAYS, TODAY);
+    merge(entity, increments, superseded, Set.of());
+  }
+
+  /**
+   * Merges one batch, naming both routes a record can be replaced by.
+   *
+   * @param entity the registration
+   * @param increments what the pass saw
+   * @param supersededNow property names a case observed in the pass replaces
+   * @param supersededWhenSettled property names a case excused on the server
+   *          replaces, once they have gone quiet
+   */
+  private void merge(CaldavServerEntity entity,
+                     Map<Observation, Long> increments,
+                     Set<String> supersededNow,
+                     Set<String> supersededWhenSettled) {
+    caldavServerStorage.mergeObservedQuirks(entity.getId(),
+                                            increments,
+                                            new Retention(supersededNow,
+                                                          supersededWhenSettled,
+                                                          GRACE_DAYS,
+                                                          RETENTION_DAYS,
+                                                          TODAY));
   }
 
   /**

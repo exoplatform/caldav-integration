@@ -230,6 +230,14 @@ public enum ServerQuirk {
   }
 
   /**
+   * @return the property whose own stored record this entry replaces, or null
+   *         when it replaces none
+   */
+  public String getSupersedes() {
+    return supersedes;
+  }
+
+  /**
    * The property whose stored record is replaced once a behaviour is observed.
    *
    * <p>
