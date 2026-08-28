@@ -17,6 +17,7 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -152,10 +153,16 @@ public class CaldavMirrorVerificationServiceTest {
   private CaldavAnswerAdoptionService        caldavAnswerAdoptionService;
 
   /**
-   * The registry the pass asks which behaviours this server is excused for. It
-   * answers null throughout this class, which is the "no registration" case:
-   * the comparison then runs on the deployment-wide fallback, exactly as it did
-   * before EXO-89771 — so every expectation here still measures what it did.
+   * The registry, asked once per pass for two things: which behaviours this
+   * server is excused for (EXO-89771), and whether a setting that governs the
+   * copies has moved since this mirror last applied one (EXO-89759).
+   *
+   * <p>
+   * Unstubbed everywhere except the settings-round tests below, so it answers
+   * null — the "no registration" case, in which the comparison runs on the
+   * deployment-wide fallback exactly as it did before EXO-89771 and no settings
+   * round is ever owed. Every expectation outside those tests therefore still
+   * measures what it did.
    */
   @Mock
   private CaldavServerService                caldavServerService;
@@ -768,4 +775,266 @@ public class CaldavMirrorVerificationServiceTest {
     return setting;
   }
 
+  // ------- a settings change reaching the copies already written (EXO-89759)
+
+  /** When the administrator changed a setting that governs the copies. */
+  private static final java.util.Date SETTINGS_CHANGED = new java.util.Date(1_800_000_000_000L);
+
+  /** A moment before that, for a pair that has already applied an older one. */
+  private static final java.util.Date EARLIER          = new java.util.Date(1_700_000_000_000L);
+
+  @Test
+  public void aSettingsChangeReachesACopyThatWasAlreadyWritten() {
+    // The whole point. The copy is exactly as eXo left it — the ETag has not
+    // moved and never will — but eXo now renders something else for the same
+    // event, because an administrator turned the answer links off. Without this
+    // round nothing ever looks at that copy again.
+    givenTheServerSettingsChanged();
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                    .thenReturn(new CalendarObject(HREF,
+                                                                                   "\"etag-1\"",
+                                                                                   ICS.replace("SUMMARY:Sprint review",
+                                                                                               "SUMMARY:Sprint review "
+                                                                                                   + "(Accept: http://exo/a)")));
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(1, result.altered(), "the copy no longer says what eXo would write for the event");
+    assertEquals(1, result.repaired());
+    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+  }
+
+  @Test
+  public void aConvergedAccountIsNotRePushedByASettingsRound() {
+    // THE anti-churn pin, and the one the obvious wrong implementation fails:
+    // "the settings changed, so re-push everything" writes every copy of every
+    // account at once, on servers that stamp and re-serialise what they store —
+    // which is the churn EXO-89716 and EXO-89756 spent two days removing, at
+    // scale. The round compares. Three copies, all of them already saying what
+    // eXo says (one of them only after the server re-serialised it), and not one
+    // byte goes back.
+    givenTheServerSettingsChanged();
+    String second = "/dav/calendars/john/exo-meetings/two.ics";
+    String third = "/dav/calendars/john/exo-meetings/three.ics";
+    givenServerHolds(Map.of(HREF, "\"etag-1\"", second, "\"etag-2\"", third, "\"etag-3\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L),
+                  mapping(second, "\"etag-2\"", 5L),
+                  mapping(third, "\"etag-3\"", 5L));
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                    .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
+    when(calDavClient.fetchObject(any(), eq(second), anyString(), anyString()))
+                                                    .thenReturn(new CalendarObject(second, "\"etag-2\"", RESERIALISED));
+    when(calDavClient.fetchObject(any(), eq(third), anyString(), anyString()))
+                                                    .thenReturn(new CalendarObject(third, "\"etag-3\"", ICS));
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(3, result.checked());
+    assertEquals(0, result.altered(), "a copy that already says what eXo says is not altered");
+    assertEquals(0, result.repaired(), "and nothing about a settings round may write it again");
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+  }
+
+  @Test
+  public void aSettingsRoundStillCostsOneFetchPerCopyAndOnlyOnce() {
+    // The price it does pay, stated so that a change which quietly makes it
+    // permanent is visible. One round fetches every copy; the round after it,
+    // with the stamp applied, is back to one listing and nothing else.
+    givenTheServerSettingsChanged();
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                    .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
+
+    service.verify(USER);
+    givenTheMirrorHasApplied(SETTINGS_CHANGED);
+    service.verify(USER);
+
+    verify(calDavClient, times(1)).fetchObject(any(), eq(HREF), anyString(), anyString());
+  }
+
+  @Test
+  public void aRoundRunsExactlyWhenTheMirrorIsBehindTheServer() {
+    // The condition, both ways round. Behind: the copies are compared. Level:
+    // nothing is fetched at all, which is what keeps the ordinary pass costing
+    // one listing on a converged mirror.
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    lenient().when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+             .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
+
+    givenTheServerSettingsChanged();
+    givenTheMirrorHasApplied(EARLIER);
+    service.verify(USER);
+    verify(calDavClient, times(1)).fetchObject(any(), eq(HREF), anyString(), anyString());
+
+    givenTheMirrorHasApplied(SETTINGS_CHANGED);
+    service.verify(USER);
+    verify(calDavClient, times(1)).fetchObject(any(), eq(HREF), anyString(), anyString());
+  }
+
+  @Test
+  public void anUpgradedInstallationDoesNothingUntilAnAdministratorActs() {
+    // Both stamps null, which is the state every existing deployment is in the
+    // moment the columns are added. Null means nothing to apply: no round, no
+    // fetch, and nothing written on the pair either — an upgrade that woke every
+    // connected account up to compare its whole calendar would be a worse bug
+    // than the one this fixes.
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+
+    service.verify(USER);
+
+    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  @Test
+  public void aCrashMidRoundLeavesTheStampUnsetAndTheNextPassCompletesIt() {
+    // Resumable by construction: the stamp is written after the walk, so
+    // anything that ends the round early never reaches it. The pair stays
+    // behind, and the next sweep re-runs a comparison that rewrites nothing
+    // already converged.
+    givenTheServerSettingsChanged();
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    when(caldavSyncStorage.getObjects(eq(3L), eq(0), anyInt())).thenThrow(new IllegalStateException("the database went away"))
+                                                              .thenReturn(new PageImpl<>(List.of(mapping(HREF,
+                                                                                                         "\"etag-1\"",
+                                                                                                         5L))));
+    lenient().when(caldavSyncStorage.getObjects(eq(3L), eq(1), anyInt())).thenReturn(new PageImpl<>(List.of()));
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                    .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
+
+    assertThrows(IllegalStateException.class, () -> service.verify(USER));
+    verify(caldavSyncStorage, never()).savePair(any());
+
+    service.verify(USER);
+
+    ArgumentCaptor<CalendarSync> stamped = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(stamped.capture());
+    assertEquals(SETTINGS_CHANGED, stamped.getValue().getCopySettingsApplied());
+  }
+
+  @Test
+  public void theStampRecordedIsTheServersValueAndNotTheMomentTheRoundFinished() {
+    // A round over a large calendar takes minutes. Stamping "now" would swallow
+    // a second change an administrator made while it ran; stamping the value the
+    // round actually applied leaves that change plainly newer.
+    givenTheServerSettingsChanged();
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                    .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
+
+    service.verify(USER);
+
+    ArgumentCaptor<CalendarSync> stamped = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(stamped.capture());
+    assertEquals(SETTINGS_CHANGED, stamped.getValue().getCopySettingsApplied());
+  }
+
+  @Test
+  public void anAnswerIsNotAdoptedOffACopyNobodyWrote() {
+    // The direction rule survives the round. In a settings round the difference
+    // is usually eXo's own — the render moved under a copy nobody touched — and
+    // handing that copy to the adoption would read eXo's own last writing back
+    // as though it were the user's latest answer, over whatever they have since
+    // said in eXo. The ETag is still the only proof that somebody else wrote.
+    givenTheServerSettingsChanged();
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                    .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ANSWERED));
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(1, result.altered());
+    assertEquals(0, result.adopted(), "an unmoved ETag is not the client's writing, whatever the round is doing");
+    verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
+    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+  }
+
+  @Test
+  public void anAnswerIsStillAdoptedWhenTheCopyDidMoveDuringASettingsRound() {
+    // The other half, so that the guard above cannot be read as "a settings
+    // round never adopts". A copy whose version moved is the client's writing
+    // whatever else is going on, and the answer on it is read before the repair
+    // exactly as it always was.
+    givenTheServerSettingsChanged();
+    givenServerHolds(Map.of(HREF, "\"etag-2\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                    .thenReturn(new CalendarObject(HREF, "\"etag-2\"", ANSWERED));
+    when(caldavAnswerAdoptionService.adoptAnswer(USER, 5L, ANSWERED))
+                                                    .thenReturn(CaldavAnswerAdoptionService.Outcome.ADOPTED);
+
+    assertEquals(1, service.verify(USER).adopted());
+  }
+
+  @Test
+  public void anAbandonedCopyIsStillLeftAloneByASettingsRound() {
+    // The round is the existing pass minus ONE gate, and the repair cap is not
+    // it. Giving up is a statement about eXo's writing that a setting does not
+    // retract — and re-opening the fight on every settings change is how a
+    // permanently unwritable copy comes back to cost a round trip for ever.
+    givenAnUnwinnableFight();
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+
+    givenTheServerSettingsChanged();
+    MirrorVerification duringTheRound = service.verify(USER);
+
+    assertEquals(1, duringTheRound.abandoned());
+    assertEquals(0, duringTheRound.repaired());
+    verify(calDavClient, times(4)).fetchObject(any(), eq(HREF), anyString(), anyString());
+  }
+
+  @Test
+  public void aMirrorPairDeletedUnderTheRoundIsNotRecreatedToCarryAStamp() {
+    // The pair went while the round walked. There is nothing left to apply a
+    // setting to, and writing the row back would resurrect a binding somebody
+    // deliberately removed.
+    givenTheServerSettingsChanged();
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                    .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ICS));
+    when(caldavSyncStorage.getPair(3L)).thenReturn(null);
+
+    service.verify(USER);
+
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  /**
+   * An administrator has changed a setting that governs the copies, and this
+   * mirror has never applied one.
+   */
+  private void givenTheServerSettingsChanged() {
+    CaldavServer server = new CaldavServer();
+    server.setId(SERVER);
+    server.setCopySettingsUpdated(SETTINGS_CHANGED);
+    when(caldavServerService.resolveServer(SERVER)).thenReturn(server);
+    lenient().when(caldavSyncStorage.getPair(3L)).thenReturn(mirror());
+  }
+
+  /**
+   * The mirror has already carried the copies through a comparison for a given
+   * server stamp.
+   *
+   * @param applied the server stamp the pair has applied
+   */
+  private void givenTheMirrorHasApplied(java.util.Date applied) {
+    CalendarSync pair = mirror();
+    pair.setCopySettingsApplied(applied);
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair));
+  }
+
 }
+

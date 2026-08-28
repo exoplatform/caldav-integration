@@ -33,6 +33,9 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import org.hibernate.annotations.DynamicUpdate;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
+import org.exoplatform.caldav.model.SyncOrigin;
 /**
  * The binding between one eXo calendar and one remote collection, for one user
  * on one declared server. This is the row the engine reconciles against: it
@@ -44,10 +47,24 @@ import lombok.NoArgsConstructor;
  * agenda's tables. Agenda owns calendars and events; how one of them happens to
  * be mirrored on a DAV server is this add-on's concern, and an add-on that can
  * be uninstalled must not have left columns behind in another domain's tables.
+ *
+ * <p>
+ * <b>{@code @DynamicUpdate}, and it is not decoration.</b> This row carries no
+ * version column and has several writers doing read-modify-save over the whole
+ * of it: the sync pass writes the token, the ctag and the two timestamps, the
+ * failure counter is written on its own, and since EXO-89759 the mirror
+ * verification stamps {@link #copySettingsApplied} at the end of a round that
+ * can take minutes. Without this annotation every one of those writes flushes an
+ * UPDATE over every column, from the snapshot the writer read when it started —
+ * so a stamp written by a long round would silently erase whatever a sync that
+ * finished in the meantime had committed, and the other way round. With it, only
+ * the columns that actually changed are in the statement, and the two writers
+ * stop overwriting each other's work.
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
+@DynamicUpdate
 @Entity(name = "CaldavCalendarSyncEntity")
 @Table(name = "CALDAV_CALENDAR_SYNC")
 public class CaldavCalendarSyncEntity {
@@ -131,4 +148,21 @@ public class CaldavCalendarSyncEntity {
    */
   @Column(name = "CONSECUTIVE_FAILURES")
   private int                consecutiveFailures;
+
+  /**
+   * The value of the server's copy-settings stamp this pair has already carried
+   * through one full comparison of its copies (EXO-89759).
+   *
+   * <p>
+   * Nullable with no default, and null means the pair has applied nothing —
+   * which, paired with a server whose own stamp is also null, is exactly the
+   * state every upgraded deployment starts in and the reason it does nothing.
+   *
+   * <p>
+   * Declared LAST, because the entity is built positionally through its all-args
+   * constructor and appending keeps every existing argument on its own field.
+   */
+  @Temporal(TemporalType.TIMESTAMP)
+  @Column(name = "COPY_SETTINGS_APPLIED")
+  private Date               copySettingsApplied;
 }

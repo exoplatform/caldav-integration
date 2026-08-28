@@ -18,6 +18,7 @@ package org.exoplatform.caldav.service;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.util.Date;
 import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
@@ -29,6 +30,7 @@ import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
+import org.exoplatform.caldav.utils.CopySettingsFingerprint;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
@@ -176,7 +178,7 @@ public class CaldavServerService {
     }
     boolean stalwartActive = !StringUtils.equalsIgnoreCase(System.getProperty(CALDAV_ENABLED_PROPERTY), "false");
     caldavServerStorage.createSeedServer(new CaldavServer(0, null, "Stalwart", null, stalwartUrl, stalwartActive, null, null,
-                                                          null, null, true, null, null, null, null),
+                                                          null, null, true, null, null, null, null, null),
                                          CALDAV_PROVIDER_NAME);
     // The kernel plugin only CREATES the provider when missing — an existing
     // one keeps whatever enabled state it holds (an admin may have disabled
@@ -184,11 +186,11 @@ public class CaldavServerService {
     // now, so its activation is pushed onto the provider explicitly; on a
     // fresh install both writes carry the same property-driven value.
     saveAgendaRemoteProvider(new CaldavServer(0, CALDAV_PROVIDER_NAME, "Stalwart", null, stalwartUrl, stalwartActive, null,
-                                              null, null, null, true, null, null, null, null));
+                                              null, null, null, true, null, null, null, null, null));
     LOG.info("Seeded the Stalwart CalDAV server ({})", stalwartUrl);
     CaldavServer bluemind = caldavServerStorage.createServer(new CaldavServer(0, null, "Bluemind", null, DEFAULT_BLUEMIND_URL,
                                                                               true, null, null, null, null, true, null,
-                                                                              null, null, null),
+                                                                              null, null, null, null),
                                                              CALDAV_PROVIDER_NAME);
     saveAgendaRemoteProvider(bluemind);
     LOG.info("Seeded the Bluemind CalDAV server ({})", DEFAULT_BLUEMIND_URL);
@@ -260,6 +262,7 @@ public class CaldavServerService {
                                                                          ObjectNotFoundException {
     checkCanEdit(username);
     validate(server);
+    stampCopySettings(server);
     CaldavServer updatedServer = caldavServerStorage.updateServer(server);
     if (updatedServer == null) {
       throw new ObjectNotFoundException("CalDAV server with id " + server.getId() + " doesn't exist");
@@ -285,6 +288,10 @@ public class CaldavServerService {
     checkCanEdit(username);
     CaldavServer server = getServerById(serverId);
     server.setActive(active);
+    // The switch changes nothing a copy carries, so the stamp must come out of
+    // this write exactly as it went in. Recomputing it rather than trusting the
+    // row read above is the same single path every other write takes.
+    stampCopySettings(server);
     CaldavServer updatedServer = caldavServerStorage.updateServer(server);
     // The row can go between the read above and this write — another
     // administrator deleting it, most plausibly. Storage answers that with
@@ -328,7 +335,8 @@ public class CaldavServerService {
     }
     saveAgendaRemoteProvider(new CaldavServer(server.getId(), server.getProviderName(), server.getName(),
                                               server.getDescription(), server.getServerUrl(), false, null, null, null, null,
-                                              server.isAnswerLinksInCopy(), null, null, null, null));
+                                              server.isAnswerLinksInCopy(), null, null, null, null,
+                                              server.getCopySettingsUpdated()));
     caldavServerStorage.deleteServer(serverId);
     caldavServerQuirkService.forget(serverId);
   }
@@ -413,6 +421,43 @@ public class CaldavServerService {
   public String resolveServerUrl(Long serverId) {
     CaldavServer server = resolveServer(serverId);
     return server == null ? null : server.getServerUrl();
+  }
+
+  /**
+   * Decides the copy-settings stamp a write is to carry, and puts it on the
+   * registration about to be saved (EXO-89759).
+   *
+   * <p>
+   * <b>Why it is here and not in the storage.</b> "Has this change to a server
+   * to reach the copies already written for it" is a judgement about the
+   * domain, and judgements belong to the service. The storage only writes down
+   * the answer.
+   *
+   * <p>
+   * <b>Why the stored row is read again.</b> The stamp is never taken from the
+   * caller. Trusting the body would let a client set every mirror in the
+   * deployment re-comparing its copies by inventing a timestamp, or stop one
+   * that owes a round by echoing back an old one. Reading the row that is about
+   * to be overwritten is what makes the comparison a comparison.
+   *
+   * <p>
+   * Through the storage rather than {@link #getServerById(long)} deliberately:
+   * this needs the row as it is persisted, and a decorated copy of it would
+   * compare unequal on fields nobody wrote.
+   *
+   * <p>
+   * A row that cannot be read — deleted between this and the write, most
+   * plausibly — leaves the stamp alone, and the write that follows answers the
+   * disappearance with the not-found it already declares.
+   *
+   * @param server the registration about to be written, mutated in place
+   */
+  private void stampCopySettings(CaldavServer server) {
+    if (server == null) {
+      return;
+    }
+    CaldavServer stored = caldavServerStorage.getServerById(server.getId());
+    server.setCopySettingsUpdated(CopySettingsFingerprint.stampFor(stored, server, new Date()));
   }
 
   /**
