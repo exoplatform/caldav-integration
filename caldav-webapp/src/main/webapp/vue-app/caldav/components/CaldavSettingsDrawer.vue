@@ -225,7 +225,11 @@ export default {
      * @returns {String} the translation key of the message to display
      */
     errorMessageKey(error) {
-      const knownCodes = ['caldav.error.credentials', 'caldav.error.connection', 'caldav.error.notCaldav', 'caldav.error.cors'];
+      // caldav.error.cors is gone with the message it named: the probe runs
+      // server-side and CaldavProbeResult has no such outcome, so the code could
+      // never arrive and the string told administrators to satisfy a browser
+      // constraint that no longer exists.
+      const knownCodes = ['caldav.error.credentials', 'caldav.error.connection', 'caldav.error.notCaldav'];
       if (error && knownCodes.includes(error.code)) {
         return error.code;
       }

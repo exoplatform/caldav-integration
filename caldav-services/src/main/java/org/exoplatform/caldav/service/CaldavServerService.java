@@ -107,6 +107,9 @@ public class CaldavServerService {
   private CaldavServerStorage      caldavServerStorage;
 
   @Autowired
+  private CaldavServerQuirkService caldavServerQuirkService;
+
+  @Autowired
   private UserACL                  userAcl;
 
   @Autowired
@@ -173,7 +176,7 @@ public class CaldavServerService {
     }
     boolean stalwartActive = !StringUtils.equalsIgnoreCase(System.getProperty(CALDAV_ENABLED_PROPERTY), "false");
     caldavServerStorage.createSeedServer(new CaldavServer(0, null, "Stalwart", null, stalwartUrl, stalwartActive, null, null,
-                                                          null, null, true),
+                                                          null, null, true, null, null, null, null),
                                          CALDAV_PROVIDER_NAME);
     // The kernel plugin only CREATES the provider when missing — an existing
     // one keeps whatever enabled state it holds (an admin may have disabled
@@ -181,10 +184,11 @@ public class CaldavServerService {
     // now, so its activation is pushed onto the provider explicitly; on a
     // fresh install both writes carry the same property-driven value.
     saveAgendaRemoteProvider(new CaldavServer(0, CALDAV_PROVIDER_NAME, "Stalwart", null, stalwartUrl, stalwartActive, null,
-                                              null, null, null, true));
+                                              null, null, null, true, null, null, null, null));
     LOG.info("Seeded the Stalwart CalDAV server ({})", stalwartUrl);
     CaldavServer bluemind = caldavServerStorage.createServer(new CaldavServer(0, null, "Bluemind", null, DEFAULT_BLUEMIND_URL,
-                                                                              true, null, null, null, null, true),
+                                                                              true, null, null, null, null, true, null,
+                                                                              null, null, null),
                                                              CALDAV_PROVIDER_NAME);
     saveAgendaRemoteProvider(bluemind);
     LOG.info("Seeded the Bluemind CalDAV server ({})", DEFAULT_BLUEMIND_URL);
@@ -198,7 +202,7 @@ public class CaldavServerService {
    * @return every registration
    */
   public List<CaldavServer> getServers() {
-    return caldavServerStorage.getServers();
+    return caldavServerStorage.getServers().stream().map(caldavServerQuirkService::decorate).toList();
   }
 
   /**
@@ -213,7 +217,7 @@ public class CaldavServerService {
     if (server == null) {
       throw new ObjectNotFoundException("CalDAV server with id " + serverId + " doesn't exist");
     }
-    return server;
+    return caldavServerQuirkService.decorate(server);
   }
 
   /**
@@ -234,12 +238,13 @@ public class CaldavServerService {
     validate(server);
     CaldavServer createdServer = caldavServerStorage.createServer(server, CALDAV_PROVIDER_NAME);
     saveAgendaRemoteProvider(createdServer);
-    return createdServer;
+    return caldavServerQuirkService.decorate(createdServer);
   }
 
   /**
-   * Updates a declared server: name, description, URL, activation and whether
-   * the copies pushed to it carry answer links. The provider name never
+   * Updates a declared server: name, description, URL, activation, whether the
+   * copies pushed to it carry answer links, and the two lists of behaviours
+   * this server is excused for. The provider name never
    * changes, and the activation is propagated to the agenda remote provider —
    * the switch users' connector lists actually read.
    *
@@ -260,7 +265,7 @@ public class CaldavServerService {
       throw new ObjectNotFoundException("CalDAV server with id " + server.getId() + " doesn't exist");
     }
     saveAgendaRemoteProvider(updatedServer);
-    return updatedServer;
+    return caldavServerQuirkService.decorate(updatedServer);
   }
 
   /**
@@ -290,7 +295,7 @@ public class CaldavServerService {
       throw new ObjectNotFoundException("CalDAV server with id " + serverId + " doesn't exist");
     }
     saveAgendaRemoteProvider(updatedServer);
-    return updatedServer;
+    return caldavServerQuirkService.decorate(updatedServer);
   }
 
   /**
@@ -323,8 +328,9 @@ public class CaldavServerService {
     }
     saveAgendaRemoteProvider(new CaldavServer(server.getId(), server.getProviderName(), server.getName(),
                                               server.getDescription(), server.getServerUrl(), false, null, null, null, null,
-                                              server.isAnswerLinksInCopy()));
+                                              server.isAnswerLinksInCopy(), null, null, null, null));
     caldavServerStorage.deleteServer(serverId);
+    caldavServerQuirkService.forget(serverId);
   }
 
   /**
@@ -389,10 +395,10 @@ public class CaldavServerService {
     if (serverId != null) {
       CaldavServer server = caldavServerStorage.getServerById(serverId);
       if (server != null) {
-        return server;
+        return caldavServerQuirkService.decorate(server);
       }
     }
-    return caldavServerStorage.getServerByProviderName(CALDAV_PROVIDER_NAME);
+    return caldavServerQuirkService.decorate(caldavServerStorage.getServerByProviderName(CALDAV_PROVIDER_NAME));
   }
 
   /**
