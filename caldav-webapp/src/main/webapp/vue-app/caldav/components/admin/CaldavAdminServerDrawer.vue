@@ -31,6 +31,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         ref="adminServerForm"
         class="mx-5 mt-5"
         @submit.stop.prevent="0">
+        <!--
+          Offered on a declaration only. Editing a row is not the moment to
+          overwrite what somebody already decided about it with what we happen
+          to know about a server of that name.
+        -->
+        <caldav-admin-server-preset-select
+          v-if="!server.id"
+          @preset="applyPreset" />
         <div class="mb-3">
           {{ $t('caldav.admin.servers.drawer.updateTheIcon') }}
         </div>
@@ -66,7 +74,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             <v-text-field
               v-model="server.serverUrl"
               :aria-label="$t('caldav.admin.servers.url')"
-              :placeholder="$t('caldav.admin.servers.url.placeholder')"
+              :placeholder="urlPlaceholder"
               class="pt-3"
               type="text"
               maxlength="1000"
@@ -213,6 +221,10 @@ export default {
   data: () => ({
     caldavServerDrawer: false,
     loading: false,
+    // The address shape the chosen preset expects. Null until one is chosen,
+    // and back to null on every close, so the generic shape is what an
+    // untouched declaration shows.
+    presetUrlPlaceholder: null,
     server: {
       id: '',
       name: '',
@@ -239,6 +251,16 @@ export default {
   computed: {
     disabled() {
       return !this.server.name || !this.server.serverUrl;
+    },
+    /**
+     * The address shape shown in the URL field: the chosen preset's, else the
+     * generic one. The shape is the hint — an administrator recognises the
+     * form of their own address faster than they read a sentence about it.
+     *
+     * @returns {String} the placeholder for the server URL field
+     */
+    urlPlaceholder() {
+      return this.presetUrlPlaceholder || this.$t('caldav.admin.servers.url.placeholder');
     },
     drawerTitle() {
       return this.server.id && this.$t('caldav.admin.servers.drawer.edit.title', {
@@ -288,6 +310,7 @@ export default {
      * @returns {void}
      */
     close() {
+      this.presetUrlPlaceholder = null;
       this.server = {
         id: '',
         name: '',
@@ -316,6 +339,26 @@ export default {
     resetImage() {
       this.server.imageUrl = null;
       this.server.imageFileId = null;
+    },
+    /**
+     * Copies a chosen preset's values into the declaration being written.
+     *
+     * A copy, not a link: what lands here is the row's own value from now on.
+     * The administrator may change any of it before saving and it stays
+     * changed, and a later build that learns something new about that server
+     * never reaches a row already declared — it reaches the administrator
+     * instead, through what the sweep observes on their own server.
+     *
+     * The whole set of preset-owned fields is assigned every time, empty ones
+     * included, so choosing a second preset replaces the first rather than
+     * leaving half of it behind.
+     *
+     * @param {Object} preset the chosen preset's values and address shape
+     * @returns {void}
+     */
+    applyPreset(preset) {
+      this.presetUrlPlaceholder = preset.urlPlaceholder;
+      this.server = Object.assign({}, this.server, preset.values);
     },
     /**
      * Creates or updates the drawer's server, then refreshes the table and
