@@ -70,6 +70,25 @@
       <description>Carries an answer recorded in eXo out to the copy on the user's CalDAV server, so the two never diverge</description>
     </component-plugin>
   </external-component-plugins>
+  <!-- The first thing that ever happens to a meeting, which until EXO-89754
+       reached nothing at all: the three registrations below all react to a
+       meeting that already exists. A new event therefore only acquired a copy
+       when somebody edited or answered it, or when the background seeding pass
+       happened to find it inside its 60-day upcoming window — so a meeting
+       further out, or created in the past, was never copied by anything.
+
+       exo.agenda.event.created only. A date poll is broadcast under
+       exo.agenda.event.poll.created and is spelled STATUS:TENTATIVE; it is not
+       a scheduled meeting and no copy of one is ever pushed. -->
+  <external-component-plugins>
+    <target-component>org.exoplatform.services.listener.ListenerService</target-component>
+    <component-plugin>
+      <name>exo.agenda.event.created</name>
+      <set-method>addListener</set-method>
+      <type>org.exoplatform.caldav.listener.EventCreatedListener</type>
+      <description>Copies a newly created meeting into the calendar of everybody invited to it, without waiting for the sweep</description>
+    </component-plugin>
+  </external-component-plugins>
   <!-- An edit reaching everyone's calendar, not only the editor's. Before
        these two, the only push of an event was the one the editing user's own
        browser made, so an organiser who moved a meeting moved it on their own

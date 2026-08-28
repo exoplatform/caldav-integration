@@ -18,6 +18,7 @@ package org.exoplatform.caldav.listener;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -126,6 +127,79 @@ public class EventPropagationWiringTest {
   }
 
   /**
+   * A creation broadcast by agenda reaches the propagation service, through the
+   * class the configuration declares for {@code exo.agenda.event.created}.
+   *
+   * <p>
+   * The registration is the whole fix of EXO-89754, and it is the one part of
+   * it no unit test of any service could see: the propagation service was
+   * correct and nothing called it, so a new meeting reached nobody's calendar
+   * while every other test in the suite stayed green. Reverting the
+   * {@code component-plugin} in {@code configuration.xml} must fail here.
+   *
+   * <p>
+   * The modifier the broadcast carries — {@code 9} in this payload — is handed
+   * over with the event, because the author's own copy is written by their
+   * browser and the service skips them. Dropping it here would put the
+   * collision back.
+   *
+   * @throws Exception when the configuration cannot be read or the declared
+   *           class cannot be instantiated
+   */
+  @Test
+  public void theCreationListenerTheConfigurationDeclaresReachesTheService() throws Exception {
+    AgendaEventPropagationListener listener = listenerDeclaredFor("exo.agenda.event.created");
+
+    listener.onEvent(broadcastOf(new AgendaEventModification(EVENT,
+                                                             7L,
+                                                             9L,
+                                                             EnumSet.of(AgendaEventModificationType.ADDED))));
+
+    verify(propagationService).propagateCreation(EVENT, 9L);
+  }
+
+  /**
+   * A creation asks for a creation and nothing else.
+   *
+   * <p>
+   * The failure mode this pins is the double push. A creation already reaches
+   * this add-on twice — agenda auto-accepts the organiser from inside the
+   * {@code created} broadcast, which makes it emit {@code responseSaved}, which
+   * this add-on also listens to — so the created listener adding an update of
+   * its own on top would be a third write of the same object with a fresh
+   * {@code DTSTAMP}, which is the churn EXO-89716 spent a day removing.
+   *
+   * @throws Exception when the configuration cannot be read or the declared
+   *           class cannot be instantiated
+   */
+  @Test
+  public void aCreationIsNotAlsoCarriedAsAnEdit() throws Exception {
+    AgendaEventPropagationListener listener = listenerDeclaredFor("exo.agenda.event.created");
+
+    listener.onEvent(broadcastOf(new AgendaEventModification(EVENT,
+                                                             7L,
+                                                             9L,
+                                                             EnumSet.of(AgendaEventModificationType.ADDED))));
+
+    verify(propagationService, never()).propagateUpdate(anyLong(), any());
+    verify(propagationService, never()).propagateDeletion(anyLong());
+  }
+
+  /**
+   * A date poll is not a scheduled meeting, and no copy of one is ever pushed.
+   * Agenda broadcasts it under a name of its own, and this add-on deliberately
+   * does not subscribe to that name — declaring a listener for it would make
+   * this add-on write a copy of something that has no time yet.
+   *
+   * @throws Exception when the configuration cannot be read
+   */
+  @Test
+  public void aDatePollCreationIsNotSubscribedTo() throws Exception {
+    assertNull(declaredFor("exo.agenda.event.poll.created"),
+               "no copy of a date poll is ever pushed, so nothing must listen to its creation");
+  }
+
+  /**
    * A deletion broadcast by agenda reaches the propagation service, through the
    * class the configuration declares for {@code exo.agenda.event.deleted}.
    *
@@ -145,14 +219,22 @@ public class EventPropagationWiringTest {
   }
 
   /**
-   * Both declared listeners are asynchronous. A synchronous one would talk to
-   * as many calendar servers as there are attendees from inside the transaction
-   * that saves the edit.
+   * Every declared listener is asynchronous. A synchronous one would talk to as
+   * many calendar servers as there are attendees from inside the transaction
+   * that saves the event.
+   *
+   * <p>
+   * On the creation listener it does a second job: the kernel's listener
+   * executor is a single thread, so being asynchronous is what makes the
+   * creation and the organiser's auto-accepted answer — which agenda emits from
+   * inside this very broadcast — run one after the other rather than at once.
    *
    * @throws Exception when the configuration cannot be read
    */
   @Test
-  public void bothDeclaredListenersAreAsynchronous() throws Exception {
+  public void everyDeclaredListenerIsAsynchronous() throws Exception {
+    assertTrue(classDeclaredFor("exo.agenda.event.created").isAnnotationPresent(Asynchronous.class),
+               "the creation listener must not run inside the saving transaction");
     assertTrue(classDeclaredFor("exo.agenda.event.updated").isAnnotationPresent(Asynchronous.class),
                "the edit listener must not run inside the saving transaction");
     assertTrue(classDeclaredFor("exo.agenda.event.deleted").isAnnotationPresent(Asynchronous.class),
@@ -164,7 +246,7 @@ public class EventPropagationWiringTest {
    * that records what was pushed would be rolled back as a warning, and the
    * copies would look carried out while nothing was.
    *
-   * <h2>Why the absence is mocked rather than arranged</h2>
+   * <b>Why the absence is mocked rather than arranged.</b>
    *
    * <p>
    * {@code setCurrentContainer(null)} does not establish this condition, which
@@ -235,7 +317,25 @@ public class EventPropagationWiringTest {
   }
 
   /**
-   * The class the kernel configuration declares for one agenda event.
+   * The class the kernel configuration declares for one agenda event, insisting
+   * that there is one.
+   *
+   * @param eventName the broadcast name the plugin is registered under
+   * @return the declared class
+   * @throws Exception when the configuration cannot be read or the class is
+   *           absent
+   */
+  private Class<?> classDeclaredFor(String eventName) throws Exception {
+    Class<?> declared = declaredFor(eventName);
+    assertNotNull(declared,
+                  "No component-plugin of this add-on registered for " + eventName + " in " + CONFIGURATION
+                      + " — the service would be correct and nothing would ever call it");
+    return declared;
+  }
+
+  /**
+   * The class the kernel configuration declares for one agenda event, or null
+   * when this add-on registers nothing for it.
    *
    * <p>
    * Every {@code conf/portal/configuration.xml} on the classpath is read, not
@@ -244,12 +344,16 @@ public class EventPropagationWiringTest {
    * type is a class of this add-on — nothing else in the platform can declare
    * one.
    *
+   * <p>
+   * Answering null rather than failing is what lets a test assert an
+   * <i>absence</i> — that this add-on deliberately does not subscribe to a
+   * broadcast — which is as much a decision as a registration is.
+   *
    * @param eventName the broadcast name the plugin is registered under
-   * @return the declared class
-   * @throws Exception when the configuration cannot be read or the class is
-   *           absent
+   * @return the declared class, or null when there is no registration
+   * @throws Exception when the configuration cannot be read
    */
-  private Class<?> classDeclaredFor(String eventName) throws Exception {
+  private Class<?> declaredFor(String eventName) throws Exception {
     DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
     factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
     factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
@@ -275,8 +379,7 @@ public class EventPropagationWiringTest {
         return Class.forName(type);
       }
     }
-    throw new AssertionError("No component-plugin of this add-on registered for " + eventName + " in " + CONFIGURATION
-        + " — the service would be correct and nothing would ever call it");
+    return null;
   }
 
   /**
