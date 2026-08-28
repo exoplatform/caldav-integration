@@ -165,11 +165,12 @@ public class CaldavServerStorage {
   /**
    * Updates the user-editable fields of a registration: name, description,
    * URL, activation, whether the copies pushed to this server carry answer
-   * links, and the two lists of behaviours this server is excused for. The
-   * provider name never changes — it is the join key user settings and agenda
-   * rows hang from, and neither is the rolling observation summary, which is
-   * the sweep's to write (see {@link #mergeObservedQuirks}) and would otherwise
-   * be erased by every administrator save.
+   * links, the two lists of behaviours this server is excused for, and the
+   * copy-settings stamp the service computed for this write. The provider name
+   * never changes — it is the join key user settings and agenda rows hang
+   * from, and neither is the rolling observation summary, which is the sweep's
+   * to write (see {@link #mergeObservedQuirks}) and would otherwise be erased
+   * by every administrator save.
    *
    * @param server registration carrying the id to update and the new values
    * @return the updated registration, or null when the row does not exist
@@ -186,6 +187,10 @@ public class CaldavServerStorage {
       entity.setIgnoredProperties(server.getIgnoredProperties());
       entity.setDroppedProperties(server.getDroppedProperties());
       entity.setOmittedProperties(server.getOmittedProperties());
+      // Written from the DTO the service handed down, never from the body a
+      // caller sent: the service recomputed it from this very row before
+      // calling, which is the only place the rule of EXO-89759 is applied.
+      entity.setCopySettingsUpdated(server.getCopySettingsUpdated());
       Long oldImageFileId = entity.getImageFileId();
       boolean imageRemoved = (server.getImageFileId() == null || server.getImageFileId() == 0)
           && oldImageFileId != null && oldImageFileId > 0;
@@ -279,7 +284,8 @@ public class CaldavServerStorage {
                             entity.getIgnoredProperties(),
                             entity.getDroppedProperties(),
                             entity.getOmittedProperties(),
-                            observedQuirks(entity.getObservedQuirks()));
+                            observedQuirks(entity.getObservedQuirks()),
+                            entity.getCopySettingsUpdated());
   }
 
   /**
@@ -525,6 +531,7 @@ public class CaldavServerStorage {
     entity.setIgnoredProperties(server.getIgnoredProperties());
     entity.setDroppedProperties(server.getDroppedProperties());
     entity.setOmittedProperties(server.getOmittedProperties());
+    entity.setCopySettingsUpdated(server.getCopySettingsUpdated());
     return entity;
   }
 }
