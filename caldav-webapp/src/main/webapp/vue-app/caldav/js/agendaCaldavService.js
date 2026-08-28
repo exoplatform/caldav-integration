@@ -451,6 +451,27 @@ export const getSyncTuning = () => {
 };
 
 /**
+ * What the last pass over each connected user's meeting copies found and
+ * moved. Administrators only.
+ *
+ * <p>Kept in memory by the platform, so an empty answer after a restart means
+ * "no account has synchronised since", never "nothing is happening".</p>
+ *
+ * @returns {Promise<Array>} one tally per user, newest first
+ */
+export const getMirrorReports = () => {
+  return fetch(`${window.location.origin}/caldav/rest/servers/mirror/reports`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
  * Records how often and how widely eXo synchronises. Administrators only.
  *
  * A refused value comes back as a 400 whose body is the message code the
