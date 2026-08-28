@@ -39,7 +39,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         the administrator decide - no warning dialog, no combination refused.
       -->
       <v-radio-group
-        :value="value"
+        :value="selected"
         class="mt-0 pt-0"
         hide-details
         @change="choose">
@@ -83,9 +83,10 @@ import {MIRROR_TARGETS, mirrorTargetOf} from '../../js/mirrorTargets.js';
 export default {
   props: {
     /**
-     * The destination currently chosen in the form. Normalised on the way in,
-     * so a row that carried nothing still lands on a real option rather than
-     * showing three empty radios.
+     * The destination currently chosen in the form. Whatever it carries, the
+     * radio group is driven by `selected` rather than by this directly, so a
+     * row that states nothing — or states a value this control no longer
+     * offers — still lands on a real option rather than on an empty group.
      */
     value: {
       type: String,
@@ -103,12 +104,29 @@ export default {
   },
   computed: {
     /**
-     * The three options, keys and all, in the order the module declares them.
+     * The options offered, keys and all, in the order the module declares
+     * them.
      *
      * @returns {Array} the options to render
      */
     options() {
       return MIRROR_TARGETS;
+    },
+    /**
+     * The option the radio group actually shows as chosen.
+     *
+     * <p>Normalised rather than bound straight through, because the registry's
+     * `MirrorTargetKind` still carries a value this control no longer offers:
+     * a row stored as `USER_CHOICE` would match no radio here and would render
+     * as a group with nothing selected, which reads to an administrator as a
+     * setting that has been lost. It shows the dedicated calendar instead —
+     * what `mirrorTargetOf` resolves anything unoffered to, and what a save
+     * from this drawer would state.</p>
+     *
+     * @returns {String} one of the offered values, never null
+     */
+    selected() {
+      return mirrorTargetOf(this.value);
     },
     /**
      * Whether saving would move the copies already written for every user of
@@ -123,7 +141,7 @@ export default {
   },
   methods: {
     /**
-     * Announces the chosen destination, always as one of the three stored
+     * Announces the chosen destination, always as one of the offered stored
      * values.
      *
      * @param {String} chosen the value the radio group produced
