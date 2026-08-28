@@ -121,6 +121,54 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               dense />
           </v-list-item-content>
         </v-list-item>
+        <!--
+          Nothing to excuse until the sweep has seen something: an empty
+          section here would be an invitation to invent a quirk, which is
+          exactly what the text field this replaces allowed.
+        -->
+        <template v-if="observedQuirks.length">
+          <v-list-item-title class="pa-0 mt-7 mb-2 text-header">
+            {{ $t('caldav.admin.servers.quirks.title') }}
+          </v-list-item-title>
+          <div class="text-caption text-sub-title mb-4">
+            {{ $t('caldav.admin.servers.quirks.subtitle') }}
+          </div>
+          <v-list-item
+            v-for="quirk in observedQuirks"
+            :key="quirk.key"
+            class="pa-0 mb-4"
+            dense>
+            <v-list-item-content class="py-0">
+              <div class="d-flex align-start">
+                <v-checkbox
+                  v-model="quirk.excused"
+                  :aria-label="quirk.label"
+                  class="ma-0 pa-0 me-2"
+                  hide-details />
+                <div class="flex-grow-1 text-start">
+                  <div :class="quirk.warning && 'error--text font-weight-bold' || ''">
+                    <v-icon
+                      v-if="quirk.warning"
+                      class="me-1"
+                      color="error"
+                      size="16">
+                      fas fa-exclamation-triangle
+                    </v-icon>
+                    {{ quirk.label }}
+                  </div>
+                  <div
+                    :class="quirk.warning && 'error--text' || 'text-sub-title'"
+                    class="text-caption mt-1">
+                    {{ quirk.cost }}
+                  </div>
+                  <div class="text-caption text-sub-title mt-1">
+                    {{ $t('caldav.admin.servers.quirks.seen', {0: quirk.count}) }}
+                  </div>
+                </div>
+              </div>
+            </v-list-item-content>
+          </v-list-item>
+        </template>
       </form>
     </template>
     <template #footer>
@@ -143,6 +191,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 </template>
 
 <script>
+import {applyExcusals} from '../../js/serverQuirks.js';
+
 export default {
   data: () => ({
     caldavServerDrawer: false,
@@ -160,7 +210,14 @@ export default {
       // On by default, matching the registry: a server declared here writes
       // the answer links unless its administrator says otherwise.
       answerLinksInCopy: true,
-    }
+      ignoredProperties: null,
+      droppedProperties: null,
+      observedQuirks: [],
+    },
+    // The behaviours this server has been seen doing, as the drawer edits
+    // them. Copied out of the row on open so an abandoned drawer leaves the
+    // registration untouched, exactly like every other field here.
+    observedQuirks: [],
   }),
   computed: {
     disabled() {
@@ -192,7 +249,37 @@ export default {
       if (server) {
         this.server = { ...server };
       }
+      this.observedQuirks = (this.server.observedQuirks || []).map(quirk => this.describeQuirk(quirk));
       this.$refs.caldavServerDrawer.open();
+    },
+    /**
+     * One observed behaviour as the drawer shows it: the sentence written in
+     * the catalogue when one describes it, a generic sentence naming the
+     * property when none does — so an administrator is never blocked by the
+     * catalogue being incomplete.
+     *
+     * @param {Object} quirk the observed behaviour as the server sent it
+     * @returns {Object} the same behaviour, with its wording and its tick
+     */
+    describeQuirk(quirk) {
+      // The catalogue's own sentence when it has one, a sentence built from the
+      // direction and the property name when it has not — so a server nobody
+      // here has seen is still described, and an administrator is never blocked
+      // by the catalogue being incomplete.
+      const wording = quirk.quirkId || `generic.${(quirk.direction || 'ADDED').toLowerCase()}`;
+      return {
+        key: `${quirk.direction}:${quirk.property}`,
+        patterns: quirk.patterns && quirk.patterns.length && quirk.patterns || [quirk.property],
+        direction: quirk.direction,
+        count: quirk.count,
+        excused: !!quirk.excused,
+        // The invitation text is the one entry that must not read as another
+        // tick-box: excusing it stops the text of every copy being compared,
+        // answer links included.
+        warning: quirk.quirkId === 'rewritesDescription',
+        label: this.$t(`caldav.admin.servers.quirks.${wording}.label`, {0: quirk.property}),
+        cost: this.$t(`caldav.admin.servers.quirks.${wording}.cost`, {0: quirk.property}),
+      };
     },
     /**
      * Closes the drawer, dropping whatever was typed.
@@ -211,7 +298,11 @@ export default {
         imageFileId: null,
         imageUrl: null,
         answerLinksInCopy: true,
+        ignoredProperties: null,
+        droppedProperties: null,
+        observedQuirks: [],
       };
+      this.observedQuirks = [];
       this.$refs.caldavServerDrawer.close();
     },
     /**
@@ -235,12 +326,18 @@ export default {
      */
     async saveServer() {
       this.loading = true;
+      applyExcusals(this.server, this.observedQuirks);
       const isNew = !this.server.id;
+      // What the sweep observed is not an administrator's input and the server
+      // keeps its own record of it, so it is not sent back: a payload carrying
+      // it would be asking the registry to accept the evidence it produced.
+      const payload = {...this.server};
+      delete payload.observedQuirks;
       try {
         if (isNew) {
-          await this.$agendaCaldavService.createCaldavServer(this.server);
+          await this.$agendaCaldavService.createCaldavServer(payload);
         } else {
-          await this.$agendaCaldavService.updateCaldavServer(this.server);
+          await this.$agendaCaldavService.updateCaldavServer(payload);
         }
         if (isNew) {
           this.$root.$emit('alert-message', this.$t('caldav.admin.servers.drawer.add.success'), 'success');
