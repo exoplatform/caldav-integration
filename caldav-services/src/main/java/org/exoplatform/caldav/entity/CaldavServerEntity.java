@@ -16,6 +16,8 @@
  */
 package org.exoplatform.caldav.entity;
 
+import java.util.Date;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -23,6 +25,8 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
+import jakarta.persistence.Temporal;
+import jakarta.persistence.TemporalType;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -142,4 +146,18 @@ public class CaldavServerEntity {
    */
   @Column(name = "OBSERVED_QUIRKS")
   private String  observedQuirks;
+
+  /**
+   * When a setting of this row that governs the <i>copies</i> last changed
+   * (EXO-89759). Nullable with no default, and null means nothing to apply: an
+   * upgraded deployment finds every registration unstamped and no mirror behind,
+   * so the mechanism ships doing nothing until an administrator acts.
+   *
+   * <p>
+   * Declared LAST, for the same reason as every field appended before it — the
+   * entity is built positionally through its all-args constructor.
+   */
+  @Temporal(TemporalType.TIMESTAMP)
+  @Column(name = "COPY_SETTINGS_UPDATED")
+  private Date    copySettingsUpdated;
 }
