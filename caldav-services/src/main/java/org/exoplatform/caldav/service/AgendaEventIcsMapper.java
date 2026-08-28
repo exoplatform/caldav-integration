@@ -42,6 +42,7 @@ import org.exoplatform.agenda.service.AgendaEventReminderService;
 import org.exoplatform.agenda.util.EventIcsBuilder;
 import org.exoplatform.agenda.util.NotificationUtils;
 import org.exoplatform.agenda.util.Utils;
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.IcsEvent;
 import org.exoplatform.caldav.model.IcsPerson;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -98,9 +99,13 @@ public class AgendaEventIcsMapper {
   @Autowired
   private AgendaEventAttendeeService  agendaEventAttendeeService;
 
-  /** Holds the account a copy names its owner by. */
+  /** Holds the account a copy names its owner by, and the server it is on. */
   @Autowired
   private CaldavConnectorStorage     caldavConnectorStorage;
+
+  /** The administrator's registry, which decides whether a copy offers answers. */
+  @Autowired
+  private CaldavServerService        caldavServerService;
 
   /** The conference links an event carries; only the first is written. */
   @Autowired
@@ -269,13 +274,26 @@ public class AgendaEventIcsMapper {
    * understands and refreshes on its own schedule. A description repeating it
    * would be stale the moment the user clicked.
    *
+   * <p>
+   * <b>An administrator can turn them off, per server</b> (EXO-89757). The
+   * gate is here and nowhere else: every render of a copy funnels through
+   * {@link #toIcsEvent(Event, String, long)}, so push, sweep repair and the
+   * comparison baseline all read one decision and cannot disagree about it —
+   * which is what EXO-89751 bought by deriving the whole document here. It is
+   * also why the switch cannot leak into the invitation mail: that path calls
+   * agenda's {@code EventIcsBuilder} directly and never passes through this
+   * class at all.
+   *
    * @param event the event being copied
    * @param pusherIdentityId the user whose calendar receives the copy, and the
    *          only person whose token may appear in it
    * @return the answer links keyed by the answer they record, empty when no
-   *         link can be offered
+   *         link can be offered or the server was told to offer none
    */
   private Map<EventAttendeeResponse, String> rsvpLinks(Event event, long pusherIdentityId) {
+    if (!answerLinksEnabled(pusherIdentityId)) {
+      return Collections.emptyMap();
+    }
     String attendeeIdentifier = attendeeIdentifierOf(pusherIdentityId);
     if (StringUtils.isBlank(attendeeIdentifier)) {
       return Collections.emptyMap();
@@ -292,6 +310,45 @@ public class AgendaEventIcsMapper {
       }
     }
     return links;
+  }
+
+  /**
+   * Whether the server this user's calendar lives on wants the answer links
+   * written into its copies.
+   *
+   * <p>
+   * The setting is per registration because a deployment can connect BlueMind
+   * and Stalwart at once and want a different answer for each: whether a
+   * calendar client offers its own RSVP control is a property of the clients
+   * used against that server and of nothing else, which is also why the flag
+   * is named after what eXo writes rather than after what the server can do.
+   *
+   * <p>
+   * <b>Every failure keeps the links.</b> A user with no stored account, a
+   * registry that answers nothing, a registration deleted between the account
+   * being stored and this render, a service not injected at all — each of
+   * those returns true, so the copy is described exactly as it is today. The
+   * asymmetry is the whole reason the default is on: a redundant Accept link
+   * next to a native button is a mild annoyance, while a copy silently
+   * stripped of its links leaves a user with no way to answer at all.
+   *
+   * @param pusherIdentityId the user whose calendar receives the copy
+   * @return true when the copy should carry the answer links
+   */
+  private boolean answerLinksEnabled(long pusherIdentityId) {
+    try {
+      CaldavUserSetting account = caldavConnectorStorage == null ? null
+                                                                 : caldavConnectorStorage.getCaldavSetting(pusherIdentityId);
+      CaldavServer server = caldavServerService == null ? null
+                                                        : caldavServerService.resolveServer(account == null ? null
+                                                                                                            : account.getServerId());
+      return server == null || server.isAnswerLinksInCopy();
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("No CalDAV registration could be resolved for identity {}; the copy keeps its answer links",
+                pusherIdentityId,
+                e);
+      return true;
+    }
   }
 
   /**

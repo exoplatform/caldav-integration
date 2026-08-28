@@ -16,8 +16,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
   <div class="mt-8">
-    <div class="text-title mb-3">
+    <div class="text-title mb-2">
       {{ $t('caldav.admin.servers.title') }}
+    </div>
+    <!--
+      What this whole section is for, in one sentence: the host page renders no
+      title of its own, so a section that paints only a two-word heading leaves
+      an administrator to guess what declaring a server here actually buys
+      their users. It says both directions explicitly, because they differ —
+      the user's own calendars come and go both ways, their eXo meetings only
+      leave.
+    -->
+    <div class="text-subtitle mb-4">
+      {{ $t('caldav.admin.servers.subtitle') }}
     </div>
     <!--
       How the servers declared below are read, on one line above the list that
