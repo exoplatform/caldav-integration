@@ -106,6 +106,19 @@ public class CaldavPushServiceTest {
   /** A second one, so a test can prove the FIRST listed is not what is taken. */
   private static final String        WORK     = "/dav/calendars/john/work/";
 
+  /**
+   * What BlueMind's scheduling inbox answers for
+   * {@code schedule-default-calendar-URL}: a fixed path built from the account
+   * uid, which is not the path of any collection the same account lists.
+   */
+  private static final String        NAMED_DEFAULT  = "/dav/calendars/john/calendar";
+
+  /** What that same account does list, under BlueMind's own container uid. */
+  private static final String        LISTED_DEFAULT = "/dav/calendars/john/calendar:Default:john/";
+
+  /** A second collection extending the same answer, so ambiguity can be pinned. */
+  private static final String        SECOND_DEFAULT = "/dav/calendars/john/calendar:Shared:john/";
+
   @Mock
   private CalDavClient               calDavClient;
 
@@ -455,6 +468,149 @@ public class CaldavPushServiceTest {
 
     assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
     verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  /**
+   * A server that names its default calendar by a path its own listing extends
+   * is still resolved — and resolved to the collection the listing holds.
+   */
+  @Test
+  public void aDefaultCalendarNamedByATruncatedPathIsResolvedFromTheAccountsOwnListing() {
+    // BlueMind, exactly: its scheduling inbox answers <home>/calendar, built
+    // from the account uid, while the collection it lists — and the one its own
+    // web client writes into — is <home>/calendar:Default:<uid>. Exact matching
+    // therefore refused a default calendar plainly there, on the server this
+    // whole destination was designed for, and every copy went on being written
+    // where the administrator had stopped asking for them.
+    givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work"),
+                                                                                                   calendar(LISTED_DEFAULT,
+                                                                                                            "Personal")));
+    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(NAMED_DEFAULT);
+
+    MirrorTarget target = service.ensureMirror(USER);
+
+    // The collection out of the listing, never the path the server answered:
+    // the answer is confirmed against the account's own home, and it is the
+    // confirmed one that is recorded and written into.
+    assertEquals(LISTED_DEFAULT, target.href());
+    assertEquals("Personal", target.name());
+    verify(caldavConnectorStorage).saveMirrorCalendarHref(LISTED_DEFAULT, USER);
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+  }
+
+  /**
+   * Two collections extending the path the account named is an account this
+   * rule cannot read, and it refuses rather than picking one.
+   */
+  @Test
+  public void twoCandidatesForTheAccountsDefaultCalendarResolveToNeither() {
+    // A wrong answer here files somebody's meetings into a calendar nobody
+    // chose. Ambiguity is therefore not a near-miss to arbitrate: it ends the
+    // same way naming nothing does.
+    givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString()))
+                                                                              .thenReturn(List.of(calendar(LISTED_DEFAULT,
+                                                                                                           "Personal"),
+                                                                                                  calendar(SECOND_DEFAULT,
+                                                                                                           "Shared")));
+    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(NAMED_DEFAULT);
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+
+    assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
+    verify(caldavConnectorStorage, never()).saveMirrorCalendarHref(anyString(), anyLong());
+  }
+
+  /**
+   * A server naming the calendar <i>home</i> resolves to nothing, however few
+   * calendars hang under it.
+   */
+  @Test
+  public void aServerNamingTheCalendarHomeResolvesToNoneOfItsCalendars() {
+    // Without the guard that the extension must stay inside one path segment,
+    // an account holding a single calendar would have that calendar adopted as
+    // its "default" on the strength of a server answering its own home — which
+    // is a guess wearing the shape of a confirmation.
+    givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+                                                                                                            "Personal")));
+    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(HOME);
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+
+    assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
+    verify(caldavConnectorStorage, never()).saveMirrorCalendarHref(anyString(), anyLong());
+  }
+
+  /**
+   * <b>The fail-closed guarantee.</b> With no default calendar identifiable,
+   * the dedicated calendar sitting right there in the listing is still not
+   * taken.
+   */
+  @Test
+  public void anUnresolvableMainCalendarNeverFallsBackToTheDedicatedOne() {
+    // The one thing the second way of resolving must not have loosened. The
+    // account lists eXo's own collection AND another calendar, and names no
+    // default that either of them extends: the copies stay unwritten. Writing
+    // them into a calendar nobody chose — least of all the very calendar this
+    // setting was changed to stop using — is worse than writing nothing and
+    // saying so.
+    givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
+                                                                                                            "eXo Meetings"),
+                                                                                                   calendar(WORK, "Work")));
+    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(NAMED_DEFAULT);
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+
+    assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    verify(caldavConnectorStorage, never()).saveMirrorCalendarHref(anyString(), anyLong());
+  }
+
+  /**
+   * An account whose main calendar cannot be resolved is said out loud once,
+   * however many times the question is asked.
+   */
+  @Test
+  public void anUnresolvableMainCalendarIsSaidOnceRatherThanOncePerPass() {
+    // The state is met on every push, every sweep and every render of the
+    // settings screen. Said each time it is the noise EXO-89798 is removing;
+    // said not at all it is how an afternoon of copies went to the wrong
+    // calendar with nothing in the log at all. Resolving the server's declared
+    // address is what the one line needs and nothing else does, so counting
+    // that call counts the lines.
+    givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(WORK, "Work")));
+    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(null);
+
+    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+
+    verify(caldavServerService, times(1)).resolveServerUrl(SERVER);
+  }
+
+  /**
+   * A state that clears and comes back is announced again: the line marks the
+   * edge into it, not the fact of having ever been in it.
+   */
+  @Test
+  public void aMainCalendarThatResolvesAndIsLostAgainIsSaidAgain() {
+    // Remembering the account for ever would make the second occurrence — a
+    // calendar the user deleted months after the first spell — as silent as the
+    // bug this whole task is about.
+    givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(PERSONAL,
+                                                                                                            "Personal")));
+    when(calDavClient.discoverDefaultCalendar(any(), anyString(), anyString())).thenReturn(null, PERSONAL, null);
+
+    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+    assertEquals(PERSONAL, service.ensureMirror(USER).href());
+    assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER));
+
+    verify(caldavServerService, times(2)).resolveServerUrl(SERVER);
   }
 
   /**
