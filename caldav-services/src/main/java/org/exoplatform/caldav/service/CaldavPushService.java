@@ -24,6 +24,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -222,6 +223,28 @@ public class CaldavPushService {
   public static boolean isClassified(String code) {
     return code != null && (KNOWN_STATE_CODES.contains(code) || FAILURE_CODES.contains(code));
   }
+
+  /**
+   * The accounts whose main calendar could not be resolved and which have
+   * already been said out loud, keyed by user and server.
+   *
+   * <p>
+   * <b>Once per transition into the state, never once per pass.</b> This
+   * question is asked on every push, on every sweep and on every render of the
+   * settings screen; said each time it would be the very noise EXO-89798 is
+   * removing, and said not at all it is what let a whole afternoon of copies go
+   * to the wrong calendar with nothing in the log but a null in an admin JSON
+   * endpoint. The entry is added when the state is entered and removed the
+   * moment a main calendar does resolve, so a state that comes back is
+   * announced again.
+   *
+   * <p>
+   * In memory, for the reason the relocation pass keeps its own set that way:
+   * it records something being wrong right now, not a fact about the account
+   * worth carrying across a restart — and a restart saying it once more is the
+   * right bias after a deploy.
+   */
+  private final Set<String>      unresolvedMainCalendars = ConcurrentHashMap.newKeySet();
 
   /**
    * Writes one event into the user's mirror calendar, creating the collection
@@ -1143,7 +1166,7 @@ public class CaldavPushService {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
     boolean recorded = StringUtils.isNotBlank(settings.getMirrorCalendarHref());
     try {
-      return lookUpMirror(settings);
+      return lookUpMirror(userIdentityId, settings);
     } catch (RuntimeException e) {
       if (recorded) {
         throw e;
@@ -1162,18 +1185,20 @@ public class CaldavPushService {
   /**
    * Asks the account for the calendar holding the copies.
    *
+   * @param userIdentityId identity of the user, so that a main calendar which
+   *          cannot be resolved is said out loud from here too
    * @param settings the connected account
    * @return the destination and its current name, or null when the account
    *         holds neither the recorded collection nor one at the derived path
    */
-  private MirrorTarget lookUpMirror(CaldavUserSetting settings) {
+  private MirrorTarget lookUpMirror(long userIdentityId, CaldavUserSetting settings) {
     CalDavEndpoint endpoint = endpointOf(settings);
     String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
     List<CalendarCollection> calendars = calDavClient.listCalendars(endpoint,
                                                                    home,
                                                                    settings.getUsername(),
                                                                    settings.getPassword());
-    return candidateOf(mirrorTargetOf(settings), settings, endpoint, calendars, home)
+    return candidateOf(userIdentityId, mirrorTargetOf(settings), settings, endpoint, calendars, home)
                                                                                      .map(collection -> new MirrorTarget(collection.href(),
                                                                                                                          false,
                                                                                                                          collection.displayName()))
@@ -1191,6 +1216,8 @@ public class CaldavPushService {
    * callers now ask this the same question, so the settings screen cannot
    * report a destination the next push would not write to.
    *
+   * @param userIdentityId identity of the user, for the one line an
+   *          unresolvable main calendar is worth
    * @param kind where the registration wants the copies written
    * @param settings the connected account
    * @param endpoint the resolved server endpoint
@@ -1200,21 +1227,17 @@ public class CaldavPushService {
    *         account holds none — which for the account's own default means the
    *         account named none
    */
-  private Optional<CalendarCollection> candidateOf(MirrorTargetKind kind,
+  private Optional<CalendarCollection> candidateOf(long userIdentityId,
+                                                   MirrorTargetKind kind,
                                                    CaldavUserSetting settings,
                                                    CalDavEndpoint endpoint,
                                                    List<CalendarCollection> calendars,
                                                    String home) {
     return switch (kind) {
-    // The account's own default, asked of the account. A null here is the
-    // server saying it names none, and no listing is searched for a
-    // replacement: findMirror against a null href matches nothing, which is
-    // exactly the empty this must answer.
-    case MAIN_CALENDAR -> findMirror(calendars,
-                                     calDavClient.discoverDefaultCalendar(endpoint,
-                                                                          settings.getUsername(),
-                                                                          settings.getPassword()),
-                                     null);
+    // The account's own default, asked of the account and then confirmed
+    // against the account's own listing — see mainCalendarOf for the two ways
+    // an answer is confirmed and the one refusal that remains.
+    case MAIN_CALENDAR -> mainCalendarOf(userIdentityId, settings, endpoint, calendars);
     // The path the slug derives under their home, and only then the href
     // recorded for this user.
     //
@@ -1234,6 +1257,199 @@ public class CaldavPushService {
                                                                                                             settings.getMirrorCalendarHref(),
                                                                                                             null));
     };
+  }
+
+  /**
+   * The account's own default calendar, as the account's own home listing
+   * holds it.
+   *
+   * <p>
+   * <b>Asked, then confirmed — the confirmation is the whole discipline.</b>
+   * The account names a default calendar ({@code schedule-default-calendar-URL},
+   * RFC 6638) and that href is a claim until the home listing shows the
+   * collection, exactly as an MKCALENDAR status is a claim until the same
+   * listing shows what it created (EXO-89760). Nothing here is ever taken from
+   * outside that listing.
+   *
+   * <p>
+   * <b>Why a second way of confirming.</b> BlueMind answers the property, and
+   * answers it with a href that is not the collection's: its scheduling inbox
+   * returns <code>&lt;home&gt;/calendar</code> — a fixed string built from the
+   * account uid — while the collection the same account lists, and the one its
+   * own web client uses, is <code>&lt;home&gt;/calendar:Default:&lt;uid&gt;</code>.
+   * Exact matching therefore refused a default calendar that was plainly there,
+   * on the very server this destination was designed for, and every copy went
+   * on being written where the administrator had stopped asking for them.
+   *
+   * <p>
+   * <b>What the second way keys on, and what it refuses.</b> Not a name
+   * pattern: nothing here knows the string {@code calendar:Default:}, and it
+   * would be worthless on the next server anyway. It keys on the server's own
+   * answer, and accepts a listed collection only when that collection's path
+   * <i>extends the answered one inside the same parent collection</i> — same
+   * home, same last path segment up to a suffix, no extra slash — and only when
+   * <b>exactly one</b> listed collection does. Two candidates is not a
+   * near-miss to arbitrate, it is an account this rule cannot read, and it
+   * refuses. So does an answer nothing extends, and so does no answer at all.
+   *
+   * <p>
+   * The fail-closed guarantee of EXO-89760 is untouched: every path out of here
+   * that is not a collection the account itself listed is {@link Optional#empty},
+   * which {@link #ensureMirror} turns into {@link #MAIN_CALENDAR_UNKNOWN}. This
+   * is another way to resolve the main calendar, never a substitution of a
+   * different one — the dedicated calendar is not reachable from here at all.
+   *
+   * @param userIdentityId identity of the user, for the one line the state is
+   *          worth
+   * @param settings the connected account
+   * @param endpoint the resolved server endpoint
+   * @param calendars what the account's home holds, already listed
+   * @return the collection the account's default resolves to, or empty when
+   *         none can be confirmed
+   */
+  private Optional<CalendarCollection> mainCalendarOf(long userIdentityId,
+                                                      CaldavUserSetting settings,
+                                                      CalDavEndpoint endpoint,
+                                                      List<CalendarCollection> calendars) {
+    String named = calDavClient.discoverDefaultCalendar(endpoint, settings.getUsername(), settings.getPassword());
+    Optional<CalendarCollection> resolved = findMirror(calendars, named, null).or(() -> extensionOf(calendars, named));
+    if (resolved.isPresent()) {
+      // Out of the state: a later spell of it is worth saying again.
+      unresolvedMainCalendars.remove(unresolvedKey(userIdentityId, settings));
+    } else {
+      announceUnresolvedMainCalendar(userIdentityId, settings, named);
+    }
+    return resolved;
+  }
+
+  /**
+   * The one listed collection whose path extends the one the account named,
+   * within the same parent collection.
+   *
+   * <p>
+   * The remainder after the answered path must be non-empty — an exact match is
+   * the caller's first question, not this one's — and must carry no slash, so
+   * that a server answering the calendar <i>home</i> cannot resolve to whatever
+   * single calendar happens to hang under it. The two together confine this to
+   * one shape: a server that truncates its own collection's last path segment.
+   *
+   * <p>
+   * Ambiguity refuses. A wrong answer here files a user's meetings into a
+   * calendar nobody chose, which is worse than filing them nowhere and saying
+   * so; two candidates therefore end this the same way none does.
+   *
+   * @param calendars what the account's home holds, already listed
+   * @param namedHref the href the account answered, may be null
+   * @return the single collection extending it, or empty
+   */
+  private Optional<CalendarCollection> extensionOf(List<CalendarCollection> calendars, String namedHref) {
+    String named = CaldavSyncStorage.canonicalHref(namedHref);
+    if (StringUtils.isBlank(named) || calendars == null) {
+      return Optional.empty();
+    }
+    List<CalendarCollection> extensions = calendars.stream()
+                                                   .filter(CalendarCollection::holdsEvents)
+                                                   .filter(calendar -> extendsWithinSegment(CaldavSyncStorage.canonicalHref(calendar.href()),
+                                                                                            named))
+                                                   .toList();
+    if (extensions.size() != 1) {
+      LOG.debug("The default calendar {} the account names is extended by {} listed collections; none is taken",
+                named,
+                extensions.size());
+      return Optional.empty();
+    }
+    return Optional.of(extensions.get(0));
+  }
+
+  /**
+   * Whether one canonical path extends another inside the same parent
+   * collection.
+   *
+   * @param href the listed collection's canonical path
+   * @param named the canonical path the account answered
+   * @return true when href is named plus a non-empty, slash-free tail
+   */
+  private boolean extendsWithinSegment(String href, String named) {
+    if (href == null || !href.startsWith(named)) {
+      return false;
+    }
+    String tail = href.substring(named.length());
+    return !tail.isEmpty() && tail.indexOf('/') < 0;
+  }
+
+  /**
+   * Says, once, that this account's main calendar cannot be resolved.
+   *
+   * <p>
+   * <b>The state had no voice at all.</b> It threw a code the push path turns
+   * into a refusal nobody sees, the relocation pass swallowed it and deferred,
+   * and the only trace left was a null field in an admin JSON endpoint — while
+   * the copies went on flowing into the calendar the administrator had just
+   * stopped asking for. Hours of that is what this line is for.
+   *
+   * <p>
+   * <b>Once per transition, not once per pass.</b> The question is asked on
+   * every push, every sweep and every render of the settings screen; at warn
+   * each time it would be exactly the noise EXO-89798 is removing from this
+   * add-on. It is not a contradiction of that task: what is quietened there is
+   * a persistent state repeated per occurrence, and what is said here is the
+   * <i>edge</i> into that state, once, with the account cleared the moment a
+   * calendar does resolve.
+   *
+   * <p>
+   * Names the user, the server and what was asked for, plus the href the
+   * account itself answered — that last one is the whole diagnosis on a server
+   * whose answer does not match its own listing, and there is no credential
+   * anywhere near it.
+   *
+   * @param userIdentityId identity of the user
+   * @param settings the connected account
+   * @param named the href the account answered, or null when it named none
+   */
+  private void announceUnresolvedMainCalendar(long userIdentityId, CaldavUserSetting settings, String named) {
+    if (!unresolvedMainCalendars.add(unresolvedKey(userIdentityId, settings))) {
+      return;
+    }
+    LOG.warn("CalDAV server {} ({}) is set to write meeting copies into each account's main calendar, and the account"
+        + " of user {} names {} as its default calendar, which its own calendar home does not list. No copy is written"
+        + " for them and the copies already written are not moved until this resolves.",
+             settings.getServerId(),
+             StringUtils.defaultIfBlank(declaredAddress(settings), "address unknown"),
+             userIdentityId,
+             StringUtils.defaultIfBlank(named, "no calendar at all"));
+  }
+
+  /**
+   * The key one account's unresolved-main-calendar state is remembered under.
+   *
+   * @param userIdentityId identity of the user
+   * @param settings the connected account
+   * @return the key, per user and per server
+   */
+  private String unresolvedKey(long userIdentityId, CaldavUserSetting settings) {
+    return userIdentityId + "|" + settings.getServerId();
+  }
+
+  /**
+   * The address an administrator declared for this account's server, for a log
+   * line and nothing else.
+   *
+   * <p>
+   * Never allowed to become a failure of its own: the registry is being read
+   * here only so that a warning names something a person recognises, and a
+   * registry that cannot answer must not turn an already-degraded state into an
+   * exception on the push path.
+   *
+   * @param settings the connected account
+   * @return the declared URL, or null when the registry answers none
+   */
+  private String declaredAddress(CaldavUserSetting settings) {
+    try {
+      return caldavServerService == null ? null : caldavServerService.resolveServerUrl(settings.getServerId());
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("The address of CalDAV server {} could not be read for a log line", settings.getServerId(), e);
+      return null;
+    }
   }
 
   /**
@@ -1316,7 +1532,7 @@ public class CaldavPushService {
     // collection is there, it is recorded, and nothing is created, adopted or
     // refused.
     MirrorTargetKind kind = mirrorTargetOf(settings);
-    Optional<CalendarCollection> resolved = candidateOf(kind, settings, endpoint, calendars, home);
+    Optional<CalendarCollection> resolved = candidateOf(userIdentityId, kind, settings, endpoint, calendars, home);
     if (resolved.isPresent()) {
       caldavConnectorStorage.saveMirrorCalendarHref(resolved.get().href(), userIdentityId);
       return new MirrorTarget(resolved.get().href(), false, resolved.get().displayName());
