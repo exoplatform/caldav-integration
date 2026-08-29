@@ -36,6 +36,7 @@ import static org.mockito.Mockito.when;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +46,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import org.exoplatform.caldav.client.SyncCollectionResult;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import org.exoplatform.caldav.client.CalendarCollection;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -66,6 +68,7 @@ import org.exoplatform.agenda.model.EventAttendeeList;
 import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
+import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.container.ExoContainer;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.container.component.ComponentRequestLifecycle;
@@ -103,6 +106,9 @@ public class CaldavInboundServiceTest {
   private static final String    LOGIN    = "john";
 
   private static final String    HREF     = "/dav/calendars/john/private/";
+
+  /** The name this add-on registers itself under as an agenda remote provider. */
+  private static final String    CONNECTOR = "agenda.caldavCalendar";
 
   /**
    * A weekly series with one occurrence moved and one cancelled — the same
@@ -146,6 +152,9 @@ public class CaldavInboundServiceTest {
 
   @Mock
   private AgendaEventAttendeeService agendaEventAttendeeService;
+
+  @Mock
+  private AgendaRemoteEventService agendaRemoteEventService;
 
   @Mock
   private CalDavEndpoint         endpoint;
@@ -240,7 +249,7 @@ public class CaldavInboundServiceTest {
     // came from rather than a new one beside it.
     assertEquals("uid-1@example.test", identity.getValue().getRemoteId());
     // Named, or agenda deletes the mapping instead of storing it.
-    assertEquals("agenda.caldavCalendar", identity.getValue().getRemoteProviderName());
+    assertEquals(CONNECTOR, identity.getValue().getRemoteProviderName());
   }
 
   /**
@@ -1511,5 +1520,284 @@ public class CaldavInboundServiceTest {
    */
   private Instant to() {
     return Instant.parse("2026-11-01T00:00:00Z");
+  }
+
+  // ---------------------------------------------------------------------
+  // EXO-89800 — an object whose event the calendar already holds is adopted,
+  // never created a second time, and adopting can reach no further than the
+  // one calendar it is importing into.
+  // ---------------------------------------------------------------------
+
+  /**
+   * An object with no mapping on this pair, whose event is already there.
+   */
+  @Test
+  public void anObjectWhoseEventTheCalendarAlreadyHoldsIsAdoptedRatherThanCreatedAgain() throws Exception {
+    // The mapping table answers "has THIS pair seen this object", and that is
+    // only as durable as the pair. Replace the pair — a disconnect that
+    // dropped it, a binding pruned for one bad pass — and the answer is no for
+    // every object in the collection, so every event is created again beside
+    // the one already there. The event's remote identity outlives the pair,
+    // and this is the half that reads it back.
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
+    givenCalendarHolds(eventIn(501L, CALENDAR));
+    givenNothingMappedYet();
+    givenRemoteIdentity(501L, "uid-1@example.test", CONNECTOR);
+    givenMappingsArePersisted();
+    when(agendaEventService.getEventById(501L)).thenReturn(event(501L));
+
+    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    verify(agendaEventService, never()).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong());
+    ArgumentCaptor<Event> updated = ArgumentCaptor.forClass(Event.class);
+    verify(agendaEventService).updateEvent(updated.capture(), any(), any(), any(), any(), any(), anyBoolean(), eq(USER));
+    assertEquals(501L, updated.getValue().getId());
+    // And the pair now has its own mapping, so the next pass answers the
+    // cheap question instead of rebuilding the index.
+    ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
+    verify(caldavSyncStorage, atLeastOnce()).saveObject(saved.capture());
+    assertEquals(501L, saved.getAllValues().get(0).getLocalEventId());
+    assertEquals(PAIR, saved.getAllValues().get(0).getCalendarSyncId());
+    assertEquals("uid-1@example.test", saved.getAllValues().get(0).getIcsUid());
+  }
+
+  /**
+   * Adopting says which event this is, not that the two sides agree.
+   */
+  @Test
+  public void anAdoptedEventIsNotRecordedAsUpToDateBeforeItHasBeenCompared() throws Exception {
+    // An etag recorded at adoption would be a claim that the event already
+    // matches the object, which nothing has checked. The next pass would then
+    // skip it for ever on an etag it invented.
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
+    givenCalendarHolds(eventIn(501L, CALENDAR));
+    givenNothingMappedYet();
+    givenRemoteIdentity(501L, "uid-1@example.test", CONNECTOR);
+    // Read at the moment of the call, not afterwards: the update path mutates
+    // the very mapping adoption saved, so a captured reference would show the
+    // etag the update went on to record rather than the one adoption stored.
+    List<String> etagsAsSaved = new ArrayList<>();
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> {
+      ObjectSync mapping = invocation.getArgument(0);
+      etagsAsSaved.add(mapping.getEtag());
+      if (mapping.getId() == null) {
+        mapping.setId(77L);
+      }
+      return mapping;
+    });
+    when(agendaEventService.getEventById(501L)).thenReturn(event(501L));
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    assertNull(etagsAsSaved.get(0));
+    // And the comparison that follows does record it, so the next pass has an
+    // etag to skip on.
+    assertEquals("etag-1", etagsAsSaved.get(etagsAsSaved.size() - 1));
+  }
+
+  /**
+   * The scope guard, on the calendar boundary.
+   */
+  @Test
+  public void anEventOfAnotherCalendarIsNeverAdoptedEvenWithTheSameUid() throws Exception {
+    // The one where a wrong fix is worse than the bug it fixes. An iCalendar
+    // UID is unique on the server that issued it and nowhere else, so a lookup
+    // wide enough to see a second calendar can attach a remote object to an
+    // event that is not its own. The candidates are drawn from THIS calendar
+    // and filtered on their own calendarId rather than trusted to be scoped.
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
+    // Two events in the user's window: one in the calendar being imported into,
+    // carrying an identifier of its own, and one in ANOTHER calendar carrying
+    // the very identifier this object arrives with. Only the calendar test
+    // stands between the object and the wrong event.
+    givenCalendarHolds(eventIn(501L, CALENDAR), eventIn(502L, 999L));
+    givenNothingMappedYet();
+    givenRemoteIdentity(501L, "uid-other@example.test", CONNECTOR);
+    lenient().when(agendaRemoteEventService.findRemoteEvent(502L, USER))
+             .thenReturn(remoteIdentity("uid-1@example.test", CONNECTOR));
+    givenAgendaCreates(777L);
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), eq(USER));
+    verify(agendaEventService, never()).updateEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong());
+  }
+
+  /**
+   * The scope guard, on the user boundary.
+   */
+  @Test
+  public void anEventWhoseRemoteIdentityBelongsToAnotherUserIsNeverAdopted() throws Exception {
+    // The identity is read as this user, so another person's mapping for the
+    // same event answers nothing here. Were it to, one user's account could
+    // bind itself to a meeting recorded against somebody else's.
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
+    givenCalendarHolds(eventIn(501L, CALENDAR));
+    givenNothingMappedYet();
+    // Recorded for identity 8, not for USER.
+    when(agendaRemoteEventService.findRemoteEvent(501L, USER)).thenReturn(null);
+    lenient().when(agendaRemoteEventService.findRemoteEvent(501L, 8L))
+             .thenReturn(remoteIdentity("uid-1@example.test", CONNECTOR));
+    givenAgendaCreates(777L);
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), eq(USER));
+  }
+
+  /**
+   * The scope guard, on the provider boundary.
+   */
+  @Test
+  public void anEventCarryingAnotherProvidersIdentifierIsNeverAdopted() throws Exception {
+    // A Google or Office 365 event in the same calendar carries a remote id of
+    // its own, minted by a server that has never heard of this one. Matching
+    // on the string alone would let one provider's identifier answer for
+    // another's.
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
+    givenCalendarHolds(eventIn(501L, CALENDAR));
+    givenNothingMappedYet();
+    givenRemoteIdentity(501L, "uid-1@example.test", "agenda.googleCalendar");
+    givenAgendaCreates(777L);
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), eq(USER));
+  }
+
+  /**
+   * An event a binding already speaks for is not up for adoption.
+   */
+  @Test
+  public void anEventAlreadyMappedByAnotherBindingIsNeverAdopted() throws Exception {
+    // A copy eXo wrote into the mirror is the obvious case: it lives in a
+    // calendar, carries a remote identity, and belongs to the mirror pair.
+    // Adopting it here would move it under a collection it is not part of.
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
+    givenCalendarHolds(eventIn(501L, CALENDAR));
+    when(caldavSyncStorage.mappedEventIds(anyCollection())).thenReturn(Set.of(501L));
+    // The identity is there to be found; the exclusion is what keeps it out of
+    // reach, so it is stubbed rather than left absent.
+    lenient().when(agendaRemoteEventService.findRemoteEvent(501L, USER))
+             .thenReturn(remoteIdentity("uid-1@example.test", CONNECTOR));
+    givenAgendaCreates(777L);
+
+    service.importInto(USER, pair(), calendar(), from(), to());
+
+    verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), eq(USER));
+    verify(agendaRemoteEventService, never()).findRemoteEvent(anyLong(), anyLong());
+  }
+
+  /**
+   * The ordinary path is untouched: a genuinely new object is still created.
+   */
+  @Test
+  public void anObjectWithNothingToAdoptIsStillCreated() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-9@example.test", "Brand new")));
+    givenCalendarHolds(eventIn(501L, CALENDAR));
+    givenNothingMappedYet();
+    givenRemoteIdentity(501L, "uid-1@example.test", CONNECTOR);
+    givenAgendaCreates(777L);
+
+    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), eq(USER));
+  }
+
+  /**
+   * The ordinary path is untouched: an unchanged object is still skipped, and
+   * the index is never even built for it.
+   */
+  @Test
+  public void anUnchangedObjectIsStillSkippedOnItsEtagWithoutLookingForAnythingToAdopt() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+
+    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    verify(agendaEventService, never()).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong());
+    // The index costs a listing of the window and a read per event in it. An
+    // object that never reaches the create path must not pay for it.
+    verify(agendaEventService, never()).getEvents(any(), any(), anyLong());
+  }
+
+  /**
+   * A calendar agenda cannot list adopts nothing, and imports anyway.
+   */
+  @Test
+  public void aCalendarThatCannotBeListedAdoptsNothingRatherThanFailingTheImport() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Design review")));
+    when(agendaEventService.getEvents(any(), any(), anyLong())).thenThrow(new IllegalAccessException("refused"));
+    givenAgendaCreates(777L);
+
+    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    verify(agendaEventService).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), eq(USER));
+  }
+
+  /**
+   * States what agenda answers when the calendar's window is listed.
+   *
+   * @param events the events it holds
+   * @throws Exception when the stub cannot be set
+   */
+  private void givenCalendarHolds(Event... events) throws Exception {
+    when(agendaEventService.getEvents(any(), any(), eq(USER))).thenReturn(List.of(events));
+  }
+
+  /**
+   * @param id the event identifier
+   * @param calendarId the calendar it belongs to
+   * @return an event agenda would answer with
+   */
+  private Event eventIn(long id, long calendarId) {
+    Event event = new Event();
+    event.setId(id);
+    event.setCalendarId(calendarId);
+    return event;
+  }
+
+  /**
+   * No binding of any kind speaks for the events in the window yet.
+   */
+  private void givenNothingMappedYet() {
+    when(caldavSyncStorage.mappedEventIds(anyCollection())).thenReturn(Set.of());
+  }
+
+  /**
+   * States the remote identity agenda holds for an event.
+   *
+   * @param eventId the event
+   * @param remoteId what the server calls it
+   * @param provider which connector recorded it
+   */
+  private void givenRemoteIdentity(long eventId, String remoteId, String provider) {
+    when(agendaRemoteEventService.findRemoteEvent(eventId, USER)).thenReturn(remoteIdentity(remoteId, provider));
+  }
+
+  /**
+   * @param remoteId what the server calls the event
+   * @param provider which connector recorded it
+   * @return the remote identity agenda would answer with
+   */
+  private RemoteEvent remoteIdentity(String remoteId, String provider) {
+    RemoteEvent identity = new RemoteEvent();
+    identity.setRemoteId(remoteId);
+    identity.setRemoteProviderName(provider);
+    return identity;
+  }
+
+  /**
+   * The storage giving a saved mapping its identifier back, as the real one
+   * does.
+   */
+  private void givenMappingsArePersisted() {
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> {
+      ObjectSync mapping = invocation.getArgument(0);
+      if (mapping.getId() == null) {
+        mapping.setId(77L);
+      }
+      return mapping;
+    });
   }
 }
