@@ -35,6 +35,7 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -278,18 +279,30 @@ public class CaldavDeletionServiceTest {
   }
 
   @Test
-  public void disconnectingRemovesACalendarExoMaterialised() throws Exception {
-    // A mirror of a collection on the account: everything in it lives there
-    // and nothing in it was created here. Left behind it would keep showing,
-    // unchanged and no longer updating.
-    CalendarSync mirror = pair(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
-    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirror));
-    givenAgendaHasCalendar();
+  public void disconnectingKeepsACalendarExoMaterialisedAndOnlyPausesItsBinding() throws Exception {
+    // EXO-89800, and the regression this whole change exists for. Disconnecting
+    // used to delete the eXo calendar a collection was materialised into,
+    // together with its events, its object mappings and its binding.
+    // Reconnecting the same account then found no binding for the collection,
+    // materialised it a SECOND time and imported every event again under new
+    // identifiers — seen live as the same BlueMind collection becoming eXo
+    // calendar 181 at 23:28 and eXo calendar 182 at 08:37 the next morning.
+    //
+    // The binding is paused instead, which is the rule a pushed calendar
+    // already had, and for the reason its own comment gave: reconnecting the
+    // same account must find its collection again instead of creating a second
+    // one beside it.
+    CalendarSync materialised = pair(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(materialised));
 
     service.freezeOnDisconnect(USER, SERVER, LOGIN);
 
-    verify(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
-    verify(caldavSyncStorage).deletePair(mirror.getId());
+    verify(agendaCalendarService, never()).deleteCalendarById(anyLong(), anyString());
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+    verify(caldavSyncStorage, never()).deleteObjects(anyLong());
+    ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(saved.capture());
+    assertEquals(CalendarSyncStatus.PAUSED, saved.getValue().getStatus());
   }
 
   @Test
@@ -300,7 +313,6 @@ public class CaldavDeletionServiceTest {
                                                                           CalendarSyncStatus.ACTIVE),
                                                                      pair(SyncOrigin.EXO,
                                                                           CalendarSyncStatus.ACTIVE)));
-    givenAgendaHasCalendar();
 
     service.freezeOnDisconnect(USER, SERVER, LOGIN);
 
@@ -308,33 +320,26 @@ public class CaldavDeletionServiceTest {
   }
 
   @Test
-  public void aMirrorThatCannotBeRemovedKeepsItsBinding() throws Exception {
-    // A binding with no calendar behind it is what makes materialisation skip
-    // the collection for good, so dropping it here would cost the user the
-    // calendar on the next reconnection.
-    CalendarSync mirror = pair(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
-    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirror));
-    givenAgendaHasCalendar();
-    doThrow(new IllegalAccessException("refused")).when(agendaCalendarService).deleteCalendarById(CALENDAR, LOGIN);
+  public void disconnectingNeverDeletesAnEventOrACalendarWhicheverSideMadeIt() throws Exception {
+    // The stronger form of the pin above, over every origin at once: nothing
+    // in eXo is destroyed by "stop syncing". A materialised calendar is an
+    // ordinary agenda calendar — the user adds events to it and the connector
+    // pushes those back — so deleting it took work of theirs that existed
+    // nowhere else, and broke every activity, notification and link pointing
+    // at the events it held.
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.REMOTE,
+                                                                          CalendarSyncStatus.ACTIVE),
+                                                                     pair(SyncOrigin.EXO,
+                                                                          CalendarSyncStatus.ACTIVE),
+                                                                     pair(SyncOrigin.MIRROR,
+                                                                          CalendarSyncStatus.ACTIVE)));
 
     service.freezeOnDisconnect(USER, SERVER, LOGIN);
 
+    verify(agendaCalendarService, never()).deleteCalendarById(anyLong(), anyString());
     verify(caldavSyncStorage, never()).deletePair(anyLong());
-  }
-
-  /**
-   * Agenda holds the calendar the binding stands for.
-   */
-  private void givenAgendaHasCalendar() {
-    Calendar calendar = new Calendar();
-    calendar.setId(CALENDAR);
-    calendar.setOwnerId(USER);
-    calendar.setSyncUid(ANCHOR);
-    try {
-      when(agendaCalendarService.getCalendars(anyInt(), anyInt(), anyString())).thenReturn(List.of(calendar));
-    } catch (Exception e) {
-      throw new IllegalStateException(e);
-    }
+    verify(caldavSyncStorage, never()).deleteObjects(anyLong());
+    verify(caldavSyncStorage, times(3)).savePair(any());
   }
 
   @Test
