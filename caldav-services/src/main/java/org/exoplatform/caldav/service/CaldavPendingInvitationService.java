@@ -435,6 +435,25 @@ public class CaldavPendingInvitationService {
     try {
       return caldavPushService.pushAgendaEvent(userIdentityId, eventId) != null;
     } catch (CaldavPushException e) {
+      if (CaldavPushService.isKnownState(e.getCode())) {
+        // Not a failure and not an incident: a state of this user that no
+        // retry changes and only they, or their administrator, can clear —
+        // never having connected an account, not having said where their
+        // copies go, an account naming no default calendar. Warning would
+        // print one line per upcoming meeting per pass, for ever, for every
+        // such user, burying the failures that are failures under the states
+        // nobody is going to change.
+        //
+        // Without the exception: a known state does not need eleven frames to
+        // be understood, and it is the trace, not the line, that made this
+        // unreadable.
+        LOG.debug("Event {} is not seeded into the account of user {}: {} ({})",
+                  eventId,
+                  userIdentityId,
+                  e.getMessage(),
+                  e.getCode());
+        return false;
+      }
       // One refused meeting must not stop the rest; whatever refused it is
       // asked again next pass. Warn rather than debug: a meeting that never
       // reaches a user's calendar is invisible to them and, at debug, to

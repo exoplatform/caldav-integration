@@ -22,6 +22,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import org.apache.commons.lang3.StringUtils;
@@ -113,6 +114,37 @@ public class CaldavPushService {
    */
   public static final String     CONNECTOR_NAME = "agenda.caldavCalendar";
 
+  /**
+   * The codes that describe a state of the subject rather than a failure of the
+   * attempt: retrying changes nothing, and only a person — the user, or their
+   * administrator — clears them.
+   *
+   * <p>
+   * Declared here, immediately under the vocabulary, because that is where the
+   * next code is written and this is the question its author has to answer. A
+   * code left out of both this set and {@link #FAILURE_CODES} is treated as a
+   * failure, which is the safe default: a state nobody classified is exactly
+   * the thing worth hearing about.
+   */
+  private static final Set<String> KNOWN_STATE_CODES = Set.of(NOT_CONNECTED, MAIN_CALENDAR_UNKNOWN);
+
+  /**
+   * The codes that describe an attempt that failed — a refused save, a
+   * conflict, rejected credentials, a collection the server would not make.
+   *
+   * <p>
+   * Listed rather than left to the default, so that {@link #isClassified} can
+   * tell "declared a failure" from "never classified at all" and a test can
+   * hold every code in the vocabulary to one answer or the other. Codes owned
+   * by other services — {@code CaldavDeletionService.NOTHING_DELETED} — are
+   * absent on purpose: they reach the default, which already says failure, and
+   * naming them here would point this class at its own callers.
+   */
+  private static final Set<String> FAILURE_CODES     = Set.of(CREDENTIALS,
+                                                              CONFLICT,
+                                                              SAVE,
+                                                              CREATION_REFUSED);
+
   private static final Log       LOG                    = ExoLogger.getLogger(CaldavPushService.class);
 
   @Autowired
@@ -149,6 +181,47 @@ public class CaldavPushService {
    */
   @Autowired
   private CaldavServerService    caldavServerService;
+
+  /**
+   * Whether a push refusal describes a persistent state of the subject rather
+   * than a failure of the attempt.
+   *
+   * <p>
+   * The distinction exists for the log and nothing else: a known state is
+   * recorded at debug and without a trace, a failure at warn and with one. A
+   * user who has never connected an account is an ordinary state of that user,
+   * not an incident — printing eleven frames for it, once per attendee per
+   * meeting, buries the copies that genuinely failed under the ones that were
+   * never going to be made.
+   *
+   * <p>
+   * <b>Anything unrecognised is a failure.</b> Not silence: a code nobody
+   * classified is the one worth hearing about, and a default of "known state"
+   * would turn this from a filter into a silencer the next time the vocabulary
+   * grows.
+   *
+   * @param code the code a {@link CaldavPushException} carries, may be null
+   * @return true when only a person can clear it and retrying cannot
+   */
+  public static boolean isKnownState(String code) {
+    return code != null && KNOWN_STATE_CODES.contains(code);
+  }
+
+  /**
+   * Whether a code was deliberately placed in one category or the other.
+   *
+   * <p>
+   * Exists for the test that walks the vocabulary and holds every code
+   * declared in this class to an explicit answer. Without it "failure" and
+   * "never classified" are the same answer from {@link #isKnownState}, and a
+   * code added without a thought would look classified.
+   *
+   * @param code the code a {@link CaldavPushException} carries, may be null
+   * @return true when the code is named in either category
+   */
+  public static boolean isClassified(String code) {
+    return code != null && (KNOWN_STATE_CODES.contains(code) || FAILURE_CODES.contains(code));
+  }
 
   /**
    * Writes one event into the user's mirror calendar, creating the collection
