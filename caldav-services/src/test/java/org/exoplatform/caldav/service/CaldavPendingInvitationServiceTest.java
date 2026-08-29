@@ -16,6 +16,7 @@
  */
 package org.exoplatform.caldav.service;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -426,6 +427,47 @@ public class CaldavPendingInvitationServiceTest {
     assertFalse(service.seedMeeting(USER, 5L));
 
     verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+  }
+
+  /**
+   * The state behind EXO-89798, held to the control flow it always had.
+   *
+   * <p>
+   * An invitee who never connected a CalDAV account is an ordinary state, and
+   * the whole change is about how loudly it is recorded — not about what
+   * happens. So this pins the behaviour rather than the log: the refusal is
+   * absorbed, the caller is told no, and nothing escapes to break the fan-out
+   * to the other attendees of the same meeting.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
+  @Test
+  public void aUserWithNoConnectedAccountIsRefusedWithoutThrowing() throws Exception {
+    givenEvent(5L, SPACE, EventStatus.CONFIRMED);
+    givenCalendar(SPACE, 7L);
+    when(caldavPushService.pushAgendaEvent(USER, 5L)).thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
+                                                                                        "User 42 has no connected CalDAV account"));
+
+    assertFalse(assertDoesNotThrow(() -> service.seedMeeting(USER, 5L)));
+  }
+
+  /**
+   * The same absorption in the sweep, and the reason the sweep is worth a test
+   * of its own: it is the loop the report watched, where one unconnected
+   * invitee must not cost the meeting its other copies.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
+  @Test
+  public void anUnconnectedInviteeDoesNotStopTheSweep() throws Exception {
+    givenUpcoming(event(5L, 0, SPACE, EventStatus.CONFIRMED), event(6L, 0, SPACE, EventStatus.CONFIRMED));
+    givenCalendar(SPACE, 7L);
+    when(caldavPushService.pushAgendaEvent(eq(USER),
+                                           eq(5L))).thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
+                                                                                      "User 42 has no connected CalDAV account"));
+    when(caldavPushService.pushAgendaEvent(eq(USER), eq(6L))).thenReturn(new ObjectSync());
+
+    assertEquals(1, assertDoesNotThrow(() -> service.pushUpcomingMeetings(USER)));
   }
 
   /**
