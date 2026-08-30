@@ -83,9 +83,42 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
       CaldavSyncService syncService = getCaldavSyncService();
       if (syncService != null) {
         syncService.forgetThrottle(userIdentityId);
+        establishDestinations(syncService, userIdentityId);
       }
     } else {
       throw new IllegalAccessException("username or password not be null");
+    }
+  }
+
+  /**
+   * Gives the copies of a freshly connected account somewhere to go, before
+   * the user has created anything to copy.
+   *
+   * <p>
+   * Connecting is a deliberate act by somebody who is watching, so the
+   * destination is resolved on that act rather than on whatever background
+   * sweep happens next. Without it the first meetings a user creates are
+   * refused silently — there is no collection to write them into — and stay
+   * refused until a pass minutes or half an hour away puts one there
+   * (EXO-89803).
+   *
+   * <p>
+   * Contained for the reason the thaw above it is contained: a user who has
+   * just given valid credentials and is told the connection failed, because a
+   * calendar server would not create a collection, is worse off than one whose
+   * first copies wait for a sweep. The engine guards each step itself; this
+   * catch is what makes that true even of a failure it did not foresee.
+   *
+   * @param syncService the resolved engine
+   * @param userIdentityId identity of the user who has just connected
+   */
+  private void establishDestinations(CaldavSyncService syncService, long userIdentityId) {
+    try {
+      syncService.establishDestinations(userIdentityId);
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("The copies of user {} were left without a destination on connect; a sweep establishes one",
+               userIdentityId,
+               e);
     }
   }
 
