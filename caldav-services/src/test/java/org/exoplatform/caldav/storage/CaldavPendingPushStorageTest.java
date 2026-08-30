@@ -378,6 +378,36 @@ public class CaldavPendingPushStorageTest {
   }
 
   /**
+   * The count shown to the user is scoped to that user and excludes the
+   * obligations eXo has given up on (EXO-89803).
+   *
+   * <p>
+   * Both halves matter and neither is provable against a mock. The scope
+   * because the row is a sentence about one person's calendar; the bound
+   * because the sentence is "eXo is still trying", and a count that included
+   * an abandoned obligation would promise a retry that is never coming — while
+   * {@link CaldavPendingPushStorage#owed(long)}, which counts every row, stays
+   * right for a report about the store.
+   */
+  @Test
+  public void theCountShownToAUserIsOnlyWhatIsStillBeingAttempted() {
+    inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REWRITE, EVENT, "uid-a"));
+    inTransaction(() -> storage.owe(ALICE_OTHER_COPY, ALICE, PendingPushKind.REWRITE, EVENT, "uid-b"));
+    inTransaction(() -> storage.owe(BOB_COPY, BOB, PendingPushKind.REWRITE, EVENT, "uid-c"));
+
+    assertEquals(2, storage.owedAndStillTrying(ALICE, 3), "one account's copies, not everybody's");
+    assertEquals(1, storage.owedAndStillTrying(BOB, 3));
+
+    long abandoned = storage.attemptable(ALICE, 3, 10).get(0).getId();
+    inTransaction(() -> refuse(abandoned));
+    inTransaction(() -> refuse(abandoned));
+    inTransaction(() -> refuse(abandoned));
+
+    assertEquals(1, storage.owedAndStillTrying(ALICE, 3), "an obligation eXo gave up on is not somebody waiting");
+    assertEquals(2, storage.owed(ALICE), "and it is still in the store, where the report about it reads it");
+  }
+
+  /**
    * A refusal is counted against the row it belongs to and against no other.
    *
    * <p>

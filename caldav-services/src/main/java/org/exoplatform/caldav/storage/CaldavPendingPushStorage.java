@@ -150,6 +150,22 @@ public class CaldavPendingPushStorage {
   }
 
   /**
+   * How many copies of one account are behind and still being argued for.
+   *
+   * <p>
+   * Deliberately not {@link #owed(long)}: that one counts every row, the
+   * abandoned ones included, which is the right number for a report about the
+   * store and the wrong one for a sentence telling somebody to wait.
+   *
+   * @param userIdentityId whose calendar the copies sit in
+   * @param maxAttempts how many refusals are argued with before stopping
+   * @return the count, zero on an account whose copies all landed
+   */
+  public long owedAndStillTrying(long userIdentityId, int maxAttempts) {
+    return pendingPushDAO.countAttemptable(userIdentityId, maxAttempts);
+  }
+
+  /**
    * Maps an obligation's entity onto its DTO.
    *
    * @param entity the persisted obligation
