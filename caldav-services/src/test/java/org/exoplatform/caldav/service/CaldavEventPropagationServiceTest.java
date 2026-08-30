@@ -41,6 +41,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -54,6 +57,7 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.agenda.constant.AgendaEventModificationType;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
@@ -827,6 +831,163 @@ public class CaldavEventPropagationServiceTest {
     service.propagateUpdate(EVENT, A_REAL_EDIT);
 
     assertEquals(0, caldavPendingPushStorage.owed(ALICE), "a conflict is not an arrear");
+  }
+
+  /**
+   * A holder who never connected an account is quiet in the log and
+   * <b>unchanged in the ledger</b> (EXO-89798).
+   *
+   * <p>
+   * The second half is the one worth pinning. The branch that quietens this
+   * sits directly under the conflict branch above, which strikes the
+   * obligation off — and folding a known state into that branch is the easy
+   * mistake, because both read as "not worth retrying". They are not the same:
+   * a conflict means the copy is out there and the verification pass owns it,
+   * while an unconnected holder has no copy at all. Striking that off would
+   * lose the write for good, and the day they connect nothing would carry the
+   * edit to them.
+   */
+  @Test
+  public void anUnconnectedHolderIsStillOwedTheEditTheyDidNotGet() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT))
+                                                        .thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
+                                                                                           "User 1 has no connected CalDAV account"));
+
+    service.propagateUpdate(EVENT, A_REAL_EDIT);
+
+    assertEquals(1,
+                 caldavPendingPushStorage.owed(ALICE),
+                 "a state only the holder can clear is not a settled obligation");
+  }
+
+  /**
+   * The reason this matters at the scale the report described: in a space where
+   * most members never connected an account, the unconnected ones must cost the
+   * others nothing — not their copy, and not their ledger.
+   */
+  @Test
+  public void anUnconnectedHolderDoesNotCostTheOthersTheirEdit() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT))
+                                                        .thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
+                                                                                           "User 1 has no connected CalDAV account"));
+    when(caldavPushService.pushAgendaEvent(BOB, EVENT)).thenReturn(new ObjectSync());
+
+    service.propagateUpdate(EVENT, A_REAL_EDIT);
+
+    assertEquals(1, caldavPendingPushStorage.owed(ALICE), "the unconnected holder is still owed their write");
+    assertEquals(0, caldavPendingPushStorage.owed(BOB), "a copy that was written is owed nothing");
+  }
+
+  /**
+   * The same state on the removal path, where being wrong is worse: a removal
+   * struck off is a meeting that stays in somebody's calendar after it was
+   * deleted in eXo, and nothing else in the add-on would ever take it out.
+   */
+  @Test
+  public void aRemovalOwedToAnUnconnectedHolderStaysOwed() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    org.mockito.Mockito.doThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
+                                                        "User 1 has no connected CalDAV account"))
+                       .when(caldavPushService)
+                       .deleteEvent(ALICE, "uid-8801");
+
+    assertEquals(0, service.propagateDeletion(EVENT), "the removal reached no copy");
+
+    PendingPush owed = onlyObligationOf(ALICE);
+    assertEquals(PendingPushKind.REMOVE, owed.getKind(), "the removal is still owed, and still as a removal");
+  }
+
+  /**
+   * The level itself, on both paths of this class (EXO-89798).
+   *
+   * <p>
+   * The three tests above pin what these branches <i>do</i>, and that is what a
+   * reader should care about — but what they do is the same whether the branch
+   * is there or not, because the change was never about behaviour. So they
+   * cover the branches without discriminating them: delete the branch and they
+   * still pass. This is the assertion that does not.
+   *
+   * <p>
+   * One test for both paths rather than one each, and one such test per class
+   * rather than one per site: reading the log is a tool for the claim that has
+   * no other observable, not a habit. The classification itself is a pure
+   * function with its own tests, and the failure half is asserted here too so
+   * that quietening everything — the way this change could go wrong — fails.
+   */
+  @Test
+  public void aKnownStateIsRecordedQuietlyOnBothPathsAndAFailureIsNot() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+
+    List<ILoggingEvent> recorded;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      when(caldavPushService.pushAgendaEvent(ALICE, EVENT))
+                                                          .thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
+                                                                                             "no account"));
+      org.mockito.Mockito.doThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED, "no account"))
+                         .when(caldavPushService)
+                         .deleteEvent(ALICE, "uid-8801");
+
+      service.propagateUpdate(EVENT, A_REAL_EDIT);
+      service.propagateDeletion(EVENT);
+      recorded = onlyRefusals(log.events());
+    }
+
+    assertEquals(2, recorded.size(), "the edit and the removal each recorded their refusal once");
+    for (ILoggingEvent line : recorded) {
+      assertEquals(Level.DEBUG, line.getLevel(), "a holder who never connected an account is not an incident");
+      assertNull(line.getThrowableProxy(), "a known state does not need a stack trace");
+    }
+  }
+
+  /**
+   * The other half, kept apart because it is the one that stops this becoming a
+   * silencer: a refused write is still a warn and still carries its trace.
+   */
+  @Test
+  public void aRefusedWriteIsStillRecordedAsAnIncident() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+
+    List<ILoggingEvent> recorded;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      when(caldavPushService.pushAgendaEvent(ALICE, EVENT))
+                                                          .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                             "the server refused it"));
+
+      service.propagateUpdate(EVENT, A_REAL_EDIT);
+      recorded = onlyRefusals(log.events());
+    }
+
+    assertEquals(1, recorded.size());
+    assertEquals(Level.WARN, recorded.get(0).getLevel(), "a copy that never got the edit has to be visible");
+    assertNotNull(recorded.get(0).getThrowableProxy(), "a failure keeps the trace that says where it came from");
+  }
+
+  /**
+   * The refusal lines only, out of everything the pass writes.
+   *
+   * <p>
+   * The propagation pass logs its own bookkeeping around these — what is owed,
+   * what landed — and asserting over the lot would pin wording nobody meant to
+   * freeze. Selected on the identity that is actually load-bearing here: a line
+   * about a copy, at debug or warn.
+   *
+   * @param events everything the class wrote
+   * @return the lines that record a refusal to write or remove a copy
+   */
+  private List<ILoggingEvent> onlyRefusals(List<ILoggingEvent> events) {
+    return events.stream()
+                 .filter(e -> e.getLevel() == Level.DEBUG || e.getLevel() == Level.WARN)
+                 .filter(e -> e.getMessage().contains("copy"))
+                 .toList();
   }
 
   /**
