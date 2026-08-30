@@ -584,14 +584,20 @@ public class CaldavSyncService {
                                   CaldavUserSetting settings,
                                   List<CalendarCollection> collections) {
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
-    // Everything except the mirror, and the exception is the point. A calendar
-    // reads back if the user has it on their devices as a calendar of their
-    // own — whether eXo materialised it from the account or created it there
-    // makes no difference to them: they see it, they edit it on a phone, and
-    // the change belongs here. Only the mirror stays one-way, because it is
-    // not the user's calendar at all but eXo's projection of meetings they
-    // accepted elsewhere; reading it back would let a copy overwrite the event
-    // it is a copy of.
+    // Every calendar binding, and never the mirror ledger. A calendar reads
+    // back if the user has it on their devices as a calendar of their own —
+    // whether eXo materialised it from the account or created it there makes
+    // no difference to them: they see it, they edit it on a phone, and the
+    // change belongs here.
+    //
+    // The mirror row is not a calendar binding: it names no eXo calendar, only
+    // the collection eXo writes its copies into. It is excluded because
+    // reading a collection *through it* would be reading eXo's own projection
+    // back — a copy overwriting the event it is a copy of. This is not the
+    // same as excluding the collection: where the copies go to the user's own
+    // calendar, as a server set to MAIN_CALENDAR sends them, that collection is
+    // read like any other, through its own binding, and each copy inside it is
+    // skipped one object at a time by the mapping table.
     //
     // This selected REMOTE alone, which made the direction depend on who
     // created the collection — bookkeeping invisible to the user, since both
@@ -935,9 +941,22 @@ public class CaldavSyncService {
    *
    * <p>
    * The <em>dedicated</em> mirror is skipped because its contents are copies
-   * of events eXo already shows, and a pair of any kind means the collection
-   * is accounted for — including a tombstone, which is exactly what stops a
-   * calendar the user deleted in eXo from coming straight back.
+   * of events eXo already shows, and an existing <em>calendar binding</em>
+   * means the collection is accounted for — including a tombstone, which is
+   * exactly what stops a calendar the user deleted in eXo from coming straight
+   * back.
+   *
+   * <p>
+   * <b>A calendar binding, not any row.</b> The mirror pair is not one: it has
+   * no local calendar behind it — the schema says so, {@code
+   * LOCAL_CALENDAR_SYNC_UID} "is null for the MIRROR pair alone" — and it
+   * exists to hold the mapping rows of the copies eXo writes. Counted here, it
+   * reintroduced by another route exactly the regression
+   * {@link #isDedicatedMirror(String)} was narrowed to end: point the copies at
+   * the account's own default calendar, as a server set to
+   * {@code MAIN_CALENDAR} does, and the mirror pair records that calendar's
+   * path — so the user's primary calendar read as already accounted for and
+   * was never materialised, nor its events ever read.
    *
    * @param collection the listed collection
    * @param known every pair this user holds on this server
@@ -958,7 +977,44 @@ public class CaldavSyncService {
     if (isExoCreated(href)) {
       return true;
     }
-    return known.stream().anyMatch(pair -> href.equals(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())));
+    return known.stream()
+                .filter(CaldavSyncService::bindsACalendar)
+                .anyMatch(pair -> href.equals(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())));
+  }
+
+  /**
+   * Whether a pair stands for an eXo calendar, rather than merely recording
+   * where eXo writes its copies.
+   *
+   * <p>
+   * The distinction the two roles need, and the reason one collection may
+   * legitimately carry two rows. A <b>calendar binding</b> — ORIGIN=REMOTE or
+   * ORIGIN=EXO — names one eXo calendar in {@code localCalendarSyncUid} and is
+   * what makes that calendar exist, receive events and, when tombstoned, stay
+   * deleted. The <b>mirror pair</b> names no calendar at all: it is the ledger
+   * the copies of space meetings are mapped against, and the destination it
+   * records may be any collection the administrator points it at, including
+   * one the user keeps their own events in.
+   *
+   * <p>
+   * Uniqueness follows the calendar, not the path: the schema's unique index
+   * is on (user, server, {@code LOCAL_CALENDAR_SYNC_UID}), so one calendar has
+   * one binding while a mirror row — whose anchor is null — sits outside it by
+   * construction. A main calendar that is also the copy destination therefore
+   * ends a pass with exactly one binding <em>and</em> one ledger row, which is
+   * one row per thing rather than two rows for one thing.
+   *
+   * <p>
+   * What keeps the copies out of the import is not this row's existence but
+   * the mapping table, asked per object: the import reads the collection
+   * through its binding and skips each object a mirror pair already maps
+   * (see {@code CaldavInboundService#isMirrorOwned}).
+   *
+   * @param pair a pair of this user on this server
+   * @return true when the pair binds an eXo calendar
+   */
+  private static boolean bindsACalendar(CalendarSync pair) {
+    return pair.getOrigin() != SyncOrigin.MIRROR;
   }
 
   /**
