@@ -103,6 +103,8 @@ public class CaldavSyncServiceTest {
 
   private static final String        HOME   = "/dav/calendars/john/";
 
+  private static final String        MAIN   = "/dav/calendars/john/calendar:Default:47/";
+
   @Mock
   private CalDavClient               calDavClient;
 
@@ -789,6 +791,180 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+
+  /**
+   * The user's own primary calendar appears in eXo even when it is also where
+   * the copies are written.
+   */
+  @Test
+  public void theMainCalendarIsMaterialisedEvenWhenTheCopiesGoIntoIt() throws Exception {
+    // The configuration this connector exists for, and the one it could not
+    // serve: a server set to MAIN_CALENDAR writes the copies into the
+    // account's own default calendar, so a MIRROR pair ends up recording that
+    // calendar's path. Read as "eXo already accounts for this collection",
+    // that pair made materialisation skip the user's primary calendar — it
+    // never appeared in eXo at all, which is exactly the regression the
+    // narrowing of isDedicatedMirror was written to end, arriving by the
+    // other route.
+    givenServerCalendars(collectionOf(MAIN, "Agenda", Set.of("VEVENT")));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirrorPair(MAIN)));
+    givenAgendaCreates("main-anchor");
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(agendaCalendarService).createCalendar(any(), eq(LOGIN));
+    // Exactly one pair is written, and it is the calendar binding. The mirror
+    // row already there is a copy ledger with no local calendar behind it, so
+    // the collection ends the pass with one binding, not two.
+    verify(caldavSyncStorage).savePair(saved.capture());
+    assertEquals(SyncOrigin.REMOTE, saved.getValue().getOrigin());
+    assertEquals("main-anchor", saved.getValue().getLocalCalendarSyncUid());
+  }
+
+  /**
+   * And its events are read, not only its calendar created.
+   */
+  @Test
+  public void theEventsOfTheMainCalendarAreImportedEvenWhenTheCopiesGoIntoIt() throws Exception {
+    // Half a fix would be worse than none: a calendar that appears and stays
+    // empty reads as the connector being broken rather than absent. The
+    // storage is modelled rather than stubbed flat, because the two halves of
+    // the defect live in different steps of one pass — what materialisation
+    // saves is what the import then has to read back. Stubbing the second
+    // answer by hand would hand the import a binding materialisation never
+    // made, and the test would pass against the bug.
+    List<CalendarSync> stored = new ArrayList<>(List.of(mirrorPair(MAIN)));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenAnswer(invocation -> List.copyOf(stored));
+    doAnswer(invocation -> {
+      CalendarSync saved = invocation.getArgument(0);
+      if (!stored.contains(saved)) {
+        stored.add(saved);
+      }
+      return saved;
+    }).when(caldavSyncStorage).savePair(any());
+    givenServerCalendars(collectionOf(MAIN, "Agenda", Set.of("VEVENT")));
+    givenAgendaCreates("main-anchor");
+    givenUserCalendars(calendarWithAnchor(99L, "main-anchor"));
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<CalendarSync> read = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavInboundService).syncContents(eq(USER), read.capture(), any(), any(), any(), anyBoolean());
+    // Read through its own calendar binding, never through the mirror row:
+    // the ledger of eXo's copies stays one-way whatever collection it names.
+    assertEquals(SyncOrigin.REMOTE, read.getValue().getOrigin());
+    assertEquals("main-anchor", read.getValue().getLocalCalendarSyncUid());
+  }
+
+  /**
+   * The ledger is never the thing the events are read through.
+   */
+  @Test
+  public void theMirrorLedgerIsNotReadBackEvenWhenACalendarStandsAtItsAnchor() throws Exception {
+    // The import selects on origin, and until now nothing tested that: a
+    // mirror row carries no local calendar, so the pass skipped it at the
+    // "which calendar does this binding stand for" step and the origin filter
+    // was never what kept it out. Delete the filter and every test still
+    // passed.
+    //
+    // The state below is not one the connector reaches today — mirrorPair
+    // never writes an anchor — and the filter is precisely what keeps it from
+    // mattering if it ever did. Now that the mirror routinely names a
+    // collection the user also synchronises, reading it back would let a copy
+    // overwrite the event it is a copy of.
+    CalendarSync mirror = mirrorPair(MAIN);
+    mirror.setLocalCalendarSyncUid("main-anchor");
+    givenServerCalendars(collectionOf(MAIN, "Agenda", Set.of("VEVENT")));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirror, remotePair(MAIN, "main-anchor")));
+    givenUserCalendars(calendarWithAnchor(99L, "main-anchor"));
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<CalendarSync> read = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavInboundService).syncContents(eq(USER), read.capture(), any(), any(), any(), anyBoolean());
+    assertEquals(SyncOrigin.REMOTE, read.getValue().getOrigin());
+  }
+
+  /**
+   * One calendar binding per collection, and the next pass adds none.
+   */
+  @Test
+  public void theMainCalendarIsBoundOnceAndNotAgainOnTheNextPass() throws Exception {
+    // What stops the multiplication once the mirror row no longer accounts for
+    // the collection: the binding created last pass does. If the pair check
+    // stopped matching altogether, every pass would materialise the same
+    // collection again and the user would collect a calendar per sync.
+    givenServerCalendars(collectionOf(MAIN, "Agenda", Set.of("VEVENT")));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirrorPair(MAIN), remotePair(MAIN, "main-anchor")));
+    givenUserCalendars(calendarWithAnchor(99L, "main-anchor"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  /**
+   * The dedicated collection is still skipped when its own pair is the only
+   * thing recording it.
+   */
+  @Test
+  public void theDedicatedMirrorIsStillSkippedWhenOnlyItsPairRecordsIt() throws Exception {
+    // The control for the change above. Once a MIRROR pair no longer accounts
+    // for a collection, the path is the only thing left keeping eXo's own copy
+    // collection out of the materialisation — and it has to be enough on its
+    // own, or the user gets an eXo calendar full of duplicates of meetings
+    // they already see.
+    CaldavUserSetting silent = settings();
+    silent.setMirrorCalendarHref(null);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(silent);
+    givenServerCalendars(collectionOf("/dav/calendars/john/exo-meetings/", "eXo Meetings", Set.of("VEVENT")));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirrorPair("/dav/calendars/john/exo-meetings/")));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  /**
+   * A calendar the user deleted in eXo stays deleted, mirror or no mirror.
+   */
+  @Test
+  public void aCalendarDeletedInExoStaysDeletedEvenWhenTheCopiesGoIntoIt() throws Exception {
+    // The tombstone is a REMOTE binding, so it still accounts for the
+    // collection — only the mirror row stopped doing so. Were the two confused,
+    // the calendar the user deleted would come straight back on the next sync,
+    // filled with the copies as well.
+    CalendarSync tombstone = remotePair(MAIN, "main-anchor");
+    tombstone.setStatus(CalendarSyncStatus.LOCALLY_DELETED);
+    givenServerCalendars(collectionOf(MAIN, "Agenda", Set.of("VEVENT")));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirrorPair(MAIN), tombstone));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+  }
+
+  /**
+   * A paused binding is not a collection to materialise afresh either.
+   */
+  @Test
+  public void aPausedBindingStillAccountsForTheCollectionTheCopiesGoInto() throws Exception {
+    // A binding paused after repeated failures, or by a disconnect, describes
+    // a calendar the user still has. Materialising beside it would hand them a
+    // second copy of the same calendar and leave the paused one on screen.
+    CalendarSync paused = remotePair(MAIN, "main-anchor");
+    paused.setStatus(CalendarSyncStatus.PAUSED);
+    givenServerCalendars(collectionOf(MAIN, "Agenda", Set.of("VEVENT")));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mirrorPair(MAIN), paused));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
   }
 
   @Test
