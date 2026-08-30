@@ -907,17 +907,6 @@ public class CaldavMirrorVerificationService {
       dropIfSuperseded(object, written);
       return true;
     } catch (RuntimeException e) {
-      if (e instanceof CaldavPushException refusal && CaldavPushService.isKnownState(refusal.getCode())) {
-        // The account was disconnected, or its destination unset, between the
-        // pass reading the mapping rows and reaching this one. A state of the
-        // holder, not a repair that failed: the rows stay, the next pass asks
-        // again, and nothing about it is worth a trace.
-        LOG.debug("The copy of event {} is not written again: {} ({})",
-                  object.getLocalEventId(),
-                  refusal.getMessage(),
-                  refusal.getCode());
-        return false;
-      }
       // The event may have been deleted in eXo since, or the account may be
       // refusing writes. Either way the next pass tries again, up to the
       // limit above.
