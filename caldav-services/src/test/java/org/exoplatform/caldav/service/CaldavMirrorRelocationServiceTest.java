@@ -18,6 +18,7 @@ package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -34,9 +35,16 @@ import static org.mockito.Mockito.when;
 import java.util.List;
 import java.util.Map;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.slf4j.LoggerFactory;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
@@ -126,8 +134,23 @@ public class CaldavMirrorRelocationServiceTest {
   @InjectMocks
   private CaldavMirrorRelocationService      service;
 
+  /**
+   * What this service actually wrote to the log during one test.
+   *
+   * <p>
+   * The distinction this class now draws — a state of the account recorded
+   * quietly, a failure of the attempt said at warn with its trace, and either
+   * of them said once rather than once per sweep — has no other observable
+   * consequence: both answers are the same deferred relocation. Asserting on
+   * the log is therefore not a stylistic choice here, it is the only place the
+   * behaviour exists.
+   */
+  private final ListAppender<ILoggingEvent>  logged    = new ListAppender<>();
+
   @BeforeEach
   public void connectAnAccount() {
+    logged.start();
+    serviceLogger().addAppender(logged);
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     lenient().when(caldavSyncStorage.savePair(any())).thenAnswer(invocation -> invocation.getArgument(0));
     lenient().when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
@@ -503,6 +526,97 @@ public class CaldavMirrorRelocationServiceTest {
     verify(caldavSyncStorage, never()).getObjects(anyLong(), anyInt(), anyInt());
   }
 
+  /**
+   * A destination that <i>failed</i> is not filed away as a destination that is
+   * merely <i>not chosen yet</i>.
+   */
+  @Test
+  public void aDestinationThatCouldNotBeEstablishedIsSaidOutLoudWithItsCause() {
+    // Every RuntimeException used to be recorded at debug here, so rejected
+    // credentials and a user who has not chosen read identically in a log — to
+    // say, not at all. A failure of the attempt is an incident and carries its
+    // trace.
+    when(caldavPushService.ensureMirror(USER)).thenThrow(new CaldavPushException(CaldavPushService.CREDENTIALS,
+                                                                                 "rejected"));
+
+    assertFalse(service.relocate(USER, settings(), mirror(DEDICATED)).applicable());
+
+    ILoggingEvent said = onlyWarning();
+    assertTrue(said.getFormattedMessage().contains(String.valueOf(USER)), "the line names the user: " + said);
+    assertNotNull(said.getThrowableProxy(), "a failure carries its trace");
+  }
+
+  /**
+   * The same failure met by every sweep costs one line, not one line per sweep.
+   */
+  @Test
+  public void aDestinationThatKeepsFailingIsSaidOnce() {
+    // A relocation that cannot finish is retried every five minutes for as long
+    // as the cause lasts. Said each time, the line an administrator has to look
+    // at is buried under its own repetitions within the hour.
+    when(caldavPushService.ensureMirror(USER)).thenThrow(new IllegalStateException("the server is down"));
+
+    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, settings(), mirror(DEDICATED));
+
+    assertEquals(1, warnings().size(), "one line for one spell of one cause");
+  }
+
+  /**
+   * A state only a person can clear is not an incident, and does not shout like
+   * one every pass.
+   */
+  @Test
+  public void aMainCalendarNobodyCanResolveIsNotReportedHereAsAFailure() {
+    // CaldavPushService has already said this one once, at warn, naming the
+    // server and what was asked for. Repeating it here — per user, per sweep,
+    // with a trace — is exactly the noise EXO-89798 is removing from this
+    // add-on.
+    when(caldavPushService.ensureMirror(USER)).thenThrow(new CaldavPushException(CaldavPushService.MAIN_CALENDAR_UNKNOWN,
+                                                                                 "no default calendar"));
+
+    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, settings(), mirror(DEDICATED));
+
+    assertTrue(warnings().isEmpty(), "a state of the account is not an incident of the pass: " + warnings());
+  }
+
+  /**
+   * A destination that comes back and is lost again is said again.
+   */
+  @Test
+  public void aDestinationRecoveredAndLostAgainIsSaidAgain() {
+    // The line marks the edge into the state. Remembering the account for ever
+    // would make the second outage as silent as the first was before this.
+    when(caldavPushService.ensureMirror(USER)).thenThrow(new IllegalStateException("the server is down"))
+                                              .thenReturn(new MirrorTarget(MAIN, false, "wherever"))
+                                              .thenThrow(new IllegalStateException("and down again"));
+    when(caldavSyncStorage.getPair(PAIR)).thenReturn(mirror(MAIN));
+    when(caldavSyncStorage.getObjects(eq(PAIR), eq(0), anyInt())).thenReturn(new PageImpl<>(List.of()));
+
+    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, settings(), mirror(DEDICATED));
+
+    assertEquals(2, warnings().size(), "one line per spell, not one per lifetime");
+  }
+
+  /**
+   * Forgetting an account re-arms the line, so a fresh attempt says what it
+   * finds.
+   */
+  @Test
+  public void anAccountForgottenSaysItsFailureAgain() {
+    when(caldavPushService.ensureMirror(USER)).thenThrow(new IllegalStateException("the server is down"));
+
+    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.forget(USER);
+    service.relocate(USER, settings(), mirror(DEDICATED));
+
+    assertEquals(2, warnings().size());
+  }
+
   @Test
   public void aPairDeletedUnderThePassIsNotRecreatedToReceiveCopies() {
     // Somebody disconnected the account while this ran. There is nothing left
@@ -536,6 +650,49 @@ public class CaldavMirrorRelocationServiceTest {
   }
 
   // ------------------------------------------------------------------ fixtures
+
+  /**
+   * Detaches the appender, so one test's lines never reach another's.
+   */
+  @AfterEach
+  public void stopListening() {
+    serviceLogger().detachAppender(logged);
+    logged.stop();
+  }
+
+  /**
+   * The logback logger the service writes through.
+   *
+   * <p>
+   * {@code ExoLogger} delegates to SLF4J under the class's own name, so the
+   * logger this returns is the very one the service holds.
+   *
+   * @return the logger named after the service under test
+   */
+  private Logger serviceLogger() {
+    return (Logger) LoggerFactory.getLogger(CaldavMirrorRelocationService.class);
+  }
+
+  /**
+   * Every warning this service wrote so far.
+   *
+   * @return the warning events, in order
+   */
+  private List<ILoggingEvent> warnings() {
+    return logged.list.stream().filter(event -> event.getLevel() == Level.WARN).toList();
+  }
+
+  /**
+   * The single warning this service wrote, failing when there is not exactly
+   * one.
+   *
+   * @return that warning
+   */
+  private ILoggingEvent onlyWarning() {
+    List<ILoggingEvent> found = warnings();
+    assertEquals(1, found.size(), "expected exactly one warning, got " + found);
+    return found.get(0);
+  }
 
   /**
    * The destination the one place that decides it now answers.
