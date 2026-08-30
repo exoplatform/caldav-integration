@@ -220,6 +220,43 @@ public class CaldavSyncServiceTest {
   }
 
   @Test
+  public void aCollectionAlreadyPairedIsReusedRatherThanMaterialisedASecondTime() throws Exception {
+    // EXO-89800. The collection is listed under a spelling of its own — the
+    // percent-encoded colon and the trailing slash BlueMind reports — while
+    // the binding stores the canonical path. Compared as written, the two look
+    // like different collections, and the second one becomes a second eXo
+    // calendar holding a second copy of every event.
+    givenServerCalendars(collection("/dav/calendars/john/calendar%3ADefault/", "Default"));
+    CalendarSync bound = remotePair("/dav/calendars/john/calendar:Default", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    givenUserCalendars(calendarWithAnchor(77L, "anchor-1"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavInboundService).syncContents(eq(USER), eq(bound), any(), any(), any(), anyBoolean());
+  }
+
+  @Test
+  public void aCollectionWhoseBindingIsOnlyPausedIsNotMaterialisedBesideIt() throws Exception {
+    // The other half of EXO-89800. Disconnecting pauses a binding rather than
+    // dropping it, so the reconnecting pass must recognise the collection as
+    // already accounted for whatever state the binding is in — otherwise the
+    // pause buys nothing and the second calendar appears anyway.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync frozen = remotePair("/dav/calendars/john/private/", "anchor-1");
+    frozen.setStatus(CalendarSyncStatus.PAUSED);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(frozen));
+    givenUserCalendars(calendarWithAnchor(77L, "anchor-1"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    // And nothing is read out of it while it is frozen.
+    verify(caldavInboundService, never()).syncContents(anyLong(), any(), any(), any(), any(), anyBoolean());
+  }
+
+  @Test
   public void theEventsOfAMaterialisedCollectionAreImported() throws Exception {
     givenServerCalendars();
     CalendarSync bound = remotePair("/dav/calendars/john/private/", "anchor-1");
