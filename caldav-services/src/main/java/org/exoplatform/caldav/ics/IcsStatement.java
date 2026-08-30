@@ -123,6 +123,17 @@ final class IcsStatement {
    * without ever offering the first — and, because that token is not a property
    * {@link IcsWriter} emits, no excusal list can be pointed at it either.
    *
+   * <p>
+   * <b>Unreachable since EXO-89805, and kept for what it forbids rather than
+   * for what it offers.</b> eXo no longer writes an organizer on an event with
+   * nobody but its creator on it, on any server, so {@code inExo} is zero there
+   * and no dropped organizer can be seen on a solo copy again. What this branch
+   * still does is guarantee that if one ever were, it would be named as the case
+   * and never as the property — an {@code ORGANIZER} excusal matches by property
+   * name and cannot tell a solo copy from a real meeting, so offering the bare
+   * property here would offer a lever that blinds the comparison on meetings
+   * that have an organizer to lose.
+   *
    * @param statement the canonical statement that diverged
    * @param onServer how many times the server's copy states it
    * @param inExo how many times eXo's render states it

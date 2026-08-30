@@ -127,6 +127,24 @@ public enum ServerQuirk {
    * sweep, for ever (EXO-89775).
    *
    * <p>
+   * <b>Superseded by EXO-89805, and kept deliberately.</b> eXo no longer names
+   * an organizer on such an event <i>on any server</i>: soloness is a property
+   * of the event, and
+   * {@code AgendaEventIcsMapper.organizerOf} now reads it the way
+   * {@code rsvpLinks} always did, so the two halves of one copy can no longer
+   * contradict each other. This entry therefore describes something the sweep
+   * can never observe again — eXo writes no organizer there, so none can be
+   * seen dropped — and ticking it asks for exactly what already happens. It
+   * stays for two reasons and no third: a deployment whose stored observations
+   * still remember the behaviour must read a sentence rather than a bare token,
+   * and {@link #SOLO_ORGANIZER} must go on naming the case in
+   * {@code IcsStatement} so an organizer missing from a solo copy is never
+   * offered as a bare {@code ORGANIZER} excusal — which would blind the
+   * comparison on real meetings too. Retiring the entry means retiring the
+   * {@code omittedProperties} list, its column and its drawer with it, which is
+   * a separate decision and not this one.
+   *
+   * <p>
    * <b>The one entry that changes what eXo writes rather than what it
    * tolerates.</b> Ticking it stops eXo naming an organizer on those copies for
    * this server; the copy and the render then say the same thing, so there is
@@ -136,12 +154,13 @@ public enum ServerQuirk {
    * are restricted to the properties {@code IcsWriter} emits.
    *
    * <p>
-   * <b>Per server, and it has to be.</b> The obvious global fix — never write an
-   * organizer when nobody else is invited — was rejected in EXO-89768 and again
-   * here: the golden corpus holds organizer-only events that a real server
-   * stored <i>with</i> their organizer, so this is one server's behaviour and
-   * not CalDAV's. Made global it would strip information from copies on servers
-   * that keep it happily, to buy a clean sweep on one.
+   * <b>Why it was per server, and why that was the wrong axis.</b> The golden
+   * corpus holds organizer-only events that a real server stored <i>with</i>
+   * their organizer, and EXO-89768 and EXO-89775 both read that as proof the
+   * behaviour was one server's. It proves what a server <i>keeps</i>, which is
+   * not the same question as what eXo should <i>write</i>; and the registration
+   * that finally showed the cost had never been declared at all, so no per-server
+   * lever could have reached it.
    */
   OMITS_SOLO_ORGANIZER("omitsSoloOrganizer",
                        ServerQuirkDirection.DROPPED,
