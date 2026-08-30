@@ -244,6 +244,49 @@ public class CaldavConnectorServiceImplTest {
     verify(caldavSyncService).forgetThrottle(7L);
   }
 
+  /**
+   * Connecting gives the copies somewhere to go, on the act of connecting
+   * (EXO-89803).
+   *
+   * <p>
+   * Storing credentials establishes nothing. Until this, the personal
+   * collections waited for the first synchronisation and the mirror for a step
+   * of the agenda connector panel — both the browser's doing, neither
+   * guaranteed — so the first meetings a user created after connecting were
+   * refused silently and stayed refused until a background sweep half an hour
+   * later.
+   */
+  @Test
+  public void connectingAnAccountEstablishesWhereItsCopiesGo() throws Exception {
+    caldavConnectorService.setCaldavSyncService(caldavSyncService);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(caldavSyncService).establishDestinations(USER_IDENTITY_ID);
+  }
+
+  /**
+   * A destination that cannot be established does not cost the user their
+   * connection: they gave valid credentials, and a calendar server refusing a
+   * collection is not a reason to tell them the account was rejected.
+   */
+  @Test
+  public void aDestinationThatCannotBeEstablishedStillConnects() throws Exception {
+    caldavConnectorService.setCaldavSyncService(caldavSyncService);
+    doThrow(new IllegalStateException("the server is down")).when(caldavSyncService)
+                                                            .establishDestinations(USER_IDENTITY_ID);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(caldavConnectorStorage).createCaldavSetting(setting, USER_IDENTITY_ID);
+  }
+
   @Test
   public void connectingAnAccountResumesTheCalendarsDisconnectingFroze() throws Exception {
     // Disconnecting pauses the bindings of the calendars eXo pushed out, so

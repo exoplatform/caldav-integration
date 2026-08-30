@@ -139,6 +139,9 @@ public class CaldavSyncServiceTest {
   private CaldavEventPropagationService caldavEventPropagationService;
 
   @Mock
+  private CaldavPushService          caldavPushService;
+
+  @Mock
   private CalDavEndpoint             endpoint;
 
   @InjectMocks
@@ -1274,6 +1277,84 @@ public class CaldavSyncServiceTest {
     Identity identity = new Identity(String.valueOf(USER));
     identity.setRemoteId(LOGIN);
     lenient().when(identityManager.getIdentity(anyString())).thenReturn(identity);
+  }
+
+  /**
+   * Connecting establishes both destinations there and then (EXO-89803).
+   *
+   * <p>
+   * Before this, connecting stored credentials and nothing else: the personal
+   * collections waited for a synchronisation and the mirror for a step of the
+   * agenda connector panel, so a meeting created in the meantime had nowhere
+   * to be written and was refused where nobody could see it.
+   */
+  @Test
+  public void connectingEstablishesBothDestinations() {
+    givenConnectedIdentity();
+
+    service.establishDestinations(USER);
+
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+    verify(caldavPushService).ensureMirror(USER);
+  }
+
+  /**
+   * The two halves fail independently: a server that will not create a
+   * collection for a personal calendar may still hold a perfectly good mirror,
+   * and the user is better off with the half that worked.
+   */
+  @Test
+  public void aRefusedPersonalCollectionStillLeavesAMirror() {
+    givenConnectedIdentity();
+    doThrow(new CalDavException("no")).when(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+
+    assertDoesNotThrow(() -> service.establishDestinations(USER));
+
+    verify(caldavPushService).ensureMirror(USER);
+  }
+
+  /**
+   * An account with no destination to establish must not stop somebody
+   * connecting it: whatever the mirror step throws is absorbed.
+   */
+  @Test
+  public void aMirrorThatCannotBeEstablishedDoesNotFailTheConnection() {
+    givenConnectedIdentity();
+    doThrow(new CaldavPushException(CaldavPushService.MAIN_CALENDAR_UNKNOWN, "no default calendar")).when(caldavPushService)
+                                                                                                    .ensureMirror(USER);
+
+    assertDoesNotThrow(() -> service.establishDestinations(USER));
+
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+  }
+
+  /**
+   * Nothing is attempted for an account that is not connected, and nothing for
+   * one whose owner has no resolvable login — binding needs it, agenda's ACL
+   * reads it.
+   */
+  @Test
+  public void nothingIsEstablishedWithoutAnAccountOrALogin() {
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(new CaldavUserSetting());
+
+    service.establishDestinations(USER);
+
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(identityManager.getIdentity(anyString())).thenReturn(null);
+
+    service.establishDestinations(USER);
+
+    verify(caldavOutboundService, never()).bindPersonalCalendars(anyLong(), anyString());
+    verify(caldavPushService, never()).ensureMirror(anyLong());
+  }
+
+  /**
+   * Gives the connected account an owner agenda's ACL can name.
+   */
+  private void givenConnectedIdentity() {
+    Identity identity = new Identity(String.valueOf(USER));
+    identity.setRemoteId(LOGIN);
+    when(identityManager.getIdentity(String.valueOf(USER))).thenReturn(identity);
   }
 
   /**
