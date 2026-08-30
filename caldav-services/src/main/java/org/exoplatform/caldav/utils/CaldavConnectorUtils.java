@@ -38,14 +38,6 @@ public class CaldavConnectorUtils {
 
   public static final String CALDAV_SERVER_ID_KEY           = "CaldavServerId";
 
-  /**
-   * The collection a user picked for themselves, on a server whose
-   * registration leaves the destination to them. Its own key rather than a
-   * second meaning on {@link #CALDAV_MIRROR_CALENDAR_KEY}: that one records
-   * where eXo is writing, this one records that a human said where.
-   */
-  public static final String CALDAV_CHOSEN_CALENDAR_KEY     = "CaldavChosenCalendarHref";
-
   public static final String CALDAV_SERVER_URL_INIT_PARAM   = "exo.agenda.caldav.connector.url";
 
   private static final Log   LOG                            = ExoLogger.getLogger(CaldavConnectorUtils.class);
