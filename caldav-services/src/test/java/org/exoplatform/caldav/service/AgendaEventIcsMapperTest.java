@@ -60,6 +60,7 @@ import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.IcsEvent;
+import org.exoplatform.caldav.model.IcsPerson;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
@@ -844,7 +845,8 @@ public class AgendaEventIcsMapperTest {
     }
   }
 
-  // ------------- the organizer of an event with nobody else on it (EXO-89775)
+  // ------------- the organizer of an event with nobody else on it
+  // ------------- (EXO-89775, made unconditional by EXO-89805)
 
   @Test
   public void aServerDeclaredToDropTheOrganizerOfASoloEventGetsACopyWithoutOne() {
@@ -862,18 +864,48 @@ public class AgendaEventIcsMapperTest {
                "the copy must carry no organizer on a server declared to drop it");
   }
 
+  /**
+   * <b>The defect EXO-89805 closed, pinned from the side it was reachable
+   * from.</b>
+   *
+   * <p>
+   * The registration that showed it on the live rig had nothing declared: event
+   * 1000, whose only roster line is its own creator, was pushed to a BlueMind
+   * registration whose {@code omittedProperties} was null. So eXo wrote an
+   * ORGANIZER, BlueMind stored the copy without one, the sweep judged it altered
+   * and re-pushed it every five minutes until the give-up counter abandoned
+   * it — and an abandoned copy stops being verified at all, so a real later
+   * alteration of that event would no longer be repaired.
+   *
+   * <p>
+   * The predecessor of this test asserted the opposite, in as many words, and
+   * was the reason the defect survived: it read the per-server lever as the
+   * design rather than as the bug, so the configuration the defect lives in was
+   * pinned <i>as correct</i>.
+   */
   @Test
-  public void aSoloEventStillNamesItsOrganizerOnAServerThatWasNotDeclaredToDropIt() {
-    // The reason this is per server and never global: the golden corpus holds
-    // organizer-only events a real server stored WITH their organizer. A global
-    // change would strip information from copies on servers that keep it
-    // happily, to buy a clean sweep on one.
+  public void aSoloEventNamesNoOrganizerOnAServerNobodyDeclaredAnythingAbout() {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
     givenServer(9L, true);
     givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED));
 
-    assertNotNull(mapper.toIcsEvent(event(), "uid-1", PUSHER).getOrganizer(),
-                  "an undeclared server must go on receiving the organizer");
+    assertNull(mapper.toIcsEvent(event(), "uid-1", PUSHER).getOrganizer(),
+               "an event with nobody on it but its creator names no organizer, declared or not");
+  }
+
+  /**
+   * And with no registration to read at all — no stored account, so nothing to
+   * resolve a server from. Soloness is a property of the event, so the answer
+   * must not depend on there being a registry to ask.
+   */
+  @Test
+  public void aSoloEventNamesNoOrganizerWithNoRegistrationAtAll() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    lenient().when(caldavConnectorStorage.getCaldavSetting(PUSHER)).thenReturn(null);
+    givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED));
+
+    assertNull(mapper.toIcsEvent(event(), "uid-1", PUSHER).getOrganizer(),
+               "no registry is consulted to answer a question about the event");
   }
 
   @Test
@@ -891,27 +923,58 @@ public class AgendaEventIcsMapperTest {
                   "a meeting with other participants keeps its organizer");
   }
 
+  /**
+   * <b>The half with teeth, on the configuration the fix widened to.</b>
+   *
+   * <p>
+   * Making the omission unconditional is only safe while it stays confined to
+   * the solo case: an attendee's client needs the ORGANIZER to reply to, so a
+   * real meeting losing one is a copy nobody can answer. Asserted on an
+   * undeclared server, because that is where the behaviour changed — the
+   * declared one was already covered above and could pass while an undeclared
+   * one stripped every organizer there is.
+   */
+  @Test
+  public void ameetingWithSomebodyElseOnItKeepsItsOrganizerOnAnUndeclaredServerToo() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenIdentity(77L, "Jane Roe", "jane@example.test");
+    givenServer(9L, true);
+    givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED),
+                   attendee(77L, EventAttendeeResponse.NEEDS_ACTION));
+
+    IcsPerson organizer = mapper.toIcsEvent(event(), "uid-1", PUSHER).getOrganizer();
+
+    assertNotNull(organizer, "a real meeting must never lose its organizer");
+    assertEquals("john@example.test",
+                 organizer.getEmail(),
+                 "and it must still be the creator, named by their profile address");
+  }
+
   @Test
   public void anEventWithNoRosterAtAllIsSoloToo() {
     // Nobody on it is not somebody else on it.
     givenIdentity(PUSHER, "John Doe", "john@example.test");
-    givenOmittingServer(9L);
+    givenServer(9L, true);
     givenAttendees();
 
     assertNull(mapper.toIcsEvent(event(), "uid-1", PUSHER).getOrganizer());
   }
 
   @Test
-  public void aFailingRegistryKeepsTheOrganizer() {
+  public void aFailingRegistryKeepsARealMeetingsOrganizer() {
     // The asymmetry that decides every fallback here: a copy naming its
-    // organizer on a server that drops it costs one permanent divergence, while
-    // a copy silently missing one loses information from somebody's calendar.
+    // organizer costs at worst one permanent divergence, while a copy silently
+    // missing one loses information from somebody's calendar. Since EXO-89805
+    // the registry has no say over the organizer at all, so a failing one can
+    // only be shown not to take one away.
     givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenIdentity(77L, "Jane Roe", "jane@example.test");
     CaldavUserSetting account = new CaldavUserSetting();
     account.setServerId(9L);
     lenient().when(caldavConnectorStorage.getCaldavSetting(PUSHER)).thenReturn(account);
     lenient().when(caldavServerService.resolveServer(9L)).thenThrow(new IllegalStateException("no registry"));
-    givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED));
+    givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED),
+                   attendee(77L, EventAttendeeResponse.NEEDS_ACTION));
 
     assertNotNull(mapper.toIcsEvent(event(), "uid-1", PUSHER).getOrganizer());
   }
@@ -1032,29 +1095,36 @@ public class AgendaEventIcsMapperTest {
   }
 
   /**
-   * <b>The actual deliverable: the two readings of one event agree.</b>
+   * <b>The actual deliverable: the two readings of one event agree, on every
+   * registration and not only on a declared one.</b>
    *
    * <p>
    * Whether an event is a meeting is asked twice about every copy — once to
-   * decide whether to name an ORGANIZER on a server declared to drop one
-   * (EXO-89775), once to decide whether to offer an answer to it (EXO-89797) —
-   * and this pins that the two can never answer differently. It is the property
-   * the fix exists for: not "solo events lose their links", but "an event is one
-   * thing, and the copy of it says one thing about that".
+   * decide whether to name an ORGANIZER (EXO-89775, EXO-89805), once to decide
+   * whether to offer an answer to it (EXO-89797) — and this pins that the two
+   * can never answer differently. It is the property the fix exists for: not
+   * "solo events lose their links", but "an event is one thing, and the copy of
+   * it says one thing about that".
    *
    * <p>
-   * Read off a single render on a server that both declares the organizer quirk
-   * and wants the answer links, so a divergence has nowhere to hide: on that
-   * server a missing ORGANIZER <i>is</i> the soloness verdict, and the presence
-   * of the links is the other one. Asserted across every roster shape agenda can
-   * produce, because a guard that agrees on the obvious case and parts company
-   * on the roster-of-one is exactly the defect this is the third instance of.
+   * <b>Run against both registrations, which is the whole of what EXO-89805
+   * added here.</b> The previous version of this test rendered only on a server
+   * that declared the organizer quirk — the one configuration in which the two
+   * halves could not disagree — and so passed, unbroken, throughout the entire
+   * life of the defect it was written to forbid. On an undeclared server the
+   * copy carried no answer links and an ORGANIZER, which is the contradiction
+   * the method's own javadoc says must not exist. A pin that only visits the
+   * configuration where the invariant holds is not a pin.
+   *
+   * <p>
+   * Asserted across every roster shape agenda can produce, because a guard that
+   * agrees on the obvious case and parts company on the roster-of-one is exactly
+   * the defect this is the third instance of.
    */
   @Test
   public void theOrganizerAndTheAnswerLinksReadTheSameEventTheSameWay() {
     givenIdentity(PUSHER, "John Doe", "john@example.test");
     givenIdentity(SOMEONE, "Jane Roe", "jane@example.test");
-    givenOmittingServer(9L);
 
     Map<List<EventAttendee>, Boolean> rosters = new LinkedHashMap<>();
     rosters.put(List.of(), true);
@@ -1064,24 +1134,32 @@ public class AgendaEventIcsMapperTest {
                         attendee(SOMEONE, EventAttendeeResponse.NEEDS_ACTION)),
                 false);
 
-    for (Map.Entry<List<EventAttendee>, Boolean> shape : rosters.entrySet()) {
-      lenient().when(agendaEventAttendeeService.getEventAttendees(1L))
-               .thenReturn(new EventAttendeeList(shape.getKey()));
+    for (boolean declared : List.of(true, false)) {
+      if (declared) {
+        givenOmittingServer(9L);
+      } else {
+        givenServer(9L, true);
+      }
+      for (Map.Entry<List<EventAttendee>, Boolean> shape : rosters.entrySet()) {
+        lenient().when(agendaEventAttendeeService.getEventAttendees(1L))
+                 .thenReturn(new EventAttendeeList(shape.getKey()));
 
-      try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
-        agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
-        givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
+        try (MockedStatic<NotificationUtils> agendaLinks = mockStatic(NotificationUtils.class)) {
+          agendaLinks.when(() -> NotificationUtils.getEventURL(1L)).thenReturn(EVENT_LINK);
+          givenAnswerLinks(agendaLinks, 1L, PUSHER_REMOTE_ID, "pusher");
 
-        IcsEvent ics = mapper.toIcsEvent(event(), "uid-1", PUSHER);
-        boolean organizerSaysSolo = ics.getOrganizer() == null;
-        boolean linksSaySolo = !ics.getDescription().contains(ANSWER_LINK_MARK);
+          IcsEvent ics = mapper.toIcsEvent(event(), "uid-1", PUSHER);
+          boolean organizerSaysSolo = ics.getOrganizer() == null;
+          boolean linksSaySolo = !ics.getDescription().contains(ANSWER_LINK_MARK);
+          String where = (declared ? "declared" : "undeclared") + " server, roster " + shape.getKey();
 
-        assertEquals(shape.getValue(),
-                     organizerSaysSolo,
-                     "the organizer must read this roster as the test says: " + shape.getKey());
-        assertEquals(organizerSaysSolo,
-                     linksSaySolo,
-                     "the organizer and the answer links must read one event the same way: " + shape.getKey());
+          assertEquals(shape.getValue(),
+                       organizerSaysSolo,
+                       "the organizer must read this roster as the test says: " + where);
+          assertEquals(organizerSaysSolo,
+                       linksSaySolo,
+                       "the organizer and the answer links must read one event the same way: " + where);
+        }
       }
     }
   }

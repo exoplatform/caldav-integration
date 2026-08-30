@@ -156,9 +156,12 @@ const COPY_SETTINGS = [ANSWER_LINKS, MIRROR_TARGET];
  * `ServerQuirk` enum, so a preset and the drawer's own check-boxes cannot mean
  * different things by the same name.
  *
- * `omitsSoloOrganizer` is the only one here that changes what eXo writes; the
- * wording beside a preset that carries it says so, because a box that alters
- * somebody's calendar must not look like a box that only alters a comparison.
+ * `omitsSoloOrganizer` is the only one here that changes what eXo writes, and
+ * the wording beside a preset that carries it says so, because a box that
+ * alters somebody's calendar must not look like a box that only alters a
+ * comparison. No preset carries it since EXO-89805 — eXo omits a solo
+ * organizer on every server now — but the mapping stays, so a preset naming it
+ * and the drawer's own check-box could still not mean two different things.
  */
 const QUIRKS = {
   dropsConference: {list: DROPPED, patterns: ['CONFERENCE']},
@@ -189,9 +192,16 @@ export const SERVER_PRESETS = [
      * current-user-principal discovery finds the account's calendars, whose
      * real hrefs are GUID-based and could not have been typed anyway.
      *
-     * The four behaviours are what kept copies of a live account in a permanent
+     * The three behaviours are what kept copies of a live account in a permanent
      * repair loop until each was recognised — `CONFERENCE` alone was proved
      * dropped 399 times in one day, five copies rewritten every five minutes.
+     *
+     * A fourth used to be here, `omitsSoloOrganizer`, and it is gone rather than
+     * forgotten: since EXO-89805 eXo names no organizer on an event with nobody
+     * but its creator on it, on every server, so the box buys nothing on a new
+     * registration and pre-ticking one that changes nothing is how a preset
+     * stops being read. The behaviour it described is still BlueMind's; it is
+     * simply no longer BlueMind's problem to declare.
      *
      * The main calendar, because BlueMind's dedicated one is known deficient:
      * it is excluded from the account's free/busy — colleagues booking around
@@ -209,7 +219,7 @@ export const SERVER_PRESETS = [
     name: 'BlueMind',
     icon: null,
     urlPlaceholder: 'https://bluemind.example.org/dav/',
-    quirks: ['dropsConference', 'addsCompatibilityMarkers', 'addsFormattedDescription', 'omitsSoloOrganizer'],
+    quirks: ['dropsConference', 'addsCompatibilityMarkers', 'addsFormattedDescription'],
     [ANSWER_LINKS]: true,
     [MIRROR_TARGET]: MIRROR_TARGET_MAIN_CALENDAR,
   },
