@@ -84,9 +84,12 @@ describe('choosing a preset fills what an administrator could not have known', (
     // Added: proprietary markers eXo never writes. The tick covers the whole
     // family, not the one marker a deployment happened to meet first.
     expect(server.ignoredProperties).toBe('X-MICROSOFT-*,X-MOZ-*,X-ALT-DESC');
-    // Omitted: the one entry that changes what eXo WRITES rather than what it
-    // notices, and it is a case rather than a property name on purpose.
-    expect(server.omittedProperties).toBe('SOLO-ORGANIZER');
+    // Omitted: empty, and it is an answer rather than a gap. The one entry that
+    // changes what eXo WRITES used to be pre-ticked here; since EXO-89805 eXo
+    // names no organizer on an event with nobody but its creator on it, on
+    // every server, so the box would buy nothing and the preset does not carry
+    // one that changes nothing.
+    expect(server.omittedProperties).toBe('');
   });
 
   it('fills Stalwart as a server with nothing to excuse, which is an answer and not a gap', () => {
@@ -110,7 +113,15 @@ describe('choosing a preset fills what an administrator could not have known', (
   });
 
   it('says which preset changes what eXo writes rather than only what it compares', () => {
-    expect(presetChangesWhatIsWritten('bluemind')).toBe(true);
+    // No preset carries such a behaviour today (EXO-89805 removed the only one),
+    // and the question is still asked of every preset rather than answered by
+    // hand: the next one that does must light the warning without anybody
+    // remembering to.
+    SERVER_PRESETS.forEach(preset => {
+      const carriesOne = (preset.quirks || []).includes('omitsSoloOrganizer');
+      expect(presetChangesWhatIsWritten(preset.id)).toBe(carriesOne);
+    });
+    expect(presetChangesWhatIsWritten('bluemind')).toBe(false);
     expect(presetChangesWhatIsWritten('stalwart')).toBe(false);
     expect(presetChangesWhatIsWritten(PRESET_NONE)).toBe(false);
   });
