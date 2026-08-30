@@ -35,6 +35,12 @@ import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
 import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
+import org.exoplatform.agenda.service.AgendaRemoteEventService;
+import org.exoplatform.agenda.model.EventFilter;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -123,6 +129,18 @@ public class CaldavInboundService {
   @Autowired
   private AgendaEventAttendeeService agendaEventAttendeeService;
 
+  /**
+   * Agenda's remote-event mapping, read here rather than only written.
+   *
+   * <p>
+   * The import records a remote identity on every event it creates
+   * (see {@link #remoteIdentity(IcsEvent)}); this is the half that reads it
+   * back, so an object whose event is already in the calendar is adopted
+   * instead of created a second time.
+   */
+  @Autowired
+  private AgendaRemoteEventService agendaRemoteEventService;
+
   @Autowired
   private IcsParser              icsParser;
 
@@ -153,6 +171,28 @@ public class CaldavInboundService {
    * @return how many events were created or updated
    */
   public int importInto(long userIdentityId, CalendarSync pair, Calendar calendar, Instant from, Instant to) {
+    return importInto(userIdentityId, pair, calendar, from, to, adoptable(userIdentityId, calendar, from, to));
+  }
+
+  /**
+   * Imports the objects of one bound collection over a window, consulting a
+   * shared index of the events already in the calendar.
+   *
+   * @param userIdentityId identity of the user
+   * @param pair the binding whose collection is read
+   * @param calendar the eXo calendar standing for it
+   * @param from beginning of the window
+   * @param to end of the window
+   * @param adoptable the events of this calendar an object may be adopted
+   *          into, built at most once for the whole pass
+   * @return how many events were created or updated
+   */
+  private int importInto(long userIdentityId,
+                         CalendarSync pair,
+                         Calendar calendar,
+                         Instant from,
+                         Instant to,
+                         AdoptableEvents adoptable) {
     if (pair == null || calendar == null) {
       return 0;
     }
@@ -173,7 +213,7 @@ public class CaldavInboundService {
       if (sliceEnd.isAfter(to)) {
         sliceEnd = to;
       }
-      touched += importSlice(userIdentityId, pair, calendar, settings, endpoint, sliceStart, sliceEnd);
+      touched += importSlice(userIdentityId, pair, calendar, settings, endpoint, sliceStart, sliceEnd, adoptable);
       sliceStart = sliceEnd;
     }
     return touched;
@@ -189,6 +229,7 @@ public class CaldavInboundService {
    * @param endpoint the declared server
    * @param from beginning of the slice
    * @param to end of the slice
+   * @param adoptable the events of this calendar an object may be adopted into
    * @return how many events this slice created
    */
   private int importSlice(long userIdentityId,
@@ -197,7 +238,8 @@ public class CaldavInboundService {
                           CaldavUserSetting settings,
                           CalDavEndpoint endpoint,
                           Instant from,
-                          Instant to) {
+                          Instant to,
+                          AdoptableEvents adoptable) {
     List<CalendarObject> objects;
     try {
       objects = calDavClient.calendarQuery(endpoint,
@@ -219,7 +261,7 @@ public class CaldavInboundService {
     }
     int touched = 0;
     for (CalendarObject object : objects) {
-      if (importObject(userIdentityId, pair, calendar, object)) {
+      if (importObject(userIdentityId, pair, calendar, object, adoptable)) {
         touched++;
       }
     }
@@ -233,9 +275,14 @@ public class CaldavInboundService {
    * @param pair the binding being read
    * @param calendar the eXo calendar standing for it
    * @param object the object as the server sent it
+   * @param adoptable the events of this calendar an object may be adopted into
    * @return true when an event was created or updated
    */
-  private boolean importObject(long userIdentityId, CalendarSync pair, Calendar calendar, CalendarObject object) {
+  private boolean importObject(long userIdentityId,
+                               CalendarSync pair,
+                               Calendar calendar,
+                               CalendarObject object,
+                               AdoptableEvents adoptable) {
     List<IcsEvent> parsed = icsParser.parse(object.calendarData());
     if (parsed.isEmpty()) {
       return false;
@@ -264,7 +311,7 @@ public class CaldavInboundService {
     if (known != null) {
       return update(userIdentityId, pair, calendar, object, master, known, parsed);
     }
-    return create(userIdentityId, pair, calendar, object, master, parsed);
+    return create(userIdentityId, pair, calendar, object, master, parsed, adoptable);
   }
 
   /**
@@ -402,14 +449,21 @@ public class CaldavInboundService {
    * @param parsed every event the object carried, master first, so the
    *          overrides and exclusions that travel with a series are applied to
    *          the event this call has just created
-   * @return true when the event was created
+   * @param adoptable the events of this calendar an object may be adopted
+   *          into instead of being created again
+   * @return true when the event was created or adopted
    */
   private boolean create(long userIdentityId,
                          CalendarSync pair,
                          Calendar calendar,
                          CalendarObject object,
                          IcsEvent master,
-                         List<IcsEvent> parsed) {
+                         List<IcsEvent> parsed,
+                         AdoptableEvents adoptable) {
+    Long already = adoptable == null ? null : adoptable.forRemoteId(master.getUid());
+    if (already != null) {
+      return adopt(userIdentityId, pair, calendar, object, master, parsed, already, adoptable);
+    }
     Event event = icsEventMapper.toEvent(master, calendar.getId());
     Event created;
     try {
@@ -449,6 +503,79 @@ public class CaldavInboundService {
     caldavSyncStorage.saveObject(mapping);
     applyOccurrences(userIdentityId, calendar, created.getId(), master, parsed);
     return true;
+  }
+
+  /**
+   * Binds this pair to the event the calendar already holds for that object,
+   * rather than creating a second one beside it.
+   *
+   * <p>
+   * The mapping table answers "has <em>this pair</em> seen this object", and
+   * that question is only as durable as the pair. Replace the pair — a
+   * disconnect that dropped it, a binding pruned because its calendar could
+   * not be read for one pass, a collection re-bound by hand — and the answer
+   * becomes no for every object in the collection, so every event is created
+   * again beside the one already there.
+   *
+   * <p>
+   * The event's remote identity outlives the pair, which is what makes this
+   * possible: the import records the server's own UID against every event it
+   * creates ({@link #remoteIdentity(IcsEvent)}), and that record belongs to
+   * the event and the user, not to the binding.
+   *
+   * <p>
+   * <b>Adopting is scoped so it cannot cross a calendar, a user or a server.</b>
+   * A UID is unique on the server that issued it and nowhere else, so a
+   * lookup wide enough to see two accounts could attach one person's meeting
+   * to another's. The candidates are therefore drawn from the events of
+   * <em>this calendar alone</em> ({@link AdoptableEvents}) — one calendar
+   * belongs to one user and is bound by one pair, so the user and the server
+   * come with it — and an event already mapped by any pair is excluded, so a
+   * mirror copy cannot be hijacked by the collection it is a copy of.
+   *
+   * <p>
+   * The mapping is recorded with no etag, then the object is applied through
+   * the ordinary update path: adopting says which event this object is, not
+   * that the two already agree.
+   *
+   * @param userIdentityId identity of the user
+   * @param pair the binding being read
+   * @param calendar the eXo calendar standing for it
+   * @param object the object as the server sent it
+   * @param master the parsed master event
+   * @param parsed every event the object carried, master first
+   * @param localEventId the event this calendar already holds for that UID
+   * @param adoptable the index the candidate came from, so it is not offered
+   *          twice
+   * @return true when the adopted event was brought in line with the object
+   */
+  private boolean adopt(long userIdentityId,
+                        CalendarSync pair,
+                        Calendar calendar,
+                        CalendarObject object,
+                        IcsEvent master,
+                        List<IcsEvent> parsed,
+                        long localEventId,
+                        AdoptableEvents adoptable) {
+    ObjectSync mapping = new ObjectSync();
+    mapping.setCalendarSyncId(pair.getId());
+    mapping.setIcsUid(master.getUid());
+    mapping.setLocalEventId(localEventId);
+    mapping.setRemoteHref(object.href());
+    // Deliberately no etag. The event is this object's, which is all adopting
+    // establishes; whether the two sides agree is the update's question, and
+    // recording an etag here would answer it by assertion.
+    mapping.setLastSync(new Date());
+    ObjectSync saved = caldavSyncStorage.saveObject(mapping);
+    if (saved == null) {
+      saved = mapping;
+    }
+    adoptable.taken(master.getUid());
+    LOG.info("Object {} is already in calendar {} as event {}; it is adopted rather than imported a second time",
+             object.href(),
+             calendar.getId(),
+             localEventId);
+    return update(userIdentityId, pair, calendar, object, master, saved, parsed);
   }
 
   /**
@@ -492,13 +619,13 @@ public class CaldavInboundService {
       // deleted. Either way there is nothing to update, and the mapping is
       // dropped so the object is imported afresh.
       LOG.debug("Mapping {} has no event behind it; it is dropped so the object can be imported again", known.getId());
-      caldavSyncStorage.deleteObject(known.getId());
+      dropMapping(known);
       return false;
     }
     Event local = agendaEventService.getEventById(known.getLocalEventId());
     if (local == null) {
       LOG.debug("Event {} is gone; its mapping is dropped so the object can be imported again", known.getLocalEventId());
-      caldavSyncStorage.deleteObject(known.getId());
+      dropMapping(known);
       return false;
     }
     if (isLocalNewer(local, master)) {
@@ -535,6 +662,23 @@ public class CaldavInboundService {
     caldavSyncStorage.saveObject(known);
     applyOccurrences(userIdentityId, calendar, local.getId(), master, parsed);
     return true;
+  }
+
+  /**
+   * Forgets a mapping, when there is one recorded to forget.
+   *
+   * <p>
+   * A mapping the storage has never seen has no identifier, and asking it to
+   * delete one would fail on the null rather than on anything real. That is
+   * not a hypothetical: an adopted mapping is handed straight to the update
+   * path, and a storage that gave nothing back leaves it unpersisted.
+   *
+   * @param mapping the mapping to forget
+   */
+  private void dropMapping(ObjectSync mapping) {
+    if (mapping.getId() != null) {
+      caldavSyncStorage.deleteObject(mapping.getId());
+    }
   }
 
   /**
@@ -717,15 +861,6 @@ public class CaldavInboundService {
    */
 
   /**
-   * The connected account behind a binding, when it is still usable.
-   *
-   * @param userIdentityId identity of the user
-   * @param pair the binding being read
-   * @return the account, or null when there is none to read with
-   */
-
-
-  /**
    * Brings a collection's contents into eXo and removes what left it, in one
    * conversation with the account.
    *
@@ -777,16 +912,20 @@ public class CaldavInboundService {
     if (pair == null || calendar == null) {
       return VanishedCleanup.nothing();
     }
+    // Built once for the whole pass and shared by both halves, because it is
+    // the expensive part: the window's events are listed once and their
+    // remote identities read once, whichever route the objects arrive by.
+    AdoptableEvents adoptable = adoptable(userIdentityId, calendar, from, to);
     if (!fullRead && StringUtils.isNotBlank(pair.getSyncToken())) {
       CaldavUserSetting settings = settingsFor(userIdentityId, pair);
       if (settings != null) {
-        VanishedCleanup incremental = readWhatChanged(userIdentityId, pair, calendar, settings);
+        VanishedCleanup incremental = readWhatChanged(userIdentityId, pair, calendar, settings, adoptable);
         if (incremental != null) {
           return incremental;
         }
       }
     }
-    importInto(userIdentityId, pair, calendar, from, to);
+    importInto(userIdentityId, pair, calendar, from, to, adoptable);
     return removeVanishedObjects(userIdentityId, pair, calendar.getTitle());
   }
 
@@ -797,13 +936,15 @@ public class CaldavInboundService {
    * @param pair the binding being read
    * @param calendar the eXo calendar it fills
    * @param settings the connected account
+   * @param adoptable the events of this calendar an object may be adopted into
    * @return what was reconciled, or null when the token could not be used and
    *         the caller should read the window in full instead
    */
   private VanishedCleanup readWhatChanged(long userIdentityId,
                                           CalendarSync pair,
                                           Calendar calendar,
-                                          CaldavUserSetting settings) {
+                                          CaldavUserSetting settings,
+                                          AdoptableEvents adoptable) {
     CalDavEndpoint endpoint;
     SyncCollectionResult report;
     try {
@@ -829,7 +970,7 @@ public class CaldavInboundService {
                                  .map(CalendarObject::href)
                                  .filter(StringUtils::isNotBlank)
                                  .toList();
-    if (!changed.isEmpty() && !importByHref(userIdentityId, pair, calendar, settings, endpoint, changed)) {
+    if (!changed.isEmpty() && !importByHref(userIdentityId, pair, calendar, settings, endpoint, changed, adoptable)) {
       // The changes could not be fetched, so the token must not move: it would
       // claim they had been taken in, and nothing would ever fetch them again.
       return VanishedCleanup.nothing();
@@ -849,6 +990,7 @@ public class CaldavInboundService {
    * @param settings the connected account
    * @param endpoint where its server lives
    * @param hrefs the paths the account reported changed
+   * @param adoptable the events of this calendar an object may be adopted into
    * @return true when they were fetched; false when the account could not be
    *         asked, which must stop the token moving
    */
@@ -857,7 +999,8 @@ public class CaldavInboundService {
                                Calendar calendar,
                                CaldavUserSetting settings,
                                CalDavEndpoint endpoint,
-                               List<String> hrefs) {
+                               List<String> hrefs,
+                               AdoptableEvents adoptable) {
     List<CalendarObject> objects;
     try {
       objects = calDavClient.multiget(endpoint,
@@ -876,7 +1019,7 @@ public class CaldavInboundService {
       return false;
     }
     for (CalendarObject object : objects) {
-      importObject(userIdentityId, pair, calendar, object);
+      importObject(userIdentityId, pair, calendar, object, adoptable);
     }
     LOG.debug("{} changed object(s) read from collection {} without re-reading its window",
               objects.size(),
@@ -1415,6 +1558,18 @@ public class CaldavInboundService {
     return true;
   }
 
+  /**
+   * The connected account behind a binding, when it is still usable.
+   *
+   * <p>
+   * Its Javadoc had come adrift from it — left stranded above another method,
+   * where the generated documentation could attach it to nothing. Restored
+   * here while this file was open.
+   *
+   * @param userIdentityId identity of the user
+   * @param pair the binding being read
+   * @return the account, or null when there is none to read with
+   */
   private CaldavUserSetting settingsFor(long userIdentityId, CalendarSync pair) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (settings == null || StringUtils.isBlank(settings.getUsername()) || StringUtils.isBlank(settings.getPassword())) {
@@ -1429,5 +1584,208 @@ public class CaldavInboundService {
       return null;
     }
     return settings;
+  }
+
+  /**
+   * The index of events an object may be adopted into, for one calendar and
+   * one window.
+   *
+   * <p>
+   * Built lazily and at most once per pass. Its cost is one listing of the
+   * window plus one remote-identity read per event of this calendar in it, so
+   * paying it per object would make importing a collection quadratic in its
+   * own size. It is also usually paid for nothing — in the steady state every
+   * object already has a mapping and never reaches the create path — which is
+   * exactly why it is deferred until the first object that does.
+   *
+   * @param userIdentityId identity of the user
+   * @param calendar the eXo calendar being filled
+   * @param from beginning of the window
+   * @param to end of the window
+   * @return the index, which reads nothing until it is first asked
+   */
+  private AdoptableEvents adoptable(long userIdentityId, Calendar calendar, Instant from, Instant to) {
+    return new AdoptableEvents(userIdentityId, calendar, from, to);
+  }
+
+  /**
+   * The events already in one calendar, by the identifier the server knows
+   * them under.
+   *
+   * <p>
+   * <b>The scope is the whole safety argument.</b> An iCalendar UID is unique
+   * on the server that issued it and nowhere else: two accounts, or two
+   * servers, can hand out the same one for entirely different meetings. A
+   * lookup keyed on the UID alone would therefore be able to attach a remote
+   * object to somebody else's event, which is a worse outcome than the
+   * duplication it exists to prevent.
+   *
+   * <p>
+   * So the candidates are the events of <em>one calendar</em>, and the three
+   * boundaries follow from that one fact rather than from three separate
+   * checks:
+   * <ul>
+   * <li><b>calendar</b> — an event is a candidate only if its own
+   * {@code calendarId} is this calendar's; the listing is filtered on it
+   * rather than trusted to be scoped;</li>
+   * <li><b>user</b> — the calendar is read as its owner and filtered on
+   * {@code ownerIds}, and the remote identity is read for that same identity,
+   * so another user's mapping for the same event is not visible here;</li>
+   * <li><b>server</b> — a calendar is bound by one pair, and a pair names one
+   * server, so an event in this calendar came from this server. Only an
+   * identity recorded under this connector counts, so an identifier a
+   * different provider stored is never mistaken for a CalDAV UID.</li>
+   * </ul>
+   *
+   * <p>
+   * An event that any pair already maps is excluded as well. Those are not
+   * orphans looking for a binding — a copy eXo wrote into the mirror is the
+   * obvious case — and adopting one would move it under a collection it does
+   * not belong to.
+   *
+   * <p>
+   * <b>Two things it does not see</b>, both accepted rather than worked
+   * around, because the cost of missing one is a duplicate and the cost of
+   * widening the lookup to catch it is an adoption that crosses a boundary.
+   * Agenda's listing returns confirmed events only, so an event cancelled in
+   * eXo is created afresh rather than adopted; and the window is the import's
+   * own, so an event that has been moved out of it is not a candidate either.
+   *
+   * <p>
+   * <b>What it costs</b>: one listing of the user's window and one identity
+   * read per event of this calendar in it — paid once per pass, and only on a
+   * pass that reaches the create path at all. In the steady state every object
+   * already has a mapping, nothing reaches it, and the index is never built.
+   */
+  private final class AdoptableEvents {
+
+    /** The user whose calendar this is; every read is made as them. */
+    private final long        userIdentityId;
+
+    /** The one calendar an adoption may reach into. */
+    private final Calendar    calendar;
+
+    /** Beginning of the window the pass is importing. */
+    private final Instant     from;
+
+    /** End of that window. */
+    private final Instant     to;
+
+    /** Built on first use, then reused for the whole pass; null until then. */
+    private Map<String, Long> byRemoteId;
+
+    /**
+     * @param userIdentityId identity of the user
+     * @param calendar the eXo calendar being filled
+     * @param from beginning of the window
+     * @param to end of the window
+     */
+    private AdoptableEvents(long userIdentityId, Calendar calendar, Instant from, Instant to) {
+      this.userIdentityId = userIdentityId;
+      this.calendar = calendar;
+      this.from = from;
+      this.to = to;
+    }
+
+    /**
+     * The event this calendar already holds under that server identifier.
+     *
+     * @param remoteId the identifier the server knows the object by
+     * @return the event to adopt, or null when there is none to adopt
+     */
+    private Long forRemoteId(String remoteId) {
+      if (StringUtils.isBlank(remoteId)) {
+        return null;
+      }
+      if (byRemoteId == null) {
+        byRemoteId = build();
+      }
+      return byRemoteId.get(remoteId);
+    }
+
+    /**
+     * Takes one candidate out, so a collection holding the same UID twice
+     * cannot bind two of its objects to one event.
+     *
+     * @param remoteId the identifier just adopted
+     */
+    private void taken(String remoteId) {
+      if (byRemoteId != null) {
+        byRemoteId.remove(remoteId);
+      }
+    }
+
+    /**
+     * Reads the calendar's events and their remote identities.
+     *
+     * @return the candidates by remote identifier, empty when there are none
+     *         or when the calendar could not be read
+     */
+    private Map<String, Long> build() {
+      List<Event> events;
+      try {
+        // Owner-scoped rather than attendee-scoped: the filter is the user's
+        // own personal calendars, which is the widest this may ever look, and
+        // the calendar test below narrows it to one of them. Agenda checks the
+        // owner against the caller, so a filter naming anybody else is refused
+        // rather than answered.
+        EventFilter filter = new EventFilter(List.of(userIdentityId),
+                                             ZonedDateTime.ofInstant(from, ZoneOffset.UTC),
+                                             ZonedDateTime.ofInstant(to, ZoneOffset.UTC));
+        events = agendaEventService.getEvents(filter, ZoneOffset.UTC, userIdentityId);
+      } catch (Exception e) { // NOSONAR agenda declares a checked exception here
+        // Nothing is adopted this pass. That costs a duplicate at worst; the
+        // alternative — adopting against a list that could not be read — is
+        // not available, and failing the import outright would be worse than
+        // either.
+        LOG.warn("The events of calendar {} could not be listed; nothing is adopted this pass",
+                 calendar.getId(),
+                 e);
+        return new HashMap<>();
+      }
+      Set<Long> candidates = new LinkedHashSet<>();
+      for (Event event : events) {
+        if (event == null || event.getCalendarId() != calendar.getId()) {
+          continue;
+        }
+        // The series, not the occurrence agenda expanded: the mapping and the
+        // remote identity are both recorded against the event the object
+        // stands for.
+        long eventId = event.getParentId() > 0 ? event.getParentId() : event.getId();
+        if (eventId > 0) {
+          candidates.add(eventId);
+        }
+      }
+      if (candidates.isEmpty()) {
+        return new HashMap<>();
+      }
+      // Asked for the whole set at once, and asked first: in the steady state
+      // every event here is already mapped, and that is the cheapest way to
+      // learn there is nothing to adopt.
+      Set<Long> alreadyBound = caldavSyncStorage.mappedEventIds(candidates);
+      Map<String, Long> byRemote = new HashMap<>();
+      for (Long eventId : candidates) {
+        if (alreadyBound.contains(eventId)) {
+          continue;
+        }
+        RemoteEvent identity;
+        try {
+          identity = agendaRemoteEventService.findRemoteEvent(eventId, userIdentityId);
+        } catch (RuntimeException e) {
+          LOG.debug("The remote identity of event {} could not be read; it is not offered for adoption", eventId, e);
+          continue;
+        }
+        if (identity == null || StringUtils.isBlank(identity.getRemoteId())
+            || !CONNECTOR_NAME.equals(identity.getRemoteProviderName())) {
+          continue;
+        }
+        // The first wins. Two events of one calendar claiming one identifier
+        // is a state nothing should produce; picking one of them
+        // deterministically at least keeps the pass from oscillating between
+        // them from one run to the next.
+        byRemote.putIfAbsent(identity.getRemoteId(), eventId);
+      }
+      return byRemote;
+    }
   }
 }
