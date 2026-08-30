@@ -18,7 +18,6 @@ package org.exoplatform.caldav.listener;
 
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.model.EventAttendee;
-import org.exoplatform.caldav.service.CaldavPushException;
 import org.exoplatform.caldav.service.CaldavPushService;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.services.listener.Asynchronous;
@@ -95,19 +94,6 @@ public class EventResponseSavedListener extends Listener<EventAttendee, EventAtt
     try {
       pushService.pushAnswer(answer.getIdentityId(), answer.getEventId(), answer.getResponse().name());
     } catch (Exception e) {
-      if (e instanceof CaldavPushException refusal && CaldavPushService.isKnownState(refusal.getCode())) {
-        // Nothing to carry the answer to. The push itself already returns
-        // quietly for an account that is plainly not connected; what reaches
-        // here is the registration this account names having gone away, which
-        // is still a state of the account rather than an answer that failed to
-        // travel.
-        LOG.debug("The answer of user {} to event {} is not carried to their calendar server: {} ({})",
-                  answer.getIdentityId(),
-                  answer.getEventId(),
-                  refusal.getMessage(),
-                  refusal.getCode());
-        return;
-      }
       // The answer is recorded in eXo and that must stand whatever the
       // calendar server says. Carrying it outward is a convenience the
       // verification pass retries.
