@@ -19,6 +19,7 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -31,6 +32,7 @@ import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.atLeast;
@@ -44,16 +46,19 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 
+import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import java.util.ArrayList;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.doAnswer;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import org.junit.jupiter.api.Test;
@@ -62,10 +67,13 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
+import org.exoplatform.container.ExoContainer;
+import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.agenda.model.Calendar;
@@ -144,8 +152,23 @@ public class CaldavSyncServiceTest {
   @Mock
   private CalDavEndpoint             endpoint;
 
+  @Mock
+  private ExoContainer               container;
+
   @InjectMocks
   private CaldavSyncService          service;
+
+  /**
+   * The stated container, while a test is running the seeding — see
+   * {@link #establishAContainer()}.
+   */
+  private MockedStatic<ExoContainerContext> containerContext;
+
+  /**
+   * How deep the seeding queue is, mirrored from the engine so the bound is
+   * asserted rather than assumed.
+   */
+  private static final int           SEEDING_QUEUE_DEPTH = 64;
 
   @BeforeEach
   public void connectAnAccount() {
@@ -1727,12 +1750,153 @@ public class CaldavSyncServiceTest {
     // request timeout against one real account, on every pass — so pressing
     // Synchronise now cost 25 seconds, nearly all of it spent on a repair whose
     // result the user never sees. Nobody waits for a repair.
+    RecordingExecutor seeding = recordSeeding();
+    givenServerCalendars();
+
+    service.syncNowAndWait(USER, LOGIN);
+    establishAContainer();
+    seeding.runQueued();
+
+    // Asserted after the seeding has run, not before it started — which would
+    // prove nothing. Half of the EXO-89804 pin, and the half that is as much a
+    // defect as the other: if the seeding ever drags the verification back onto
+    // the user's path with it, this fails.
+    verify(caldavMirrorVerificationService, never()).verify(anyLong());
+  }
+
+  /**
+   * Connecting seeds the meetings the user already has (EXO-89804).
+   *
+   * <p>
+   * The reported defect, on the entry the connection actually reaches. Agenda
+   * connects in three steps — the drawer stores the credentials, agenda records
+   * the account, agenda calls the connector's {@code sync()} — and this is the
+   * third. It used to run the calendars and stop: the two cheap outward phases
+   * sat inside the same {@code if (verifyMirror)} as the expensive one, so
+   * refusing the verification refused them too. An event created before
+   * connecting was then copied by nothing until a sweep came round, with
+   * nothing anywhere saying it was pending.
+   */
+  @Test
+  public void connectingSeedsTheMeetingsTheUserAlreadyHas() throws Exception {
+    RecordingExecutor seeding = recordSeeding();
+    givenServerCalendars();
+
+    service.syncNowAndWait(USER, LOGIN);
+    establishAContainer();
+    seeding.runQueued();
+
+    InOrder order = inOrder(caldavEventPropagationService, caldavPendingInvitationService);
+    // Settled before seeded, for the reason the sweep settles first: a copy
+    // eXo is behind on is written before anything else looks at it.
+    order.verify(caldavEventPropagationService).retryOwedPushes(USER);
+    order.verify(caldavPendingInvitationService).pushUpcomingMeetings(USER);
+  }
+
+  /**
+   * And nobody clicking <i>Connect</i> waits for those copies.
+   *
+   * <p>
+   * A fresh account reaches sixty days ahead by default, which is a few hundred
+   * writes to somebody else's server. The proof does not time anything: the
+   * executor records what it is handed and runs none of it, so a version that
+   * did the work on the caller's thread has already made the calls by the time
+   * this looks, and a version that did nothing at all has handed nothing over.
+   * Only "handed over, not done here" passes both assertions.
+   */
+  @Test
+  public void theSeedingIsStartedAndNeverAwaited() throws Exception {
+    RecordingExecutor seeding = recordSeeding();
     givenServerCalendars();
 
     service.syncNowAndWait(USER, LOGIN);
 
-    verify(caldavMirrorVerificationService, never()).verify(anyLong());
+    assertEquals(1, seeding.queued(), "connecting must hand the copies to the seeding thread");
     verify(caldavPendingInvitationService, never()).pushUpcomingMeetings(anyLong());
+    verify(caldavEventPropagationService, never()).retryOwedPushes(anyLong());
+  }
+
+  /**
+   * One phase failing does not take the others with it.
+   *
+   * <p>
+   * The neighbour of the defect this task fixed, one level in. Until this was
+   * split, a single {@code try} wrapped all three phases: an arrear the
+   * calendar server refused ended the round, and the seeding and the
+   * verification never happened — three things that are not the same thing,
+   * sharing a fate nobody chose for them. A server that will not accept a
+   * rewrite may have every reason to accept a first copy.
+   */
+  @Test
+  public void aPhaseThatFailsDoesNotTakeTheNextOnesWithIt() throws Exception {
+    givenServerCalendars();
+    when(caldavEventPropagationService.retryOwedPushes(USER)).thenThrow(new IllegalStateException("the server refused a rewrite"));
+
+    service.syncInBackground(USER, LOGIN);
+
+    verify(caldavPendingInvitationService).pushUpcomingMeetings(USER);
+    verify(caldavMirrorVerificationService).verify(USER);
+  }
+
+  /**
+   * The burst is written from one thread, and there is a bound on how many
+   * accounts may be waiting for it.
+   *
+   * <p>
+   * The pacing, asserted rather than described. Twenty people connecting after
+   * a migration, each on a thread of their own, is what a calendar server reads
+   * as an attack — the rig's own proxy was banned by Stalwart's fail2ban for
+   * exactly that, and the ban outlives a container restart. Serialised, twenty
+   * connects cost the server the same instantaneous rate as one.
+   */
+  @Test
+  public void theSeedingIsWrittenFromOneBoundedThread() throws Exception {
+    ThreadPoolExecutor executor = assertInstanceOf(ThreadPoolExecutor.class, service.outboundExecutor);
+
+    assertEquals(1, executor.getCorePoolSize(), "one thread, so bursts queue behind each other rather than pile on");
+    assertEquals(1, executor.getMaximumPoolSize(), "and it must stay one under load, which is when it matters");
+    assertEquals(SEEDING_QUEUE_DEPTH,
+                 executor.getQueue().remainingCapacity(),
+                 "the queue is bounded: an account turned away is seeded by the sweep, an unbounded queue is never bounded at all");
+  }
+
+  /**
+   * Pressing the button twice is one burst, not two.
+   *
+   * <p>
+   * A second burst would find every copy the first wrote already mapped and
+   * write nothing, having asked the server about all of them first.
+   */
+  @Test
+  public void anAccountAlreadyBeingSeededIsNotSeededASecondTime() throws Exception {
+    RecordingExecutor seeding = recordSeeding();
+    givenServerCalendars();
+
+    service.syncNowAndWait(USER, LOGIN);
+    service.syncNowAndWait(USER, LOGIN);
+
+    assertEquals(1, seeding.queued(), "a burst already waiting to be written is not queued a second time");
+  }
+
+  /**
+   * Opening the agenda seeds nothing.
+   *
+   * <p>
+   * A read must not become a burst of writes. The throttled page-load entry
+   * carries no outward phase at all, which is what keeps rendering a calendar
+   * free of any obligation towards a remote server.
+   */
+  @Test
+  public void openingTheAgendaSeedsNothing() throws Exception {
+    RecordingExecutor seeding = recordSeeding();
+    givenServerCalendars();
+
+    service.syncIfDue(USER, LOGIN);
+
+    assertEquals(0, seeding.queued(), "a page load hands no copies to anybody");
+    verify(caldavEventPropagationService, never()).retryOwedPushes(anyLong());
+    verify(caldavPendingInvitationService, never()).pushUpcomingMeetings(anyLong());
+    verify(caldavMirrorVerificationService, never()).verify(anyLong());
   }
 
   @Test
@@ -1775,14 +1939,170 @@ public class CaldavSyncServiceTest {
    * And a user pressing Synchronise now does not wait for it, for the reason
    * the mirror check does not run there either: settling an arrear talks to
    * somebody else's server, and nobody presses a button to wait on that.
+   *
+   * <p>
+   * <b>Not waiting is not the same as not doing</b> (EXO-89804). Until this
+   * was split, the arrear was skipped outright on the user's path because it
+   * shared a switch with the verification — so the one thing a connection
+   * needed was refused by a decision taken about something else. It runs now,
+   * on a thread of its own; what this pins is that the caller's thread is not
+   * the one that pays for it.
    */
   @Test
   public void aUserTriggeredSyncDoesNotWaitForWhatEXoOwesToBeSettled() throws Exception {
+    RecordingExecutor seeding = recordSeeding();
     givenServerCalendars();
 
     service.syncNowAndWait(USER, LOGIN);
 
     verify(caldavEventPropagationService, never()).retryOwedPushes(anyLong());
+
+    // Not waiting is not the same as not doing (EXO-89804). Until this was
+    // split, the arrear was skipped outright on the user's path because it
+    // shared a switch with the verification — so the one thing a connection
+    // needed was refused by a decision taken about something else.
+    establishAContainer();
+    seeding.runQueued();
+    verify(caldavEventPropagationService).retryOwedPushes(USER);
+  }
+
+  /**
+   * Puts an executor in place that records the seeding instead of running it,
+   * so a test can say what happened on the caller's thread and what did not.
+   *
+   * @return the executor, to run the recorded work when the test is ready
+   */
+  private RecordingExecutor recordSeeding() {
+    RecordingExecutor executor = new RecordingExecutor();
+    service.outboundExecutor = executor;
+    return executor;
+  }
+
+  /**
+   * States a container the woven aspect can work with.
+   *
+   * <p>
+   * {@code seedCopies} carries {@code @ContainerTransactional}, and that aspect
+   * is woven into the class under test: it reads the current container and,
+   * finding the JVM-wide root one a unit test ends up with, calls
+   * {@code PortalContainer.getInstance()} — which in a unit test tries to build
+   * a real portal and dies on the first optional add-on missing from this
+   * module's classpath. That is the annotation working, not failing:
+   * establishing the container is exactly what it is for, and exactly what a
+   * plain executor thread needs. So the condition is <i>stated</i>, with the
+   * same {@code mockStatic} discipline {@code CaldavSyncSweepJobTest} uses —
+   * and only in the tests that actually run the seeding, since the static is
+   * scoped to this thread.
+   */
+  private void establishAContainer() {
+    containerContext = mockStatic(ExoContainerContext.class);
+    containerContext.when(ExoContainerContext::getCurrentContainer).thenReturn(container);
+  }
+
+  /**
+   * Takes the stated container away again: it is scoped to one test, and a
+   * static left mocked would be read by whatever runs next in this fork.
+   */
+  @AfterEach
+  public void forgetTheContainer() {
+    if (containerContext != null) {
+      containerContext.close();
+      containerContext = null;
+    }
+  }
+
+  /**
+   * An executor that keeps what it is handed until a test asks for it to run.
+   *
+   * <p>
+   * Deliberately not a same-thread executor: what these tests are about is that
+   * the caller hands the work over rather than doing it, and an executor that
+   * runs inline cannot tell the two apart.
+   */
+  private static final class RecordingExecutor extends AbstractExecutorService {
+
+    private final List<Runnable> handedOver = new ArrayList<>();
+
+    private volatile boolean     stopped;
+
+    /**
+     * Keeps the task instead of running it.
+     *
+     * @param command the task
+     */
+    @Override
+    public void execute(Runnable command) {
+      handedOver.add(command);
+    }
+
+    /**
+     * How many tasks have been handed over.
+     *
+     * @return the count
+     */
+    int queued() {
+      return handedOver.size();
+    }
+
+    /**
+     * Runs everything handed over so far, on the calling thread.
+     */
+    void runQueued() {
+      List<Runnable> pending = new ArrayList<>(handedOver);
+      handedOver.clear();
+      pending.forEach(Runnable::run);
+    }
+
+    /**
+     * Marks this executor stopped; nothing is ever in flight.
+     */
+    @Override
+    public void shutdown() {
+      stopped = true;
+    }
+
+    /**
+     * Marks this executor stopped and reports nothing left over.
+     *
+     * @return an empty list, always
+     */
+    @Override
+    public List<Runnable> shutdownNow() {
+      stopped = true;
+      return List.of();
+    }
+
+    /**
+     * Whether shutdown has been asked for.
+     *
+     * @return true once it has
+     */
+    @Override
+    public boolean isShutdown() {
+      return stopped;
+    }
+
+    /**
+     * Whether this executor has finished; nothing is ever in flight.
+     *
+     * @return true once shutdown has been asked for
+     */
+    @Override
+    public boolean isTerminated() {
+      return stopped;
+    }
+
+    /**
+     * Waits for nothing.
+     *
+     * @param timeout ignored
+     * @param unit ignored
+     * @return true, always
+     */
+    @Override
+    public boolean awaitTermination(long timeout, TimeUnit unit) {
+      return true;
+    }
   }
 
   private CaldavUserSetting settings() {
