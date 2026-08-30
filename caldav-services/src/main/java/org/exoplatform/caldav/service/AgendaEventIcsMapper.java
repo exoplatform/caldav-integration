@@ -165,7 +165,7 @@ public class AgendaEventIcsMapper {
                    .uid(icsUid)
                    .summary(event.getSummary())
                    .location(event.getLocation())
-                   .description(description(event, conference, link, pusherIdentityId))
+                   .description(description(event, roster, conference, link, pusherIdentityId))
                    .eventUrl(link)
                    .conferenceUrl(conference)
                    .start(instantOf(event.getStart()))
@@ -219,19 +219,25 @@ public class AgendaEventIcsMapper {
    * into this same field.
    *
    * @param event the event being copied
+   * @param roster the event's attendees as agenda holds them, which decide
+   *          whether there is an invitation to offer an answer to at all
    * @param conference the conference link, already resolved, or null
    * @param link the link back to the event in eXo, already resolved, or null
    * @param pusherIdentityId the user whose calendar receives the copy, whose
    *          language the text is written in
    * @return the description the copy carries
    */
-  private String description(Event event, String conference, String link, long pusherIdentityId) {
+  private String description(Event event,
+                             List<EventAttendee> roster,
+                             String conference,
+                             String link,
+                             long pusherIdentityId) {
     return EventIcsBuilder.description(localeOf(pusherIdentityId),
                                        fullNameOf(event.getCreatorId()),
                                        spaceNameOf(event),
                                        conference,
                                        link,
-                                       rsvpLinks(event, pusherIdentityId),
+                                       rsvpLinks(event, roster, pusherIdentityId),
                                        event.getDescription());
   }
 
@@ -286,13 +292,42 @@ public class AgendaEventIcsMapper {
    * agenda's {@code EventIcsBuilder} directly and never passes through this
    * class at all.
    *
+   * <p>
+   * <b>An event with nobody on it but its creator gets none</b> (EXO-89797).
+   * A meeting is what an answer answers: an event the user made for themselves,
+   * with no attendee list to be on, carries no invitation, and Accept / Decline
+   * / Tentative on it are three controls with no question in front of them. The
+   * links minted here are live and tokenised, so offering them there is not
+   * merely odd — a click records an RSVP against an event nobody was invited
+   * to. Decided on the very predicate {@link #organizerOf} uses, and for the
+   * matching reason: an event with no other participants has neither an
+   * organizer to name nor an invitation to answer, and those two readings of
+   * one event must not be allowed to disagree.
+   *
+   * <p>
+   * <b>Asked before the per-server switch, not inside it.</b> The two questions
+   * are different in kind: {@code answerLinksInCopy} says whether <i>this
+   * server's</i> clients already offer their own RSVP control, while soloness is
+   * a property of the event and reads the same on every server there is. Folding
+   * the first into the second would make the fix arrive only where an
+   * administrator had already left the links on, which is exactly the deployment
+   * that shows the defect.
+   *
    * @param event the event being copied
+   * @param roster the event's attendees as agenda holds them, read once by
+   *          {@link #toIcsEvent(Event, String, long)} and passed down here —
+   *          asking agenda a second time would double the cost of a sweep that
+   *          already renders every copy it checks
    * @param pusherIdentityId the user whose calendar receives the copy, and the
    *          only person whose token may appear in it
-   * @return the answer links keyed by the answer they record, empty when no
-   *         link can be offered or the server was told to offer none
+   * @return the answer links keyed by the answer they record, empty when the
+   *         event invites nobody, when no link can be offered, or when the
+   *         server was told to offer none
    */
-  private Map<EventAttendeeResponse, String> rsvpLinks(Event event, long pusherIdentityId) {
+  private Map<EventAttendeeResponse, String> rsvpLinks(Event event, List<EventAttendee> roster, long pusherIdentityId) {
+    if (soloEvent(event, roster)) {
+      return Collections.emptyMap();
+    }
     if (!answerLinksEnabled(pusherIdentityId)) {
       return Collections.emptyMap();
     }
@@ -573,10 +608,11 @@ public class AgendaEventIcsMapper {
    * The event's roster as agenda holds it, read once per mapping.
    *
    * <p>
-   * Read once and passed on, because two decisions need it now: who the copy
-   * names, and — since EXO-89775 — whether the event has anybody on it but its
-   * creator. Asking agenda twice for one render would double the cost of a sweep
-   * that already renders every copy it checks.
+   * Read once and passed on, because three decisions need it now: who the copy
+   * names, whether the event has anybody on it but its creator (EXO-89775), and
+   * whether it therefore carries an invitation to offer an answer to at all
+   * (EXO-89797). Asking agenda three times for one render would triple the cost
+   * of a sweep that already renders every copy it checks.
    *
    * @param eventId the agenda event
    * @return the roster, never null
@@ -636,6 +672,14 @@ public class AgendaEventIcsMapper {
 
   /**
    * Whether the event has nobody on it but the person who created it.
+   *
+   * <p>
+   * <b>The one place the question is asked</b>, and deliberately so. Two
+   * properties of a copy turn on it — whether it names an ORGANIZER on a server
+   * declared to drop one (EXO-89775) and whether its description offers answer
+   * links (EXO-89797) — and an event that is a meeting for one of those and a
+   * private appointment for the other would be a copy contradicting itself. Any
+   * further reader of "is this a meeting" belongs here too, not beside it.
    *
    * @param event the agenda event
    * @param roster the event's attendees as agenda holds them
