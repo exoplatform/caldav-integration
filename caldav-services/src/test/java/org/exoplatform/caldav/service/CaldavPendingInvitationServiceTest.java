@@ -16,8 +16,11 @@
  */
 package org.exoplatform.caldav.service;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -34,6 +37,9 @@ import static org.mockito.Mockito.when;
 import java.util.ArrayList;
 import java.util.Set;
 import java.util.List;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -56,6 +62,7 @@ import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.agenda.service.AgendaUserSettingsService;
+import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 
@@ -426,6 +433,96 @@ public class CaldavPendingInvitationServiceTest {
     assertFalse(service.seedMeeting(USER, 5L));
 
     verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+  }
+
+  /**
+   * The state behind EXO-89798, held to the control flow it always had.
+   *
+   * <p>
+   * An invitee who never connected a CalDAV account is an ordinary state, and
+   * the whole change is about how loudly it is recorded — not about what
+   * happens. So this pins the behaviour rather than the log: the refusal is
+   * absorbed, the caller is told no, and nothing escapes to break the fan-out
+   * to the other attendees of the same meeting.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
+  @Test
+  public void aUserWithNoConnectedAccountIsRefusedWithoutThrowing() throws Exception {
+    givenEvent(5L, SPACE, EventStatus.CONFIRMED);
+    givenCalendar(SPACE, 7L);
+    when(caldavPushService.pushAgendaEvent(USER, 5L)).thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
+                                                                                        "User 42 has no connected CalDAV account"));
+
+    assertFalse(assertDoesNotThrow(() -> service.seedMeeting(USER, 5L)));
+  }
+
+  /**
+   * The one test in this change that reads the log, and the only one that can
+   * prove what the change actually claims (EXO-89798).
+   *
+   * <p>
+   * Everywhere else the classification is tested as what it is — a pure
+   * function of the code — and each call site is pinned on its behaviour, which
+   * is what a reader of those tests should care about. But at every one of
+   * those sites the observable difference between a known state and a failure
+   * <i>is</i> the log line, so a suite that never looks at one cannot tell a
+   * working filter from a branch that quietly does nothing. This looks, once,
+   * at the site the incident was reported on.
+   *
+   * <p>
+   * Both halves, and the second is the guard against a silencer: a state is
+   * recorded at debug with no trace attached, and a failure is still a warn
+   * that carries its trace. A change that quietened both would pass the first
+   * assertion on its own.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
+  @Test
+  public void aKnownStateIsRecordedQuietlyAndAFailureIsStillAnIncident() throws Exception {
+    givenEvent(5L, SPACE, EventStatus.CONFIRMED);
+    givenCalendar(SPACE, 7L);
+
+    List<ILoggingEvent> recorded;
+    try (LogRecorder log = new LogRecorder(CaldavPendingInvitationService.class)) {
+      when(caldavPushService.pushAgendaEvent(USER, 5L)).thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
+                                                                                          "no account"),
+                                                                  new CaldavPushException(CaldavPushService.SAVE,
+                                                                                          "the server refused the write"));
+
+      service.seedMeeting(USER, 5L);
+      service.seedMeeting(USER, 5L);
+      recorded = List.copyOf(log.events());
+    }
+
+    assertEquals(2, recorded.size(), "each refusal is recorded exactly once");
+
+    ILoggingEvent state = recorded.get(0);
+    assertEquals(Level.DEBUG, state.getLevel(), "a user who never connected an account is not an incident");
+    assertNull(state.getThrowableProxy(), "a known state does not need eleven frames to be understood");
+
+    ILoggingEvent failure = recorded.get(1);
+    assertEquals(Level.WARN, failure.getLevel(), "a refused write is still a failure and still has to be seen");
+    assertNotNull(failure.getThrowableProxy(), "a failure keeps the trace that says where it came from");
+  }
+
+  /**
+   * The same absorption in the sweep, and the reason the sweep is worth a test
+   * of its own: it is the loop the report watched, where one unconnected
+   * invitee must not cost the meeting its other copies.
+   *
+   * @throws Exception never — the agenda mocks declare checked exceptions
+   */
+  @Test
+  public void anUnconnectedInviteeDoesNotStopTheSweep() throws Exception {
+    givenUpcoming(event(5L, 0, SPACE, EventStatus.CONFIRMED), event(6L, 0, SPACE, EventStatus.CONFIRMED));
+    givenCalendar(SPACE, 7L);
+    when(caldavPushService.pushAgendaEvent(eq(USER),
+                                           eq(5L))).thenThrow(new CaldavPushException(CaldavPushService.NOT_CONNECTED,
+                                                                                      "User 42 has no connected CalDAV account"));
+    when(caldavPushService.pushAgendaEvent(eq(USER), eq(6L))).thenReturn(new ObjectSync());
+
+    assertEquals(1, assertDoesNotThrow(() -> service.pushUpcomingMeetings(USER)));
   }
 
   /**

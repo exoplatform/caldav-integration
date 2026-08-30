@@ -27,6 +27,15 @@ package org.exoplatform.caldav.service;
  * stops building iCalendar in this PR but keeps rendering the failures, and a
  * renamed code would silently degrade every one of them into the generic
  * message.
+ *
+ * <p>
+ * Not every code is a failure, whatever this class is called. Some describe a
+ * state of the subject that no retry changes — a user who never connected an
+ * account, one who has not said where their copies go — and those are recorded
+ * at debug, without a trace, rather than as incidents nobody can act on.
+ * {@link CaldavPushService#isKnownState} draws the line, and a code left out of
+ * it is a failure: see the two sets declared under the vocabulary there, which
+ * a new code has to join one of.
  */
 public class CaldavPushException extends RuntimeException {
 
