@@ -103,6 +103,16 @@ i18nPromise.finally(() => {
     rank: 29,
     vueComponent: Vue.options.components['caldav-calendar-states-section'],
   });
+  // Above the calendars that cannot synchronise, and for the same reason that
+  // one sits above the hidden calendars: this row says a meeting the user
+  // created is not on their server yet, which is the most urgent of the three
+  // and the one they are most likely to have come to the page about. Absent
+  // whenever nothing is outstanding, which is the usual case (EXO-89803).
+  extensionRegistry.registerExtension('agenda-user-settings', 'sections', {
+    id: 'caldavPendingCopies',
+    rank: 28,
+    vueComponent: Vue.options.components['caldav-pending-copies-section'],
+  });
   // Just under the hidden calendars: pointing a phone at the account is an
   // offer, not a problem, so it comes after the rows that name problems. In
   // the healthy case both problem rows are absent and this is the only

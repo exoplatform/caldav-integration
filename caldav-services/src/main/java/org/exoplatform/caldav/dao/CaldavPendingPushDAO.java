@@ -87,6 +87,30 @@ public interface CaldavPendingPushDAO extends JpaRepository<CaldavPendingPushEnt
                                                 Pageable pageable);
 
   /**
+   * How many of one account's copies are behind and still worth attempting.
+   *
+   * <p>
+   * The same predicate as {@link #findAttemptable}, counted rather than
+   * listed, and it has to stay the same predicate: this number is shown to the
+   * user as "copies eXo has not managed to write yet", and a count that
+   * included the obligations eXo has given up on would promise a retry that is
+   * never coming. Those are a different sentence, said once at WARN to whoever
+   * runs the platform.
+   *
+   * <p>
+   * Spelled out as a query for the reason {@link #findAttemptable} is: the
+   * derived spelling would carry a {@code LessThan} that reads as a property
+   * name to anything checking this repository's method names.
+   *
+   * @param userIdentityId whose calendar the copies sit in
+   * @param maxAttempts how many refusals are argued with before stopping
+   * @return the count, zero on a converged account
+   */
+  @Query("SELECT COUNT(q) FROM CaldavPendingPushEntity q WHERE q.userIdentityId = :userIdentityId"
+      + " AND q.attempts < :maxAttempts")
+  long countAttemptable(@Param("userIdentityId") long userIdentityId, @Param("maxAttempts") int maxAttempts);
+
+  /**
    * Records one more refusal against an obligation.
    *
    * <p>
