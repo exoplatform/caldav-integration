@@ -254,11 +254,22 @@ public class CaldavEventPropagationService {
    * {@link CaldavPendingInvitationService}, which already owns the question
    * "does this user get a copy of this meeting" for the background seeding pass
    * — the account has to be connected, copies have to be enabled on it, the
-   * meeting has to be CONFIRMED rather than a date poll, an event of the user's
-   * own calendars belongs to their own collections, and a meeting that already
-   * has a copy is left to the machinery that owns it. Asking the same service
-   * here is what keeps the answer the same whichever path arrives at it, and it
-   * is the guard that makes a second trigger on the same creation write nothing.
+   * meeting has to be CONFIRMED rather than a date poll, the user must not have
+   * declined it, and a meeting that already has a copy is left to the machinery
+   * that owns it. Asking the same service here is what keeps the answer the same
+   * whichever path arrives at it, and it is the guard that makes a second
+   * trigger on the same creation write nothing.
+   *
+   * <p>
+   * Keeping the answer the same is not a figure of speech; it stopped being
+   * true once and had to be restored (EXO-89796). While the shared decision
+   * also refused any event of a calendar the user owns, the two paths diverged
+   * in practice: an event somebody made for themselves was copied by their
+   * browser on save and never seeded afterwards, so the same event was copied
+   * or not according only to whether it predated the connection. Where an event
+   * belongs is {@link CaldavPushService#pushAgendaEvent(long, long)}'s question
+   * and it answers it — own calendar to its own collection, anything else to
+   * the mirror — so the shared decision no longer duplicates it.
    *
    * <p>
    * Only the attendees that are <b>users</b> are considered. A space invited to
@@ -297,6 +308,14 @@ public class CaldavEventPropagationService {
    * a gap this does not close rather than one it opens; closing it means moving
    * the author's copy off the browser and onto the server, which is a change to
    * how agenda's connector panel saves, not to this listener.
+   *
+   * <p>
+   * That sentence was a promise the seeding pass could not keep until
+   * EXO-89796, and this is the one line worth reading twice, because it is how
+   * the defect stayed invisible: the pass refused own-calendar events outright
+   * and listed only events with an attendee row, so an author's own copy was
+   * left to a pass that would never write it. The pass now asks after the
+   * events of the user's own calendars too, and the promise holds.
    *
    * @param eventId the agenda event that was just created
    * @param authorIdentityId whoever created it, as the broadcast names them;
