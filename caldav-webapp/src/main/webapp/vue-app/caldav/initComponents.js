@@ -20,6 +20,7 @@ import CaldavSettingsDrawer from './components/CaldavSettingsDrawer.vue';
 import CaldavHiddenCalendarsSection from './components/CaldavHiddenCalendarsSection.vue';
 import CaldavHiddenCalendarsDrawer from './components/CaldavHiddenCalendarsDrawer.vue';
 import CaldavCalendarStatesSection from './components/CaldavCalendarStatesSection.vue';
+import CaldavPendingCopiesSection from './components/CaldavPendingCopiesSection.vue';
 import CaldavCalendarStatesDrawer from './components/CaldavCalendarStatesDrawer.vue';
 import CaldavDeviceSetupSection from './components/CaldavDeviceSetupSection.vue';
 import CaldavDeviceSetupDrawer from './components/CaldavDeviceSetupDrawer.vue';
@@ -39,6 +40,7 @@ const components = {
   'caldav-hidden-calendars-section': CaldavHiddenCalendarsSection,
   'caldav-hidden-calendars-drawer': CaldavHiddenCalendarsDrawer,
   'caldav-calendar-states-section': CaldavCalendarStatesSection,
+  'caldav-pending-copies-section': CaldavPendingCopiesSection,
   'caldav-calendar-states-drawer': CaldavCalendarStatesDrawer,
   'caldav-device-setup-section': CaldavDeviceSetupSection,
   'caldav-device-setup-drawer': CaldavDeviceSetupDrawer,

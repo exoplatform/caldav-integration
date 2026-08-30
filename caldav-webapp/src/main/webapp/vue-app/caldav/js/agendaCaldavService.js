@@ -509,6 +509,28 @@ export const saveSyncTuning = tuning => {
  *
  * @returns {Promise<Array>} the states, empty when everything is well
  */
+/**
+ * How many meeting copies eXo still owes this user's calendar and has not
+ * managed to write.
+ *
+ * Only the ones it is still attempting: a copy it has given up on is a
+ * different problem with a different answer, and lumping the two together
+ * would tell somebody to wait for a write that is never coming.
+ *
+ * @returns {Promise<Number>} the count, zero when everything has landed
+ */
+export const getOwedCopies = () => {
+  return fetch(`${window.location.origin}/caldav/rest/push/owed`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
 export const getCalendarSyncStates = () => {
   return fetch(`${window.location.origin}/caldav/rest/calendar-states`, {
     credentials: 'include',

@@ -857,6 +857,55 @@ public class CaldavEventPropagationService {
   }
 
   /**
+   * How many of a user's calendar copies eXo holds a write for and has not
+   * managed to make.
+   *
+   * <p>
+   * <b>The number that makes the backstop visible.</b> Everything about the
+   * obligation table was, until now, addressed to whoever reads the server
+   * log: a copy that could not be written left a row, the sweep settled it
+   * minutes later, and the person whose calendar it was had no way to tell
+   * that anything was outstanding — the meeting simply was not there, which is
+   * indistinguishable from the feature being broken.
+   *
+   * <p>
+   * <b>What it deliberately does not count, and this is the part worth reading
+   * twice.</b> A meeting that has just been <i>created</i> and could not be
+   * copied is <b>not</b> in here, and cannot be: an obligation names a mapping
+   * row, and a copy that was never written has none. Only a rewrite and a
+   * removal are recorded, because only those address a copy that already
+   * exists. What carries a missed creation is the seeding pass — a window
+   * query, not a recorded obligation — so this number is honest about
+   * <i>this</i> kind of lateness and silent about the other. The cure for the
+   * other is not a queue to look at, it is
+   * {@link CaldavSyncService#establishDestinations(long)}: give the copies
+   * somewhere to go at the moment the account is connected, and there is no
+   * lateness to narrate.
+   *
+   * <p>
+   * Abandoned obligations are left out for the same reason the number exists:
+   * it is read as "eXo is still trying". A copy eXo has given up on is a
+   * different sentence, said to the administrator once, at WARN, by
+   * {@link #refuse}.
+   *
+   * @param userIdentityId whose calendar's copies are counted
+   * @return how many writes are outstanding, zero when the store cannot be
+   *         read — an unreadable count is not evidence of a backlog, and
+   *         claiming one that may not exist is worse than saying nothing
+   */
+  public long owedCopies(long userIdentityId) {
+    if (userIdentityId <= 0) {
+      return 0;
+    }
+    try {
+      return caldavPendingPushStorage.owedAndStillTrying(userIdentityId, maxPushAttempts);
+    } catch (Exception | LinkageError e) {
+      LOG.debug("What eXo owes the copies of user {} could not be counted", userIdentityId, e);
+      return 0;
+    }
+  }
+
+  /**
    * Makes one owed write, and records the refusal when it does not land.
    *
    * <p>
