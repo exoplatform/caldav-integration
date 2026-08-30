@@ -110,6 +110,16 @@ public class CaldavMirrorRelocationService {
   /** How many mapping rows one pass reads at a time, as the verification pass reads them. */
   private static final int        PAGE_SIZE = 200;
 
+  /**
+   * What the account's destination is remembered under in {@link #reported}.
+   *
+   * <p>
+   * The set is keyed by user and href, and this stands in the href's place for
+   * the one entry that is about no particular copy. It cannot collide with a
+   * real path: every one of those is server-absolute and starts with a slash.
+   */
+  private static final String     DESTINATION = "destination";
+
   @Autowired
   private CalDavClient            calDavClient;
 
@@ -192,6 +202,18 @@ public class CaldavMirrorRelocationService {
    * the account names none of refuses. Both mean "not yet", and both leave the
    * change unstamped so that the pass which can finish it does.
    *
+   * <p>
+   * <b>But they are not the same silence, and this used to make them one.</b>
+   * Every {@code RuntimeException} was recorded at debug, so a state of the
+   * account and an outright failure of the attempt — rejected credentials, a
+   * refused collection, a 500 — read identically in a log, which is to say not
+   * at all. A state a person has to clear is recorded at debug, without a
+   * trace, because the service that decides the destination has already said it
+   * once; anything else is a failure and is said at warn with its trace, once,
+   * through the same {@link #sayOnce} the refused removals go through, so a
+   * server that is down for an afternoon costs one line rather than one per
+   * sweep.
+   *
    * @param userIdentityId identity of the user
    * @return the collection the copies belong in, or null when none could be
    *         established
@@ -199,11 +221,67 @@ public class CaldavMirrorRelocationService {
   private String destinationOf(long userIdentityId) {
     try {
       MirrorTarget target = caldavPushService.ensureMirror(userIdentityId);
-      return target == null || StringUtils.isBlank(target.href()) ? null : target.href();
+      String href = target == null || StringUtils.isBlank(target.href()) ? null : target.href();
+      if (href != null) {
+        // Out of whatever state this account was in: the next spell of one is
+        // said again rather than remembered as already reported.
+        reported.remove(userIdentityId + "|" + DESTINATION);
+      }
+      return href;
+    } catch (CaldavPushException refusal) {
+      if (isDeferredState(refusal.getCode())) {
+        LOG.debug("User {} has no destination for their copies yet ({}); they are not moved this pass",
+                  userIdentityId,
+                  refusal.getCode());
+      } else {
+        sayOnce(userIdentityId,
+                DESTINATION,
+                "The destination of the meeting copies of user {} could not be established ({}); their copies are not"
+                    + " moved until it can be",
+                userIdentityId,
+                refusal.getCode(),
+                refusal);
+      }
+      return null;
     } catch (RuntimeException | LinkageError e) {
-      LOG.debug("No destination could be established for user {}; their copies are not moved this pass", userIdentityId, e);
+      sayOnce(userIdentityId,
+              DESTINATION,
+              "The destination of the meeting copies of user {} could not be established; their copies are not moved"
+                  + " until it can be",
+              userIdentityId,
+              e);
       return null;
     }
+  }
+
+  /**
+   * Whether a refusal names a state of the account rather than a failed
+   * attempt.
+   *
+   * <p>
+   * The three this method's own contract already describes: an account that is
+   * no longer connected, one whose registration leaves the destination to a
+   * user who has not chosen, and one asked for a main calendar that cannot be
+   * resolved. None of them is an incident, none of them is cleared by retrying,
+   * and {@code CaldavPushService} has already said the last of them once, at
+   * warn, naming the server and what was asked for.
+   *
+   * <p>
+   * <b>Anything else is a failure</b>, including a code this version does not
+   * know: a default of "state" would make this a silencer the next time the
+   * vocabulary grows. EXO-89798 is introducing {@code isKnownState} over the
+   * same vocabulary in {@code CaldavPushService}; when it lands, this method is
+   * a call to it and nothing else.
+   *
+   * @param code the code the refusal carries, may be null
+   * @return true when only a person can clear it
+   */
+  private boolean isDeferredState(String code) {
+    // EXO-89798's classification, not a second list beside it. This shipped as
+    // a local copy only because that branch was unmerged; it has since landed,
+    // so the two collapse as its javadoc said they would. Delegating also picks
+    // up the guard rail: a code added later must be classified or a test fails.
+    return CaldavPushService.isKnownState(code);
   }
 
   /**
@@ -613,9 +691,11 @@ public class CaldavMirrorRelocationService {
    * exactly once.
    *
    * @param userIdentityId identity of the user
-   * @param href the copy's old path
+   * @param href the copy's old path, or {@link #DESTINATION} for the one thing
+   *          this says that is about no particular copy
    * @param message the line to write, with its placeholders
-   * @param arguments what fills them
+   * @param arguments what fills them — a trailing throwable is written as the
+   *          line's trace, as everywhere else in this add-on
    */
   private void sayOnce(long userIdentityId, String href, String message, Object... arguments) {
     if (reported.add(userIdentityId + "|" + href)) {
