@@ -484,6 +484,71 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
+   * A meeting somebody made for themselves reaches nothing here, and — the
+   * half that matters — leaves nothing owed either (EXO-89803).
+   *
+   * <p>
+   * This is the finding that decided the shape of EXO-89803, and it is worth
+   * stating as a test because reading the log cannot tell it apart from the
+   * other possibility. A solo event has one attendee, its author, whose own
+   * copy the browser writes; the set is therefore empty and the method returns
+   * at DEBUG before it asks anybody anything. What "nothing attempted" costs is
+   * that <b>no obligation is recorded</b>: an obligation names a mapping row,
+   * a copy that was never written has none, and so a creation that could not be
+   * copied is invisible to {@link CaldavEventPropagationService#retryOwedPushes}
+   * and to the count the settings page shows. Only the seeding pass carries it,
+   * on the next sweep — which is exactly the half-hour wait reported.
+   *
+   * <p>
+   * Pinned so that a later change cannot quietly start claiming the obligation
+   * table covers creations. If one ever should, the mapping row has to exist
+   * first, and that is a different design.
+   */
+  @Test
+  public void aSoloCreationAttemptsNothingAndOwesNothing() {
+    givenInvited(user(AUTHOR));
+
+    assertEquals(0, service.propagateCreation(EVENT, AUTHOR));
+
+    verify(caldavPendingInvitationService, never()).seedMeeting(anyLong(), anyLong());
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+    verify(caldavPendingPushStorage, never()).owe(anyLong(), anyLong(), any(), any(), anyString());
+  }
+
+  /**
+   * The count the settings page reads is the one eXo is still attempting, for
+   * that user, and an unreadable store answers nothing rather than a number
+   * nobody can trust.
+   */
+  @Test
+  public void theOwedCountIsWhatIsStillBeingAttempted() {
+    caldavPendingPushStorage.owe(701L, ALICE, PendingPushKind.REWRITE, EVENT, "uid-a");
+    caldavPendingPushStorage.owe(702L, ALICE, PendingPushKind.REWRITE, EVENT, "uid-b");
+    caldavPendingPushStorage.owe(703L, BOB, PendingPushKind.REWRITE, EVENT, "uid-c");
+
+    assertEquals(2L, service.owedCopies(ALICE), "one account's copies, not everybody's");
+    assertEquals(0L, service.owedCopies(0L), "no user, no count, and no query");
+
+    for (int refusal = 0; refusal < MAX_ATTEMPTS; refusal++) {
+      caldavPendingPushStorage.refused(caldavPendingPushStorage.attemptable(ALICE, MAX_ATTEMPTS, 10).get(0).getId());
+    }
+
+    assertEquals(1L, service.owedCopies(ALICE), "a copy eXo gave up on is not somebody waiting for one");
+  }
+
+  /**
+   * An unreadable store answers nothing rather than a number nobody can trust:
+   * claiming a backlog that may not exist is worse than saying nothing.
+   */
+  @Test
+  public void anUnreadableStoreIsNotABacklog() {
+    org.mockito.Mockito.doThrow(new IllegalStateException("no database")).when(caldavPendingPushStorage)
+                                                     .owedAndStillTrying(ALICE, MAX_ATTEMPTS);
+
+    assertEquals(0L, service.owedCopies(ALICE));
+  }
+
+  /**
    * A creation is the one moment where handing out a copy is the instruction,
    * so the set of people written to is agenda's attendee list — never the
    * mapping table, which is empty for an event nobody has a copy of yet. Asking
@@ -1441,6 +1506,18 @@ public class CaldavEventPropagationServiceTest {
     @Override
     public long owed(long userIdentityId) {
       return byObject.values().stream().filter(pending -> pending.getUserIdentityId() == userIdentityId).count();
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public long owedAndStillTrying(long userIdentityId, int maxAttempts) {
+      return byObject.values()
+                     .stream()
+                     .filter(pending -> pending.getUserIdentityId() == userIdentityId)
+                     .filter(pending -> pending.getAttempts() < maxAttempts)
+                     .count();
     }
   }
 }
