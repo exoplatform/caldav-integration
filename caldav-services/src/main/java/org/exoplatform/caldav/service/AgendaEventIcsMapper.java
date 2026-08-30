@@ -43,7 +43,6 @@ import org.exoplatform.agenda.util.EventIcsBuilder;
 import org.exoplatform.agenda.util.NotificationUtils;
 import org.exoplatform.agenda.util.Utils;
 import org.exoplatform.caldav.model.CaldavServer;
-import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.IcsEvent;
 import org.exoplatform.caldav.model.IcsPerson;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -152,13 +151,15 @@ public class AgendaEventIcsMapper {
    *          agenda id changing
    * @param pusherIdentityId identity of the user whose calendar receives the
    *          copy, which decides whether ORGANIZER carries SCHEDULE-AGENT and
-   *          whose account address names them on the roster
+   *          whose account address names them on the roster. Deliberately not
+   *          consulted to decide <i>whether</i> there is an organizer at all:
+   *          that is a property of the event (EXO-89805)
    * @return the event as the ICS engine takes it
    */
   public IcsEvent toIcsEvent(Event event, String icsUid, long pusherIdentityId) {
     String pusherAccountAddress = accountAddressOf(pusherIdentityId);
     List<EventAttendee> roster = rosterOf(event.getId());
-    IcsPerson organizer = organizerOf(event, roster, pusherIdentityId);
+    IcsPerson organizer = organizerOf(event, roster);
     String conference = conferenceUrl(event.getId());
     String link = eventUrl(event);
     return IcsEvent.builder()
@@ -609,10 +610,10 @@ public class AgendaEventIcsMapper {
    *
    * <p>
    * Read once and passed on, because three decisions need it now: who the copy
-   * names, whether the event has anybody on it but its creator (EXO-89775), and
-   * whether it therefore carries an invitation to offer an answer to at all
-   * (EXO-89797). Asking agenda three times for one render would triple the cost
-   * of a sweep that already renders every copy it checks.
+   * names, whether the event has anybody on it but its creator (EXO-89775,
+   * EXO-89805), and whether it therefore carries an invitation to offer an
+   * answer to at all (EXO-89797). Asking agenda three times for one render would
+   * triple the cost of a sweep that already renders every copy it checks.
    *
    * @param eventId the agenda event
    * @return the roster, never null
@@ -626,22 +627,56 @@ public class AgendaEventIcsMapper {
    * Who the copy names as the meeting's organizer, or nobody.
    *
    * <p>
-   * <b>The one place the registry changes what eXo writes rather than what it
-   * notices.</b> A server declared to drop the organizer from an event with no
-   * other participants gets a copy with no {@code ORGANIZER} at all: BlueMind
-   * stores neither {@code ORGANIZER} nor {@code ATTENDEE} for such an event, so
-   * eXo wrote one, read back a copy without it, judged the copy altered and
-   * rewrote it — on every sweep, for ever (EXO-89775). Writing what the server
-   * will keep is the only thing that ends that, and it needs no comparison
-   * excusal beside it: the same mapping produces the push and the sweep's
-   * render, so once eXo omits it the two sides agree.
+   * <b>An event with nobody on it but its creator names no organizer, on every
+   * server</b> (EXO-89805). An organizer is the person who called a meeting, so
+   * naming one is a statement that there is a meeting — the same statement the
+   * answer links make, decided on the same predicate two methods below. Until
+   * this landed the two disagreed: EXO-89797 made the links unconditionally
+   * absent on a solo event while the organizer stayed behind a per-server
+   * declaration, so on any server nobody had declared, a copy offered no answer
+   * (not a meeting) while naming an ORGANIZER (a meeting). The javadoc of
+   * {@link #soloEvent} had said in as many words that such a copy must not
+   * exist; it existed three lines away from where it said so.
    *
    * <p>
-   * <b>Never global, and that was decided twice.</b> The golden corpus holds
-   * organizer-only events a real server stored <i>with</i> their organizer, so
-   * this is one server's behaviour and not CalDAV's; made global it would strip
-   * information from copies on servers that keep it happily, to buy a clean
-   * sweep on one.
+   * <b>Why unconditional, when EXO-89775 decided the opposite.</b> That decision
+   * answered a different question. It read the divergence as a server behaviour
+   * — BlueMind stores neither {@code ORGANIZER} nor {@code ATTENDEE} for such an
+   * event, so eXo wrote one, read back a copy without it, judged the copy
+   * altered and rewrote it on every sweep for ever — and a server behaviour is
+   * declared per server. But soloness is a property of the <i>event</i>, and it
+   * reads the same on every server there is, which is exactly the reasoning
+   * EXO-89797 accepted for the links. The observation that finally settled it
+   * (event 1000 on the live rig, 2026-08-30) was on a registration nobody had
+   * declared, so the per-server lever could never have reached it: the copy was
+   * re-pushed every five minutes until the give-up counter abandoned it, and an
+   * abandoned copy stops being verified <i>at all</i> — a genuine later
+   * alteration of that event would no longer be repaired. Real repair capability
+   * was being traded for a cosmetic difference.
+   *
+   * <p>
+   * <b>What the golden corpus proves, and what it does not.</b> It holds
+   * organizer-only events a real server stored <i>with</i> their organizer,
+   * which is why EXO-89775 refused a global change. That is evidence about what
+   * a server <i>keeps</i>, and none at all about what eXo should <i>write</i>:
+   * a server keeping a statement does not make the statement true. eXo now
+   * declines to make it, and a server keeping nothing has nothing to disagree
+   * with. Existing copies on servers that kept theirs are rewritten once as this
+   * lands and then converge, exactly as EXO-89753 predicted for the description.
+   *
+   * <p>
+   * <b>The ATTENDEE line goes with it, and by the rule rather than by
+   * accident.</b> {@link org.exoplatform.caldav.ics.IcsWriter} omits the whole
+   * scheduling block when there is no organizer to head it, because RFC 5545
+   * &sect;3.8.4.1 defines ATTENDEE only in a group-scheduled component. So a
+   * solo copy now carries neither, which is both what the RFC says and what
+   * BlueMind stores.
+   *
+   * <p>
+   * <b>Only the solo case, and that is the half with teeth.</b> A meeting with
+   * somebody else on it keeps its organizer whatever any registry says: an
+   * attendee's client needs the organizer to reply to, and a copy that lost one
+   * would leave every client unable to say who called the meeting.
    *
    * <p>
    * <b>"No other participants" is decided on agenda's roster, by identity.</b>
@@ -650,24 +685,15 @@ public class AgendaEventIcsMapper {
    * comparing the organizer's address against the roster's would answer "there
    * is somebody else here" for an event with nobody else on it.
    *
-   * <p>
-   * Every failure keeps the organizer, like the answer links above: an
-   * unresolvable registry, a deleted registration, a service not injected at
-   * all. A copy that names its organizer on a server that drops it costs one
-   * permanent divergence; a copy silently missing one on a server that keeps it
-   * loses information from somebody's calendar.
-   *
    * @param event the agenda event being copied
    * @param roster the event's attendees as agenda holds them
-   * @param pusherIdentityId the user whose calendar receives the copy
    * @return the organizer to write, or null to write none
    */
-  private IcsPerson organizerOf(Event event, List<EventAttendee> roster, long pusherIdentityId) {
-    IcsPerson organizer = personOf(event.getCreatorId());
-    if (organizer == null || !soloEvent(event, roster)) {
-      return organizer;
+  private IcsPerson organizerOf(Event event, List<EventAttendee> roster) {
+    if (soloEvent(event, roster)) {
+      return null;
     }
-    return omitsSoloOrganizer(pusherIdentityId) ? null : organizer;
+    return personOf(event.getCreatorId());
   }
 
   /**
@@ -675,11 +701,28 @@ public class AgendaEventIcsMapper {
    *
    * <p>
    * <b>The one place the question is asked</b>, and deliberately so. Two
-   * properties of a copy turn on it — whether it names an ORGANIZER on a server
-   * declared to drop one (EXO-89775) and whether its description offers answer
-   * links (EXO-89797) — and an event that is a meeting for one of those and a
-   * private appointment for the other would be a copy contradicting itself. Any
-   * further reader of "is this a meeting" belongs here too, not beside it.
+   * properties of a copy turn on it — whether it names an ORGANIZER
+   * (EXO-89775, EXO-89805) and whether its description offers answer links
+   * (EXO-89797) — and an event that is a meeting for one of those and a private
+   * appointment for the other would be a copy contradicting itself. Any further
+   * reader of "is this a meeting" belongs here too, not beside it.
+   *
+   * <p>
+   * <b>And the invariant now holds by construction, which it did not before.</b>
+   * Both readers ask this method and <i>nothing else</i>: neither consults the
+   * registry, the account, or any setting, so no configuration can make the two
+   * answers differ. That was the whole defect EXO-89805 closed — the sentence
+   * above was written when EXO-89797 landed, while the organizer half was still
+   * gated on a per-server declaration, so the copy it forbids was reachable on
+   * every server nobody had declared. An invariant a comment states and the
+   * code decides per deployment is not an invariant.
+   *
+   * <p>
+   * A third statement rides on the first without asking: the whole scheduling
+   * block, ATTENDEE lines included, is written only under an ORGANIZER (RFC 5545
+   * &sect;3.8.4.1), so a solo copy carries no attendee line either. That is the
+   * rule doing the work rather than a second gate, which is why it is recorded
+   * here and not implemented again.
    *
    * @param event the agenda event
    * @param roster the event's attendees as agenda holds them
@@ -687,28 +730,6 @@ public class AgendaEventIcsMapper {
    */
   private boolean soloEvent(Event event, List<EventAttendee> roster) {
     return roster.stream().noneMatch(attendee -> attendee.getIdentityId() != event.getCreatorId());
-  }
-
-  /**
-   * Whether the server this copy is going to has been declared to drop the
-   * organizer of an event with no other participants.
-   *
-   * @param pusherIdentityId the user whose calendar receives the copy
-   * @return true when eXo should leave the organizer out
-   */
-  private boolean omitsSoloOrganizer(long pusherIdentityId) {
-    try {
-      CaldavUserSetting account = caldavConnectorStorage == null ? null
-                                                                 : caldavConnectorStorage.getCaldavSetting(pusherIdentityId);
-      Long serverId = account == null ? null : account.getServerId();
-      CaldavServer server = caldavServerService == null ? null : caldavServerService.resolveServer(serverId);
-      return server != null && ServerQuirk.listMatches(server.getOmittedProperties(), ServerQuirk.SOLO_ORGANIZER);
-    } catch (RuntimeException | LinkageError e) {
-      LOG.debug("No CalDAV registration could be resolved for identity {}; the copy keeps its organizer",
-                pusherIdentityId,
-                e);
-      return false;
-    }
   }
 
   /**
