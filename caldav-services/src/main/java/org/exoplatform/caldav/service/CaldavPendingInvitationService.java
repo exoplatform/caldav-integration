@@ -435,19 +435,6 @@ public class CaldavPendingInvitationService {
     try {
       return caldavPushService.pushAgendaEvent(userIdentityId, eventId) != null;
     } catch (CaldavPushException e) {
-      if (CaldavPushService.CHOICE_PENDING.equals(e.getCode())) {
-        // Not a failure and not an incident: this user was asked where their
-        // copies should go and has not answered yet, which their own settings
-        // screen tells them. Warning would print one line per upcoming meeting
-        // per pass, for ever, for every user of a server whose administrator
-        // has just switched the setting on - burying the failures that are
-        // failures under the one state nobody but the user can clear.
-        LOG.debug("Event {} is not seeded into the account of user {}: they have not chosen where their copies go",
-                  eventId,
-                  userIdentityId,
-                  e);
-        return false;
-      }
       // One refused meeting must not stop the rest; whatever refused it is
       // asked again next pass. Warn rather than debug: a meeting that never
       // reaches a user's calendar is invisible to them and, at debug, to

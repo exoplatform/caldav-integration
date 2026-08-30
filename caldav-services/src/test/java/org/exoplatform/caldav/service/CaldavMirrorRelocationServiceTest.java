@@ -484,12 +484,15 @@ public class CaldavMirrorRelocationServiceTest {
   // ------------------------------------------------------ when to do nothing
 
   @Test
-  public void aDestinationTheUserHasNotChosenYetDefersInsteadOfGuessing() {
-    // The registration says the destination is the user's to name. Moving the
-    // copies into a calendar of eXo's own choosing would answer a question they
-    // were asked and have not answered — in somebody else's calendar.
-    when(caldavPushService.ensureMirror(USER)).thenThrow(new CaldavPushException(CaldavPushService.CHOICE_PENDING,
-                                                                                 "not chosen"));
+  public void aDestinationThatCannotBeEstablishedDefersInsteadOfGuessing() {
+    // The one place that decides the destination refused. Moving the copies
+    // into a calendar of eXo's own choosing would put them exactly where the
+    // registration had stopped asking for them — in somebody else's calendar.
+    // Asserted through the refusal rather than a specific code: what this pins
+    // is that ANY refusal from ensureMirror defers, which is the catch-all in
+    // destinationOf and the only test that covers it.
+    when(caldavPushService.ensureMirror(USER)).thenThrow(new CaldavPushException(CaldavPushService.MAIN_CALENDAR_UNKNOWN,
+                                                                                 "the account names no default calendar"));
 
     MirrorRelocation relocation = service.relocate(USER, settings(), mirror(DEDICATED));
 

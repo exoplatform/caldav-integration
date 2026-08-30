@@ -174,15 +174,15 @@ public class CaldavServerStorageTest {
   @Test
   public void shouldLeaveTheDestinationAloneWhenTheSaveDoesNotMentionIt() {
     CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null,
-                                                         true, null, null, null, null, null, "USER_CHOICE");
+                                                         true, null, null, null, null, null, "MAIN_CALENDAR");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
     CaldavServer payload = server(7, null, "New", null, "https://new/", true);
     payload.setMirrorTarget(null);
 
     CaldavServer updated = caldavServerStorage.updateServer(payload);
 
-    assertEquals(MirrorTargetKind.USER_CHOICE, updated.getMirrorTarget());
-    assertEquals("USER_CHOICE", existing.getMirrorTarget());
+    assertEquals(MirrorTargetKind.MAIN_CALENDAR, updated.getMirrorTarget());
+    assertEquals("MAIN_CALENDAR", existing.getMirrorTarget());
   }
 
   /**
