@@ -194,6 +194,15 @@ public class IcsWriterPayloadContractTest {
    * that stopped saying who called the meeting would lose the attribution
    * every client shows, and would contradict the golden corpus, whose write
    * cases are events with an organizer and nobody else.
+   *
+   * <p>
+   * This is the <b>writer's</b> contract and stays exactly as it was: given an
+   * organizer, it names one. Since EXO-89805 the mapper no longer hands it one
+   * for an event with nobody but its creator on it — that decision is the
+   * mapper's, made on agenda's roster by identity, and the writer has no roster
+   * to make it from. The test above pins the shape that reaches the wire in that
+   * case; this one pins that the writer did not start second-guessing what it
+   * was given.
    */
   @Test
   public void theOrganizerIsStillNamedWhenTheyAreTheOnlyParticipant() {
@@ -204,6 +213,42 @@ public class IcsWriterPayloadContractTest {
 
     assertNotNull(property(ics, "ORGANIZER"), "the copy must still say who called the meeting");
     assertTrue(properties(ics, "ATTENDEE").isEmpty(), "nobody but the organizer is on the roster");
+  }
+
+  /**
+   * <b>No organizer, no scheduling block at all — attendee lines included</b>
+   * (EXO-89805).
+   *
+   * <p>
+   * Since EXO-89805 the mapper hands this writer no organizer for an event with
+   * nobody on it but its creator, and this is what that buys on the wire: RFC
+   * 5545 &sect;3.8.4.1 defines ATTENDEE only inside a group-scheduled component,
+   * which the ORGANIZER property is what marks, so the writer drops the whole
+   * block rather than emitting a roster with nothing at its head.
+   *
+   * <p>
+   * The line that would otherwise survive is the creator's own, spelled with
+   * the address their CalDAV account answers to — a different string from their
+   * profile address on a live rig, so the organizer filter three tests above
+   * would not have matched it. It would have reached somebody's calendar as
+   * {@code ATTENDEE;PARTSTAT=ACCEPTED} on an appointment they made for
+   * themselves: an answer recorded to an invitation nobody sent, which is the
+   * ATTENDEE-shaped twin of the answer links EXO-89797 removed. Pinned here
+   * rather than left to the guard's good nature, because the guard was written
+   * for "the organizer has no visible address" and happens to cover this.
+   */
+  @Test
+  public void anEventWithNoOrganizerCarriesNoAttendeeLineEither() {
+    IcsEvent event = meeting();
+    event.setOrganizer(null);
+    event.setAttendees(List.of(new IcsPerson("The Organiser", "the.organiser@account.example", "ACCEPTED")));
+
+    String ics = writer.write(event);
+
+    assertNull(property(ics, "ORGANIZER"), "there is no organizer to name");
+    assertTrue(properties(ics, "ATTENDEE").isEmpty(),
+               "and no attendee line may head a component that is not group-scheduled: " + properties(ics, "ATTENDEE"));
+    assertNotNull(property(ics, "SUMMARY"), "the rest of the copy must still be written");
   }
 
   /**
