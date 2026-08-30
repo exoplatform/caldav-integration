@@ -658,6 +658,18 @@ public class CaldavEventPropagationService {
                   userIdentityId,
                   e);
         settled(objectSyncId);
+      } else if (CaldavPushService.isKnownState(e.getCode())) {
+        // A state of the holder rather than a failure of this write: they have
+        // no connected account, or none that names a destination. Retrying
+        // cannot move it and nobody but they can, so it is recorded without a
+        // trace and without the word failure. The obligation still stands —
+        // this branch changes what is printed, not what is owed, and the day
+        // they connect the sweep writes the copy.
+        LOG.debug("The edit of event {} is not carried to the copy of user {}: {} ({})",
+                  eventId,
+                  userIdentityId,
+                  e.getMessage(),
+                  e.getCode());
       } else {
         LOG.warn("The edit of event {} could not be carried to the copy held by user {} ({}); it stays owed and is retried",
                  eventId,
@@ -706,6 +718,20 @@ public class CaldavEventPropagationService {
       settled(objectSyncId);
       return true;
     } catch (Exception | LinkageError e) {
+      if (e instanceof CaldavPushException refusal && CaldavPushService.isKnownState(refusal.getCode())) {
+        // Nowhere to remove it from, because there is no account: a removal
+        // owed to a user who never connected one is the same ordinary state as
+        // a copy never written for them, and it recurs on every sweep.
+        //
+        // Tested on the caught throwable rather than caught in a clause of its
+        // own, so that the one message this method has stays written once.
+        LOG.debug("The copy of the deleted event held by user {} at {} is not removed: {} ({})",
+                  userIdentityId,
+                  remoteHref,
+                  refusal.getMessage(),
+                  refusal.getCode());
+        return false;
+      }
       LOG.warn("The copy of the deleted event held by user {} at {} could not be removed; it stays owed and is retried",
                userIdentityId,
                remoteHref,
