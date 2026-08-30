@@ -19,21 +19,29 @@ package org.exoplatform.caldav.service;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Collections;
 import java.util.Date;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
+import io.meeds.common.ContainerTransactional;
+import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -106,6 +114,130 @@ public class CaldavSyncService {
    * one that has wedged.
    */
   private static final long           IN_FLIGHT_WAIT_SECONDS   = 20L;
+
+  /**
+   * The pieces of outward work a pass may do once the calendars themselves are
+   * in step — each named, and each governed on its own.
+   *
+   * <p>
+   * <b>Why an enumerated set and not a boolean.</b> These three used to sit
+   * behind one parameter called {@code verifyMirror}, and a name describing one
+   * of them governed all three. Connecting asked for no verification, which is
+   * right — the check lists whole collections and was measured at 30 seconds —
+   * and silently lost the two cheap ones with it, so an event a user had
+   * created before connecting was copied by nothing until a sweep came round
+   * a quarter of an hour later (EXO-89804). Nobody decided that; adjacency did.
+   *
+   * <p>
+   * A second boolean beside the first would have reproduced the defect one
+   * notch along: the fourth piece of outward work would arrive as a third
+   * boolean, every call site would grow another unlabelled {@code false}, and
+   * {@code sync(id, login, true, false, true)} says nothing at all about what
+   * the pass will do. A set names each piece where the call is written —
+   * {@code EnumSet.of(SETTLE_OWED_COPIES, SEED_UPCOMING_COPIES)} reads as the
+   * decision it is — and a phase added tomorrow changes no existing signature
+   * and no existing call: it is absent from every set that does not name it,
+   * which is the only safe default for work that talks to somebody's server.
+   *
+   * <p>
+   * <b>The order they are declared in is the order they are done in</b>
+   * ({@link #runOutboundPhases(long, Set)} walks {@code values()}), so the
+   * ordering is stated once and cannot drift between a sweep and a connection.
+   */
+  public enum OutboundPhase {
+    /**
+     * Writes the copies eXo already knows it owes and has not managed to make.
+     * Cheap on a converged account: one index lookup answering no rows.
+     */
+    SETTLE_OWED_COPIES,
+    /**
+     * Copies the upcoming events the account has never been given — the
+     * backfill a freshly connected account needs, and the only thing that
+     * carries an event created before the account existed.
+     */
+    SEED_UPCOMING_COPIES,
+    /**
+     * Reads back every copy eXo has written and repairs what has drifted.
+     * Lists whole collections, measured at a full 30-second request timeout
+     * against one real account: the sweep's alone, never a user's.
+     */
+    VERIFY_MIRROR
+  }
+
+  /**
+   * What a pass triggered by someone looking at a page does outward: nothing.
+   * Opening the agenda and pressing a button are reads, and a read must not
+   * turn into a burst of writes to a calendar server.
+   */
+  private static final Set<OutboundPhase> NO_OUTBOUND_PHASES =
+                                                             Collections.unmodifiableSet(EnumSet.noneOf(OutboundPhase.class));
+
+  /**
+   * What the background sweep does outward: all of it. It is the pass nobody
+   * is waiting for, which is what makes it the right home for the expensive
+   * check.
+   */
+  private static final Set<OutboundPhase> SWEEP_PHASES       =
+                                                             Collections.unmodifiableSet(EnumSet.allOf(OutboundPhase.class));
+
+  /**
+   * What connecting an account does outward: settles what is owed and seeds
+   * what the account has never been given — and does <b>not</b> verify.
+   *
+   * <p>
+   * Taking the verification off the user's path was a deliberate decision and
+   * stays one. What was never decided is that the two cheap phases went with
+   * it.
+   */
+  private static final Set<OutboundPhase> SEEDING_PHASES     =
+                                                             Collections.unmodifiableSet(EnumSet.of(OutboundPhase.SETTLE_OWED_COPIES,
+                                                                                                   OutboundPhase.SEED_UPCOMING_COPIES));
+
+  /**
+   * How many accounts may be waiting to be seeded before the next one is
+   * turned away.
+   *
+   * <p>
+   * A bound, not a buffer. Turning an account away costs it nothing it cannot
+   * recover: it holds a binding by the time it gets here, so the sweep can see
+   * it and will seed it within the account-due interval. Holding an unbounded
+   * queue of them, on the other hand, costs memory and turns a morning where
+   * everyone connects at once into an hour of writes nobody asked for.
+   */
+  private static final int                SEEDING_QUEUE_DEPTH = 64;
+
+  /**
+   * The single thread every seeded copy is written from.
+   *
+   * <p>
+   * One thread, platform-wide, on purpose. A fresh account can be up to
+   * {@code seedLimit} events per question and two questions per pass, so one
+   * connect is already a few hundred writes; twenty people connecting after a
+   * migration, each on their own thread, is what a calendar server reads as an
+   * attack, and the test rig's proxy was in fact banned by Stalwart's fail2ban
+   * for exactly that — a ban that outlives a container restart. Serialised,
+   * twenty connects cost the server the same instantaneous rate as one, and
+   * they cost it in the order people connected.
+   *
+   * <p>
+   * The per-account bound is untouched and stays where it belongs: the seeding
+   * pass writes at most {@code seedLimit} events per question and leaves the
+   * rest to the next pass, and every give-up rule on an individual copy is the
+   * propagation service's.
+   *
+   * <p>
+   * Package-visible so a test can put a recording executor here and say what
+   * happened on the caller's thread and what was merely handed over — a
+   * distinction a same-thread executor cannot make. Nothing outside this
+   * package replaces it.
+   */
+  ExecutorService                         outboundExecutor    = newOutboundExecutor();
+
+  /**
+   * The accounts already queued or being seeded, so pressing a button twice
+   * queues one burst and not two.
+   */
+  private final Set<Long>                 seeding             = ConcurrentHashMap.newKeySet();
 
   /**
    * The pass running for a user, so two page loads a second apart do not run
@@ -301,7 +433,7 @@ public class CaldavSyncService {
     if (last != null && last.isAfter(Instant.now().minus(Duration.ofMinutes(caldavTuningService.getThrottleMinutes())))) {
       return;
     }
-    sync(userIdentityId, username, false, false);
+    sync(userIdentityId, username, false, NO_OUTBOUND_PHASES);
   }
 
   /**
@@ -316,7 +448,7 @@ public class CaldavSyncService {
    * @param username the user's login
    */
   public void syncNow(long userIdentityId, String username) {
-    sync(userIdentityId, username, false, false);
+    sync(userIdentityId, username, false, NO_OUTBOUND_PHASES);
   }
 
   /**
@@ -339,7 +471,7 @@ public class CaldavSyncService {
    * @param username the user's login
    */
   public void syncInBackground(long userIdentityId, String username) {
-    sync(userIdentityId, username, false, true);
+    sync(userIdentityId, username, false, SWEEP_PHASES);
   }
 
   /**
@@ -360,11 +492,118 @@ public class CaldavSyncService {
    * listener is recognised by its thread and returns immediately, as it
    * always did.
    *
+   * <p>
+   * <b>This is where connecting an account lands</b>, and it is why the
+   * seeding is started from here. Agenda's connect sequence is: the drawer
+   * stores the credentials, then agenda records the connected account in the
+   * user's agenda settings, then it calls the connector's {@code sync()},
+   * which is this. Only the last of the three runs with the account recorded —
+   * and recorded is what {@code CaldavPendingInvitationService} reads to know
+   * the user consented to copies at all, so a seeding hung on the earlier
+   * steps would run, find no consent, and copy nothing. The user's own
+   * <i>Synchronise now</i> reaches the same entry, and seeds too: on a
+   * converged account that is one query answering "everything is already
+   * copied".
+   *
+   * <p>
+   * Started, never awaited: see {@code startSeedingCopies} below.
+   *
    * @param userIdentityId identity of the user
    * @param username the user's login
    */
   public void syncNowAndWait(long userIdentityId, String username) {
-    sync(userIdentityId, username, true, false);
+    sync(userIdentityId, username, true, NO_OUTBOUND_PHASES);
+    // After the pass, not inside it: the copies are written into the
+    // collections the pass has just bound, so starting them earlier would be
+    // starting them without a destination.
+    startSeedingCopies(userIdentityId);
+  }
+
+  /**
+   * Starts, on a thread of its own, the copies a freshly connected account is
+   * owed — and returns without waiting for a single one of them.
+   *
+   * <p>
+   * <b>Started, not awaited, and that is the requirement.</b> A fresh account
+   * can be a few hundred writes ({@code seedDays} reaches sixty days ahead by
+   * default), each of them a round trip to somebody else's server. Whoever
+   * pressed <i>Connect</i> is watching a spinner, and the answer they are
+   * waiting for — "your account was accepted" — is already known by the time
+   * this is reached.
+   *
+   * <p>
+   * A plain executor thread is enough here, and deliberately so:
+   * {@code @ContainerTransactional} <i>establishes</i> the container rather
+   * than requiring one — it reads the current container, falls back to the
+   * portal container and runs the request lifecycle around the call — so
+   * {@link #seedCopies(long)} carries its own. The trap that annotation does
+   * not cover is a thread running before the portal container is up, at
+   * startup; this one is started by a request, long after. The legacy
+   * {@code @ExoTransactional} would be the wrong annotation for exactly the
+   * reason it is wrong on the sweep job: its aspect demands a container
+   * already bound and throws when there is none.
+   *
+   * <p>
+   * Nothing here may reach the caller. A connection that succeeded must not be
+   * reported as failed because a queue was full or a thread pool was shutting
+   * down — the same rule the destination resolution answers to.
+   *
+   * @param userIdentityId identity of the user whose account is to be seeded
+   */
+  private void startSeedingCopies(long userIdentityId) {
+    if (!connected(caldavConnectorStorage.getCaldavSetting(userIdentityId))) {
+      return;
+    }
+    if (!seeding.add(userIdentityId)) {
+      // Already queued or already running. Pressing the button twice is one
+      // burst, not two: the second would find every copy of the first already
+      // mapped and write nothing, having asked the server about all of them.
+      LOG.debug("The copies of user {} are already being seeded; this request joins that one", userIdentityId);
+      return;
+    }
+    try {
+      outboundExecutor.execute(() -> {
+        try {
+          seedCopies(userIdentityId);
+        } finally {
+          seeding.remove(userIdentityId);
+        }
+      });
+    } catch (RejectedExecutionException e) {
+      seeding.remove(userIdentityId);
+      // Not an error, and not lost: the account holds a binding by now, so the
+      // sweep can see it and seeds it within the account-due interval. Said at
+      // debug because the queue filling is the bound working, not a fault.
+      LOG.debug("The copies of user {} are left to the sweep; too many accounts are already waiting to be seeded",
+                userIdentityId);
+    } catch (RuntimeException | LinkageError e) {
+      seeding.remove(userIdentityId);
+      LOG.warn("The copies of user {} could not be started on connect; a sweep seeds them", userIdentityId, e);
+    }
+  }
+
+  /**
+   * Settles what eXo owes this account and copies what it has never been
+   * given.
+   *
+   * <p>
+   * The body of the background seeding, on its own method because it is what
+   * carries the container: an executor thread has none bound, and
+   * {@code @ContainerTransactional} is what establishes one around the calls
+   * that read agenda and write the mapping rows.
+   *
+   * <p>
+   * Public because the aspect is woven on method <i>execution</i> and the
+   * platform weaves what it can see; and because it is the seam a test runs to
+   * pin that connecting seeds, and does not verify. A test that runs it states
+   * a container first, exactly as the sweep job's test does — the annotation
+   * building a portal in a unit-test JVM is it working, not failing.
+   *
+   * @param userIdentityId identity of the user whose account receives copies
+   */
+  @ContainerTransactional
+  public void seedCopies(long userIdentityId) {
+    runOutboundPhases(userIdentityId, SEEDING_PHASES);
   }
 
   /**
@@ -532,12 +771,13 @@ public class CaldavSyncService {
    *          {@link #syncNowAndWait(long, String)} needs so the answer it gives
    *          is true when it is given. Never waits on the calling thread's own
    *          pass.
-   * @param verifyMirror whether this pass also seeds and verifies the copies eXo
-   *          pushed. Only the background sweep asks for it: that check lists a
-   *          whole collection and was measured at 30 seconds, which nobody who
-   *          pressed a button should wait for a repair they will never see.
+   * @param outboundPhases which pieces of outward work this pass does once the
+   *          calendars are in step, each named rather than implied — see
+   *          {@link OutboundPhase}. Empty for every pass somebody is waiting
+   *          for; the whole set for the sweep, which is the only pass that may
+   *          spend 30 seconds verifying.
    */
-  private void sync(long userIdentityId, String username, boolean awaitPassInFlight, boolean verifyMirror) {
+  private void sync(long userIdentityId, String username, boolean awaitPassInFlight, Set<OutboundPhase> outboundPhases) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (!connected(settings)) {
       return;
@@ -566,27 +806,7 @@ public class CaldavSyncService {
       pruneOrphanBindings(userIdentityId, username, settings);
       List<CalendarCollection> collections = materialiseRemoteCalendars(userIdentityId, username, settings);
       importRemoteEvents(userIdentityId, username, settings, collections);
-      // Last, and never allowed to fail the pass: the copies eXo pushed are
-      // its own projection of what agenda already holds, so a check on them
-      // that throws must not cost the user the calendars they came for.
-      try {
-        if (verifyMirror) {
-          // What eXo already knows it owes, before anything is inspected or
-          // seeded. An edit whose push failed leaves a record on this side, and
-          // settling it first means the verification pass that follows judges a
-          // copy eXo has finished writing rather than one it is behind on
-          // (EXO-89773). On a converged account it is one index lookup that
-          // answers no rows.
-          caldavEventPropagationService.retryOwedPushes(userIdentityId);
-          // Seed before verifying: a pending invitation pushed this round is
-          // read back by the same discipline as every other copy from the
-          // next round on (EXO-89681).
-          caldavPendingInvitationService.pushUpcomingMeetings(userIdentityId);
-          caldavMirrorVerificationService.verify(userIdentityId);
-        }
-      } catch (RuntimeException e) {
-        LOG.warn("The copies pushed for user {} could not be verified this round", userIdentityId, e);
-      }
+      runOutboundPhases(userIdentityId, outboundPhases);
       lastSync.put(userIdentityId, Instant.now());
     } catch (CalDavAuthenticationException e) {
       // Immediately, and before anything else is tried: a stale password
@@ -608,6 +828,105 @@ public class CaldavSyncService {
       // over, not for it to have succeeded.
       pass.done().complete(null);
     }
+  }
+
+  /**
+   * Does the outward work this caller asked for, and only that.
+   *
+   * <p>
+   * The one place the three phases are ordered, so the order is stated once
+   * whether they are reached from a sweep or from a connection. Settle what is
+   * owed, then seed what was never given, then verify: an edit whose push
+   * failed must be written before anything judges the copy, or the pass judges
+   * eXo's own arrears and reports a mirror needing attention that the very next
+   * call would have put right (EXO-89773); and a copy seeded this round is read
+   * back by the ordinary discipline from the next round on (EXO-89681).
+   *
+   * <p>
+   * The order is {@link OutboundPhase}'s own declaration order, walked here —
+   * so a phase cannot be run in one order by the sweep and another by a
+   * connection, whatever set each of them names.
+   *
+   * @param userIdentityId identity of the user whose account receives copies
+   * @param phases the pieces of work to do, in the set the caller named
+   */
+  private void runOutboundPhases(long userIdentityId, Set<OutboundPhase> phases) {
+    for (OutboundPhase phase : OutboundPhase.values()) {
+      if (phases.contains(phase)) {
+        runOutboundPhase(userIdentityId, phase);
+      }
+    }
+  }
+
+  /**
+   * Does one phase, and lets it fail on its own.
+   *
+   * <p>
+   * Guarded per phase rather than around the three of them, and that is a
+   * decision rather than a formatting choice. One guard around all three meant
+   * an arrear the calendar server refused took the seeding and the verification
+   * down with it for that round — the same shape as the defect this class was
+   * fixed for, one level in: three things that are not the same thing, sharing
+   * a fate nobody chose for them. They are independent, so a server that will
+   * not accept a rewrite may still have every reason to accept a first copy.
+   *
+   * <p>
+   * Never allowed to fail its caller either. Inside a pass, the copies eXo
+   * pushed are its own projection of what agenda already holds, and trouble
+   * with them must not cost the user the calendars they came for; on the
+   * seeding thread there is no caller left to tell.
+   *
+   * @param userIdentityId identity of the user whose account receives copies
+   * @param phase the piece of work to do
+   */
+  private void runOutboundPhase(long userIdentityId, OutboundPhase phase) {
+    try {
+      switch (phase) {
+      case SETTLE_OWED_COPIES -> caldavEventPropagationService.retryOwedPushes(userIdentityId);
+      case SEED_UPCOMING_COPIES -> caldavPendingInvitationService.pushUpcomingMeetings(userIdentityId);
+      case VERIFY_MIRROR -> caldavMirrorVerificationService.verify(userIdentityId);
+      }
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("The {} of the copies of user {} did not complete this round", phase, userIdentityId, e);
+    }
+  }
+
+  /**
+   * The one thread seeded copies are written from.
+   *
+   * <p>
+   * A single thread with a bounded queue, and an overflow that is refused
+   * rather than dropped in silence: the caller turns a refusal into a line at
+   * debug and leaves the account to the sweep. Daemon, because a burst of
+   * copies is never a reason to hold a shutdown open.
+   *
+   * @return the executor the seeding runs on
+   */
+  private static ExecutorService newOutboundExecutor() {
+    return new ThreadPoolExecutor(1,
+                                  1,
+                                  0L,
+                                  TimeUnit.MILLISECONDS,
+                                  new ArrayBlockingQueue<>(SEEDING_QUEUE_DEPTH),
+                                  runnable -> {
+                                    Thread thread = new Thread(runnable, "caldav-seeding");
+                                    thread.setDaemon(true);
+                                    return thread;
+                                  });
+  }
+
+  /**
+   * Stops accepting seeding work when the platform is going down.
+   *
+   * <p>
+   * {@code shutdown} and not {@code shutdownNow}: a copy half written is a copy
+   * the verification pass has to reconcile later, so the burst in flight is let
+   * finish rather than interrupted. Anything still queued is dropped, which
+   * costs nothing — the sweep seeds those accounts on the next start.
+   */
+  @PreDestroy
+  public void stopSeeding() {
+    outboundExecutor.shutdown();
   }
 
   /**
