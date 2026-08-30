@@ -47,7 +47,6 @@ import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.service.CaldavPushException;
 import org.exoplatform.caldav.service.CaldavDeletionService;
 import org.exoplatform.caldav.service.CaldavPushService;
-import org.exoplatform.caldav.service.MirrorState;
 import org.exoplatform.caldav.service.MirrorTarget;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.social.core.manager.IdentityManager;
@@ -224,50 +223,6 @@ public class CaldavPushRest {
   }
 
   /**
-   * How this user's destination is decided, and whether they still owe a
-   * choice.
-   *
-   * <p>
-   * Its own endpoint beside {@code GET /push/mirror}, which answers 204 for
-   * every kind of "nowhere". A user on a server whose administrator left the
-   * destination to them needs to be asked, and a 204 cannot ask anything.
-   *
-   * @return the kind, the pending state, and the destination when there is one
-   */
-  @GetMapping("/push/mirror/state")
-  @Secured("users")
-  @Operation(summary = "How this user's meeting copies are placed",
-      description = "Says whether the destination is a calendar of eXo's own, the account's own default, or one "
-          + "the user picks — and, in that last case, whether they still owe a choice, which is the one state "
-          + "in which no copy is written and the user themselves can clear it.")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The state"),
-      @ApiResponse(responseCode = "409", description = "No CalDAV account is connected") })
-  public MirrorState mirrorState() {
-    return caldavPushService.mirrorState(currentUser());
-  }
-
-  /**
-   * Records the collection this user chose to receive their meeting copies.
-   *
-   * @param href the collection they picked, as the account lists it
-   * @return the destination as the account now describes it
-   */
-  @PostMapping("/push/mirror/choice")
-  @Secured("users")
-  @Operation(summary = "Records where this user wants their meeting copies written",
-      description = "The path is confirmed against the account's own calendar listing before it is recorded: a "
-          + "path is a claim until a listing shows the collection.")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The chosen destination"),
-      @ApiResponse(responseCode = "403", description = "Stored CalDAV credentials rejected upstream"),
-      @ApiResponse(responseCode = "409", description = "No account is connected, or it holds no such calendar") })
-  public MirrorTarget chooseMirror(@Parameter(description = "Server-absolute path of the collection the user picked",
-                                              required = true)
-                                   @RequestParam("href")
-                                   String href) {
-    return caldavPushService.chooseMirror(currentUser(), href);
-  }
-
-  /**
    * What deleting an eXo calendar would also do remotely.
    *
    * @param calendarId the eXo calendar in question
@@ -408,12 +363,10 @@ public class CaldavPushRest {
   public ResponseEntity<String> onPushFailure(CaldavPushException failure) {
     HttpStatus status = switch (failure.getCode()) {
     case CaldavPushService.CREDENTIALS -> HttpStatus.FORBIDDEN;
-    // A pending choice, and a chosen path the account does not hold, are both
-    // states of this account rather than failures of the server behind it — the
-    // same reading that already puts NOT_CONNECTED here, and the reason neither
-    // answers the 502 a browser renders as "the calendar server is down".
-    case CaldavPushService.CONFLICT, CaldavPushService.NOT_CONNECTED, CaldavPushService.CHOICE_PENDING,
-        CaldavPushService.CALENDAR_NOT_ON_ACCOUNT -> HttpStatus.CONFLICT;
+    // A state of this account rather than a failure of the server behind it —
+    // the reading that already puts NOT_CONNECTED here, and the reason it does
+    // not answer the 502 a browser renders as "the calendar server is down".
+    case CaldavPushService.CONFLICT, CaldavPushService.NOT_CONNECTED -> HttpStatus.CONFLICT;
     default -> HttpStatus.BAD_GATEWAY;
     };
     return ResponseEntity.status(status).body(failure.getCode());

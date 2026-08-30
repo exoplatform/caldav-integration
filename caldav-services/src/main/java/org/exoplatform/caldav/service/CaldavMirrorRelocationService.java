@@ -187,11 +187,10 @@ public class CaldavMirrorRelocationService {
    * which this needs and neither of which belongs here.
    *
    * <p>
-   * <b>Every failure defers rather than guesses.</b> A registration that leaves
-   * the destination to the user answers {@code CHOICE_PENDING} until they
-   * choose; an account that cannot be reached answers nothing. Both mean "not
-   * yet", and both leave the change unstamped so that the pass which can finish
-   * it does.
+   * <b>Every failure defers rather than guesses.</b> An account that cannot be
+   * reached answers nothing, and a registration asking for a default calendar
+   * the account names none of refuses. Both mean "not yet", and both leave the
+   * change unstamped so that the pass which can finish it does.
    *
    * @param userIdentityId identity of the user
    * @return the collection the copies belong in, or null when none could be

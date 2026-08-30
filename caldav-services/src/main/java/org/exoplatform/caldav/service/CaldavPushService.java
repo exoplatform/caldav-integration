@@ -94,20 +94,6 @@ public class CaldavPushService {
   public static final String     CREATION_REFUSED       = "calendarCreationRefused";
 
   /**
-   * The registration leaves the destination to the user, and this user has not
-   * named one yet, so nothing is written for them.
-   *
-   * <p>
-   * A code of its own rather than a variant of {@link #NOT_CONNECTED} or
-   * {@link #CREATION_REFUSED}, because it is the only one of the three the user
-   * can clear themselves — the settings screen turns it into "choose where your
-   * meetings go", where the other two turn into "reconnect" and "ask your
-   * administrator". Merging them would leave the one actionable state looking
-   * like a fault.
-   */
-  public static final String     CHOICE_PENDING         = "caldav.error.calendarNotChosen";
-
-  /**
    * The registration asks for the account's own default calendar, and the
    * account names none that its calendar home actually holds.
    *
@@ -118,18 +104,6 @@ public class CaldavPushService {
    * this whole path exists not to make.
    */
   public static final String     MAIN_CALENDAR_UNKNOWN  = "caldav.error.mainCalendarUnknown";
-
-  /**
-   * The collection a user named is not one their account holds.
-   *
-   * <p>
-   * Read back before it is recorded, for the reason MKCALENDAR is: a path is a
-   * claim until the account's own listing shows the collection. Recording an
-   * unverified one would turn a typo — or a calendar deleted between the screen
-   * being rendered and the choice being made — into a destination every later
-   * push fails against, with nothing to point at.
-   */
-  public static final String     CALENDAR_NOT_ON_ACCOUNT = "caldav.error.calendarNotOnAccount";
 
   /**
    * The name this add-on registers itself under as an agenda remote provider,
@@ -1086,9 +1060,7 @@ public class CaldavPushService {
    * Which of those candidates is asked for depends on the registration's
    * destination setting, and it is asked through the same helper
    * {@link #ensureMirror} uses: the screen must never name a calendar the next
-   * push would not write to. A registration leaving the destination to the
-   * user answers null here until they have chosen — see
-   * {@link #mirrorState(long)} for the state that says so out loud.
+   * push would not write to.
    *
    * @param userIdentityId identity of the user
    * @return the destination and its current name, or null when the account
@@ -1140,12 +1112,11 @@ public class CaldavPushService {
    * the server just listed, without creating or recording anything.
    *
    * <p>
-   * <b>The one place the three kinds differ, and the reason it is one method.</b>
+   * <b>The one place the kinds differ, and the reason it is one method.</b>
    * Reading the destination and establishing it used to be two walks over the
-   * same listing with the same two candidate hrefs written out twice; a third
-   * kind would have made it six. Both callers now ask this the same question,
-   * so the settings screen cannot report a destination the next push would not
-   * write to.
+   * same listing with the same two candidate hrefs written out twice. Both
+   * callers now ask this the same question, so the settings screen cannot
+   * report a destination the next push would not write to.
    *
    * @param kind where the registration wants the copies written
    * @param settings the connected account
@@ -1153,9 +1124,8 @@ public class CaldavPushService {
    * @param calendars what the account's home holds, already listed
    * @param home the calendar home's path
    * @return the collection the destination resolves to, or empty when the
-   *         account holds none — which for a user-chosen destination means
-   *         they have not chosen yet, and for the account's own default means
-   *         the account named none
+   *         account holds none — which for the account's own default means the
+   *         account named none
    */
   private Optional<CalendarCollection> candidateOf(MirrorTargetKind kind,
                                                    CaldavUserSetting settings,
@@ -1172,11 +1142,6 @@ public class CaldavPushService {
                                                                           settings.getUsername(),
                                                                           settings.getPassword()),
                                      null);
-    // Only what the user themselves named. Deliberately NOT the recorded
-    // mirror href and NOT the derived path: either of those would let a
-    // destination eXo established under an earlier setting go on receiving
-    // copies, which is the silent fallback this kind exists to refuse.
-    case USER_CHOICE -> findMirror(calendars, settings.getChosenCalendarHref(), null);
     // The path the slug derives under their home, and only then the href
     // recorded for this user.
     //
@@ -1207,11 +1172,11 @@ public class CaldavPushService {
    * every deployment had before this setting existed: an account referencing no
    * registration, a registry that answers nothing, a registration deleted
    * between the account being stored and this call, a row carrying a value this
-   * version does not know. The asymmetry is deliberate and the opposite of the
-   * one {@link #CHOICE_PENDING} makes — refusing to write because the registry
-   * could not be read would strand every copy on an incident that has nothing
-   * to do with where they go, while writing them where they have always gone is
-   * at worst unchanged behaviour.
+   * version does not know — {@code USER_CHOICE}, withdrawn by EXO-89793,
+   * among them. The asymmetry is deliberate: refusing to write because the
+   * registry could not be read would strand every copy on an incident that has
+   * nothing to do with where they go, while writing them where they have always
+   * gone is at worst unchanged behaviour.
    *
    * @param settings the connected account
    * @return the kind the registration declares, never null
@@ -1242,16 +1207,14 @@ public class CaldavPushService {
    * would disagree on exactly the account where it mattered.
    *
    * <p>
-   * What "establishes" means depends on the kind, and only one of the three
+   * What "establishes" means depends on the kind, and only one of the two
    * creates anything: the dedicated calendar is created when absent and an
    * existing one adopted when the server refuses; the account's own default is
-   * asked for and never invented; a user-chosen destination is refused until
-   * the user has chosen.
+   * asked for and never invented.
    *
    * @param userIdentityId identity of the user
    * @return where the copies go, and whether an existing calendar was adopted
    * @throws CaldavPushException when no destination can be established —
-   *           {@link #CHOICE_PENDING} when the user still owes a choice,
    *           {@link #MAIN_CALENDAR_UNKNOWN} when the account names no default
    *           calendar, {@link #CREATION_REFUSED} when nothing could be created
    *           or adopted
@@ -1276,9 +1239,9 @@ public class CaldavPushService {
                                                                     settings.getUsername(),
                                                                     settings.getPassword());
     // One question, asked the same way the settings screen asks it. On a
-    // converged account of any of the three kinds this is where the method
-    // ends: the collection is there, it is recorded, and nothing is created,
-    // adopted or refused.
+    // converged account of either kind this is where the method ends: the
+    // collection is there, it is recorded, and nothing is created, adopted or
+    // refused.
     MirrorTargetKind kind = mirrorTargetOf(settings);
     Optional<CalendarCollection> resolved = candidateOf(kind, settings, endpoint, calendars, home);
     if (resolved.isPresent()) {
@@ -1286,14 +1249,6 @@ public class CaldavPushService {
       return new MirrorTarget(resolved.get().href(), false, resolved.get().displayName());
     }
 
-    if (kind == MirrorTargetKind.USER_CHOICE) {
-      // Nothing is written, and nothing is created. The administrator said the
-      // destination is the user's to name; making one for them here, or reusing
-      // the dedicated calendar because its href happens to be recorded, would
-      // answer a question they were asked and have not answered.
-      throw new CaldavPushException(CHOICE_PENDING,
-                                    "User " + userIdentityId + " has not chosen where their meeting copies go");
-    }
     if (kind == MirrorTargetKind.MAIN_CALENDAR) {
       // The account named no default calendar, or named one its own home does
       // not list. Creating a calendar of eXo's own would put the copies exactly
@@ -1392,81 +1347,6 @@ public class CaldavPushService {
                       return href != null && (href.equals(stored) || href.equals(derived));
                     })
                     .findFirst();
-  }
-
-  /**
-   * How this user's destination is being decided, and whether they still owe a
-   * choice.
-   *
-   * <p>
-   * The settings screen's question, and the reason a pending choice is not left
-   * to be discovered as a failed push: a user whose copies are not being written
-   * has no way to tell that from a server being down unless something says so.
-   * It asks the same resolution every push asks, so it cannot describe a
-   * destination the next push would refuse.
-   *
-   * <p>
-   * <b>An unreachable account is not a pending choice.</b> The kind comes from
-   * the registration, which is a local read, so it is always answerable; the
-   * destination comes from the account, and when that cannot be reached this
-   * answers the kind with no destination rather than claiming the user has not
-   * chosen — {@link #currentMirror} already absorbs that, and inventing a
-   * pending choice out of it would put a "choose a calendar" prompt in front of
-   * a user who chose one last week.
-   *
-   * @param userIdentityId identity of the user
-   * @return the kind, whether a choice is still owed, and the destination when
-   *         there is one
-   */
-  public MirrorState mirrorState(long userIdentityId) {
-    CaldavUserSetting settings = connectedSettings(userIdentityId);
-    MirrorTargetKind kind = mirrorTargetOf(settings);
-    MirrorTarget destination = currentMirror(userIdentityId);
-    boolean choicePending = kind == MirrorTargetKind.USER_CHOICE && destination == null
-        && StringUtils.isBlank(settings.getChosenCalendarHref());
-    return new MirrorState(kind, choicePending, destination);
-  }
-
-  /**
-   * Records the collection this user chose to receive their meeting copies.
-   *
-   * <p>
-   * <b>Confirmed against the account's own listing before it is recorded</b>,
-   * for the reason {@code ensureMirror} never believes an MKCALENDAR status: a
-   * path is a claim until a listing shows the collection. Recording an
-   * unconfirmed one would turn a stale screen — or a calendar deleted between
-   * being offered and being picked — into a destination every later push fails
-   * against, with a user who believes they answered the question.
-   *
-   * <p>
-   * Recorded whatever the registration currently says, and deliberately: an
-   * administrator switching a server to {@code USER_CHOICE} should find the
-   * users who already answered already answered. What the kind decides is
-   * whether the choice is <i>used</i>, and that is
-   * {@link #ensureMirror}'s call, not this one's.
-   *
-   * @param userIdentityId identity of the user
-   * @param href the collection they picked
-   * @return the destination as the account now describes it
-   * @throws CaldavPushException {@link #CALENDAR_NOT_ON_ACCOUNT} when the
-   *           account holds no such collection, {@link #NOT_CONNECTED} when no
-   *           account is connected
-   */
-  public MirrorTarget chooseMirror(long userIdentityId, String href) {
-    CaldavUserSetting settings = connectedSettings(userIdentityId);
-    CalDavEndpoint endpoint = endpointOf(settings);
-    String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
-    List<CalendarCollection> calendars = calDavClient.listCalendars(endpoint,
-                                                                    home,
-                                                                    settings.getUsername(),
-                                                                    settings.getPassword());
-    CalendarCollection chosen = findMirror(calendars, href, null)
-                                                                 .orElseThrow(() -> new CaldavPushException(CALENDAR_NOT_ON_ACCOUNT,
-                                                                                                            "The account of user "
-                                                                                                                + userIdentityId
-                                                                                                                + " holds no collection at the chosen path"));
-    caldavConnectorStorage.saveChosenCalendarHref(chosen.href(), userIdentityId);
-    return new MirrorTarget(chosen.href(), false, chosen.displayName());
   }
 
   /**
