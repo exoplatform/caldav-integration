@@ -46,6 +46,7 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.service.CaldavPushException;
 import org.exoplatform.caldav.service.CaldavDeletionService;
+import org.exoplatform.caldav.service.CaldavEventPropagationService;
 import org.exoplatform.caldav.service.CaldavPushService;
 import org.exoplatform.caldav.service.MirrorTarget;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
@@ -78,6 +79,9 @@ public class CaldavPushRest {
 
   @Autowired
   private CaldavDeletionService caldavDeletionService;
+
+  @Autowired
+  private CaldavEventPropagationService caldavEventPropagationService;
 
   @Autowired
   private IdentityManager   identityManager;
@@ -115,6 +119,26 @@ public class CaldavPushRest {
     // collection to make one in. Nothing failed, and nothing happened, and
     // those are different answers.
     return written == null ? ResponseEntity.noContent().build() : ResponseEntity.ok(written);
+  }
+
+  /**
+   * How many calendar copies eXo still owes this user and has not written.
+   *
+   * <p>
+   * A number, not a list: what the user needs is to be able to tell "eXo is
+   * still working on it" from "eXo thinks it is done", and naming the meetings
+   * would cost a page of them and answer a question nobody asked.
+   *
+   * @return the count, zero on an account whose copies have all landed
+   */
+  @GetMapping("/push/owed")
+  @Secured("users")
+  @Operation(summary = "How many calendar copies eXo has not managed to write yet",
+      description = "Counts only the writes eXo is still attempting. A copy it has given up on, and a meeting "
+          + "whose first copy was never written at all, are not in this number — see the service for why.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The count") })
+  public long owedCopies() {
+    return caldavEventPropagationService.owedCopies(currentUser());
   }
 
   /**

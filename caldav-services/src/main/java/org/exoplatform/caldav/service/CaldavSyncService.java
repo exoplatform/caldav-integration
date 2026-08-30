@@ -163,6 +163,9 @@ public class CaldavSyncService {
   @Autowired
   private AgendaCalendarService       agendaCalendarService;
 
+  @Autowired
+  private CaldavPushService           caldavPushService;
+
   /**
    * Synchronises the accounts that have gone longest without one.
    *
@@ -393,6 +396,109 @@ public class CaldavSyncService {
     // created by a sync that is still running — that pass returns immediately
     // rather than recursing into itself.
     syncNow(userIdentityId, identity.getRemoteId());
+  }
+
+  /**
+   * Establishes, there and then, the collections this user's copies are
+   * written into.
+   *
+   * <p>
+   * <b>What connecting an account calls, and the half of it that was
+   * missing.</b> Connecting used to store the credentials, thaw whatever
+   * disconnecting had frozen, and forget the throttle — three pieces of
+   * bookkeeping, none of which gives a copy anywhere to go. The destinations
+   * were established later and elsewhere: the personal collections by the
+   * first synchronisation, the mirror by the calendar step of the agenda
+   * connector panel. Both are the browser's doing, and neither is guaranteed —
+   * an account connected from a page that does not offer the step, or through
+   * the REST API, ended up connected with no destination at all.
+   *
+   * <p>
+   * Until one exists, every copy is refused in a way nobody can see:
+   * {@link CaldavPushService#pushAgendaEvent(long, long)} answers null for an
+   * event of a calendar with no collection — a 204 the page renders as
+   * nothing — and refuses a space meeting with a known-state code the seeding
+   * pass logs at debug. No error, no queue, no trace: exactly the "it does not
+   * work" this is reported as.
+   *
+   * <p>
+   * <b>And the wait was not merely long, it could be endless.</b> The sweep
+   * picks its accounts from the bindings that already exist
+   * ({@code findDueAccounts} selects user identities out of
+   * {@code CALDAV_CALENDAR_SYNC}), so an account that never acquired one is
+   * invisible to it for ever. The wait people saw — the account-due interval —
+   * is what happens once a first binding exists; without one, nothing in the
+   * platform was ever going to make it.
+   *
+   * <p>
+   * Narrow on purpose: this binds the calendars and establishes the mirror,
+   * and does <b>not</b> import events or seed the meetings the user already
+   * has. Those are the expensive halves of a pass, they are what the first
+   * synchronisation and the sweep are for, and nobody clicking <i>Connect</i>
+   * should wait on a download to find out whether their account was accepted.
+   * What this buys is that the next event they create has somewhere to go.
+   *
+   * <p>
+   * Neither step is allowed to fail the connection, and they fail
+   * independently: a server that refuses to create a collection for a personal
+   * calendar may still hold a perfectly good mirror, and the user is better
+   * off with the half that worked.
+   *
+   * @param userIdentityId identity of the user who has just connected
+   */
+  public void establishDestinations(long userIdentityId) {
+    if (!connected(caldavConnectorStorage.getCaldavSetting(userIdentityId))) {
+      return;
+    }
+    String username = loginOf(userIdentityId);
+    if (username == null) {
+      return;
+    }
+    bindOwnCalendarsNow(userIdentityId, username);
+    ensureMirrorNow(userIdentityId);
+  }
+
+  /**
+   * Gives each of the user's own calendars its collection, absorbing whatever
+   * the server does about it.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login, which agenda's ACL reads
+   */
+  private void bindOwnCalendarsNow(long userIdentityId, String username) {
+    try {
+      caldavOutboundService.bindPersonalCalendars(userIdentityId, username);
+    } catch (Exception | LinkageError e) {
+      LOG.warn("The personal calendars of user {} could not be bound on connect; the first sweep binds them", userIdentityId, e);
+    }
+  }
+
+  /**
+   * Establishes the calendar the copies of space meetings go into.
+   *
+   * <p>
+   * A known state is said at debug and not at warning, the same way
+   * {@link CaldavPendingInvitationService} says it: an account naming no
+   * default calendar on a server configured to write into the main one is a
+   * state only its owner or their administrator can clear, and no amount of
+   * retrying changes it. Warning here would print a stack trace on a
+   * successful connection, for a condition the settings screen already names
+   * in words the user can act on.
+   *
+   * @param userIdentityId identity of the user
+   */
+  private void ensureMirrorNow(long userIdentityId) {
+    try {
+      caldavPushService.ensureMirror(userIdentityId);
+    } catch (CaldavPushException e) {
+      if (CaldavPushService.isKnownState(e.getCode())) {
+        LOG.debug("The copies of user {} have no destination yet: {} ({})", userIdentityId, e.getMessage(), e.getCode());
+      } else {
+        LOG.warn("The calendar the copies of user {} go into could not be established on connect", userIdentityId, e);
+      }
+    } catch (Exception | LinkageError e) {
+      LOG.warn("The calendar the copies of user {} go into could not be established on connect", userIdentityId, e);
+    }
   }
 
   /**
