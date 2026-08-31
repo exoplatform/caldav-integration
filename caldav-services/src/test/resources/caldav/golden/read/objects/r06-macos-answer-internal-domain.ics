@@ -1,0 +1,24 @@
+BEGIN:VCALENDAR
+CALSCALE:GREGORIAN
+PRODID:-//Apple Inc.//macOS 26.5.1//EN
+VERSION:2.0
+BEGIN:VEVENT
+ATTENDEE;CN="benjamin mestrallet";CUTYPE=UNKNOWN;EMAIL=alice@stalwart.local;
+ PARTSTAT=TENTATIVE;SCHEDULE-AGENT=CLIENT:mailto:alice@stalwart.local
+CREATED:20260831T104014Z
+DESCRIPTION:Invitation envoyée par Root Root dans l'espace Project Space.\n
+ \nEvent link: http://localhost:8080/portal/dw/agenda?eventId=1017
+DTEND:20260902T073000Z
+DTSTAMP:20260831T104032Z
+DTSTART:20260902T070000Z
+LAST-MODIFIED:20260831T104032Z
+ORGANIZER;CN="Root Root";EMAIL=anais.francois@demo3.livecollab.fr;
+ SCHEDULE-AGENT=CLIENT:mailto:anais.francois@demo3.livecollab.fr
+SEQUENCE:0
+STATUS:CONFIRMED
+SUMMARY:test13
+TRANSP:OPAQUE
+UID:f291b55a-52fd-4753-b887-f2520d95ac6e
+URL;VALUE=URI:http://localhost:8080/portal/dw/agenda?eventId=1017
+END:VEVENT
+END:VCALENDAR

@@ -42,7 +42,6 @@ import org.exoplatform.caldav.model.IcsDivergence;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
-import net.fortuna.ical4j.data.CalendarBuilder;
 import net.fortuna.ical4j.model.Calendar;
 import net.fortuna.ical4j.model.DateTime;
 import net.fortuna.ical4j.model.Parameter;
@@ -776,7 +775,7 @@ public class IcsEquivalence {
       throw new IcsParseException("the calendar object is empty", null);
     }
     try {
-      return new CalendarBuilder().build(new StringReader(ics));
+      return IcsCompatibility.newCalendarBuilder().build(new StringReader(ics));
     } catch (Exception e) {
       throw new IcsParseException("The calendar object could not be read as iCalendar", e);
     }
