@@ -27,7 +27,6 @@ import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
 
-import net.fortuna.ical4j.data.CalendarBuilder;
 import net.fortuna.ical4j.model.Calendar;
 import net.fortuna.ical4j.model.Date;
 import net.fortuna.ical4j.model.DateTime;
@@ -214,7 +213,7 @@ public class IcsMerger {
    */
   private Calendar parse(String ics) {
     try {
-      return new CalendarBuilder().build(new StringReader(ics));
+      return IcsCompatibility.newCalendarBuilder().build(new StringReader(ics));
     } catch (Exception e) {
       throw new IcsParseException("The calendar object could not be read as iCalendar", e);
     }
