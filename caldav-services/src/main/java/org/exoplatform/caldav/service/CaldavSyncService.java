@@ -174,25 +174,33 @@ public class CaldavSyncService {
                                                              Collections.unmodifiableSet(EnumSet.noneOf(OutboundPhase.class));
 
   /**
-   * What the background sweep does outward: all of it. It is the pass nobody
-   * is waiting for, which is what makes it the right home for the expensive
-   * check.
-   */
-  private static final Set<OutboundPhase> SWEEP_PHASES       =
-                                                             Collections.unmodifiableSet(EnumSet.allOf(OutboundPhase.class));
-
-  /**
-   * What connecting an account does outward: settles what is owed and seeds
-   * what the account has never been given — and does <b>not</b> verify.
+   * What a pass nobody is waiting for does outward: all of it.
    *
    * <p>
-   * Taking the verification off the user's path was a deliberate decision and
-   * stays one. What was never decided is that the two cheap phases went with
-   * it.
+   * Two callers name this set and they are the same kind of caller: the sweep,
+   * and the burst {@link #startOutboundBurst(long)} hands to the executor. What
+   * they have in common is the only property that ever mattered — no request is
+   * blocked on either of them — and it is the property the expensive phase asks
+   * for.
+   *
+   * <p>
+   * <b>Why the burst gained the verification</b> (EXO-89821). It used to settle
+   * and seed and stop there, so the one phase that reads a copy back — and with
+   * it the user's answer given in their own calendar — ran on the sweep alone.
+   * A user who answered a meeting on their phone, pressed <i>Synchronise
+   * now</i> and saw nothing was reading a button that could not read an answer
+   * back; the answer arrived up to five minutes later, from a pass they had not
+   * asked for.
+   *
+   * <p>
+   * <b>What has not changed is the reason it was taken off the user's path</b>:
+   * the check lists whole collections and was measured at a full 30-second
+   * request timeout. Nobody waits for it, here no more than before — the burst
+   * is started and never awaited, so what the button gained is that the work
+   * <i>begins</i> when it is pressed, not that anybody sits through it.
    */
-  private static final Set<OutboundPhase> SEEDING_PHASES     =
-                                                             Collections.unmodifiableSet(EnumSet.of(OutboundPhase.SETTLE_OWED_COPIES,
-                                                                                                   OutboundPhase.SEED_UPCOMING_COPIES));
+  private static final Set<OutboundPhase> ALL_OUTBOUND_PHASES =
+                                                             Collections.unmodifiableSet(EnumSet.allOf(OutboundPhase.class));
 
   /**
    * How many accounts may be waiting to be seeded before the next one is
@@ -235,10 +243,28 @@ public class CaldavSyncService {
   ExecutorService                         outboundExecutor    = newOutboundExecutor();
 
   /**
-   * The accounts already queued or being seeded, so pressing a button twice
-   * queues one burst and not two.
+   * The accounts whose outward work is already queued or already running,
+   * wherever it is being run from.
+   *
+   * <p>
+   * Pressing a button twice queues one burst and not two — that is what this
+   * was for, and now that the burst verifies as well as seeds, it is what keeps
+   * a second press from queueing a second listing of every collection: the
+   * expensive thing the verification was kept off the user's path for in the
+   * first place.
+   *
+   * <p>
+   * <b>And it is held by the sweep too</b> (EXO-89821). The two are the same
+   * work on the same account — a sweep verifying while a burst verifies is two
+   * passes listing one collection, both counting the same drift as a repair.
+   * One key, honoured by both, is what keeps them apart; a second guard beside
+   * it would only be a second thing to keep in step. The {@code syncing} map
+   * below is deliberately <i>not</i> that key: a burst holding a sync pass
+   * would be waited on by the next {@link #syncNowAndWait(long, String)}, for
+   * up to {@link #IN_FLIGHT_WAIT_SECONDS} seconds, which is precisely the wait
+   * the burst exists to avoid.
    */
-  private final Set<Long>                 seeding             = ConcurrentHashMap.newKeySet();
+  private final Set<Long>                 outboundInFlight    = ConcurrentHashMap.newKeySet();
 
   /**
    * The pass running for a user, so two page loads a second apart do not run
@@ -456,23 +482,26 @@ public class CaldavSyncService {
    * Synchronises in the background, where the slow housekeeping belongs.
    *
    * <p>
-   * The only entry that verifies the copies eXo pushed. That check lists a
-   * whole collection, which on a real calendar can take longer than the request
-   * timeout allows — measured at a full 30 seconds against one account, every
-   * pass. Nobody is waiting for a repair, so making a user wait for one is pure
-   * cost: pressing <em>Synchronise now</em> took 25 seconds, almost all of it
-   * spent on a listing whose result the user would never see.
+   * Verifies the copies eXo pushed, and does it on the calling thread because
+   * that thread is the sweep's own. The check lists a whole collection, which
+   * on a real calendar can take longer than the request timeout allows —
+   * measured at a full 30 seconds against one account, every pass — so no
+   * request may ever be blocked on it: pressing <em>Synchronise now</em> once
+   * took 25 seconds, almost all of it spent on a listing whose result the user
+   * would never see.
    *
    * <p>
-   * So the user's paths skip it and the sweep keeps it. Repairs happen exactly
-   * as often as before — the sweep runs every five minutes — they simply stop
-   * happening on someone's click.
+   * That rule is about <i>waiting</i>, not about the check. A user pressing the
+   * button also starts it (EXO-89821), on the executor thread and without
+   * waiting for it — see {@link #startOutboundBurst(long)}. Both paths take the
+   * same {@code outboundInFlight} key, so an account is never verified twice at
+   * once.
    *
    * @param userIdentityId identity of the user
    * @param username the user's login
    */
   public void syncInBackground(long userIdentityId, String username) {
-    sync(userIdentityId, username, false, SWEEP_PHASES);
+    sync(userIdentityId, username, false, ALL_OUTBOUND_PHASES);
   }
 
   /**
@@ -507,7 +536,11 @@ public class CaldavSyncService {
    * copied".
    *
    * <p>
-   * Started, never awaited: see {@code startSeedingCopies} below.
+   * <b>And it is where the copies are read back from</b> (EXO-89821). The burst
+   * started here settles, seeds <i>and</i> verifies, so an answer the user gave
+   * in their own calendar is read the moment they ask for it rather than
+   * whenever the next sweep comes round. Started, never awaited: see
+   * {@link #startOutboundBurst(long)} below.
    *
    * @param userIdentityId identity of the user
    * @param username the user's login
@@ -517,28 +550,31 @@ public class CaldavSyncService {
     // After the pass, not inside it: the copies are written into the
     // collections the pass has just bound, so starting them earlier would be
     // starting them without a destination.
-    startSeedingCopies(userIdentityId);
+    startOutboundBurst(userIdentityId);
   }
 
   /**
-   * Starts, on a thread of its own, the copies a freshly connected account is
-   * owed — and returns without waiting for a single one of them.
+   * Starts, on a thread of its own, the outward work an account is owed — the
+   * copies it has never been given and the reading back of the ones it has —
+   * and returns without waiting for a single piece of it.
    *
    * <p>
    * <b>Started, not awaited, and that is the requirement.</b> A fresh account
    * can be a few hundred writes ({@code seedDays} reaches sixty days ahead by
-   * default), each of them a round trip to somebody else's server. Whoever
-   * pressed <i>Connect</i> is watching a spinner, and the answer they are
-   * waiting for — "your account was accepted" — is already known by the time
-   * this is reached.
+   * default), each of them a round trip to somebody else's server, and the
+   * verification on top of them lists whole collections. Whoever pressed
+   * <i>Connect</i> is watching a spinner, and the answer they are waiting for —
+   * "your account was accepted" — is already known by the time this is reached;
+   * whoever pressed <i>Synchronise now</i> has already been given the calendars
+   * the pass brought in.
    *
    * <p>
    * A plain executor thread is enough here, and deliberately so:
    * {@code @ContainerTransactional} <i>establishes</i> the container rather
    * than requiring one — it reads the current container, falls back to the
    * portal container and runs the request lifecycle around the call — so
-   * {@link #seedCopies(long)} carries its own. The trap that annotation does
-   * not cover is a thread running before the portal container is up, at
+   * {@link #runOutboundBurst(long)} carries its own. The trap that annotation
+   * does not cover is a thread running before the portal container is up, at
    * startup; this one is started by a request, long after. The legacy
    * {@code @ExoTransactional} would be the wrong annotation for exactly the
    * reason it is wrong on the sweep job: its aspect demands a container
@@ -549,62 +585,76 @@ public class CaldavSyncService {
    * reported as failed because a queue was full or a thread pool was shutting
    * down — the same rule the destination resolution answers to.
    *
-   * @param userIdentityId identity of the user whose account is to be seeded
+   * @param userIdentityId identity of the user whose copies are brought up to
+   *          date
    */
-  private void startSeedingCopies(long userIdentityId) {
+  private void startOutboundBurst(long userIdentityId) {
     if (!connected(caldavConnectorStorage.getCaldavSetting(userIdentityId))) {
       return;
     }
-    if (!seeding.add(userIdentityId)) {
-      // Already queued or already running. Pressing the button twice is one
-      // burst, not two: the second would find every copy of the first already
-      // mapped and write nothing, having asked the server about all of them.
-      LOG.debug("The copies of user {} are already being seeded; this request joins that one", userIdentityId);
+    if (!outboundInFlight.add(userIdentityId)) {
+      // Already queued, already running, or being done right now by a sweep.
+      // Pressing the button twice is one burst, not two: the second would find
+      // every copy of the first already mapped and write nothing, having asked
+      // the server about all of them first — and would list every collection a
+      // second time to verify them, which is the expensive half.
+      LOG.debug("The copies of user {} are already being brought up to date; this request joins that round", userIdentityId);
       return;
     }
+    // Taken before the hand-over and released by the task, so an account
+    // waiting its turn in the queue is already spoken for: a second press
+    // queues nothing, and a sweep arriving meanwhile leaves the outward work
+    // to the burst rather than doing it alongside.
     try {
       outboundExecutor.execute(() -> {
         try {
-          seedCopies(userIdentityId);
+          runOutboundBurst(userIdentityId);
         } finally {
-          seeding.remove(userIdentityId);
+          outboundInFlight.remove(userIdentityId);
         }
       });
     } catch (RejectedExecutionException e) {
-      seeding.remove(userIdentityId);
+      outboundInFlight.remove(userIdentityId);
       // Not an error, and not lost: the account holds a binding by now, so the
       // sweep can see it and seeds it within the account-due interval. Said at
       // debug because the queue filling is the bound working, not a fault.
-      LOG.debug("The copies of user {} are left to the sweep; too many accounts are already waiting to be seeded",
+      LOG.debug("The copies of user {} are left to the sweep; too many accounts are already waiting their turn",
                 userIdentityId);
     } catch (RuntimeException | LinkageError e) {
-      seeding.remove(userIdentityId);
-      LOG.warn("The copies of user {} could not be started on connect; a sweep seeds them", userIdentityId, e);
+      outboundInFlight.remove(userIdentityId);
+      LOG.warn("The copies of user {} could not be started on connect; a sweep brings them up to date", userIdentityId, e);
     }
   }
 
   /**
-   * Settles what eXo owes this account and copies what it has never been
-   * given.
+   * Settles what eXo owes this account, copies what it has never been given,
+   * and reads back the copies it already holds.
    *
    * <p>
-   * The body of the background seeding, on its own method because it is what
+   * The body of the background burst, on its own method because it is what
    * carries the container: an executor thread has none bound, and
    * {@code @ContainerTransactional} is what establishes one around the calls
    * that read agenda and write the mapping rows.
    *
    * <p>
+   * The key is <b>not</b> taken here. It is taken in
+   * {@link #startOutboundBurst(long)} before the hand-over, so that an account
+   * queued behind another one is already spoken for; taking it here as well
+   * would find it held by this very burst.
+   *
+   * <p>
    * Public because the aspect is woven on method <i>execution</i> and the
    * platform weaves what it can see; and because it is the seam a test runs to
-   * pin that connecting seeds, and does not verify. A test that runs it states
-   * a container first, exactly as the sweep job's test does — the annotation
-   * building a portal in a unit-test JVM is it working, not failing.
+   * pin what the burst does — and what the caller's thread did not do. A test
+   * that runs it states a container first, exactly as the sweep job's test does
+   * — the annotation building a portal in a unit-test JVM is it working, not
+   * failing.
    *
    * @param userIdentityId identity of the user whose account receives copies
    */
   @ContainerTransactional
-  public void seedCopies(long userIdentityId) {
-    runOutboundPhases(userIdentityId, SEEDING_PHASES);
+  public void runOutboundBurst(long userIdentityId) {
+    runOutboundPhases(userIdentityId, ALL_OUTBOUND_PHASES);
   }
 
   /**
@@ -825,8 +875,8 @@ public class CaldavSyncService {
    * @param outboundPhases which pieces of outward work this pass does once the
    *          calendars are in step, each named rather than implied — see
    *          {@link OutboundPhase}. Empty for every pass somebody is waiting
-   *          for; the whole set for the sweep, which is the only pass that may
-   *          spend 30 seconds verifying.
+   *          for; the whole set for the sweep, which may spend 30 seconds
+   *          verifying because no request is blocked on it.
    */
   private void sync(long userIdentityId, String username, boolean awaitPassInFlight, Set<OutboundPhase> outboundPhases) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
@@ -857,7 +907,7 @@ public class CaldavSyncService {
       pruneOrphanBindings(userIdentityId, username, settings);
       List<CalendarCollection> collections = materialiseRemoteCalendars(userIdentityId, username, settings);
       importRemoteEvents(userIdentityId, username, settings, collections);
-      runOutboundPhases(userIdentityId, outboundPhases);
+      runOutboundPhasesUnlessAlreadyRunning(userIdentityId, outboundPhases);
       lastSync.put(userIdentityId, Instant.now());
     } catch (CalDavAuthenticationException e) {
       // Immediately, and before anything else is tried: a stale password
@@ -890,6 +940,46 @@ public class CaldavSyncService {
       // Whatever the pass did, anyone waiting on it is waiting for it to be
       // over, not for it to have succeeded.
       pass.done().complete(null);
+    }
+  }
+
+  /**
+   * Does a pass's outward work, unless the same account's outward work is
+   * already being done somewhere else.
+   *
+   * <p>
+   * The sweep's side of the one key (EXO-89821). The burst a button starts and
+   * the outward part of a sweep are the same three phases on the same account:
+   * run at the same time they list one collection twice, each counts the same
+   * drift as a repair it made, and each may push the same arrear. The account
+   * is claimed by whichever gets there first and the other leaves it alone —
+   * nothing is lost, because what the other one would have done is exactly what
+   * is being done.
+   *
+   * <p>
+   * Nothing waits, here or anywhere else on this key. A sweep that finds an
+   * account claimed moves on to the rest of its work; it is a pass every five
+   * minutes and the account will be free on one of them.
+   *
+   * <p>
+   * A pass carrying no outward phase claims nothing: opening a page must not
+   * make a burst wait its turn for work that page was never going to do.
+   *
+   * @param userIdentityId identity of the user whose account receives copies
+   * @param phases the pieces of work to do, in the set the caller named
+   */
+  private void runOutboundPhasesUnlessAlreadyRunning(long userIdentityId, Set<OutboundPhase> phases) {
+    if (phases.isEmpty()) {
+      return;
+    }
+    if (!outboundInFlight.add(userIdentityId)) {
+      LOG.debug("The copies of user {} are being brought up to date elsewhere; this pass leaves them to it", userIdentityId);
+      return;
+    }
+    try {
+      runOutboundPhases(userIdentityId, phases);
+    } finally {
+      outboundInFlight.remove(userIdentityId);
     }
   }
 
@@ -963,7 +1053,7 @@ public class CaldavSyncService {
    * debug and leaves the account to the sweep. Daemon, because a burst of
    * copies is never a reason to hold a shutdown open.
    *
-   * @return the executor the seeding runs on
+   * @return the executor the outward bursts run on
    */
   private static ExecutorService newOutboundExecutor() {
     return new ThreadPoolExecutor(1,
@@ -972,6 +1062,9 @@ public class CaldavSyncService {
                                   TimeUnit.MILLISECONDS,
                                   new ArrayBlockingQueue<>(SEEDING_QUEUE_DEPTH),
                                   runnable -> {
+                                    // Named for what it was first built to do, and left named
+                                    // that way on purpose: it is what a running deployment's log
+                                    // lines and thread dumps are already read by.
                                     Thread thread = new Thread(runnable, "caldav-seeding");
                                     thread.setDaemon(true);
                                     return thread;
@@ -979,7 +1072,7 @@ public class CaldavSyncService {
   }
 
   /**
-   * Stops accepting seeding work when the platform is going down.
+   * Stops accepting outward work when the platform is going down.
    *
    * <p>
    * {@code shutdown} and not {@code shutdownNow}: a copy half written is a copy
