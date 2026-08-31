@@ -1,0 +1,27 @@
+BEGIN:VCALENDAR
+CALSCALE:GREGORIAN
+PRODID:-//Apple Inc.//macOS 26.5.1//EN
+VERSION:2.0
+BEGIN:VEVENT
+SUMMARY:test16
+UID:fd5fdafc-0cc1-4ebd-bf2f-dec8887032a4
+DTSTAMP:20260831T131435Z
+DTSTART:20260905T070000Z
+DTEND:20260905T073000Z
+DESCRIPTION:Invitation envoyée par Root Root dans l'espace Project Space.\n
+ \nEvent link: http://localhost:8080/portal/dw/agenda?eventId=1020
+URL:http://localhost:8080/portal/dw/agenda?eventId=1020
+CREATED:20260831T120748Z
+ORGANIZER;CN="Root Root";SCHEDULE-AGENT=CLIENT:mailto:anais.francois@demo3.l
+ ivecollab.fr
+ATTENDEE;CN="benjamin mestrallet";PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:ma
+ ilto:alice@stalwart.local
+STATUS:CONFIRMED
+TRANSP:OPAQUE
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:test16
+TRIGGER:-PT5M
+END:VALARM
+END:VEVENT
+END:VCALENDAR

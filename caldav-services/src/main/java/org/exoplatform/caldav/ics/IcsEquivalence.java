@@ -131,6 +131,16 @@ import net.fortuna.ical4j.model.component.VTimeZone;
  * (EXO-89826).
  *
  * <p>
+ * <b>And an alarm the client stamps its own identifier on.</b> An alarm is
+ * compared as one folded statement of the event that carries it, so a single
+ * property inside it that one side does not state makes the whole reminder a
+ * different reminder. macOS Calendar keeps the reminder eXo pushes and writes
+ * {@code X-WR-ALARMUID} on it — Apple's spelling of the RFC 9074 {@code UID}
+ * that was already ignored — and the copy was read as carrying one alarm eXo
+ * had never written while missing the one eXo had. See
+ * {@link #IGNORED_ALARM_PROPERTIES} (EXO-89828).
+ *
+ * <p>
  * <b>And an attendee the server did not keep.</b> BlueMind discards attendees
  * whose addresses are not in its directory, so a copy carries fewer people than
  * eXo sent and no repair can change that. Tolerated for the same reason and in
@@ -299,8 +309,34 @@ public class IcsEquivalence {
    * how it fires. {@code ACKNOWLEDGED} records that somebody dismissed the
    * reminder — per-viewer state, not a property of the meeting; treating it as a
    * rewrite would have eXo resurrect a reminder the user has just dismissed.
+   *
+   * <p>
+   * <b>{@code X-WR-ALARMUID} is {@code UID} under Apple's own name</b>, and the
+   * reason EXO-89828 was opened. Apple's calendar stack has stamped an
+   * identifier on every alarm it writes since long before RFC 9074 gave the
+   * property a standard spelling, and macOS Calendar 26.5.1 still writes that
+   * one: it keeps the reminder eXo pushed, adds its identifier to it, and
+   * leaves {@code ACTION}, {@code DESCRIPTION} and {@code TRIGGER} exactly as
+   * they were. Because an alarm is compared as a single folded statement of the
+   * event that carries it, one unequal property inside it makes the whole alarm
+   * a different alarm: the rig read one reminder as two, one missing from the
+   * copy and one missing from eXo's render, judged the copy altered and
+   * rewrote it — and the client stamped its identifier back on the next time it
+   * touched the object (2026-08-31 14:14:35, both copies a macOS client had
+   * answered).
+   *
+   * <p>
+   * <b>The admission test is EXO-89826's, not "did we fail to parse it".</b>
+   * The question is whether the client writes the property for its own
+   * bookkeeping or whether a user authored it. An alarm's identifier is the
+   * former in its purest form — it names the alarm and says nothing about when
+   * or how it fires — which is precisely why {@code UID} was already here.
+   * {@code X-} is not what admits it, and being unparsed is not what admits it:
+   * the same sweep reported {@code PRIORITY} and {@code SEQUENCE} through the
+   * same unrecognised bucket, and both are refused. See
+   * {@link #DEFAULT_STATEMENTS} for what they are and why.
    */
-  private static final Set<String>         IGNORED_ALARM_PROPERTIES = Set.of("UID", "ACKNOWLEDGED");
+  private static final Set<String>         IGNORED_ALARM_PROPERTIES = Set.of("UID", "ACKNOWLEDGED", "X-WR-ALARMUID");
 
   /**
    * Statements equal to their own absence, per the RFC 5545 defaults. eXo writes
@@ -308,6 +344,24 @@ public class IcsEquivalence {
    * redundant; it writes none of the other three, and a server is free to add
    * them at their default. A non-default value of any of them is not here, so it
    * still registers — {@code SEQUENCE:1} means a client edited the object.
+   *
+   * <p>
+   * <b>And that last sentence was measured, not assumed (EXO-89828).</b> The
+   * sweep of 2026-08-31 12:45:01 reported {@code UNRECOGNISED:PRIORITY=5} and
+   * {@code UNRECOGNISED:SEQUENCE=1} on one BlueMind copy — in the same
+   * comparison that reported {@code SUMMARY=test12} against
+   * {@code SUMMARY=test121}, a moved {@code DTEND} and an attendee the copy had
+   * gained. Somebody had edited that meeting in a client, and those two
+   * statements are the fingerprint of the edit: {@code PRIORITY} is a fact
+   * about the meeting a person set, and {@code SEQUENCE} is the organizer's own
+   * count of how many times the meeting has changed. Neither is a client
+   * indexing itself, so neither is admitted anywhere — not to
+   * {@link #IGNORED_EVENT_PROPERTIES}, not to
+   * {@link #IGNORED_ALARM_PROPERTIES}, and not by any rule about the
+   * unrecognised bucket they happen to arrive in. Their <i>defaults</i> are
+   * excused here and that is the whole of the tolerance they get: a server
+   * spelling out {@code PRIORITY:0} or {@code SEQUENCE:0} states nothing, and
+   * any other value states an edit that must be seen.
    */
   private static final Map<String, String> DEFAULT_STATEMENTS       = Map.of("TRANSP",
                                                                              "OPAQUE",
