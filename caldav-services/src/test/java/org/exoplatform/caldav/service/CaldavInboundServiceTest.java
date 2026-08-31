@@ -159,6 +159,10 @@ public class CaldavInboundServiceTest {
   @Mock
   private CalDavEndpoint         endpoint;
 
+  /** The narrow inbound mapping of the owner's own PARTSTAT (EXO-89681). */
+  @Mock
+  private CaldavAnswerAdoptionService caldavAnswerAdoptionService;
+
   @Spy
   private IcsParser              icsParser;
 
@@ -845,6 +849,34 @@ public class CaldavInboundServiceTest {
   }
 
   /**
+   * A copy carrying the owner's answer, spelled the way the live server spells
+   * it: an uppercase scheme, the parameters BlueMind attaches, and the address
+   * the account answers to.
+   *
+   * @param uid the object's uid
+   * @param summary its summary
+   * @param partStat the participation status on the owner's line
+   * @return a single-event calendar object carrying that answer
+   */
+  private String icsAnsweredBy(String uid, String summary, String partStat) {
+    return """
+        BEGIN:VCALENDAR
+        VERSION:2.0
+        PRODID:-//test//EN
+        BEGIN:VEVENT
+        DTSTAMP:20261001T080000Z
+        UID:%s
+        DTSTART:20261012T090000Z
+        DTEND:20261012T100000Z
+        SUMMARY:%s
+        ORGANIZER;CN=benjamin mestrallet:mailto:bob@stalwart.local
+        ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=%s;CN=FRANCOIS:MAILTO:john@example.test
+        END:VEVENT
+        END:VCALENDAR
+        """.formatted(uid, summary, partStat);
+  }
+
+  /**
    * @param etag the tag recorded at the last import
    * @return an existing object mapping
    */
@@ -1362,6 +1394,117 @@ public class CaldavInboundServiceTest {
                                                     any(),
                                                     anyBoolean(),
                                                     anyLong());
+  }
+
+  /**
+   * The owner's answer is read off a copy eXo wrote before the copy is dropped.
+   */
+  @Test
+  public void theAnswerOnACopyEXoWroteIsReadBeforeTheCopyIsDropped() throws Exception {
+    // The defect this pins (EXO-89807). Two readers meet this object in one
+    // sweep: the verification pass, which may adopt the answer but is gated on
+    // the copy's ETag having moved, and this one, which is TOLD by the
+    // collection's sync report that the object changed and holds its body —
+    // and dropped it with a debug line. On a server that records an answer
+    // without moving its ETag, the gate never opens and the answer never
+    // arrives: measured on BlueMind, PARTSTAT=ACCEPTED sitting on the copy
+    // across 35 sweeps while eXo went on showing the meeting unanswered.
+    String answered = icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED");
+    givenServerObjects(object("o1.ics", "etag-1", answered));
+    when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
+    when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-1@example.test")).thenReturn(777L);
+
+    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    verify(caldavAnswerAdoptionService).adoptAnswer(USER, 777L, answered);
+  }
+
+  /**
+   * Reading the answer off the copy is not importing the copy.
+   */
+  @Test
+  public void readingTheAnswerOffACopyEXoWroteStillDoesNotImportIt() throws Exception {
+    // The guarantee EXO-89802 bought, kept. The adoption is one field read on
+    // the way past; if it ever became a reason to let the object through, the
+    // user would get a second, personal event standing beside the space
+    // meeting it was copied from.
+    givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED")));
+    when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
+    lenient().when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-1@example.test")).thenReturn(777L);
+    lenient().when(agendaEventService.createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong()))
+             .thenReturn(event(501L));
+
+    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    verify(agendaEventService, never()).createEvent(any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    anyBoolean(),
+                                                    anyLong());
+  }
+
+  /**
+   * A copy standing for no event of ours has no answer to record anywhere.
+   */
+  @Test
+  public void aCopyThatNamesNoEventOfOursIsSimplyDropped() throws Exception {
+    // The mapping row is what says which meeting the copy stands for, and an
+    // interrupted push can leave a copy without one. Guessing an event to
+    // record an answer against would attribute somebody's answer to whatever
+    // meeting came to hand.
+    givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED")));
+    when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
+    when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-1@example.test")).thenReturn(null);
+
+    assertEquals(0, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
+  }
+
+  /**
+   * An answer that cannot be read costs its object and nothing else.
+   */
+  @Test
+  public void anAdoptionThatFailsDoesNotCostTheCollectionItsImport() throws Exception {
+    // One unreadable answer must not end the pass over a collection: the
+    // meetings after it in the same page are the user's calendar, and they
+    // have nothing to do with it.
+    givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED")),
+                       object("o2.ics", "etag-2", ics("uid-9@example.test", "Dentist")));
+    when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
+    lenient().when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-9@example.test")).thenReturn(false);
+    when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-1@example.test")).thenReturn(777L);
+    when(caldavAnswerAdoptionService.adoptAnswer(eq(USER), eq(777L), anyString()))
+                                                                                 .thenThrow(new IllegalStateException("agenda is down"));
+    givenAgendaCreates(501L);
+
+    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+  }
+
+  /**
+   * Somebody else's meeting is never offered to the adoption.
+   */
+  @Test
+  public void anObjectNoMirrorOwnsIsNeverReadForAnAnswer() throws Exception {
+    // The narrow boundary of EXO-89681 held at this end too: the only object
+    // whose PARTSTAT may reach agenda is one eXo wrote itself. A colleague's
+    // meeting in the user's own calendar carries attendee lines that are
+    // content, not identity, and must never act on a platform user's behalf.
+    givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-9@example.test", "Dentist", "ACCEPTED")));
+    when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-9@example.test")).thenReturn(false);
+    // Answering as though a mapping existed, deliberately: it makes the
+    // ownership check the only thing standing between this object and the
+    // adoption, so a pass that asked before checking fails here rather than
+    // passing on a mapping that happened to be absent.
+    lenient().when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-9@example.test")).thenReturn(777L);
+    givenAgendaCreates(501L);
+
+    assertEquals(1, service.importInto(USER, pair(), calendar(), from(), to()));
+
+    verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
   }
 
   /**
