@@ -50,6 +50,8 @@ import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.ics.IcsReader;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.RemoteCalendar;
+import org.exoplatform.caldav.model.RemoteCalendarsRead;
+import org.exoplatform.caldav.model.RemoteEventsRead;
 import org.exoplatform.caldav.model.RemoteIcsEvent;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -119,10 +121,33 @@ public class CaldavReadServiceTest {
                                                                                                                 .thenReturn(List.of(object("BEGIN:VCALENDAR")));
     when(icsReader.read(anyString(), any(), any())).thenReturn(List.of(occurrence("kept")));
 
-    List<RemoteIcsEvent> events = service.readEvents(USER, FROM, TO);
+    RemoteEventsRead read = service.readEvents(USER, FROM, TO);
 
-    assertEquals(1, events.size());
-    assertEquals("kept", events.get(0).getUid());
+    assertEquals(1, read.events().size());
+    assertEquals("kept", read.events().get(0).getUid());
+    // Degrading is not the same as hiding. The calendar that refused is named,
+    // so the view can own up to a partial week instead of drawing it as a
+    // complete one.
+    assertEquals(List.of("/dav/calendars/john/a/"), read.failedCalendars());
+    // The account itself answered — it listed its collections — so a banner
+    // saying the whole account is unreachable would be a lie.
+    assertFalse(read.failed());
+  }
+
+  /**
+   * Every calendar answered and none of them held anything: the flags stay
+   * down, so a view draws a genuinely empty week without a failure banner.
+   */
+  @Test
+  public void anAccountThatAnsweredNothingIsNotReportedAsFailed() {
+    givenCalendars(calendar("/dav/calendars/john/a/", "A"));
+    when(calDavClient.calendarQuery(any(), anyString(), any(), any(), anyString(), anyString())).thenReturn(List.of());
+
+    RemoteEventsRead read = service.readEvents(USER, FROM, TO);
+
+    assertTrue(read.events().isEmpty());
+    assertFalse(read.failed());
+    assertTrue(read.failedCalendars().isEmpty());
   }
 
   @Test
@@ -136,7 +161,15 @@ public class CaldavReadServiceTest {
     when(icsReader.read(eq("BROKEN"), any(), any())).thenThrow(new IllegalStateException("unparseable"));
     when(icsReader.read(eq("BEGIN:VCALENDAR"), any(), any())).thenReturn(List.of(occurrence("kept")));
 
-    assertEquals(1, service.readEvents(USER, FROM, TO).size());
+    RemoteEventsRead read = service.readEvents(USER, FROM, TO);
+
+    assertEquals(1, read.events().size());
+    // Deliberately not escalated to the calendar's failure flag. An object no
+    // parser accepts is a data defect, not a reachability one: it does not
+    // heal, so raising the flag would pin a "could not be read" banner on an
+    // agenda that is otherwise correct, for ever. The WARN is where it lives.
+    assertTrue(read.failedCalendars().isEmpty());
+    assertFalse(read.failed());
   }
 
   @Test
@@ -149,7 +182,12 @@ public class CaldavReadServiceTest {
     when(calDavClient.calendarQuery(any(), anyString(), any(), any(), anyString(), anyString()))
                                                                                                .thenThrow(new CalDavAuthenticationException("refused"));
 
-    assertTrue(service.readEvents(USER, FROM, TO).isEmpty());
+    RemoteEventsRead read = service.readEvents(USER, FROM, TO);
+
+    assertTrue(read.events().isEmpty());
+    // Usable, but not passed off as an empty calendar: a stale password is
+    // exactly the case where the user has something to do about it.
+    assertEquals(List.of("/dav/calendars/john/a/"), read.failedCalendars());
   }
 
   @Test
@@ -173,7 +211,7 @@ public class CaldavReadServiceTest {
                                                                                                .thenReturn(List.of(object("BEGIN:VCALENDAR")));
     when(icsReader.read(anyString(), any(), any())).thenReturn(List.of(occurrence("one")));
 
-    RemoteIcsEvent event = service.readEvents(USER, FROM, TO).get(0);
+    RemoteIcsEvent event = service.readEvents(USER, FROM, TO).events().get(0);
 
     assertEquals("/dav/calendars/john/a/", event.getCalendarId());
     assertTrue(event.getColor().startsWith("#"), "every event carries a usable colour");
@@ -183,7 +221,7 @@ public class CaldavReadServiceTest {
   public void aServerPublishedColourIsHonoured() {
     givenCalendars(new CalendarCollection("/dav/calendars/john/a/", "A", null, null, "#D688DBFF", true));
 
-    List<RemoteCalendar> calendars = service.listCalendars(USER);
+    List<RemoteCalendar> calendars = service.listCalendars(USER).calendars();
 
     // BlueMind publishes #RRGGBBAA; the alpha is dropped, the colour is kept.
     assertEquals("#D688DB", calendars.get(0).getColor());
@@ -193,7 +231,7 @@ public class CaldavReadServiceTest {
   public void aCalendarIsIdentifiedByItsHrefNotItsName() {
     givenCalendars(calendar("/dav/calendars/john/a/", "Work"));
 
-    RemoteCalendar calendar = service.listCalendars(USER).get(0);
+    RemoteCalendar calendar = service.listCalendars(USER).calendars().get(0);
 
     // Renaming a calendar in a client must not detach what eXo associated
     // with it, and nothing stops two collections sharing a name.
@@ -205,22 +243,26 @@ public class CaldavReadServiceTest {
   public void aReadOnlyCollectionIsReportedAsSuch() {
     givenCalendars(new CalendarCollection("/dav/calendars/john/shared/", "Shared", null, null, null, false));
 
-    assertTrue(service.listCalendars(USER).get(0).isReadOnly());
+    assertTrue(service.listCalendars(USER).calendars().get(0).isReadOnly());
   }
 
   @Test
   public void aWritableCollectionIsNot() {
     givenCalendars(calendar("/dav/calendars/john/a/", "A"));
 
-    assertFalse(service.listCalendars(USER).get(0).isReadOnly());
+    assertFalse(service.listCalendars(USER).calendars().get(0).isReadOnly());
   }
 
   @Test
   public void anAccountThatIsNotConnectedReadsNothing() {
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
 
-    assertTrue(service.readEvents(USER, FROM, TO).isEmpty());
-    assertTrue(service.listCalendars(USER).isEmpty());
+    assertTrue(service.readEvents(USER, FROM, TO).events().isEmpty());
+    assertTrue(service.listCalendars(USER).calendars().isEmpty());
+    // Empty, and not a failure. There is no account to have failed, and a user
+    // who connected nothing must not be told their calendar server is down.
+    assertFalse(service.readEvents(USER, FROM, TO).failed());
+    assertFalse(service.listCalendars(USER).failed());
     // Never a request: an unconnected account has no credentials to send, and
     // sending none would prompt a Basic challenge on the user's own browser.
     verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
@@ -230,16 +272,60 @@ public class CaldavReadServiceTest {
   public void anImpossiblePeriodIsNotAskedFor() {
     // A reversed or absent window would have the server enumerate whatever the
     // calendar chooses to return, which is not what the caller asked for.
-    assertTrue(service.readEvents(USER, TO, FROM).isEmpty());
-    assertTrue(service.readEvents(USER, null, TO).isEmpty());
+    assertTrue(service.readEvents(USER, TO, FROM).events().isEmpty());
+    assertTrue(service.readEvents(USER, null, TO).events().isEmpty());
+    // A window nobody could ask about is not an account that failed.
+    assertFalse(service.readEvents(USER, TO, FROM).failed());
     verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
   }
 
+  /**
+   * The pin this ticket exists for, on the events endpoint.
+   *
+   * <p>
+   * Measured live: the calendar server was stopped, the platform logged that
+   * it could not be reached, and the browser was handed a cheerful empty list
+   * it drew as an empty week. The request must still answer — an exception
+   * here blanks an agenda the user can otherwise read — but the answer has to
+   * say that nothing was read, or the log stays the only place the failure
+   * exists.
+   */
   @Test
-  public void aServerThatCannotBeListedAnswersEmptyRatherThanFailing() {
+  public void aServerThatCannotBeListedAnswersEmptyAndSaysItFailed() {
     when(calDavClient.discoverCalendarHome(any(), anyString(), anyString())).thenThrow(new CalDavException("unreachable"));
 
-    assertTrue(service.readEvents(USER, FROM, TO).isEmpty());
+    RemoteEventsRead read = service.readEvents(USER, FROM, TO);
+
+    assertTrue(read.events().isEmpty());
+    assertTrue(read.failed());
+  }
+
+  /**
+   * The same pin on the calendars endpoint: an account whose listing failed
+   * must not be mistaken for an account that holds no calendar.
+   */
+  @Test
+  public void aServerThatCannotBeListedSaysSoOnTheCalendarsToo() {
+    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString())).thenThrow(new CalDavException("unreachable"));
+
+    RemoteCalendarsRead read = service.listCalendars(USER);
+
+    assertTrue(read.calendars().isEmpty());
+    assertTrue(read.failed());
+  }
+
+  /**
+   * An account that lists its calendars normally reports no failure, so the
+   * flag above means something when it is raised.
+   */
+  @Test
+  public void anAccountThatListsItsCalendarsReportsNoFailure() {
+    givenCalendars(calendar("/dav/calendars/john/a/", "A"));
+
+    RemoteCalendarsRead read = service.listCalendars(USER);
+
+    assertEquals(1, read.calendars().size());
+    assertFalse(read.failed());
   }
 
   @Test
@@ -250,7 +336,7 @@ public class CaldavReadServiceTest {
     givenCalendars(calendar("/dav/calendars/john/personal/", "Personal"),
                    calendar("/dav/calendars/john/exo-meetings/", "eXo Meetings"));
 
-    List<RemoteCalendar> calendars = service.listCalendars(USER);
+    List<RemoteCalendar> calendars = service.listCalendars(USER).calendars();
 
     assertEquals(1, calendars.size());
     assertEquals("/dav/calendars/john/personal/", calendars.get(0).getId());
@@ -260,7 +346,7 @@ public class CaldavReadServiceTest {
   public void theMirrorIsNotReadEither() {
     givenCalendars(calendar("/dav/calendars/john/exo-meetings/", "eXo Meetings"));
 
-    assertTrue(service.readEvents(USER, FROM, TO).isEmpty());
+    assertTrue(service.readEvents(USER, FROM, TO).events().isEmpty());
     // Never even asked for: the copies are not events to display, and fetching
     // them only to drop them costs a REPORT per read.
     verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
@@ -274,8 +360,8 @@ public class CaldavReadServiceTest {
     givenCalendars(calendar("/dav/calendars/john/work/", "Work"));
     givenBoundCollections("/dav/calendars/john/work");
 
-    assertTrue(service.readEvents(USER, FROM, TO).isEmpty());
-    assertTrue(service.listCalendars(USER).isEmpty());
+    assertTrue(service.readEvents(USER, FROM, TO).events().isEmpty());
+    assertTrue(service.listCalendars(USER).calendars().isEmpty());
     // Not fetched only to be dropped: a retired collection costs no REPORT.
     verify(calDavClient, never()).calendarQuery(any(), anyString(), any(), any(), anyString(), anyString());
   }
@@ -287,7 +373,7 @@ public class CaldavReadServiceTest {
     // losing them between the two halves.
     givenCalendars(calendar("/dav/calendars/john/work/", "Work"));
 
-    assertEquals(1, service.listCalendars(USER).size());
+    assertEquals(1, service.listCalendars(USER).calendars().size());
   }
 
   @Test
@@ -298,7 +384,7 @@ public class CaldavReadServiceTest {
     givenCalendars(calendar("/dav/calendars/john/private/", "Private"));
     givenBoundCollections("/dav/calendars/john/private");
 
-    assertTrue(service.listCalendars(USER).isEmpty());
+    assertTrue(service.listCalendars(USER).calendars().isEmpty());
   }
 
   @Test
@@ -316,7 +402,7 @@ public class CaldavReadServiceTest {
                                           true,
                                           java.util.Set.of("VTODO")));
 
-    assertTrue(service.listCalendars(USER).isEmpty());
+    assertTrue(service.listCalendars(USER).calendars().isEmpty());
   }
 
   @Test
@@ -328,7 +414,7 @@ public class CaldavReadServiceTest {
     // that could never become a calendar.
     givenCalendars(calendar("/dav/cal/john/exo-cal-3b4fca2c-8563-4ff4-8a7c-26cc731aec68/", "Work"));
 
-    assertTrue(service.listCalendars(USER).isEmpty());
+    assertTrue(service.listCalendars(USER).calendars().isEmpty());
   }
 
   @Test
@@ -338,7 +424,7 @@ public class CaldavReadServiceTest {
     // Remote section on every server that does not publish it.
     givenCalendars(calendar("/dav/calendars/john/private/", "Private"));
 
-    assertEquals(1, service.listCalendars(USER).size());
+    assertEquals(1, service.listCalendars(USER).calendars().size());
   }
 
   @Test
@@ -347,8 +433,8 @@ public class CaldavReadServiceTest {
                    calendar("/dav/calendars/john/family/", "Family"));
     givenBoundCollections("/dav/calendars/john/work");
 
-    assertEquals(1, service.listCalendars(USER).size());
-    assertEquals("Family", service.listCalendars(USER).get(0).getName());
+    assertEquals(1, service.listCalendars(USER).calendars().size());
+    assertEquals("Family", service.listCalendars(USER).calendars().get(0).getName());
   }
 
   /**
@@ -379,7 +465,7 @@ public class CaldavReadServiceTest {
     givenCalendars(calendar("/dav/calendars/john/personal/", "Personal"),
                    calendar("/dav/calendars/john/work/", "Work"));
 
-    List<RemoteCalendar> calendars = service.listCalendars(USER);
+    List<RemoteCalendar> calendars = service.listCalendars(USER).calendars();
 
     assertEquals(1, calendars.size());
     assertEquals("/dav/calendars/john/work/", calendars.get(0).getId());
