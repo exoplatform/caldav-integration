@@ -389,6 +389,33 @@ public class CaldavMirrorVerificationServiceTest {
   }
 
   @Test
+  public void aCopyThatCouldNotBeReadIsLeftAloneRatherThanRepairedOver() {
+    // Same protection, different ignorance. FAILED says "an answer was found
+    // and I could not record it"; UNREADABLE says "I could not read the copy
+    // at all, so I do not know what is on it". Repairing on the second is the
+    // more dangerous of the two — it writes eXo's own answer over a body
+    // nobody has looked inside, and that body is exactly where a user's
+    // answer from their own client lives (EXO-89820).
+    givenServerHolds(Map.of(HREF, "\"etag-2\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                                            .thenReturn(new CalendarObject(HREF,
+                                                                                                           "\"etag-2\"",
+                                                                                                           ANSWERED));
+    when(caldavAnswerAdoptionService.adoptAnswer(USER, 5L, ANSWERED))
+                                                                     .thenReturn(CaldavAnswerAdoptionService.Outcome.UNREADABLE);
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(1, result.altered());
+    assertEquals(0, result.adopted());
+    assertEquals(0, result.repaired());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  @Test
   public void anAnswerGivenInExoAloneIsPushedNotAdopted() {
     // The direction rule's other half. The ETag still matches what eXo
     // recorded, so the copy is untouched since the last write: whatever

@@ -277,6 +277,39 @@ public class CaldavAnswerAdoptionServiceTest {
   }
 
   @Test
+  public void aCopyThatCannotBeReadIsNotACopyNobodyAnswered() {
+    // The distinction EXO-89820 turns on. An unreadable object used to come
+    // back NOTHING — the same answer as "this copy carries no answer" — and
+    // the caller is entitled to repair a copy that carries no answer. So a
+    // body eXo failed to understand licensed a write over whatever the user
+    // had actually put there. UNREADABLE says "I could not tell", which is
+    // not permission to overwrite anything.
+    Outcome outcome = service.adoptAnswer(USER, EVENT, "this is not a calendar object at all");
+
+    assertEquals(Outcome.UNREADABLE, outcome);
+  }
+
+  @Test
+  public void anAnswerGivenOnAnInternalMailDomainIsAdopted() throws Exception {
+    // End to end on the live specimen's shape: macOS Calendar answers
+    // TENTATIVE and writes EMAIL= on the attendee line. The address is on an
+    // internal mail domain, which commons-validator rejects, and the whole
+    // object was therefore unreadable — so this answer never reached agenda
+    // on any sweep.
+    givenOwnEmail("alice@stalwart.local");
+    when(agendaEventAttendeeService.getEventResponse(EVENT, null, USER)).thenReturn(EventAttendeeResponse.NEEDS_ACTION);
+
+    Outcome outcome = service.adoptAnswer(USER,
+                                          EVENT,
+                                          object("ATTENDEE;CN=\"benjamin mestrallet\";CUTYPE=UNKNOWN;"
+                                              + "EMAIL=alice@stalwart.local;PARTSTAT=TENTATIVE;"
+                                              + "SCHEDULE-AGENT=CLIENT:mailto:alice@stalwart.local"));
+
+    assertEquals(Outcome.ADOPTED, outcome);
+    verify(agendaEventAttendeeService).sendEventResponse(EVENT, USER, EventAttendeeResponse.TENTATIVE);
+  }
+
+  @Test
   public void aSingleOccurrenceAnswerBecomesAPerOccurrenceResponse() throws Exception {
     // A client accepting one instance of a series writes an override carrying
     // RECURRENCE-ID. It maps to agenda's own per-occurrence shape — the
