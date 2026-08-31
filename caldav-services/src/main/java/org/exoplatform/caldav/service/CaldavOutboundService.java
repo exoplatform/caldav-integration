@@ -26,9 +26,11 @@ import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
+import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.MkCalendarResult;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -73,9 +75,30 @@ public class CaldavOutboundService {
    * Binds every personal calendar of a user to a collection on their server,
    * creating what does not exist yet.
    *
+   * <p>
+   * This is the <b>first</b> step that talks to the server in both sequences
+   * that reach it — a connection and a synchronisation pass — so what it does
+   * with a failure decides how many credential-bearing requests the whole
+   * sequence makes. Two failures are re-thrown rather than absorbed, because
+   * they are properties of the <i>server</i> and are settled after one
+   * attempt: {@link CalDavAuthenticationException} (a person must act) and
+   * {@link CalDavUnreachableException} (nothing is there). Letting the caller
+   * continue past either of them buys nothing and costs four more
+   * authenticated requests against a server that may be counting them
+   * (EXO-89806).
+   *
+   * <p>
+   * Anything else stays absorbed exactly as before: a home this account
+   * cannot be read out of, an answer that is not DAV XML, a quirk on one
+   * account — those say nothing about the rest of the pass, whose later steps
+   * ask the server different questions and may well be answered.
+   *
    * @param userIdentityId identity of the user
    * @param username the user's login, which agenda's ACL reads
    * @return the pairs, bound or refused, one per personal calendar
+   * @throws CalDavAuthenticationException when the server refused the stored
+   *           credentials
+   * @throws CalDavUnreachableException when the server could not be reached
    */
   public List<CalendarSync> bindPersonalCalendars(long userIdentityId, String username) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
@@ -88,6 +111,11 @@ public class CaldavOutboundService {
     try {
       home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
       collections = calDavClient.listCalendars(endpoint, home, settings.getUsername(), settings.getPassword());
+    } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
+      // Not logged here, and that is the point: the caller says it once, for
+      // the whole sequence it is abandoning. Logging here as well would put
+      // the same fact in the log twice per connection.
+      throw e;
     } catch (CalDavException e) {
       LOG.warn("The account's calendars could not be listed; personal calendars are not bound this round", e);
       return List.of();
