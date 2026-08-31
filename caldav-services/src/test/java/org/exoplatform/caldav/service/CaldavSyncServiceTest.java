@@ -296,6 +296,79 @@ public class CaldavSyncServiceTest {
     verify(caldavInboundService).syncContents(eq(USER), eq(bound), any(), any(), any(), anyBoolean());
   }
 
+  /**
+   * A collection holding a valid token is still re-read in full once a day.
+   */
+  @Test
+  public void aCollectionWithAValidTokenIsStillReadInFullOnceADay() throws Exception {
+    // EXO-89810, and the load-bearing line of it. A sync token reports a
+    // change ONCE: the report that names an object consumes the token and
+    // hands back a new one, so a change eXo could not act on when it was told
+    // about it is never mentioned again. That is how an answer given while
+    // adoption was broken becomes unreachable — measured on the rig, where
+    // BlueMind reported root's ACCEPTED twice, the token moved past both, and
+    // deploying the fix changed nothing because nothing ever re-reported the
+    // object. Disconnecting did not help either: reconnecting thaws the
+    // paused bindings and therefore their tokens.
+    //
+    // This line is what makes that recoverable, and it recovers it without
+    // resetting anything: once a day the window is read in full, the token is
+    // not asked, and every object in range is met again — the copy carrying
+    // the answer among them. Anyone who ever reads "we hold a token, why
+    // re-read the window?" and removes this is removing the only heal there
+    // is, silently, for a defect nobody will connect to their change.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync bound = remotePair("/dav/calendars/john/private/", "anchor-1");
+    bound.setSyncToken("token-1");
+    // The collection itself says nothing has changed since eXo last read it.
+    bound.setCtag("ctag-1");
+    // ... and eXo last read it yesterday, which is the whole trigger.
+    bound.setLastSyncEnd(Date.from(Instant.now().minus(Duration.ofDays(1))));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    givenUserCalendars(calendarWithAnchor(77L, "anchor-1"));
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<Boolean> fullRead = ArgumentCaptor.forClass(Boolean.class);
+    verify(caldavInboundService).syncContents(eq(USER), eq(bound), any(), any(), any(), fullRead.capture());
+    assertTrue(fullRead.getValue(),
+               "a collection last read yesterday must be re-read in full, whatever token it holds");
+  }
+
+  /**
+   * The rest of the day, a token is what the collection is asked with.
+   */
+  @Test
+  public void aCollectionAlreadyReadTodayIsAskedWithItsTokenRatherThanReadInFull() throws Exception {
+    // The bound on the heal above, and the reason it is not a burst. Reading
+    // the window in full is fifteen REPORTs each carrying the full iCalendar
+    // of a 30-day slice; doing it on every sweep is a request every five
+    // minutes per collection, which is the shape that got the rig's proxy
+    // auto-banned. Once a day is the whole budget, and it is spent on the
+    // sweep with nobody waiting.
+    //
+    // Pinned as a pair with the test above deliberately: the two together say
+    // "once a day, and only once a day", which is a statement neither makes
+    // alone — a change making every pass a full read would keep the first one
+    // green.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync bound = remotePair("/dav/calendars/john/private/", "anchor-1");
+    bound.setSyncToken("token-1");
+    // The collection has moved on since eXo read it, so there IS something to
+    // read — otherwise the pass would skip it and assert nothing at all.
+    bound.setCtag("ctag-0");
+    bound.setLastSyncEnd(new Date());
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    givenUserCalendars(calendarWithAnchor(77L, "anchor-1"));
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<Boolean> fullRead = ArgumentCaptor.forClass(Boolean.class);
+    verify(caldavInboundService).syncContents(eq(USER), eq(bound), any(), any(), any(), fullRead.capture());
+    assertFalse(fullRead.getValue(),
+                "a collection already read today must be asked what changed, not re-read in full");
+  }
+
   @Test
   public void theMirrorIsNeverReadBackIn() throws Exception {
     // The one collection that stays one-way. It is not a calendar of the
