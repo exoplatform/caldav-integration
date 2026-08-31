@@ -43,6 +43,12 @@
       somebody answers an invitation, then made the whole object unparseable
       with a NoClassDefFoundError. Declared here because this add-on is the one
       that parses iCalendar written by other people's clients.
+
+      Still declared although IcsCompatibility now switches ical4j's relaxed
+      validation on, which is what stops that constructor calling the validator
+      at all (EXO-89820): the hint is a runtime setting and the dependency is
+      the floor under it, so a build that removed this would break the moment
+      anything turned the hint back off.
     -->
     <dependency>
       <groupId>commons-validator</groupId>

@@ -566,9 +566,16 @@ public class CaldavMirrorVerificationService {
           // carries is the user's latest word, and a repair that ran first
           // would overwrite it before anything had read it.
           CaldavAnswerAdoptionService.Outcome answer = adoptAnswer(userIdentityId, object, assessment.remote());
-          if (answer == CaldavAnswerAdoptionService.Outcome.FAILED) {
+          if (answer == CaldavAnswerAdoptionService.Outcome.FAILED
+              || answer == CaldavAnswerAdoptionService.Outcome.UNREADABLE) {
             // The object still holds the only record of the user's answer.
             // Nothing may overwrite it; the next pass reads it again.
+            //
+            // UNREADABLE is here for the same reason and not a weaker one:
+            // eXo could not read the copy, so it does not know whether an
+            // answer is on it. Repairing on that ignorance is the one move
+            // that could destroy the answer — and a repair would in any case
+            // have to parse the same body to rewrite it (EXO-89820).
             continue;
           }
           if (answer == CaldavAnswerAdoptionService.Outcome.ADOPTED) {
