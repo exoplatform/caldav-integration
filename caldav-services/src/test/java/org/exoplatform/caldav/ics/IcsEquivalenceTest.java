@@ -357,6 +357,104 @@ public class IcsEquivalenceTest {
     assertDifferent(EXO.replaceAll("(?s)BEGIN:VALARM.*END:VALARM\r\n", ""));
   }
 
+  // ------------- the identifier a client stamps on an alarm (EXO-89828)
+
+  @Test
+  public void anAlarmIdentifierTheClientStampedIsNotAnEdit() {
+    // The divergence the rig logged at 14:14:35 on 2026-08-31, on the build
+    // deployed at 13:56, on both copies a macOS client had answered:
+    //   VALARM{ACTION=DISPLAY&DESCRIPTION=test16&TRIGGER=-PT5M
+    //          &UNRECOGNISED:X-WR-ALARMUID=3E427B17-...}  (server 1, eXo 0)
+    //   VALARM{ACTION=DISPLAY&DESCRIPTION=test16&TRIGGER=-PT5M}
+    //                                                     (server 0, eXo 1)
+    // One reminder, on both sides, counted as two. An alarm is compared as one
+    // folded statement of the event that carries it, so a single property
+    // inside it that one side does not state makes the whole reminder a
+    // different reminder: the copy was judged altered, rewritten, and stamped
+    // again the moment the client next touched it.
+    assertEquivalent(EXO.replace("TRIGGER:-PT15M",
+                                 "TRIGGER:-PT15M\r\nX-WR-ALARMUID:3E427B17-E128-4DF9-8090-18D619BCDC81"));
+  }
+
+  @Test
+  public void aMovedReminderIsStillAnEditOnAnAlarmTheClientStamped() {
+    // The bound. What is dropped is the identifier and nothing beside it: the
+    // three properties that say when and how the reminder fires are compared
+    // exactly as before, on a stamped alarm as on a bare one.
+    assertDifferent(EXO.replace("TRIGGER:-PT15M",
+                                "TRIGGER:-PT60M\r\nX-WR-ALARMUID:3E427B17-E128-4DF9-8090-18D619BCDC81"));
+  }
+
+  @Test
+  public void aReminderTheClientAddedIsStillAnEditHoweverItIsIdentified() {
+    // And the identifier cannot smuggle a whole reminder past the comparison:
+    // a second alarm is a second alarm, whatever the client calls it.
+    assertDifferent(EXO.replace("END:VEVENT\r\n",
+                                "BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Sprint review\r\n"
+                                    + "TRIGGER:-PT60M\r\nX-WR-ALARMUID:7154708B-083E-4286-BD4B-AEAADD777DAE\r\n"
+                                    + "END:VALARM\r\nEND:VEVENT\r\n"));
+  }
+
+  @Test
+  public void aPriorityAUserSetIsStillAnEdit() {
+    // Not everything the alarm and event models fail to parse is the client
+    // indexing itself. The same sweep — 2026-08-31 12:45:01, one BlueMind copy
+    // — reported UNRECOGNISED:PRIORITY=5 in the same comparison that reported
+    // SUMMARY=test12 against SUMMARY=test121, a moved DTEND and an attendee
+    // the copy had gained. Somebody had edited that meeting; PRIORITY is a
+    // fact about it that a person set, and admitting it because it arrived
+    // through the unrecognised bucket would have hidden half the edit.
+    assertDifferent(EXO.replace("STATUS:CONFIRMED", "PRIORITY:5\r\nSTATUS:CONFIRMED"));
+  }
+
+  @Test
+  public void aSequenceTheOrganizerBumpedIsStillAnEdit() {
+    // Its neighbour in the same log line, UNRECOGNISED:SEQUENCE=1, and the
+    // same verdict for a different reason: SEQUENCE is bookkeeping, but it is
+    // the organizer's count of how many times the meeting has changed, not a
+    // client's private handle on a record. It is how a client says an edit
+    // happened, so it is the last statement that may be ignored.
+    assertDifferent(EXO.replace("STATUS:CONFIRMED", "SEQUENCE:1\r\nSTATUS:CONFIRMED"));
+  }
+
+  @Test
+  public void aCapturedCopyCarryingTheClientsAlarmIdentifierIsNotRePushed() throws Exception {
+    // The convergence pin, on the captured specimen rather than a synthetic
+    // one. caldav/golden/read/objects/r07-exo-reminder-repaired-onto-stalwart
+    // .ics is the exact body Stalwart held for
+    // /dav/cal/alice@stalwart.local/exo-meetings/fd5fdafc-...ics — event 1020,
+    // "test16" — read back at 14:39 on 2026-08-31, which is eXo's own repair
+    // of 14:14:35 as the server stored it, alarm and all.
+    //
+    // The server's side is that body with the client's identifier put back
+    // into its VALARM. The value is not invented: it is the one the sweep
+    // logged for this object minutes earlier, verbatim —
+    //   VALARM{ACTION=DISPLAY&DESCRIPTION=test16&TRIGGER=-PT5M
+    //          &UNRECOGNISED:X-WR-ALARMUID=3E427B17-E128-4DF9-8090-18D619BCDC81}
+    // — and the sweep's own repair is what removed it from the object before
+    // it could be captured decorated. So the fixture is captured and the one
+    // line derived, which is the opposite way round from EXO-89826's pin and
+    // is stated as such in the corpus README.
+    //
+    // What it pins is the whole ticket in one assertion: a second pass over a
+    // copy the client has stamped concludes EQUIVALENT and re-pushes nothing.
+    String inExo = golden("r07-exo-reminder-repaired-onto-stalwart");
+    String onServer = inExo.replace("TRIGGER:-PT5M\r\n",
+                                    "TRIGGER:-PT5M\r\nX-WR-ALARMUID:3E427B17-E128-4DF9-8090-18D619BCDC81\r\n");
+    // The fixture must really gain the identifier, or this test proves nothing.
+    assertNotEquals(onServer, inExo);
+
+    assertEquivalent(onServer, inExo);
+  }
+
+  @Test
+  public void anUnknownPropertyInsideAnAlarmIsStillAnEdit() {
+    // The rule admits one name, not a bucket. A property the alarm model does
+    // not recognise is still a difference wherever it appears, which is what
+    // keeps "ignore anything we failed to parse" from being what was written.
+    assertDifferent(EXO.replace("TRIGGER:-PT15M", "TRIGGER:-PT15M\r\nPRIORITY:5"));
+  }
+
   // ------------------------------------------- names, and who they belong to
 
   @Test
