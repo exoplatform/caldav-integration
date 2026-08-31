@@ -195,6 +195,17 @@ public class CaldavMirrorVerificationService {
   private CaldavMirrorReportService    caldavMirrorReportService;
 
   /**
+   * Reads the owner's answers off the copies of a collection no binding reads
+   * (EXO-89814) — the dedicated <code>exo-meetings</code> collection, which is
+   * the default destination. Held here rather than in the sweep because this is
+   * the pass that already holds the mirror pair, and because the mirror pass is
+   * the sweep's alone: a read must never turn into a burst of requests on
+   * somebody's page load.
+   */
+  @Autowired
+  private CaldavMirrorAnswerService    caldavMirrorAnswerService;
+
+  /**
    * How many times one object may be repaired before the pass stops trying.
    * Three is enough to ride out a server having a bad minute and few enough
    * that a genuine fight is over quickly.
@@ -273,6 +284,14 @@ public class CaldavMirrorVerificationService {
     if (relocation.applicable()) {
       mirror.setRemoteHref(relocation.destination());
     }
+    // Before the comparison, and that ordering is the whole of EXO-89814 twice
+    // over. It is the only pass that meets a copy in a collection no binding
+    // reads, so an answer on it is read here or nowhere; and reading it first
+    // is what stops the settings round below repairing a copy over the very
+    // answer nothing had read yet. The relocation runs first for its own
+    // reason — asking the collection the copies are about to leave what changed
+    // in it would spend a report on the wrong calendar.
+    caldavMirrorAnswerService.readAnswers(userIdentityId, settings, mirror);
     Map<String, String> etags;
     try {
       CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
@@ -515,6 +534,7 @@ public class CaldavMirrorVerificationService {
     int adopted = 0;
     int repaired = 0;
     int abandoned = 0;
+    int held = 0;
     int page = 0;
     List<ObjectSync> objects = caldavSyncStorage.getObjects(mirror.getId(), page, PAGE_SIZE).getContent();
     while (!objects.isEmpty()) {
@@ -540,7 +560,7 @@ public class CaldavMirrorVerificationService {
         } else {
           altered++;
         }
-        if (assessment.verdict() == Verdict.ALTERED) {
+        if (assessment.verdict() == Verdict.ALTERED && assessment.clientWrote()) {
           // Before the repair, and it has to be. The ETag moved, so the
           // client wrote this object after eXo did: whatever answer it
           // carries is the user's latest word, and a repair that ran first
@@ -555,6 +575,9 @@ public class CaldavMirrorVerificationService {
             adopted++;
             recordClientWrite(object, assessment.remote(), etagOf(object.getRemoteHref(), etags));
           }
+        } else if (assessment.verdict() == Verdict.ALTERED && holdsAnAnswerNothingHasRead(userIdentityId, object, assessment)) {
+          held++;
+          continue;
         }
         if (giveUpOn(userIdentityId, object)) {
           abandoned++;
@@ -566,14 +589,16 @@ public class CaldavMirrorVerificationService {
       objects = caldavSyncStorage.getObjects(mirror.getId(), ++page, PAGE_SIZE).getContent();
     }
     if (missing > 0 || altered > 0) {
-      LOG.info("Mirror of user {}: {} checked, {} missing, {} altered, {} answers adopted, {} re-pushed, {} abandoned",
+      LOG.info("Mirror of user {}: {} checked, {} missing, {} altered, {} answers adopted, {} re-pushed, {} abandoned, "
+          + "{} left alone as carrying an unread answer",
                userIdentityId,
                checked,
                missing,
                altered,
                adopted,
                repaired,
-               abandoned);
+               abandoned,
+               held);
     }
     return new MirrorVerification(checked, missing, altered, adopted, repaired, abandoned);
   }
@@ -597,6 +622,64 @@ public class CaldavMirrorVerificationService {
       return CaldavAnswerAdoptionService.Outcome.NOTHING;
     }
     return caldavAnswerAdoptionService.adoptAnswer(userIdentityId, object.getLocalEventId(), remote.calendarData());
+  }
+
+  /**
+   * Whether a copy this pass is about to overwrite carries an answer of the
+   * owner's that agenda does not hold (EXO-89814).
+   *
+   * <p>
+   * <b>The case this exists for.</b> A settings round removes the ETag gate:
+   * every mapped copy is fetched and judged on its content, and a copy that
+   * differs is repaired. On a server that records an answer <i>without</i>
+   * moving the ETag — BlueMind, measured — the answer on such a copy is
+   * precisely the difference the round finds, and {@code clientWrote} is false,
+   * so nothing adopts it and the repair writes eXo's own render straight over
+   * it. The user's answer is not merely unread at that point: it is destroyed,
+   * and it existed nowhere else.
+   *
+   * <p>
+   * <b>Why it refuses the repair rather than adopting.</b> Adopting would need
+   * to know the direction, and an unmoved version is exactly the absence of
+   * that knowledge: the copy may carry the client's latest word, or it may
+   * carry eXo's own previous one while a newer answer given in eXo waits on a
+   * push that has not landed. Adopting the second case would revert the user's
+   * answer, which is the very failure the ETag gate of EXO-89681 exists to
+   * prevent and which EXO-89807 was careful not to reopen. Leaving the copy
+   * alone is safe in both readings — nothing is lost either way — and it
+   * resolves itself: {@link CaldavMirrorAnswerService} adopts the answer on a
+   * later sweep, after which agenda and the copy agree and the copy repairs
+   * like any other.
+   *
+   * <p>
+   * <b>The round is still stamped as applied.</b> Holding the stamp back would
+   * make the round owed for ever on a server where the answer can never be
+   * adopted, and a settings round costs a fetch per copy — an owed round that
+   * never completes is one of those on every sweep, which is the shape that got
+   * this rig's test proxy banned twice. A handful of copies keeping the
+   * settings they were written with is the smaller wrong, and it is said out
+   * loud rather than left to be discovered.
+   *
+   * @param userIdentityId identity of the account's owner
+   * @param object the mapping row of the copy about to be repaired
+   * @param assessment the verdict, carrying the copy as the server holds it
+   * @return true when the copy must not be written over
+   */
+  private boolean holdsAnAnswerNothingHasRead(long userIdentityId, ObjectSync object, Assessment assessment) {
+    CalendarObject remote = assessment.remote();
+    if (remote == null || StringUtils.isBlank(remote.calendarData()) || object.getLocalEventId() == null
+        || object.getLocalEventId() <= 0) {
+      return false;
+    }
+    boolean unread = caldavAnswerAdoptionService.holdsUnrecordedAnswer(userIdentityId,
+                                                                      object.getLocalEventId(),
+                                                                      remote.calendarData());
+    if (unread) {
+      LOG.warn("The copy at {} carries an answer eXo does not hold and its version never moved; it is left as it is "
+          + "rather than written over",
+               object.getRemoteHref());
+    }
+    return unread;
   }
 
   /**
@@ -685,7 +768,7 @@ public class CaldavMirrorVerificationService {
                            CaldavServer server) {
     String etag = etagOf(object.getRemoteHref(), etags);
     if (etag == null) {
-      return new Assessment(Verdict.MISSING, null);
+      return new Assessment(Verdict.MISSING, null, false);
     }
     // The same ETag, or a server that publishes none we can compare. Either way
     // this is not the client's writing.
@@ -697,7 +780,7 @@ public class CaldavMirrorVerificationService {
       // direction rule's other half: untouched since eXo wrote it, so any
       // difference with agenda is eXo-side and the ordinary push overwrites the
       // copy.
-      return new Assessment(Verdict.UNTOUCHED, null);
+      return new Assessment(Verdict.UNTOUCHED, null, false);
     }
     return assessContent(userIdentityId, object, settings, etag, clientWrote, server);
   }
@@ -763,18 +846,18 @@ public class CaldavMirrorVerificationService {
       // Nothing to compare against, nothing a repair could write, and no event
       // to record an answer against either.
       LOG.debug("The copy at {} stands for no known event; its content is not judged", object.getRemoteHref());
-      return new Assessment(Verdict.UNTOUCHED, null);
+      return new Assessment(Verdict.UNTOUCHED, null, false);
     }
     String rendered;
     try {
       rendered = caldavPushService.renderAgendaEvent(userIdentityId, object.getLocalEventId(), object.getIcsUid());
     } catch (RuntimeException | LinkageError e) {
       LOG.debug("Event {} could not be rendered; its copy is left alone", object.getLocalEventId(), e);
-      return new Assessment(Verdict.UNTOUCHED, null);
+      return new Assessment(Verdict.UNTOUCHED, null, false);
     }
     if (StringUtils.isBlank(rendered)) {
       LOG.debug("Event {} renders to nothing; its copy is left alone", object.getLocalEventId());
-      return new Assessment(Verdict.UNTOUCHED, null);
+      return new Assessment(Verdict.UNTOUCHED, null, false);
     }
     CalendarObject remote;
     try {
@@ -792,13 +875,13 @@ public class CaldavMirrorVerificationService {
       // class it only needs for certain content, and one such object must
       // leave the other copies unexamined rather than end the pass.
       LOG.debug("The copy at {} could not be read back; it is left alone", object.getRemoteHref(), e);
-      return new Assessment(Verdict.UNTOUCHED, null);
+      return new Assessment(Verdict.UNTOUCHED, null, false);
     }
     if (remote == null || StringUtils.isBlank(remote.calendarData())) {
       // The server answered and holds nothing readable where the copy should
       // be: rewritten into something that is not the copy, with no answer on
       // it to read.
-      return new Assessment(Verdict.ALTERED, null);
+      return new Assessment(Verdict.ALTERED, null, false);
     }
     IcsJudgement judgement;
     try {
@@ -809,7 +892,7 @@ public class CaldavMirrorVerificationService {
                                          server == null ? null : server.getDroppedProperties());
     } catch (RuntimeException | LinkageError e) {
       LOG.debug("The copy at {} could not be judged; it is left alone", object.getRemoteHref(), e);
-      return new Assessment(Verdict.UNTOUCHED, null);
+      return new Assessment(Verdict.UNTOUCHED, null, false);
     }
     // Recorded whatever the verdict is, and that is the point: a divergence
     // this server's administrator has already excused is still reported by the
@@ -825,22 +908,29 @@ public class CaldavMirrorVerificationService {
       // with the verdict: the answer its writer left on it is read from there,
       // before any repair overwrites it.
       LOG.info("The copy at {} no longer states what eXo writes: {}", object.getRemoteHref(), judgement.detail());
-      // The copy travels with the verdict only when its version moved. In a
-      // settings round the difference is usually eXo's own — the render changed
-      // under a copy nobody touched — and handing that copy on would have the
-      // pass read eXo's own last writing back as though it were the user's
-      // latest answer, over whatever they have since said in eXo.
-      return new Assessment(Verdict.ALTERED, clientWrote ? remote : null);
+      // The copy travels with the verdict, and the direction travels beside it
+      // rather than being spelt by the copy's absence. Adoption is still
+      // licensed by the version having moved and by nothing else: in a settings
+      // round the difference is usually eXo's own — the render changed under a
+      // copy nobody touched — and adopting there would read eXo's own last
+      // writing back as though it were the user's latest answer, over whatever
+      // they have since said in eXo. What the copy is needed for on that path
+      // is the opposite question, asked before the repair rather than instead
+      // of it: whether it carries an answer nothing has read, in which case it
+      // must not be written over (EXO-89814).
+      return new Assessment(Verdict.ALTERED, remote, clientWrote);
     }
     if (judgement.verdict() == IcsJudgement.Verdict.UNJUDGEABLE) {
       LOG.debug("The copy at {} cannot be judged ({}); it is left alone", object.getRemoteHref(), judgement.detail());
-      return new Assessment(Verdict.UNTOUCHED, null);
+      return new Assessment(Verdict.UNTOUCHED, null, false);
     }
     // The listing's value first, the fetch's only when the listing carried
     // none. See adoptVersion: what is recorded here is compared against the
-    // listing on the next pass, so it has to be the listing's own value.
+    // listing on the next pass, so it has to be the listing's own value
+    // (EXO-89809). The third argument is EXO-89814's: direction travels beside
+    // the verdict rather than being spelt by the copy's absence.
     adoptVersion(object, StringUtils.defaultIfBlank(currentEtag, remote.etag()));
-    return new Assessment(Verdict.UNTOUCHED, null);
+    return new Assessment(Verdict.UNTOUCHED, null, false);
   }
 
   /**
@@ -1130,11 +1220,26 @@ public class CaldavMirrorVerificationService {
   /**
    * The verdict on one copy, carrying the fetched object when there is one.
    *
+   * <p>
+   * <b>The copy and the direction are two facts, and they used to be one.</b>
+   * {@code remote} was handed on only when the version had moved, so a copy
+   * fetched in a settings round on a server that answers without moving it
+   * arrived here as {@code null} — and a null copy reads to every caller as
+   * "there is nothing on it", which is how a repair came to be allowed to write
+   * over an answer nobody had looked at (EXO-89814). The copy is now always
+   * carried when it was read, and {@code clientWrote} says the one thing it
+   * used to say by its absence: that the version moved, which is the only proof
+   * the copy holds the user's latest word and therefore the only licence to
+   * adopt off it. Nothing about the adoption rule changed — the licence is the
+   * same one, said out loud.
+   *
    * @param verdict what the copy turned out to be
-   * @param remote the copy as the client left it — only for an ALTERED copy
-   *          whose content was readable, which is the one case an answer can
-   *          be read off
+   * @param remote the copy as the server holds it, whenever it was readable —
+   *          for an ALTERED copy that is what an answer is read from, and what
+   *          a refusal to repair is decided on
+   * @param clientWrote whether the version moved away from the one eXo
+   *          recorded, which is the only case an answer may be adopted in
    */
-  private record Assessment(Verdict verdict, CalendarObject remote) {
+  private record Assessment(Verdict verdict, CalendarObject remote, boolean clientWrote) {
   }
 }
