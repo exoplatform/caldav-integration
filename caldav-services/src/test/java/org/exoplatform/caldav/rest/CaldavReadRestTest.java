@@ -19,8 +19,10 @@
 package org.exoplatform.caldav.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -39,6 +41,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.RemoteCalendar;
+import org.exoplatform.caldav.model.RemoteCalendarsRead;
+import org.exoplatform.caldav.model.RemoteEventsRead;
 import org.exoplatform.caldav.model.RemoteIcsEvent;
 import org.exoplatform.caldav.service.CaldavReadService;
 import org.exoplatform.caldav.service.CaldavSyncService;
@@ -106,12 +110,60 @@ public class CaldavReadRestTest {
     RemoteIcsEvent event = new RemoteIcsEvent();
     when(caldavReadService.readEvents(42L,
                                       Instant.parse("2026-10-01T00:00:00Z"),
-                                      Instant.parse("2026-11-30T00:00:00Z"))).thenReturn(List.of(event));
+                                      Instant.parse("2026-11-30T00:00:00Z")))
+                                                                        .thenReturn(new RemoteEventsRead(List.of(event),
+                                                                                                         false,
+                                                                                                         List.of()));
 
-    List<RemoteIcsEvent> events = caldavReadRest.events("2026-10-01T00:00:00Z", "2026-11-30T00:00:00Z");
+    RemoteEventsRead read = caldavReadRest.events("2026-10-01T00:00:00Z", "2026-11-30T00:00:00Z");
 
-    assertEquals(1, events.size());
-    assertSame(event, events.get(0));
+    assertEquals(1, read.events().size());
+    assertSame(event, read.events().get(0));
+    assertFalse(read.failed());
+  }
+
+  /**
+   * The pin this ticket exists for, at the boundary a client actually sees.
+   *
+   * <p>
+   * A reading the service could not perform must not leave this layer as a
+   * 200 carrying a bare empty array. It stays a 200 — the partial answers of
+   * other calendars are worth rendering, and an unreachable third-party server
+   * is neither a bad request nor a fault of this platform — but the body has
+   * to carry the distinction the status code cannot: asked and empty, versus
+   * could not ask.
+   */
+  @Test
+  public void shouldTellAFailedReadingApartFromAnEmptyOne() {
+    withCurrentUser();
+    when(caldavReadService.readEvents(42L,
+                                      Instant.parse("2026-10-01T00:00:00Z"),
+                                      Instant.parse("2026-11-30T00:00:00Z"))).thenReturn(RemoteEventsRead.unreachable());
+
+    RemoteEventsRead read = caldavReadRest.events("2026-10-01T00:00:00Z", "2026-11-30T00:00:00Z");
+
+    assertTrue(read.events().isEmpty());
+    assertTrue(read.failed());
+  }
+
+  /**
+   * The collections that were listed but could not be read reach the client
+   * too: a week short of one calendar is not a week the view may draw whole.
+   */
+  @Test
+  public void shouldNameTheCalendarsThatCouldNotBeRead() {
+    withCurrentUser();
+    when(caldavReadService.readEvents(42L,
+                                      Instant.parse("2026-10-01T00:00:00Z"),
+                                      Instant.parse("2026-11-30T00:00:00Z")))
+                                                                        .thenReturn(new RemoteEventsRead(List.of(),
+                                                                                                         false,
+                                                                                                         List.of("/dav/a/")));
+
+    RemoteEventsRead read = caldavReadRest.events("2026-10-01T00:00:00Z", "2026-11-30T00:00:00Z");
+
+    assertEquals(List.of("/dav/a/"), read.failedCalendars());
+    assertFalse(read.failed());
   }
 
   /**
@@ -172,7 +224,7 @@ public class CaldavReadRestTest {
     withCurrentUser();
     when(caldavReadService.readEvents(42L,
                                       Instant.parse("2026-10-01T00:00:00Z"),
-                                      Instant.parse("2026-11-30T00:00:00Z"))).thenReturn(List.of());
+                                      Instant.parse("2026-11-30T00:00:00Z"))).thenReturn(RemoteEventsRead.empty());
 
     caldavReadRest.events("2026-10-01T00:00:00Z", "2026-11-30T00:00:00Z");
 
@@ -206,12 +258,28 @@ public class CaldavReadRestTest {
   public void shouldListTheCallerOwnCalendars() {
     withCurrentUser();
     RemoteCalendar calendar = new RemoteCalendar("/dav/calendars/john/work/", "Work", "#112233", false);
-    when(caldavReadService.listCalendars(42L)).thenReturn(List.of(calendar));
+    when(caldavReadService.listCalendars(42L)).thenReturn(new RemoteCalendarsRead(List.of(calendar), false));
 
-    List<RemoteCalendar> calendars = caldavReadRest.calendars();
+    RemoteCalendarsRead read = caldavReadRest.calendars();
 
-    assertSame(calendar, calendars.get(0));
+    assertSame(calendar, read.calendars().get(0));
+    assertFalse(read.failed());
     verify(caldavReadService).listCalendars(42L);
+  }
+
+  /**
+   * An account whose listing failed is not served as an account holding no
+   * calendar: the same distinction, on the other read endpoint.
+   */
+  @Test
+  public void shouldTellAFailedListingApartFromAnEmptyOne() {
+    withCurrentUser();
+    when(caldavReadService.listCalendars(42L)).thenReturn(new RemoteCalendarsRead(List.of(), true));
+
+    RemoteCalendarsRead read = caldavReadRest.calendars();
+
+    assertTrue(read.calendars().isEmpty());
+    assertTrue(read.failed());
   }
 
   /**
