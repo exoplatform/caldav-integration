@@ -58,14 +58,35 @@ final class IcsStatement {
 
   /**
    * The property name a canonical statement was built from: everything before
-   * its parameter suffix or its value.
+   * its parameter suffix, its value, or the body of the component it embeds.
    *
    * <p>
    * Statements are written as {@code NAME[;PARAM=…]=VALUE}, so the name ends at
    * the first {@code ;} or {@code =}, whichever comes first. A statement with
-   * neither — {@code OWNER-ATTENDEE}, or an embedded {@code VALARM{…}} — yields
-   * its whole text, which matches no event property and so can never be excused
-   * by an operator's list.
+   * none of the three — {@code OWNER-ATTENDEE} — yields its whole text, which
+   * matches no event property and so can never be excused by an operator's
+   * list.
+   *
+   * <p>
+   * <b>An opening brace closes a name too, and leaving it out was a real
+   * defect</b> (EXO-89828). An embedded component is spelled
+   * {@code VALARM{…}} and its body is a run of {@code NAME=VALUE} statements,
+   * so the first {@code =} inside it belongs to the alarm's own first property
+   * and not to the statement being named. Stopping there yielded
+   * <code>VALARM{ACTION</code> — the name of no property in any calendar
+   * object, which nevertheless travelled the whole way to an administrator: the
+   * rig's Stalwart registration recorded <code>DROPPED:VALARM{ACTION</code> in
+   * its observed-behaviour summary, and the drawer offered it as something to
+   * excuse. The name of an embedded component is the component.
+   *
+   * <p>
+   * <b>It stays un-excusable, and that is deliberate.</b> {@code VALARM} is not
+   * a property {@link IcsWriter} emits, so {@link ServerExcusals#excuse}
+   * refuses it exactly as it refused the malformed spelling, and
+   * {@code excusingTheInvitationTextDoesNotReachTheReminderItCarries} goes on
+   * pinning that an excusal cannot reach inside an alarm. What changes is only
+   * that the administrator is told the truth about which part of the copy
+   * diverged.
    *
    * @param statement the canonical statement
    * @return the property name it states, never null
@@ -74,7 +95,7 @@ final class IcsStatement {
     int end = statement.length();
     for (int index = 0; index < statement.length(); index++) {
       char character = statement.charAt(index);
-      if (character == ';' || character == '=') {
+      if (character == ';' || character == '=' || character == '{') {
         end = index;
         break;
       }
