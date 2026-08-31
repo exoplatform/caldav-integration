@@ -23,6 +23,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.caldav.entity.CaldavObjectSyncEntity;
@@ -93,6 +94,6 @@ public interface CaldavObjectSyncDAO extends JpaRepository<CaldavObjectSyncEntit
   @Modifying
   @Transactional
   @Query("DELETE FROM CaldavObjectSyncEntity o WHERE o.calendarSyncId = :calendarSyncId")
-  int deleteByCalendarSyncId(long calendarSyncId);
+  int deleteByCalendarSyncId(@Param("calendarSyncId") long calendarSyncId);
 
 }
