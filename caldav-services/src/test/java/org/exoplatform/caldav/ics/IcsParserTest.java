@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
@@ -153,6 +154,45 @@ public class IcsParserTest {
     assertTrue(parser.parse("this is not a calendar").isEmpty());
     assertTrue(parser.parse("").isEmpty());
     assertTrue(parser.parse(null).isEmpty());
+  }
+
+  /**
+   * An address on an internal mail domain is read, parameter and all.
+   *
+   * @throws Exception when the golden cannot be read
+   */
+  @Test
+  public void anAnswerIsReadOffACopyWhoseAddressesAreOnAnInternalDomain() throws Exception {
+    // The live specimen of EXO-89820: macOS Calendar answered TENTATIVE and
+    // wrote EMAIL= on the attendee line, whose address is on .local. ical4j
+    // hands that parameter to commons-validator, which wants a public
+    // top-level domain, and the whole object became unreadable — so the
+    // answer below could not be seen, on either direction of the sync.
+    // A deployment must be able to read what its own mail server publishes.
+    List<IcsEvent> events = parser.parseOrFail(golden("r06-macos-answer-internal-domain"));
+
+    assertEquals(1, events.size());
+    IcsEvent event = events.get(0);
+    assertEquals(1, event.getAttendees().size());
+    assertEquals("alice@stalwart.local", event.getAttendees().get(0).getEmail());
+    assertEquals("TENTATIVE", event.getAttendees().get(0).getResponse());
+  }
+
+  /**
+   * An object that could not be read is told from an object holding nothing.
+   *
+   * @throws Exception when the golden cannot be read
+   */
+  @Test
+  public void anObjectThatCannotBeReadIsToldFromAnObjectHoldingNothing() throws Exception {
+    // The distinction the adoption path decides on: an empty list means "no
+    // event in it", and a caller that may overwrite the copy must not be told
+    // that when the truth is "I could not read it".
+    assertThrows(IcsParseException.class, () -> parser.parseOrFail("this is not a calendar"));
+    assertTrue(parser.parseOrFail("").isEmpty());
+    assertTrue(parser.parseOrFail(null).isEmpty());
+    // And a readable object still comes back readable through this flavour.
+    assertFalse(parser.parseOrFail(golden("r06-macos-answer-internal-domain")).isEmpty());
   }
 
   /**

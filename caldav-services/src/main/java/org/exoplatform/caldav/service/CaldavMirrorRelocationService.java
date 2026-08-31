@@ -431,9 +431,13 @@ public class CaldavMirrorRelocationService {
     if (clientWrote(object, listed)) {
       CalendarObject remote = fetch(endpoint, settings, from);
       if (remote != null && StringUtils.isNotBlank(remote.calendarData())) {
-        if (adopt(userIdentityId, object, remote) == CaldavAnswerAdoptionService.Outcome.FAILED) {
+        CaldavAnswerAdoptionService.Outcome adopted = adopt(userIdentityId, object, remote);
+        if (adopted == CaldavAnswerAdoptionService.Outcome.FAILED
+            || adopted == CaldavAnswerAdoptionService.Outcome.UNREADABLE) {
           // The old copy still holds the only record of the user's answer.
           // Nothing may move or remove it; the next pass reads it again.
+          // UNREADABLE says eXo could not tell whether an answer is on it,
+          // which is not permission to remove it either (EXO-89820).
           LOG.debug("The answer on the copy at {} could not be recorded; it is not moved this pass", from);
           return Outcome.FAILED;
         }
