@@ -484,6 +484,28 @@ public class CaldavRelayServiceTest {
   }
 
   /**
+   * EXO-89806. A gateway status is an unreachable server, not a wrongly
+   * declared address: the measured failure was a proxy answering 502 in front
+   * of a Stalwart that had banned the platform's source address, and the user
+   * was told to have their administrator check the configured server URL —
+   * which was correct all along.
+   */
+  @Test
+  public void aGatewayRefusalIsAnUnreachableServerNotAWrongAddress() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    for (int status : new int[] { 502, 503, 504 }) {
+      givenProbeAnswer(status);
+
+      CaldavProbeResult outcome = caldavRelayService.probeAccount(SERVER_ID, "john", "pw");
+
+      assertEquals(CaldavProbeResult.CONNECTION, outcome.getResult(), () -> "status " + status);
+      // The status travels with the outcome, so the log and the support ticket
+      // keep the raw fact the message paraphrases.
+      assertEquals(status, outcome.getStatus());
+    }
+  }
+
+  /**
    * The probe tries the TYPED credentials against the declared server's own
    * URL, username substituted — and only against a registry row.
    */
