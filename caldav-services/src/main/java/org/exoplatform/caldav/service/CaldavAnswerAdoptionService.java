@@ -55,11 +55,23 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * sidesteps that question entirely.
  *
  * <p>
- * The caller decides <i>when</i> to ask — the ETag comparison in
- * {@link CaldavMirrorVerificationService} is what tells a phone's answer from
- * an eXo answer not yet pushed — and what to do with the object afterwards.
- * This service only turns "what the client wrote" into "what agenda records",
- * and says whether it changed anything.
+ * The caller decides <i>when</i> to ask and what to do with the object
+ * afterwards. This service only turns "what the client wrote" into "what agenda
+ * records", and says whether it changed anything.
+ *
+ * <p>
+ * <b>Two callers ask, on two different signals, and that is deliberate.</b>
+ * {@link CaldavMirrorVerificationService} asks when a copy's ETag has moved
+ * away from the one eXo recorded — the server's own statement that a client
+ * wrote after eXo did, which is what tells a phone's answer from an eXo answer
+ * not yet pushed. {@link CaldavInboundService} asks when the collection's sync
+ * report names one of eXo's own copies as changed (EXO-89807), because a server
+ * can record an answer without moving the value the first signal reads, and did:
+ * on BlueMind the answer sat on the copy for hours while its ETag never moved.
+ * Neither signal supersedes the other; between them they cover the servers that
+ * publish a version and the servers that publish one but do not move it.
+ * Whichever asks, the answers below are the same, and asking twice about one
+ * copy costs nothing — an answer agenda already holds is not adopted again.
  */
 @Service
 public class CaldavAnswerAdoptionService {
@@ -281,13 +293,6 @@ public class CaldavAnswerAdoptionService {
   }
 
   /**
-   * The account owner's own address — the same one the write side puts on
-   * their ATTENDEE line, which is what makes the match unambiguous.
-   *
-   * @param userIdentityId identity of the account's owner
-   * @return the address, or null when their profile exposes none
-   */
-  /**
    * Whether an attendee line is the owner's own.
    *
    * <p>
@@ -296,6 +301,18 @@ public class CaldavAnswerAdoptionService {
    * the event as an invitation to itself; copies written before that carry
    * the eXo profile address. Refusing the older spelling would make every
    * answer on an existing copy unreadable.
+   *
+   * <p>
+   * <b>Three spellings, really, and the third is the server's.</b> The address
+   * arrives here with its {@code mailto:} scheme already off — stripped
+   * case-insensitively by {@link org.exoplatform.caldav.ics.IcsParser}, which
+   * matters because a server may hand back what eXo wrote in a different case
+   * from the one eXo wrote it in: BlueMind returns {@code MAILTO:} for the
+   * lowercase {@code mailto:} eXo sends (EXO-89807), and a URI scheme is
+   * case-insensitive per RFC 3986. The address itself is compared the same way
+   * for the same reason. Both are pinned by tests using the live payload's own
+   * spelling, because this is the shape that makes an answer arrive, be seen,
+   * and be attributed to nobody.
    *
    * @param candidate the address on the attendee line
    * @param profileEmail the owner's eXo profile address
@@ -311,6 +328,13 @@ public class CaldavAnswerAdoptionService {
         || StringUtils.equalsIgnoreCase(address, accountAddress);
   }
 
+  /**
+   * The account owner's own address — the same one the write side puts on
+   * their ATTENDEE line, which is what makes the match unambiguous.
+   *
+   * @param userIdentityId identity of the account's owner
+   * @return the address, or null when their profile exposes none
+   */
   private String ownEmail(long userIdentityId) {
     Identity identity = identityManager.getIdentity(userIdentityId);
     if (identity == null || identity.getProfile() == null) {

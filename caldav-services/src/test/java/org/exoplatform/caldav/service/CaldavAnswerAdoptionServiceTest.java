@@ -143,6 +143,48 @@ public class CaldavAnswerAdoptionServiceTest {
     assertEquals(Outcome.NOTHING, outcome);
   }
 
+  /**
+   * The server's own spelling of the scheme is still the owner's line.
+   */
+  @Test
+  public void anAnswerWrittenBackWithAnUppercaseSchemeIsStillTheOwnersOwn() throws Exception {
+    // Taken verbatim from the live copy that lost an answer on the rig: eXo
+    // writes "mailto:" and BlueMind hands the same line back as "MAILTO:".
+    // A URI scheme is case-insensitive (RFC 3986), so this is one address in
+    // two spellings — but an adoption comparing it as text finds the answer,
+    // fails to attribute it, and reports the one outcome nobody investigates:
+    // NOTHING, on an object that plainly carries an answer.
+    when(agendaEventAttendeeService.getEventResponse(EVENT, null, USER)).thenReturn(EventAttendeeResponse.NEEDS_ACTION);
+
+    Outcome outcome = service.adoptAnswer(USER,
+                                          EVENT,
+                                          object("ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED;CN=FRANCOIS;"
+                                              + "DIR=\"bm://19d43481671.internal/users/751E6D1A\":MAILTO:" + EMAIL));
+
+    assertEquals(Outcome.ADOPTED, outcome);
+    verify(agendaEventAttendeeService).sendEventResponse(EVENT, USER, EventAttendeeResponse.ACCEPTED);
+  }
+
+  /**
+   * A server may also return the address itself in another case.
+   */
+  @Test
+  public void anAnswerWrittenBackInAnotherCaseIsStillTheOwnersOwn() throws Exception {
+    // The scheme is not the only half a server may re-case. The local part of
+    // an address is formally case-sensitive, but no mail system treats it so,
+    // and a copy eXo wrote for john@ that comes back naming John@ is the same
+    // person's line — the alternative is an answer silently attributed to
+    // nobody, which is exactly the failure this pins.
+    lenient().when(agendaEventAttendeeService.getEventResponse(EVENT, null, USER))
+             .thenReturn(EventAttendeeResponse.NEEDS_ACTION);
+
+    Outcome outcome = service.adoptAnswer(USER,
+                                          EVENT,
+                                          object("ATTENDEE;PARTSTAT=DECLINED:MAILTO:" + EMAIL.toUpperCase()));
+
+    assertEquals(Outcome.ADOPTED, outcome);
+  }
+
   @Test
   public void anotherAttendeesLineIsNeverRead() {
     // The narrow boundary itself: one line, matched on the account's own

@@ -345,6 +345,56 @@ public class CaldavSyncStorageTest {
     verify(objectSyncDAO, never()).countByOwnerAndOriginAndIcsUid(anyLong(), anyLong(), any(), anyString());
   }
 
+  /**
+   * A mirror copy says which meeting it stands for, so its answer has a home.
+   */
+  @Test
+  public void aMirrorCopyNamesTheEventItsAnswerBelongsTo() {
+    // The second half of the ownership question (EXO-89807): recognising one
+    // of eXo's own copies is not enough to record the answer written on it —
+    // the answer attaches to an event, and only the mirror's own mapping knows
+    // which.
+    when(objectSyncDAO.findEventIdsByOwnerAndOriginAndIcsUid(USER, 2L, SyncOrigin.MIRROR, "uid-1"))
+                                                                                                  .thenReturn(List.of(88L));
+
+    assertEquals(88L, storage.getMirrorEventId(USER, 2L, "uid-1"));
+  }
+
+  /**
+   * A UID no mirror of this user holds names no event of theirs.
+   */
+  @Test
+  public void aUidNoMirrorHoldsNamesNoEventToAnswerFor() {
+    when(objectSyncDAO.findEventIdsByOwnerAndOriginAndIcsUid(USER, 2L, SyncOrigin.MIRROR, "uid-2")).thenReturn(List.of());
+
+    assertNull(storage.getMirrorEventId(USER, 2L, "uid-2"));
+  }
+
+  /**
+   * Two events behind one UID is a question this refuses to guess at.
+   */
+  @Test
+  public void aUidTwoMirrorCopiesClaimAnswersForNeither() {
+    // Not a state this connector creates, and precisely why it must not be
+    // resolved by taking the first row: the two copies stand for different
+    // meetings, so any answer read off one of them would be recorded against
+    // a meeting the user may never have been asked about.
+    when(objectSyncDAO.findEventIdsByOwnerAndOriginAndIcsUid(USER, 2L, SyncOrigin.MIRROR, "uid-3"))
+                                                                                                  .thenReturn(List.of(88L, 99L));
+
+    assertNull(storage.getMirrorEventId(USER, 2L, "uid-3"));
+  }
+
+  /**
+   * A blank UID is nobody's copy and is not asked about.
+   */
+  @Test
+  public void anObjectWithNoUidNamesNoMirrorEvent() {
+    assertNull(storage.getMirrorEventId(USER, 2L, " "));
+
+    verify(objectSyncDAO, never()).findEventIdsByOwnerAndOriginAndIcsUid(anyLong(), anyLong(), any(), anyString());
+  }
+
   @Test
   public void theObjectsOfABindingComeBackAsAPage() {
     when(objectSyncDAO.findByCalendarSyncId(eq(3L), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(objectEntity(1L))));
