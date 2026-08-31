@@ -25,11 +25,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mockStatic;
@@ -89,6 +91,14 @@ public class CaldavServerServiceTest {
   private static final String      REGULAR_USER = "mary";
 
   private static final String      SERVER_URL   = "https://dav.example.org/cal/{username}/";
+
+  /**
+   * The local development rig's address. Unusual in three separate ways —
+   * plain http, a port outside the default set, and a loopback host — which is
+   * exactly why it takes three deployment properties to allow, and why it
+   * stands here for "an address only the deployment can vouch for".
+   */
+  private static final String      RIG_URL      = "http://localhost:8888/dav/cal/{username}/";
 
   @Mock
   private CaldavServerStorage      caldavServerStorage;
@@ -469,6 +479,12 @@ public class CaldavServerServiceTest {
    * activation the legacy enabled property declares; and Bluemind as a
    * normally-named row whose agenda remote provider is upserted here, since
    * no kernel plugin declares it.
+   *
+   * <p>
+   * Bluemind's row arrives INACTIVE (EXO-89794): its shipped address is an
+   * RFC 2606 {@code .invalid} placeholder that resolves to nothing, so it does
+   * not pass the address check and the row is not switched on. That state
+   * reaches the agenda provider too — the connector is not offered to anybody.
    */
   @Test
   public void shouldSeedEmptyRegistryWithBothDefaults() {
@@ -476,7 +492,7 @@ public class CaldavServerServiceTest {
     System.setProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY, "false");
     when(caldavServerStorage.countServers()).thenReturn(0L);
     CaldavServer createdBluemind = server(2, "agenda.caldavCalendar.2", "Bluemind", null,
-                                          CaldavServerService.DEFAULT_BLUEMIND_URL, true);
+                                          CaldavServerService.DEFAULT_BLUEMIND_URL, false);
     when(caldavServerStorage.createServer(any(), eq(CaldavServerService.CALDAV_PROVIDER_NAME))).thenReturn(createdBluemind);
 
     caldavServerService.seedDefaultServers();
@@ -491,7 +507,7 @@ public class CaldavServerServiceTest {
     verify(caldavServerStorage).createServer(bluemind.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
     assertEquals("Bluemind", bluemind.getValue().getName());
     assertEquals(CaldavServerService.DEFAULT_BLUEMIND_URL, bluemind.getValue().getServerUrl());
-    assertEquals(true, bluemind.getValue().isActive());
+    assertEquals(false, bluemind.getValue().isActive());
 
     // BOTH providers are pushed: Stalwart's explicitly (the kernel plugin
     // only creates a missing provider, it never re-enables a stored one, so
@@ -501,7 +517,7 @@ public class CaldavServerServiceTest {
     assertEquals(CaldavServerService.CALDAV_PROVIDER_NAME, provider.getAllValues().get(0).getName());
     assertEquals(false, provider.getAllValues().get(0).isEnabled());
     assertEquals("agenda.caldavCalendar.2", provider.getAllValues().get(1).getName());
-    assertEquals(true, provider.getAllValues().get(1).isEnabled());
+    assertEquals(false, provider.getAllValues().get(1).isEnabled());
   }
 
   /**
@@ -521,25 +537,226 @@ public class CaldavServerServiceTest {
   }
 
   /**
-   * Without the legacy property, Stalwart seeds its literal default URL —
-   * the registry still gets both defaults.
+   * <b>The fix of EXO-89794.</b> Without the legacy property, Stalwart seeds
+   * its literal default URL — and that row arrives <b>INACTIVE</b>, because
+   * the shipped default is a placeholder no deployment vouched for.
+   *
+   * <p>
+   * This is the pin over the loophole: the constant used to be
+   * {@code http://localhost:8888/dav/cal/{username}/} and the row used to be
+   * seeded active, so a fresh install shipped a live registration pointing at
+   * its own loopback interface, through which a connected user could drive the
+   * relay's allowed verbs at a row nobody had typed. Two things are asserted
+   * together because either alone would let it back: the default names no
+   * loopback host, and the row is off.
+   *
+   * <p>
+   * The inactive state reaches the agenda remote provider as well — a row that
+   * is off but whose provider is on is a connector users are still offered.
    */
   @Test
-  public void shouldSeedLiteralStalwartUrlWithoutLegacyProperty() {
+  public void shouldSeedTheStalwartPlaceholderInactiveWithoutLegacyProperty() {
     System.clearProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY);
     System.clearProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY);
     when(caldavServerStorage.countServers()).thenReturn(0L);
     when(caldavServerStorage.createServer(any(), anyString()))
                                                               .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null,
                                                                                  CaldavServerService.DEFAULT_BLUEMIND_URL,
-                                                                                 true));
+                                                                                 false));
 
     caldavServerService.seedDefaultServers();
 
     ArgumentCaptor<CaldavServer> stalwart = ArgumentCaptor.forClass(CaldavServer.class);
     verify(caldavServerStorage).createSeedServer(stalwart.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
     assertEquals(CaldavServerService.DEFAULT_STALWART_URL, stalwart.getValue().getServerUrl());
-    assertEquals(true, stalwart.getValue().isActive());
+    assertFalse(stalwart.getValue().isActive());
+
+    // The shipped default names no address on this machine, whatever the
+    // check then makes of it: a product default pointing at a developer's
+    // loopback is the defect, not merely its activation.
+    assertFalse(CaldavServerService.DEFAULT_STALWART_URL.contains("localhost"));
+    assertFalse(CaldavServerService.DEFAULT_STALWART_URL.contains("127.0.0.1"));
+
+    ArgumentCaptor<RemoteProvider> provider = ArgumentCaptor.forClass(RemoteProvider.class);
+    verify(agendaRemoteEventService, times(2)).saveRemoteProvider(provider.capture());
+    assertEquals(CaldavServerService.CALDAV_PROVIDER_NAME, provider.getAllValues().get(0).getName());
+    assertFalse(provider.getAllValues().get(0).isEnabled());
+  }
+
+  /**
+   * The gate is the address check's answer, not a blanket "seeds are off": an
+   * address the deployment NAMED — through the legacy property — and which
+   * passes the check is seeded active, exactly as before EXO-89794, and its
+   * agenda provider is enabled with it.
+   *
+   * <p>
+   * Without this, "seed inactive" would be indistinguishable from "seeding is
+   * broken", and every upgrade of a deployment whose registry is empty but
+   * whose CalDAV server is properly configured would silently lose its
+   * connector.
+   */
+  @Test
+  public void shouldSeedStalwartActiveWhenTheDeclaredAddressPassesTheCheck() {
+    System.setProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY, SERVER_URL);
+    System.clearProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY);
+    when(caldavServerStorage.countServers()).thenReturn(0L);
+    when(caldavServerStorage.createServer(any(), anyString()))
+                                                              .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null,
+                                                                                 CaldavServerService.DEFAULT_BLUEMIND_URL,
+                                                                                 false));
+
+    caldavServerService.seedDefaultServers();
+
+    ArgumentCaptor<CaldavServer> stalwart = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).createSeedServer(stalwart.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
+    assertEquals(SERVER_URL, stalwart.getValue().getServerUrl());
+    assertTrue(stalwart.getValue().isActive());
+
+    ArgumentCaptor<RemoteProvider> provider = ArgumentCaptor.forClass(RemoteProvider.class);
+    verify(agendaRemoteEventService, times(2)).saveRemoteProvider(provider.capture());
+    assertEquals(CaldavServerService.CALDAV_PROVIDER_NAME, provider.getAllValues().get(0).getName());
+    assertTrue(provider.getAllValues().get(0).isEnabled());
+  }
+
+  /**
+   * The local development rig, first half: naming
+   * {@code http://localhost:8888/dav/cal/{username}/} in
+   * {@code exo.agenda.caldav.connector.url} and NOTHING else does not get it
+   * seeded active. The property says where the server is; it does not say the
+   * deployment means to reach loopback.
+   */
+  @Test
+  public void shouldSeedTheRigAddressInactiveWithoutTheDocumentedOptIn() {
+    System.setProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY, RIG_URL);
+    System.clearProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY);
+    when(caldavServerStorage.countServers()).thenReturn(0L);
+    when(caldavServerStorage.createServer(any(), anyString()))
+                                                              .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null,
+                                                                                 CaldavServerService.DEFAULT_BLUEMIND_URL,
+                                                                                 false));
+
+    caldavServerService.seedDefaultServers();
+
+    ArgumentCaptor<CaldavServer> stalwart = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).createSeedServer(stalwart.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
+    assertEquals(RIG_URL, stalwart.getValue().getServerUrl());
+    assertFalse(stalwart.getValue().isActive());
+  }
+
+  /**
+   * The local development rig, second half: on a deployment that HAS opted
+   * into that address, the very same seeding switches the row on — the rig
+   * keeps working, through its documented properties rather than through a
+   * default that walks past them.
+   *
+   * <p>
+   * The opt-in is expressed here by making the real validator accept the rig
+   * URL, because what those three properties do to it is not this class's
+   * subject and is pinned where it belongs — see
+   * {@link CaldavServerUrlValidatorTest#shouldLetTheLocalRigThroughOnlyWithTheExplicitOptIn},
+   * which walks {@code allowedSchemes}, {@code allowedPorts} and
+   * {@code allowedHosts} one refusal at a time until the address passes. Read
+   * with the test above, the pair says the whole rule: the address alone is
+   * refused, the address plus the opt-in is allowed.
+   */
+  @Test
+  public void shouldSeedTheRigAddressActiveWhenTheDeploymentOptedIn() {
+    System.setProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY, RIG_URL);
+    System.clearProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY);
+    doNothing().when(caldavServerUrlValidator).validate(RIG_URL);
+    when(caldavServerStorage.countServers()).thenReturn(0L);
+    when(caldavServerStorage.createServer(any(), anyString()))
+                                                              .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null,
+                                                                                 CaldavServerService.DEFAULT_BLUEMIND_URL,
+                                                                                 false));
+
+    caldavServerService.seedDefaultServers();
+
+    ArgumentCaptor<CaldavServer> stalwart = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).createSeedServer(stalwart.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
+    assertEquals(RIG_URL, stalwart.getValue().getServerUrl());
+    assertTrue(stalwart.getValue().isActive());
+
+    ArgumentCaptor<RemoteProvider> provider = ArgumentCaptor.forClass(RemoteProvider.class);
+    verify(agendaRemoteEventService, times(2)).saveRemoteProvider(provider.capture());
+    assertTrue(provider.getAllValues().get(0).isEnabled());
+  }
+
+  /**
+   * The address of a seeded row is judged even when the legacy enabled
+   * property is already switching that row off — so the boot log says what the
+   * deployment is holding whatever the outcome.
+   *
+   * <p>
+   * This pins the ORDER of the two operands, which is otherwise invisible: put
+   * the property test first and {@code &&} short-circuits the check away, the
+   * row is off for a reason nobody can read, and the warning EXO-89774 added
+   * silently stops firing on exactly the deployments that most need it.
+   */
+  @Test
+  public void shouldStillJudgeTheSeedAddressWhenTheLegacyPropertyDisablesIt() {
+    System.setProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY, RIG_URL);
+    System.setProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY, "false");
+    when(caldavServerStorage.countServers()).thenReturn(0L);
+    when(caldavServerStorage.createServer(any(), anyString()))
+                                                              .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null,
+                                                                                 CaldavServerService.DEFAULT_BLUEMIND_URL,
+                                                                                 false));
+
+    caldavServerService.seedDefaultServers();
+
+    verify(caldavServerUrlValidator).validate(RIG_URL);
+    ArgumentCaptor<CaldavServer> stalwart = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).createSeedServer(stalwart.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
+    assertFalse(stalwart.getValue().isActive());
+  }
+
+  /**
+   * <b>The upgrade pin.</b> A deployment that already holds registrations —
+   * the two live rows on the rig, say, both active and both connected to — is
+   * not touched by taking this version: no row is written, no agenda provider
+   * is re-pushed, and the address check is <b>never consulted at all</b>.
+   *
+   * <p>
+   * The last of those is the load-bearing one and the reason this test exists
+   * next to {@link #shouldNotSeedNonEmptyRegistry()} rather than inside it.
+   * EXO-89794 makes an address the boot path judges decide whether a row is
+   * switched on; the danger it introduces is that judgement escaping to rows
+   * an administrator already declared, which would deactivate — at boot,
+   * silently, with connected users on them — every on-premises server whose
+   * address is internal. Asserting "the validator saw nothing" is what forbids
+   * that, and it forbids it for any future shape of the gate too: verifying
+   * only that no write happened would still pass a version that judged the
+   * rows and then wrote the answer somewhere else.
+   *
+   * <p>
+   * The lenient stub below and the order of the assertions are both load
+   * bearing, and for one reason: without them, a build that dropped the guard
+   * failed this test with a {@code NullPointerException} thrown by an
+   * unstubbed mock two lines into the seeding — green when it should be red is
+   * the famous failure, but red for an incidental reason is the quieter one,
+   * because it makes the test look like it is pinning something it never
+   * reaches. Stubbing the create lets the wrong version run all the way
+   * through, and asserting the validator saw nothing FIRST is what makes that
+   * version fail on the sentence this test is about.
+   */
+  @Test
+  public void shouldNeverJudgeStoredRowsWhenTheRegistryIsAlreadyFilled() {
+    System.setProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY, RIG_URL);
+    lenient().when(caldavServerStorage.createServer(any(), anyString()))
+             .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null, CaldavServerService.DEFAULT_BLUEMIND_URL,
+                                false));
+    when(caldavServerStorage.countServers()).thenReturn(2L);
+
+    caldavServerService.seedDefaultServers();
+
+    verifyNoInteractions(caldavServerUrlValidator);
+    verifyNoInteractions(agendaRemoteEventService);
+    verify(caldavServerStorage, never()).createSeedServer(any(), anyString());
+    verify(caldavServerStorage, never()).createServer(any(), anyString());
+    verify(caldavServerStorage, never()).updateServer(any());
+    verify(caldavServerStorage, never()).getServerById(anyLong());
+    verify(caldavServerStorage, never()).getServers();
   }
 
   /**
