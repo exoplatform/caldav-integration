@@ -35,6 +35,8 @@ import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.ics.IcsReader;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.RemoteCalendar;
+import org.exoplatform.caldav.model.RemoteCalendarsRead;
+import org.exoplatform.caldav.model.RemoteEventsRead;
 import org.exoplatform.caldav.model.RemoteIcsEvent;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
@@ -69,19 +71,31 @@ public class CaldavReadService {
   private CaldavSyncStorage      caldavSyncStorage;
 
   /**
-   * The calendars of the connected account.
+   * The calendars of the connected account, and whether the account could be
+   * asked at all.
+   *
+   * <p>
+   * The failure travels in the answer rather than as an exception. A caller
+   * that receives a bare empty list cannot tell an account holding no calendar
+   * from an account whose server is down, and the second is the case that
+   * actually happens — so it is said, next to the list, instead of being left
+   * in a log line no browser reads.
    *
    * @param userIdentityId identity of the user
-   * @return the calendars, each with a usable colour; empty when no account is
+   * @return the calendars, each with a usable colour, and the flag saying
+   *         whether the listing failed; empty and unfailed when no account is
    *         connected
    */
-  public List<RemoteCalendar> listCalendars(long userIdentityId) {
+  public RemoteCalendarsRead listCalendars(long userIdentityId) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (!connected(settings)) {
-      return List.of();
+      // Not a failure: there is no account to fail. A user who has connected
+      // nothing must not be told their calendar server is down.
+      return RemoteCalendarsRead.empty();
     }
     CalDavEndpoint endpoint = endpointOf(settings);
-    List<CalendarCollection> collections = readableCollections(userIdentityId, endpoint, settings);
+    CollectionListing listing = readableCollections(userIdentityId, endpoint, settings);
+    List<CalendarCollection> collections = listing.collections();
     List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
     List<RemoteCalendar> calendars = new ArrayList<>();
     for (CalendarCollection collection : collections) {
@@ -110,46 +124,71 @@ public class CaldavReadService {
                                                                 order.size()),
                                        !collection.writable()));
     }
-    return calendars;
+    return new RemoteCalendarsRead(calendars, listing.failed());
   }
 
   /**
-   * The events of the connected account over a window, one calendar at a time.
+   * The events of the connected account over a window, one calendar at a time,
+   * and which part of that reading failed.
    *
    * <p>
    * A calendar that fails degrades to no events <i>for that calendar</i>,
    * exactly as the browser's Promise.allSettled did: one collection a server
    * refuses, or one object it cannot serialise, must not blank the whole
-   * agenda. The failure is logged rather than raised, because the user's
-   * remaining calendars are still worth showing.
+   * agenda. The failure is still not raised, because the user's remaining
+   * calendars are worth showing — but it is now <b>reported</b>, in the answer,
+   * because a caller handed only the surviving events draws them as the whole
+   * truth and says nothing is missing.
+   *
+   * <p>
+   * Two grains, matching the two ways a read fails. The account could not be
+   * asked at all — nothing was read, and the empty list is not an answer about
+   * the user's week. Or the account answered and some of its collections did
+   * not, in which case the events of the others are returned and only the
+   * failed hrefs are named.
    *
    * @param userIdentityId identity of the user
    * @param start beginning of the window
    * @param end end of the window
-   * @return the occurrences, each tagged with the calendar it came from
+   * @return the occurrences, each tagged with the calendar it came from,
+   *         beside the flag and the hrefs that say what was not read
    */
-  public List<RemoteIcsEvent> readEvents(long userIdentityId, Instant start, Instant end) {
+  public RemoteEventsRead readEvents(long userIdentityId, Instant start, Instant end) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (!connected(settings) || start == null || end == null || !start.isBefore(end)) {
-      return List.of();
+      // Neither of these is a failure of the account: there is no account, or
+      // there is no window worth asking about. Reporting them as one would put
+      // a "could not be reached" banner on a user who connected nothing.
+      return RemoteEventsRead.empty();
     }
     CalDavEndpoint endpoint = endpointOf(settings);
-    List<CalendarCollection> collections = readableCollections(userIdentityId, endpoint, settings);
+    CollectionListing listing = readableCollections(userIdentityId, endpoint, settings);
+    if (listing.failed()) {
+      // The account itself could not be asked, so there is no per-calendar
+      // truth to report: not one collection was ever named.
+      return RemoteEventsRead.unreachable();
+    }
+    List<CalendarCollection> collections = listing.collections();
     List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
 
     List<RemoteIcsEvent> events = new ArrayList<>();
+    List<String> failedCalendars = new ArrayList<>();
     for (CalendarCollection collection : collections) {
       String colour = CalendarPalette.colourOf(collection.color(),
                                                collection.href(),
                                                order.indexOf(collection.href()),
                                                order.size());
-      events.addAll(readCalendar(endpoint, settings, collection, colour, start, end));
+      CalendarReading reading = readCalendar(endpoint, settings, collection, colour, start, end);
+      events.addAll(reading.events());
+      if (reading.failed()) {
+        failedCalendars.add(collection.href());
+      }
     }
-    return events;
+    return new RemoteEventsRead(events, false, failedCalendars);
   }
 
   /**
-   * One calendar's occurrences, or none when reading it fails.
+   * One calendar's occurrences, and whether reading it failed.
    *
    * @param endpoint the declared server
    * @param settings the connected account
@@ -157,14 +196,15 @@ public class CaldavReadService {
    * @param colour the colour its events are shown in
    * @param start beginning of the window
    * @param end end of the window
-   * @return the occurrences, possibly empty
+   * @return the occurrences, possibly empty, beside the flag saying whether
+   *         that emptiness is an answer or a failure
    */
-  private List<RemoteIcsEvent> readCalendar(CalDavEndpoint endpoint,
-                                            CaldavUserSetting settings,
-                                            CalendarCollection collection,
-                                            String colour,
-                                            Instant start,
-                                            Instant end) {
+  private CalendarReading readCalendar(CalDavEndpoint endpoint,
+                                       CaldavUserSetting settings,
+                                       CalendarCollection collection,
+                                       String colour,
+                                       Instant start,
+                                       Instant end) {
     List<RemoteIcsEvent> events = new ArrayList<>();
     try {
       List<CalendarObject> objects = calDavClient.calendarQuery(endpoint,
@@ -180,10 +220,12 @@ public class CaldavReadService {
       // Worth its own line: every calendar of this account will fail the same
       // way, and the cause is a stale password rather than a broken calendar.
       LOG.warn("The stored CalDAV credentials were rejected while reading {}", collection.href(), e);
+      return new CalendarReading(List.of(), true);
     } catch (CalDavException e) {
       LOG.warn("Calendar {} could not be read; its events are omitted from this answer", collection.href(), e);
+      return new CalendarReading(List.of(), true);
     }
-    return events;
+    return new CalendarReading(events, false);
   }
 
   /**
@@ -250,17 +292,24 @@ public class CaldavReadService {
    *          hide the wrong collections
    * @param endpoint the declared server
    * @param settings the connected account
-   * @return the collections whose events belong on the agenda
+   * @return the collections whose events belong on the agenda, beside the flag
+   *         saying whether the account could be listed at all
    */
-  private List<CalendarCollection> readableCollections(long userIdentityId,
-                                                       CalDavEndpoint endpoint,
-                                                       CaldavUserSetting settings) {
+  private CollectionListing readableCollections(long userIdentityId,
+                                                CalDavEndpoint endpoint,
+                                                CaldavUserSetting settings) {
+    CollectionListing listing = collectionsOf(endpoint, settings);
+    if (listing.failed()) {
+      return listing;
+    }
     String mirror = CaldavSyncStorage.canonicalHref(settings.getMirrorCalendarHref());
     Set<String> bound = boundCollections(userIdentityId, settings);
-    return collectionsOf(endpoint, settings).stream()
-                                            .filter(collection -> !isMirror(collection, mirror))
-                                            .filter(collection -> !bound.contains(CaldavSyncStorage.canonicalHref(collection.href())))
-                                            .toList();
+    return new CollectionListing(listing.collections()
+                                        .stream()
+                                        .filter(collection -> !isMirror(collection, mirror))
+                                        .filter(collection -> !bound.contains(CaldavSyncStorage.canonicalHref(collection.href())))
+                                        .toList(),
+                                 false);
   }
 
   /**
@@ -327,19 +376,32 @@ public class CaldavReadService {
   }
 
   /**
-   * The calendars of an account, or none when the server cannot be listed.
+   * The calendars of an account, or the statement that it could not be asked.
+   *
+   * <p>
+   * This is the one failure that used to disappear entirely. The server being
+   * down makes both endpoints answer with an empty list, and every caller
+   * downstream — the REST layer, the connector, the three agenda views — read
+   * that list as "this account holds nothing". The WARN below stays, and stays
+   * the place to look for <i>why</i>; what changes is that it is no longer the
+   * only place the failure exists.
    *
    * @param endpoint the declared server
    * @param settings the connected account
-   * @return the collections, possibly empty
+   * @return the collections, possibly empty, beside the flag saying whether
+   *         that emptiness is an answer or a failure
    */
-  private List<CalendarCollection> collectionsOf(CalDavEndpoint endpoint, CaldavUserSetting settings) {
+  private CollectionListing collectionsOf(CalDavEndpoint endpoint, CaldavUserSetting settings) {
     try {
       String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
-      return calDavClient.listCalendars(endpoint, home, settings.getUsername(), settings.getPassword());
+      return new CollectionListing(calDavClient.listCalendars(endpoint,
+                                                              home,
+                                                              settings.getUsername(),
+                                                              settings.getPassword()),
+                                   false);
     } catch (CalDavException e) {
       LOG.warn("The calendars of the connected account could not be listed", e);
-      return List.of();
+      return new CollectionListing(List.of(), true);
     }
   }
 
@@ -362,5 +424,29 @@ public class CaldavReadService {
    */
   private CalDavEndpoint endpointOf(CaldavUserSetting settings) {
     return calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+  }
+
+  /**
+   * What listing an account's collections produced, failure included.
+   *
+   * <p>
+   * Internal to this service: the outside world is told in the vocabulary of
+   * {@link RemoteCalendarsRead} and {@link RemoteEventsRead}. It exists so the
+   * flag survives the two filtering steps between the listing and the answer,
+   * which a bare {@code List} would drop on the floor.
+   *
+   * @param collections the collections that were listed, empty on failure
+   * @param failed true when the account could not be asked
+   */
+  private record CollectionListing(List<CalendarCollection> collections, boolean failed) {
+  }
+
+  /**
+   * What reading one collection produced, failure included.
+   *
+   * @param events the occurrences read from it, empty on failure
+   * @param failed true when the collection could not be read
+   */
+  private record CalendarReading(List<RemoteIcsEvent> events, boolean failed) {
   }
 }

@@ -19,7 +19,6 @@ package org.exoplatform.caldav.rest;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.Date;
-import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -37,8 +36,8 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
-import org.exoplatform.caldav.model.RemoteCalendar;
-import org.exoplatform.caldav.model.RemoteIcsEvent;
+import org.exoplatform.caldav.model.RemoteCalendarsRead;
+import org.exoplatform.caldav.model.RemoteEventsRead;
 import org.exoplatform.caldav.service.CaldavReadService;
 import org.exoplatform.caldav.service.CaldavSyncService;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
@@ -67,25 +66,38 @@ public class CaldavReadRest {
   private IdentityManager   identityManager;
 
   /**
-   * The connected account's events over a window.
+   * The connected account's events over a window, and what of it could not be
+   * read.
+   *
+   * <p>
+   * Answers 200 with a partial reading rather than an error status, on
+   * purpose. A failure status would throw away the calendars that did answer
+   * to report the one that did not, which is a worse agenda than the one the
+   * failure caused; and an unreachable account is not a bad request, nor a
+   * fault of this platform, so neither 4xx nor 5xx describes it. What the
+   * body carries instead is the distinction the status code cannot express:
+   * whether the account was asked and answered nothing, or could not be asked.
    *
    * @param start beginning of the window, an ISO instant
    * @param end end of the window, an ISO instant
-   * @return the occurrences, each tagged with its calendar and colour
+   * @return the occurrences, each tagged with its calendar and colour, beside
+   *         what could not be read
    */
   @GetMapping("/events")
   @Secured("users")
   @Operation(summary = "Reads the connected account's events over a period",
       description = "One REPORT per calendar, bounded by the account's calendar count. A calendar that fails "
-          + "contributes no events rather than blanking the whole answer.")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The events of the period"),
+          + "contributes no events rather than blanking the whole answer, and says so: `failed` marks an account "
+          + "that could not be asked at all, `failedCalendars` names the collections that were listed but could "
+          + "not be read. An empty `events` with neither flag set means the account answered and holds nothing.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The events of the period, and what failed"),
       @ApiResponse(responseCode = "400", description = "The period is missing or not a pair of instants") })
-  public List<RemoteIcsEvent> events(@Parameter(description = "Beginning of the period, ISO instant", required = true)
-                                     @RequestParam("start")
-                                     String start,
-                                     @Parameter(description = "End of the period, ISO instant", required = true)
-                                     @RequestParam("end")
-                                     String end) {
+  public RemoteEventsRead events(@Parameter(description = "Beginning of the period, ISO instant", required = true)
+                                 @RequestParam("start")
+                                 String start,
+                                 @Parameter(description = "End of the period, ISO instant", required = true)
+                                 @RequestParam("end")
+                                 String end) {
     // The period is checked before anything else happens: a request that is
     // about to be refused should not first make the platform talk to a
     // calendar server.
@@ -147,17 +159,21 @@ public class CaldavReadRest {
   }
 
   /**
-   * The calendars of the connected account.
+   * The calendars of the connected account, and whether it could be asked.
    *
-   * @return the calendars, each with a usable colour
+   * @return the calendars, each with a usable colour, beside the flag that
+   *         tells an account holding none from one that could not be listed
    */
   @GetMapping("/calendars")
   @Secured("users")
   @Operation(summary = "Lists the connected account's calendars",
       description = "The identity of a calendar is its collection href, never its display name: a user renaming "
-          + "a calendar in their own client must not detach what eXo associated with it.")
-  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The account's calendars") })
-  public List<RemoteCalendar> calendars() {
+          + "a calendar in their own client must not detach what eXo associated with it. `failed` marks a listing "
+          + "the account could not answer, which an empty array alone cannot be told apart from an account that "
+          + "holds no calendar.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The account's calendars, and whether the "
+      + "listing failed") })
+  public RemoteCalendarsRead calendars() {
     return caldavReadService.listCalendars(currentUser());
   }
 
