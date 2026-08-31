@@ -94,6 +94,34 @@ position-dependent — colour derivation stays a browser concern).
   parameters must stay: dropping the organizer's retires that pin as silently
   as renaming the attendee's address retires the other.
 
+- **r07** `objects/r07-exo-reminder-repaired-onto-stalwart.ics` — **captured**:
+  the exact body Stalwart held on 2026-08-31 at 14:39 for
+  `/dav/cal/alice@stalwart.local/exo-meetings/fd5fdafc-...ics` (agenda event
+  1020, "test16"), read back over plain HTTP with no modification. It is what
+  eXo itself writes, as a server stores it: the sweep had repaired this copy
+  twenty-five minutes earlier and the repair is what the file holds, VALARM and
+  all.
+
+  **Its decoration is derived, and deliberately so.** The fixture of EXO-89828
+  is a copy carrying macOS Calendar's own `X-WR-ALARMUID` inside that VALARM,
+  and no such body could be captured: the sweep's repair removes the identifier
+  from the object, which is the very loop the ticket is about, so by the time
+  anybody looks the decorated body is gone. What survives verbatim is the
+  canonical statement the comparison logged for this object minutes before —
+  `VALARM{ACTION=DISPLAY&DESCRIPTION=test16&TRIGGER=-PT5M&UNRECOGNISED:X-WR-ALARMUID=3E427B17-E128-4DF9-8090-18D619BCDC81}`
+  — so `IcsEquivalenceTest`'s
+  `aCapturedCopyCarryingTheClientsAlarmIdentifierIsNotRePushed` puts that one
+  line back into the captured body and compares the two. Captured file, derived
+  line, which is the **opposite way round** from EXO-89826's pin on r06, where
+  the decorated body was the capture and eXo's side was derived from it. Say so
+  rather than letting the two read as the same kind of evidence. A live capture
+  of the decorated body would strictly improve this fixture; it needs a client
+  to touch the copy between one sweep and the next.
+
+  What is load-bearing: the `BEGIN:VALARM` block, and the fact that eXo's own
+  render carries **no** `X-WR-ALARMUID` on it — that is what makes the derived
+  side a difference of exactly one statement.
+
 **Load-bearing capture finding** (transcript
 `../transcripts/stalwart-calendar-query-expand.xml`): the browser reads
 through `calendar-query` with `CALDAV:expand`, and **Stalwart answers
