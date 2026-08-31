@@ -253,6 +253,45 @@ public class CaldavSyncStorage {
   }
 
   /**
+   * The eXo event a copy eXo wrote into this user's mirror stands for.
+   *
+   * <p>
+   * The companion of {@link #isMirrorOwned(long, long, String)} and asked in
+   * the same breath (EXO-89807): the inbound half recognises one of eXo's own
+   * copies and drops it, but the owner's answer is written on that copy and has
+   * to be recorded against something. The mapping that knows which event lives
+   * on the MIRROR pair, and the pair reading the collection is a different one,
+   * so nothing pair-scoped can answer this.
+   *
+   * <p>
+   * Two mirror pairs holding the same UID is not a state this connector
+   * creates — a user has one mirror per server — and if it ever arises, the
+   * copies stand for different events and no answer can be attributed to either
+   * without guessing. Ambiguity therefore answers "no event", the same as
+   * "never pushed": nothing is recorded rather than something recorded against
+   * the wrong meeting.
+   *
+   * @param userIdentityId identity of the user whose copies are asked about
+   * @param serverId the declared server registration
+   * @param icsUid the iCalendar UID being read
+   * @return the event the copy stands for, or null when it is not ours, names
+   *         no event, or names more than one
+   */
+  public Long getMirrorEventId(long userIdentityId, long serverId, String icsUid) {
+    if (StringUtils.isBlank(icsUid)) {
+      return null;
+    }
+    List<Long> events = objectSyncDAO.findEventIdsByOwnerAndOriginAndIcsUid(userIdentityId,
+                                                                           serverId,
+                                                                           SyncOrigin.MIRROR,
+                                                                           icsUid);
+    if (events == null || events.size() != 1) {
+      return null;
+    }
+    return events.get(0);
+  }
+
+  /**
    * The mapping for one eXo event inside a pair.
    *
    * @param calendarSyncId the pair
