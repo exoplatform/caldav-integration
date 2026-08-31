@@ -34,6 +34,7 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.verify;
@@ -82,6 +83,7 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
@@ -1337,6 +1339,38 @@ public class CaldavSyncServiceTest {
   }
 
   /**
+   * EXO-89806. The two halves fail independently, but not blindly: a server
+   * that is not there is not a property of the step that met it, and asking it
+   * a second question buys nothing while costing a second credential-bearing
+   * request against a server that may be counting them.
+   */
+  @Test
+  public void anUnreachableServerOnConnectIsNotAskedASecondTime() {
+    givenConnectedIdentity();
+    doThrow(new CalDavUnreachableException("the gateway answered 502")).when(caldavOutboundService)
+                                                                      .bindPersonalCalendars(USER, LOGIN);
+
+    assertDoesNotThrow(() -> service.establishDestinations(USER));
+
+    verify(caldavPushService, never()).ensureMirror(anyLong());
+  }
+
+  /**
+   * EXO-89806. A refused password is the other failure settled after one
+   * attempt — and the one where a second attempt is actively harmful, since a
+   * server counting failed logins is how an account gets locked.
+   */
+  @Test
+  public void refusedCredentialsOnConnectAreNotTriedASecondTime() {
+    givenConnectedIdentity();
+    doThrow(new CalDavAuthenticationException("401")).when(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+
+    assertDoesNotThrow(() -> service.establishDestinations(USER));
+
+    verify(caldavPushService, never()).ensureMirror(anyLong());
+  }
+
+  /**
    * An account with no destination to establish must not stop somebody
    * connecting it: whatever the mirror step throws is absorbed.
    */
@@ -1396,6 +1430,24 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     assertEquals(CalendarSyncStatus.PAUSED, bound.getStatus());
+  }
+
+  /**
+   * EXO-89806. The pass is five steps that each talk to the server; an
+   * unreachable server is settled by the first of them, and the four after it
+   * would only spend four more authenticated requests rediscovering it.
+   */
+  @Test
+  public void anUnreachableServerEndsThePassAtItsFirstStep() {
+    doThrow(new CalDavUnreachableException("the gateway answered 502")).when(caldavOutboundService)
+                                                                      .bindPersonalCalendars(USER, LOGIN);
+
+    service.syncNow(USER, LOGIN);
+
+    // Nothing after the binding step is asked of the server: no listing to
+    // materialise from, and no inbound work off the back of it.
+    verify(calDavClient, never()).listCalendars(any(), anyString(), anyString(), anyString());
+    verifyNoInteractions(caldavInboundService);
   }
 
   /**

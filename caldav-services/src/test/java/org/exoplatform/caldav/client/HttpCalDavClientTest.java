@@ -782,6 +782,45 @@ END:VCALENDAR</A:calendar-data></D:prop>
     assertTrue(exception.getMessage().contains("could not be reached"));
   }
 
+  @Test
+  void aTransportFailureIsToldApartFromAnyOtherFailure() throws Exception {
+    // EXO-89806. A caller running several independent steps has to be able to
+    // tell "this call did not work" from "the server is not there" — the
+    // second is settled after one attempt, and the steps after it would only
+    // rediscover it, at the cost of a burst of authenticated requests that
+    // earns a persistent ban from a server counting them.
+    when(transport.send(any(HttpRequest.class), any())).thenThrow(new IOException("connection refused"));
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    assertThrows(CalDavUnreachableException.class, () -> client.getCtag(endpoint, null, USER, PASSWORD));
+  }
+
+  @Test
+  void aGatewaySayingItCannotReachTheServerIsAnUnreachableServer() throws Exception {
+    // What the rig actually measured: a proxy in front of a banned Stalwart
+    // answered 502 to every request, and each step of the connection read it
+    // as its own private failure.
+    givenStatusAnswers(502, "");
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    assertThrows(CalDavUnreachableException.class, () -> client.getCtag(endpoint, null, USER, PASSWORD));
+  }
+
+  @Test
+  void aServerErrorFromTheServerItselfIsNotAnAbsentServer() throws Exception {
+    // 500 is deliberately outside the gateway set: BlueMind answers it for an
+    // absent object, a quirk this add-on accommodates, and reading it as "the
+    // server is gone" would abandon passes against a server that is there.
+    givenStatusAnswers(500, "");
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    CalDavException exception = assertThrows(CalDavException.class,
+                                             () -> client.getCtag(endpoint, null, USER, PASSWORD));
+
+    assertFalse(exception instanceof CalDavUnreachableException,
+                "a 500 from the server itself is a refusal of this call, not an absent server");
+  }
+
   // ---- helpers -----------------------------------------------------------
 
   /**
