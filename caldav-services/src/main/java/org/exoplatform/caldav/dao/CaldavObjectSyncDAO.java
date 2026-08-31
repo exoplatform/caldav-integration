@@ -178,6 +178,39 @@ public interface CaldavObjectSyncDAO extends JpaRepository<CaldavObjectSyncEntit
                                       @Param("icsUid") String icsUid);
 
   /**
+   * Which eXo events this user's pairs of one origin, on one server, hold that
+   * iCalendar UID for.
+   *
+   * <p>
+   * The question above answers "did eXo write this object?"; this one answers
+   * "and what did it write it for?" (EXO-89807). The inbound half needs the
+   * second because the owner's answer arrives on an object it is about to drop
+   * as one of eXo's own, and an answer can only be recorded against the event
+   * the copy stands for — which lives on a <em>different</em> pair from the one
+   * doing the reading, and so is out of reach of every pair-scoped lookup here.
+   *
+   * <p>
+   * The event identifiers and nothing else, deliberately, for the reason the
+   * count above records: the caller must not be handed a mapping row belonging
+   * to another pair, because a row it holds is a row it can write to. An
+   * identifier is a fact it can only read.
+   *
+   * @param userIdentityId the user whose pairs are asked about
+   * @param serverId the declared server registration
+   * @param origin which side created the collections that count as owning
+   * @param icsUid the iCalendar UID looked for
+   * @return the events those mappings name, empty when the UID is not ours
+   */
+  @Query("SELECT DISTINCT o.localEventId FROM CaldavObjectSyncEntity o, CaldavCalendarSyncEntity p"
+      + " WHERE o.calendarSyncId = p.id AND p.userIdentityId = :userIdentityId"
+      + " AND p.serverId = :serverId AND p.origin = :origin AND o.icsUid = :icsUid"
+      + " AND o.localEventId IS NOT NULL")
+  List<Long> findEventIdsByOwnerAndOriginAndIcsUid(@Param("userIdentityId") long userIdentityId,
+                                                   @Param("serverId") long serverId,
+                                                   @Param("origin") SyncOrigin origin,
+                                                   @Param("icsUid") String icsUid);
+
+  /**
    * Drops every mapping of a pair. Called when a pair is unbound; the foreign
    * key would cascade on a row delete, but a pair is often kept as a tombstone
    * while its objects are not.
