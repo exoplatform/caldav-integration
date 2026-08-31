@@ -225,6 +225,15 @@ public class NormalisingServerMirrorTest {
                                  org.mockito.Mockito.mock(CaldavServerQuirkService.class));
     lenient().when(caldavAnswerAdoptionService.adoptAnswer(anyLong(), anyLong(), anyString()))
              .thenReturn(CaldavAnswerAdoptionService.Outcome.NOTHING);
+    // EXO-89814 gave the pass a second reader — the one that meets the copies in
+    // a collection no binding reads. Mocked and never stubbed: this class is
+    // about which copies a normalising server makes look rewritten, and its
+    // fake server has no collection nothing else reads. Left null it would take
+    // every case here down with a NullPointerException, which says nothing at
+    // all about normalisation.
+    ReflectionTestUtils.setField(verification,
+                                 "caldavMirrorAnswerService",
+                                 org.mockito.Mockito.mock(CaldavMirrorAnswerService.class));
     ReflectionTestUtils.setField(icsEquivalence, "ignoredProperties", "");
     ReflectionTestUtils.setField(verification, "maxRepairs", 3);
     // EXO-89681 gave the pass an answer-adoption collaborator that did not exist
