@@ -148,6 +148,16 @@ public class CaldavInboundService {
   private IcsEventMapper         icsEventMapper;
 
   /**
+   * Turns the owner's PARTSTAT on one of eXo's own copies into an agenda
+   * response, for the one object this pass recognises as eXo's and drops
+   * (EXO-89807). The narrow inbound mapping of EXO-89681, reused rather than
+   * repeated: this half decides <em>when</em> to ask, never what an answer
+   * means.
+   */
+  @Autowired
+  private CaldavAnswerAdoptionService caldavAnswerAdoptionService;
+
+  /**
    * How many days one calendar-query asks for. Small enough that a busy
    * calendar answers inside the client's request timeout.
    */
@@ -296,6 +306,10 @@ public class CaldavInboundService {
       return false;
     }
     if (isMirrorOwned(pair, master.getUid())) {
+      // Read before it is dropped, and that ordering is the whole of
+      // EXO-89807. The object is in hand, its owner's answer is on it, and
+      // this is the only reader that was told it changed.
+      adoptAnswerOnCopy(userIdentityId, pair, object, master.getUid());
       // A copy eXo wrote itself. Importing it would show the user a second,
       // personal event standing for a space meeting they already see.
       LOG.debug("Object {} is a copy eXo wrote into the mirror and is not imported back", object.href());
@@ -312,6 +326,90 @@ public class CaldavInboundService {
       return update(userIdentityId, pair, calendar, object, master, known, parsed);
     }
     return create(userIdentityId, pair, calendar, object, master, parsed, adoptable);
+  }
+
+  /**
+   * Records the owner's answer off a copy eXo wrote, on its way to dropping it.
+   *
+   * <p>
+   * <b>Why the answer is read here at all.</b> The mirror is eXo's projection
+   * and the one field allowed back is the owner's own PARTSTAT (EXO-89681),
+   * whose adoption lives in the verification pass and is gated there on the
+   * copy's ETag having moved — the server's own statement that a client wrote
+   * after eXo did. On a server that records an answer <em>without</em> moving
+   * that value the gate never opens, and the answer is never read: measured on
+   * BlueMind, where a copy carrying {@code PARTSTAT=ACCEPTED} was reported by
+   * the collection's own sync report while its ETag, and even its
+   * LAST-MODIFIED, stood exactly where eXo's write had left them (EXO-89807).
+   *
+   * <p>
+   * <b>Why here is the right place and not a second trick for the gate.</b>
+   * Two readers meet the same changed object in the same sweep and only one of
+   * them can act: this one is <em>told</em> the object changed — by the sync
+   * report, which is evidence independent of any ETag — and already holds its
+   * body, having fetched it; the other has the permission to adopt and no way
+   * to see the change. Widening the gate would be teaching it to distrust the
+   * one thing it is built on. This simply lets the reader that has the evidence
+   * hand it to the reader that has the permission.
+   *
+   * <p>
+   * <b>What it does not do.</b> It does not import: the copy is still dropped,
+   * on the very next line, because importing it is the duplicate personal event
+   * EXO-89802 exists to prevent. Adoption reads one field off it and changes
+   * nothing else.
+   *
+   * <p>
+   * <b>The direction question the ETag was answering.</b> This path sees eXo's
+   * own writes too — a copy eXo has just pushed is a change the sync report
+   * reports — so it cannot tell "answered on the phone" from "answered in eXo"
+   * by provenance. It does not need to: a copy eXo wrote carries the answer
+   * agenda already holds, which the adoption compares and treats as nothing to
+   * do, and a copy carrying NEEDS-ACTION is never an answer at all, so eXo's
+   * own writing can neither change nor erase a recorded answer. What remains is
+   * one narrow window — the user changes an answer in eXo, and the sweep reads
+   * a copy still carrying the previous one before the push that carries it out
+   * has landed. It is the same window the verification pass lives with (a
+   * server rewriting a copy for its own reasons moves the ETag over eXo's older
+   * answer just as well), it is bounded by that push, and the alternative —
+   * refusing every answer this server sends — is the defect being fixed.
+   *
+   * <p>
+   * Never allowed to fail the pass. An answer that cannot be read is one field
+   * lost on one object; the collection around it still has to import.
+   *
+   * @param userIdentityId identity of the user whose account is being read
+   * @param pair the binding being read, which is never the mirror's own
+   * @param object the copy as the server sent it, body included
+   * @param icsUid the object's iCalendar UID, already known to be one of eXo's
+   */
+  private void adoptAnswerOnCopy(long userIdentityId, CalendarSync pair, CalendarObject object, String icsUid) {
+    try {
+      if (StringUtils.isBlank(object.calendarData())) {
+        return;
+      }
+      Long localEventId = caldavSyncStorage.getMirrorEventId(userIdentityId, pair.getServerId(), icsUid);
+      if (localEventId == null || localEventId <= 0) {
+        // The copy is ours by UID but names no event we can record against —
+        // an interrupted push, an event since deleted. Nothing to do, and
+        // nothing wrong.
+        LOG.debug("The copy at {} stands for no event of ours; no answer is read off it", object.href());
+        return;
+      }
+      CaldavAnswerAdoptionService.Outcome outcome = caldavAnswerAdoptionService.adoptAnswer(userIdentityId,
+                                                                                           localEventId,
+                                                                                           object.calendarData());
+      if (outcome == CaldavAnswerAdoptionService.Outcome.ADOPTED) {
+        LOG.debug("An answer of user {} was read off the copy at {} before it was left where it is",
+                  userIdentityId,
+                  object.href());
+      }
+    } catch (RuntimeException | LinkageError e) {
+      // Deliberately swallowed to a line. This runs inside the import of one
+      // object among many, and one unreadable answer must not cost the
+      // collection its import — the same discipline every other per-object
+      // failure on this pass follows.
+      LOG.debug("The answer on the copy at {} could not be read", object.href(), e);
+    }
   }
 
   /**
