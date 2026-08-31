@@ -17,6 +17,7 @@
 package org.exoplatform.caldav.ics;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -638,6 +639,110 @@ public class IcsEquivalenceTest {
     // and the PARTSTAT are compared regardless, as the two tests above prove.
     assertEquivalent(EXO.replace("ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:",
                                  "ATTENDEE;CN=Ann;DIR=\"bm://c0ffee\";PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:"));
+  }
+
+  // ------------------------- the address a server restates (EXO-89826)
+
+  @Test
+  public void anEmailParameterOnTheOrganizerIsNotAnEdit() {
+    // The divergence the rig logged at 13:08 on 2026-08-31, byte for byte:
+    // the copy states ORGANIZER;EMAIL=x:mailto:x and eXo's render states
+    // ORGANIZER:mailto:x. One organizer, spelled twice, counted as two
+    // statements — one missing from eXo, one missing from the copy — so the
+    // copy was judged altered and repaired, and diverged again as soon as the
+    // client touched it. EMAIL (RFC 6047 §2) restates, as a parameter, the
+    // address the value already carries; IcsWriter never emits it.
+    assertEquivalent(EXO.replace("ORGANIZER;CN=The Boss:", "ORGANIZER;CN=The Boss;EMAIL=boss@acme.test:"));
+  }
+
+  @Test
+  public void anEmailParameterOnAnAttendeeIsNotAnEdit() {
+    // macOS Calendar writes it on the attendee line too, whenever its user
+    // answers an invitation — the same parameter, the same argument.
+    assertEquivalent(EXO.replace("ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:",
+                                 "ATTENDEE;CN=Ann;EMAIL=ann@acme.test;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:"));
+  }
+
+  @Test
+  public void anAnswerIsStillAnEditOnALineCarryingAnEmailParameter() {
+    // The pair that bounds the relaxation, and the reason PARTSTAT is not in
+    // IGNORED_PARAMETERS with it. PARTSTAT is a parameter too, but it states a
+    // person's answer rather than the server's index of them, and EXO-89807
+    // and EXO-89814 both depend on a PARTSTAT difference being seen. Dropping
+    // EMAIL must not drag its neighbours with it.
+    assertDifferent(EXO.replace("ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:",
+                                "ATTENDEE;CN=Ann;EMAIL=ann@acme.test;PARTSTAT=DECLINED;SCHEDULE-AGENT=CLIENT:"));
+  }
+
+  @Test
+  public void anAddressMovedOutOfTheValueIsStillAnEdit() {
+    // The other bound. What makes EMAIL safe to drop is that the address in
+    // the property's own value stays compared: a server that replaced the
+    // value with a handle of its own and moved the address into EMAIL would
+    // be rewriting the identity, and the value it left behind still says so.
+    assertDifferent(EXO.replace("ORGANIZER;CN=The Boss:mailto:boss@acme.test",
+                                "ORGANIZER;CN=The Boss;EMAIL=boss@acme.test:urn:uuid:8f14e45f"));
+  }
+
+  @Test
+  public void aDifferentPersonInTheValueIsStillAnEditWhateverTheEmailParameterSays() {
+    // And the identity cannot be smuggled past the relaxation by agreeing in
+    // the parameter and disagreeing in the value.
+    assertDifferent(EXO.replace("ORGANIZER;CN=The Boss:mailto:boss@acme.test",
+                                "ORGANIZER;CN=The Boss;EMAIL=boss@acme.test:mailto:mallory@acme.test"));
+  }
+
+  @Test
+  public void aCapturedMacosCopyStatesWhatExoWritesAndIsNotRePushed() throws Exception {
+    // The convergence pin, on the captured specimen rather than a synthetic
+    // one: caldav/golden/read/objects/r06-macos-answer-internal-domain.ics is
+    // the exact body Stalwart held for
+    // /dav/cal/alice@stalwart.local/exo-meetings/f291b55a-...ics after macOS
+    // Calendar 26.5.1 answered, EMAIL parameters and all — the same object the
+    // rig reported as "1 altered, 1 re-pushed" at 12:55.
+    //
+    // eXo's side is that body with its EMAIL parameters removed and nothing
+    // else touched, which is faithful because IcsWriter emits EMAIL on no
+    // property at all (verified: the only parameter it ever adds to a calendar
+    // user line is CN). So this pins exactly the claim the ticket is about — a
+    // copy carrying the server's spelling compares equal to what eXo writes —
+    // and nothing else.
+    String onServer = golden("r06-macos-answer-internal-domain");
+    String inExo = withoutEmailParameters(onServer);
+    // The fixture must really carry the parameter, or this test proves nothing.
+    assertNotEquals(onServer, inExo);
+
+    assertEquivalent(onServer, inExo);
+  }
+
+  /**
+   * A calendar object with every {@code EMAIL} parameter removed: eXo's own
+   * spelling of the same lines.
+   *
+   * <p>
+   * Unfolds first, because a parameter can straddle a folded line and the
+   * captured fixture folds both of the lines that carry one.
+   *
+   * @param ics the object as the server holds it
+   * @return the same object without its EMAIL parameters
+   */
+  private String withoutEmailParameters(String ics) {
+    String unfolded = ics.replace("\r\n ", "").replace("\n ", "");
+    return unfolded.replaceAll("(?i);EMAIL=(\"[^\"]*\"|[^;:\r\n]*)", "");
+  }
+
+  /**
+   * Reads a golden object from the corpus.
+   *
+   * @param name the file name, without extension
+   * @return its contents
+   * @throws Exception when it cannot be read
+   */
+  private String golden(String name) throws Exception {
+    return java.nio.file.Files.readString(java.nio.file.Paths.get(IcsEquivalenceTest.class.getClassLoader()
+                                                                                          .getResource("caldav/golden/read/objects/"
+                                                                                              + name + ".ics")
+                                                                                          .toURI()));
   }
 
   // ------------------------------------------------------------ unknowns
