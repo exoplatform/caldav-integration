@@ -56,6 +56,12 @@ import org.exoplatform.caldav.service.CaldavServerService;
  * coordinates are overridable — {@code caldav.test.stalwart.url},
  * {@code caldav.test.stalwart.user}, {@code caldav.test.stalwart.password}
  * — and default to the local dev rig.
+ * <p>
+ * <b>Rig-gated: this class contributes no CI signal.</b> Every test here assumes out when
+ * the rig is unreachable, which is always the case in CI — these are the skipped tests in
+ * a normal run. The server-quirk behaviour it exercises is pinned for CI by
+ * {@link HttpCalDavClientServerQuirksTest} (12 tests); treat that class, not this one, as
+ * the regression net.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
