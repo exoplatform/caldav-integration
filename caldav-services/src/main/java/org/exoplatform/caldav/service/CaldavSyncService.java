@@ -1116,6 +1116,30 @@ public class CaldavSyncService {
         // says nothing about days sliding into range, and an event a year out
         // that nobody touches must still appear when the window reaches it.
         // That is once a day, which is what the last sync time decides.
+        //
+        // It has a second job it was never designed for, and that job is now
+        // the only one of its kind (EXO-89810). A sync report names an object
+        // ONCE — it consumes the token it was given and hands back a new one —
+        // so a change eXo was told about while it could not act on it is never
+        // mentioned again, and no amount of waiting brings it back. Measured
+        // on the rig: BlueMind reported an answer on one of eXo's own copies
+        // twice, the token moved past both, and deploying the fix that reads
+        // such answers (EXO-89807) changed nothing, because nothing ever
+        // reported the object again. Disconnecting did not help either —
+        // reconnecting thaws the paused bindings and therefore their tokens.
+        // The mirror's own verification cannot see it: it adopts only off a
+        // copy whose ETag moved, and this server answers without moving it.
+        //
+        // This line is what brings that answer home. Once a day the token is
+        // not asked, the window is walked, and every object in range is met
+        // again — the copies among them, where the adoption of EXO-89807 sits.
+        // It costs nothing extra, it runs on the sweep with nobody waiting,
+        // and it is bounded by being once a day rather than once a sweep.
+        // Anyone reading "we hold a valid token, why re-read the window?" and
+        // removing this is removing the only heal there is, for a defect they
+        // will never connect to their change. Held by
+        // CaldavSyncServiceTest#aCollectionWithAValidTokenIsStillReadInFullOnceADay
+        // and, end to end, by CaldavAnswerHealOnFullReadTest.
         boolean fullRead = StringUtils.isBlank(pair.getSyncToken())
             || pair.getLastSyncEnd() == null
             || pair.getLastSyncEnd().toInstant().isBefore(today);
