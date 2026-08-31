@@ -54,6 +54,7 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
@@ -683,33 +684,83 @@ public class CaldavSyncService {
    * calendar may still hold a perfectly good mirror, and the user is better
    * off with the half that worked.
    *
+   * <p>
+   * <b>Independently, but not blindly.</b> Two failures are not properties of
+   * the step that met them but of the server itself — its credentials refused,
+   * or nothing there at all — and are therefore settled after one attempt.
+   * Running the second step after either of them cannot succeed, and it is not
+   * free: it is a second authenticated request against a calendar server that
+   * may be counting failures and banning the source address for them
+   * (EXO-89806). So on those two, and only those two, this stops after the
+   * first step and says so once.
+   *
    * @param userIdentityId identity of the user who has just connected
    */
   public void establishDestinations(long userIdentityId) {
-    if (!connected(caldavConnectorStorage.getCaldavSetting(userIdentityId))) {
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (!connected(settings)) {
       return;
     }
     String username = loginOf(userIdentityId);
     if (username == null) {
       return;
     }
-    bindOwnCalendarsNow(userIdentityId, username);
-    ensureMirrorNow(userIdentityId);
+    if (bindOwnCalendarsNow(userIdentityId, username, settings)) {
+      ensureMirrorNow(userIdentityId);
+    }
   }
 
   /**
    * Gives each of the user's own calendars its collection, absorbing whatever
    * the server does about it.
    *
+   * <p>
+   * The one place the server-level refusal of a connection is written down, so
+   * that it is written down <b>once</b>: the calendars step is the first thing
+   * a connection asks the server, and everything after it would only rediscover
+   * the same answer. The line names the server and the user, because an
+   * administrator reading it has neither in front of them, and it distinguishes
+   * the two cases the caller cannot act on alike — a refusal only the account's
+   * owner can clear, versus a server that is not answering at all.
+   *
    * @param userIdentityId identity of the user
    * @param username the user's login, which agenda's ACL reads
+   * @param settings the connected account, for the server it names
+   * @return whether the connection may go on to establish the mirror — false
+   *         when the server itself refused, true otherwise, the per-calendar
+   *         refusals included
    */
-  private void bindOwnCalendarsNow(long userIdentityId, String username) {
+  private boolean bindOwnCalendarsNow(long userIdentityId, String username, CaldavUserSetting settings) {
     try {
       caldavOutboundService.bindPersonalCalendars(userIdentityId, username);
+      return true;
+    } catch (CalDavAuthenticationException e) {
+      LOG.warn("CalDAV server {} refused the credentials of user {} on connect; nothing else was asked of it",
+               serverIdOf(settings),
+               userIdentityId,
+               e);
+      return false;
+    } catch (CalDavUnreachableException e) {
+      LOG.warn("CalDAV server {} could not be reached for user {} on connect; nothing else was asked of it",
+               serverIdOf(settings),
+               userIdentityId,
+               e);
+      return false;
     } catch (Exception | LinkageError e) {
       LOG.warn("The personal calendars of user {} could not be bound on connect; the first sweep binds them", userIdentityId, e);
+      return true;
     }
+  }
+
+  /**
+   * The declared server an account speaks to, named the way a log line can
+   * name it.
+   *
+   * @param settings the connected account
+   * @return the registration id, or 0 for a legacy account referencing none
+   */
+  private long serverIdOf(CaldavUserSetting settings) {
+    return settings == null || settings.getServerId() == null ? 0L : settings.getServerId();
   }
 
   /**
@@ -817,6 +868,18 @@ public class CaldavSyncService {
                userIdentityId,
                e);
       pauseAll(userIdentityId, settings);
+    } catch (CalDavUnreachableException e) {
+      // Named apart from the failure below, and stopping the pass here rather
+      // than letting its five steps each rediscover the same absence: an
+      // unreachable server is a property of the server, settled after one
+      // attempt, and a burst of failed authenticated requests is how a source
+      // address earns a persistent ban (EXO-89806). Not paused, unlike a
+      // credential refusal — nobody has to do anything for a server to come
+      // back, and the next pass is the one that finds out.
+      LOG.warn("CalDAV server {} could not be reached for user {}; this pass asked it nothing more",
+               serverIdOf(settings),
+               userIdentityId,
+               e);
     } catch (RuntimeException e) {
       // A sync that fails is not an error the caller can act on — the page it
       // was triggered from has its own events to show. It is logged and the
@@ -1343,10 +1406,14 @@ public class CaldavSyncService {
     try {
       String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
       collections = calDavClient.listCalendars(endpoint, home, settings.getUsername(), settings.getPassword());
-    } catch (CalDavAuthenticationException e) {
-      // Not swallowed with the rest: a refused credential is not "this round
-      // did not work", it is an account that must stop being retried, and the
-      // decision belongs to the caller that can pause every binding at once.
+    } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
+      // Not swallowed with the rest, and for the same reason in both cases:
+      // neither is "this round did not work". A refused credential is an
+      // account that must stop being retried, and an unreachable server is an
+      // absence the rest of the pass would only rediscover — importing, then
+      // settling, then seeding, each spending its own authenticated requests
+      // on a server that is not there (EXO-89806). The decision belongs to the
+      // caller, which is the one that can pause every binding at once.
       throw e;
     } catch (CalDavException e) {
       // null, not an empty list: an account whose listing failed and an

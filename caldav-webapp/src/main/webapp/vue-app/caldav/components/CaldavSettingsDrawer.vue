@@ -113,8 +113,25 @@ export default {
     toggleFieldType() {
       return this.showPassWord ? 'text': 'password';
     },
+    /**
+     * Whether Connect is refused: nothing typed yet, or an attempt already
+     * under way.
+     *
+     * `saving` belongs here and not only on `:loading`. Vuetify's v-btn
+     * renders the spinner for `loading` but writes `disabled` from `disabled`
+     * alone, so a button that is merely loading is still clickable and still
+     * fires its handler. Each such click sends the typed credentials to the
+     * verify endpoint, which sends one authenticated PROPFIND to the CalDAV
+     * server; a user pressing an apparently-busy button while a refusal is in
+     * flight therefore multiplied the burst one-for-one — five presses, five
+     * credential-bearing requests in nineteen seconds, which is how a source
+     * address earns a persistent ban from a server that counts them
+     * (EXO-89806).
+     *
+     * @returns {Boolean} true when the Connect button must not act
+     */
     disableConnectButton() {
-      return this.account === '' || this.account < 3 || this.password === '';
+      return this.saving || this.account === '' || this.account.length < 3 || this.password === '';
     }
   },
   watch: {
@@ -172,6 +189,11 @@ export default {
      * refusal the drawer stays open with what the user typed, under a message
      * naming the actual failure — credentials refused, server unreachable, or
      * a URL that reaches something that is not a CalDAV calendar.
+     *
+     * One attempt at a time, and the guard below is what makes that true:
+     * `disableConnectButton` now includes `saving`, so a second press while a
+     * verification is in flight neither reaches this method nor sends a second
+     * credential-bearing request to the calendar server (EXO-89806).
      *
      * @returns {void}
      */

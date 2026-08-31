@@ -300,6 +300,19 @@ public class CaldavRelayService {
    * stored setting: only the typed credentials are tried, only against a
    * registry row.
    *
+   * <p>
+   * <b>This is the one request a refused connection makes</b> — the drawer
+   * stores nothing until this says yes — so it is also the only place a
+   * refused connection can be heard from. Every outcome but acceptance is
+   * therefore written down here, exactly once per attempt: at warning when
+   * somebody other than the person typing has to act (the server unreachable,
+   * or answering as something that is not a calendar), at debug when they do
+   * not (their own username or password refused, which the drawer already
+   * tells them in words). A gateway status is classified as unreachable rather
+   * than as "not a CalDAV calendar": a 502 in front of a banned or stopped
+   * server used to tell the user their administrator had configured the wrong
+   * address (EXO-89806).
+   *
    * @param serverId identifier of the declared server, or null for the
    *          resolution fallback (the seed registration)
    * @param username account username to try
@@ -339,17 +352,40 @@ public class CaldavRelayService {
       HttpResponse<Void> response = httpClient.send(request, BodyHandlers.discarding());
       int status = response.statusCode();
       if (status == 401 || status == 403) {
+        // The person retypes their password; nobody else has anything to do,
+        // and the drawer says so in words. Debug, not an incident.
+        LOG.debug("CalDAV server {} refused the credentials of account {} ({})", server.getId(), username, status);
         return new CaldavProbeResult(CaldavProbeResult.CREDENTIALS, status);
       }
+      if (status == 502 || status == 503 || status == 504) {
+        // A gateway in front of the server saying it could not reach it. Told
+        // apart from "this is not a CalDAV calendar", which is what every
+        // non-207 used to become: the two send the user to different people —
+        // one waits or calls their administrator, the other means the declared
+        // address is wrong.
+        LOG.warn("CalDAV server {} is unreachable: the account {} was refused with {} before reaching it",
+                 server.getId(),
+                 username,
+                 status);
+        return new CaldavProbeResult(CaldavProbeResult.CONNECTION, status);
+      }
       if (status != 207) {
+        LOG.warn("CalDAV server {} did not answer as a CalDAV calendar for account {} ({})",
+                 server.getId(),
+                 username,
+                 status);
         return new CaldavProbeResult(CaldavProbeResult.NOT_CALDAV, status);
       }
       return new CaldavProbeResult(CaldavProbeResult.OK, status);
     } catch (IOException e) {
-      LOG.debug("CalDAV probe could not reach the server {}", server.getId(), e);
+      // One line, at warning: this is the only request a refused connection
+      // makes, and until now it made none. An administrator whose users cannot
+      // connect had nothing whatsoever to read (EXO-89806).
+      LOG.warn("CalDAV server {} could not be reached while verifying the account {}", server.getId(), username, e);
       return new CaldavProbeResult(CaldavProbeResult.CONNECTION, null);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
+      LOG.warn("Interrupted while verifying the account {} against CalDAV server {}", username, server.getId());
       return new CaldavProbeResult(CaldavProbeResult.CONNECTION, null);
     }
   }
