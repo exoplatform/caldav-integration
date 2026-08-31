@@ -28,6 +28,7 @@ import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.ics.IcsEventMapper;
+import org.exoplatform.caldav.ics.IcsParseException;
 import org.exoplatform.caldav.ics.IcsParser;
 import org.exoplatform.caldav.ics.IcsText;
 import org.exoplatform.caldav.model.IcsEvent;
@@ -104,7 +105,19 @@ public class CaldavAnswerAdoptionService {
     /** At least one answer was read off the object and recorded in agenda. */
     ADOPTED,
     /** An answer was found and recording it failed; nothing may overwrite it. */
-    FAILED
+    FAILED,
+    /**
+     * The object could not be read, so whether it carries an answer is
+     * unknown; nothing may overwrite it either.
+     *
+     * <p>
+     * Its own outcome rather than {@link #NOTHING}, and that is the whole
+     * point of it. "Nothing was answered here" and "I could not tell" lead to
+     * opposite decisions: the first lets the caller repair the copy back to
+     * what eXo holds, the second must not, because the copy may be the only
+     * record of an answer the user gave in their own client (EXO-89820).
+     */
+    UNREADABLE
   }
 
   /**
@@ -125,7 +138,8 @@ public class CaldavAnswerAdoptionService {
    * @param userIdentityId identity of the account's owner
    * @param localEventId the agenda event the object's mapping row names
    * @param remoteIcs the object as the client left it on the server
-   * @return whether anything was adopted, and whether adopting it failed
+   * @return whether anything was adopted, whether adopting it failed, and
+   *         whether the object could be read at all
    */
   public Outcome adoptAnswer(long userIdentityId, long localEventId, String remoteIcs) {
     String email = ownEmail(userIdentityId);
@@ -142,7 +156,19 @@ public class CaldavAnswerAdoptionService {
       LOG.debug("User {} exposes no email address; no answer can be read off their copies", userIdentityId);
       return Outcome.NOTHING;
     }
-    List<IcsEvent> parsed = icsParser.parse(remoteIcs);
+    List<IcsEvent> parsed;
+    try {
+      parsed = icsParser.parseOrFail(remoteIcs);
+    } catch (IcsParseException e) {
+      // Not NOTHING. An object eXo cannot read is not an object nobody
+      // answered, and the caller decides what to overwrite on the strength of
+      // this answer: saying NOTHING here is how a repair comes to write over
+      // a user's own answer sight unseen.
+      LOG.warn("The copy of event {} could not be read, so no answer can be taken off it; it is left untouched",
+               localEventId,
+               e);
+      return Outcome.UNREADABLE;
+    }
     if (parsed.isEmpty()) {
       return Outcome.NOTHING;
     }

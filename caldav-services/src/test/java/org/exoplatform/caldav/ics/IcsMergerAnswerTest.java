@@ -24,6 +24,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -214,6 +217,75 @@ public class IcsMergerAnswerTest {
    */
   private String unfolded(String ics) {
     return ics.replace("\r\n ", "").replace("\n ", "");
+  }
+
+  /**
+   * eXo's answer reaches a copy whose addresses are on an internal domain.
+   *
+   * @throws Exception when the golden cannot be read
+   */
+  @Test
+  public void anAnswerIsWrittenIntoACopyWhoseAddressesAreOnAnInternalDomain() throws Exception {
+    // The outbound half of EXO-89820, and the reason the fix cannot be
+    // confined to the reading side: this merge parses the object the server
+    // holds before rewriting one parameter of it, so an address ical4j
+    // refused made the answer given in eXo undeliverable too — the listener
+    // logged "could not be carried to their calendar server" on every try.
+    AnswerRewrite rewrite = merger.setAttendeeResponse(golden("r06-macos-answer-internal-domain"),
+                                                       List.of("alice@stalwart.local"),
+                                                       "ACCEPTED");
+
+    assertTrue(rewrite.attendeeNamed());
+    assertTrue(rewrite.hasChange());
+    String unfolded = unfolded(rewrite.document());
+    assertTrue(unfolded.contains("PARTSTAT=ACCEPTED"), unfolded);
+    assertFalse(unfolded.contains("PARTSTAT=TENTATIVE"), unfolded);
+    // Read leniently, written back whole. The parameter ical4j objected to is
+    // still on the line, because the fix configures the library rather than
+    // editing the payload — a read that quietly dropped it would leave every
+    // such copy differing from what eXo writes for ever.
+    assertTrue(unfolded.contains("EMAIL=alice@stalwart.local"), unfolded);
+    assertTrue(unfolded.contains("CUTYPE=UNKNOWN"), unfolded);
+    assertTrue(unfolded.contains("SUMMARY:test13"), unfolded);
+    assertTrue(unfolded.contains("EMAIL=anais.francois@demo3.livecollab.fr"), unfolded);
+  }
+
+  /**
+   * And writing it a second time writes nothing: no permanent re-push.
+   *
+   * @throws Exception when the golden cannot be read
+   */
+  @Test
+  public void aCopyOnAnInternalDomainIsNotRewrittenForEver() throws Exception {
+    // The failure mode EXO-89809 had just fixed and this must not bring back.
+    // If reading such a copy leniently altered it — unfolding it, dropping
+    // the parameter the validator dislikes — what eXo wrote back would never
+    // match what it reads next time, and the copy would be re-pushed on every
+    // sweep. Merging the same answer into the merged document must therefore
+    // come back with nothing to write.
+    String once = merger.setAttendeeResponse(golden("r06-macos-answer-internal-domain"),
+                                             List.of("alice@stalwart.local"),
+                                             "ACCEPTED")
+                        .document();
+    assertNotNull(once);
+
+    AnswerRewrite twice = merger.setAttendeeResponse(once, List.of("alice@stalwart.local"), "ACCEPTED");
+
+    assertTrue(twice.attendeeNamed());
+    assertFalse(twice.hasChange());
+    assertNull(twice.document());
+  }
+
+  /**
+   * @param name the golden's file name, without extension
+   * @return its contents
+   * @throws Exception when it cannot be read
+   */
+  private String golden(String name) throws Exception {
+    Path path = Paths.get(IcsMergerAnswerTest.class.getClassLoader()
+                                                   .getResource("caldav/golden/read/objects/" + name + ".ics")
+                                                   .toURI());
+    return Files.readString(path);
   }
 
   /**
