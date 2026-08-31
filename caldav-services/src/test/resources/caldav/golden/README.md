@@ -70,6 +70,18 @@ position-dependent — colour derivation stays a browser concern).
   connector's first-subcomponent branch.
 - **r04** a TZID with **no VTIMEZONE** — pins today's resolution behaviour.
 - **r05** round trip: the exact object the 06 write capture stored, read back.
+- **r06** `objects/r06-macos-answer-internal-domain.ics` — **captured, not
+  reconstructed**: the exact body Stalwart held on 2026-08-31 for
+  `/dav/cal/alice@stalwart.local/exo-meetings/f291b55a-...ics` after macOS
+  Calendar 26.5.1 answered the invitation TENTATIVE. It has no read-golden
+  envelope because it is not part of the `retrieveEvents` capture above; it is
+  the fixture of EXO-89820, and what makes it load-bearing is one parameter:
+  `EMAIL=alice@stalwart.local` on the attendee line. commons-validator, which
+  ical4j calls from the EMAIL parameter's constructor, requires a public
+  top-level domain, so this object was unreadable end to end — the answer
+  could not be read in and the copy could not be rewritten out. Keep the
+  address on an internal domain: renaming it to a public TLD retires the
+  fixture without saying so.
 
 **Load-bearing capture finding** (transcript
 `../transcripts/stalwart-calendar-query-expand.xml`): the browser reads

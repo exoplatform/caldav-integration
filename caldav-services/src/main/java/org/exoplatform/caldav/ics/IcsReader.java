@@ -25,7 +25,6 @@ import java.util.Map;
 
 import org.springframework.stereotype.Component;
 
-import net.fortuna.ical4j.data.CalendarBuilder;
 import net.fortuna.ical4j.model.Calendar;
 import net.fortuna.ical4j.model.DateTime;
 import net.fortuna.ical4j.model.Period;
@@ -251,7 +250,7 @@ public class IcsReader {
    */
   private Calendar parse(String ics) {
     try {
-      return new CalendarBuilder().build(new StringReader(ics));
+      return IcsCompatibility.newCalendarBuilder().build(new StringReader(ics));
     } catch (Exception e) {
       throw new IcsParseException("The calendar object could not be read as iCalendar", e);
     }
