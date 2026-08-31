@@ -188,6 +188,14 @@ public class CaldavMirrorVerificationServiceTest {
   @Mock
   private CaldavMirrorReportService          caldavMirrorReportService;
 
+  /**
+   * Reads the answers off a collection no binding reads (EXO-89814). Mocked
+   * here: what it does is held by its own tests, and what belongs to this class
+   * is only that it is asked, and asked before the comparison.
+   */
+  @Mock
+  private CaldavMirrorAnswerService          caldavMirrorAnswerService;
+
   @Mock
   private CalDavEndpoint                     endpoint;
 
@@ -1012,12 +1020,19 @@ public class CaldavMirrorVerificationServiceTest {
     // handing that copy to the adoption would read eXo's own last writing back
     // as though it were the user's latest answer, over whatever they have since
     // said in eXo. The ETag is still the only proof that somebody else wrote.
+    //
+    // The copy is stated as carrying nothing at risk, deliberately: this test
+    // is about the ADOPTION being refused, and leaving the question unstubbed
+    // would make it pass through EXO-89814's refusal-to-repair instead — an
+    // assertion answered by the wrong mechanism is an assertion that no longer
+    // holds what it names.
     givenTheServerSettingsChanged();
     givenServerHolds(Map.of(HREF, "\"etag-1\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
     when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
                                                     .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ANSWERED));
+    when(caldavAnswerAdoptionService.holdsUnrecordedAnswer(USER, 5L, ANSWERED)).thenReturn(false);
 
     MirrorVerification result = service.verify(USER);
 
@@ -1025,6 +1040,71 @@ public class CaldavMirrorVerificationServiceTest {
     assertEquals(0, result.adopted(), "an unmoved ETag is not the client's writing, whatever the round is doing");
     verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
     verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+  }
+
+  @Test
+  public void aSettingsRoundNeverWritesOverAnAnswerNothingHasRead() {
+    // The more serious half of EXO-89814, and the one that loses data rather
+    // than merely failing to gain it. A settings round removes the ETag gate:
+    // every copy is fetched and judged on its content, and one that differs is
+    // repaired. On a server that records an answer WITHOUT moving the ETag —
+    // BlueMind, measured — the answer IS that difference, and nothing adopts it
+    // because the direction is unproven. So the round used to write eXo's own
+    // render straight over the only record of the user's answer.
+    //
+    // Refusing the repair is safe whichever way the difference runs: if the
+    // client wrote it, the answer survives to be adopted; if eXo did, an
+    // unrepaired copy costs a setting and nothing else.
+    givenTheServerSettingsChanged();
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                    .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ANSWERED));
+    when(caldavAnswerAdoptionService.holdsUnrecordedAnswer(USER, 5L, ANSWERED)).thenReturn(true);
+
+    service.verify(USER);
+
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+  }
+
+  @Test
+  public void theRoundIsStillStampedWhenACopyWasLeftAlone() {
+    // Holding the stamp back would make the round owed for ever on a server
+    // where the answer can never be adopted — and an owed round costs a fetch
+    // per copy on EVERY sweep, which is the unbounded read shape that got this
+    // rig's test proxy banned twice. A handful of copies keeping the settings
+    // they were written with is the smaller wrong, and the log says so.
+    givenTheServerSettingsChanged();
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(INVITED);
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                    .thenReturn(new CalendarObject(HREF, "\"etag-1\"", ANSWERED));
+    when(caldavAnswerAdoptionService.holdsUnrecordedAnswer(USER, 5L, ANSWERED)).thenReturn(true);
+
+    service.verify(USER);
+
+    ArgumentCaptor<CalendarSync> stamped = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(stamped.capture());
+    assertEquals(SETTINGS_CHANGED, stamped.getValue().getCopySettingsApplied());
+  }
+
+  @Test
+  public void theAnswersOnACollectionNothingElseReadsAreReadBeforeItIsCompared() {
+    // EXO-89814's first half, held where the ordering lives. The read has to
+    // come before the comparison twice over: it is the only pass that meets a
+    // copy in a collection no binding reads, so an answer on it is read there
+    // or nowhere — and reading it first is what leaves agenda holding the
+    // answer by the time the settings round decides whether the copy differs.
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+
+    service.verify(USER);
+
+    InOrder order = inOrder(caldavMirrorAnswerService, calDavClient);
+    order.verify(caldavMirrorAnswerService).readAnswers(eq(USER), any(), any());
+    order.verify(calDavClient).listResourceEtags(any(), anyString(), anyString(), anyString());
   }
 
   @Test
