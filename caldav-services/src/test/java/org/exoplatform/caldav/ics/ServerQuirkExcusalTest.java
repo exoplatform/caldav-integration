@@ -227,6 +227,50 @@ public class ServerQuirkExcusalTest {
     assertDifferent(server, exo, null, "DESCRIPTION");
   }
 
+  @Test
+  public void aDivergingReminderIsOfferedToTheAdministratorByItsComponentName() {
+    // EXO-89828. An embedded alarm is one statement of the event, spelled
+    // VALARM{NAME=VALUE&...}, and the name was read off it by stopping at the
+    // first "=" — which is the alarm's own first property, not the end of the
+    // name. The drawer was offered "VALARM{ACTION", the name of no property in
+    // any calendar object, and the rig's Stalwart registration had it stored:
+    // DROPPED:VALARM{ACTION=3@20696.
+    IcsJudgement judgement = judge.compare(EXO, withReminder(), OWNER, null, null);
+
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
+    assertTrue(judgement.divergences().contains(new IcsDivergence("VALARM", ServerQuirkDirection.DROPPED)),
+               "a reminder is offered as the component it is: " + judgement.divergences());
+    assertTrue(judgement.divergences().stream().noneMatch(divergence -> divergence.property().contains("{")),
+               "and never as a fragment of its own body: " + judgement.divergences());
+  }
+
+  @Test
+  public void anExcusalCannotBePointedAtAReminderByNamingItsComponent() {
+    // The bound on the rename, and the reason it is safe. Naming the component
+    // truthfully must not make the component excusable: the lists only ever
+    // accept a property IcsWriter emits, and VALARM is a component, so no
+    // ticking can blind the comparison to a reminder a client removed. Same
+    // guarantee as excusingTheInvitationTextDoesNotReachTheReminderItCarries,
+    // reached from the other side.
+    assertDifferent(EXO, withReminder(), "VALARM", "VALARM");
+  }
+
+  /**
+   * What eXo renders for an event carrying one reminder.
+   *
+   * <p>
+   * The shared {@link #EXO} fixture states no alarm, so the two cases above
+   * build eXo's side rather than the server's: the copy is {@link #EXO} itself,
+   * a server that did not keep the reminder eXo wrote.
+   *
+   * @return the render, alarm included
+   */
+  private String withReminder() {
+    return EXO.replace("END:VEVENT",
+                       "BEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Sprint review\r\nTRIGGER:-PT15M\r\n"
+                           + "END:VALARM\r\nEND:VEVENT");
+  }
+
   // --------------------------------------------------- what is still observed
 
   @Test
