@@ -105,6 +105,46 @@ property; the first edit or re-activation of that row from the administration
 screen then goes through the full check like any other write.
 
 
+## Answering a meeting from your own calendar
+
+When eXo copies a space meeting into a user's calendar, the user can accept,
+decline or answer tentatively **in their own client** — a phone, Thunderbird,
+the server's web UI — and eXo records it. It is the one field that travels back
+from a copy; nothing else a client writes on a copy is ever imported.
+
+An answer comes home by one of two routes:
+
+- **Within a sweep**, when the server reports the copy as changed. This is the
+  usual case and it is quick.
+- **On the daily full read**, otherwise. Once a day eXo re-reads each bound
+  collection's whole window rather than asking what changed, and reads any
+  answer off the copies it meets on the way.
+
+The second route matters more than it looks, because the first one only fires
+once per change: a CalDAV sync report names an object and then moves the token
+past it, so a change eXo could not act on when it was reported is never
+reported again. The daily full read is what catches those.
+
+### After upgrading
+
+**Answers given before this version was installed are picked up on their own,
+within a day of the upgrade. Nobody needs to answer again, and there is nothing
+for an administrator to run.** The daily full read meets those copies whatever
+the server said about them at the time.
+
+Two limits are worth knowing:
+
+- The re-read covers the synchronisation window only — by default 60 days back
+  and 365 forward (`exo.agenda.caldav.sync.pastDays` /
+  `exo.agenda.caldav.sync.futureDays`). An answer on a meeting that has since
+  fallen out of the past window is not recovered.
+- It applies to servers whose meeting copies land in the account's **own**
+  calendar (mirror target `MAIN_CALENDAR`), because that is the collection eXo
+  reads. Where the copies go to the dedicated `exo-meetings` calendar
+  (`DEDICATED_CALENDAR`, the default), that collection is deliberately never
+  read back in, so an answer written on a copy there does not reach eXo at all
+  — before or after this version.
+
 ## Validated providers
 The following providers was tested and validated with this caldav-integration addon
 
