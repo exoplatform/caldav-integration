@@ -83,6 +83,17 @@ position-dependent — colour derivation stays a browser concern).
   address on an internal domain: renaming it to a public TLD retires the
   fixture without saying so.
 
+  It is **load-bearing twice over**. EXO-89820 made this object readable, and
+  what reading it revealed is the second fixture it now serves: the object
+  carries `EMAIL=` on the **organizer** line as well, and eXo's render carries
+  none, so the comparison counted one organizer as two statements and re-pushed
+  the copy on every verification pass. `IcsEquivalenceTest`'s
+  `aCapturedMacosCopyStatesWhatExoWritesAndIsNotRePushed` compares this body
+  against itself with the `EMAIL` parameters removed — eXo's own spelling of
+  the same lines — and is the convergence pin of EXO-89826. So **both** `EMAIL`
+  parameters must stay: dropping the organizer's retires that pin as silently
+  as renaming the attendee's address retires the other.
+
 **Load-bearing capture finding** (transcript
 `../transcripts/stalwart-calendar-query-expand.xml`): the browser reads
 through `calendar-query` with `CALDAV:expand`, and **Stalwart answers
