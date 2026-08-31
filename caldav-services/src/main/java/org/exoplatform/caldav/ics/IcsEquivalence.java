@@ -122,6 +122,15 @@ import net.fortuna.ical4j.model.component.VTimeZone;
  * address — which is who they actually are — is compared regardless.
  *
  * <p>
+ * <b>And so is the server's own index of them.</b> {@code EMAIL} restates the
+ * address the property's value already carries, for a server that wants one
+ * without parsing a URI; macOS Calendar writes it on the organizer and attendee
+ * lines and {@link IcsWriter} never writes it at all. Compared, it made one
+ * organizer two statements — the copy's and eXo's, each missing from the other
+ * side — and every copy a macOS client had touched was repaired for it
+ * (EXO-89826).
+ *
+ * <p>
  * <b>And an attendee the server did not keep.</b> BlueMind discards attendees
  * whose addresses are not in its directory, so a copy carries fewer people than
  * eXo sent and no repair can change that. Tolerated for the same reason and in
@@ -342,14 +351,44 @@ public class IcsEquivalence {
    * only eXo's opinion of how to spell somebody, against the server's.
    *
    * <p>
-   * Neither can hide who is on the event: the <b>address</b> is the identity and
-   * it is compared regardless, on ORGANIZER and ATTENDEE alike, as is every
-   * PARTSTAT.
+   * {@code EMAIL} (RFC 6047 section 2, as Apple and Microsoft clients write it)
+   * is the third of the same kind, and the one EXO-89826 was opened for. It
+   * restates, as a parameter, the very address the property's own value already
+   * carries, so that a server which indexes calendar users by mail address does
+   * not have to parse the CAL-ADDRESS URI to find one. macOS Calendar writes it
+   * on the organizer and attendee lines whenever its user answers an invitation
+   * — {@code ORGANIZER;EMAIL=anais.francois@…:mailto:anais.francois@…} — and
+   * {@link IcsWriter} never emits it, on any property, so a compared statement
+   * can only ever carry it because the server put it there. Left compared, the
+   * one organizer was counted twice: the copy's spelling missing from eXo's
+   * render and eXo's spelling missing from the copy, judged altered, repaired,
+   * and diverging again the moment the client touched the object.
+   *
+   * <p>
+   * None of the three can hide who is on the event: the <b>address in the
+   * property's value</b> is the identity and it is compared regardless, on
+   * ORGANIZER and ATTENDEE alike, as is every PARTSTAT. That is what bounds the
+   * {@code EMAIL} relaxation in particular — a server that replaced the value
+   * with an opaque handle of its own and moved the address into {@code EMAIL}
+   * would be rewriting the identity, and the value it left behind
+   * ({@code urn:uuid:…} against {@code mailto:…}) still registers as the
+   * difference it is.
+   *
+   * <p>
+   * <b>What must never join this set.</b> {@code PARTSTAT} is a parameter too,
+   * and it is the one parameter that states a fact about the meeting rather
+   * than about the directory: it is a person's answer. EXO-89807 and EXO-89814
+   * both turn on a PARTSTAT difference being seen — an answer given in a client
+   * is read off the copy precisely because the comparison notices it. So the
+   * test for admission here is not "is it a parameter" but "does the server
+   * write it for its own bookkeeping": a name, a pointer, a scheduling
+   * instruction, a restated address. An answer is none of those.
    */
   private static final Set<String>         IGNORED_PARAMETERS       = Set.of("TZID",
                                                                              "VALUE",
                                                                              "CN",
                                                                              "DIR",
+                                                                             "EMAIL",
                                                                              "SCHEDULE-AGENT",
                                                                              "SCHEDULE-STATUS",
                                                                              "SCHEDULE-FORCE-SEND");
