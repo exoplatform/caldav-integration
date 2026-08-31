@@ -98,19 +98,50 @@ const caldavConnector = {
       });
     });
   },
+  /**
+   * The connected account's events over a period, and whether reading them
+   * failed.
+   *
+   * <p>
+   * One request, answered with events already mapped. What this replaces is
+   * one REPORT per calendar issued from the page, then every iCalendar object
+   * parsed in the main thread — with the account's password in that page to
+   * make the requests at all.
+   *
+   * <p>
+   * Resolves with `{events, failed}` and not with a bare array, because the
+   * bare array is exactly what hid this account's failures. A calendar server
+   * that is down produced a 200 with `[]`, which every view downstream drew as
+   * an empty week; the flag is the only thing that tells that apart from an
+   * account which genuinely has nothing scheduled. Rejecting instead was
+   * considered and rejected in turn: a partial read — most calendars answered,
+   * one did not — has events worth drawing, and a rejection throws them away.
+   *
+   * @param {Date|Number|String} periodStartDate beginning of the period
+   * @param {Date|Number|String} periodEndDate end of the period
+   * @returns {Promise<Object>} `{events, failed}`; `failed` is true when the
+   *          account, or any of its calendars, could not be read
+   */
   getEvents(periodStartDate, periodEndDate) {
-    // One request, answered with events already mapped. What this replaces is
-    // one REPORT per calendar issued from the page, then every iCalendar
-    // object parsed in the main thread — with the account's password in that
-    // page to make the requests at all.
     const start = isoInstant(periodStartDate);
     const end = isoInstant(periodEndDate);
     if (!start || !end) {
-      return Promise.resolve([]);
+      // Nothing was asked, so nothing failed: a half-built period is this
+      // page's own doing and not the account's.
+      return Promise.resolve({events: [], failed: false});
     }
     return fetch(`${window.location.origin}/caldav/rest/events?start=${start}&end=${end}`, {
       credentials: 'include',
-    }).then(readOutcome).then(events => (events || []).map(event => ({...event, type: 'remoteEvent', id: event.uid})));
+    }).then(response => {
+      if (!response.ok) {
+        // A read the platform refused is a read that did not happen. Answering
+        // an empty list here would put the failure back exactly where this
+        // change took it out of.
+        console.error('cannot read the remote events', response.status);
+        return {events: [], failed: true};
+      }
+      return response.json().then(readEventsOutcome, () => ({events: [], failed: true}));
+    });
   },
   canListCalendars: true,
   /**
@@ -122,12 +153,24 @@ const caldavConnector = {
    * renaming a calendar in their own client must not detach whatever eXo has
    * associated with it, and nothing stops two collections sharing a name.
    *
+   * Answers a plain array, unwrapped from the endpoint's envelope. The
+   * envelope's `failed` flag is deliberately not surfaced here: agenda's
+   * callers of this method — the left panel, the mirror lookup in the
+   * connector row and in the push settings — chain on the array without a
+   * rejection path, and each needs its own decision about what to show for an
+   * account that could not be listed. That is a separate change from the one
+   * this ticket measured, which is the events views drawing an empty week.
+   *
    * @returns {Promise<Array>} one entry per calendar of the connected account
    */
   listCalendars() {
     return fetch(`${window.location.origin}/caldav/rest/calendars`, {credentials: 'include'})
       .then(readOutcome)
-      .then(calendars => calendars || []);
+      // An array is tolerated beside the envelope: the webapp bundle and the
+      // services jar ship together, but the platform is known to serve a stale
+      // aggregated script after a redeploy, and a stale reader must degrade to
+      // the old behaviour rather than to no calendars at all.
+      .then(payload => (Array.isArray(payload) ? payload : payload && payload.calendars || []));
   },
 
   /**
@@ -517,12 +560,42 @@ function isoInstant(value) {
 }
 
 /**
+ * Turns what `/caldav/rest/events` answered into the shape agenda's views
+ * consume, keeping the failure the body carries.
+ *
+ * <p>
+ * `failedCalendars` folds into the same flag as `failed`. The two differ in
+ * how much was lost — the whole account, or some of its collections — but not
+ * in what a view has to do about it: say the week it is drawing is not the
+ * whole week. The events that did arrive are returned either way.
+ *
+ * @param {Object|Array} payload the parsed response body
+ * @returns {Object} `{events, failed}`
+ */
+function readEventsOutcome(payload) {
+  // An array is tolerated beside the envelope, for the stale-bundle reason
+  // given on listCalendars: an old body must degrade to the old behaviour.
+  const body = Array.isArray(payload) ? {events: payload} : payload || {};
+  return {
+    events: (body.events || []).map(event => ({...event, type: 'remoteEvent', id: event.uid})),
+    failed: !!body.failed || (body.failedCalendars || []).length > 0,
+  };
+}
+
+/**
  * Reads a server-side read outcome.
  *
+ * <p>
  * A read that fails answers with nothing rather than rejecting: the agenda
  * shows several connectors at once, and one of them failing must not take the
  * whole month down. The server already degraded per calendar for the same
  * reason; this is the last step of the same rule.
+ *
+ * <p>
+ * Deliberately no longer used for `/caldav/rest/events`, which needs to keep
+ * the failure rather than flatten it — see getEvents. It still serves the
+ * calendars listing and the deletion plan, whose callers have no failure
+ * channel of their own.
  *
  * @param {Response} response the server's answer
  * @returns {Promise} resolves the payload, or an empty result
