@@ -908,7 +908,10 @@ public class HttpCalDavClient implements CalDavClient {
       }
       return new DavResponse(status, response, new String(bytes, StandardCharsets.UTF_8));
     } catch (IOException e) {
-      throw new CalDavException("The calendar server could not be reached at " + request.uri(), e);
+      // Unreachable, not merely failed: this is the transport itself giving
+      // up, which every later step of the same sequence would repeat. See
+      // CalDavUnreachableException for why one attempt is the whole answer.
+      throw new CalDavUnreachableException("The calendar server could not be reached at " + request.uri(), e);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw new CalDavException("Interrupted while talking to " + request.uri(), e);
@@ -955,15 +958,24 @@ public class HttpCalDavClient implements CalDavClient {
    * The one exception an unaccepted status becomes — method and URI only,
    * never a header, so no auth material can ever reach a log through it.
    *
+   * <p>
+   * A gateway status (502, 503, 504) becomes the narrower
+   * {@link CalDavUnreachableException}: something in front of the calendar
+   * server has answered that it could not reach it, which the next step of
+   * the same sequence would only rediscover. 500 is deliberately not in that
+   * set — BlueMind answers it for an absent object, and treating that as an
+   * absent server would abandon passes against a server that is there.
+   *
    * @param status the answered status
    * @param request the request it answers
    * @return the exception to throw
    */
   private CalDavException refusal(int status, HttpRequest request) {
-    return new CalDavException(String.format("The calendar server answered %s for %s %s",
-                                             status,
-                                             request.method(),
-                                             request.uri()));
+    String message = String.format("The calendar server answered %s for %s %s", status, request.method(), request.uri());
+    if (status == 502 || status == 503 || status == 504) {
+      return new CalDavUnreachableException(message);
+    }
+    return new CalDavException(message);
   }
 
   /**
