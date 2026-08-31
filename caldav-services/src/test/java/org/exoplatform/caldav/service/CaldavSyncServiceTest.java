@@ -1874,19 +1874,72 @@ public class CaldavSyncServiceTest {
     // Measured: that check lists a whole collection and took a full 30-second
     // request timeout against one real account, on every pass — so pressing
     // Synchronise now cost 25 seconds, nearly all of it spent on a repair whose
-    // result the user never sees. Nobody waits for a repair.
+    // result the user never sees. Nobody waits for a repair, and that has not
+    // changed now that pressing the button starts one (EXO-89821).
     RecordingExecutor seeding = recordSeeding();
     givenServerCalendars();
 
     service.syncNowAndWait(USER, LOGIN);
-    establishAContainer();
-    seeding.runQueued();
 
-    // Asserted after the seeding has run, not before it started — which would
-    // prove nothing. Half of the EXO-89804 pin, and the half that is as much a
-    // defect as the other: if the seeding ever drags the verification back onto
-    // the user's path with it, this fails.
+    // Asserted with the burst handed over and deliberately not run: a version
+    // that verified on the caller's thread has already made the call by the
+    // time this looks, and no arrangement of the executor can hide it. What
+    // the next test then adds is that the work was handed over rather than
+    // dropped — only the two together say "started, not awaited".
     verify(caldavMirrorVerificationService, never()).verify(anyLong());
+    assertEquals(1, seeding.queued(), "the burst that verifies must be handed to the executor, not to the caller");
+  }
+
+  /**
+   * Pressing <i>Synchronise now</i> starts the verification (EXO-89821).
+   *
+   * <p>
+   * The reported defect. A user answers a meeting in their own calendar,
+   * presses the button and nothing happens: reading a copy back is the
+   * verification's job and the verification ran on the sweep alone, so their
+   * answer reached eXo up to five minutes later, from a pass they never asked
+   * for. The button could not read an answer back.
+   *
+   * <p>
+   * The fix is not to make it wait — the check lists whole collections — but to
+   * make the burst it already hands over do the reading too.
+   */
+  @Test
+  public void pressingSynchroniseNowStartsTheVerification() throws Exception {
+    RecordingExecutor burst = recordSeeding();
+    givenServerCalendars();
+
+    service.syncNowAndWait(USER, LOGIN);
+    establishAContainer();
+    burst.runQueued();
+
+    verify(caldavMirrorVerificationService).verify(USER);
+  }
+
+  /**
+   * And it starts it <i>after</i> settling and seeding, as the sweep does.
+   *
+   * <p>
+   * The order is the same order for the same reasons, stated once in
+   * {@code OutboundPhase} and walked from there: an arrear eXo is behind on is
+   * written before anything judges the copy (EXO-89773), and a copy seeded this
+   * round is read back from the next round on (EXO-89681). A burst that
+   * verified first would report a mirror needing attention that its own next
+   * call was about to put right.
+   */
+  @Test
+  public void theBurstVerifiesAfterItHasSettledAndSeeded() throws Exception {
+    RecordingExecutor burst = recordSeeding();
+    givenServerCalendars();
+
+    service.syncNowAndWait(USER, LOGIN);
+    establishAContainer();
+    burst.runQueued();
+
+    InOrder order = inOrder(caldavEventPropagationService, caldavPendingInvitationService, caldavMirrorVerificationService);
+    order.verify(caldavEventPropagationService).retryOwedPushes(USER);
+    order.verify(caldavPendingInvitationService).pushUpcomingMeetings(USER);
+    order.verify(caldavMirrorVerificationService).verify(USER);
   }
 
   /**
@@ -2004,6 +2057,76 @@ public class CaldavSyncServiceTest {
   }
 
   /**
+   * And that de-duplication covers the verification, which is the expensive
+   * half (EXO-89821).
+   *
+   * <p>
+   * The reason the check was kept off the user's path in the first place is
+   * that it lists whole collections — measured at a full 30-second request
+   * timeout. A key that covered only the seeding would let an impatient user
+   * queue that listing once per press, which is the same cost arriving by
+   * another door. The burst is claimed as one piece of work, so the second
+   * press joins the first rather than ordering another round trip through every
+   * copy the account holds.
+   */
+  @Test
+  public void pressingTheButtonTwiceStartsOneVerificationAndNotTwo() throws Exception {
+    RecordingExecutor burst = recordSeeding();
+    givenServerCalendars();
+
+    service.syncNowAndWait(USER, LOGIN);
+    service.syncNowAndWait(USER, LOGIN);
+    establishAContainer();
+    burst.runQueued();
+
+    verify(caldavMirrorVerificationService, times(1)).verify(USER);
+  }
+
+  /**
+   * A sweep does not verify an account whose burst is still outstanding
+   * (EXO-89821).
+   *
+   * <p>
+   * Two passes listing one collection at the same time is not merely wasteful:
+   * each counts the same drift as a repair it made, so the give-up threshold a
+   * copy is judged against is reached at half the drift it was set for, and
+   * each may push the same arrear. They are the same three phases on the same
+   * account, so one key is held by whichever gets there first and the other
+   * leaves it alone — the burst loses nothing by being left alone, because what
+   * the sweep would have done is exactly what it is about to do.
+   *
+   * <p>
+   * The sweep runs on a thread of its own, as it does in life. It is not
+   * <i>inside</i> the burst — the burst is held on the recording executor —
+   * but the key is held across the whole window from the press to the burst
+   * running, and that window is the one where the two would meet.
+   */
+  @Test
+  public void aSweepLeavesAloneAnAccountWhoseBurstIsStillOutstanding() throws Exception {
+    RecordingExecutor burst = recordSeeding();
+    givenServerCalendars();
+
+    service.syncNowAndWait(USER, LOGIN);
+
+    Thread sweep = new Thread(() -> service.syncInBackground(USER, LOGIN));
+    sweep.start();
+    sweep.join(5000);
+
+    // First, that the sweep ran at all. A pass that died on its way to the
+    // outward phases would satisfy every assertion below while proving
+    // nothing — the shape a guard test most easily degenerates into.
+    verify(caldavOutboundService, times(2)).bindPersonalCalendars(USER, LOGIN);
+    verify(caldavMirrorVerificationService, never()).verify(anyLong());
+    verify(caldavPendingInvitationService, never()).pushUpcomingMeetings(anyLong());
+
+    // And nothing was lost by the sweep standing aside: the burst it stood
+    // aside for does the same three phases.
+    establishAContainer();
+    burst.runQueued();
+    verify(caldavMirrorVerificationService, times(1)).verify(USER);
+  }
+
+  /**
    * Opening the agenda seeds nothing.
    *
    * <p>
@@ -2107,16 +2230,16 @@ public class CaldavSyncServiceTest {
    * States a container the woven aspect can work with.
    *
    * <p>
-   * {@code seedCopies} carries {@code @ContainerTransactional}, and that aspect
-   * is woven into the class under test: it reads the current container and,
-   * finding the JVM-wide root one a unit test ends up with, calls
+   * {@code runOutboundBurst} carries {@code @ContainerTransactional}, and that
+   * aspect is woven into the class under test: it reads the current container
+   * and, finding the JVM-wide root one a unit test ends up with, calls
    * {@code PortalContainer.getInstance()} — which in a unit test tries to build
    * a real portal and dies on the first optional add-on missing from this
    * module's classpath. That is the annotation working, not failing:
    * establishing the container is exactly what it is for, and exactly what a
    * plain executor thread needs. So the condition is <i>stated</i>, with the
    * same {@code mockStatic} discipline {@code CaldavSyncSweepJobTest} uses —
-   * and only in the tests that actually run the seeding, since the static is
+   * and only in the tests that actually run the burst, since the static is
    * scoped to this thread.
    */
   private void establishAContainer() {
