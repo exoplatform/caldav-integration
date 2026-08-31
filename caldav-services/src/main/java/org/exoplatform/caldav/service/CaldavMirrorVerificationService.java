@@ -621,13 +621,30 @@ public class CaldavMirrorVerificationService {
    * one here would have put back, on the one path that must not loop, the
    * state that never converges.
    *
+   * <p>
+   * <b>The listing's value, not the fetch's</b>, and on a server where the two
+   * agree that sentence costs nothing. Where they do not it is the whole of
+   * EXO-89809: the gate above compares the row against the
+   * <i>collection listing</i>, so a row holding the value some other channel
+   * published is a row the listing never agrees with, and the answer on this
+   * copy is read again on every sweep for ever — silently, because a copy that
+   * has already given up its answer changes nothing when it gives it up again.
+   * BlueMind is such a server: its {@code DAV:getetag} property is a quoted
+   * base64 of the value its own {@code ETag} response header carries in plain,
+   * and no normalisation turns one into the other. Recording the listing's
+   * value is also the conservative half of the choice: the fetch happened after
+   * the listing, so its version can only be the newer of the two, and a row
+   * holding the older one has the next pass look again rather than skip a write
+   * that landed in between.
+   *
    * @param object the mapping row of the copy
-   * @param remote the copy as the client left it
-   * @param listedEtag the ETag the collection listing carried for the copy,
-   *          used when the fetch itself came back without one
+   * @param remote the copy as the client left it, whose own ETag is used only
+   *          when the listing carried none
+   * @param listedEtag the ETag the collection listing carried for the copy —
+   *          the value the next pass's gate compares against
    */
   private void recordClientWrite(ObjectSync object, CalendarObject remote, String listedEtag) {
-    object.setEtag(StringUtils.isNotBlank(remote.etag()) ? remote.etag() : listedEtag);
+    object.setEtag(StringUtils.isNotBlank(listedEtag) ? listedEtag : remote.etag());
     object.setLastSync(new java.util.Date());
     caldavSyncStorage.saveObject(object);
   }
@@ -819,7 +836,10 @@ public class CaldavMirrorVerificationService {
       LOG.debug("The copy at {} cannot be judged ({}); it is left alone", object.getRemoteHref(), judgement.detail());
       return new Assessment(Verdict.UNTOUCHED, null);
     }
-    adoptVersion(object, StringUtils.defaultIfBlank(remote.etag(), currentEtag));
+    // The listing's value first, the fetch's only when the listing carried
+    // none. See adoptVersion: what is recorded here is compared against the
+    // listing on the next pass, so it has to be the listing's own value.
+    adoptVersion(object, StringUtils.defaultIfBlank(currentEtag, remote.etag()));
     return new Assessment(Verdict.UNTOUCHED, null);
   }
 
@@ -844,8 +864,33 @@ public class CaldavMirrorVerificationService {
    * first sweep absorbs a server's own serialisation, the listing and the row
    * agree and nothing is fetched again until somebody actually writes.
    *
+   * <p>
+   * <b>"The version the server publishes" means the one the collection listing
+   * publishes</b>, and EXO-89809 is what happens when it does not. The gate is
+   * a comparison against the listing; recording anything else leaves the row
+   * disagreeing with the listing on the very next pass, so the fetch this
+   * method exists to make unnecessary is paid again, and again, for ever — and
+   * in complete silence, because a copy that compares equal says nothing. The
+   * caller used to hand this the ETag of the <i>fetch</i> in preference to the
+   * listing's, which is identical on a server whose channels agree and useless
+   * on one whose channels do not: BlueMind answers a GET or a PUT with
+   * {@code bmdav_2859517047_0} and publishes {@code DAV:getetag} as
+   * {@code "Ym1kYXZfMjY4MjA1MjMzOF8xMjc="} — a quoted base64 of the same kind
+   * of value, carrying the real version rather than 0. {@link #normalise}
+   * strips quoting and a weak marker; it cannot decode one form into the other,
+   * and it must not learn to, because a comparison that decodes a server's
+   * private encoding is a comparison nobody can reason about. The value stored
+   * is what is fixed instead.
+   *
+   * <p>
+   * The stored value is also the {@code If-Match} of the next ordinary update,
+   * so this is the value the server is asked to match. Recording what the
+   * server publishes as the resource's entity-tag is what that precondition is
+   * defined against; recording what some other channel answered is not.
+   *
    * @param object the mapping row whose content was just confirmed
-   * @param currentEtag the version the server publishes now, may be blank
+   * @param currentEtag the version the collection listing publishes now, may be
+   *          blank
    */
   private void adoptVersion(ObjectSync object, String currentEtag) {
     if (StringUtils.isBlank(currentEtag) || StringUtils.equals(normalise(currentEtag), normalise(object.getEtag()))) {

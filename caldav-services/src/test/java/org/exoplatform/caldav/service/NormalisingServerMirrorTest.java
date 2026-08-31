@@ -482,6 +482,83 @@ public class NormalisingServerMirrorTest {
   }
 
   @Test
+  public void aServerThatSpellsAVersionOneWayInItsHeadersAndAnotherInItsListingStillFallsSilent() {
+    // EXO-89809, and the reason it went unnoticed for as long as it did: every
+    // symptom of it is an absence. BlueMind answers a write with
+    // bmdav_2859517047_0 and publishes "Ym1kYXZfMjY4MjA1MjMzOF8xMjc=" for the
+    // neighbouring object in the same collection — two spellings of one
+    // entity-tag — and the gate compares the row against the listing. So the
+    // row the write left behind never agreed with the listing, every copy was
+    // rendered, fetched and compared on every sweep for ever, and not one line
+    // was ever logged, because a copy that compares equal says nothing.
+    //
+    // Four passes, because one proves nothing about a loop, and the assertion
+    // is the fetch count rather than a verdict: the verdicts were always 0.
+    server.spellsItsVersionsTwoWays();
+    push.writeInto(USER, mirror, event(), EVENT);
+
+    verification.verify(USER);
+    int afterTheFirstPass = server.fetches();
+    assertTrue(afterTheFirstPass > 0, "the first pass had to read the copy to know it was ours");
+
+    for (int pass = 0; pass < 4; pass++) {
+      MirrorVerification later = verification.verify(USER);
+
+      assertEquals(0, later.altered(), "pass " + pass);
+      assertEquals(0, later.repaired(), "pass " + pass);
+      assertEquals(afterTheFirstPass, server.fetches(), "pass " + pass);
+    }
+  }
+
+  @Test
+  public void theVersionRecordedForAnEquivalentCopyIsTheOneTheListingPublishes() {
+    // The fix stated as what is written down rather than as what stops
+    // happening. The pass gates on the collection listing, so the value the row
+    // keeps has to be the listing's own — not the one the fetch answered, which
+    // is the same thing on a server whose channels agree and a row that never
+    // agrees with anything on a server whose channels do not.
+    server.spellsItsVersionsTwoWays();
+    ObjectSync mapping = push.writeInto(USER, mirror, event(), EVENT);
+
+    verification.verify(USER);
+
+    assertEquals(server.listed(HREF), rows.get(mapping.getId()).getEtag());
+    assertNotEquals(server.etag(HREF),
+                    rows.get(mapping.getId()).getEtag(),
+                    "this server was supposed to spell the two channels differently");
+  }
+
+  @Test
+  public void anAnswerReadOffACopyTheServerWillNotTakeBackIsNotReadAgainOnEveryPass() {
+    // The same defect on the other recording site. When the answer has been
+    // taken in but the repair cannot be written — a server refusing the
+    // rewrite — what the pass recorded before attempting it is what stands, and
+    // it is what the next pass's gate compares. Recording the fetch's spelling
+    // left that gate open for ever: the copy was fetched and its answer read
+    // again every five minutes, and adopting an answer already adopted changes
+    // nothing, so nothing was ever said about it.
+    CaldavAnswerAdoptionService adoption = org.mockito.Mockito.mock(CaldavAnswerAdoptionService.class);
+    when(adoption.adoptAnswer(anyLong(), anyLong(), anyString())).thenReturn(CaldavAnswerAdoptionService.Outcome.ADOPTED);
+    ReflectionTestUtils.setField(verification, "caldavAnswerAdoptionService", adoption);
+    server.spellsItsVersionsTwoWays();
+    push.writeInto(USER, mirror, event(), EVENT);
+    verification.verify(USER);
+    server.editedByAClient(HREF, server.stored(HREF).replace("Sprint review", "Sprint review (accepted)"));
+    server.refuseWrites();
+
+    MirrorVerification first = verification.verify(USER);
+    int afterTheAnswerWasRead = server.fetches();
+
+    assertEquals(1, first.adopted());
+    for (int pass = 0; pass < 3; pass++) {
+      verification.verify(USER);
+
+      assertEquals(afterTheAnswerWasRead, server.fetches(), "pass " + pass);
+    }
+    org.mockito.Mockito.verify(adoption, org.mockito.Mockito.times(1)).adoptAnswer(anyLong(), anyLong(), anyString());
+  }
+
+  @Test
   public void anAnswerExoWritesOntoTheCopyIsNotThenUndoneByTheVerificationPass() {
     // EXO-89715's guarantee, re-expressed without a digest — and it is a real
     // question, not a formality, because the two halves take different code
@@ -822,6 +899,9 @@ public class NormalisingServerMirrorTest {
     /** Whether reads are refused, standing for an unreachable server. */
     private boolean                   readsRefused;
 
+    /** Whether writes are refused, standing for a server that will not take the copy. */
+    private boolean                   writesRefused;
+
     /** How many annotations it has stamped, so no two are alike. */
     private int                       annotations;
 
@@ -833,6 +913,13 @@ public class NormalisingServerMirrorTest {
 
     /** The hrefs it has not finished settling. */
     private final java.util.Set<String> unsettled = new java.util.LinkedHashSet<>();
+
+    /**
+     * Whether this server spells one and the same version two ways: plainly in
+     * the {@code ETag} header its writes and its reads answer, and quoted
+     * base64 in the {@code DAV:getetag} its collection listing publishes.
+     */
+    private boolean                   spellsItsVersionsTwoWays;
 
     /**
      * @param normalisation what it does to what it stores
@@ -857,6 +944,47 @@ public class NormalisingServerMirrorTest {
      */
     private void settlesLate() {
       settlesLate = true;
+    }
+
+    /**
+     * Makes this server publish its versions in one spelling through its
+     * headers and another through its collection listing.
+     *
+     * <p>
+     * BlueMind, measured on a live account (EXO-89809): the {@code ETag} header
+     * of a PUT or a GET reads {@code bmdav_2859517047_0}, while the
+     * {@code DAV:getetag} the collection listing publishes for a neighbouring
+     * object in the very same collection reads
+     * {@code "Ym1kYXZfMjY4MjA1MjMzOF8xMjc="} — quoted base64 of the same kind
+     * of value. Two spellings of one entity-tag, and the connector's
+     * normalisation strips quoting and a weak marker, so it can turn neither
+     * into the other.
+     *
+     * <p>
+     * It is not a cosmetic difference: the verification pass gates on the
+     * <i>listing</i>, so a row holding the header's spelling never agrees with
+     * it. Every copy is then rendered, fetched and compared on every sweep for
+     * ever, and says nothing at all — a copy that compares equal reports
+     * nothing. Modelled as a property of the server rather than as a scenario,
+     * for the reason the misplaced VERSION is: it is what the server does, not
+     * what a test does.
+     */
+    private void spellsItsVersionsTwoWays() {
+      spellsItsVersionsTwoWays = true;
+    }
+
+    /**
+     * How this server spells a version in its collection listing.
+     *
+     * @param etag the version as its headers spell it
+     * @return the version as its {@code DAV:getetag} spells it
+     */
+    private String asListed(String etag) {
+      if (!spellsItsVersionsTwoWays || etag == null) {
+        return etag;
+      }
+      return "\"" + java.util.Base64.getEncoder().encodeToString(etag.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+          + "\"";
     }
 
     /**
@@ -885,6 +1013,23 @@ public class NormalisingServerMirrorTest {
     /** Makes every read fail, standing for a server that cannot be reached. */
     private void refuseReads() {
       readsRefused = true;
+    }
+
+    /**
+     * Makes every write fail, standing for a server that will not take the
+     * copy back — so that what the pass recorded before attempting the repair
+     * is what stands, and can be looked at.
+     */
+    private void refuseWrites() {
+      writesRefused = true;
+    }
+
+    /**
+     * @param href the object's path
+     * @return the version its collection listing publishes for it
+     */
+    private String listed(String href) {
+      return asListed(etags.get(href));
     }
 
     /**
@@ -1139,6 +1284,9 @@ public class NormalisingServerMirrorTest {
      * @return the write's result
      */
     private PutResult accept(String href, String ics, int status) {
+      if (writesRefused) {
+        throw new IllegalStateException("the server will not take this copy");
+      }
       String answered = "\"v" + ++version + "\"";
       objects.put(href, store(ics, false));
       etags.put(href, normalisation == Normalisation.NONE ? answered : "\"v" + ++version + "\"");
@@ -1199,7 +1347,9 @@ public class NormalisingServerMirrorTest {
                                                  String collectionHref,
                                                  String username,
                                                  String password) {
-      return new LinkedHashMap<>(etags);
+      Map<String, String> listed = new LinkedHashMap<>();
+      etags.forEach((href, etag) -> listed.put(href, asListed(etag)));
+      return listed;
     }
 
     @Override
@@ -1278,8 +1428,16 @@ public class NormalisingServerMirrorTest {
                                   String password) {
       // If-Match — refused when the caller's version is not the current one,
       // which is how a stale recorded ETag stops an eXo edit from landing.
-      return ifMatch != null && ifMatch.equals(etags.get(href)) ? accept(href, icsData, 204)
-                                                                : new PutResult(412, null, null);
+      //
+      // Either spelling of the current version is honoured, and a server that
+      // publishes two has to: the precondition is defined against the
+      // entity-tag the server itself published, and this one published both.
+      // The alternative — publishing a value through the listing and then
+      // refusing it in a precondition — would leave a client no storable value
+      // at all, and is not a shape any measurement of BlueMind showed.
+      String current = etags.get(href);
+      boolean matches = ifMatch != null && (ifMatch.equals(current) || ifMatch.equals(asListed(current)));
+      return matches ? accept(href, icsData, 204) : new PutResult(412, null, null);
     }
 
     @Override
