@@ -343,6 +343,37 @@ describe('a preset says what it chose about the copies', () => {
     expect(summary).toMatch(/any calendar/i);
     expect(summary).toMatch(/dedicated eXo Meetings calendar/i);
   });
+
+  it('names in its summary exactly the behaviours it ticks, neither more nor fewer', () => {
+    // The summary is the only place an administrator reads what a preset filled
+    // in; the check-boxes it ticks are several scrolls further down and read as
+    // settings rather than as claims. So a sentence here that no longer matches
+    // a tick is not cosmetic - it is the preset telling somebody it excused
+    // something it did not excuse, on a server it just described to them.
+    //
+    // Both directions are pinned, and the second is the one that has already
+    // gone wrong. EXO-89805 removed omitsSoloOrganizer from the BlueMind preset
+    // - eXo names no organizer on a solo event on any server now, so the tick
+    // bought nothing - and the sentence claiming BlueMind's organizer handling
+    // stayed behind in the summary for the whole of that release, because
+    // nothing connected the prose to the list. Adding a tick without a sentence
+    // is the same defect read the other way, so it fails here too.
+    const phrases = {
+      dropsConference: /video-conference links/i,
+      addsCompatibilityMarkers: /compatibility markers/i,
+      addsFormattedDescription: /formatted duplicate of the description/i,
+      omitsSoloOrganizer: /organizer/i,
+    };
+    SERVER_PRESETS.forEach(preset => {
+      const summary = messages[`caldav.admin.servers.preset.${preset.id}.summary`];
+      expect(summary).toBeDefined();
+      Object.keys(phrases).forEach(quirkId => {
+        // A preset that ticks nothing - including the uncharacterised option,
+        // whose list is null rather than empty - must name no behaviour at all.
+        expect(phrases[quirkId].test(summary)).toBe((preset.quirks || []).includes(quirkId));
+      });
+    });
+  });
 });
 
 describe('a preset is copied into the row, never linked to it', () => {
