@@ -84,23 +84,52 @@ public class CaldavServerService {
    */
   public static final String       CALDAV_ENABLED_PROPERTY       = "exo.agenda.caldav.connector.enabled";
 
-  /**
-   * URL the Stalwart seed row falls back to when the legacy property is not
-   * set on the deployment.
-   */
   /** The name the Stalwart seed is declared under. */
   public static final String       STALWART_SERVER_NAME          = "Stalwart";
 
   /** The name the Bluemind seed is declared under. */
   public static final String       BLUEMIND_SERVER_NAME          = "Bluemind";
 
-  public static final String       DEFAULT_STALWART_URL          = "http://localhost:8888/dav/cal/{username}/";
+  /**
+   * Address the Stalwart seed row falls back to when the deployment named none
+   * through {@link #CALDAV_SERVER_URL_PROPERTY}.
+   *
+   * <p>
+   * <b>It is a placeholder, and it is one on purpose (EXO-89794).</b> This
+   * constant used to read {@code http://localhost:8888/dav/cal/{username}/} —
+   * the local development rig — so a fresh install shipped an <i>active</i>
+   * registration pointing at its own loopback interface, through which a
+   * connected user could drive the relay's verbs at a row nobody had typed.
+   * A product default must not name a host that exists only on a developer's
+   * machine, and it must certainly not arrive switched on.
+   *
+   * <p>
+   * The replacement is an RFC 2606 {@code .invalid} name, which is guaranteed
+   * never to resolve: it cannot be a live target under any deployment's
+   * resolver, it reads unmistakably as "replace me", and it fails the address
+   * check — which is what makes the row arrive inactive, see
+   * {@link #seedDefaultServers()}. The rig keeps working the documented way,
+   * by setting {@link #CALDAV_SERVER_URL_PROPERTY} (plus the opt-ins the
+   * address check reads); it no longer works by being the shipped default.
+   */
+  public static final String       DEFAULT_STALWART_URL          = "https://stalwart.example.invalid/dav/cal/{username}/";
 
   /**
-   * URL of the Bluemind seed row: where that BlueMind actually serves DAV
-   * (its /dav/ answers 401 Basic realm="bm.basic.auth.v2"; the bare host only
-   * redirects). Note that BlueMind sends no CORS headers, so connecting from
-   * the browser needs the portal to front it on its own origin.
+   * Address the Bluemind seed row is declared with: a placeholder an
+   * administrator is expected to replace with the DAV endpoint of their own
+   * BlueMind, whose shape it mirrors (BlueMind serves DAV under {@code /dav/}
+   * and answers there with 401 Basic realm="bm.basic.auth.v2"; the bare host
+   * only redirects).
+   *
+   * <p>
+   * An RFC 2606 {@code .invalid} name for the same reason as
+   * {@link #DEFAULT_STALWART_URL}: it can never resolve, so the row can never
+   * be a live target, and it fails the address check — so the row is seeded
+   * inactive rather than offered to users as a connector that goes nowhere.
+   *
+   * <p>
+   * Note also that BlueMind sends no CORS headers, so connecting from the
+   * browser needs the portal to front it on its own origin.
    */
   public static final String       DEFAULT_BLUEMIND_URL          = "https://caldav.example.invalid/dav/";
 
@@ -179,18 +208,45 @@ public class CaldavServerService {
    * </ul>
    *
    * <p>
-   * <b>Seeding is not gated by the address check (EXO-89774), on purpose.</b>
-   * These two rows are product bootstrap, not administrator input: the
-   * Stalwart default points at the local development rig by design, and the
-   * Bluemind row ships a {@code .invalid} placeholder host an administrator is
-   * expected to replace. Refusing either would break the product's own
-   * bootstrap for a reason that only applies to what a person types. What the
-   * seeding does instead is say so out loud — see
-   * {@link #warnAboutSeededUrl(String, String)} — and the first administrator
-   * edit or re-activation of a seeded row goes through the full check like any
-   * other write. The residual gap is named in the delivery: a deployment that
-   * never opens the administration screen keeps whatever the seed declared,
-   * which is today's behaviour unchanged.
+   * <b>A seeded row is switched ON only when its address passes the same check
+   * an administrator's would (EXO-89794).</b> Seeding used to be exempt from
+   * the address check of EXO-89774 altogether, which left the loophole that
+   * check was written to close: a fresh install carried an <i>active</i>
+   * registration at {@code http://localhost:8888/dav/cal/{username}/}, so a
+   * connected user could drive the relay's allowed verbs at loopback through a
+   * row nobody had typed. Neither the check nor the seeds are the thing to
+   * drop; what had to go is the row arriving <i>switched on</i> without ever
+   * meeting the check.
+   *
+   * <p>
+   * So the seeds are still written — they are the pre-filled form an
+   * administrator edits, and skipping them would leave a fresh install with an
+   * empty administration screen and no hint of what belongs in it — but their
+   * activation is the address check's answer, not a constant:
+   * <ul>
+   * <li>An address the deployment actually named and vouched for — through
+   * {@link #CALDAV_SERVER_URL_PROPERTY}, plus whichever of the four
+   * {@code exo.agenda.caldav.server.*} opt-ins that address needs — passes,
+   * and the row is seeded active exactly as before. This is how the local
+   * development rig keeps working: through its documented properties, not
+   * through a default that walks past them.</li>
+   * <li>Anything else — both shipped placeholders included — is seeded
+   * <b>inactive</b>, and said out loud in the log (see
+   * {@link #isDeclarableSeedAddress(String, String)}). Inactive is the honest
+   * state for an address nobody has vouched for: no user is offered the
+   * connector, nothing can be driven at it, and switching it on later is a
+   * write that {@link #setServerActive(long, boolean, String)} already puts
+   * through the full check. The administrator edits the row, which is checked
+   * too, and turns it on — the check is never bypassed, only deferred to the
+   * person who knows the address.</li>
+   * </ul>
+   *
+   * <p>
+   * This governs a <b>fresh</b> registry and nothing else. The guard below is
+   * the whole upgrade story: a deployment that already holds rows returns
+   * before any of this runs, so an install that has been serving its users for
+   * months does not find its servers deactivated — or judged at all — by
+   * taking this version.
    */
   protected void seedDefaultServers() {
     if (caldavServerStorage.countServers() > 0) {
@@ -200,7 +256,13 @@ public class CaldavServerService {
     if (StringUtils.isBlank(stalwartUrl)) {
       stalwartUrl = DEFAULT_STALWART_URL;
     }
-    boolean stalwartActive = !StringUtils.equalsIgnoreCase(System.getProperty(CALDAV_ENABLED_PROPERTY), "false");
+    // The address check runs FIRST, and unconditionally: a deployment holding
+    // an unvalidatable registration has to say so at boot whatever the legacy
+    // enabled property says. Ordering the operands the other way round would
+    // let `enabled=false` short-circuit the warning away, and the row would be
+    // off for a reason nobody could read.
+    boolean stalwartActive = isDeclarableSeedAddress(STALWART_SERVER_NAME, stalwartUrl)
+        && !StringUtils.equalsIgnoreCase(System.getProperty(CALDAV_ENABLED_PROPERTY), "false");
     caldavServerStorage.createSeedServer(new CaldavServer(0, null, STALWART_SERVER_NAME, null, stalwartUrl, stalwartActive, null, null,
                                                           null, null, true, null, null, null, null, null,
                                                           MirrorTargetKind.DEDICATED_CALENDAR),
@@ -213,40 +275,53 @@ public class CaldavServerService {
     saveAgendaRemoteProvider(new CaldavServer(0, CALDAV_PROVIDER_NAME, STALWART_SERVER_NAME, null, stalwartUrl, stalwartActive, null,
                                               null, null, null, true, null, null, null, null, null,
                                               MirrorTargetKind.DEDICATED_CALENDAR));
-    LOG.info("Seeded the Stalwart CalDAV server ({})", stalwartUrl);
-    warnAboutSeededUrl(STALWART_SERVER_NAME, stalwartUrl);
+    LOG.info("Seeded the Stalwart CalDAV server ({}), active: {}", stalwartUrl, stalwartActive);
+    boolean bluemindActive = isDeclarableSeedAddress(BLUEMIND_SERVER_NAME, DEFAULT_BLUEMIND_URL);
     CaldavServer bluemind = caldavServerStorage.createServer(new CaldavServer(0, null, BLUEMIND_SERVER_NAME, null, DEFAULT_BLUEMIND_URL,
-                                                                              true, null, null, null, null, true, null,
+                                                                              bluemindActive, null, null, null, null, true, null,
                                                                               null, null, null, null,
                                                                               MirrorTargetKind.DEDICATED_CALENDAR),
                                                              CALDAV_PROVIDER_NAME);
     saveAgendaRemoteProvider(bluemind);
-    LOG.info("Seeded the Bluemind CalDAV server ({})", DEFAULT_BLUEMIND_URL);
-    warnAboutSeededUrl(BLUEMIND_SERVER_NAME, DEFAULT_BLUEMIND_URL);
+    LOG.info("Seeded the Bluemind CalDAV server ({}), active: {}", DEFAULT_BLUEMIND_URL, bluemindActive);
   }
 
   /**
-   * Says out loud, at boot, that a row just seeded carries an address an
-   * administrator would not be allowed to type — and which configuration
-   * property would make it acceptable.
+   * Whether a row about to be seeded may arrive switched on: it may exactly
+   * when its address passes the check an administrator's would (EXO-89774) —
+   * and when it does not, says so at boot, naming the address, the reason and
+   * the properties that would settle it.
    *
    * <p>
-   * This exists so the gap between the seed and the administration screen is
-   * visible in the log rather than discovered the first time somebody edits a
-   * seeded row and is refused for a reason the screen alone cannot explain.
-   * The warning never changes what is seeded.
+   * One method rather than two deliberately. The activation and the warning
+   * are the same judgement, and when they were separate — a gate that did not
+   * exist, and a warning that only described the gap — the seed could ship
+   * active while the log said the address would be refused. Reading the answer
+   * once, here, is what keeps the two from ever disagreeing again.
    *
-   * @param name display name of the seeded row, for the log line
-   * @param url address the row was seeded with
+   * <p>
+   * The warning survives the gate rather than being replaced by it, and that
+   * matters: a deployment now holds a registration it cannot use, and the
+   * administrator has to be able to find out why from the boot log rather than
+   * from a connector that silently never appears. The check is not the
+   * administration screen's to explain — the row is inactive before anyone
+   * opens it.
+   *
+   * @param name display name of the row being seeded, for the log line
+   * @param url address the row is being seeded with
+   * @return true when the address passes and the row may be seeded active
    */
-  private void warnAboutSeededUrl(String name, String url) {
+  private boolean isDeclarableSeedAddress(String name, String url) {
     try {
       caldavServerUrlValidator.validate(url);
+      return true;
     } catch (IllegalArgumentException e) {
-      LOG.warn("The seeded CalDAV server {} carries the address {}, which an administrator would be refused ({}). "
-          + "Editing or re-activating this row from the administration screen will be refused until the deployment "
-          + "opts in through exo.agenda.caldav.server.allowedSchemes / allowedPorts / allowedHosts / "
-          + "allowPrivateAddresses.", name, url, e.getMessage());
+      LOG.warn("The seeded CalDAV server {} carries the address {}, which the platform must not be made to connect to ({}), "
+          + "so the row is seeded INACTIVE: no user is offered it and nothing is driven at it. Replace the address from the "
+          + "administration screen and switch the row on, or — if that address is the one this deployment means — opt in "
+          + "through exo.agenda.caldav.server.allowedSchemes / allowedPorts / allowedHosts / allowPrivateAddresses. "
+          + "Editing and activating the row both go through the same check.", name, url, e.getMessage());
+      return false;
     }
   }
 
