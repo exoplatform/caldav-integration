@@ -86,23 +86,60 @@ Tuning properties (defaults in parentheses):
   named ahead of time.
 
 For the **local development rig**, whose Stalwart server answers on
-`http://localhost:8888/dav/cal/{username}/`, all three of these are needed
-before that address can be declared or re-activated from the administration
-screen — one property per thing that is unusual about it:
+`http://localhost:8888/dav/cal/{username}/`, all four of these lines are
+needed — one property per thing that is unusual about that address, plus the
+line that names the address itself:
 
 ```
+exo.agenda.caldav.connector.url=http://localhost:8888/dav/cal/{username}/
 exo.agenda.caldav.server.allowedSchemes=https,http
 exo.agenda.caldav.server.allowedPorts=80,443,8888
 exo.agenda.caldav.server.allowedHosts=localhost
 ```
 
-The two rows seeded into an empty registry at startup (Stalwart from
-`exo.agenda.caldav.connector.url`, and Bluemind) are product bootstrap rather
-than administrator input and are **not** gated by this check — the Stalwart
-default points at the rig by design and the Bluemind row ships a placeholder
-host. When a seeded address would not pass, the boot log says so and names the
-property; the first edit or re-activation of that row from the administration
-screen then goes through the full check like any other write.
+With those set, the rig's address passes the check, so the Stalwart row is
+seeded **active** and everything works as it always did. Without them the rig
+does not work — which is the point: it is reached because the deployment said
+so, not because the product shipped a default pointing at it.
+
+### What a fresh install seeds, and in what state
+
+Two rows are seeded into an **empty** registry at startup: Stalwart (from
+`exo.agenda.caldav.connector.url` when set) and Bluemind. They are the
+pre-filled form an administrator edits, not a working configuration.
+
+**A seeded row is switched on only when its address passes the same check an
+administrator's would.** Until [EXO-89794] seeding was exempt from the check
+altogether, which left exactly the loophole the check exists to close: a fresh
+install shipped an **active** registration at
+`http://localhost:8888/dav/cal/{username}/`, so a connected user could drive
+the relay's allowed verbs at loopback through a row nobody had typed. Neither
+the check nor the seeds were the thing to drop; what had to go is the row
+arriving switched on without ever meeting the check.
+
+So today:
+
+- An address the deployment **named and vouched for** — through
+  `exo.agenda.caldav.connector.url`, plus whichever of the four properties
+  above that address needs — passes, and the row is seeded active, exactly as
+  before. The rig above is this case.
+- Anything else is seeded **inactive**. Both shipped placeholder addresses
+  (`https://stalwart.example.invalid/…` and `https://caldav.example.invalid/dav/`)
+  are RFC 2606 `.invalid` names that can never resolve, so they can never be a
+  live target and they fail the check by construction. The boot log says so,
+  naming the address, the reason and the properties that would settle it.
+  Nobody is offered the connector; nothing is driven at it.
+
+An inactive seed is not a dead end: the administrator edits the row (checked)
+and switches it on (checked too — activation has been a validated write since
+[EXO-89774]). The check is never bypassed, only deferred to the person who
+actually knows the address.
+
+**Upgrades touch nothing.** All of the above governs a *fresh* registry only:
+a deployment that already holds rows is never seeded again, so an install that
+has been serving its users for months does not find its servers deactivated —
+or judged at all — by taking this version. An already-declared server is only
+ever re-judged when someone edits its address or switches it back on.
 
 
 ## Answering a meeting from your own calendar
