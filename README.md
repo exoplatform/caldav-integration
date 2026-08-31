@@ -149,3 +149,54 @@ Two limits are worth knowing:
 The following providers was tested and validated with this caldav-integration addon
 
 04/01/2024 - MDaemon
+
+
+## Answering a meeting from a copy in the dedicated calendar
+
+Where the meeting copies go to eXo's own `exo-meetings` collection — the
+**default** destination — that collection is deliberately never brought into eXo
+as a calendar: it holds copies of meetings the user already has, and importing
+it would show every one of them twice. The consequence, until now, was that
+**nothing read those copies at all**. An answer given on one of them reached eXo
+only where the calendar server moves the object's version when a client writes;
+on a server that records an answer without moving it, the answer stayed on the
+copy for ever.
+
+The mirror pass now asks that collection what has changed since it last asked —
+an RFC 6578 sync report, the same evidence the ordinary calendars are read
+with — and reads the owner's participation off the objects it names. It reads
+**only** that: no calendar is created, no event is imported, nothing is written
+to the server.
+
+What it costs, so that nobody is surprised by it:
+
+* one report per account per sweep, which answers with an empty list on a
+  collection where nothing has happened;
+* one fetch per copy eXo itself writes, once, on the sweep after the write —
+  eXo's own push is a change the report reports, and no signal tells it from a
+  client's. Those copies carry "needs action" and yield no answer;
+* nothing at all on a server whose copies land in the account's own calendar,
+  where that calendar is read through its own binding and the answers are
+  already picked up there.
+
+`exo.agenda.caldav.mirror.answers.maxPerPass` (default 100) caps how many
+objects one pass fetches, for the one burst that is not ordinary: the first
+sweep after a newly connected account is given its backlog of copies.
+
+### After upgrading
+
+The read is forward-looking. The first pass on each account takes the
+collection's sync token **without** reading anything, and every pass after it
+reads only what changed since — so an answer given on a copy *before* the
+upgrade is not recovered by it. Answering again in eXo, or in the calendar,
+records it.
+
+### A copy that is left as it is
+
+When an administrator changes a setting that governs the copies, every copy is
+compared once against what eXo would write now and rewritten if it differs. A
+copy carrying an answer eXo does not hold is **left alone** instead: on a server
+that answers without moving the version there is no way to tell that answer from
+eXo's own earlier writing, and rewriting it would destroy the only record of it.
+Such a copy keeps the settings it was written with until its answer is read, and
+the log names it.
