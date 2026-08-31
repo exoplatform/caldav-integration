@@ -102,13 +102,21 @@ public class CaldavReadRest {
   /**
    * Synchronises the connected account now, whatever the throttle says.
    *
+   * <p>
+   * Answers on the calendars, not on the copies. The outward work this starts —
+   * settling what eXo owes, seeding what was never given, reading the copies
+   * back — runs on a thread of its own and is not waited for, so a 204 means
+   * the calendars are in step and the copies are being seen to, not that they
+   * have been.
+   *
    * @return an empty 204
    */
   @PostMapping("/sync")
   @Secured("users")
   @Operation(summary = "Synchronises the connected CalDAV account now",
       description = "Bypasses the throttle: a user pressing this has a reason the throttle cannot know — they just "
-          + "changed something on another device and want to see it.")
+          + "changed something on another device and want to see it. Answers once the calendars are in step; the "
+          + "copies are settled, seeded and verified on a background thread this starts and does not wait for.")
   @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Synchronisation ran") })
   public ResponseEntity<Void> syncNow() {
     caldavSyncService.syncNowAndWait(currentUser(), CaldavConnectorUtils.getCurrentUser());
