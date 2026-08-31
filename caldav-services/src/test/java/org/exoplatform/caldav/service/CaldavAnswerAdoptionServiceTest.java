@@ -17,6 +17,8 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -183,6 +185,50 @@ public class CaldavAnswerAdoptionServiceTest {
                                           object("ATTENDEE;PARTSTAT=DECLINED:MAILTO:" + EMAIL.toUpperCase()));
 
     assertEquals(Outcome.ADOPTED, outcome);
+  }
+
+  /**
+   * The question a caller asks before overwriting a copy (EXO-89814).
+   */
+  @Test
+  public void aCopyStatingAnAnswerAgendaDoesNotHoldMustNotBeWrittenOver() throws Exception {
+    // The whole of the second half of EXO-89814. A settings round removes the
+    // ETag gate and repairs every copy whose content differs; on a server that
+    // records an answer without moving the ETag, that difference IS the answer,
+    // and the repair writes eXo's render straight over the only record of it.
+    when(agendaEventAttendeeService.getEventResponse(EVENT, null, USER)).thenReturn(EventAttendeeResponse.NEEDS_ACTION);
+
+    assertTrue(service.holdsUnrecordedAnswer(USER, EVENT, object("ATTENDEE;PARTSTAT=ACCEPTED:mailto:" + EMAIL)));
+  }
+
+  @Test
+  public void aCopyEXoHasJustWrittenHoldsNothingToLose() {
+    // Every copy eXo pushes carries NEEDS-ACTION until somebody answers, and a
+    // settings round meets all of them. Reading those as "an answer at risk"
+    // would hold back the repair of every copy on the account and strand the
+    // setting the round exists to apply.
+    assertFalse(service.holdsUnrecordedAnswer(USER, EVENT, object("ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:" + EMAIL)));
+  }
+
+  @Test
+  public void aCopyStatingTheAnswerAgendaAlreadyHoldsHoldsNothingToLose() throws Exception {
+    when(agendaEventAttendeeService.getEventResponse(EVENT, null, USER)).thenReturn(EventAttendeeResponse.ACCEPTED);
+
+    assertFalse(service.holdsUnrecordedAnswer(USER, EVENT, object("ATTENDEE;PARTSTAT=ACCEPTED:mailto:" + EMAIL)));
+  }
+
+  @Test
+  public void askingWhetherAnAnswerWouldBeLostRecordsNothing() throws Exception {
+    // Asked on the way to refusing a write, so it must not itself become one.
+    // An exceptional occurrence materialised here, or a response sent, would
+    // make the guard a writer — and this is the path a settings round walks
+    // over every copy of an account at once.
+    when(agendaEventAttendeeService.getEventResponse(EVENT, null, USER)).thenReturn(EventAttendeeResponse.NEEDS_ACTION);
+
+    service.holdsUnrecordedAnswer(USER, EVENT, object("ATTENDEE;PARTSTAT=DECLINED:mailto:" + EMAIL));
+
+    verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any());
+    verify(agendaEventService, never()).saveEventExceptionalOccurrence(anyLong(), any());
   }
 
   @Test

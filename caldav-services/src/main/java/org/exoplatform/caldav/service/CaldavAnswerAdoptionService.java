@@ -177,6 +177,107 @@ public class CaldavAnswerAdoptionService {
   }
 
   /**
+   * Whether a copy carries an answer of the owner's that agenda does not hold
+   * (EXO-89814) — asked, and answered, without recording anything.
+   *
+   * <p>
+   * <b>What it is for.</b> The caller is about to <i>overwrite</i> the copy —
+   * a settings round repairing a copy whose content differs while its version
+   * never moved — and needs to know whether doing so would destroy the only
+   * record of an answer. That is a different question from
+   * {@link #adoptAnswer(long, long, String)}: adopting needs the direction
+   * proven and this does not, because refusing to write is safe whichever way
+   * the difference runs.
+   *
+   * <p>
+   * The same three refusals apply and are the whole of the answer's meaning:
+   * a line that is not the owner's is not theirs to answer on, NEEDS-ACTION is
+   * not an answer, and an answer agenda already holds is not one at risk. So a
+   * copy eXo has just written — every one of which carries NEEDS-ACTION until
+   * somebody answers — reads as holding nothing, which is what keeps a settings
+   * round doing its work on the copies that have nothing to lose.
+   *
+   * <p>
+   * Occurrences are read as the series is: an override carrying a
+   * RECURRENCE-ID states an answer to one instance, and losing that is the same
+   * loss. It is compared against the response agenda gives for that occurrence,
+   * exceptional or not, which is the same reading {@link #adoptOnOccurrence}
+   * does before deciding there is nothing to record.
+   *
+   * <p>
+   * Reads only. Nothing here creates an exceptional occurrence or sends a
+   * response — a question asked on the way to refusing a write must not itself
+   * change what agenda holds.
+   *
+   * @param userIdentityId identity of the account's owner
+   * @param localEventId the agenda event the copy's mapping row names
+   * @param remoteIcs the copy as the server holds it
+   * @return true when the copy states an answer of the owner's that agenda does
+   *         not already hold
+   */
+  public boolean holdsUnrecordedAnswer(long userIdentityId, long localEventId, String remoteIcs) {
+    String email = ownEmail(userIdentityId);
+    CaldavUserSetting account = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    String accountAddress = account == null ? null : StringUtils.trimToNull(account.getUsername());
+    if (StringUtils.isBlank(email) && StringUtils.isBlank(accountAddress)) {
+      return false;
+    }
+    List<IcsEvent> parsed = icsParser.parse(remoteIcs);
+    if (parsed.isEmpty()) {
+      return false;
+    }
+    long seriesId = seriesIdOf(localEventId);
+    if (seriesId <= 0) {
+      return false;
+    }
+    try {
+      for (IcsEvent component : parsed) {
+        EventAttendeeResponse answer = answerOf(component, email, accountAddress);
+        if (answer != null && answer != recordedAnswer(userIdentityId, seriesId, component)) {
+          return true;
+        }
+      }
+    } catch (Exception e) { // NOSONAR agenda declares several checked exceptions on this path
+      // Agenda could not say what it holds, so nothing can be concluded about
+      // what would be lost. Refusing the write is the safe reading of a
+      // question that could not be answered: an unrepaired copy costs a
+      // setting, a repaired one can cost an answer.
+      LOG.debug("What agenda holds for event {} could not be read; the copy is treated as carrying an answer",
+                localEventId,
+                e);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * The answer agenda holds for the meeting one component stands for.
+   *
+   * @param userIdentityId identity of the account's owner
+   * @param seriesId the agenda event the master component stands for
+   * @param component the parsed component, master or override
+   * @return the recorded response, or null when there is none to read
+   * @throws Exception when agenda refuses the read
+   */
+  private EventAttendeeResponse recordedAnswer(long userIdentityId,
+                                               long seriesId,
+                                               IcsEvent component) throws Exception { // NOSONAR
+    if (StringUtils.isBlank(component.getOccurrenceId())) {
+      return agendaEventAttendeeService.getEventResponse(seriesId, null, userIdentityId);
+    }
+    ZonedDateTime occurrenceId = icsEventMapper.occurrenceOf(component);
+    if (occurrenceId == null) {
+      // An override whose instance cannot be identified states an answer to
+      // nothing this can compare. Read as the series' own so it is not counted
+      // as a loss on its own.
+      return agendaEventAttendeeService.getEventResponse(seriesId, null, userIdentityId);
+    }
+    Event occurrence = agendaEventService.getExceptionalOccurrenceEvent(seriesId, occurrenceId);
+    return occurrence == null ? agendaEventAttendeeService.getEventResponse(seriesId, occurrenceId, userIdentityId)
+                              : agendaEventAttendeeService.getEventResponse(occurrence.getId(), null, userIdentityId);
+  }
+
+  /**
    * Records an answer against the series — or the single event, which agenda
    * treats the same way — when it differs from the one agenda already holds.
    *
