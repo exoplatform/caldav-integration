@@ -19,6 +19,7 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -42,9 +43,11 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
+import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.MkCalendarResult;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -387,6 +390,32 @@ public class CaldavOutboundServiceTest {
                                                                             .thenThrow(new org.exoplatform.caldav.client.CalDavException("unreachable"));
 
     assertTrue(service.bindPersonalCalendars(USER, LOGIN).isEmpty());
+  }
+
+  @Test
+  public void anUnreachableServerIsHandedBackToTheCallerRatherThanAbsorbed() {
+    // EXO-89806. Absorbed, this returned an empty list that reads exactly like
+    // "this account has no calendars", so the connection went on to establish
+    // the mirror, then synchronise, then read the mirror back — four more
+    // credential-bearing requests, each rediscovering the same absent server.
+    // A server that is not there is settled after one attempt, and the caller
+    // is the only party that can act on it.
+    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+                                                                            .thenThrow(new CalDavUnreachableException("gateway said 502"));
+
+    assertThrows(CalDavUnreachableException.class, () -> service.bindPersonalCalendars(USER, LOGIN));
+  }
+
+  @Test
+  public void refusedCredentialsAreHandedBackToTheCallerRatherThanAbsorbed() {
+    // EXO-89806, and the older bug it uncovers: CalDavAuthenticationException
+    // is a CalDavException, so absorbing the parent here swallowed it too —
+    // the pass's own "pause this account rather than retry a stale password"
+    // branch could never fire from the first step that meets the server.
+    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString()))
+                                                                            .thenThrow(new CalDavAuthenticationException("401"));
+
+    assertThrows(CalDavAuthenticationException.class, () -> service.bindPersonalCalendars(USER, LOGIN));
   }
 
   @Test
