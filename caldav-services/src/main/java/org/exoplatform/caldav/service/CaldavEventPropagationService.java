@@ -451,7 +451,7 @@ public class CaldavEventPropagationService {
    * because a meeting that disappears is indistinguishable from a
    * synchronisation that broke.
    *
-   * <h2>An edit can make a meeting stop deserving a copy</h2>
+   * <h4>An edit can make a meeting stop deserving a copy</h4>
    *
    * <p>
    * Adding a second date option to a confirmed meeting turns it back into a
@@ -477,7 +477,7 @@ public class CaldavEventPropagationService {
    * reason: the set describes what moved, and what matters here is where the
    * event ended up.
    *
-   * <h2>And a confirmation can make one start deserving it</h2>
+   * <h4>And a confirmation can make one start deserving it</h4>
    *
    * <p>
    * The other direction is not symmetrical and cannot be. When a poll is
