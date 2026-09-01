@@ -235,6 +235,9 @@ public class CaldavEventPropagationService {
   private CaldavPendingInvitationService                       caldavPendingInvitationService;
 
   @Autowired
+  private CaldavCopyPolicy                                     caldavCopyPolicy;
+
+  @Autowired
   private CaldavPendingPushStorage                             caldavPendingPushStorage;
 
   /**
@@ -448,14 +451,54 @@ public class CaldavEventPropagationService {
    * because a meeting that disappears is indistinguishable from a
    * synchronisation that broke.
    *
+   * <h2>An edit can make a meeting stop deserving a copy</h2>
+   *
+   * <p>
+   * Adding a second date option to a confirmed meeting turns it back into a
+   * date poll — {@code AgendaEventServiceImpl.updateEvent} calls
+   * {@code checkAndComputeDateOptions}, which sets {@code TENTATIVE} and
+   * stretches the event over the envelope of the options — and that is
+   * reachable from the REST API, not only from the poll screen. So the copies
+   * written while it was a meeting have to be <b>retired</b>, not rewritten:
+   * rewriting one would replace a real meeting on somebody's calendar with the
+   * multi-day block {@link CaldavCopyPolicy} exists to keep off it. Refusing
+   * new writes in the push core is what stops a poll acquiring a copy; this is
+   * what takes away the copy it already had.
+   *
+   * <p>
+   * Asked <b>before</b> {@link #worthCarrying}, deliberately. What agenda
+   * broadcasts when date options are added is
+   * {@code DATE_OPTION_CREATED} — which is on the invisible list, because for a
+   * poll that stays a poll an option inside the envelope changes nothing a copy
+   * states. Asking the cheap question first would therefore have made the one
+   * edit that must retire a copy the one edit this method returns early from,
+   * and the retirement would never have run. The status is read from the event
+   * itself rather than inferred from the modification set for exactly that
+   * reason: the set describes what moved, and what matters here is where the
+   * event ended up.
+   *
+   * <h2>And a confirmation can make one start deserving it</h2>
+   *
+   * <p>
+   * The other direction is not symmetrical and cannot be. When a poll is
+   * confirmed, <b>nobody holds a copy</b> — none was ever written — so there is
+   * nothing for a rewrite to reach, and the loop below would count zero and
+   * stop. The confirmation is therefore seeded like a creation. See
+   * {@link #seedConfirmedPoll(long, Event)} for what it is keyed on, which is
+   * the one detail in this whole change that fails silently if it is got wrong.
+   *
    * @param eventId the agenda event that was edited
    * @param modificationTypes what agenda says moved, as the broadcast carried
    *          it; null or empty is treated as "something did"
-   * @return how many copies were rewritten
+   * @return how many copies were rewritten, removed, or newly written
    */
   public int propagateUpdate(long eventId, Set<AgendaEventModificationType> modificationTypes) {
     if (eventId <= 0) {
       return 0;
+    }
+    Event event = readEvent(eventId);
+    if (!caldavCopyPolicy.mayHoldCopy(event)) {
+      return retireCopies(eventId);
     }
     if (!worthCarrying(modificationTypes)) {
       LOG.debug("Event {} changed only in ways a calendar copy cannot show ({}); no copy is rewritten",
@@ -465,6 +508,10 @@ public class CaldavEventPropagationService {
     }
     Map<Long, ObjectSync> holders = holdersOf(eventId, true);
     if (holders.isEmpty()) {
+      if (modificationTypes != null
+          && modificationTypes.contains(AgendaEventModificationType.SWITCHED_DATE_POLL_TO_EVENT)) {
+        return seedConfirmedPoll(eventId, event);
+      }
       LOG.debug("Event {} was edited but nobody holds a copy of it; nothing to carry out", eventId);
       return 0;
     }
@@ -483,6 +530,147 @@ public class CaldavEventPropagationService {
     }
     LOG.info("Event {} was edited; its copy was rewritten for {} of {} holders", eventId, carried, holders.size());
     return carried;
+  }
+
+  /**
+   * The event as agenda holds it now, or null when it cannot be read.
+   *
+   * <p>
+   * Read without a viewer, like the seeding pass does: this is asked to decide
+   * what happens to <b>other people's</b> copies, so there is no one user whose
+   * visibility the answer should depend on, and the alternative — reading it
+   * once per holder — would ask agenda the same question fifty times to get
+   * fifty identical answers.
+   *
+   * <p>
+   * A failure to read is not allowed to break the fan-out, and answers null
+   * rather than throwing: the caller treats null as "this says nothing", which
+   * leaves an edit to be carried as an ordinary edit. That is the safe
+   * direction — the mirror sweep retires a poll's copy on its own pass, so an
+   * unreadable event costs a wasted rewrite and a few minutes, where the other
+   * direction would retire copies of live meetings whenever agenda hiccupped.
+   *
+   * @param eventId the agenda event
+   * @return the event, or null when agenda could not answer for it
+   */
+  private Event readEvent(long eventId) {
+    try {
+      return agendaEventService.getEventById(eventId);
+    } catch (Exception | LinkageError e) {
+      LOG.debug("Event {} could not be read; its copies are treated as an ordinary edit", eventId, e);
+      return null;
+    }
+  }
+
+  /**
+   * Takes away every copy of an event that may no longer hold one.
+   *
+   * <p>
+   * The same machinery a deletion uses, and on purpose: what the holder's
+   * calendar has to end up with is identical — no entry — and the only
+   * difference is that eXo still holds the event. So the obligation recorded is
+   * a {@link PendingPushKind#REMOVE} like any other, settled by the same retry
+   * and satisfied by the same {@link #removeOne} — which means a holder whose
+   * server is down when a poll is created out of a meeting has the copy taken
+   * away on the next sweep instead of never.
+   *
+   * <p>
+   * The series is resolved, as it is for an edit: an override and its series
+   * share one object, so an override that became a poll names a copy filed
+   * under the series' identity.
+   *
+   * <p>
+   * A tombstone is not written here, unlike a cancellation. A cancelled meeting
+   * still happened and its attendees have to be told it is off; a meeting that
+   * became a poll is being <i>re-planned</i>, and the people invited are about
+   * to be asked to vote on it in eXo. Leaving {@code STATUS:CANCELLED} on their
+   * calendars would announce a cancellation that is not one.
+   *
+   * @param eventId the agenda event whose copies must go
+   * @return how many copies were removed
+   */
+  private int retireCopies(long eventId) {
+    Map<Long, ObjectSync> holders = holdersOf(eventId, true);
+    if (holders.isEmpty()) {
+      LOG.debug("Event {} may hold no copy, and nobody holds one of it; nothing to retire", eventId);
+      return 0;
+    }
+    // Recorded before any of them is attempted, for the reason propagateUpdate
+    // and propagateDeletion both give: a thread that dies at the third of fifty
+    // holders must leave the other forty-seven owed a removal.
+    for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
+      owe(holder.getValue(), holder.getKey(), PendingPushKind.REMOVE, null);
+    }
+    int removed = 0;
+    for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
+      ObjectSync mapping = holder.getValue();
+      if (removeOne(holder.getKey(), mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref())) {
+        // At INFO and one line per copy, deliberately: this is the line an
+        // administrator watching the first sweep after the deploy is looking
+        // for, and a per-pass total would tell them how many without telling
+        // them which.
+        LOG.info("Event {} became a date poll; the copy held by user {} has been retired",
+                 eventId,
+                 holder.getKey());
+        removed++;
+      }
+    }
+    LOG.info("Event {} may hold no copy; it was retired for {} of {} holders", eventId, removed, holders.size());
+    return removed;
+  }
+
+  /**
+   * Writes the copies of a date poll that has just become a real meeting.
+   *
+   * <h2>Keyed on {@code SWITCHED_DATE_POLL_TO_EVENT}, and on nothing else</h2>
+   *
+   * <p>
+   * This is the one line of this change that breaks silently if it is wrong, so
+   * it is written down. Confirming a poll goes through
+   * {@code AgendaEventServiceImpl.selectEventDateOption}, which sets the event
+   * {@code CONFIRMED} and broadcasts exactly three modification types:
+   * {@code UPDATED}, {@code DATE_OPTION_SELECTED} and
+   * {@code SWITCHED_DATE_POLL_TO_EVENT}. <b>There is no
+   * {@code STATUS_UPDATED}</b> — agenda has the constant, and does not put it
+   * in this broadcast (verified on {@code origin/develop} of
+   * {@code Meeds-io/agenda}, {@code AgendaEventServiceImpl}, the block ending
+   * in {@code Utils.broadcastEvent(listenerService, POST_UPDATE_AGENDA_EVENT_EVENT, ...)}).
+   * Keyed on {@code STATUS_UPDATED} this method would never run, no copy of a
+   * confirmed poll would ever be written, and nothing anywhere would say so:
+   * the feature would fail at exactly the moment it starts mattering.
+   * {@code UPDATED} cannot serve either — it accompanies every edit and is on
+   * the invisible list.
+   *
+   * <h2>Why it also closes a gap that predates this change</h2>
+   *
+   * <p>
+   * Before this, a confirmed poll reached its attendees' calendars only through
+   * the background seeding pass — so a poll confirmed for a date beyond that
+   * pass's upcoming window, or one confirmed for a date in the past, reached
+   * nobody at all, ever. Seeding here is window-free, because it is told about
+   * one event rather than looking for candidates.
+   *
+   * <p>
+   * The author of the confirmation is skipped, for the same reason
+   * {@link #propagateCreation(long, long)} skips a creation's author: their own
+   * browser pushes their copy on save, and both writers minting the same UID
+   * means the second one to record its mapping row dies on the uniqueness
+   * constraint — an ERROR with a stack trace on an ordinary path. Their
+   * identity is read from the event agenda has just stored, which carries it:
+   * {@code selectEventDateOption} does {@code event.setModifierId(userIdentityId)}
+   * before saving. What that costs is the same cost stated there: a
+   * confirmation made without a browser leaves its author's own copy to the
+   * seeding pass, which now writes it because the event is {@code CONFIRMED}.
+   *
+   * @param eventId the agenda event that has just stopped being a poll
+   * @param event the event as it now stands, never null here — the caller has
+   *          already asked the policy about it
+   * @return how many copies were written
+   */
+  private int seedConfirmedPoll(long eventId, Event event) {
+    long confirmedBy = event == null ? 0L : event.getModifierId();
+    LOG.info("Event {} was a date poll and has been confirmed; its copies are written now", eventId);
+    return propagateCreation(eventId, confirmedBy);
   }
 
   /**

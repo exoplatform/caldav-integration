@@ -46,6 +46,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -112,6 +113,15 @@ public class CaldavPendingInvitationServiceTest {
 
   @Mock
   private CaldavSyncStorage              caldavSyncStorage;
+
+  /**
+   * The real rule rather than a mock, and deliberately so: what a copy may
+   * stand for is one decision this suite has to exercise, not stage. A mocked
+   * policy would answer whatever the test told it to and prove nothing about
+   * the event statuses these scenarios actually build.
+   */
+  @Spy
+  private CaldavCopyPolicy              caldavCopyPolicy = new CaldavCopyPolicy();
 
   @InjectMocks
   private CaldavPendingInvitationService service;

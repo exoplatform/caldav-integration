@@ -17,6 +17,7 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -59,6 +60,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.agenda.constant.AgendaEventModificationType;
+import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
 import org.exoplatform.agenda.model.EventAttendeeList;
@@ -107,6 +109,33 @@ public class CaldavEventPropagationServiceTest {
   /** How many refusals the retry argues with before it gives up, under test. */
   private static final int                      MAX_ATTEMPTS = 3;
 
+  /**
+   * The exact set agenda broadcasts when a date poll is confirmed.
+   *
+   * <p>
+   * Copied from {@code AgendaEventServiceImpl.selectEventDateOption} on
+   * {@code origin/develop} of {@code Meeds-io/agenda}, which builds
+   * {@code modificationTypes} out of these three and nothing else before
+   * {@code Utils.broadcastEvent(listenerService, POST_UPDATE_AGENDA_EVENT_EVENT, ...)}.
+   * Written out here rather than approximated, because the whole confirmation
+   * leg is keyed on what is in this set — and what is <b>not</b> in it,
+   * {@code STATUS_UPDATED}, is the mistake that would make a confirmed poll
+   * reach nobody, silently, for ever.
+   */
+  private static final Set<AgendaEventModificationType> A_POLL_CONFIRMATION =
+                                                                            EnumSet.of(AgendaEventModificationType.UPDATED,
+                                                                                       AgendaEventModificationType.DATE_OPTION_SELECTED,
+                                                                                       AgendaEventModificationType.SWITCHED_DATE_POLL_TO_EVENT);
+
+  /**
+   * What agenda broadcasts when date options are added to an event that was a
+   * meeting — every one of them on the invisible list, which is exactly why
+   * the retirement is asked before that list is consulted.
+   */
+  private static final Set<AgendaEventModificationType> AN_EDIT_A_COPY_CANNOT_SHOW =
+                                                                            EnumSet.of(AgendaEventModificationType.UPDATED,
+                                                                                       AgendaEventModificationType.DATE_OPTION_CREATED);
+
   private static final Set<AgendaEventModificationType> A_REAL_EDIT =
                                                                     EnumSet.of(AgendaEventModificationType.UPDATED,
                                                                                AgendaEventModificationType.START_DATE_UPDATED);
@@ -142,6 +171,15 @@ public class CaldavEventPropagationServiceTest {
    */
   @Spy
   private CaldavPendingPushStorage              caldavPendingPushStorage = new InMemoryPendingPushStorage();
+
+  /**
+   * The real rule rather than a mock, and deliberately: whether an event may
+   * hold a copy is what decides between a rewrite and a retirement here, and a
+   * mocked policy would answer whatever a test told it to rather than what the
+   * event's status actually says.
+   */
+  @Spy
+  private CaldavCopyPolicy                      caldavCopyPolicy = new CaldavCopyPolicy();
 
   @InjectMocks
   private CaldavEventPropagationService         service;
@@ -343,6 +381,243 @@ public class CaldavEventPropagationServiceTest {
                                                     AgendaEventModificationType.STATUS_UPDATED)));
 
     verify(caldavPushService).pushAgendaEvent(ALICE, EVENT);
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
+  }
+
+  // ------------------------------------------------- date polls (EXO-89863)
+
+  /**
+   * The case that makes "just do not write it" insufficient.
+   *
+   * <p>
+   * A confirmed meeting can <b>become</b> a date poll: adding a second date
+   * option through {@code updateEvent} sends it back to {@code TENTATIVE} and
+   * stretches it over the envelope of the options. The copies written while it
+   * was a meeting are then standing for something a calendar must not show, so
+   * they are taken away rather than rewritten — rewriting one would put the
+   * multi-day block on the holder's calendar, which is the entry this whole
+   * change exists to prevent.
+   */
+  @Test
+  public void aMeetingThatBecomesADatePollHasItsCopiesRetired() {
+    givenTheEventIs(EventStatus.TENTATIVE);
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+
+    assertEquals(2, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPushService).deleteEvent(ALICE, "uid-8801");
+    verify(caldavPushService).deleteEvent(BOB, "uid-8801");
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+  }
+
+  /**
+   * The ordering decision, pinned.
+   *
+   * <p>
+   * Agenda broadcasts {@code DATE_OPTION_CREATED} when options are added, and
+   * that type is on the invisible list — for a poll that stays a poll it
+   * genuinely changes nothing a copy states. Asked in the order the method used
+   * to run in, the cheap "is this worth carrying" question would return early
+   * on precisely the edit that has to retire a copy, and the retirement would
+   * never happen. Nothing else in the suite would have noticed.
+   */
+  @Test
+  public void aRetirementIsNotSkippedByAnEditNoCopyCanShow() {
+    givenTheEventIs(EventStatus.TENTATIVE);
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+
+    assertEquals(1, service.propagateUpdate(EVENT, AN_EDIT_A_COPY_CANNOT_SHOW));
+
+    verify(caldavPushService).deleteEvent(ALICE, "uid-8801");
+  }
+
+  /**
+   * A retirement a server refused is owed as a removal, and settled by the same
+   * retry every other removal goes through. Without it, a holder whose account
+   * was down when the poll appeared would keep the multi-day block for ever.
+   */
+  @Test
+  public void aRetirementThatFailsStaysOwedAsARemoval() {
+    givenTheEventIs(EventStatus.TENTATIVE);
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    org.mockito.Mockito.doThrow(new CaldavPushException(CaldavPushService.SAVE, "alice's server is down"))
+                       .when(caldavPushService)
+                       .deleteEvent(ALICE, "uid-8801");
+
+    assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    assertEquals(PendingPushKind.REMOVE, onlyObligationOf(ALICE).getKind(), "a retirement is a removal, not a rewrite");
+  }
+
+  /**
+   * One line per retired copy, at INFO. An administrator watching the first
+   * sweep after this deploy is looking for exactly this: which copies went, on
+   * whose account — a per-pass total would say how many without saying which.
+   */
+  @Test
+  public void everyRetiredCopyIsAnnouncedOnceAtInfo() {
+    givenTheEventIs(EventStatus.TENTATIVE);
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+
+    List<ILoggingEvent> announced;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      service.propagateUpdate(EVENT, A_REAL_EDIT);
+      announced = log.events()
+                     .stream()
+                     .filter(recorded -> recorded.getFormattedMessage().contains("has been retired"))
+                     .toList();
+    }
+
+    assertEquals(2, announced.size(), "one line per copy, not one line per pass");
+    assertTrue(announced.stream().allMatch(recorded -> recorded.getLevel() == Level.INFO),
+               "a migration an administrator is meant to watch cannot be at debug");
+  }
+
+  /**
+   * The other half of the rule, and the one a careless guard destroys. A
+   * cancelled meeting keeps its copy and has it rewritten: the copy carrying
+   * {@code STATUS:CANCELLED} is the only place its attendees are still told the
+   * meeting is off, because eXo hides a cancelled event from its own screens.
+   */
+  @Test
+  public void aCancelledMeetingKeepsItsTombstoneAndHasItRewritten() {
+    givenTheEventIs(EventStatus.CANCELLED);
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT);
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
+  }
+
+  /**
+   * The confirmation leg, on the exact broadcast agenda makes.
+   *
+   * <p>
+   * Nobody holds a copy of a poll — none was ever written — so there is nothing
+   * for the rewrite loop to reach, and the meeting has to be seeded as though
+   * it had just been created. Keyed on {@code SWITCHED_DATE_POLL_TO_EVENT},
+   * which is what {@link #A_POLL_CONFIRMATION} carries and what agenda actually
+   * broadcasts.
+   */
+  @Test
+  public void aConfirmedDatePollIsSeededForEverybodyInvited() {
+    givenTheEventIs(EventStatus.CONFIRMED);
+    givenNoHolders();
+    givenInvited(user(ALICE), user(BOB));
+    when(caldavPendingInvitationService.seedMeeting(anyLong(), eq(EVENT))).thenReturn(true);
+
+    assertEquals(2, service.propagateUpdate(EVENT, A_POLL_CONFIRMATION));
+
+    verify(caldavPendingInvitationService).seedMeeting(ALICE, EVENT);
+    verify(caldavPendingInvitationService).seedMeeting(BOB, EVENT);
+  }
+
+  /**
+   * Whoever confirmed the poll is skipped, for the reason a creation's author
+   * is: their own browser pushes their copy on save, and both writers minting
+   * the same iCalendar UID means the second one to record its mapping row dies
+   * on the uniqueness constraint. Their identity is the modifier agenda stamped
+   * on the event when it stored the confirmation.
+   */
+  @Test
+  public void whoeverConfirmedThePollIsNotWrittenToTwice() {
+    Event confirmed = new Event();
+    confirmed.setId(EVENT);
+    confirmed.setStatus(EventStatus.CONFIRMED);
+    confirmed.setModifierId(AUTHOR);
+    when(agendaEventService.getEventById(EVENT)).thenReturn(confirmed);
+    givenNoHolders();
+    givenInvited(user(ALICE), user(AUTHOR));
+    when(caldavPendingInvitationService.seedMeeting(anyLong(), eq(EVENT))).thenReturn(true);
+
+    assertEquals(1, service.propagateUpdate(EVENT, A_POLL_CONFIRMATION));
+
+    verify(caldavPendingInvitationService).seedMeeting(ALICE, EVENT);
+    verify(caldavPendingInvitationService, never()).seedMeeting(AUTHOR, EVENT);
+  }
+
+  /**
+   * The fact the confirmation leg rests on, written down so that it is read
+   * rather than assumed.
+   *
+   * <p>
+   * {@code AgendaEventServiceImpl.selectEventDateOption} broadcasts
+   * {@code UPDATED}, {@code DATE_OPTION_SELECTED} and
+   * {@code SWITCHED_DATE_POLL_TO_EVENT}. It does <b>not</b> broadcast
+   * {@code STATUS_UPDATED}, although agenda has the constant and uses it
+   * elsewhere. A confirmation leg keyed on {@code STATUS_UPDATED} would
+   * therefore never run — no copy of a confirmed poll would ever be written,
+   * and nothing anywhere would report a failure. {@code UPDATED} cannot serve
+   * either: it accompanies every edit and is on the invisible list.
+   */
+  @Test
+  public void agendaDoesNotSayStatusUpdatedWhenAPollIsConfirmed() {
+    assertFalse(A_POLL_CONFIRMATION.contains(AgendaEventModificationType.STATUS_UPDATED),
+                "keyed on this, the confirmation leg would never run");
+    assertTrue(A_POLL_CONFIRMATION.contains(AgendaEventModificationType.SWITCHED_DATE_POLL_TO_EVENT),
+               "this is the only type in the broadcast that means 'it stopped being a poll'");
+  }
+
+  /**
+   * An ordinary edit of an event nobody holds a copy of still seeds nobody. The
+   * confirmation leg is a door for one broadcast, not a second creation path
+   * that any edit can walk through.
+   */
+  @Test
+  public void anOrdinaryEditOfAnUncopiedMeetingStillSeedsNobody() {
+    givenTheEventIs(EventStatus.CONFIRMED);
+    givenNoHolders();
+
+    assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPendingInvitationService, never()).seedMeeting(anyLong(), anyLong());
+  }
+
+  /**
+   * A confirmation whose event somebody already holds a copy of — a poll copy
+   * pushed before this change and not yet retired — is rewritten, not seeded a
+   * second time. Seeding on top of an existing mapping is how two writers end
+   * up minting the same UID.
+   */
+  @Test
+  public void aConfirmationOfAPollSomebodyStillHoldsIsRewrittenNotSeeded() {
+    givenTheEventIs(EventStatus.CONFIRMED);
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.propagateUpdate(EVENT, A_POLL_CONFIRMATION));
+
+    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT);
+    verify(caldavPendingInvitationService, never()).seedMeeting(anyLong(), anyLong());
+  }
+
+  /**
+   * An event agenda could not answer for is carried as an ordinary edit, never
+   * retired. The pass runs every few minutes and the other direction would
+   * delete live meetings from people's calendars on any agenda hiccup; the
+   * mirror sweep retires a genuine poll on its own pass anyway.
+   */
+  @Test
+  public void anEventThatCouldNotBeReadIsNotRetired() {
+    when(agendaEventService.getEventById(EVENT)).thenThrow(new IllegalStateException("agenda is unavailable"));
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
     verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
   }
 
@@ -1320,6 +1595,19 @@ public class CaldavEventPropagationServiceTest {
   }
 
   // ---------------------------------------------------------------- fixtures
+
+  /**
+   * Declares what agenda now holds for the edited event.
+   *
+   * @param status the status agenda stores — TENTATIVE for a date poll
+   */
+  private void givenTheEventIs(EventStatus status) {
+    Event event = new Event();
+    event.setId(EVENT);
+    event.setParentId(0);
+    event.setStatus(status);
+    when(agendaEventService.getEventById(EVENT)).thenReturn(event);
+  }
 
   /**
    * Declares who agenda says was invited to the created event.
