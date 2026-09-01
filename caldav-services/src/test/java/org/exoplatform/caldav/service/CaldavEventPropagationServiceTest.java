@@ -100,6 +100,28 @@ public class CaldavEventPropagationServiceTest {
 
   private static final long                     CAROL     = 33L;
 
+  private static final long                     DAVE      = 55L;
+
+  private static final long                     ERIN      = 66L;
+
+  private static final long                     FRANK     = 77L;
+
+  /**
+   * An exceptional occurrence of the meeting. Its copy lives under the series'
+   * identity, which is why answering it has to resolve the parent.
+   */
+  private static final long                     OCCURRENCE = 8802L;
+
+  /**
+   * The addresses that name the answerer on somebody <b>else's</b> copy.
+   *
+   * <p>
+   * Both spellings, most specific first, as {@code addressesNaming} offers
+   * them: a deployment holds copies written under either rule.
+   */
+  private static final List<String>             CAROL_ADDRESSES =
+                                                                List.of("carol@stalwart.local", "carol@example.org");
+
   /**
    * Whoever created the meeting. Never one of the identities a creation test
    * expects a copy for: their own copy is written by their browser, not here.
@@ -1592,6 +1614,450 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(0, caldavPendingPushStorage.owed(ALICE), "an unsatisfiable obligation is not recorded");
     verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
+  }
+
+  // -------------------------------------------- the answer fan-out, EXO-89868
+
+  /**
+   * The defect itself, seen live by Benjamin on 2026-09-01: an attendee's
+   * answer reaches the copies of the <b>other</b> attendees.
+   *
+   * <p>
+   * root created a meeting in a space and invited Benjamin; Benjamin accepted
+   * in macOS Calendar; eXo recorded it correctly in both agendas — and root's
+   * BlueMind copy never learned, because the only write an answer ever caused
+   * went to the answerer's own account.
+   */
+  @Test
+  public void anAnswerReachesTheCopiesOfTheOtherAttendees() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+
+    assertEquals(2, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"));
+    verify(caldavPushService).pushAnswerOnto(eq(BOB), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"));
+  }
+
+  /**
+   * The answerer's own copy is not written here.
+   *
+   * <p>
+   * Not an optimisation. {@code pushAnswer} writes it, off the same listener
+   * and on the same thread, and two conditional writes racing for one object
+   * would make one of them fail its If-Match — a conflict eXo inflicted on
+   * itself and then reported as a divergence.
+   */
+  @Test
+  public void theAnswerersOwnCopyIsNotWrittenByTheFanOut() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/carol/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, CAROL);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+
+    assertEquals(1, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), any(), any(), anyString());
+    verify(caldavPushService, never()).pushAnswerOnto(eq(CAROL), any(), any(), anyString());
+    assertEquals(0, caldavPendingPushStorage.owed(CAROL), "the answerer's own copy owes this fan-out nothing");
+  }
+
+  /**
+   * The write names the <b>answerer</b> on the <b>holder's</b> copy, and that
+   * crossing over is the whole mechanism.
+   *
+   * <p>
+   * Getting it the other way round is the original defect written a second
+   * time: it would rewrite each holder's own PARTSTAT to somebody else's
+   * answer, which is worse than doing nothing at all.
+   */
+  @Test
+  public void theWriteUsesTheAnswerersAddressesAndTheHoldersCopy() {
+    ObjectSync alicesCopy = mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics");
+    givenHolders(alicesCopy);
+    givenPair(100L, ALICE);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+
+    service.propagateAnswer(EVENT, CAROL, "DECLINED");
+
+    verify(caldavPushService).pushAnswerOnto(ALICE, alicesCopy, CAROL_ADDRESSES, "DECLINED");
+    // The holder's own addresses are never asked for: they name the wrong
+    // person on this object.
+    verify(caldavPushService, never()).addressesNaming(ALICE);
+  }
+
+  /**
+   * A mapping with no href is the tombstone a removal leaves, not a copy —
+   * the same guard the edit path rests on, and it has to hold here too or an
+   * answer re-creates on the server an object somebody deleted.
+   */
+  @Test
+  public void aTombstoneIsNotWrittenAnAnswer() {
+    givenHolders(mapping(1L, 100L, "uid-8801", null));
+    // The pair resolves perfectly well: only the missing href must stop this.
+    givenPair(100L, ALICE);
+    givenTheAnswererIsNamed(CAROL);
+
+    assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), any(), any(), anyString());
+    assertEquals(0, caldavPendingPushStorage.owed(ALICE), "a tombstone is owed nothing");
+  }
+
+  /**
+   * The reset to NEEDS-ACTION that follows a material edit is not fanned out.
+   *
+   * <p>
+   * Benjamin's decision, and the arithmetic behind it: the edit that caused
+   * the reset has already been carried to every copy by
+   * {@link CaldavEventPropagationService#propagateUpdate}, which renders every
+   * attendee's current answer. Fanning out on each reset as well turns one
+   * edit of an eight-person meeting into fifty-six extra writes saying what
+   * fifty-six writes have just said.
+   */
+  @Test
+  public void aResetToNeedsActionIsNotFannedOut() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    // Everything else about this fan-out is in working order — the answerer is
+    // nameable and every server would take the write. A test that let the
+    // empty-address guard do the refusing would pass against a build that had
+    // no reset skip at all, which is exactly what it did until a mutant said
+    // so.
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+
+    assertEquals(0, service.propagateAnswer(EVENT, CAROL, "NEEDS_ACTION"));
+
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), any(), any(), anyString());
+    assertEquals(0, caldavPendingPushStorage.owed(ALICE), "a reset owes no copy anything");
+  }
+
+  /**
+   * And so is an answer this add-on has no word for, because it would be
+   * <i>written</i> as a reset.
+   *
+   * <p>
+   * The skip is on the PARTSTAT the write would carry, not on the response
+   * name. {@code IcsText.partStat} maps anything unrecognised to
+   * {@code NEEDS-ACTION}, so a response agenda grows tomorrow would otherwise
+   * fan a reset out to every copy in the name of an answer nobody gave —
+   * exactly the case a name comparison would let through.
+   */
+  @Test
+  public void anAnswerTheRfcDoesNotDefineIsNotFannedOutAsAReset() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+
+    assertEquals(0, service.propagateAnswer(EVENT, CAROL, "MAYBE_LATER"));
+
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), any(), any(), anyString());
+  }
+
+  /**
+   * But an answer propagated onto a series' exceptional occurrences <b>is</b>
+   * fanned out.
+   *
+   * <p>
+   * Agenda saves-without-sending there too, which is what made it tempting to
+   * treat it like a reset. It is not one: what it saves is a real answer, and
+   * the other attendees' copies have to learn it like any other. The copy
+   * itself lives under the series' identity, which is why the holders are
+   * resolved through the parent.
+   */
+  @Test
+  public void anAnswerPropagatedOntoAnOccurrenceIsStillFannedOut() {
+    Event occurrence = new Event();
+    occurrence.setId(OCCURRENCE);
+    occurrence.setParentId(EVENT);
+    when(agendaEventService.getEventById(OCCURRENCE)).thenReturn(occurrence);
+    givenNoHoldersFor(OCCURRENCE);
+    givenHoldersFor(EVENT, mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+
+    assertEquals(1, service.propagateAnswer(OCCURRENCE, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"));
+  }
+
+  /**
+   * Every obligation is recorded before the first network call, so a thread
+   * that dies at the third of five holders leaves the other four owed.
+   *
+   * <p>
+   * The same crash discipline the edit path has, and it is what a
+   * {@code catch} block cannot buy: a PUT that times out ambiguously, a thread
+   * killed mid-fan-out and a platform restarted between two attendees all
+   * leave no exception for anybody to catch, and all of them leave the
+   * obligation standing.
+   */
+  @Test
+  public void everyObligationIsRecordedBeforeTheFirstWriteIsAttempted() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/a/uid.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/b/uid.ics"),
+                 mapping(3L, 300L, "uid-8801", "/dav/c/uid.ics"),
+                 mapping(4L, 400L, "uid-8801", "/dav/d/uid.ics"),
+                 mapping(5L, 500L, "uid-8801", "/dav/e/uid.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    givenPair(300L, CAROL);
+    givenPair(400L, DAVE);
+    givenPair(500L, ERIN);
+    givenTheAnswererIsNamed(FRANK);
+    // An OutOfMemoryError rather than an exception, and rather than the
+    // LinkageError the per-holder guard absorbs: this has to model a thread
+    // that simply stops, unwinding past every catch there is. If the guard
+    // caught it, the fan-out would carry on and the test would be pinning the
+    // guard instead of the ordering.
+    when(caldavPushService.pushAnswerOnto(anyLong(), any(), any(), anyString()))
+                                                                               .thenReturn(CaldavPushService.AnswerOutcome.WRITTEN)
+                                                                               .thenReturn(CaldavPushService.AnswerOutcome.WRITTEN)
+                                                                               .thenThrow(new OutOfMemoryError("the thread dies here"));
+
+    org.junit.jupiter.api.Assertions.assertThrows(OutOfMemoryError.class,
+                                                  () -> service.propagateAnswer(EVENT, FRANK, "ACCEPTED"));
+
+    // The two that landed are settled; the three that were never attempted are
+    // owed, which is the whole point of recording them first.
+    assertEquals(0, caldavPendingPushStorage.owed(ALICE), "a copy the answer reached is owed nothing");
+    assertEquals(0, caldavPendingPushStorage.owed(BOB), "a copy the answer reached is owed nothing");
+    assertEquals(1, caldavPendingPushStorage.owed(CAROL), "the copy the thread died on is still owed its write");
+    assertEquals(1, caldavPendingPushStorage.owed(DAVE), "a copy never attempted is still owed its write");
+    assertEquals(1, caldavPendingPushStorage.owed(ERIN), "a copy never attempted is still owed its write");
+  }
+
+  /**
+   * And the ordering itself, asserted directly: every obligation is written
+   * down before the <b>first</b> network call, not interleaved with the
+   * writes.
+   *
+   * <p>
+   * Interleaving would leave the holders after the one that died looking as
+   * though nobody had ever intended to write to them — which is
+   * indistinguishable, to every later pass, from an answer that never
+   * concerned them.
+   */
+  @Test
+  public void everyHolderIsRecordedBeforeTheFirstAnswerIsWritten() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/a/uid.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/b/uid.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+
+    service.propagateAnswer(EVENT, CAROL, "ACCEPTED");
+
+    InOrder order = inOrder(caldavPendingPushStorage, caldavPushService);
+    order.verify(caldavPendingPushStorage).owe(1L, ALICE, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    order.verify(caldavPendingPushStorage).owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    order.verify(caldavPushService).pushAnswerOnto(anyLong(), any(), any(), anyString());
+  }
+
+  /**
+   * A copy that already carries the answer is settled rather than rewritten,
+   * and settled rather than left owed.
+   *
+   * <p>
+   * Both halves are the task's own requirement. Rewriting it would move the
+   * ETag for nothing, every time anybody answers. Leaving it owed would be the
+   * same waste five minutes later and worse in kind: the retry is a
+   * <b>full</b> rewrite, which is the one operation this design avoids because
+   * it can destroy an answer nothing has read yet.
+   */
+  @Test
+  public void aCopyThatAlreadyCarriesTheAnswerIsSettledRatherThanOwed() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenTheAnswererIsNamed(CAROL);
+    when(caldavPushService.pushAnswerOnto(anyLong(), any(), any(), anyString()))
+                                                                               .thenReturn(CaldavPushService.AnswerOutcome.ALREADY_SAID);
+
+    assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"), "nothing was written");
+
+    assertEquals(0, caldavPendingPushStorage.owed(ALICE), "a copy that already agrees is owed nothing");
+  }
+
+  /**
+   * A copy that does not name the answerer stays owed, so the bounded full
+   * rewrite comes round and puts the missing ATTENDEE line there.
+   *
+   * <p>
+   * The one outcome where the blunt instrument is the right one: a targeted
+   * rewrite has nothing to target, and only a full render can add a line that
+   * is not on the object.
+   */
+  @Test
+  public void aCopyThatDoesNotNameTheAnswererStaysOwed() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenTheAnswererIsNamed(CAROL);
+    when(caldavPushService.pushAnswerOnto(anyLong(), any(), any(), anyString()))
+                                                                               .thenReturn(CaldavPushService.AnswerOutcome.NOT_NAMED);
+
+    assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    PendingPush owed = onlyObligationOf(ALICE);
+    assertEquals(PendingPushKind.REWRITE, owed.getKind(), "the fallback is a full rewrite of the event");
+    assertEquals(EVENT, owed.getLocalEventId(), "and it renders the event, which now carries the answer");
+  }
+
+  /**
+   * A conflict settles the obligation rather than queueing a retry.
+   *
+   * <p>
+   * The same rule the edit path follows, for the same reason: a conflict means
+   * the server's version moved away from the one eXo recorded, which is
+   * precisely the gate the verification pass opens on. Retrying would fight
+   * the same conditional write to the same refusal.
+   */
+  @Test
+  public void aConflictSettlesAndIsLeftToTheVerificationPass() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenTheAnswererIsNamed(CAROL);
+    when(caldavPushService.pushAnswerOnto(anyLong(), any(), any(), anyString()))
+                                                                               .thenThrow(new CaldavPushException(CaldavPushService.CONFLICT,
+                                                                                                                  "somebody wrote it first"));
+
+    assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    assertEquals(0, caldavPendingPushStorage.owed(ALICE), "a conflict is the verification pass's business, not the retry's");
+  }
+
+  /**
+   * Any other failure leaves the obligation standing, and the retry pass turns
+   * it into a bounded full rewrite of the event — which carries the answer,
+   * because agenda recorded it before this listener ever ran.
+   */
+  @Test
+  public void aFailedAnswerStaysOwedAndConvergesThroughTheRetry() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenTheAnswererIsNamed(CAROL);
+    when(caldavPushService.pushAnswerOnto(anyLong(), any(), any(), anyString()))
+                                                                               .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                                                  "alice's server is down"));
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
+
+    assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+    assertEquals(PendingPushKind.REWRITE, onlyObligationOf(ALICE).getKind());
+
+    assertEquals(1, service.retryOwedPushes(ALICE), "a later pass carries the answer as a full rewrite");
+
+    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT);
+  }
+
+  /**
+   * And a failure that is not a {@code CaldavPushException} at all leaves the
+   * obligation standing just the same.
+   *
+   * <p>
+   * Its own test because it is caught in its own clause: a settle slipped into
+   * either clause is invisible to a test that only ever throws the other kind,
+   * and a mutant proved that before this existed.
+   */
+  @Test
+  public void anUnexpectedFailureAlsoLeavesTheCopyOwed() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenTheAnswererIsNamed(CAROL);
+    when(caldavPushService.pushAnswerOnto(anyLong(), any(), any(), anyString()))
+                                                                               .thenThrow(new IllegalStateException("something nobody classified"));
+
+    assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    assertEquals(PendingPushKind.REWRITE, onlyObligationOf(ALICE).getKind(), "an unclassified failure is still owed a write");
+  }
+
+  /**
+   * One unreachable server is not a reason the other attendees keep a stale
+   * RSVP.
+   */
+  @Test
+  public void oneUnreachableHolderDoesNotStopTheFanOut() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/a/uid.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/b/uid.ics"),
+                 mapping(3L, 300L, "uid-8801", "/dav/c/uid.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    givenPair(300L, DAVE);
+    givenTheAnswererIsNamed(CAROL);
+    when(caldavPushService.pushAnswerOnto(eq(ALICE), any(), any(), anyString()))
+                                                                               .thenReturn(CaldavPushService.AnswerOutcome.WRITTEN);
+    when(caldavPushService.pushAnswerOnto(eq(BOB), any(), any(), anyString()))
+                                                                             .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                                                "bob's server is down"));
+    when(caldavPushService.pushAnswerOnto(eq(DAVE), any(), any(), anyString()))
+                                                                              .thenReturn(CaldavPushService.AnswerOutcome.WRITTEN);
+
+    assertEquals(2, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService).pushAnswerOnto(eq(DAVE), any(), any(), anyString());
+    assertEquals(1, caldavPendingPushStorage.owed(BOB), "only the one that failed is still owed");
+  }
+
+  /**
+   * An answerer no copy can name reaches nothing, and owes nothing.
+   *
+   * <p>
+   * No address means the mapper wrote no ATTENDEE line for them on anybody's
+   * copy, so there is nothing a targeted rewrite could find and nothing a full
+   * rewrite would add. Recording obligations for that would queue one
+   * unsatisfiable rewrite per holder — attempted, refused and abandoned, five
+   * times each, to say once what one warning says here.
+   */
+  @Test
+  public void anAnswererNoCopyCanNameReachesNothingAndOwesNothing() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.addressesNaming(CAROL)).thenReturn(List.of());
+
+    assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), any(), any(), anyString());
+    assertEquals(0, caldavPendingPushStorage.owed(ALICE), "an unsatisfiable obligation is not recorded");
+  }
+
+  /**
+   * Nobody else holds a copy, so nothing is read, written or owed.
+   */
+  @Test
+  public void anAnswerToAMeetingNobodyElseHasACopyOfCostsNothing() {
+    givenNoHolders();
+    givenTheAnswererIsNamed(CAROL);
+
+    assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), any(), any(), anyString());
+  }
+
+  /**
+   * Declares which addresses name the answerer on somebody else's copy.
+   *
+   * @param answererIdentityId who answered
+   */
+  private void givenTheAnswererIsNamed(long answererIdentityId) {
+    lenient().when(caldavPushService.addressesNaming(answererIdentityId)).thenReturn(CAROL_ADDRESSES);
+  }
+
+  /**
+   * Declares that every holder's server takes the answer.
+   */
+  private void givenEveryCopyAcceptsTheAnswer() {
+    lenient().when(caldavPushService.pushAnswerOnto(anyLong(), any(), any(), anyString()))
+             .thenReturn(CaldavPushService.AnswerOutcome.WRITTEN);
   }
 
   // ---------------------------------------------------------------- fixtures

@@ -1098,13 +1098,26 @@ public class CaldavPushService {
    * purpose: an address that names nobody costs one failed comparison, while
    * the wrong single answer costs the whole feature, without a sound.
    *
+   * <p>
+   * <b>The account half is optional, and that is what EXO-89868 needed of
+   * it.</b> Fanning an answer out to the other attendees' copies has to name
+   * the <i>answerer</i> on somebody else's object, and the answerer need not
+   * have connected an account at all — their answer still has to reach the
+   * copies of the people who did. A null or half-filled account is therefore
+   * an ordinary input here and contributes nothing rather than throwing; the
+   * profile address alone is exactly what a copy written for somebody else
+   * names them by, because {@code AgendaEventIcsMapper.attendees} spells the
+   * account address on one line only, the line of the person the copy is
+   * being written for.
+   *
    * @param userIdentityId identity of the user whose answer was recorded
-   * @param settings their connected account
+   * @param settings their connected account, null or unconnected when they
+   *          have none — then only their profile address is offered
    * @return the addresses to look for, most specific first, possibly empty
    */
   public List<String> addressesNaming(long userIdentityId, CaldavUserSetting settings) {
     List<String> addresses = new ArrayList<>();
-    String account = StringUtils.trimToNull(settings.getUsername());
+    String account = settings == null ? null : StringUtils.trimToNull(settings.getUsername());
     if (account != null) {
       addresses.add(account);
     }
@@ -1113,6 +1126,249 @@ public class CaldavPushService {
       addresses.add(profile);
     }
     return addresses;
+  }
+
+  /**
+   * Every address a copy might name one person by, without needing them to
+   * have connected an account.
+   *
+   * <p>
+   * The form EXO-89868's fan-out asks for. The two-argument sibling is called
+   * from paths that are already holding the account they are writing to, and
+   * making them look it up again would be a second read of the same row; this
+   * one is called about a person whose account is not the one being written
+   * to and may not exist at all, so it looks the account up itself and treats
+   * its absence as ordinary rather than as a refusal.
+   *
+   * <p>
+   * The account is read but not <i>required</i> to be connected. A stored
+   * account with no password is not something this can write with — and it is
+   * not being asked to write with it. It is being asked what a copy might
+   * spell this person as, and a username stored without a password is still a
+   * username some copy may have been written under.
+   *
+   * @param userIdentityId identity of the person to be named
+   * @return the addresses to look for, most specific first, possibly empty
+   */
+  public List<String> addressesNaming(long userIdentityId) {
+    CaldavUserSetting settings;
+    try {
+      settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    } catch (Exception | LinkageError e) {
+      // Not being able to read an account is not being able to offer one more
+      // address. The profile address is the one a copy written for somebody
+      // else actually carries, so this degrades rather than fails.
+      LOG.debug("The CalDAV account of user {} could not be read; only their profile address can name them",
+                userIdentityId,
+                e);
+      settings = null;
+    }
+    return addressesNaming(userIdentityId, settings);
+  }
+
+  /**
+   * Writes one person's answer onto somebody else's copy of the same meeting.
+   *
+   * <h2>The half of answering that was never built (EXO-89868)</h2>
+   *
+   * <p>
+   * {@link #pushAnswer} opens by reading <b>the answerer's own</b> account and
+   * rewrites the copy sitting on it. So an answer travelled to the answerer's
+   * own calendar and stopped there: every other attendee's copy went on
+   * showing the answer it last carried, on every server, for ever. The
+   * organiser read a stale RSVP in the client they actually live in, while
+   * eXo's own screens showed the right one — the worst shape a divergence can
+   * take, because nothing in the product disagrees out loud.
+   *
+   * <p>
+   * This is the same targeted write pointed at a different copy. Two things
+   * are deliberately crossed over, and getting either the wrong way round is
+   * the whole defect written a second time: the <b>holder's</b> account,
+   * endpoint and ETag decide where and how the write goes, while the
+   * <b>answerer's</b> addresses decide which ATTENDEE line on that object is
+   * rewritten.
+   *
+   * <h2>Why a targeted line rewrite and not a rewrite of the event</h2>
+   *
+   * <p>
+   * Because a full rewrite would destroy answers. {@link IcsMerger#merge}
+   * replaces the master VEVENT wholesale with what eXo renders, and on a
+   * server that records its own owner's answer <b>without moving the
+   * ETag</b> — BlueMind, measured on this rig — the conditional write
+   * succeeds and takes an unread answer down with it. The verification pass
+   * guards that case by reading before it writes; the push path does not read.
+   * Rewriting one named ATTENDEE line and leaving every other byte alone
+   * avoids it by construction, and that property is what the fan-out is safe
+   * on rather than something it is careful about.
+   *
+   * <p>
+   * The mapping is handed in rather than looked up, and for a reason worth
+   * more than the round trip it saves: the caller has already recorded an
+   * obligation against <i>that</i> row, and a lookup here could resolve a
+   * different one — the same user can hold a mapping in their mirror and
+   * another in a personal collection. The copy written and the obligation
+   * settled must be the same copy.
+   *
+   * @param holderIdentityId identity of the user whose copy is written to
+   * @param copy the mapping row naming that copy, with its href and the ETag
+   *          the write is conditioned on
+   * @param answererAddresses every address the copy might name the answerer
+   *          by, from {@link #addressesNaming(long)}
+   * @param response the answer as agenda holds it, e.g. {@code ACCEPTED}
+   * @return what happened to the copy, which is what tells the caller whether
+   *         anything is still owed to it
+   * @throws CaldavPushException when the copy could not be written
+   */
+  public AnswerOutcome pushAnswerOnto(long holderIdentityId,
+                                      ObjectSync copy,
+                                      List<String> answererAddresses,
+                                      String response) {
+    if (copy == null || StringUtils.isBlank(copy.getRemoteHref())) {
+      // A tombstone, or a row built by hand. Nothing to write to, and writing
+      // to it would re-create the object somebody deleted.
+      return AnswerOutcome.UNWRITABLE;
+    }
+    if (answererAddresses == null || answererAddresses.isEmpty()) {
+      LOG.debug("An answer is not carried onto the copy of user {} at {}: no address could name the answerer on it",
+                holderIdentityId,
+                copy.getRemoteHref());
+      return AnswerOutcome.UNWRITABLE;
+    }
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(holderIdentityId);
+    if (!connected(settings)) {
+      // A refusal rather than a false, so the caller records it the way it
+      // records every other state of a holder it cannot write to: the copy
+      // stays owed, and the day they reconnect the sweep settles it.
+      throw new CaldavPushException(NOT_CONNECTED, "User " + holderIdentityId + " has no connected CalDAV account");
+    }
+    if (StringUtils.isBlank(copy.getEtag())) {
+      // A mapping pointing at an href while recording no ETag describes an
+      // object eXo never managed to write. There is nothing to condition a
+      // write on, and the client refuses an unconditional one on purpose.
+      LOG.warn("An answer is not carried onto the copy of user {} at {}: it is mapped without an ETag,"
+          + " so no conditional write is possible; the verification pass has to re-establish it",
+               holderIdentityId,
+               copy.getRemoteHref());
+      return AnswerOutcome.UNWRITABLE;
+    }
+    CalDavEndpoint endpoint = endpointOf(settings);
+    try {
+      CalendarObject existing = calDavClient.fetchObject(endpoint,
+                                                        copy.getRemoteHref(),
+                                                        settings.getUsername(),
+                                                        settings.getPassword());
+      if (existing == null || StringUtils.isBlank(existing.calendarData())) {
+        LOG.warn("An answer is not carried onto the copy of user {} at {}: it is mapped but the server serves nothing at it",
+                 holderIdentityId,
+                 copy.getRemoteHref());
+        return AnswerOutcome.UNWRITABLE;
+      }
+      IcsMerger.AnswerRewrite rewrite = icsMerger.setAttendeeResponse(existing.calendarData(),
+                                                                     answererAddresses,
+                                                                     IcsText.partStat(response));
+      if (!rewrite.attendeeNamed()) {
+        // The answerer is not on this object at all: their profile hides their
+        // address, or the copy predates their invitation and has never been
+        // rewritten since. Said at WARN because eXo holds a mapping asserting
+        // this is a copy of a meeting they are invited to, so the two
+        // disagree. The line cannot be added by a targeted rewrite — there is
+        // nothing to target — and this is exactly the outcome the caller
+        // leaves owed, so that the bounded full rewrite puts the line there.
+        LOG.warn("An answer is not carried onto the copy of user {} at {}: it names none of {},"
+            + " so there is no participation status of theirs to rewrite",
+                 holderIdentityId,
+                 copy.getRemoteHref(),
+                 answererAddresses);
+        return AnswerOutcome.NOT_NAMED;
+      }
+      if (!rewrite.hasChange()) {
+        // The copy already says this, and saying so is a settled copy rather
+        // than a failed write. Both halves matter. Writing anyway would move
+        // the ETag for nothing — the guard the task names, without which one
+        // answer rewrites every copy that already agrees, every time anybody
+        // answers. And leaving the obligation standing would be the same waste
+        // deferred by five minutes: the sweep would come back and rewrite a
+        // correct copy in full, which is the one operation this whole design
+        // avoids because it can destroy an answer nothing has read yet.
+        LOG.debug("An answer is not carried onto the copy of user {} at {}: it already says {}",
+                  holderIdentityId,
+                  copy.getRemoteHref(),
+                  response);
+        return AnswerOutcome.ALREADY_SAID;
+      }
+      PutResult result = calDavClient.updateObject(endpoint,
+                                                   copy.getRemoteHref(),
+                                                   rewrite.document(),
+                                                   copy.getEtag(),
+                                                   settings.getUsername(),
+                                                   settings.getPassword());
+      if (result.preconditionFailed()) {
+        throw new CaldavPushException(CONFLICT, "The copy at " + copy.getRemoteHref() + " changed since it was read");
+      }
+      // The version has to become the one this write produced, or the next
+      // ordinary update carries an If-Match the server has already left behind.
+      copy.setEtag(result.etag());
+      copy.setLastSync(new Date());
+      caldavSyncStorage.saveObject(copy);
+      LOG.debug("An answer was carried onto the copy of user {} at {}: {} for {}",
+                holderIdentityId,
+                copy.getRemoteHref(),
+                response,
+                answererAddresses);
+      return AnswerOutcome.WRITTEN;
+    } catch (CalDavAuthenticationException e) {
+      throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
+    } catch (CalDavException e) {
+      throw new CaldavPushException(SAVE, "The answer could not be written to " + copy.getRemoteHref(), e);
+    }
+  }
+
+  /**
+   * What became of one attempt to write an answer onto one copy.
+   *
+   * <p>
+   * Four states rather than a boolean, because two of them look like failure
+   * and are not, and the caller has to tell them apart to decide whether the
+   * copy still owes eXo anything. A copy that already carries the answer is as
+   * settled as one this write just corrected; a copy that does not name the
+   * answerer at all is not settled by anything a targeted rewrite can do.
+   * Collapsing those into "false" is what would make the obligation table
+   * either grow for ever or forget the copies that genuinely need a full
+   * rewrite.
+   */
+  public enum AnswerOutcome {
+
+    /** The answer was written onto the copy, which now carries it. */
+    WRITTEN,
+
+    /**
+     * The copy already carried the answer, so nothing was written and nothing
+     * is owed.
+     */
+    ALREADY_SAID,
+
+    /**
+     * The copy carries no ATTENDEE line for the answerer, so a targeted
+     * rewrite has nothing to target. Only a full rewrite can put the line
+     * there, and the obligation is what brings one.
+     */
+    NOT_NAMED,
+
+    /**
+     * The copy could not be written to at all — no href, no recorded version
+     * to condition on, nothing served at it, or no address to name the
+     * answerer by. The obligation stands.
+     */
+    UNWRITABLE;
+
+    /**
+     * Whether this outcome leaves the copy agreeing with what eXo holds.
+     *
+     * @return true when nothing more is owed to the copy
+     */
+    public boolean settles() {
+      return this == WRITTEN || this == ALREADY_SAID;
+    }
   }
 
   /**
