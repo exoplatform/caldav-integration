@@ -1198,6 +1198,62 @@ public class CaldavMirrorVerificationServiceTest {
   }
 
   /**
+   * <b>What the answer fan-out of EXO-89868 does — and does not — do to this
+   * budget.</b>
+   *
+   * <p>
+   * The fan-out writes <i>other people's</i> answers onto this copy, so the
+   * question the two changes raise together is whether that traffic can
+   * re-arm the budget spuriously or exhaust it spuriously. It can do neither,
+   * and this pins why: the statement a copy's budget is keyed on is read for
+   * <b>the copy's owner and nobody else</b>. Another attendee answering ten
+   * times moves neither half of it, so no amount of fan-out re-arms an
+   * abandoned copy, and the abandonment stays a statement about what eXo is
+   * trying to say to <i>this</i> user.
+   *
+   * <p>
+   * Exhaustion is safe for a different reason, which lives in {@code IcsWriter}
+   * rather than here: eXo's own render carries <b>every</b> attendee's
+   * PARTSTAT, so a copy the fan-out has just written agrees with what the
+   * sweep would render for it. The fan-out converges the copy; it does not
+   * create work for the repair pass. What it removes is real: before it, every
+   * holder's copy carried a permanently stale PARTSTAT for every other
+   * attendee, and since EXO-89829 that is reported as drift rather than
+   * tolerated — so ordinary answering was consuming this budget on every copy
+   * but the answerer's.
+   *
+   * <p>
+   * <b>The gap this leaves, said out loud rather than pinned shut.</b> Because
+   * the statement excludes other attendees' answers, a copy already abandoned
+   * for an unrelated fight will not re-arm when somebody else answers — so the
+   * sweep is not a safety net for a fan-out write that failed its bounded
+   * retries on an already-abandoned copy. That is a property of EXO-89863's
+   * statement, not of the fan-out, and widening the statement to the roster is
+   * a decision for that change rather than this one.
+   *
+   * @throws Exception which agenda's reader declares
+   */
+  @Test
+  public void anotherAttendeesAnswerIsNotPartOfThisCopysStatement() throws Exception {
+    givenAnUnwinnableFight();
+    givenTheAnswerIs(EventAttendeeResponse.ACCEPTED);
+    givenTheMeetingWasEditedAt(EDITED);
+
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+    assertEquals(1, service.verify(USER).abandoned(), "the copy has to be abandoned before the point can be made");
+
+    // The statement is asked of the copy's owner alone. Were it asked of the
+    // roster, every fan-out write anywhere would be a new statement here, and
+    // abandonment would be abolished on exactly the accounts already in
+    // trouble.
+    verify(agendaEventAttendeeService, never()).getEventResponse(anyLong(),
+                                                                any(),
+                                                                org.mockito.ArgumentMatchers.longThat(identityId -> identityId != USER));
+  }
+
+  /**
    * And the same guarantee where it is easiest to lose: an event agenda cannot
    * read at all.
    *

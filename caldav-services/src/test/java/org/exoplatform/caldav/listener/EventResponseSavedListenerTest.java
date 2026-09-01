@@ -31,6 +31,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.model.EventAttendee;
+import org.exoplatform.caldav.service.CaldavEventPropagationService;
 import org.exoplatform.caldav.service.CaldavPushService;
 import org.exoplatform.services.listener.Event;
 
@@ -46,9 +47,12 @@ public class EventResponseSavedListenerTest {
   private static final long          EVENT = 964L;
 
   @Mock
-  private CaldavPushService          caldavPushService;
+  private CaldavPushService             caldavPushService;
 
-  private EventResponseSavedListener listener;
+  @Mock
+  private CaldavEventPropagationService caldavEventPropagationService;
+
+  private EventResponseSavedListener    listener;
 
   /**
    * A listener holding the service, since there is no container to resolve it.
@@ -57,6 +61,7 @@ public class EventResponseSavedListenerTest {
   public void wireTheService() {
     listener = new EventResponseSavedListener();
     listener.setCaldavPushService(caldavPushService);
+    listener.setCaldavEventPropagationService(caldavEventPropagationService);
   }
 
   /**
@@ -119,6 +124,68 @@ public class EventResponseSavedListenerTest {
     when(caldavPushService.pushAnswer(USER, EVENT, "ACCEPTED")).thenThrow(new IllegalStateException("down"));
 
     assertDoesNotThrow(() -> listener.onEvent(answer(EventAttendeeResponse.DECLINED, EventAttendeeResponse.ACCEPTED)));
+  }
+
+  /**
+   * The other half of the same answer (EXO-89868): it is handed on to reach
+   * every <b>other</b> attendee's copy as well.
+   *
+   * <p>
+   * Without this call, root created a meeting, Benjamin accepted it in macOS
+   * Calendar, and root's BlueMind copy went on saying NEEDS-ACTION for ever —
+   * because the only write an answer caused went to the answerer's own
+   * account.
+   */
+  @Test
+  public void anAnswerIsAlsoHandedOnToReachTheOtherAttendeesCopies() {
+    listener.onEvent(answer(EventAttendeeResponse.DECLINED, EventAttendeeResponse.ACCEPTED));
+
+    verify(caldavEventPropagationService).propagateAnswer(EVENT, USER, "ACCEPTED");
+  }
+
+  /**
+   * The answerer's own account being unreachable is not the reason nobody
+   * else's copy learns anything.
+   *
+   * <p>
+   * The two halves fail for entirely unrelated reasons — one account's server
+   * against fifty others' — so a single guard around the pair would have made
+   * the answerer's own server outage into the very defect EXO-89868 fixes,
+   * in miniature.
+   */
+  @Test
+  public void aFailureOnTheAnswerersOwnCopyDoesNotStopTheFanOut() {
+    when(caldavPushService.pushAnswer(USER, EVENT, "ACCEPTED")).thenThrow(new IllegalStateException("down"));
+
+    assertDoesNotThrow(() -> listener.onEvent(answer(EventAttendeeResponse.DECLINED, EventAttendeeResponse.ACCEPTED)));
+
+    verify(caldavEventPropagationService).propagateAnswer(EVENT, USER, "ACCEPTED");
+  }
+
+  /**
+   * And symmetrically: the fan-out failing does not stop the answerer's own
+   * copy from being written, nor cost them the answer they gave.
+   */
+  @Test
+  public void aFailingFanOutDoesNotUndoTheAnswerOrStopTheirOwnCopy() {
+    when(caldavEventPropagationService.propagateAnswer(EVENT, USER, "ACCEPTED"))
+                                                                                .thenThrow(new IllegalStateException("everybody's servers are down"));
+
+    assertDoesNotThrow(() -> listener.onEvent(answer(EventAttendeeResponse.DECLINED, EventAttendeeResponse.ACCEPTED)));
+
+    verify(caldavPushService).pushAnswer(USER, EVENT, "ACCEPTED");
+  }
+
+  /**
+   * A save that changes nothing costs neither half a round trip. The fan-out
+   * declines resets on its own account too, but the cheapest place to decline
+   * a re-save is before either service is called.
+   */
+  @Test
+  public void anAnswerThatSaysWhatItAlreadySaidReachesNeitherHalf() {
+    listener.onEvent(answer(EventAttendeeResponse.ACCEPTED, EventAttendeeResponse.ACCEPTED));
+
+    verify(caldavEventPropagationService, never()).propagateAnswer(anyLong(), anyLong(), anyString());
   }
 
   /**

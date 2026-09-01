@@ -35,6 +35,7 @@ import org.exoplatform.agenda.model.EventAttendee;
 import org.exoplatform.agenda.model.EventAttendeeList;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
+import org.exoplatform.caldav.ics.IcsText;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.PendingPush;
@@ -717,6 +718,245 @@ public class CaldavEventPropagationService {
     }
     LOG.info("Event {} was deleted; its copy was removed for {} of {} holders", eventId, removed, holders.size());
     return removed;
+  }
+
+  /**
+   * Carries one attendee's answer out to every <b>other</b> attendee's copy of
+   * the same meeting.
+   *
+   * <h2>The half of answering that stopped at the answerer (EXO-89868)</h2>
+   *
+   * <p>
+   * {@code CaldavPushService.pushAnswer} opens by reading the <b>answerer's
+   * own</b> account and rewrites the copy on it. So an acceptance reached the
+   * accepter's own phone and nothing else: the organiser's copy, and every
+   * other attendee's, went on displaying the answer it last carried. eXo's own
+   * screens were right throughout, which is what made it invisible — nothing
+   * in the product disagreed out loud, and the organiser read a stale RSVP in
+   * the client they actually live in.
+   *
+   * <p>
+   * This is the fan-out, and it changes the mirror's rule from "your copy
+   * reflects your answer" to "every attendee's copy reflects everyone's
+   * answers". {@code pushAnswer} is left exactly as it was and still writes
+   * the answerer's own copy; this writes the others.
+   *
+   * <h2>Whose copies, and whose name on them</h2>
+   *
+   * <p>
+   * The holders are read from the mapping table, never from agenda's attendee
+   * list — the same guard {@link #propagateUpdate} rests on: answering a
+   * meeting must not hand a copy to somebody who has never had one, or the
+   * first person to accept anything would push a year of meetings at every
+   * colleague who has since connected an account. Tombstones are skipped by
+   * {@link #holdersOf} for the same reason it always skips them.
+   *
+   * <p>
+   * The answerer is taken out of that set, and not as an optimisation. Their
+   * own copy is {@code pushAnswer}'s, both run off the same listener, and two
+   * conditional writes racing for the same object would make one of them fail
+   * its If-Match — a self-inflicted conflict reported as a divergence.
+   *
+   * <p>
+   * On each of those copies it is the <b>answerer's</b> addresses that decide
+   * which ATTENDEE line is rewritten, and that crossing over is the whole
+   * mechanism. A copy written for Bob spells Bob by the address his own CalDAV
+   * account answers to and everybody else — Alice included — by their eXo
+   * profile address, so Alice's answer is found on Bob's copy under Alice's
+   * profile address. Both of hers are offered anyway
+   * ({@code addressesNaming}), because being handed one address and told it is
+   * <i>the</i> one is how this propagation silently matched nothing on a live
+   * rig once already.
+   *
+   * <h2>Why NEEDS-ACTION is not fanned out</h2>
+   *
+   * <p>
+   * Because something else already carries it, N times over. The reset to
+   * NEEDS-ACTION that follows a material edit is broadcast once per attendee,
+   * and the edit that caused it has already been carried to every copy by
+   * {@link #propagateUpdate} — which renders every attendee's current answer,
+   * resets included. Fanning out on each reset as well would turn one edit of
+   * an eight-person meeting into fifty-six extra conditional writes saying
+   * what fifty-six writes have just said.
+   *
+   * <p>
+   * The skip is on the <b>PARTSTAT this would write</b>, not on the response
+   * name, and that is deliberately wider than the rule it implements.
+   * {@code IcsText.partStat} maps anything it does not recognise to
+   * {@code NEEDS-ACTION}, so a response agenda grows tomorrow and this add-on
+   * has no word for would otherwise fan a reset out to every copy in the name
+   * of an answer nobody gave. Skipping on the token covers both, and can only
+   * ever decline to write a reset.
+   *
+   * <p>
+   * <b>An answer propagated onto a series' occurrences is not a reset and is
+   * not skipped.</b> Agenda saves-without-sending there too, but what it saves
+   * is a real answer, and the copies of the other attendees have to learn it
+   * like any other.
+   *
+   * <h2>What is written down before anything is written out</h2>
+   *
+   * <p>
+   * An obligation per holder, before the first network call, exactly as
+   * {@link #propagateUpdate} records them and for the same reason: a thread
+   * killed at the third of fifty holders must leave the other forty-seven
+   * recorded as owed. It is a {@link PendingPushKind#REWRITE} on the same
+   * table with no schema change, and it is the right kind rather than a
+   * near-enough one — the retry renders the event <i>as it now stands</i>, and
+   * the event as it now stands carries this answer. A copy that could not be
+   * reached by the targeted write therefore converges through a full rewrite,
+   * which is slower and blunter and is the fallback, not the path.
+   *
+   * @param eventId the agenda event answered, master or occurrence
+   * @param answererIdentityId identity of the user whose answer was recorded;
+   *          their own copy is not written here
+   * @param response the answer as agenda holds it, e.g. {@code ACCEPTED}
+   * @return how many other attendees' copies now carry the answer
+   */
+  public int propagateAnswer(long eventId, long answererIdentityId, String response) {
+    if (eventId <= 0 || answererIdentityId <= 0 || StringUtils.isBlank(response)) {
+      return 0;
+    }
+    String partStat = IcsText.partStat(response);
+    if (IcsText.NEEDS_ACTION.equals(partStat)) {
+      LOG.debug("The answer {} of user {} to event {} is a reset; the edit that caused it is carried to every copy already",
+                response,
+                answererIdentityId,
+                eventId);
+      return 0;
+    }
+    List<String> addresses = caldavPushService.addressesNaming(answererIdentityId);
+    if (addresses.isEmpty()) {
+      // No address means this add-on wrote no ATTENDEE line for them on
+      // anybody's copy — the mapper leaves off whoever has no visible address
+      // — so there is nothing on any copy a targeted rewrite could find, and a
+      // full rewrite would not put a line there either. Recording obligations
+      // for that would queue a rewrite per holder that could never satisfy
+      // them. Said at WARN because it is a state of the profile somebody can
+      // repair, not a user simply not using the feature.
+      LOG.warn("The answer of user {} to event {} reaches no other copy: no address names them on one", answererIdentityId, eventId);
+      return 0;
+    }
+    Map<Long, ObjectSync> holders = holdersOf(eventId, true);
+    holders.remove(answererIdentityId);
+    if (holders.isEmpty()) {
+      LOG.debug("User {} answered event {}, but nobody else holds a copy of it; nothing to carry out",
+                answererIdentityId,
+                eventId);
+      return 0;
+    }
+    // Every obligation first, then every write, for the reason propagateUpdate
+    // states: a thread that dies at the third of fifty holders must leave the
+    // other forty-seven recorded as owed, and interleaving would leave them
+    // looking as though nobody had ever intended to write to them.
+    for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
+      owe(holder.getValue(), holder.getKey(), PendingPushKind.REWRITE, eventId);
+    }
+    int carried = 0;
+    for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
+      if (answerOne(holder.getKey(), holder.getValue(), addresses, eventId, answererIdentityId, response)) {
+        carried++;
+      }
+    }
+    LOG.info("User {} answered event {}; the answer was written onto the copy of {} of {} other holders",
+             answererIdentityId,
+             eventId,
+             carried,
+             holders.size());
+    return carried;
+  }
+
+  /**
+   * Writes one answer onto one other attendee's copy, absorbing whatever that
+   * one account does to it.
+   *
+   * <p>
+   * Every failure is contained here for the reason {@link #rewriteOne}
+   * contains its own: fifty attendees is fifty accounts on as many servers,
+   * and one of them being down is not a reason the other forty-nine keep a
+   * stale RSVP. {@code LinkageError} as well as {@code Exception}, because one
+   * escaped a {@code catch (RuntimeException)} on this very code path once and
+   * took a whole sweep with it.
+   *
+   * <p>
+   * The outcomes divide three ways rather than two, and the middle one is what
+   * a boolean would have got wrong. A copy this write corrected and a copy
+   * that already carried the answer are both settled — the second especially,
+   * since leaving it owed would send the sweep to rewrite a correct copy in
+   * full, which is the one operation this design avoids because it can destroy
+   * an answer nothing has read yet. A copy that does not name the answerer, or
+   * that could not be written to at all, stays owed and converges through that
+   * full rewrite, which here is the fallback rather than the path.
+   *
+   * <p>
+   * A CONFLICT settles rather than retries, the same rule
+   * {@link #rewriteOne} follows: a conflict means the server's version moved
+   * away from the one eXo recorded, which is precisely the gate the
+   * verification pass opens on, and retrying would fight the same conditional
+   * write to the same refusal.
+   *
+   * @param holderIdentityId whose copy is written to
+   * @param copy the mapping row naming that copy
+   * @param answererAddresses every address the copy might name the answerer by
+   * @param eventId the agenda event, for the log
+   * @param answererIdentityId who answered, for the log
+   * @param response the answer, for the log
+   * @return true when the copy now carries the answer
+   */
+  private boolean answerOne(long holderIdentityId,
+                            ObjectSync copy,
+                            List<String> answererAddresses,
+                            long eventId,
+                            long answererIdentityId,
+                            String response) {
+    try {
+      CaldavPushService.AnswerOutcome outcome = caldavPushService.pushAnswerOnto(holderIdentityId,
+                                                                                copy,
+                                                                                answererAddresses,
+                                                                                response);
+      if (outcome.settles()) {
+        settled(copy.getId());
+      }
+      return outcome == CaldavPushService.AnswerOutcome.WRITTEN;
+    } catch (CaldavPushException e) {
+      if (CaldavPushService.CONFLICT.equals(e.getCode())) {
+        LOG.debug("The copy of event {} held by user {} changed under the answer of user {};"
+            + " the verification pass will reconcile it",
+                  eventId,
+                  holderIdentityId,
+                  answererIdentityId,
+                  e);
+        settled(copy.getId());
+      } else if (CaldavPushService.isKnownState(e.getCode())) {
+        // A state of the holder rather than a failure of this write: they have
+        // no connected account, or none that names a destination. Recorded
+        // without a trace and without the word failure. The obligation still
+        // stands, so the day they connect the sweep writes their copy.
+        LOG.debug("The answer of user {} to event {} is not carried to the copy of user {}: {} ({})",
+                  answererIdentityId,
+                  eventId,
+                  holderIdentityId,
+                  e.getMessage(),
+                  e.getCode());
+      } else {
+        LOG.warn("The answer of user {} to event {} could not be carried to the copy held by user {} ({});"
+            + " it stays owed and is retried",
+                 answererIdentityId,
+                 eventId,
+                 holderIdentityId,
+                 e.getCode(),
+                 e);
+      }
+      return false;
+    } catch (Exception | LinkageError e) {
+      LOG.warn("The answer of user {} to event {} could not be carried to the copy held by user {};"
+          + " it stays owed and is retried",
+               answererIdentityId,
+               eventId,
+               holderIdentityId,
+               e);
+      return false;
+    }
   }
 
   /**

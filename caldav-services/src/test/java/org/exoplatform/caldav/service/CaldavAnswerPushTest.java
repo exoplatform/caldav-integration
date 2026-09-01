@@ -33,6 +33,8 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 
+import org.apache.commons.lang3.StringUtils;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -95,6 +97,19 @@ public class CaldavAnswerPushTest {
 
   /** What their eXo profile says, which on the rig is a different mailbox. */
   private static final String      PROFILE = "bob@stalwart.local";
+
+  /**
+   * Another attendee of the same meeting: the one whose answer the fan-out of
+   * EXO-89868 has to write onto <b>this</b> account's copy.
+   */
+  private static final long        CAROL   = 77L;
+
+  /**
+   * How that other attendee is named on a copy written for somebody else —
+   * their eXo profile address, because the mapper spells the account address
+   * on one line only, the line of the person the copy is written for.
+   */
+  private static final String      CAROL_ADDRESS = "carol@stalwart.local";
 
   @Mock
   private CalDavClient             calDavClient;
@@ -429,6 +444,312 @@ public class CaldavAnswerPushTest {
     ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
     verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString(), anyString(), anyString());
     assertTrue(written.getValue().contains("PARTSTAT=NEEDS-ACTION"), written.getValue());
+  }
+
+  /**
+   * The fan-out's whole point, on a real merger: somebody <b>else's</b> answer
+   * is written onto this account's copy.
+   *
+   * <p>
+   * Before EXO-89868 nothing did this at any level. root created a meeting,
+   * Benjamin accepted it in macOS Calendar, eXo recorded the acceptance — and
+   * root's copy went on saying NEEDS-ACTION for ever, because the only write
+   * an answer ever caused went to the answerer's own account.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anotherAttendeesAnswerIsWrittenOntoThisAccountsCopy() throws Exception {
+    givenTheCopyAlsoNames(CAROL_ADDRESS, "NEEDS-ACTION");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(204,
+                                                                                                                                    "\"etag-2\"",
+                                                                                                                                    null));
+
+    assertEquals(CaldavPushService.AnswerOutcome.WRITTEN,
+                 service.pushAnswerOnto(USER, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
+
+    ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).updateObject(eq(endpoint),
+                                      eq(HREF),
+                                      written.capture(),
+                                      eq("\"etag-1\""),
+                                      eq(ACCOUNT),
+                                      eq("secret"));
+    assertTrue(attendeeLine(written.getValue(), CAROL_ADDRESS).contains("PARTSTAT=ACCEPTED"),
+               written.getValue());
+  }
+
+  /**
+   * <b>The anti-clobber pin, and the reason this is a targeted line rewrite
+   * rather than a rewrite of the event.</b>
+   *
+   * <p>
+   * The tempting implementation is to treat an answer like an edit and issue
+   * {@code propagateUpdate}'s full rewrite per holder. It would have destroyed
+   * answers. {@code IcsMerger.merge} replaces the master VEVENT wholesale, and
+   * on a server that records its own owner's answer <b>without moving the
+   * ETag</b> — BlueMind, measured on this rig — the conditional write succeeds
+   * and takes an answer nothing has read yet down with it.
+   *
+   * <p>
+   * A targeted rewrite cannot do that, and this pins the property rather than
+   * the intention: the other attendee's <b>answer</b> comes out of the write
+   * exactly as it went in. Read off that attendee's own line, not looked for
+   * anywhere in the document — a test asserting only that
+   * {@code PARTSTAT=ACCEPTED} appears somewhere would pass against a rewrite
+   * that had moved the answer onto the wrong line.
+   *
+   * <p>
+   * <b>The line itself is not byte-identical, and saying so is the point.</b>
+   * Measured here rather than assumed: a targeted rewrite still parses and
+   * re-serialises the whole object through ical4j, which normalises what it
+   * emits — the served {@code CN="benjamin mestrallet"} comes back as
+   * {@code CN=benjamin mestrallet}, because the quotes were not required. That
+   * is a spelling of the same statement and it is what the merge path has
+   * always done to every line it touches. What must not move, and does not, is
+   * the statement: the address named and the answer against it. Anything
+   * stronger asserted here would be pinning ical4j's serialiser rather than
+   * this add-on's behaviour, and would break on the next library bump for no
+   * user-visible reason.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void writingOneAttendeesAnswerLeavesTheOtherAttendeesAnswerUntouched() throws Exception {
+    String served = copyNaming(CAROL_ADDRESS, "NEEDS-ACTION", "ACCEPTED");
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+                                                                                     .thenReturn(new CalendarObject(HREF,
+                                                                                                                    "\"etag-1\"",
+                                                                                                                    served));
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(204,
+                                                                                                                                    "\"etag-2\"",
+                                                                                                                                    null));
+
+    service.pushAnswerOnto(USER, mapped(), List.of(CAROL_ADDRESS), "DECLINED");
+
+    ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString(), anyString(), anyString());
+    assertEquals("PARTSTAT=ACCEPTED",
+                 partStatOn(served, ACCOUNT),
+                 "the fixture must actually carry the holder's own answer, or this pins nothing");
+    assertEquals(partStatOn(served, ACCOUNT),
+                 partStatOn(written.getValue(), ACCOUNT),
+                 "the holder's own answer must come out of somebody else's answer untouched");
+    assertEquals("PARTSTAT=DECLINED", partStatOn(written.getValue(), CAROL_ADDRESS), written.getValue());
+  }
+
+  /**
+   * The copy already carries the answer, so nothing is written — and the
+   * caller is told it is settled rather than failed.
+   *
+   * <p>
+   * The guard the task names by name: without it one answer rewrites every
+   * copy that already agrees, every time anybody answers, moving N ETags for
+   * nothing and handing the verification pass N divergences of its own making.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void aCopyThatAlreadyCarriesTheAnswerIsNotWrittenAndIsSettled() throws Exception {
+    givenTheCopyAlsoNames(CAROL_ADDRESS, "ACCEPTED");
+
+    assertEquals(CaldavPushService.AnswerOutcome.ALREADY_SAID,
+                 service.pushAnswerOnto(USER, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
+
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  /**
+   * A copy that does not name the answerer at all is told apart from one that
+   * already agrees, because the two owe eXo opposite things: this one still
+   * needs a full rewrite to acquire the missing line, and the obligation the
+   * caller recorded is what brings one.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void aCopyThatDoesNotNameTheAnswererIsNotSettled() throws Exception {
+    givenTheCopySays("ACCEPTED");
+
+    assertEquals(CaldavPushService.AnswerOutcome.NOT_NAMED,
+                 service.pushAnswerOnto(USER, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
+
+    assertFalse(CaldavPushService.AnswerOutcome.NOT_NAMED.settles());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * The write is conditional on the <b>holder's</b> recorded version, and a
+   * server that has moved on refuses it rather than overwriting whatever
+   * moved it. The same discipline every other ordinary write here follows.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void aConcurrentChangeToTheHoldersCopyIsRefusedRatherThanOverwritten() throws Exception {
+    givenTheCopyAlsoNames(CAROL_ADDRESS, "NEEDS-ACTION");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(412,
+                                                                                                                                    null,
+                                                                                                                                    null));
+
+    CaldavPushException failure =
+                                org.junit.jupiter.api.Assertions.assertThrows(CaldavPushException.class,
+                                                                             () -> service.pushAnswerOnto(USER,
+                                                                                                          mapped(),
+                                                                                                          List.of(CAROL_ADDRESS),
+                                                                                                          "ACCEPTED"));
+
+    assertEquals(CaldavPushService.CONFLICT, failure.getCode());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  /**
+   * A holder who has connected no account is refused with the code that says
+   * so, not with a silent false — the caller prints it without the word
+   * failure and leaves the copy owed, so the day they connect the sweep
+   * settles it.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void aHolderWithNoConnectedAccountIsRefusedAsAKnownState() throws Exception {
+    when(caldavConnectorStorage.getCaldavSetting(CAROL)).thenReturn(null);
+
+    CaldavPushException failure =
+                                org.junit.jupiter.api.Assertions.assertThrows(CaldavPushException.class,
+                                                                             () -> service.pushAnswerOnto(CAROL,
+                                                                                                          mapped(),
+                                                                                                          List.of(CAROL_ADDRESS),
+                                                                                                          "ACCEPTED"));
+
+    assertEquals(CaldavPushService.NOT_CONNECTED, failure.getCode());
+    assertTrue(CaldavPushService.isKnownState(failure.getCode()));
+  }
+
+  /**
+   * The answerer need not have connected an account for the other attendees'
+   * copies to learn their answer, so the addresses that name them are
+   * available without one.
+   *
+   * <p>
+   * The profile address alone is the right answer here rather than a
+   * degraded one: a copy written for somebody else spells everybody but its
+   * own owner by their eXo profile address, which is exactly the line this
+   * has to find.
+   */
+  @Test
+  public void theAnswererIsNameableWithoutAConnectedAccount() {
+    when(caldavConnectorStorage.getCaldavSetting(CAROL)).thenReturn(null);
+    when(agendaEventIcsMapper.addressOf(CAROL)).thenReturn(CAROL_ADDRESS);
+
+    assertEquals(List.of(CAROL_ADDRESS), service.addressesNaming(CAROL));
+  }
+
+  /**
+   * And an account that <i>is</i> connected contributes its own address as
+   * well, most specific first — a copy in a deployment may have been written
+   * under either spelling.
+   */
+  @Test
+  public void aConnectedAnswererIsNameableByBothSpellings() {
+    assertEquals(List.of(ACCOUNT, PROFILE), service.addressesNaming(USER));
+  }
+
+  /**
+   * The object the server holds, naming this account's owner with one answer
+   * and one other attendee with another.
+   *
+   * @param address the other attendee's address
+   * @param partStat the answer the copy currently carries for them
+   */
+  private void givenTheCopyAlsoNames(String address, String partStat) {
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+                                                                                     .thenReturn(new CalendarObject(HREF,
+                                                                                                                    "\"etag-1\"",
+                                                                                                                    copyNaming(address,
+                                                                                                                               partStat,
+                                                                                                                               "ACCEPTED")));
+  }
+
+  /**
+   * A calendar object naming two attendees, as a server serves it.
+   *
+   * @param address the second attendee's address
+   * @param theirPartStat the answer the copy carries for them
+   * @param ownersPartStat the answer the copy carries for the account's owner
+   * @return the object
+   */
+  private String copyNaming(String address, String theirPartStat, String ownersPartStat) {
+    return String.join("\r\n",
+                       "BEGIN:VCALENDAR",
+                       "VERSION:2.0",
+                       "PRODID:-//eXo//caldav//EN",
+                       "BEGIN:VEVENT",
+                       "UID:evt-1",
+                       "DTSTAMP:20260826T150000Z",
+                       "DTSTART:20260908T090000Z",
+                       "DTEND:20260908T100000Z",
+                       "SUMMARY:invit5",
+                       "ORGANIZER;CN=Root Root:mailto:root@stalwart.local",
+                       "ATTENDEE;CN=\"benjamin mestrallet\";PARTSTAT=" + ownersPartStat
+                           + ";SCHEDULE-AGENT=CLIENT:mailto:" + ACCOUNT,
+                       "ATTENDEE;CN=Carol;PARTSTAT=" + theirPartStat + ";SCHEDULE-AGENT=CLIENT:mailto:" + address,
+                       "END:VEVENT",
+                       "END:VCALENDAR",
+                       "");
+  }
+
+  /**
+   * The ATTENDEE line naming one address, unfolded, so that two documents can
+   * be compared line for line whatever width either was serialised at.
+   *
+   * @param document a calendar object
+   * @param address the address whose line is wanted
+   * @return the line, without its line break
+   */
+  private String attendeeLine(String document, String address) {
+    String unfolded = document.replace("\r\n ", "").replace("\n ", "");
+    for (String line : unfolded.split("\r?\n")) {
+      if (line.startsWith("ATTENDEE") && line.contains(address)) {
+        return line;
+      }
+    }
+    return "";
+  }
+
+  /**
+   * The PARTSTAT parameter carried by the ATTENDEE line naming one address.
+   *
+   * <p>
+   * Read off <b>that</b> line rather than searched for in the document,
+   * because the whole question the anti-clobber pin asks is whose answer is
+   * whose. Answers a marker rather than null when the line or the parameter is
+   * absent, so a comparison against it fails loudly instead of comparing two
+   * nothings and passing.
+   *
+   * @param document a calendar object
+   * @param address the attendee whose answer is wanted
+   * @return the {@code PARTSTAT=...} segment, or a marker naming what was
+   *         missing
+   */
+  private String partStatOn(String document, String address) {
+    String line = attendeeLine(document, address);
+    if (line.isEmpty()) {
+      return "(no line naming " + address + ")";
+    }
+    for (String parameter : line.split(";")) {
+      if (parameter.startsWith("PARTSTAT=")) {
+        // The value follows the last parameter after a colon, and the merger's
+        // remove-then-add leaves PARTSTAT last on the line it rewrote — so the
+        // address rides along on that segment and has to be cut off.
+        return StringUtils.substringBefore(parameter, ":");
+      }
+    }
+    return "(no PARTSTAT on the line naming " + address + ")";
   }
 
   /**
