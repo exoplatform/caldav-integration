@@ -60,8 +60,12 @@ import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
+import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
 
 /**
  * The outward half of answering a meeting.
@@ -269,6 +273,231 @@ public class CaldavAnswerPushTest {
 
     verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
     verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  /**
+   * The rig's exact case (EXO-89895): the organiser of a meeting answers it,
+   * and the write to their <b>own</b> copy is declined without a word of
+   * warning.
+   *
+   * <p>
+   * Twice on the rig, for two ordinary answers: "Answer of user 1 to event
+   * 1041 is not carried out: the copy at
+   * /dav/calendars/__uids__/751E&hellip;.ics names none of
+   * [anais.francois@demo3.livecollab.fr], so there is no participation status
+   * of theirs to rewrite". Nothing broke — no obligation is recorded on this
+   * path and nothing retries — but the situation the WARN described is
+   * structurally impossible to avoid and entirely normal, so it fired for
+   * every organiser, for ever, and a warning nobody can act on is how people
+   * learn to ignore warnings.
+   *
+   * <p>
+   * <b>The copy here names none of this user's addresses</b>, which is the
+   * whole point rather than a detail of the fixture: that is what an
+   * organiser's copy looks like, because
+   * {@link org.exoplatform.caldav.ics.IcsWriter}'s {@code guests} leaves
+   * whoever heads the ORGANIZER line off the ATTENDEE lines. Everything else
+   * about the write is in working order — connected account, mapped copy, an
+   * object the server holds and would take a rewrite of — so only the skip may
+   * stop it, or this pins the wrong guard.
+   *
+   * <p>
+   * <b>And the level is the assertion.</b> That the copy is left alone was
+   * already true before the fix: the merger found no line to change and the
+   * method returned false. What changed is that it is said as an ordinary
+   * no-op instead of as an inconsistency somebody has to repair, so the pin is
+   * on there being no WARN at all rather than on the return value.
+   *
+   * <p>
+   * It also pins that the organiser is recognised by <b>identity</b>. This
+   * copy heads its ORGANIZER line with {@code root@stalwart.local} and names
+   * this user by neither of their two addresses, so nothing on the object
+   * could have identified them; agenda saying they created it is what does.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anOrganizerAnsweringTheirOwnEventIsDeclinedWithoutAWarning() throws Exception {
+    lenient().when(agendaEventService.getEventById(eq(EVENT), isNull(), eq(USER))).thenReturn(anEvent(EVENT, 0L, USER));
+    lenient().when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
+    lenient().when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+             .thenReturn(new CalendarObject(HREF, "\"etag-1\"", copy("NEEDS-ACTION").replace(ACCOUNT, CAROL_ADDRESS)));
+    givenTheEventWasCreatedBy(USER);
+
+    List<ILoggingEvent> recorded;
+    try (LogRecorder log = new LogRecorder(CaldavPushService.class)) {
+      assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+      recorded = List.copyOf(log.events());
+    }
+
+    assertTrue(recorded.stream().noneMatch(line -> line.getLevel() == Level.WARN),
+               "an organiser's own answer is a normal no-op, not an inconsistency somebody can repair: " + recorded);
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  /**
+   * And it declines before the copy is even looked for.
+   *
+   * <p>
+   * Kept apart from the level, because it is a different claim. There is no
+   * participation status of theirs on any copy, so locating the object and
+   * fetching it could only ever end at the refusal, having spent a round trip
+   * against somebody's calendar server to get there. On a deployment where
+   * organisers answer their own meetings — which is most of them — that is one
+   * wasted request per answer, for ever.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anOrganizersOwnAnswerCostsNoRoundTrip() throws Exception {
+    // Everything the write would have needed is laid out and left unused: the
+    // meeting is copied, the mapping carries an ETag and the server holds the
+    // object. Without the skip this reaches the server; with it, nothing here
+    // is ever touched, which is what the verifications say.
+    lenient().when(agendaEventService.getEventById(eq(EVENT), isNull(), eq(USER))).thenReturn(anEvent(EVENT, 0L, USER));
+    lenient().when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
+    lenient().when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+             .thenReturn(new CalendarObject(HREF, "\"etag-1\"", copy("NEEDS-ACTION").replace(ACCOUNT, CAROL_ADDRESS)));
+    givenTheEventWasCreatedBy(USER);
+
+    assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+
+    verify(agendaRemoteEventService, never()).findRemoteEvent(anyLong(), anyLong());
+    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * The pin that stops the fix swallowing the anomaly it was carved out of: a
+   * copy naming none of the answerer's addresses, when the answerer does
+   * <b>not</b> organise the meeting, still warns.
+   *
+   * <p>
+   * That state is a real inconsistency — a copy on somebody's own account that
+   * does not name the person it was written for — and it is what the message
+   * was written for. Quietening it along with the organiser's case is how this
+   * change would go wrong, and it would go wrong silently, which is the only
+   * reason a test asserts on a log line here at all.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void aCopyNamingSomebodyWhoDoesNotOrganizeTheMeetingStillWarns() throws Exception {
+    givenTheMeetingIsCopied();
+    givenTheEventWasCreatedBy(CAROL);
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+                                                                                     .thenReturn(new CalendarObject(HREF,
+                                                                                                                    "\"etag-1\"",
+                                                                                                                    copy("DECLINED").replace(ACCOUNT,
+                                                                                                                                             CAROL_ADDRESS)));
+
+    List<ILoggingEvent> recorded;
+    try (LogRecorder log = new LogRecorder(CaldavPushService.class)) {
+      assertFalse(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+      recorded = List.copyOf(log.events());
+    }
+
+    List<ILoggingEvent> warnings = recorded.stream().filter(line -> line.getLevel() == Level.WARN).toList();
+    assertEquals(1, warnings.size(), "a copy that does not name the person it belongs to is still an incident: " + recorded);
+    assertTrue(warnings.get(0).getFormattedMessage().contains("names none of"), warnings.get(0).getFormattedMessage());
+  }
+
+  /**
+   * The skip is about who <i>this answerer</i> is, and not about the event
+   * having an organiser at all — every meeting has one.
+   *
+   * <p>
+   * The matched half of the pin above, and the behaviour that has to survive
+   * the fix: an ordinary attendee's answer still reaches their own copy of a
+   * meeting somebody else called.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anAttendeesAnswerStillReachesTheirOwnCopyOfSomebodyElsesMeeting() throws Exception {
+    givenTheMeetingIsCopied();
+    givenTheEventWasCreatedBy(CAROL);
+    givenTheCopySays("NEEDS-ACTION");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(204,
+                                                                                                                                    "\"etag-2\"",
+                                                                                                                                    null));
+
+    assertTrue(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+
+    ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString(), anyString(), anyString());
+    assertTrue(written.getValue().contains("PARTSTAT=ACCEPTED"), written.getValue());
+  }
+
+  /**
+   * The organiser is read on the event <b>as given</b>, not on its series —
+   * the way the render reads it.
+   *
+   * <p>
+   * {@code AgendaEventIcsMapper.toIcsEvent} is handed the occurrence when an
+   * occurrence is pushed and takes {@code getCreatorId()} off that, so an
+   * override whose creator differs from its series' has to be judged by its
+   * own or the skip answers a different question from the render it mirrors.
+   * Here the series was called by somebody else and this one instance by the
+   * answerer, and the answer is declined.
+   *
+   * <p>
+   * Note what is <i>not</i> being said. {@link CaldavPushService#pushAnswer}
+   * does resolve an occurrence to its series — but only to find the object the
+   * copy is filed under, which is a different question, asked separately by
+   * {@code icsUidOf} and answered from the mapping. Folding the two would make
+   * an override's organiser its series'.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anOccurrenceIsJudgedByItsOwnCreatorAsTheRenderIs() throws Exception {
+    long occurrenceId = 965L;
+    // The series says somebody else called this meeting. It is stubbed to say
+    // so and then deliberately never read: reading it is the mistake this pins.
+    lenient().when(agendaEventService.getEventById(EVENT)).thenReturn(anEvent(EVENT, 0L, CAROL));
+    when(agendaEventService.getEventById(occurrenceId)).thenReturn(anEvent(occurrenceId, EVENT, USER));
+    // And the whole write is laid out and left unused, so that a skip reading
+    // the series instead would go through to the server and be seen doing it,
+    // rather than stopping for some unrelated reason.
+    lenient().when(agendaEventService.getEventById(eq(occurrenceId), isNull(), eq(USER)))
+             .thenReturn(anEvent(occurrenceId, EVENT, USER));
+    lenient().when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
+    lenient().when(calDavClient.fetchObject(eq(endpoint), eq(HREF), eq(ACCOUNT), eq("secret")))
+             .thenReturn(new CalendarObject(HREF, "\"etag-1\"", copy("NEEDS-ACTION").replace(ACCOUNT, CAROL_ADDRESS)));
+
+    assertFalse(service.pushAnswer(USER, occurrenceId, "ACCEPTED"));
+
+    verify(agendaRemoteEventService, never()).findRemoteEvent(anyLong(), anyLong());
+    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * An event agenda cannot read does not suppress the write.
+   *
+   * <p>
+   * The same bias the fan-out takes. Proceeding costs at worst the doomed
+   * write the skip exists to prevent, for as long as agenda cannot answer,
+   * while refusing on an unreadable event would silently drop the answers of
+   * people who are not organisers at all — which is the defect this whole
+   * delivery is about, reintroduced by its own fix.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anUnreadableEventDoesNotSuppressTheAnswerersOwnWrite() throws Exception {
+    givenTheMeetingIsCopied();
+    givenTheCopySays("NEEDS-ACTION");
+    when(agendaEventService.getEventById(EVENT)).thenThrow(new IllegalStateException("agenda is having a moment"));
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString()))
+                                                                                                          .thenReturn(new PutResult(204,
+                                                                                                                                    "\"etag-2\"",
+                                                                                                                                    null));
+
+    assertTrue(service.pushAnswer(USER, EVENT, "ACCEPTED"));
+
+    verify(calDavClient).updateObject(any(), anyString(), anyString(), anyString(), anyString(), anyString());
   }
 
   /**
@@ -768,6 +997,39 @@ public class CaldavAnswerPushTest {
     event.setId(EVENT);
     when(agendaEventService.getEventById(eq(EVENT), isNull(), eq(USER))).thenReturn(event);
     when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
+  }
+
+  /**
+   * Declares who agenda records as having created the event — the predicate
+   * the render heads its ORGANIZER line with, and the only thing the organiser
+   * skip is keyed on.
+   *
+   * <p>
+   * Read without a viewer, which is the single-argument call rather than the
+   * three-argument one {@code icsUidOf} makes: the question is about the shape
+   * of the render and not about anybody's visibility.
+   *
+   * @param creatorIdentityId who called the meeting
+   */
+  private void givenTheEventWasCreatedBy(long creatorIdentityId) {
+    when(agendaEventService.getEventById(EVENT)).thenReturn(anEvent(EVENT, 0L, creatorIdentityId));
+  }
+
+  /**
+   * An agenda event as this suite needs to state one: an id, a series if it is
+   * an override, and a creator.
+   *
+   * @param id the event's own id
+   * @param parentId the series it overrides, or 0 when it is not an override
+   * @param creatorIdentityId who called the meeting
+   * @return the event
+   */
+  private Event anEvent(long id, long parentId, long creatorIdentityId) {
+    Event event = new Event();
+    event.setId(id);
+    event.setParentId(parentId);
+    event.setCreatorId(creatorIdentityId);
+    return event;
   }
 
   /**
