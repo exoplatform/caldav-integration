@@ -1169,7 +1169,7 @@ public class CaldavPushService {
   /**
    * Writes one person's answer onto somebody else's copy of the same meeting.
    *
-   * <h2>The half of answering that was never built (EXO-89868)</h2>
+   * <h4>The half of answering that was never built (EXO-89868)</h4>
    *
    * <p>
    * {@link #pushAnswer} opens by reading <b>the answerer's own</b> account and
@@ -1188,7 +1188,7 @@ public class CaldavPushService {
    * <b>answerer's</b> addresses decide which ATTENDEE line on that object is
    * rewritten.
    *
-   * <h2>Why a targeted line rewrite and not a rewrite of the event</h2>
+   * <h4>Why a targeted line rewrite and not a rewrite of the event</h4>
    *
    * <p>
    * Because a full rewrite would destroy answers. {@link IcsMerger#merge}
