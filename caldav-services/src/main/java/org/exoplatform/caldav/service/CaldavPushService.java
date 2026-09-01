@@ -955,6 +955,20 @@ public class CaldavPushService {
    * name the user it belongs to — are WARN, because each is an inconsistency
    * somebody has to repair rather than a user simply not using the feature.
    *
+   * <p>
+   * <b>An organiser answering their own event is an ordinary no-op, and used
+   * not to read as one</b> (EXO-89895). Their own copy names them on its
+   * ORGANIZER line and never on an ATTENDEE one, so the last of those WARNs —
+   * "the copy at &hellip; names none of &hellip;" — fired for a situation that
+   * is structurally impossible to avoid and entirely normal, for every
+   * organiser, for ever. Nothing broke: no obligation is recorded here and
+   * nothing retries. But an inconsistency nobody can repair is not an
+   * inconsistency, and a warning nobody can act on is how people learn to
+   * ignore warnings. It is now recognised by {@link #isOrganizerOf} and
+   * declined at DEBUG, the same question the fan-out asks and from the same
+   * place. <b>The WARN stays for the genuine case</b>: a copy naming none of a
+   * <i>non-organiser's</i> addresses really is a state somebody has to repair.
+   *
    * @param userIdentityId identity of the user whose answer was recorded
    * @param eventId the agenda event answered — an occurrence is resolved to
    *          its series, which is what the copy is written under
@@ -966,6 +980,20 @@ public class CaldavPushService {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (!connected(settings)) {
       LOG.debug("Answer of user {} to event {} is not carried out: no connected CalDAV account", userIdentityId, eventId);
+      return false;
+    }
+    if (isOrganizerOf(eventId, userIdentityId)) {
+      // EXO-89895. Asked here — before the copy is even looked for — because
+      // it is a statement about the answer and not about the copy: there is no
+      // participation status of theirs on any copy, so finding the object,
+      // fetching it and merging into it could only ever end at the NOT_NAMED
+      // warning below, having spent a round trip to get there. The fan-out
+      // places its own copy of this guard in the same position, and the two
+      // have to read alike.
+      LOG.debug("Answer of user {} to event {} is not carried out: they organize it, so their own copy names them on its"
+          + " ORGANIZER line and never on an ATTENDEE one, and there is no participation status of theirs on it to rewrite",
+                userIdentityId,
+                eventId);
       return false;
     }
     List<String> addresses = addressesNaming(userIdentityId, settings);
@@ -1164,6 +1192,119 @@ public class CaldavPushService {
       settings = null;
     }
     return addressesNaming(userIdentityId, settings);
+  }
+
+  /**
+   * Whether a copy of this event names this user as its ORGANIZER, and so
+   * never as an ATTENDEE.
+   *
+   * <h4>Why answering has to ask, on both of its halves</h4>
+   *
+   * <p>
+   * Because a copy never carries an organiser's participation status, so there
+   * is nothing on one for an answer to rewrite — structurally, on every
+   * holder's copy including their own, by design.
+   * {@link org.exoplatform.caldav.ics.IcsWriter}'s {@code guests} excludes
+   * whoever heads the ORGANIZER line from the ATTENDEE lines (EXO-89768: a
+   * server whose model holds an organizer and a list of attendees that
+   * excludes them silently drops the duplicate, and the repair loop that
+   * followed could never close). In eXo they <i>are</i> an attendee and their
+   * answer is recorded like anybody's; the copy simply never says so.
+   *
+   * <p>
+   * Measured, not reasoned, and twice. EXO-89868 found it on the fan-out: on
+   * the rig, root organised event 1040 and answered it, and every other
+   * holder's copy refused the write with "it names none of [root's address],
+   * so there is no participation status of theirs to rewrite". EXO-89895 found
+   * the same refusal on {@link #pushAnswer}, which writes the answerer's
+   * <b>own</b> copy and had never been told: "Answer of user 1 to event 1041
+   * is not carried out: the copy at /dav/calendars/__uids__/751E&hellip;.ics
+   * names none of [anais.francois@demo3.livecollab.fr]".
+   *
+   * <h4>Why it lives here, once, rather than in each caller</h4>
+   *
+   * <p>
+   * Because two callers now need it and a rule that recognises one side of a
+   * pair and not its neighbour is the failure shape this delivery has paid for
+   * repeatedly. {@link CaldavEventPropagationService#propagateAnswer} asked it
+   * privately from EXO-89868; {@link #pushAnswer} needed the same answer from
+   * EXO-89895, and the fan-out already reaches across for the sibling question
+   * — {@link #addressesNaming(long)}, "by what addresses would a copy name
+   * this person" — so this is where the questions about <i>whom a copy names,
+   * and how</i> already live. It is also the class holding
+   * {@link AgendaEventIcsMapper}, whose {@code organizerOf} and
+   * {@code organizerIsPusher} are the render this predicate mirrors, and
+   * {@code AgendaEventService}, the read it needs: no new collaborator, and no
+   * second reading of the event that could drift from this one. The arrow only
+   * runs this way — the fan-out depends on this service and not the reverse —
+   * so asking it of the fan-out instead would have been a bean cycle.
+   * {@link CaldavCopyPolicy} was the other candidate and is ruled out by its
+   * own contract: it takes an event it does not read and deliberately refuses
+   * to answer for one that cannot be read, which is exactly the half this has
+   * to own.
+   *
+   * <h4>What this deliberately does not fix</h4>
+   *
+   * <p>
+   * Whether a copy <i>should</i> name an attending organiser on both lines.
+   * RFC 5545 expects both, and Google, Outlook and macOS all emit both, so
+   * there is a real case that the render is what is wrong here. That is a
+   * product decision Benjamin is keeping apart from this change, and it
+   * belongs to neither caller: if it is ever taken, it is
+   * {@code IcsWriter.guests} that changes, and <b>this method is what comes
+   * out</b> — the skip exists only for as long as the render omits the line.
+   *
+   * <h4>Decided the way the mapper decides it</h4>
+   *
+   * <p>
+   * On {@code getCreatorId()}, by identity, which is what
+   * {@code AgendaEventIcsMapper.organizerOf} and {@code toIcsEvent}'s
+   * {@code organizerIsPusher} both use. Emphatically <b>not</b> by comparing
+   * addresses, although {@code guests} compares addresses: the creator's own
+   * attendee line is spelled with the address their CalDAV account answers to
+   * and their ORGANIZER line with their eXo profile address, so an address
+   * comparison answers differently for the same person depending on whose copy
+   * is being looked at — and on their own copy, which is what
+   * {@link #pushAnswer} writes, it is the two spellings of one person that
+   * would be compared. A skip keyed on anything but the render's own predicate
+   * would drift from the render it mirrors.
+   *
+   * <p>
+   * Read on the event as given rather than on its series, for the same reason:
+   * {@code toIcsEvent} is handed the occurrence when an occurrence is pushed
+   * and reads {@code getCreatorId()} off that, so an override whose creator
+   * differs from its series' must be judged by its own. Note that
+   * {@link #pushAnswer} does resolve an occurrence to its series — but only to
+   * find the <i>object</i> the copy is filed under, which is a different
+   * question with a different answer, and it is asked separately by
+   * {@code icsUidOf}.
+   *
+   * <p>
+   * Read without a viewer, like the fan-out's own {@code readEvent} does. This
+   * is asked about the shape of the render and not about anybody's visibility,
+   * and a viewer-scoped read would make the answer depend on who happened to
+   * be asking — the very thing the identity comparison is here to avoid.
+   *
+   * <p>
+   * An event that cannot be read answers false, and the caller goes ahead.
+   * Proceeding costs at worst the doomed write this method exists to prevent,
+   * for as long as agenda cannot answer, while refusing on an unreadable event
+   * would silently drop the answers of people who are not organisers at all —
+   * which is the defect this whole delivery is about.
+   *
+   * @param eventId the agenda event answered, master or occurrence
+   * @param identityId identity of the user whose answer was recorded
+   * @return true when a copy of this event names them as its organizer
+   */
+  public boolean isOrganizerOf(long eventId, long identityId) {
+    Event event;
+    try {
+      event = agendaEventService.getEventById(eventId);
+    } catch (Exception | LinkageError e) {
+      LOG.debug("Event {} could not be read; user {} is not treated as its organizer", eventId, identityId, e);
+      return false;
+    }
+    return event != null && event.getCreatorId() == identityId;
   }
 
   /**
