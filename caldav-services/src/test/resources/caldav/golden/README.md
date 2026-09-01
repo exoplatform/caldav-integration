@@ -160,6 +160,18 @@ flag them, and PR3 must waive them **by name**, never silently:
   Stalwart's expansion flattens them anyway.
 - **BlueMind-held read goldens** — no credentials in this session, by design;
   the BlueMind capture script exists precisely to add its transcripts.
+- **`TRANSP:TRANSPARENT`** — no golden carries it, and none can: the corpus is
+  what the *browser connector* produced, and it wrote `TRANSP:OPAQUE`
+  unconditionally. eXo started writing TRANSPARENT in EXO-89870, for the copy
+  of an event its owner marked `FREE`. Whether a server keeps it is a fact
+  about the server, so it is asked of one rather than frozen here:
+  `HttpCalDavClientStalwartTest.theServerKeepsTheAvailabilityEXoWrote` pushes
+  the property to the live rig and reads it back verbatim. BlueMind is
+  unreachable from a test; if it rewrites the property to the `OPAQUE` default,
+  that folds to the default and therefore to nothing in the comparison, so the
+  divergence takes the shape of a *dropped* property and is excusable through
+  the per-server dropped list the quirk drawer already offers (EXO-89771) — no
+  new catalogue entry and no change here.
 
 ## Regenerating
 

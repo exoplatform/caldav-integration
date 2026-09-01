@@ -277,10 +277,37 @@ public class CaldavEventPropagationServiceTest {
                  service.propagateUpdate(EVENT,
                                          EnumSet.of(AgendaEventModificationType.UPDATED,
                                                     AgendaEventModificationType.COLOR_UPDATED,
-                                                    AgendaEventModificationType.AVAILABILITY_UPDATED)));
+                                                    AgendaEventModificationType.ALLOW_INVITE_UPDATED)));
 
     verify(caldavSyncStorage, never()).getObjectsByEvent(anyLong(), anyInt(), anyInt());
     verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyLong());
+  }
+
+  /**
+   * Availability used to sit in that set, and EXO-89870 took it out.
+   *
+   * <p>
+   * The justification for it being there was that {@code TRANSP} was written
+   * {@code OPAQUE} unconditionally, so nothing about availability could reach
+   * the object. It can now: an event marked {@code FREE} is copied with
+   * {@code TRANSP:TRANSPARENT}. Left in the deny-list, the one modification
+   * that moves that property would have been the one modification no rewrite
+   * is issued for, and the copy would have gone on claiming the owner's time
+   * until the mirror sweep noticed the divergence and repaired it — a repair
+   * standing in for an edit nobody carried.
+   */
+  @Test
+  public void aChangeOfAvailabilityIsCarriedBecauseTheCopyStatesIt() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, EVENT)).thenReturn(new ObjectSync());
+
+    assertEquals(1,
+                 service.propagateUpdate(EVENT,
+                                         EnumSet.of(AgendaEventModificationType.UPDATED,
+                                                    AgendaEventModificationType.AVAILABILITY_UPDATED)));
+
+    verify(caldavPushService).pushAgendaEvent(ALICE, EVENT);
   }
 
   /**
