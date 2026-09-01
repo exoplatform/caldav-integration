@@ -293,6 +293,19 @@ public class IcsEquivalence {
    */
   private static final String              DESCRIPTION              = "DESCRIPTION";
 
+  /**
+   * The property naming a person invited to the event.
+   *
+   * <p>
+   * Named for the same reason as {@link #DESCRIPTION} above: four places decide
+   * something about an attendee line - the statement kind it is indexed under,
+   * whether a line is the calendar owner's own, whether it carries an address
+   * worth comparing, and which properties the answer is read from. A rename
+   * that missed one of them would silently change what is compared, and the
+   * pairing this class does depends on all four agreeing.
+   */
+  private static final String              ATTENDEE                 = "ATTENDEE";
+
   private static final Set<String>         IGNORED_EVENT_PROPERTIES = Set.of("DTSTAMP", "CREATED", "LAST-MODIFIED");
 
   /**
@@ -308,7 +321,7 @@ public class IcsEquivalence {
                                                                              "URL",
                                                                              "CONFERENCE",
                                                                              "ORGANIZER",
-                                                                             "ATTENDEE",
+                                                                             ATTENDEE,
                                                                              "STATUS",
                                                                              "TRANSP",
                                                                              "RECURRENCE-ID",
@@ -1064,7 +1077,7 @@ public class IcsEquivalence {
       }
       return List.of(IcsStatement.UNRECOGNISED + name + "=" + value);
     }
-    if ("ATTENDEE".equals(name) && ownerAddresses.contains(bareAddress(value))) {
+    if (ATTENDEE.equals(name) && ownerAddresses.contains(bareAddress(value))) {
       return List.of(ownerStatement(property));
     }
     String suffix = normaliseParameters(property);
@@ -1102,7 +1115,7 @@ public class IcsEquivalence {
       // "immediately after" can only be read once that is one space.
       return LINKIFIED_URI_REPEAT.matcher(collapsed).replaceAll("$1$2");
     }
-    if ("ORGANIZER".equals(name) || "ATTENDEE".equals(name)) {
+    if ("ORGANIZER".equals(name) || ATTENDEE.equals(name)) {
       // A calendar address is a URI: its scheme and its host are
       // case-insensitive, and servers do re-case them. Nobody edits a meeting
       // by changing the case of an address, so the whole value is folded
@@ -1200,7 +1213,7 @@ public class IcsEquivalence {
                                                   ServerExcusals excusals) {
     Map<String, AttendeeLine> lines = new TreeMap<>();
     for (Property property : event.getProperties()) {
-      if (!"ATTENDEE".equalsIgnoreCase(property.getName())) {
+      if (!ATTENDEE.equalsIgnoreCase(property.getName())) {
         continue;
       }
       String address = bareAddress(property.getValue());
