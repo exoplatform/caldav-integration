@@ -29,6 +29,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
+import org.exoplatform.agenda.constant.EventAvailability;
 import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
@@ -184,10 +185,12 @@ public class AgendaEventIcsMapper {
                    // eXo hides a cancelled event from its own screens, so the
                    // only place its attendees can still be told the meeting is
                    // off is the copy. Carried as a flag rather than the status
-                   // itself: TENTATIVE is eXo's word for a date poll, which is
-                   // never pushed, so CANCELLED is the only other thing a copy
-                   // can truthfully say.
+                   // itself: TENTATIVE is eXo's word for a date poll, which the
+                   // copy never spells — the writer states CONFIRMED for every
+                   // event that is not cancelled — so CANCELLED is the only
+                   // other thing this flag can say.
                    .cancelled(event.getStatus() == EventStatus.CANCELLED)
+                   .transparent(transparent(event))
                    // Exclusions are deliberately absent: agenda's model exposes
                    // no list of excluded instances, and deleting an occurrence
                    // goes through a rewrite of the stored object instead. Left
@@ -196,6 +199,37 @@ public class AgendaEventIcsMapper {
                    // cancelled.
                    .exceptionDates(List.of())
                    .build();
+  }
+
+  /**
+   * Whether the copy states that this time is still free.
+   *
+   * <p>
+   * {@code EventAvailability.FREE} means precisely what
+   * {@code TRANSP:TRANSPARENT} means, and no copy has ever carried it: the
+   * field is on the event, on the entity, on the REST payload and in agenda's
+   * modification types, so an owner who sets it has stated exactly this — and
+   * the copy went on saying the opposite on every other calendar they own.
+   * That is the whole of this decision; nothing else about the event is read
+   * into the property.
+   *
+   * <p>
+   * <b>Everything else claims the time.</b> {@code BUSY}, {@code DEFAULT} and
+   * an unset availability are all written {@code OPAQUE}, which is what the
+   * event drawer produces today since it exposes no availability control at
+   * all. So this reaches a copy only where a caller has deliberately marked
+   * the event free, and it stops the moment they unmark it: nothing is
+   * remembered between two renders, and agenda broadcasts the change as
+   * {@code AVAILABILITY_UPDATED}, which
+   * {@code CaldavEventPropagationService} carries (it is deliberately absent
+   * from {@code INVISIBLE_ON_A_COPY}) so that every existing copy is
+   * rewritten.
+   *
+   * @param event the agenda event being copied
+   * @return true when the copy must carry {@code TRANSP:TRANSPARENT}
+   */
+  private boolean transparent(Event event) {
+    return event.getAvailability() == EventAvailability.FREE;
   }
 
   /**

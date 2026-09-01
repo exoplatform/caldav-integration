@@ -42,6 +42,7 @@ import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
+import org.exoplatform.agenda.constant.EventAvailability;
 import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.constant.ReminderPeriodType;
 import org.exoplatform.agenda.model.Event;
@@ -590,8 +591,7 @@ public class AgendaEventIcsMapperTest {
   }
 
   /**
-   * And an ordinary meeting is not, whichever of eXo's other statuses it
-   * carries — TENTATIVE is eXo's word for a date poll, which is never pushed.
+   * And an ordinary meeting is not.
    */
   @Test
   public void anOrdinaryEventIsNotMappedAsCancelled() {
@@ -600,6 +600,65 @@ public class AgendaEventIcsMapperTest {
     event.setStatus(EventStatus.CONFIRMED);
 
     assertFalse(mapper.toIcsEvent(event, "uid-1", PUSHER).isCancelled());
+  }
+
+  // ------------------------------- what claims the owner's time (EXO-89870)
+
+  /**
+   * The defect this ticket was opened for: the platform's own notion of
+   * availability, which no copy had ever carried.
+   *
+   * <p>
+   * {@code EventAvailability.FREE} means exactly what
+   * {@code TRANSP:TRANSPARENT} means — it is on the event, on the entity, on
+   * the REST payload and in agenda's modification types — and an owner who set
+   * it was still written busy onto every other calendar they own, which is the
+   * opposite of what they asked for.
+   */
+  @Test
+  public void anEventMarkedFreeIsCopiedAsFree() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    Event event = event();
+    event.setStatus(EventStatus.CONFIRMED);
+    event.setAvailability(EventAvailability.FREE);
+
+    assertTrue(mapper.toIcsEvent(event, "uid-1", PUSHER).isTransparent());
+  }
+
+  /**
+   * A cancelled meeting is not a free one. The two statements are separate
+   * properties saying separate things, and folding one into the other would
+   * make a struck-through meeting silently free its time as well.
+   */
+  @Test
+  public void aCancelledMeetingIsNotAlsoMappedAsFreeTime() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    Event event = event();
+    event.setStatus(EventStatus.CANCELLED);
+
+    assertFalse(mapper.toIcsEvent(event, "uid-1", PUSHER).isTransparent());
+  }
+
+  /**
+   * And the bound that keeps this from reaching an event nobody marked free:
+   * {@code BUSY}, {@code DEFAULT} and an unset availability are all busy. The
+   * event drawer exposes no availability control at all, so every event it
+   * creates lands on the last of those three.
+   */
+  @Test
+  public void anythingButFreeStillClaimsTheTime() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    Event event = event();
+    event.setStatus(EventStatus.CONFIRMED);
+
+    event.setAvailability(EventAvailability.BUSY);
+    assertFalse(mapper.toIcsEvent(event, "uid-1", PUSHER).isTransparent(), "BUSY claims the time");
+
+    event.setAvailability(EventAvailability.DEFAULT);
+    assertFalse(mapper.toIcsEvent(event, "uid-1", PUSHER).isTransparent(), "DEFAULT is not FREE");
+
+    event.setAvailability(null);
+    assertFalse(mapper.toIcsEvent(event, "uid-1", PUSHER).isTransparent(), "an unset availability is not FREE");
   }
 
   private Event event() {

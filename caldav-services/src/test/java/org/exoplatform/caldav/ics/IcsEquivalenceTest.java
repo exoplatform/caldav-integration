@@ -240,6 +240,50 @@ public class IcsEquivalenceTest {
     assertDifferent(EXO.replace("TRANSP:OPAQUE", "TRANSP:TRANSPARENT"));
   }
 
+  // -------------------------- a copy eXo itself writes free (EXO-89870)
+
+  /**
+   * The convergence pin, and the one that matters.
+   *
+   * <p>
+   * Since EXO-89870 eXo writes {@code TRANSP:TRANSPARENT} itself, on the copy
+   * of an event its owner marked {@code FREE} — a property this engine did not
+   * previously emit at all. A copy gaining a statement eXo did not previously
+   * write is exactly the shape of EXO-89826 and EXO-89828: one statement
+   * present on one side, absent on the other, judged altered and repaired on
+   * every sweep for ever. It is not that shape only if a server that kept what
+   * eXo wrote compares equal to what eXo writes next time, so that is what this
+   * asserts, on both sides of the property at once.
+   */
+  @Test
+  public void aFreeCopyTheServerKeptIsNotRePushed() {
+    String free = EXO.replace("TRANSP:OPAQUE", "TRANSP:TRANSPARENT");
+    // The fixture must really carry the statement, or this proves nothing.
+    assertNotEquals(EXO, free);
+
+    assertEquivalent(free, free);
+  }
+
+  /**
+   * And a free copy is not equal to a busy one in either direction, which is
+   * the bound on the relaxation above.
+   *
+   * <p>
+   * The direction that is new is the second: eXo renders the copy free and the
+   * server states the RFC default instead — a server that forces every event
+   * busy, or simply drops what it does not keep. That has to register,
+   * because the whole point of the property is that it reached the copy;
+   * silently tolerating its loss would fix the ticket in the render and leave
+   * the calendar showing exactly what it showed before.
+   */
+  @Test
+  public void aServerThatWillNotHoldTheCopyFreeIsStillReported() {
+    String free = EXO.replace("TRANSP:OPAQUE", "TRANSP:TRANSPARENT");
+
+    assertDifferent(EXO, free);
+    assertDifferent(EXO.replace("TRANSP:OPAQUE\r\n", ""), free);
+  }
+
   @Test
   public void aServerAddingTheDefaultSequenceIsNotAnEdit() {
     assertEquivalent(EXO.replace("STATUS:CONFIRMED", "SEQUENCE:0\r\nSTATUS:CONFIRMED"));

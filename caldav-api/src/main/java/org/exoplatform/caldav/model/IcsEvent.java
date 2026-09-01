@@ -127,10 +127,35 @@ public class IcsEvent {
    * <p>
    * The one thing about a meeting that is not a property of the meeting but a
    * statement about it, which is why it is a flag and not a status string. Every
-   * event this engine writes is CONFIRMED except a cancelled one — eXo spells a
-   * date poll TENTATIVE and a poll is never pushed, so the only other value
-   * RFC 5545 offers that eXo can ever mean is CANCELLED.
+   * event this engine writes is CONFIRMED except a cancelled one, so CANCELLED
+   * is the only other thing this flag can ever mean. eXo's third status,
+   * TENTATIVE, is its word for a date poll, and this sentence used to add that
+   * a poll is never pushed — which is false: the fan-out refuses one, but a
+   * poll's own author does push their own copy of it from their browser. It
+   * never reaches the copy as a status all the same, and whether a poll should
+   * be copied at all is EXO-89863's question rather than this flag's.
    */
   private boolean           cancelled;
+
+  /**
+   * Whether this copy states that its time is still free.
+   *
+   * <p>
+   * The RFC 5545 {@code TRANSP} property: {@code TRANSPARENT} means the event
+   * does not consume the owner's time, {@code OPAQUE} — the RFC default, and
+   * what every ordinary meeting carries — means it does. A flag rather than the
+   * property's own word for the same reason {@link #cancelled} is one: the
+   * engine takes a decision already made, not an iCalendar token to echo.
+   *
+   * <p>
+   * <b>Why an event ever says it.</b> Agenda's {@code EventAvailability.FREE}
+   * has always meant exactly what {@code TRANSP:TRANSPARENT} means — it is on
+   * the event, on the entity, on the REST payload and in agenda's modification
+   * types — and until EXO-89870 no copy carried it: an event its owner had
+   * marked free was written onto every other calendar as busy, which is the
+   * opposite of what they asked for. Every other value, {@code DEFAULT} and an
+   * unset availability included, is written {@code OPAQUE}.
+   */
+  private boolean           transparent;
 
 }
