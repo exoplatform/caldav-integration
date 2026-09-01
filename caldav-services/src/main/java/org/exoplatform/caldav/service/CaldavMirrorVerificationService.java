@@ -27,7 +27,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -166,6 +168,19 @@ public class CaldavMirrorVerificationService {
   /** The version stood in for an object the collection listing no longer carries. */
   private static final String          ABSENT       = "(absent)";
 
+  /**
+   * What a statement says when eXo cannot say it.
+   *
+   * <p>
+   * A <b>constant</b>, and that is load-bearing rather than tidy. The repair
+   * bound gives up when the same statement keeps failing, so a placeholder that
+   * varied — a timestamp, a random token, anything derived from the moment of
+   * the read — would look like a new statement on every pass, re-arm the budget
+   * for ever and quietly abolish abandonment. An event eXo cannot read is one
+   * eXo has nothing new to say about.
+   */
+  private static final String          UNSTATED     = "(unstated)";
+
   @Autowired
   private CalDavClient                 calDavClient;
 
@@ -214,6 +229,18 @@ public class CaldavMirrorVerificationService {
   private AgendaEventService           agendaEventService;
 
   /**
+   * Read for one thing only: the answer eXo holds for the owner of a copy.
+   *
+   * <p>
+   * It is half of what {@link #statementOf} calls a statement, and it is the
+   * half that made the repair bound wrong before EXO-89863 — a bound that could
+   * not see the answer could not tell yesterday's refused answer from today's
+   * new one.
+   */
+  @Autowired
+  private AgendaEventAttendeeService   agendaEventAttendeeService;
+
+  /**
    * How many times one object may be repaired before the pass stops trying.
    * Three is enough to ride out a server having a bad minute and few enough
    * that a genuine fight is over quickly.
@@ -229,7 +256,7 @@ public class CaldavMirrorVerificationService {
    * that something is going wrong right now, not a fact about the account
    * worth carrying across a restart.
    */
-  private final Map<String, Integer>   repairs      = new ConcurrentHashMap<>();
+  private final Map<String, RepairBudget> repairs   = new ConcurrentHashMap<>();
 
   /**
    * The version each abandoned object carried when the pass stopped arguing with
@@ -262,7 +289,7 @@ public class CaldavMirrorVerificationService {
    * to get another chance at. In memory, beside the repair counts, for the same
    * reason they are — this records what is going wrong right now.
    */
-  private final Map<String, String>    settled      = new ConcurrentHashMap<>();
+  private final Map<String, Settlement> settled     = new ConcurrentHashMap<>();
 
   /**
    * Compares every copy eXo pushed for a user against what the server holds.
@@ -597,9 +624,14 @@ public class CaldavMirrorVerificationService {
           held++;
           continue;
         }
-        if (giveUpOn(userIdentityId, object)) {
+        // Computed here rather than inside the bound, because both branches
+        // need the same one and re-deriving it between them could straddle an
+        // edit — the copy would then be given up on against a statement no
+        // comparison ever made.
+        Statement statement = statementOf(userIdentityId, object);
+        if (giveUpOn(userIdentityId, object, statement)) {
           abandoned++;
-          settled.put(keyOf(userIdentityId, object), versionOf(object, etags));
+          settled.put(keyOf(userIdentityId, object), new Settlement(statement.stamp(), versionOf(object, etags)));
         } else if (repair(userIdentityId, object, assessment.verdict())) {
           repaired++;
         }
@@ -1237,21 +1269,48 @@ public class CaldavMirrorVerificationService {
    * @param object the mapping row
    * @return true when the pass should leave it alone and say so
    */
-  private boolean giveUpOn(long userIdentityId, ObjectSync object) {
+  private boolean giveUpOn(long userIdentityId, ObjectSync object, Statement statement) {
     String key = keyOf(userIdentityId, object);
-    int attempts = repairs.merge(key, 1, Integer::sum);
-    if (attempts <= maxRepairs) {
+    // Compared, not merely counted. The budget belongs to a statement and not
+    // to a copy: the count starts again the moment eXo has something different
+    // to say, and goes on climbing for as long as it is saying the same thing.
+    // Written with compute() rather than merge() because the increment depends
+    // on the value already there, and two sweeps of the same account must not
+    // be able to interleave a read with a write.
+    RepairBudget budget =
+                        repairs.compute(key,
+                                        (ignored, previous) -> previous == null
+                                            || !StringUtils.equals(previous.stamp(), statement.stamp())
+                                                                                                       ? new RepairBudget(statement.stamp(),
+                                                                                                                          1)
+                                                                                                       : new RepairBudget(previous.stamp(),
+                                                                                                                          previous.attempts()
+                                                                                                                              + 1));
+    if (budget.attempts() <= maxRepairs) {
       return false;
     }
-    if (attempts == maxRepairs + 1) {
+    if (budget.attempts() == maxRepairs + 1) {
       // Once, not on every pass: this is a state, and repeating it every few
       // minutes would bury the log it is meant to stand out in.
-      LOG.warn("The copy at {} has been repaired {} times and keeps going wrong; eXo stops re-pushing it",
+      //
+      // It names the person and the answer as well as the copy (EXO-89863).
+      // An href alone told an administrator that something had been given up
+      // on without telling them what: "a copy is wrong" is not actionable,
+      // "eXo cannot get user 42's ACCEPTED onto this meeting" is. The answer
+      // is named even when the divergence was about something else, because
+      // it is the statement the budget is keyed on and therefore the thing
+      // that has to change before eXo tries again.
+      LOG.warn("The copy at {} has been repaired {} times and keeps going wrong; eXo stops re-pushing it."
+          + " What it is refusing is what eXo states for user {} on event {}, whose answer there is {}",
                object.getRemoteHref(),
-               maxRepairs);
+               maxRepairs,
+               userIdentityId,
+               object.getLocalEventId(),
+               statement.answer());
     }
     return true;
   }
+
 
   /**
    * Whether an object has already been abandoned and the server still publishes
@@ -1270,11 +1329,119 @@ public class CaldavMirrorVerificationService {
    */
   private boolean hasSettled(long userIdentityId, ObjectSync object, Map<String, String> etags) {
     String key = keyOf(userIdentityId, object);
-    if (repairs.getOrDefault(key, 0) <= maxRepairs) {
+    RepairBudget budget = repairs.get(key);
+    if (budget == null || budget.attempts() <= maxRepairs) {
       return false;
     }
-    return StringUtils.equals(settled.get(key), versionOf(object, etags));
+    Settlement settlement = settled.get(key);
+    if (settlement == null || !StringUtils.equals(settlement.version(), versionOf(object, etags))) {
+      // The server has moved since eXo stopped arguing: somebody wrote, and
+      // what they wrote may be an answer nothing has read. Looked at again,
+      // exactly as before.
+      return false;
+    }
+    // Nothing moved on the server. The remaining question — and the one that
+    // was never asked before EXO-89863 — is whether anything moved on ours: an
+    // abandoned copy has to be tried again once eXo has something new to say
+    // about it, or a server that refused yesterday's answer silently swallows
+    // tomorrow's and every edit after it.
+    //
+    // Asked here and nowhere earlier, deliberately. This is the only point at
+    // which the copy is known to be abandoned AND known to be unmoved, so the
+    // two agenda reads it costs are paid for the small set of copies eXo has
+    // given up on rather than for every copy on every pass.
+    return StringUtils.equals(settlement.stamp(), statementOf(userIdentityId, object).stamp());
   }
+
+  /**
+   * What eXo currently states about one copy.
+   *
+   * <h2>Why the bound needs this at all</h2>
+   *
+   * <p>
+   * The repair budget used to be keyed by the copy alone, so it was spent once
+   * and never re-armed: three refused repairs abandoned that copy for the life
+   * of the process. Two things were wrong with that, and they are the same
+   * thing seen twice. An answer the user gave <b>today</b> got no sweep at all
+   * if the server had refused a different answer yesterday — the copy was
+   * already out of budget, so a server that swallowed one answer swallowed
+   * every answer after it. And the abandonment was all-or-nothing: budget spent
+   * on a stripped PARTSTAT also abandoned that copy for a genuine edit weeks
+   * later, which had nothing to do with what the server had been refusing.
+   *
+   * <p>
+   * Both end if the budget belongs to <b>what eXo is trying to say</b> rather
+   * than to the copy it is trying to say it on. That is what this returns, and
+   * only two things can change it: the meeting was edited, or its owner's
+   * answer moved.
+   *
+   * <h2>Why a stamp of these two, and not a hash of the rendered object</h2>
+   *
+   * <p>
+   * The obvious "what eXo states" is the iCalendar document a push would write,
+   * and it is the wrong choice: {@code IcsWriter} stamps every render with a
+   * fresh {@code DTSTAMP}, so two renders of an unchanged meeting differ. Keyed
+   * on that, every pass would look like a new statement, the budget would
+   * re-arm for ever and abandonment would be abolished — the exact failure this
+   * change must not cause. The event's own update stamp and the recorded answer
+   * carry the same information without the volatility, and cost two reads
+   * instead of a serialisation.
+   *
+   * <p>
+   * {@code EventDAO.update} sets {@code updatedDate} to now on every update, so
+   * the first component moves on any edit to the meeting; the second is read
+   * the way {@code CaldavAnswerAdoptionService} reads it, off the series, since
+   * an override and its series share one answer.
+   *
+   * <p>
+   * Anything unreadable becomes {@link #UNSTATED} rather than something derived
+   * from the moment — see that constant for why a varying placeholder would
+   * destroy the bound it is supposed to serve.
+   *
+   * @param userIdentityId identity of the user whose copy it is
+   * @param object the mapping row
+   * @return the statement, never null
+   */
+  private Statement statementOf(long userIdentityId, ObjectSync object) {
+    Long localEventId = object.getLocalEventId();
+    if (localEventId == null || localEventId <= 0) {
+      return new Statement(UNSTATED, UNSTATED);
+    }
+    long seriesId = localEventId;
+    String eventVersion = UNSTATED;
+    try {
+      Event event = agendaEventService.getEventById(localEventId);
+      if (event != null) {
+        if (event.getParentId() > 0) {
+          seriesId = event.getParentId();
+        }
+        if (event.getUpdated() != null) {
+          // The instant, not the zoned form: the same moment must stamp the
+          // same way whatever zone the read came back in.
+          eventVersion = event.getUpdated().toInstant().toString();
+        }
+      }
+    } catch (Exception | LinkageError e) { // NOSONAR one unreadable event must not stop the pass
+      LOG.debug("Event {} could not be read; what eXo states about the copy of user {} is left unstated",
+                localEventId,
+                userIdentityId,
+                e);
+    }
+    String answer = UNSTATED;
+    try {
+      EventAttendeeResponse response = agendaEventAttendeeService.getEventResponse(seriesId, null, userIdentityId);
+      if (response != null) {
+        answer = response.name();
+      }
+    } catch (Exception | LinkageError e) { // NOSONAR agenda declares several checked exceptions on this path
+      LOG.debug("The answer of user {} to event {} could not be read; it is left unstated",
+                userIdentityId,
+                seriesId,
+                e);
+    }
+    return new Statement(eventVersion, answer);
+  }
+
 
   /**
    * The version the collection listing publishes for a copy, in the form the
@@ -1316,6 +1483,15 @@ public class CaldavMirrorVerificationService {
    * cleared would be consulted by {@link #hasSettled} for an object that is no
    * longer abandoned — harmless today because the count is checked first, and a
    * trap for the next change that reorders those two checks.
+   *
+   * <p>
+   * <b>Both maps stay keyed by user and href</b>, and the statement the budget
+   * is now keyed on (EXO-89863) lives in the <i>value</i> rather than in the
+   * key. That was the deciding argument for putting it there: a key carrying a
+   * statement would have to be matched by prefix here too, and any spelling of
+   * it that this sweep did not anticipate would survive the account that owned
+   * it — an entry attributed to a user who no longer exists, in a map nothing
+   * else ever prunes. One key shape, one prefix, nothing left behind.
    *
    * @param userIdentityId identity of the user
    */
@@ -1359,6 +1535,54 @@ public class CaldavMirrorVerificationService {
    */
   private String normalise(String etag) {
     return StringUtils.removeStart(StringUtils.strip(etag, "\""), "W/").replace("\"", "");
+  }
+
+  /**
+   * What eXo states about one copy: the version of the meeting it stands for,
+   * and the answer eXo holds for its owner.
+   *
+   * @param eventVersion when the meeting was last edited, or {@link #UNSTATED}
+   * @param answer the recorded response, by name, or {@link #UNSTATED}
+   */
+  private record Statement(String eventVersion, String answer) {
+
+    /**
+     * The two together, as the one value the repair budget is keyed on.
+     *
+     * @return the comparable form of this statement
+     */
+    private String stamp() {
+      return eventVersion + "|" + answer;
+    }
+  }
+
+  /**
+   * How many times eXo has tried to make one copy say one thing.
+   *
+   * <p>
+   * The statement travels with the count because that is what makes the count
+   * mean something: a budget that remembered only a number could never tell a
+   * server refusing the same thing for the fourth time from a server being
+   * asked something new.
+   *
+   * @param stamp the statement these attempts were spent on
+   * @param attempts how many have been spent
+   */
+  private record RepairBudget(String stamp, int attempts) {
+  }
+
+  /**
+   * The state one abandoned copy was left in.
+   *
+   * <p>
+   * Both halves are needed to decide whether to look at it again, and they
+   * answer different questions: the version says whether anybody has written to
+   * the copy since, the stamp whether eXo has anything new to write to it.
+   *
+   * @param stamp the statement eXo gave up on
+   * @param version what the server published for the copy at that moment
+   */
+  private record Settlement(String stamp, String version) {
   }
 
   /** What one copy turned out to be. */
