@@ -207,6 +207,22 @@ public class NormalisingServerMirrorTest {
     ReflectionTestUtils.setField(push, "agendaEventIcsMapper", agendaEventIcsMapper);
     ReflectionTestUtils.setField(push, "agendaRemoteEventService", agendaRemoteEventService);
     ReflectionTestUtils.setField(push, "agendaCalendarService", agendaCalendarService);
+    // EXO-89863 gave both services the same rule to consult before writing a
+    // copy or judging one. The real thing, not a mock: this rig builds real
+    // events and what it must keep proving is that an ordinary confirmed
+    // meeting is written and repaired exactly as it always was.
+    ReflectionTestUtils.setField(push, "caldavCopyPolicy", new CaldavCopyPolicy());
+    ReflectionTestUtils.setField(verification, "caldavCopyPolicy", new CaldavCopyPolicy());
+    ReflectionTestUtils.setField(verification, "agendaEventService", agendaEventService);
+    // The attendee reader the repair bound consults for the answer half of a
+    // statement (EXO-89863). Mocked and never stubbed: this rig is about which
+    // copies a normalising server makes look rewritten, and an unstubbed reader
+    // leaves the statement constant, which is the state its abandonment
+    // arithmetic was written against. Left null it would cost a caught
+    // NullPointerException and a debug line per copy per pass.
+    ReflectionTestUtils.setField(verification,
+                                 "agendaEventAttendeeService",
+                                 org.mockito.Mockito.mock(org.exoplatform.agenda.service.AgendaEventAttendeeService.class));
     ReflectionTestUtils.setField(verification, "caldavPushService", push);
     ReflectionTestUtils.setField(verification, "icsEquivalence", icsEquivalence);
     ReflectionTestUtils.setField(verification, "caldavAnswerAdoptionService", caldavAnswerAdoptionService);
