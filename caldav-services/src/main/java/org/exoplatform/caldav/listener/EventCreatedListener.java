@@ -55,16 +55,18 @@ import org.exoplatform.services.listener.Asynchronous;
  * {@code CONFIRMED}), but not subscribing is the honest way to say so.
  *
  * <p>
- * <b>That is a statement about the fan-out, not about the poll's author</b>,
- * and the sentence that used to stand here — "no copy of one is ever pushed" —
- * conflated the two. The creator's own browser pushes their own copy of
- * whatever they save, poll included ({@code AgendaConnector.vue} on
+ * <b>Not subscribing is a statement about the fan-out, and it used not to be
+ * enough.</b> The creator's own browser pushes their own copy of whatever they
+ * save, poll included ({@code AgendaConnector.vue} on
  * {@code agenda-event-saved}, through {@code CaldavPushRest} into
- * {@code CaldavPushService.pushAgendaEvent}, which carries no status guard),
- * and every path afterwards — the update listener, the retry pass, the mirror
- * sweep — keeps that copy in step because it is a copy like any other. So a
- * poll does reach a calendar today. Suppressing that copy entirely is tracked
- * separately, as EXO-89863; nothing here changes it.
+ * {@code CaldavPushService.pushAgendaEvent}), and every path afterwards kept
+ * that copy in step because it was a copy like any other — so a poll did reach
+ * a calendar, as a multi-day block spanning every option proposed. EXO-89863
+ * ended that: {@code CaldavPushService.pushAgendaEvent} now refuses a poll in
+ * the private core every writer comes through, and existing poll copies are
+ * retired by the propagation service and by the mirror sweep. This listener is
+ * unchanged by it — refusing to subscribe to {@code poll.created} remains the
+ * honest way to say the fan-out has nothing to do here.
  *
  * <h2>Why asynchronous, and why that is safe here</h2>
  *
