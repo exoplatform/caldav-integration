@@ -144,9 +144,15 @@ public class IcsWriter {
 
     // CONFIRMED for every event pushed, deliberately, rather than a mapping of
     // the agenda status: eXo spells a date poll TENTATIVE, which in RFC 5545
-    // means "provisionally scheduled" — a poll pushed with its own word would
-    // show up as a real meeting nobody has confirmed. An event only reaches
-    // this engine once it is scheduled, so the honest value is the constant.
+    // means "provisionally scheduled". This comment used to add that a poll
+    // never reaches this engine because "an event only reaches this engine once
+    // it is scheduled" — which is not true: the fan-out refuses a poll, but its
+    // author's own browser pushes their own copy of it on save, and every path
+    // afterwards keeps that copy in step. The constant stays all the same, and
+    // the copy is written CONFIRMED rather than TENTATIVE: STATUS is how a
+    // client decides whether to show an entry at all, and an entry spelled
+    // TENTATIVE is hidden outright by some clients. Whether a poll should be
+    // copied at all is a separate question, tracked as EXO-89863.
     //
     // CANCELLED is the one exception, and it is not a status mapping either:
     // it is the whole point of writing the copy again after a meeting is
@@ -154,9 +160,15 @@ public class IcsWriter {
     // absence, because a client shows a cancelled meeting struck through where
     // it shows a removed one not at all — and "not at all" is what a failed
     // synchronisation looks like too.
-    // TRANSP is the RFC default and is written for explicitness.
+    //
+    // TRANSP:OPAQUE is the RFC default and is written for explicitness — the
+    // comparison treats it as equal to its own absence, so a server dropping
+    // it as redundant is not an edit. TRANSPARENT is not a default and does
+    // not get that tolerance, which is the point: it is a statement the copy
+    // has to keep carrying while its owner means it, and one it must lose
+    // again the moment they stop.
     vEvent.getProperties().add(event.isCancelled() ? Status.VEVENT_CANCELLED : Status.VEVENT_CONFIRMED);
-    vEvent.getProperties().add(Transp.OPAQUE);
+    vEvent.getProperties().add(event.isTransparent() ? Transp.TRANSPARENT : Transp.OPAQUE);
 
     addRecurrence(vEvent, event, timeZone, occurrence);
 
