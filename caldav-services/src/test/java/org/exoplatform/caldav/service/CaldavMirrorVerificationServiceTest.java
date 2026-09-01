@@ -17,6 +17,8 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -25,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
@@ -33,8 +36,12 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,6 +55,11 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.exoplatform.agenda.constant.EventAttendeeResponse;
+import org.exoplatform.agenda.constant.EventStatus;
+import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.service.AgendaEventAttendeeService;
+import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -153,6 +165,9 @@ public class CaldavMirrorVerificationServiceTest {
       + "END:VCALENDAR\r\n";
 
   /** The same copy after a client rewrote the one thing eXo cannot let stand. */
+  /** When the meeting a copy stands for was last edited, in the tests that care. */
+  private static final ZonedDateTime         EDITED   = ZonedDateTime.parse("2026-09-01T09:00:00Z");
+
   private static final String                HIJACKED = ICS.replace("SUMMARY:Sprint review", "SUMMARY:Hijacked");
 
   @Mock
@@ -224,6 +239,35 @@ public class CaldavMirrorVerificationServiceTest {
   @Spy
   private IcsEquivalence                     icsEquivalence = new IcsEquivalence();
 
+  /**
+   * Agenda, asked one question by this pass and one only: what an event's
+   * status is now, so a copy standing for a date poll is retired instead of
+   * repaired (EXO-89863). Unstubbed it answers null for every event, which
+   * {@link CaldavCopyPolicy} reads as "says nothing" — every scenario written
+   * before that check existed therefore stays on the path it was written for.
+   */
+  @Mock
+  private AgendaEventService                agendaEventService;
+
+  /**
+   * Agenda's attendee side, read for one thing: the answer eXo holds for the
+   * owner of a copy, which is half of the statement the repair budget is keyed
+   * on. Unstubbed it answers null, which the service reads as "unstated" — a
+   * constant, so every scenario written before EXO-89863 keeps the stable
+   * statement its abandonment arithmetic depends on.
+   */
+  @Mock
+  private AgendaEventAttendeeService        agendaEventAttendeeService;
+
+  /**
+   * The real rule rather than a mock, and deliberately so: what a copy may
+   * stand for is one decision this suite has to exercise, not stage. A mocked
+   * policy would answer whatever the test told it to and prove nothing about
+   * the event statuses these scenarios actually build.
+   */
+  @Spy
+  private CaldavCopyPolicy                  caldavCopyPolicy = new CaldavCopyPolicy();
+
   @InjectMocks
   private CaldavMirrorVerificationService    service;
 
@@ -251,6 +295,177 @@ public class CaldavMirrorVerificationServiceTest {
     assertEquals(1, result.missing());
     assertEquals(1, result.repaired());
     verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+  }
+
+  // ------------------------------------------------- date polls (EXO-89863)
+
+  /**
+   * The retirement, and the migration.
+   *
+   * <p>
+   * A copy standing for an event that has become a date poll is deleted from
+   * the server before anything compares it. It has to run before the
+   * comparison, because a poll renders to a multi-day block spanning every
+   * option proposed: left to the comparison the copy is judged altered and
+   * <b>repaired into that block</b>, which is the pass writing the very entry
+   * this change removes.
+   *
+   * <p>
+   * This is also how the copies pushed before the change leave people's
+   * calendars: the first sweep of each account after the deploy meets them
+   * here. There is no separate migration script, and this test is the reason
+   * there does not have to be one.
+   */
+  @Test
+  public void aCopyStandingForADatePollIsRetiredRatherThanCompared() {
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    givenTheEventIs(5L, EventStatus.TENTATIVE);
+
+    service.verify(USER);
+
+    verify(caldavPushService).deleteEvent(USER, UID);
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * A poll copy the server no longer holds is a mapping row and nothing else.
+   *
+   * <p>
+   * Left to the comparison this row is MISSING, and MISSING is the verdict that
+   * <b>re-pushes</b> — so the pass that was supposed to end the poll copy would
+   * have written it back. It is cleared instead, with no request made: there is
+   * nothing on the server to delete.
+   */
+  @Test
+  public void aDatePollCopyAlreadyGoneIsClearedAndNeverRepaired() {
+    givenServerHolds(Map.of());
+    ObjectSync row = mapping(HREF, "\"etag-1\"", 5L);
+    givenMappings(row);
+    givenTheEventIs(5L, EventStatus.TENTATIVE);
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(0, result.missing(), "a poll copy that is gone is not a copy that needs putting back");
+    assertEquals(0, result.repaired());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
+    verify(caldavSyncStorage).saveObject(row);
+    assertNull(row.getRemoteHref(), "the row must stop naming an object, or the next pass repairs it");
+  }
+
+  /**
+   * The loop that must not exist, walked end to end.
+   *
+   * <p>
+   * A retirement clears the row's href — that is what
+   * {@code CaldavPushService.deleteEvent} does — and a row with no href is
+   * skipped at the top of the walk. So the pass that retires a copy does not
+   * meet it again, does not report it missing, and asks nothing of the server
+   * on any pass after the first. This is the half of "no re-push loop" that
+   * lives in this class; the other halves are the seeding pass refusing a poll
+   * and the push core refusing one.
+   */
+  @Test
+  public void aRetiredCopyIsNotMetAgainOnTheNextPass() {
+    ObjectSync row = mapping(HREF, "\"etag-1\"", 5L);
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(row);
+    givenTheEventIs(5L, EventStatus.TENTATIVE);
+    // What the real deleteEvent leaves behind, since this suite mocks it.
+    doAnswer(invocation -> {
+      row.setRemoteHref(null);
+      row.setEtag(null);
+      return null;
+    }).when(caldavPushService).deleteEvent(USER, UID);
+
+    service.verify(USER);
+    MirrorVerification second = service.verify(USER);
+
+    assertEquals(0, second.checked(), "a row naming no object is not a copy to check");
+    verify(caldavPushService, times(1)).deleteEvent(USER, UID);
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+  }
+
+  /**
+   * One line per retired copy, at INFO, naming the event and the account: the
+   * line an administrator watching the first sweep after the deploy is looking
+   * for.
+   */
+  @Test
+  public void everyRetiredCopyIsAnnouncedOnceAtInfo() {
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    givenTheEventIs(5L, EventStatus.TENTATIVE);
+
+    List<ILoggingEvent> announced;
+    try (LogRecorder log = new LogRecorder(CaldavMirrorVerificationService.class)) {
+      service.verify(USER);
+      announced = log.events()
+                     .stream()
+                     .filter(recorded -> recorded.getFormattedMessage().contains("has been retired"))
+                     .toList();
+    }
+
+    assertEquals(1, announced.size());
+    assertEquals(Level.INFO, announced.get(0).getLevel());
+    assertTrue(announced.get(0).getFormattedMessage().contains(HREF), "an administrator needs to know which copy went");
+  }
+
+  /**
+   * A retirement the server refused leaves the copy alone rather than repairing
+   * it. The row keeps its href so the next pass meets it here again — but a
+   * poll copy nobody could remove must still not be written back over.
+   */
+  @Test
+  public void aRetirementTheServerRefusedStillDoesNotRepairTheCopy() {
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    givenTheEventIs(5L, EventStatus.TENTATIVE);
+    doThrow(new CaldavPushException(CaldavPushService.SAVE, "the server refused it")).when(caldavPushService)
+                                                                                     .deleteEvent(USER, UID);
+
+    service.verify(USER);
+
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+  }
+
+  /**
+   * A cancelled meeting is not a poll, and its copy is verified and repaired
+   * like any other — the tombstone is what tells its attendees the meeting is
+   * off.
+   */
+  @Test
+  public void aCancelledMeetingsCopyIsStillVerifiedAndRepaired() {
+    givenServerHolds(Map.of());
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    givenTheEventIs(5L, EventStatus.CANCELLED);
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(1, result.missing());
+    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
+  }
+
+  /**
+   * An event agenda cannot answer for is judged exactly as it always was. The
+   * pass runs every few minutes, and concluding "retire" from a failed read
+   * would delete live meetings off people's calendars on any agenda hiccup.
+   */
+  @Test
+  public void anEventThatCouldNotBeReadDoesNotRetireItsCopy() {
+    givenServerHolds(Map.of());
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(agendaEventService.getEventById(5L)).thenThrow(new IllegalStateException("agenda is unavailable"));
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(1, result.missing());
+    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
   }
 
   @Test
@@ -841,6 +1056,19 @@ public class CaldavMirrorVerificationServiceTest {
   /**
    * @param etags what the server currently holds
    */
+  /**
+   * Declares what agenda now holds for the event a mapping row stands for.
+   *
+   * @param eventId the agenda event the row names
+   * @param status the status agenda stores — TENTATIVE for a date poll
+   */
+  private void givenTheEventIs(long eventId, EventStatus status) {
+    Event event = new Event();
+    event.setId(eventId);
+    event.setStatus(status);
+    when(agendaEventService.getEventById(eventId)).thenReturn(event);
+  }
+
   private void givenServerHolds(Map<String, String> etags) {
     when(calDavClient.listResourceEtags(any(), anyString(), anyString(), anyString())).thenReturn(etags);
   }
@@ -866,6 +1094,164 @@ public class CaldavMirrorVerificationServiceTest {
     assertEquals(1, afterAbandonment.abandoned());
     assertEquals(0, afterAbandonment.altered(), "an unexamined copy must not be reported as judged");
     verify(calDavClient, times(4)).fetchObject(any(), eq(HREF), anyString(), anyString());
+  }
+
+  // -------------------------- the repair bound, per statement (EXO-89863)
+
+  /**
+   * Gap 1: the budget never re-armed, so a server that swallowed yesterday's
+   * answer swallowed every answer after it.
+   *
+   * <p>
+   * The budget used to be keyed by the copy alone. Once a copy had spent its
+   * three repairs it was abandoned for the life of the process, so an answer
+   * the user gave <b>today</b> got no sweep at all — not one attempt, not one
+   * log line. It is keyed by what eXo is trying to say now, so a genuinely new
+   * answer is a new statement and gets a budget of its own.
+   */
+  @Test
+  public void anAnswerRecordedAfterACopyWasAbandonedIsPushedAgain() throws Exception {
+    givenAnUnwinnableFight();
+    givenTheAnswerIs(EventAttendeeResponse.NEEDS_ACTION);
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+    assertEquals(1, service.verify(USER).abandoned(), "the copy has to be abandoned before the point can be made");
+
+    givenTheAnswerIs(EventAttendeeResponse.ACCEPTED);
+    MirrorVerification afterTheAnswer = service.verify(USER);
+
+    assertEquals(1, afterTheAnswer.repaired(), "a new answer is a new statement and gets its own attempts");
+    assertEquals(0, afterTheAnswer.abandoned());
+  }
+
+  /**
+   * Gap 2: abandonment used to be all-or-nothing per copy.
+   *
+   * <p>
+   * Three repairs spent fighting over a stripped property also abandoned that
+   * copy for every <b>other</b> divergence — so a real edit weeks later was
+   * never carried, for a reason that had nothing to do with it. The old fight
+   * here is still unwinnable and still unresolved; the edit is repaired anyway,
+   * because it is a different thing to say.
+   */
+  @Test
+  public void anEditAfterACopyWasAbandonedIsRepairedAlthoughTheOldFightIsUnresolved() {
+    givenAnUnwinnableFight();
+    givenTheMeetingWasEditedAt(EDITED);
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+    assertEquals(1, service.verify(USER).abandoned());
+
+    givenTheMeetingWasEditedAt(EDITED.plusMinutes(5));
+    MirrorVerification afterTheEdit = service.verify(USER);
+
+    assertEquals(1, afterTheEdit.repaired(), "an edit is not the divergence the budget was spent on");
+  }
+
+  /**
+   * Re-arming gives a whole budget, not the remainder of the spent one.
+   *
+   * <p>
+   * The distinction is the difference between a copy that gets three real
+   * attempts at every new statement and one that gets a single token attempt
+   * for ever after its first bad week. Three writes before, three after.
+   */
+  @Test
+  public void aReArmedCopyGetsAWholeBudgetRatherThanTheRemainderOfTheOldOne() {
+    givenAnUnwinnableFight();
+    givenTheMeetingWasEditedAt(EDITED);
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
+
+    givenTheMeetingWasEditedAt(EDITED.plusMinutes(5));
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+
+    verify(caldavPushService, times(6)).rewriteAgendaEvent(USER, 5L);
+  }
+
+  /**
+   * The guarantee this change must not weaken: a stubborn server is still given
+   * up on.
+   *
+   * <p>
+   * Keying the budget on a statement is only safe while the statement is stable
+   * for as long as eXo is saying the same thing. Ten passes, one statement,
+   * three writes and no more.
+   */
+  @Test
+  public void aServerRefusingTheSameStatementForEverIsStillGivenUpOn() throws Exception {
+    givenAnUnwinnableFight();
+    givenTheAnswerIs(EventAttendeeResponse.ACCEPTED);
+    givenTheMeetingWasEditedAt(EDITED);
+
+    for (int pass = 0; pass < 10; pass++) {
+      service.verify(USER);
+    }
+
+    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
+  }
+
+  /**
+   * And the same guarantee where it is easiest to lose: an event agenda cannot
+   * read at all.
+   *
+   * <p>
+   * The unreadable statement is a <b>constant</b>. Anything derived from the
+   * moment of the read — a timestamp, a counter, an exception's identity —
+   * would look like a new statement on every pass, re-arm the budget every five
+   * minutes and abolish abandonment altogether, on precisely the accounts that
+   * are already in trouble.
+   */
+  @Test
+  public void anEventAgendaCannotReadDoesNotReArmTheBudgetForEver() {
+    givenAnUnwinnableFight();
+    when(agendaEventService.getEventById(5L)).thenThrow(new IllegalStateException("agenda is unavailable"));
+
+    for (int pass = 0; pass < 10; pass++) {
+      service.verify(USER);
+    }
+
+    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
+  }
+
+  /**
+   * Gap 3: the give-up line named the copy and nothing else.
+   *
+   * <p>
+   * An href alone tells an administrator that something was given up on without
+   * telling them what, and "a copy is wrong" is not something anybody can act
+   * on. The person and the answer eXo was trying to get onto that copy are what
+   * make it actionable — and they are also the statement the budget is keyed
+   * on, so they name the thing that has to change before eXo tries again.
+   */
+  @Test
+  public void theGiveUpWarningNamesThePersonAndTheAnswer() throws Exception {
+    givenAnUnwinnableFight();
+    givenTheAnswerIs(EventAttendeeResponse.ACCEPTED);
+
+    List<ILoggingEvent> warnings;
+    try (LogRecorder log = new LogRecorder(CaldavMirrorVerificationService.class)) {
+      for (int pass = 0; pass < 6; pass++) {
+        service.verify(USER);
+      }
+      warnings = log.events()
+                    .stream()
+                    .filter(recorded -> recorded.getFormattedMessage().contains("stops re-pushing it"))
+                    .toList();
+    }
+
+    assertEquals(1, warnings.size(), "said once when it happens, never again on every pass");
+    assertEquals(Level.WARN, warnings.get(0).getLevel());
+    String said = warnings.get(0).getFormattedMessage();
+    assertTrue(said.contains(HREF), "which copy");
+    assertTrue(said.contains(String.valueOf(USER)), "whose copy");
+    assertTrue(said.contains("ACCEPTED"), "and what eXo could not get onto it");
   }
 
   @Test
@@ -917,6 +1303,31 @@ public class CaldavMirrorVerificationServiceTest {
 
     assertEquals(1, afterForgetting.altered());
     assertEquals(1, afterForgetting.repaired());
+  }
+
+  /**
+   * Declares the answer eXo holds for this user on the meeting a copy stands
+   * for — half of the statement the repair budget is keyed on.
+   *
+   * @param response what agenda records
+   * @throws Exception which agenda's reader declares
+   */
+  private void givenTheAnswerIs(EventAttendeeResponse response) throws Exception {
+    when(agendaEventAttendeeService.getEventResponse(5L, null, USER)).thenReturn(response);
+  }
+
+  /**
+   * Declares when the meeting a copy stands for was last edited — the other
+   * half of that statement. {@code EventDAO.update} stamps this on every
+   * update, which is what makes an edit visible to the bound.
+   *
+   * @param updated the moment agenda recorded
+   */
+  private void givenTheMeetingWasEditedAt(ZonedDateTime updated) {
+    Event event = new Event();
+    event.setId(5L);
+    event.setUpdated(updated);
+    when(agendaEventService.getEventById(5L)).thenReturn(event);
   }
 
   /**

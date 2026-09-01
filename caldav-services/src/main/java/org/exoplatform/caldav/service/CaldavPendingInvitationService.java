@@ -29,7 +29,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
-import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
@@ -146,6 +145,9 @@ public class CaldavPendingInvitationService {
 
   @Autowired
   private CaldavPushService                        caldavPushService;
+
+  @Autowired
+  private CaldavCopyPolicy                         caldavCopyPolicy;
 
   @Autowired
   private CaldavSyncStorage                        caldavSyncStorage;
@@ -387,9 +389,16 @@ public class CaldavPendingInvitationService {
    */
   private boolean seedOne(long userIdentityId, long eventId) {
     Event event = agendaEventService.getEventById(eventId);
-    if (event == null || event.getStatus() != EventStatus.CONFIRMED) {
+    if (!caldavCopyPolicy.maySeedCopy(event)) {
       // A date poll is spelled TENTATIVE and a cancelled event CANCELLED;
-      // neither is a scheduled meeting a calendar should show.
+      // neither is a meeting a calendar should be given a fresh copy of.
+      //
+      // The rule used to be spelled out here, in the one place that happened
+      // to need it. It moved into CaldavCopyPolicy (EXO-89863) so that it sits
+      // beside the rule the push core enforces — a poll may not hold a copy at
+      // all — because the two answer the same question about the same event
+      // and had already drifted once: this refused a poll while the push core
+      // wrote one for whoever's browser asked.
       return false;
     }
     Calendar calendar = agendaCalendarService.getCalendarById(event.getCalendarId());
