@@ -150,6 +150,15 @@ public class CaldavServerService {
   @Autowired
   private CaldavServerUrlValidator caldavServerUrlValidator;
 
+  /**
+   * The instance-wide server choice, injected one way only. Managed mode reads
+   * this registry's storage rather than this service, precisely so that this
+   * service may ask it whether a row is the managed one before taking that row
+   * out of service — the reverse edge would close a bean cycle.
+   */
+  @Autowired
+  private CaldavManagedModeService caldavManagedModeService;
+
   @Autowired
   private UserACL                  userAcl;
 
@@ -427,12 +436,20 @@ public class CaldavServerService {
    * @throws ObjectNotFoundException when no registration carries that id
    * @throws IllegalArgumentException carrying a message code when the row is
    *           being ACTIVATED and its stored address is one the platform must
-   *           not be made to connect to
+   *           not be made to connect to, or {@code caldav.managed.serverInUse}
+   *           when the row is the one managed mode synchronises everybody with
    */
   public CaldavServer setServerActive(long serverId, boolean active, String username) throws IllegalAccessException,
                                                                                       ObjectNotFoundException {
     checkCanEdit(username);
     CaldavServer server = getServerById(serverId);
+    if (!active) {
+      // Deactivating the managed server would leave every user of the instance
+      // without a connect affordance — managed mode took it away — and with a
+      // server that no longer answers. The mode goes off first, one click
+      // above in the same screen.
+      caldavManagedModeService.checkServerNotManaged(serverId);
+    }
     if (active) {
       // Activation is a write like any other, and the row being activated may
       // predate the address check — a registration stored before EXO-89774, or
@@ -479,10 +496,20 @@ public class CaldavServerService {
    * @throws IllegalStateException carrying the message code
    *           {@code caldav.server.referenced:<count>} when connected
    *           accounts still reference the row (the REST layer answers 409)
+   * @throws IllegalArgumentException carrying
+   *           {@code caldav.managed.serverInUse} when the row is the one
+   *           managed mode synchronises everybody with (the REST layer answers
+   *           400)
    */
   public void deleteServer(long serverId, String username) throws IllegalAccessException, ObjectNotFoundException {
     checkCanEdit(username);
     CaldavServer server = getServerById(serverId);
+    // Before the reference count, and deliberately: managed mode points at
+    // this row for the WHOLE instance, including the users who have not
+    // connected yet and therefore reference nothing. The count below would let
+    // that deletion through on a freshly switched-on instance and leave the
+    // setting naming a row that no longer exists.
+    caldavManagedModeService.checkServerNotManaged(serverId);
     long references = countServerReferences(serverId);
     if (references > 0) {
       throw new IllegalStateException("caldav.server.referenced:" + references);

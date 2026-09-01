@@ -26,6 +26,7 @@ import CaldavDeviceSetupSection from './components/CaldavDeviceSetupSection.vue'
 import CaldavDeviceSetupDrawer from './components/CaldavDeviceSetupDrawer.vue';
 import CaldavAdminServersSection from './components/admin/CaldavAdminServersSection.vue';
 import CaldavAdminSyncDrawer from './components/admin/CaldavAdminSyncDrawer.vue';
+import CaldavAdminManagedModeDrawer from './components/admin/CaldavAdminManagedModeDrawer.vue';
 import CaldavAdminServerList from './components/admin/CaldavAdminServerList.vue';
 import CaldavAdminServerDrawer from './components/admin/CaldavAdminServerDrawer.vue';
 import CaldavAdminServerImageInput from './components/admin/CaldavAdminServerImageInput.vue';
@@ -46,6 +47,7 @@ const components = {
   'caldav-device-setup-drawer': CaldavDeviceSetupDrawer,
   'caldav-admin-servers-section': CaldavAdminServersSection,
   'caldav-admin-sync-drawer': CaldavAdminSyncDrawer,
+  'caldav-admin-managed-mode-drawer': CaldavAdminManagedModeDrawer,
   'caldav-admin-server-list': CaldavAdminServerList,
   'caldav-admin-server-drawer': CaldavAdminServerDrawer,
   'caldav-admin-server-image-input': CaldavAdminServerImageInput,

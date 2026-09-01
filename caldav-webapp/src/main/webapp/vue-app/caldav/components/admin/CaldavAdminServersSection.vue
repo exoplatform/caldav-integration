@@ -31,6 +31,33 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       {{ $t('caldav.admin.servers.subtitle') }}
     </div>
     <!--
+      Who chooses the server, before how often it is read: this row decides
+      whether the users of this instance are offered the choice at all, so
+      everything below it — the tuning, the list — is read differently
+      depending on what it says. The switch sits at the right edge, and the
+      pencil beside it appears only once there is a choice to revisit.
+    -->
+    <div class="d-flex align-center mb-4">
+      <div class="flex-grow-1 text-start">
+        <div>{{ $t('caldav.admin.managed.title') }}</div>
+        <div class="text-subtitle">{{ managedSummary }}</div>
+      </div>
+      <v-btn
+        v-if="managedOn"
+        :aria-label="$t('caldav.admin.managed.title')"
+        :title="$t('caldav.admin.managed.title')"
+        icon
+        @click="openManagedDrawer">
+        <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
+      </v-btn>
+      <v-switch
+        v-model="managedOn"
+        :aria-label="$t('caldav.admin.managed.title')"
+        class="ma-0 ms-2 pa-0"
+        hide-details
+        @change="flipManagedMode" />
+    </div>
+    <!--
       How the servers declared below are read, on one line above the list that
       declares them: it is the same subject seen from the other end, and an
       administrator who has just added a server is exactly who wonders how
@@ -67,6 +94,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <caldav-admin-server-list :servers="servers" />
     <caldav-admin-server-drawer />
     <caldav-admin-sync-drawer @saved="tuning = $event" />
+    <caldav-admin-managed-mode-drawer
+      @saved="managedApplied"
+      @cancelled="managedCancelled" />
   </div>
 </template>
 
@@ -88,6 +118,19 @@ export default {
   data: () => ({
     servers: [],
     tuning: null,
+    /**
+     * What the instance decided about who chooses the CalDAV server —
+     * {serverId, serverName, managedForMe}. Null until it has been read, so
+     * the row can tell "not read yet" from "off".
+     */
+    managed: null,
+    /**
+     * The switch's own state, which is deliberately NOT derived from
+     * `managed`. Flipping it on is a request to choose a server, not the
+     * choice: it runs ahead of the setting for as long as the drawer is open,
+     * and goes back if the administrator closes without applying.
+     */
+    managedOn: false,
   }),
   computed: {
     /**
@@ -107,11 +150,39 @@ export default {
         3: this.tuning.sweepStaleMinutes,
       });
     },
+    /**
+     * Who chooses the CalDAV server, in one line.
+     *
+     * Three answers, not two: an instance with nothing declared yet is neither
+     * "users connect their own account" — there is none to connect to — nor
+     * managed. Saying so is what makes the switch worth pressing, because the
+     * drawer behind it offers the way out.
+     *
+     * @returns {String} the summary line
+     */
+    managedSummary() {
+      if (this.managed && this.managed.serverId) {
+        return this.$t('caldav.admin.managed.on', {0: this.managed.serverName || ''});
+      }
+      if (!this.activeServers.length) {
+        return this.$t('caldav.admin.managed.noServers');
+      }
+      return this.$t('caldav.admin.managed.off');
+    },
+    /**
+     * The registrations managed mode could point at.
+     *
+     * @returns {Array} the active declared servers
+     */
+    activeServers() {
+      return (this.servers || []).filter(server => server.active);
+    },
   },
   created() {
     this.$root.$on('refresh-caldav-servers-list', this.refreshServers);
     this.refreshServers();
     this.retrieveTuning();
+    this.retrieveManagedMode();
   },
   methods: {
     /**
@@ -137,6 +208,89 @@ export default {
       return this.$agendaCaldavService.getCaldavServers()
         .then(servers => this.servers = servers || [])
         .catch(() => this.servers = []);
+    },
+    /**
+     * Reads whether the instance chooses the server for its users, and which.
+     *
+     * A failure leaves the row saying "off" rather than inventing a state: the
+     * switch is a control, and one showing a position the platform never
+     * confirmed is worse than a summary that reads conservatively.
+     *
+     * @returns {Promise} resolves once the mode has been read or given up on
+     */
+    retrieveManagedMode() {
+      return caldavConnectorService.getManagedMode()
+        .then(managed => {
+          this.managed = managed || null;
+          this.managedOn = !!(managed && managed.serverId);
+        })
+        .catch(error => console.error('cannot read the CalDAV managed mode', error));
+    },
+    /**
+     * Reacts to the switch, which does two quite different things depending on
+     * which way it went.
+     *
+     * On is a REQUEST, not a commit: it opens the drawer and stores nothing.
+     * There is no honest way to turn managed mode on without naming a server,
+     * and the switch cannot name one. Off is a commit, immediately and with no
+     * confirmation dialog: it gives an affordance back rather than taking one
+     * away, and nothing is severed by it — the accounts already connected go
+     * on synchronising exactly as they did.
+     *
+     * @param {Boolean} on the position the switch was moved to
+     * @returns {Promise} resolves once the drawer is open, or the mode cleared
+     */
+    flipManagedMode(on) {
+      if (on) {
+        this.openManagedDrawer();
+        return Promise.resolve();
+      }
+      return caldavConnectorService.clearManagedMode()
+        .then(managed => {
+          this.managed = managed || null;
+          this.$root.$emit('alert-message', this.$t('caldav.admin.managed.cleared'), 'success');
+        })
+        .catch(error => {
+          console.error('cannot switch the CalDAV managed mode off', error);
+          this.managedOn = true;
+          this.$root.$emit('alert-message', this.$t('caldav.admin.managed.clearFailed'), 'error');
+        });
+    },
+    /**
+     * Opens the drawer on the rows this section already read and the mode in
+     * force, so the choice is made against exactly what is on screen.
+     *
+     * @returns {void}
+     */
+    openManagedDrawer() {
+      this.$root.$emit('open-caldav-managed-mode-drawer', {
+        servers: this.servers,
+        managed: this.managed,
+      });
+    },
+    /**
+     * Records what the drawer stored. This — and only this — is what puts the
+     * row into its managed state.
+     *
+     * @param {Object} managed the mode now in force
+     * @returns {void}
+     */
+    managedApplied(managed) {
+      this.managed = managed || null;
+      this.managedOn = !!(managed && managed.serverId);
+    },
+    /**
+     * Puts the switch back where the setting says it is, after a drawer closed
+     * without applying.
+     *
+     * Back to what was STORED, not to false: an administrator who opened the
+     * drawer to change which server is managed, then closed it, has not
+     * switched managed mode off.
+     *
+     * @returns {void}
+     */
+    managedCancelled() {
+      this.managedOn = !!(this.managed && this.managed.serverId);
     },
   }
 };

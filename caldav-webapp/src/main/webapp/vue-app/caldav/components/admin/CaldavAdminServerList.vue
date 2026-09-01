@@ -115,8 +115,17 @@ export default {
           const successAlertMessage = item.active && 'caldav.admin.servers.activate.success' || 'caldav.admin.servers.deactivate.success';
           this.$root.$emit('alert-message', this.$t(`${successAlertMessage}`), 'success');
         })
-        .catch(() => {
+        .catch(error => {
           item.active = !item.active;
+          // A refusal that names a rule says it, rather than "could not be
+          // deactivated": deactivating the server managed mode points the
+          // whole instance at is refused with a message code that tells the
+          // administrator exactly which switch to flip first.
+          const code = error && error.messageCode || '';
+          if (code && this.$te(code)) {
+            this.$root.$emit('alert-message', this.$t(code), 'error');
+            return;
+          }
           const errorAlertMessage = item.active && 'caldav.admin.servers.activate.error' || 'caldav.admin.servers.deactivate.error';
           this.$root.$emit('alert-message', this.$t(`${errorAlertMessage}`), 'error');
         });
@@ -141,6 +150,10 @@ export default {
           if (error && error.status === 409) {
             const count = error.referenceCount || '';
             this.$root.$emit('alert-message', this.$t('caldav.admin.servers.delete.referenced', {0: count}), 'error');
+          } else if (error && error.messageCode && this.$te(error.messageCode)) {
+            // The managed-mode refusal: no other object is in the way, so it
+            // arrives as a 400 rather than a conflict, and it names the rule.
+            this.$root.$emit('alert-message', this.$t(error.messageCode), 'error');
           } else {
             this.$root.$emit('alert-message', this.$t('caldav.admin.servers.delete.error'), 'error');
           }
