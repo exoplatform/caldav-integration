@@ -16,7 +16,7 @@
  */
 import './initComponents.js';
 import * as agendaCaldavService from './js/agendaCaldavService.js';
-import caldavConnector, {createCaldavConnector, serverHost} from './caldav-connector/caldavConnector.js';
+import {createCaldavConnector, createLegacyCaldavConnector, serverHost} from './caldav-connector/caldavConnector.js';
 
 if (!Vue.prototype.$agendaCaldavService) {
   window.Object.defineProperty(Vue.prototype, '$agendaCaldavService', {
@@ -131,18 +131,40 @@ i18nPromise.finally(() => {
 // When the registry answers nothing — an empty registry with no legacy
 // property, or the REST failing — the single legacy connector is registered
 // exactly as before this section existed.
+//
+// This is the ONE writer of the CalDAV descriptors agenda reads, which is why
+// the managed verdict is read here and stamped here: every screen that hides a
+// connect or disconnect affordance reads it off the descriptor, so a second
+// place asking the platform the same question is a second answer that can
+// disagree with this one.
+//
+// The verdict is read BEFORE the registry, and its own failure is swallowed
+// rather than allowed to take the connectors down: a deployment whose managed
+// setting cannot be read still has to offer its users their calendars. It
+// falls back to "not managed", which restores affordances rather than removing
+// them — the recoverable direction, and the honest one when nothing is known.
+// The mode is read once, when this module loads: an administrator switching it
+// on does not reach into a session already open, which is why hiding a control
+// was never the control (the server-side refusal is its own ticket).
+let managedMode = null;
 i18nPromise
   .catch(() => null)
+  .then(() => agendaCaldavService.getManagedMode())
+  .then(managed => managedMode = managed)
+  .catch(error => {
+    console.error('cannot read whether this instance manages the CalDAV account', error);
+    managedMode = null;
+  })
   .then(() => agendaCaldavService.getCaldavServers())
   .then(servers => {
     const activeServers = (servers || []).filter(server => server.active);
     if (!activeServers.length) {
-      extensionRegistry.registerExtension('agenda', 'connectors', caldavConnector);
+      extensionRegistry.registerExtension('agenda', 'connectors', createLegacyCaldavConnector(managedMode));
       return;
     }
     const labels = {};
     activeServers.forEach((server, index) => {
-      extensionRegistry.registerExtension('agenda', 'connectors', createCaldavConnector(server, index));
+      extensionRegistry.registerExtension('agenda', 'connectors', createCaldavConnector(server, index, managedMode));
       labels[server.providerName] = server.name;
       // The secondary line of the connect-drawer row: the admin's words when
       // there are some, else the host — always present, and the thing that
@@ -151,6 +173,6 @@ i18nPromise
     });
     return i18nPromise.then(i18n => i18n.mergeLocaleMessage(lang, labels));
   })
-  .catch(() => extensionRegistry.registerExtension('agenda', 'connectors', caldavConnector))
+  .catch(() => extensionRegistry.registerExtension('agenda', 'connectors', createLegacyCaldavConnector(managedMode)))
   .finally(() => document.dispatchEvent(new CustomEvent('agenda-connectors-refresh')));
 

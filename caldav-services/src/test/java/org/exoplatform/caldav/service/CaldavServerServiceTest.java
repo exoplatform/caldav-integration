@@ -33,6 +33,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -125,6 +126,15 @@ public class CaldavServerServiceTest {
    */
   @Mock
   private CaldavServerQuirkService caldavServerQuirkService;
+
+  /**
+   * The instance-wide server choice. Mocked and silent by default, so every
+   * test in this class goes on measuring the registry: a no-op
+   * checkServerNotManaged is exactly the state of an instance where managed
+   * mode was never switched on, which is what every other test here is about.
+   */
+  @Mock
+  private CaldavManagedModeService caldavManagedModeService;
 
   /**
    * The address check, REAL rather than mocked, so these tests keep measuring
@@ -435,6 +445,90 @@ public class CaldavServerServiceTest {
     verify(agendaRemoteEventService).saveRemoteProvider(provider.capture());
     assertEquals("agenda.caldavCalendar.7", provider.getValue().getName());
     assertEquals(false, provider.getValue().isEnabled());
+  }
+
+  /**
+   * The server managed mode points the whole instance at cannot be
+   * deactivated.
+   *
+   * <p>
+   * Not caution: deactivating it leaves every user of the instance with no
+   * connect affordance — managed mode took it away — and a server that no
+   * longer answers, which is a state nobody can get out of from the screens
+   * they are left with. The administrator switches the mode off first, one row
+   * above the list.
+   */
+  @Test
+  public void shouldRefuseDeactivatingTheManagedServer() {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL,
+                                                                 true));
+    doThrow(new IllegalArgumentException("caldav.managed.serverInUse")).when(caldavManagedModeService)
+                                                                      .checkServerNotManaged(7);
+    // Leniently: the write is stubbed to SUCCEED so that a guard removed from
+    // the service fails this test on the refusal that did not happen, and not
+    // on some unrelated exception the unstubbed write would have thrown. A
+    // mutant that dies of the wrong cause is not a pin.
+    lenient().when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.setServerActive(7, false, ADMIN_USER));
+
+    assertEquals("caldav.managed.serverInUse", refusal.getMessage());
+    verify(caldavServerStorage, never()).updateServer(any());
+    verifyNoInteractions(agendaRemoteEventService);
+  }
+
+  /**
+   * And it cannot be deleted either — checked BEFORE the reference count, on
+   * purpose. Managed mode points at this row for every user of the instance,
+   * including the ones who have never connected and therefore reference
+   * nothing: judged on references alone, a freshly switched-on instance would
+   * let the deletion through and leave the setting naming a row that no longer
+   * exists.
+   */
+  @Test
+  public void shouldRefuseDeletingTheManagedServer() {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL,
+                                                                 true));
+    doThrow(new IllegalArgumentException("caldav.managed.serverInUse")).when(caldavManagedModeService)
+                                                                      .checkServerNotManaged(7);
+    // Leniently, same reason as above: nothing references this row, so with the
+    // guard removed the deletion would go THROUGH rather than trip over an
+    // unstubbed enumeration. That is the failure this test has to see.
+    lenient().when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(),
+                                                                          anyInt(), anyInt()))
+             .thenReturn(List.of());
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.deleteServer(7, ADMIN_USER));
+
+    assertEquals("caldav.managed.serverInUse", refusal.getMessage());
+    verify(caldavServerStorage, never()).deleteServer(anyLong());
+    verifyNoInteractions(agendaRemoteEventService);
+    // Nobody references it yet, and it is still refused: the count is not what
+    // protects the managed row.
+    verify(settingService, never()).getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(),
+                                                                            anyString(), anyInt(), anyInt());
+  }
+
+  /**
+   * Activating a row is never refused by managed mode. The managed row is
+   * active by construction — the service refuses to point at an inactive one —
+   * so switching it on again changes nothing, and refusing a no-op would read
+   * as a rule the administrator broke.
+   */
+  @Test
+  public void shouldNotAskManagedModeAboutAnActivation() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer server = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    caldavServerService.setServerActive(7, true, ADMIN_USER);
+
+    verify(caldavManagedModeService, never()).checkServerNotManaged(anyLong());
   }
 
   /**
