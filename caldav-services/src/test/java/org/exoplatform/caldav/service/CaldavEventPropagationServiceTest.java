@@ -2044,6 +2044,168 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
+   * The gap live testing on the rig found (EXO-89868, second round): an
+   * organiser's own answer reaches nobody, so it records nothing and attempts
+   * nothing.
+   *
+   * <p>
+   * root organised event 1040 and answered it, and every holder's copy refused
+   * the write — "it names none of [root's address], so there is no
+   * participation status of theirs to rewrite". A copy names whoever called
+   * the meeting on its ORGANIZER line and never on an ATTENDEE line, so there
+   * is nothing on any copy for a targeted rewrite to find.
+   */
+  @Test
+  public void anOrganizersOwnAnswerIsNotFannedOut() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    // Everything else about this fan-out is in working order: the organiser is
+    // nameable and every server would take the write. Only the skip may stop
+    // it, or this pins the wrong guard.
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+    givenTheEventWasCreatedBy(CAROL);
+
+    assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), any(), any(), anyString());
+  }
+
+  /**
+   * And it records no obligation, which is the half with teeth.
+   *
+   * <p>
+   * {@code NOT_NAMED} deliberately leaves the obligation standing so a full
+   * rewrite can add a missing ATTENDEE line. No full rewrite can add
+   * <b>this</b> line — the render is what omits it — so before the skip every
+   * organiser's answer scheduled a doomed retry against every other holder's
+   * copy, up to the bound, on the one path that can destroy an unread answer.
+   * The rig said so out loud: "User 13 was owed 1 calendar write(s); 0 landed
+   * this round".
+   */
+  @Test
+  public void anOrganizersOwnAnswerSchedulesNoDoomedRewrite() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+    givenTheEventWasCreatedBy(CAROL);
+
+    service.propagateAnswer(EVENT, CAROL, "ACCEPTED");
+
+    assertEquals(0, caldavPendingPushStorage.owed(ALICE), "an obligation nothing could ever satisfy is not recorded");
+    assertEquals(0, caldavPendingPushStorage.owed(BOB), "an obligation nothing could ever satisfy is not recorded");
+    verify(caldavPendingPushStorage, never()).owe(anyLong(), anyLong(), any(), any(), anyString());
+  }
+
+  /**
+   * The other side of the same event: an ordinary attendee's answer is still
+   * fanned out, on a meeting somebody else organises.
+   *
+   * <p>
+   * The skip has to be about who <i>this answerer</i> is and not about the
+   * event having an organiser at all — every meeting has one. This is the
+   * behaviour the rig confirmed working end to end, and it must survive the
+   * fix to the other direction.
+   */
+  @Test
+  public void anAttendeesAnswerIsStillFannedOutOnAMeetingSomebodyElseOrganizes() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+    givenTheEventWasCreatedBy(ALICE);
+
+    assertEquals(1, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"));
+  }
+
+  /**
+   * An event whose creator is on nobody's roster still behaves: the answerer
+   * is not that creator, so the fan-out proceeds.
+   */
+  @Test
+  public void anEventOrganizedBySomebodyNotOnTheRosterStillFansOut() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+    givenTheEventWasCreatedBy(FRANK);
+
+    assertEquals(1, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"));
+  }
+
+  /**
+   * The organiser is decided the way the render decides it — on the event as
+   * given, so an occurrence is judged by its own creator rather than its
+   * series'.
+   *
+   * <p>
+   * {@code AgendaEventIcsMapper.toIcsEvent} is handed the occurrence when an
+   * occurrence is pushed and reads {@code getCreatorId()} off that, so a skip
+   * reading the series would answer a different question from the render it
+   * mirrors.
+   */
+  @Test
+  public void anOccurrenceIsJudgedByItsOwnCreatorAsTheRenderIs() {
+    Event occurrence = new Event();
+    occurrence.setId(OCCURRENCE);
+    occurrence.setParentId(EVENT);
+    occurrence.setCreatorId(CAROL);
+    when(agendaEventService.getEventById(OCCURRENCE)).thenReturn(occurrence);
+    givenNoHoldersFor(OCCURRENCE);
+    givenHoldersFor(EVENT, mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+
+    assertEquals(0, service.propagateAnswer(OCCURRENCE, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), any(), any(), anyString());
+  }
+
+  /**
+   * An event agenda cannot read at all does not stop the fan-out.
+   *
+   * <p>
+   * The bias {@code readEvent} already takes. Proceeding costs at worst the
+   * doomed retries the skip exists to prevent, for as long as agenda cannot
+   * answer; refusing would silently drop the answers of people who are not
+   * organisers at all, which is the defect this whole delivery is about.
+   */
+  @Test
+  public void anUnreadableEventDoesNotSuppressTheFanOut() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+    when(agendaEventService.getEventById(EVENT)).thenThrow(new IllegalStateException("agenda is having a moment"));
+
+    assertEquals(1, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), any(), any(), anyString());
+  }
+
+  /**
+   * Declares who agenda records as having created the event — the predicate
+   * the render heads its ORGANIZER line with.
+   *
+   * @param creatorIdentityId who called the meeting
+   */
+  private void givenTheEventWasCreatedBy(long creatorIdentityId) {
+    Event event = new Event();
+    event.setId(EVENT);
+    event.setParentId(0);
+    event.setCreatorId(creatorIdentityId);
+    when(agendaEventService.getEventById(EVENT)).thenReturn(event);
+  }
+
+  /**
    * Declares which addresses name the answerer on somebody else's copy.
    *
    * @param answererIdentityId who answered
