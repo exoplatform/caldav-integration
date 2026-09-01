@@ -17,8 +17,10 @@
 package org.exoplatform.caldav.ics;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -781,6 +783,234 @@ public class IcsEquivalenceTest {
     // and the PARTSTAT are compared regardless, as the two tests above prove.
     assertEquivalent(EXO.replace("ATTENDEE;CN=Ann;PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:",
                                  "ATTENDEE;CN=Ann;DIR=\"bm://c0ffee\";PARTSTAT=ACCEPTED;SCHEDULE-AGENT=CLIENT:"));
+  }
+
+  // ----------------- one guest, two spellings, one statement (EXO-89829)
+
+  // The rig's own case, and the shape behind it. On the BlueMind account,
+  // identity 13 — profile address bob@stalwart.local — is a guest on events
+  // 1018 and 1020 and has answered in eXo. BlueMind's copies carry his line
+  // with no PARTSTAT on one and with an RSVP=TRUE of its own on the other. That
+  // is one disagreement, "the copy does not state his answer", and it used to
+  // arrive at the tolerance rules as two statements: the rule for an attendee
+  // the server did not keep swallowed eXo's half, and the copy's half was
+  // reported as ATTENDEE=mailto:bob@stalwart.local (server 1, eXo 0) — which
+  // reads as an attendee the server ADDED, the opposite event in the world.
+  //
+  // He is deliberately not in the owner list these tests pass. On the rig the
+  // account is somebody else's, which is exactly why the divergence met the
+  // ordinary-attendee rule rather than the owner's own.
+
+  @Test
+  public void anAnswerTheServerDidNotKeepIsReportedAsOneGuestAndNotAsOneAdded() {
+    // The first rig shape: the copy names him and states no answer. One
+    // statement, one decision — and the decision is to report it, so the answer
+    // is written back on every server where a re-push works, which on the rig's
+    // own copies it does. What is fixed here is the naming: before, this was
+    // reported as ATTENDEE=mailto:bob@stalwart.local (server 1, eXo 0), which
+    // says the server ADDED him.
+    IcsJudgement judgement = judge.compare(rigCopyWithoutAnswer(), rigRenderWithAnswer(), HOST);
+
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
+    assertEquals("the answer for bob@stalwart.local differs: no answer on the server, DECLINED in eXo "
+        + "(one attendee, not one added and one dropped)", judgement.detail());
+  }
+
+  @Test
+  public void anAnswerTheServerReplacedWithAnRsvpOfItsOwnIsReportedTheSameWay() {
+    // The second rig shape, on the sibling event. RSVP=TRUE is not a default
+    // and so is compared; the copy still states no answer for him, and the
+    // finding has to read the same — a fix that named the copy with no PARTSTAT
+    // correctly and its neighbour by whichever parameter happened to differ
+    // would be this ticket's own defect written again. The RSVP is inside the
+    // pair, not beside it.
+    IcsJudgement judgement = judge.compare(rigCopyWithRsvp(), rigRenderWithAnswer(), HOST);
+
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
+    assertEquals("the answer for bob@stalwart.local differs: no answer on the server, DECLINED in eXo "
+        + "(one attendee, not one added and one dropped)", judgement.detail());
+  }
+
+  // The guard against an endless re-push is NOT here, and was deliberately
+  // moved rather than dropped. An earlier round of this ticket had the
+  // comparison fall silent on a drift eXo states and the copy does not, which
+  // does stop the loop — and also stops the answer ever being written back on
+  // the servers where a re-push works, the rig's own two copies included. A
+  // comparison is a pure function of the two objects it is handed: it has no
+  // copy identity to count attempts against, no hook to forget them on, and no
+  // business remembering how often it has been asked.
+  //
+  // The bound lives where the pass state and the copy's identity already are,
+  // and it already existed: CaldavMirrorVerificationService re-pushes one copy
+  // maxRepairs times, warns once, and abandons it. The pin that replaces the
+  // one that stood here is
+  // CaldavMirrorVerificationServiceTest.aServerThatKeepsStrippingAnAnswerIsRePushedThreeTimesAndThenAbandoned,
+  // which exercises this comparison and that budget together.
+
+  @Test
+  public void anAnswerDriftIsReportedAsOnePersonAndNotAsAnAttendeeTheServerAdded() {
+    // The reporting half, in the direction that must still be repaired: he
+    // answered from his own client and the copy carries it. Before this ticket
+    // the finding read ATTENDEE;PARTSTAT=DECLINED=mailto:bob@stalwart.local
+    // (server 1, eXo 0) while eXo's own line for him was swallowed — true of an
+    // answer drift and true of a guest somebody added, and those call for
+    // opposite actions from whoever reads the log.
+    IcsJudgement judgement = judge.compare(rigCopyWithAnswer(), rigRenderWithoutAnswer(), HOST);
+
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
+    assertEquals("the answer for bob@stalwart.local differs: DECLINED on the server, no answer in eXo "
+        + "(one attendee, not one added and one dropped)", judgement.detail());
+  }
+
+  @Test
+  public void anAttendeeTheServerReallyAddedIsStillReportedAsOne() {
+    // The neighbour the new wording must not swallow. Nobody named Mallory is
+    // on eXo's render at all, so there is no pair to fold: the copy really has
+    // gained a guest, and the log has to go on saying so in the plain way.
+    IcsJudgement judgement =
+        judge.compare(EXO.replace("STATUS:CONFIRMED", "ATTENDEE;CN=Mallory:mailto:mallory@stalwart.local\r\nSTATUS:CONFIRMED"),
+                      EXO,
+                      HOST);
+
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
+    assertTrue(judgement.detail().contains("mallory@stalwart.local (server 1, eXo 0)"), judgement.detail());
+    assertFalse(judgement.detail().contains("one attendee, not one added and one dropped"), judgement.detail());
+  }
+
+  @Test
+  public void anAnswerFromTheServerIsStillReadWhileAnotherGuestsAnswerDriftsTheOtherWay() {
+    // The two that must hold TOGETHER, in one object rather than one at a time.
+    // EXO-89807 and EXO-89814 read an answer back off a copy precisely because
+    // the comparison notices a PARTSTAT difference, and both of them meet this
+    // account's copies: the owner has answered DECLINED on her phone and eXo
+    // still renders her as unanswered. In the same object a second pair points
+    // the other way — the guest whose answer this server does not keep. Two
+    // drifts, opposite directions, one object: a fix that decided the pair by
+    // its direction would silence one of them, and would do it with a test for
+    // each of them passing on its own.
+    String inExo = EXO.replace("STATUS:CONFIRMED",
+                               "ATTENDEE;PARTSTAT=DECLINED:mailto:bob@stalwart.local\r\n"
+                                   + "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:alice@stalwart.local\r\n"
+                                   + "STATUS:CONFIRMED");
+    String onServer = EXO.replace("STATUS:CONFIRMED",
+                                  "ATTENDEE;CN=FRANCOIS;DIR=\"bm://19d43a7c\":mailto:bob@stalwart.local\r\n"
+                                      + "ATTENDEE;CN=ALICE;PARTSTAT=DECLINED:mailto:alice@stalwart.local\r\n"
+                                      + "STATUS:CONFIRMED");
+
+    IcsJudgement judgement = judge.compare(onServer, inExo, HOST);
+
+    // Her answer still registers, which is what those two depend on.
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
+    assertTrue(judgement.detail()
+                        .contains("the answer for the calendar's own owner differs: DECLINED on the server, "
+                            + "no answer in eXo (one attendee, not one added and one dropped)"),
+               judgement.detail());
+    // And the other guest's drift is named beside hers, as its own person and
+    // its own direction — not as an attendee this server added, which is what
+    // the line said before this ticket and is the opposite instruction to an
+    // administrator.
+    assertTrue(judgement.detail()
+                        .contains("the answer for bob@stalwart.local differs: no answer on the server, "
+                            + "DECLINED in eXo (one attendee, not one added and one dropped)"),
+               judgement.detail());
+    assertFalse(judgement.detail().contains("(server 1, eXo 0)"), judgement.detail());
+  }
+
+  @Test
+  public void aPairedGuestWhoseLineDiffersOtherwiseIsStillAnEdit() {
+    // The third outcome, and the bound on the other two. Both lines state the
+    // same answer — none — so nothing here is about a reply: somebody made him
+    // the chair. Folding the pair changes how that is reported, never whether.
+    IcsJudgement judgement =
+        judge.compare(EXO.replace("STATUS:CONFIRMED",
+                                  "ATTENDEE;CN=FRANCOIS;ROLE=CHAIR:mailto:bob@stalwart.local\r\nSTATUS:CONFIRMED"),
+                      EXO.replace("STATUS:CONFIRMED", "ATTENDEE;CN=Root Root:mailto:bob@stalwart.local\r\nSTATUS:CONFIRMED"),
+                      HOST);
+
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
+    assertEquals("the line for bob@stalwart.local differs: [ATTENDEE;ROLE=CHAIR=mailto:bob@stalwart.local] on the server, "
+        + "[ATTENDEE=mailto:bob@stalwart.local] in eXo (one attendee, not one added and one dropped)",
+                 judgement.detail());
+  }
+
+  @Test
+  public void theOwnerWhoAnsweredOnTheirPhoneIsNamedOnceAndNotTwice() {
+    // The owner has the same shape and had the same two-halves reporting: their
+    // answered line missing from eXo's render, eXo's unanswered line missing
+    // from the copy. One person, one finding — and the finding names them as
+    // the owner rather than by whichever of their two addresses this copy chose.
+    String inExo = EXO.replace("STATUS:CONFIRMED",
+                               "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:alice@stalwart.local\r\nSTATUS:CONFIRMED");
+    String onServer = EXO.replace("STATUS:CONFIRMED",
+                                  "ATTENDEE;CN=ALICE;DIR=\"bm://19d4\";PARTSTAT=DECLINED:mailto:bob@stalwart.local\r\n"
+                                      + "STATUS:CONFIRMED");
+
+    IcsJudgement judgement = judge.compare(onServer, inExo, OWNER);
+
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
+    assertEquals("the answer for the calendar's own owner differs: DECLINED on the server, no answer in eXo "
+        + "(one attendee, not one added and one dropped)", judgement.detail());
+  }
+
+  /**
+   * The addresses this account's owner answers to on the rig's BlueMind
+   * account. Identity 13 — bob@stalwart.local — is deliberately not one of
+   * them: on the rig he is a guest on the events, not the owner of the calendar
+   * they are mirrored into, which is why his divergence met the ordinary
+   * attendee rule and not the owner's.
+   */
+  private static final java.util.List<String> HOST = java.util.List.of("alice@stalwart.local");
+
+  /**
+   * What eXo renders for the rig's event: identity 13 has declined.
+   *
+   * @return the object
+   */
+  private String rigRenderWithAnswer() {
+    return EXO.replace("STATUS:CONFIRMED",
+                       "ATTENDEE;CN=Root Root;PARTSTAT=DECLINED:mailto:bob@stalwart.local\r\nSTATUS:CONFIRMED");
+  }
+
+  /**
+   * The same render before he answered, for the direction where the copy is the
+   * side carrying a reply.
+   *
+   * @return the object
+   */
+  private String rigRenderWithoutAnswer() {
+    return EXO.replace("STATUS:CONFIRMED", "ATTENDEE;CN=Root Root:mailto:bob@stalwart.local\r\nSTATUS:CONFIRMED");
+  }
+
+  /**
+   * BlueMind's copy of the rig's event 1018: his line kept, his answer not,
+   * spelled in the server's own directory terms.
+   *
+   * @return the object
+   */
+  private String rigCopyWithoutAnswer() {
+    return EXO.replace("STATUS:CONFIRMED",
+                       "ATTENDEE;CN=FRANCOIS;DIR=\"bm://19d43a7c\":mailto:bob@stalwart.local\r\nSTATUS:CONFIRMED");
+  }
+
+  /**
+   * BlueMind's copy of the sibling event 1020: no answer either, and an RSVP of
+   * the server's own on the line.
+   *
+   * @return the object
+   */
+  private String rigCopyWithRsvp() {
+    return EXO.replace("STATUS:CONFIRMED", "ATTENDEE;CN=FRANCOIS;RSVP=TRUE:mailto:bob@stalwart.local\r\nSTATUS:CONFIRMED");
+  }
+
+  /**
+   * A copy carrying an answer of his that eXo does not hold — the direction a
+   * repair must still be driven in.
+   *
+   * @return the object
+   */
+  private String rigCopyWithAnswer() {
+    return EXO.replace("STATUS:CONFIRMED",
+                       "ATTENDEE;CN=FRANCOIS;PARTSTAT=DECLINED:mailto:bob@stalwart.local\r\nSTATUS:CONFIRMED");
   }
 
   // ------------------------- the address a server restates (EXO-89826)
