@@ -50,8 +50,21 @@ import org.exoplatform.services.listener.Asynchronous;
  * <p>
  * A date poll is broadcast under its own name and is spelled
  * {@code STATUS:TENTATIVE}; it is not a scheduled meeting, and no copy of one
- * is ever pushed. The seeding path refuses it on its own, but not subscribing
- * is the honest way to say so.
+ * is fanned out to the people invited to vote on it. The seeding path refuses
+ * it on its own ({@code CaldavPendingInvitationService.seedOne} requires
+ * {@code CONFIRMED}), but not subscribing is the honest way to say so.
+ *
+ * <p>
+ * <b>That is a statement about the fan-out, not about the poll's author</b>,
+ * and the sentence that used to stand here — "no copy of one is ever pushed" —
+ * conflated the two. The creator's own browser pushes their own copy of
+ * whatever they save, poll included ({@code AgendaConnector.vue} on
+ * {@code agenda-event-saved}, through {@code CaldavPushRest} into
+ * {@code CaldavPushService.pushAgendaEvent}, which carries no status guard),
+ * and every path afterwards — the update listener, the retry pass, the mirror
+ * sweep — keeps that copy in step because it is a copy like any other. So a
+ * poll does reach a calendar today. Suppressing that copy entirely is tracked
+ * separately, as EXO-89863; nothing here changes it.
  *
  * <h2>Why asynchronous, and why that is safe here</h2>
  *
