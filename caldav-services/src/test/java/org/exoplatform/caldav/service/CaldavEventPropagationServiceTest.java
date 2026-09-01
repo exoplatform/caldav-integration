@@ -2153,19 +2153,23 @@ public class CaldavEventPropagationServiceTest {
    */
   @Test
   public void anOccurrenceIsJudgedByItsOwnCreatorAsTheRenderIs() {
-    Event occurrence = new Event();
-    occurrence.setId(OCCURRENCE);
-    occurrence.setParentId(EVENT);
-    occurrence.setCreatorId(CAROL);
-    when(agendaEventService.getEventById(OCCURRENCE)).thenReturn(occurrence);
     givenNoHoldersFor(OCCURRENCE);
     givenHoldersFor(EVENT, mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
     givenTheAnswererIsNamed(CAROL);
     givenEveryCopyAcceptsTheAnswer();
+    when(caldavPushService.isOrganizerOf(OCCURRENCE, CAROL)).thenReturn(true);
 
     assertEquals(0, service.propagateAnswer(OCCURRENCE, CAROL, "ACCEPTED"));
 
+    // The event as given, not the series it belongs to. This is the sharper
+    // half of the pin now that the rule is shared: the fan-out resolves an
+    // occurrence to its series to find the copies, and asking the organiser
+    // question off that resolution instead of off the answered event is the
+    // exact mistake — one line away, and invisible in the result — that this
+    // stops.
+    verify(caldavPushService).isOrganizerOf(OCCURRENCE, CAROL);
+    verify(caldavPushService, never()).isOrganizerOf(EVENT, CAROL);
     verify(caldavPushService, never()).pushAnswerOnto(anyLong(), any(), any(), anyString());
   }
 
@@ -2173,10 +2177,18 @@ public class CaldavEventPropagationServiceTest {
    * An event agenda cannot read at all does not stop the fan-out.
    *
    * <p>
-   * The bias {@code readEvent} already takes. Proceeding costs at worst the
-   * doomed retries the skip exists to prevent, for as long as agenda cannot
-   * answer; refusing would silently drop the answers of people who are not
-   * organisers at all, which is the defect this whole delivery is about.
+   * The bias every read on this path takes — here {@code seriesOf}'s, which
+   * answers 0 rather than raising and leaves the fan-out to look for holders
+   * of the event as given. Proceeding costs at worst a doomed retry, for as
+   * long as agenda cannot answer; refusing would silently drop the answers of
+   * people who are not organisers at all, which is the defect this whole
+   * delivery is about.
+   *
+   * <p>
+   * The organiser rule takes the same bias for the same reason, and since
+   * EXO-89895 it takes it in one place for both halves of answering:
+   * {@code CaldavAnswerPushTest#anUnreadableEventDoesNotSuppressTheAnswerersOwnWrite}
+   * pins it there.
    */
   @Test
   public void anUnreadableEventDoesNotSuppressTheFanOut() {
@@ -2192,17 +2204,22 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
-   * Declares who agenda records as having created the event — the predicate
-   * the render heads its ORGANIZER line with.
+   * Declares who called the meeting, as the shared rule answers it.
+   *
+   * <p>
+   * The rule itself moved to {@link CaldavPushService#isOrganizerOf(long, long)}
+   * for EXO-89895, so that the fan-out and the answerer's own write recognise
+   * one organiser between them rather than two. What it is keyed on — agenda's
+   * {@code getCreatorId()}, on the event as given, by identity and never by
+   * address, false for an event nobody can read — is pinned where it now
+   * lives, in {@code CaldavAnswerPushTest}. What is pinned <b>here</b> is what
+   * this fan-out does with the answer, which is the half this class owns.
    *
    * @param creatorIdentityId who called the meeting
    */
   private void givenTheEventWasCreatedBy(long creatorIdentityId) {
-    Event event = new Event();
-    event.setId(EVENT);
-    event.setParentId(0);
-    event.setCreatorId(creatorIdentityId);
-    when(agendaEventService.getEventById(EVENT)).thenReturn(event);
+    lenient().when(caldavPushService.isOrganizerOf(eq(EVENT), anyLong()))
+             .thenAnswer(invocation -> invocation.getArgument(1, Long.class).longValue() == creatorIdentityId);
   }
 
   /**
