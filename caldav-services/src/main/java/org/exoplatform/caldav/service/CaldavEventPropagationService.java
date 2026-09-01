@@ -186,15 +186,30 @@ public class CaldavEventPropagationService {
    * Each entry is here because the written object provably does not carry it:
    * {@code UPDATED} accompanies every single edit and says only that one
    * happened; eXo's colour is a property of the eXo calendar and never reaches
-   * the object; TRANSP is written {@code OPAQUE} unconditionally, so
-   * availability cannot move it; who may invite or modify is an eXo permission
-   * with no iCalendar counterpart; and the date-option rows are a poll's
-   * bookkeeping, for an event no copy of which is ever pushed.
+   * the object; who may invite or modify is an eXo permission with no
+   * iCalendar counterpart; and a date option is a row of a poll's own
+   * bookkeeping, which the copy does not carry — the copy carries the
+   * <i>envelope</i> the options span, and an option that moves the envelope
+   * moves the event's own start or end with it, so that change arrives here as
+   * {@code START_DATE_UPDATED}/{@code END_DATE_UPDATED} as well and is carried
+   * on those. An option edited inside the envelope changes nothing a copy
+   * states, which is what this entry is for.
+   *
+   * <p>
+   * <b>{@code AVAILABILITY_UPDATED} left this list in EXO-89870</b>, and the
+   * sentence that justified it — "TRANSP is written {@code OPAQUE}
+   * unconditionally, so availability cannot move it" — is no longer true. The
+   * copy of an event marked {@code FREE} now carries
+   * {@code TRANSP:TRANSPARENT}, so availability is a visible property of the
+   * object and a change to it must reach every holder's copy. Leaving it here
+   * would have made the one modification that moves TRANSP the one
+   * modification no rewrite is issued for, and the mirror sweep would have had
+   * to find it minutes later as a divergence and repair it — a repair standing
+   * in for an edit nobody carried.
    */
   private static final Set<AgendaEventModificationType>        INVISIBLE_ON_A_COPY =
                                                                                    EnumSet.of(AgendaEventModificationType.UPDATED,
                                                                                               AgendaEventModificationType.COLOR_UPDATED,
-                                                                                              AgendaEventModificationType.AVAILABILITY_UPDATED,
                                                                                               AgendaEventModificationType.ALLOW_INVITE_UPDATED,
                                                                                               AgendaEventModificationType.ALLOW_MODIFY_UPDATED,
                                                                                               AgendaEventModificationType.DATE_OPTION_CREATED,

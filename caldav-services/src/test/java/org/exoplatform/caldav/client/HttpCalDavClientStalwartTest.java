@@ -237,14 +237,84 @@ public class HttpCalDavClientStalwartTest {
     assertTrue(deleteStatus == 200 || deleteStatus == 204, "the run cleans its own collection up");
   }
 
+  /**
+   * Whether the server gives back the availability eXo wrote.
+   *
+   * <p>
+   * EXO-89870 makes eXo write {@code TRANSP:TRANSPARENT} on the copy of an
+   * event its owner marked free, so that it stops answering "busy" for them on
+   * every other calendar they own. Everything about that change rests on the
+   * server keeping the property: a server that drops it, or rewrites it to the
+   * {@code OPAQUE} default, leaves the copy claiming the time and — because
+   * {@code OPAQUE} equals its own absence in the comparison while
+   * {@code TRANSPARENT} does not — puts the copy in a repair loop as well. That
+   * is not a thing to assume about a server; it is a thing to ask one.
+   *
+   * <p>
+   * Asked of the rig, which is the server this add-on is developed against.
+   * BlueMind cannot be reached from a test, and if it turns out to rewrite the
+   * property there the answer is the per-server quirk mechanism (EXO-89771),
+   * not a change here: a rewritten {@code TRANSP:OPAQUE} folds to the default
+   * and therefore to nothing, so the divergence takes the shape of a dropped
+   * property and is excusable through the dropped list the drawer already
+   * offers.
+   */
   @Test
   @Order(6)
+  void theServerKeepsTheAvailabilityEXoWrote() {
+    assumeRigIsUp();
+    theHomeListsAtLeastOneWritableCalendar();
+    String href = calendarHref + "exo-transp-" + runId + ".ics";
+    String uid = "exo-transp-" + runId;
+
+    client.putObject(endpoint, href, freeIcsFor(uid), USER, PASSWORD);
+
+    try {
+      CalendarObject fetched = client.fetchObject(endpoint, href, USER, PASSWORD);
+      assertNotNull(fetched, "the object this run created must read back");
+      assertTrue(fetched.calendarData().contains("TRANSP:TRANSPARENT"),
+                 "the rig must give back the availability eXo wrote, or the copy claims the time anyway:\n"
+                     + fetched.calendarData());
+    } finally {
+      client.deleteObject(endpoint, href, null, USER, PASSWORD);
+    }
+  }
+
+  @Test
+  @Order(7)
   void wrongCredentialsClassifyAsACredentialRefusal() {
     assumeRigIsUp();
     CalDavEndpoint rigEndpoint = client.endpoint(1L, USER);
 
     assertThrows(CalDavAuthenticationException.class,
                  () -> client.discoverCalendarHome(rigEndpoint, USER, "definitely-not-the-password"));
+  }
+
+  /**
+   * A VEVENT declaring its time still free, in the shape eXo writes the copy of
+   * an event its owner marked {@code FREE}: an ordinary confirmed entry
+   * carrying {@code TRANSP:TRANSPARENT} so it does not claim the time it
+   * covers.
+   *
+   * @param uid the event UID
+   * @return the iCalendar text
+   */
+  private String freeIcsFor(String uid) {
+    return """
+        BEGIN:VCALENDAR\r
+        VERSION:2.0\r
+        PRODID:-//eXo//caldav-client-it//EN\r
+        BEGIN:VEVENT\r
+        UID:%s\r
+        DTSTAMP:20300101T090000Z\r
+        DTSTART:20300102T100000Z\r
+        DTEND:20300102T110000Z\r
+        SUMMARY:Free time\r
+        STATUS:CONFIRMED\r
+        TRANSP:TRANSPARENT\r
+        END:VEVENT\r
+        END:VCALENDAR\r
+        """.formatted(uid);
   }
 
   /**
