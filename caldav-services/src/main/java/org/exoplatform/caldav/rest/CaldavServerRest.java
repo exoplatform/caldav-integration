@@ -37,8 +37,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import org.exoplatform.caldav.model.CaldavManagedMode;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavSyncTuning;
+import org.exoplatform.caldav.service.CaldavManagedModeService;
 import org.exoplatform.caldav.service.CaldavMirrorReportService;
 import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.caldav.service.CaldavTuningService;
@@ -72,6 +74,9 @@ public class CaldavServerRest {
 
   @Autowired
   private CaldavTuningService caldavTuningService;
+
+  @Autowired
+  private CaldavManagedModeService caldavManagedModeService;
 
   @Autowired
   private CaldavMirrorReportService caldavMirrorReportService;
@@ -123,6 +128,86 @@ public class CaldavServerRest {
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
+  }
+
+  /**
+   * Whether this deployment chooses the CalDAV server on its users' behalf,
+   * and — for the caller specifically — whether that choice applies to them.
+   *
+   * <p>
+   * Readable by every authenticated user because every authenticated user acts
+   * on it: this is what the browser reads before deciding whether to offer
+   * connecting an account at all. The {@code managedForMe} half is computed
+   * per viewer in the service, so that the group exclusions planned next
+   * change one service method and not one front-end component per screen.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @return the mode as it stands for the caller
+   */
+  @GetMapping("/managed")
+  @Secured("users")
+  @Operation(summary = "Reads the CalDAV managed mode", method = "GET",
+      description = "Says which declared server the instance synchronises everybody with, and whether the calling "
+          + "user is governed by that choice. Nothing is named when managed mode is off.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled") })
+  public CaldavManagedMode getManagedMode(HttpServletRequest request) {
+    return caldavManagedModeService.getManagedMode(request.getRemoteUser());
+  }
+
+  /**
+   * Records the server the instance synchronises everybody with.
+   *
+   * <p>
+   * Switching managed mode on takes the connect and disconnect affordances
+   * away from every user, so the row has to be one they could actually have
+   * connected to: an unknown or deactivated registration is refused with the
+   * message code the drawer renders.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param serverId technical identifier of the registration to manage with
+   * @return the mode now in force, as it stands for the calling administrator
+   */
+  @PutMapping("/managed")
+  @Secured("administrators")
+  @Operation(summary = "Records the CalDAV managed mode", method = "PUT",
+      description = "Points the whole instance at one declared server. The registration must exist and be active: "
+          + "managed mode removes every user's connect affordance, so it must not name a server nobody can reach.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public CaldavManagedMode saveManagedMode(HttpServletRequest request,
+                                           @Parameter(description = "Technical identifier of the registration", required = true)
+                                           @RequestParam("serverId")
+                                           long serverId) {
+    try {
+      caldavManagedModeService.saveManagedServer(serverId);
+      return caldavManagedModeService.getManagedMode(request.getRemoteUser());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Switches managed mode off: users choose their own server again.
+   *
+   * <p>
+   * Nothing is severed by this and nothing was severed by switching it on —
+   * the mode governs which affordances are offered, never the connections that
+   * already exist.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @return the mode now in force, which names no server
+   */
+  @DeleteMapping("/managed")
+  @Secured("administrators")
+  @Operation(summary = "Switches the CalDAV managed mode off", method = "DELETE",
+      description = "Gives every user back the choice of their own CalDAV server. Accounts already connected are "
+          + "untouched, as they were when the mode was switched on.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public CaldavManagedMode clearManagedMode(HttpServletRequest request) {
+    caldavManagedModeService.clearManagedServer();
+    return caldavManagedModeService.getManagedMode(request.getRemoteUser());
   }
 
   /**
@@ -277,6 +362,7 @@ public class CaldavServerRest {
   @Operation(summary = "Deletes a declared CalDAV server", method = "DELETE",
       description = "Deletes a declared CalDAV server, unless connected accounts still reference it")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden"),
       @ApiResponse(responseCode = "404", description = "Not found"),
       @ApiResponse(responseCode = "409", description = "Connected accounts still reference this server") })
@@ -292,6 +378,12 @@ public class CaldavServerRest {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalStateException e) {
       throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      // The managed-mode refusal, which is a bad request and not a conflict:
+      // no other object is in the way, the administrator is being told to
+      // switch managed mode off first. Without this catch the message code
+      // reached the browser as a 500 and the snackbar said nothing useful.
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
   }
 

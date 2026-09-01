@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-import caldavConnector, {createCaldavConnector, serverHost} from '../../main/webapp/vue-app/caldav/caldav-connector/caldavConnector.js';
+import caldavConnector, {createCaldavConnector, createLegacyCaldavConnector, serverHost} from '../../main/webapp/vue-app/caldav/caldav-connector/caldavConnector.js';
 
 /**
  * The contract agenda's left panel holds every connector to. My Calendars
@@ -130,6 +130,67 @@ describe('createCaldavConnector', () => {
     const bare = createCaldavConnector(seedServer, 0);
     expect(bare.icon).toBeNull();
     expect(bare.avatar).toBe(caldavConnector.avatar);
+  });
+
+  /**
+   * EXO-89900. The managed verdict agenda reads off every descriptor to decide
+   * whether to offer connecting and disconnecting at all.
+   *
+   * What is pinned is that the stamp follows `managedForMe` — the PER-VIEWER
+   * half of the platform's answer — and not `serverId`, which is what the
+   * INSTANCE decided and is the same for everybody. The two cannot disagree
+   * today; group exclusions are exactly what will make them, and a descriptor
+   * stamped from the global half would then hide the connect button from the
+   * very users an exclusion exists to let connect.
+   */
+  it('stamps managed from the per-viewer verdict and not from the instance choice', () => {
+    const forThisViewer = {serverId: 6, serverName: 'Bluemind', managedForMe: true};
+    const chosenButNotForThisViewer = {serverId: 6, serverName: 'Bluemind', managedForMe: false};
+
+    expect(createCaldavConnector(declaredServer, 1, forThisViewer).managed).toBe(true);
+    expect(createCaldavConnector(declaredServer, 1, forThisViewer).managedServerName).toBe('Bluemind');
+
+    expect(createCaldavConnector(declaredServer, 1, chosenButNotForThisViewer).managed).toBe(false);
+    expect(createCaldavConnector(declaredServer, 1, chosenButNotForThisViewer).managedServerName).toBeNull();
+  });
+
+  /**
+   * The stamp reaches EVERY CalDAV descriptor, not only the chosen server's:
+   * managed mode governs the CalDAV family as a whole, and a user offered to
+   * connect a DIFFERENT CalDAV server would be offered exactly the act the
+   * mode exists to take away.
+   */
+  it('stamps every CalDAV descriptor, including the servers that were not chosen', () => {
+    const managedElsewhere = {serverId: 999, serverName: 'Bluemind', managedForMe: true};
+
+    expect(createCaldavConnector(seedServer, 0, managedElsewhere).managed).toBe(true);
+    expect(createCaldavConnector(declaredServer, 1, managedElsewhere).managed).toBe(true);
+    expect(createLegacyCaldavConnector(managedElsewhere).managed).toBe(true);
+  });
+
+  /**
+   * The property EXISTS on every descriptor shape, false rather than
+   * undefined: agenda reads it to remove affordances, and `undefined` and
+   * `false` read alike right up to the day somebody writes `!== false`.
+   */
+  it('declares managed false rather than leaving it undefined', () => {
+    expect(caldavConnector.managed).toBe(false);
+    expect(createCaldavConnector(seedServer, 0).managed).toBe(false);
+    expect(createCaldavConnector(declaredServer, 1, null).managed).toBe(false);
+    expect(createLegacyCaldavConnector(null).managed).toBe(false);
+    expect(createLegacyCaldavConnector(undefined).managedServerName).toBeNull();
+  });
+
+  /**
+   * The legacy fallback is a COPY. It is registered when the registry answers
+   * nothing, and stamping the shared singleton in place would leak the verdict
+   * into the object every other descriptor is built from.
+   */
+  it('never mutates the shared descriptor when stamping the fallback', () => {
+    createLegacyCaldavConnector({serverId: 6, serverName: 'Bluemind', managedForMe: true});
+
+    expect(caldavConnector.managed).toBe(false);
+    expect(caldavConnector.managedServerName).toBeNull();
   });
 
   /**
