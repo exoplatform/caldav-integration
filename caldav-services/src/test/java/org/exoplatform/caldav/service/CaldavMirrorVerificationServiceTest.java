@@ -18,6 +18,7 @@ package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -47,6 +48,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarObject;
@@ -59,6 +61,9 @@ import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
 
 /**
  * Whether the copies eXo pushed are still there, and still what eXo wrote.
@@ -656,6 +661,86 @@ public class CaldavMirrorVerificationServiceTest {
     assertEquals(0, fourth.repaired());
     assertEquals(1, fourth.abandoned());
     verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
+  }
+
+  /**
+   * A server that keeps a guest but strips their answer: written back three
+   * times, then abandoned, with the give-up said once.
+   *
+   * <p>
+   * <b>Why this pin lives here and not in {@code IcsEquivalenceTest}</b>
+   * (EXO-89829). The comparison used to fall silent on this exact shape — an
+   * answer eXo states that the copy's line does not — and
+   * {@code IcsEquivalenceTest} pinned that silence as
+   * {@code aServerThatKeepsStrippingAnAnswerDoesNotDriveAnEndlessRePush}. The
+   * guard was not dropped when that test went; it was moved to the layer that
+   * can hold it. Silence in the comparison stops the loop by also stopping the
+   * repair on every server where a re-push <i>works</i> — the rig's own
+   * BlueMind copies among them, where the answer stuck on the first write. And
+   * a comparison is a pure function of the two objects it is handed: it has no
+   * copy identity to count attempts against and no hook to forget them on.
+   *
+   * <p>
+   * So the comparison reports the drift, every time, and the bound is the one
+   * that already existed one layer up: {@code maxRepairs} writes for this copy
+   * and then {@code giveUpOn} abandons it. The two halves are exercised
+   * together here — the real {@link IcsEquivalence} judging the rig's shape,
+   * and the real budget counting the writes it causes — because either alone
+   * proves nothing about the loop.
+   *
+   * <p>
+   * <b>The INFO line is asserted too, and it is half of what this ticket is
+   * for.</b> Before it, this copy was reported as an attendee the server had
+   * added, which reads as a guest a client invited and is the opposite
+   * instruction to whoever is holding the log.
+   */
+  @Test
+  public void aServerThatKeepsStrippingAnAnswerIsRePushedThreeTimesAndThenAbandoned() {
+    String inExo = INVITED.replace("ATTENDEE;CN=John:", "ATTENDEE;CN=John;PARTSTAT=DECLINED:");
+    givenServerHolds(Map.of(HREF, "\"etag-2\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(caldavPushService.renderAgendaEvent(eq(USER), eq(5L), anyString())).thenReturn(inExo);
+    // The copy keeps coming back as the server stores it: the guest kept, the
+    // answer gone, whatever eXo just wrote. The listing never moves off its own
+    // version either, so nothing about this fight is ever winnable.
+    when(calDavClient.fetchObject(any(), eq(HREF), anyString(), anyString()))
+                                                                            .thenReturn(new CalendarObject(HREF,
+                                                                                                           "\"etag-2\"",
+                                                                                                           INVITED));
+    // What the pass is acting on, stated before it acts: one guest, one drift.
+    // Asked of the same real judge the service holds, so this cannot pass while
+    // the service is judging something else.
+    assertEquals("the answer for john@acme.test differs: no answer on the server, DECLINED in eXo "
+        + "(one attendee, not one added and one dropped)", icsEquivalence.compare(INVITED, inExo, List.of()).detail());
+
+    List<ILoggingEvent> written;
+    try (LogRecorder log = new LogRecorder(CaldavMirrorVerificationService.class)) {
+      for (int pass = 0; pass < 3; pass++) {
+        // Under the bound the answer is written back, which is the whole
+        // reason the comparison reports it: on a server that keeps the
+        // PARTSTAT, this first write is the end of the story.
+        assertEquals(1, service.verify(USER).repaired());
+      }
+      MirrorVerification fourth = service.verify(USER);
+      MirrorVerification fifth = service.verify(USER);
+
+      assertEquals(0, fourth.repaired(), "the fourth pass is where a loop would start, and it does not");
+      assertEquals(1, fourth.abandoned());
+      assertEquals(1, fifth.abandoned(), "and it stays abandoned while the server publishes the same version");
+      written = List.copyOf(log.events());
+    }
+
+    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
+    List<ILoggingEvent> warnings = written.stream().filter(event -> event.getLevel() == Level.WARN).toList();
+    assertEquals(1, warnings.size(), "giving up is a state, and saying it on every pass would bury it: " + warnings);
+    assertTrue(warnings.get(0).getFormattedMessage().contains("keeps going wrong"), warnings.get(0).getFormattedMessage());
+    // And what the administrator reads on the way there names the person and
+    // the two answers, rather than calling this an attendee the server added.
+    assertTrue(written.stream()
+                      .anyMatch(event -> event.getFormattedMessage()
+                                              .contains("the answer for john@acme.test differs: no answer on the server, "
+                                                  + "DECLINED in eXo (one attendee, not one added and one dropped)")),
+               String.valueOf(written));
   }
 
   @Test

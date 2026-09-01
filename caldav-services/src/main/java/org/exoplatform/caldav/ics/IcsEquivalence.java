@@ -159,8 +159,11 @@ import net.fortuna.ical4j.model.component.VTimeZone;
  * which is a different event in the world and the wrong thing to tell an
  * administrator (EXO-89829). So a person both copies name is folded into one
  * statement about them <b>before</b> any tolerance rule sees either half —
- * exactly one decision is taken for the pair, and the rules below only ever
- * meet somebody one side does not name at all. See
+ * exactly one decision is taken for the pair, the rules above only ever meet
+ * somebody one side does not name at all, and the disagreement is reported as
+ * the one thing it is. What stops eXo re-asserting an answer a server keeps
+ * stripping is not silence here but the pass's own budget: one copy is
+ * re-pushed {@code maxRepairs} times and then abandoned, with a warning. See
  * {@link #pairAttendeeStatements}.
  *
  * <p>
@@ -1474,14 +1477,13 @@ public class IcsEquivalence {
    * event in the world.
    *
    * <p>
-   * <b>And the loop guard half-applied.</b> That rule exists to stop a copy
-   * being re-pushed for ever when a server will not carry something eXo holds
-   * about a guest. Absorbing one half of a pair and leaving the other to drive
-   * the repair gives its protection to one side only: on the rig the re-push
-   * stuck, but a server that keeps stripping a guest's {@code PARTSTAT} would
-   * be rewritten every five minutes for ever — precisely the case the rule was
-   * written to prevent. One statement gets one decision, so it cannot half-hold
-   * any more.
+   * <b>And a rule half-applied.</b> The rule for an attendee the server did not
+   * keep exists to stop eXo asserting something a server will not carry.
+   * Absorbing one half of a pair and leaving the other to drive the repair gave
+   * its judgement to one side of one disagreement, which is incoherent whatever
+   * the right judgement turns out to be. One statement now gets one decision,
+   * so it cannot half-hold any more — and, the pair being one statement, the
+   * decision is taken once, in the open, rather than twice by accident.
    *
    * <p>
    * <b>Why here and not as a third rule beside the other two.</b> A third rule
@@ -1493,22 +1495,37 @@ public class IcsEquivalence {
    * guest one side does not name at all.
    *
    * <p>
-   * <b>Three outcomes, and the direction decides between them.</b>
+   * <b>One outcome, and the direction decides only how it is worded.</b> A pair
+   * is a disagreement about a guest, and every one of them is reported:
    * <ul>
    * <li><b>The copy states an answer eXo's line does not</b> — somebody replied
-   * from their own client. Reported, always: this is the divergence EXO-89807
-   * and EXO-89814 read an answer back from, and it is now reported as the one
-   * thing it is rather than as an attendee added and an attendee dropped.</li>
+   * from their own client. This is the divergence EXO-89807 and EXO-89814 read
+   * an answer back from, and it is now reported as the one thing it is rather
+   * than as an attendee added and an attendee dropped.</li>
    * <li><b>eXo states an answer and the copy's line states none</b> — the
-   * server did not keep the answer. Tolerated, for the reason the whole guest
-   * is tolerated in {@link #tolerated}: re-pushing what a server declines to
-   * store is not a repair, it is a loop. This is <b>narrower</b> than the rule
-   * it completes, which gives up the guest entirely; here the copy still names
-   * them and understates only their reply.</li>
+   * server did not keep the answer. Reported too, so the answer is written back
+   * where a re-push works, which on the rig's own copies it does.</li>
    * <li><b>The two lines agree on the answer and differ otherwise</b> — a role,
    * a type, a parameter nobody expected. Reported, as before, and now as one
    * finding naming the person rather than as two halves.</li>
    * </ul>
+   *
+   * <p>
+   * <b>Where the loop is stopped, and why not here.</b> Reporting a drift a
+   * server will strip again means a repair that is undone, and the temptation
+   * is to fall silent about it after the first one. That was tried and
+   * rejected: silence here would also stop the re-push on the servers where it
+   * <i>works</i>, and it would put a memory inside a comparison that is a pure
+   * function of the two objects it is handed — with no copy identity to key it
+   * by, no hook to forget it on, and every reader of a copy paying for what an
+   * earlier reader had already asked. The bound belongs where the pass state
+   * and the copy's identity already live, and it is already there:
+   * {@code CaldavMirrorVerificationService.giveUpOn} re-pushes a copy at most
+   * {@code exo.agenda.caldav.mirror.maxRepairs} times — three by default —
+   * warns once that it is giving up, and then leaves it alone while the server
+   * publishes the version it was abandoned at. So a server that keeps stripping
+   * a guest's answer costs three writes and stops, and this method's job is to
+   * say <i>what</i> diverged, never how many times it is worth saying.
    *
    * <p>
    * <b>What it cannot hide.</b> Pairing needs the <i>same</i> person on both
@@ -1516,10 +1533,8 @@ public class IcsEquivalence {
    * as somebody a client added, and a guest only eXo names still meets the rule
    * written for them. A changed address is two different people to this method,
    * so it survives as a surplus each way and the copy's surplus is reported.
-   * The cost is stated plainly: on a paired guest whose answer the copy has
-   * dropped, a client that also changed their role in the same breath goes
-   * unnoticed — one notch less than the rule this completes already gives up,
-   * which is that guest's entire line.
+   * And it hides nothing a client did: every pair is reported, so a role
+   * changed in the same breath as an answer is in the finding beside it.
    *
    * @param serverStatements what the server's component says; the paired halves
    *          are consumed from it
@@ -1556,15 +1571,6 @@ public class IcsEquivalence {
         cancel(exoStatements, inExo);
         String serverAnswer = attendees.get(onServer).answer();
         String exoAnswer = attendees.get(inExo).answer();
-        if (serverAnswer == null && exoAnswer != null) {
-          // Tolerated, and therefore not observed either: what a built-in rule
-          // excuses is never offered to an administrator as a decision. Said at
-          // DEBUG all the same, because a copy that keeps understating an answer
-          // is diagnosed by reading what the two sides say.
-          LOG.debug("The copy does not carry the answer eXo states for {}: [{}] against [{}]. "
-              + "Left alone, as an answer a server declines to store cannot be repaired into it", person.getKey(), onServer, inExo);
-          continue;
-        }
         // Both halves are observed, so IcsStatement.collapse folds them into the
         // one behaviour they are: this server REWRITES the line, which is what
         // an administrator has to be shown rather than a bare addition.
@@ -1715,10 +1721,14 @@ public class IcsEquivalence {
    * server that keeps an attendee but not their answer states that person on a
    * line of its own, and eXo's answered line for them arrived here as a surplus
    * this rule swallowed — leaving the copy's line to be reported as an attendee
-   * the server had added, and leaving the loop guard applying to one side of
-   * one disagreement. {@link #pairAttendeeStatements} folds such a pair into
-   * one statement before anything reaches this method, so what it decides is
-   * again what it was written for.
+   * the server had added, and leaving one disagreement judged on one of its two
+   * sides. {@link #pairAttendeeStatements} folds such a pair into one statement
+   * before anything reaches this method, so what it decides is again what it
+   * was written for. A guest the copy still names, whose answer it does not
+   * carry, is <b>not</b> this rule's business and is reported; a copy that
+   * strips that answer on every write is bounded by the pass, which re-pushes
+   * one copy {@code maxRepairs} times and then abandons it, not by silence
+   * here.
    *
    * <p>
    * The owner is deliberately outside the second rule. The architect's reason

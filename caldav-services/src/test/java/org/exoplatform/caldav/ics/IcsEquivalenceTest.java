@@ -802,47 +802,50 @@ public class IcsEquivalenceTest {
   // ordinary-attendee rule rather than the owner's own.
 
   @Test
-  public void anAnswerTheServerDidNotKeepIsNotAnEdit() {
+  public void anAnswerTheServerDidNotKeepIsReportedAsOneGuestAndNotAsOneAdded() {
     // The first rig shape: the copy names him and states no answer. One
-    // statement, one decision — and the decision is the one the rule this
-    // completes already takes for the whole guest, for the same reason:
-    // re-pushing what a server declines to store is not a repair, it is a loop.
-    //
-    // The cost, stated rather than discovered later: a client that cleared his
-    // answer would look the same and would go unnoticed. That is one notch less
-    // than what the dropped-attendee rule already gives up, which is the guest
-    // entirely.
-    assertEquivalent(rigCopyWithoutAnswer(), rigRenderWithAnswer(), HOST);
+    // statement, one decision — and the decision is to report it, so the answer
+    // is written back on every server where a re-push works, which on the rig's
+    // own copies it does. What is fixed here is the naming: before, this was
+    // reported as ATTENDEE=mailto:bob@stalwart.local (server 1, eXo 0), which
+    // says the server ADDED him.
+    IcsJudgement judgement = judge.compare(rigCopyWithoutAnswer(), rigRenderWithAnswer(), HOST);
+
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
+    assertEquals("the answer for bob@stalwart.local differs: no answer on the server, DECLINED in eXo "
+        + "(one attendee, not one added and one dropped)", judgement.detail());
   }
 
   @Test
-  public void anAnswerTheServerReplacedWithAnRsvpOfItsOwnIsNotAnEdit() {
+  public void anAnswerTheServerReplacedWithAnRsvpOfItsOwnIsReportedTheSameWay() {
     // The second rig shape, on the sibling event. RSVP=TRUE is not a default
     // and so is compared; the copy still states no answer for him, and the
-    // decision has to be the same one — a fix that held for the copy with no
-    // PARTSTAT and not for its neighbour would be this ticket's own defect
-    // written again.
-    assertEquivalent(rigCopyWithRsvp(), rigRenderWithAnswer(), HOST);
+    // finding has to read the same — a fix that named the copy with no PARTSTAT
+    // correctly and its neighbour by whichever parameter happened to differ
+    // would be this ticket's own defect written again. The RSVP is inside the
+    // pair, not beside it.
+    IcsJudgement judgement = judge.compare(rigCopyWithRsvp(), rigRenderWithAnswer(), HOST);
+
+    assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
+    assertEquals("the answer for bob@stalwart.local differs: no answer on the server, DECLINED in eXo "
+        + "(one attendee, not one added and one dropped)", judgement.detail());
   }
 
-  @Test
-  public void aServerThatKeepsStrippingAnAnswerDoesNotDriveAnEndlessRePush() {
-    // The loop guard, whole. A repair writes eXo's render, PARTSTAT and all;
-    // this server stores it without the PARTSTAT. If the comparison reported
-    // that state, the next sweep would repair it again, and the one after that,
-    // for ever — the case the dropped-attendee rule exists to prevent, which it
-    // used to prevent on one side of this pair only.
-    String repaired = rigRenderWithAnswer();
-    String asStored = repaired.replace(";PARTSTAT=DECLINED", "");
-    // The fixture has to lose something, or the round below proves nothing.
-    assertNotEquals(repaired, asStored);
-
-    // Round one: the copy as the sweep first meets it.
-    assertEquivalent(asStored, repaired, HOST);
-    // Round two: the same copy after a repair the server undid in the same way.
-    // Same verdict, so no second repair is ever asked for.
-    assertEquivalent(asStored, repaired, HOST);
-  }
+  // The guard against an endless re-push is NOT here, and was deliberately
+  // moved rather than dropped. An earlier round of this ticket had the
+  // comparison fall silent on a drift eXo states and the copy does not, which
+  // does stop the loop — and also stops the answer ever being written back on
+  // the servers where a re-push works, the rig's own two copies included. A
+  // comparison is a pure function of the two objects it is handed: it has no
+  // copy identity to count attempts against, no hook to forget them on, and no
+  // business remembering how often it has been asked.
+  //
+  // The bound lives where the pass state and the copy's identity already are,
+  // and it already existed: CaldavMirrorVerificationService re-pushes one copy
+  // maxRepairs times, warns once, and abandons it. The pin that replaces the
+  // one that stood here is
+  // CaldavMirrorVerificationServiceTest.aServerThatKeepsStrippingAnAnswerIsRePushedThreeTimesAndThenAbandoned,
+  // which exercises this comparison and that budget together.
 
   @Test
   public void anAnswerDriftIsReportedAsOnePersonAndNotAsAnAttendeeTheServerAdded() {
@@ -875,16 +878,16 @@ public class IcsEquivalenceTest {
   }
 
   @Test
-  public void anAnswerFromTheServerIsStillReadWhileAPairIsToleratedForSomebodyElse() {
+  public void anAnswerFromTheServerIsStillReadWhileAnotherGuestsAnswerDriftsTheOtherWay() {
     // The two that must hold TOGETHER, in one object rather than one at a time.
     // EXO-89807 and EXO-89814 read an answer back off a copy precisely because
     // the comparison notices a PARTSTAT difference, and both of them meet this
     // account's copies: the owner has answered DECLINED on her phone and eXo
-    // still renders her as unanswered. In the same object, the guest whose
-    // answer the server does not keep is being tolerated — the pair this ticket
-    // folds. A fix that tolerated the drift as a class, rather than in the one
-    // direction where a repair is a loop, would silence her answer too, and
-    // would do it with a test for each of them passing on its own.
+    // still renders her as unanswered. In the same object a second pair points
+    // the other way — the guest whose answer this server does not keep. Two
+    // drifts, opposite directions, one object: a fix that decided the pair by
+    // its direction would silence one of them, and would do it with a test for
+    // each of them passing on its own.
     String inExo = EXO.replace("STATUS:CONFIRMED",
                                "ATTENDEE;PARTSTAT=DECLINED:mailto:bob@stalwart.local\r\n"
                                    + "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:alice@stalwart.local\r\n"
@@ -898,11 +901,19 @@ public class IcsEquivalenceTest {
 
     // Her answer still registers, which is what those two depend on.
     assertEquals(IcsJudgement.Verdict.DIFFERENT, judgement.verdict());
-    assertEquals("the answer for the calendar's own owner differs: DECLINED on the server, no answer in eXo "
-        + "(one attendee, not one added and one dropped)", judgement.detail());
-    // And the tolerated pair is not in the line, so what the administrator
-    // reads is the one thing there is to act on.
-    assertFalse(judgement.detail().contains("bob@stalwart.local"), judgement.detail());
+    assertTrue(judgement.detail()
+                        .contains("the answer for the calendar's own owner differs: DECLINED on the server, "
+                            + "no answer in eXo (one attendee, not one added and one dropped)"),
+               judgement.detail());
+    // And the other guest's drift is named beside hers, as its own person and
+    // its own direction — not as an attendee this server added, which is what
+    // the line said before this ticket and is the opposite instruction to an
+    // administrator.
+    assertTrue(judgement.detail()
+                        .contains("the answer for bob@stalwart.local differs: no answer on the server, "
+                            + "DECLINED in eXo (one attendee, not one added and one dropped)"),
+               judgement.detail());
+    assertFalse(judgement.detail().contains("(server 1, eXo 0)"), judgement.detail());
   }
 
   @Test
@@ -1000,19 +1011,6 @@ public class IcsEquivalenceTest {
   private String rigCopyWithAnswer() {
     return EXO.replace("STATUS:CONFIRMED",
                        "ATTENDEE;CN=FRANCOIS;PARTSTAT=DECLINED:mailto:bob@stalwart.local\r\nSTATUS:CONFIRMED");
-  }
-
-  /**
-   * Asserts that two objects state the same thing, for an account whose owner
-   * is not the reference pair.
-   *
-   * @param onServer the object the server holds
-   * @param inExo the object eXo renders
-   * @param owners the addresses this account's owner answers to
-   */
-  private void assertEquivalent(String onServer, String inExo, java.util.List<String> owners) {
-    IcsJudgement judgement = judge.compare(onServer, inExo, owners);
-    assertEquals(IcsJudgement.Verdict.EQUIVALENT, judgement.verdict(), String.valueOf(judgement.detail()));
   }
 
   // ------------------------- the address a server restates (EXO-89826)
