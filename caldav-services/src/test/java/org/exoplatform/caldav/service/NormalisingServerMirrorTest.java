@@ -210,6 +210,13 @@ public class NormalisingServerMirrorTest {
     ReflectionTestUtils.setField(push, "agendaEventIcsMapper", agendaEventIcsMapper);
     ReflectionTestUtils.setField(push, "agendaRemoteEventService", agendaRemoteEventService);
     ReflectionTestUtils.setField(push, "agendaCalendarService", agendaCalendarService);
+    // EXO-89863 gave both services the same rule to consult before writing a
+    // copy or judging one. The real thing, not a mock: this rig builds real
+    // events and what it must keep proving is that an ordinary confirmed
+    // meeting is written and repaired exactly as it always was.
+    ReflectionTestUtils.setField(push, "caldavCopyPolicy", new CaldavCopyPolicy());
+    ReflectionTestUtils.setField(verification, "caldavCopyPolicy", new CaldavCopyPolicy());
+    ReflectionTestUtils.setField(verification, "agendaEventService", agendaEventService);
     ReflectionTestUtils.setField(verification, "caldavPushService", push);
     ReflectionTestUtils.setField(verification, "icsEquivalence", icsEquivalence);
     ReflectionTestUtils.setField(verification, "caldavAnswerAdoptionService", caldavAnswerAdoptionService);

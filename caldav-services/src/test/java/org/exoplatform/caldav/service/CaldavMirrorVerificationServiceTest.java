@@ -17,6 +17,8 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -25,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
@@ -35,6 +38,9 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Map;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,6 +54,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.exoplatform.agenda.constant.EventStatus;
+import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -224,6 +233,25 @@ public class CaldavMirrorVerificationServiceTest {
   @Spy
   private IcsEquivalence                     icsEquivalence = new IcsEquivalence();
 
+  /**
+   * Agenda, asked one question by this pass and one only: what an event's
+   * status is now, so a copy standing for a date poll is retired instead of
+   * repaired (EXO-89863). Unstubbed it answers null for every event, which
+   * {@link CaldavCopyPolicy} reads as "says nothing" — every scenario written
+   * before that check existed therefore stays on the path it was written for.
+   */
+  @Mock
+  private AgendaEventService                agendaEventService;
+
+  /**
+   * The real rule rather than a mock, and deliberately so: what a copy may
+   * stand for is one decision this suite has to exercise, not stage. A mocked
+   * policy would answer whatever the test told it to and prove nothing about
+   * the event statuses these scenarios actually build.
+   */
+  @Spy
+  private CaldavCopyPolicy                  caldavCopyPolicy = new CaldavCopyPolicy();
+
   @InjectMocks
   private CaldavMirrorVerificationService    service;
 
@@ -251,6 +279,177 @@ public class CaldavMirrorVerificationServiceTest {
     assertEquals(1, result.missing());
     assertEquals(1, result.repaired());
     verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+  }
+
+  // ------------------------------------------------- date polls (EXO-89863)
+
+  /**
+   * The retirement, and the migration.
+   *
+   * <p>
+   * A copy standing for an event that has become a date poll is deleted from
+   * the server before anything compares it. It has to run before the
+   * comparison, because a poll renders to a multi-day block spanning every
+   * option proposed: left to the comparison the copy is judged altered and
+   * <b>repaired into that block</b>, which is the pass writing the very entry
+   * this change removes.
+   *
+   * <p>
+   * This is also how the copies pushed before the change leave people's
+   * calendars: the first sweep of each account after the deploy meets them
+   * here. There is no separate migration script, and this test is the reason
+   * there does not have to be one.
+   */
+  @Test
+  public void aCopyStandingForADatePollIsRetiredRatherThanCompared() {
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    givenTheEventIs(5L, EventStatus.TENTATIVE);
+
+    service.verify(USER);
+
+    verify(caldavPushService).deleteEvent(USER, UID);
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * A poll copy the server no longer holds is a mapping row and nothing else.
+   *
+   * <p>
+   * Left to the comparison this row is MISSING, and MISSING is the verdict that
+   * <b>re-pushes</b> — so the pass that was supposed to end the poll copy would
+   * have written it back. It is cleared instead, with no request made: there is
+   * nothing on the server to delete.
+   */
+  @Test
+  public void aDatePollCopyAlreadyGoneIsClearedAndNeverRepaired() {
+    givenServerHolds(Map.of());
+    ObjectSync row = mapping(HREF, "\"etag-1\"", 5L);
+    givenMappings(row);
+    givenTheEventIs(5L, EventStatus.TENTATIVE);
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(0, result.missing(), "a poll copy that is gone is not a copy that needs putting back");
+    assertEquals(0, result.repaired());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
+    verify(caldavSyncStorage).saveObject(row);
+    assertNull(row.getRemoteHref(), "the row must stop naming an object, or the next pass repairs it");
+  }
+
+  /**
+   * The loop that must not exist, walked end to end.
+   *
+   * <p>
+   * A retirement clears the row's href — that is what
+   * {@code CaldavPushService.deleteEvent} does — and a row with no href is
+   * skipped at the top of the walk. So the pass that retires a copy does not
+   * meet it again, does not report it missing, and asks nothing of the server
+   * on any pass after the first. This is the half of "no re-push loop" that
+   * lives in this class; the other halves are the seeding pass refusing a poll
+   * and the push core refusing one.
+   */
+  @Test
+  public void aRetiredCopyIsNotMetAgainOnTheNextPass() {
+    ObjectSync row = mapping(HREF, "\"etag-1\"", 5L);
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(row);
+    givenTheEventIs(5L, EventStatus.TENTATIVE);
+    // What the real deleteEvent leaves behind, since this suite mocks it.
+    doAnswer(invocation -> {
+      row.setRemoteHref(null);
+      row.setEtag(null);
+      return null;
+    }).when(caldavPushService).deleteEvent(USER, UID);
+
+    service.verify(USER);
+    MirrorVerification second = service.verify(USER);
+
+    assertEquals(0, second.checked(), "a row naming no object is not a copy to check");
+    verify(caldavPushService, times(1)).deleteEvent(USER, UID);
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+  }
+
+  /**
+   * One line per retired copy, at INFO, naming the event and the account: the
+   * line an administrator watching the first sweep after the deploy is looking
+   * for.
+   */
+  @Test
+  public void everyRetiredCopyIsAnnouncedOnceAtInfo() {
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    givenTheEventIs(5L, EventStatus.TENTATIVE);
+
+    List<ILoggingEvent> announced;
+    try (LogRecorder log = new LogRecorder(CaldavMirrorVerificationService.class)) {
+      service.verify(USER);
+      announced = log.events()
+                     .stream()
+                     .filter(recorded -> recorded.getFormattedMessage().contains("has been retired"))
+                     .toList();
+    }
+
+    assertEquals(1, announced.size());
+    assertEquals(Level.INFO, announced.get(0).getLevel());
+    assertTrue(announced.get(0).getFormattedMessage().contains(HREF), "an administrator needs to know which copy went");
+  }
+
+  /**
+   * A retirement the server refused leaves the copy alone rather than repairing
+   * it. The row keeps its href so the next pass meets it here again — but a
+   * poll copy nobody could remove must still not be written back over.
+   */
+  @Test
+  public void aRetirementTheServerRefusedStillDoesNotRepairTheCopy() {
+    givenServerHolds(Map.of(HREF, "\"etag-1\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    givenTheEventIs(5L, EventStatus.TENTATIVE);
+    doThrow(new CaldavPushException(CaldavPushService.SAVE, "the server refused it")).when(caldavPushService)
+                                                                                     .deleteEvent(USER, UID);
+
+    service.verify(USER);
+
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyLong());
+  }
+
+  /**
+   * A cancelled meeting is not a poll, and its copy is verified and repaired
+   * like any other — the tombstone is what tells its attendees the meeting is
+   * off.
+   */
+  @Test
+  public void aCancelledMeetingsCopyIsStillVerifiedAndRepaired() {
+    givenServerHolds(Map.of());
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    givenTheEventIs(5L, EventStatus.CANCELLED);
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(1, result.missing());
+    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
+  }
+
+  /**
+   * An event agenda cannot answer for is judged exactly as it always was. The
+   * pass runs every few minutes, and concluding "retire" from a failed read
+   * would delete live meetings off people's calendars on any agenda hiccup.
+   */
+  @Test
+  public void anEventThatCouldNotBeReadDoesNotRetireItsCopy() {
+    givenServerHolds(Map.of());
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(agendaEventService.getEventById(5L)).thenThrow(new IllegalStateException("agenda is unavailable"));
+
+    MirrorVerification result = service.verify(USER);
+
+    assertEquals(1, result.missing());
+    verify(caldavPushService).rewriteAgendaEvent(USER, 5L);
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString());
   }
 
   @Test
@@ -841,6 +1040,19 @@ public class CaldavMirrorVerificationServiceTest {
   /**
    * @param etags what the server currently holds
    */
+  /**
+   * Declares what agenda now holds for the event a mapping row stands for.
+   *
+   * @param eventId the agenda event the row names
+   * @param status the status agenda stores — TENTATIVE for a date poll
+   */
+  private void givenTheEventIs(long eventId, EventStatus status) {
+    Event event = new Event();
+    event.setId(eventId);
+    event.setStatus(status);
+    when(agendaEventService.getEventById(eventId)).thenReturn(event);
+  }
+
   private void givenServerHolds(Map<String, String> etags) {
     when(calDavClient.listResourceEtags(any(), anyString(), anyString(), anyString())).thenReturn(etags);
   }
