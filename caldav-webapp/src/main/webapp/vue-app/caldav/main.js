@@ -65,13 +65,42 @@ document.addEventListener('open-caldav-connector-settings-drawer',function(event
   });
 });
 
-// The CalDAV servers section of the agenda administration page. Registered
-// only once the Caldav bundle is merged (finally: a failed bundle fetch
-// still registers — raw keys beat a missing section), and followed by the
-// refresh event the admin page listens to: the module may run before or
-// after the admin app is created, and whichever side arrives second finds
-// the other.
-i18nPromise.finally(() => {
+// Whether this instance chose the user's CalDAV server, fetched ONCE and
+// shared by the two things that need it: which nested rows this module
+// registers on the agenda settings page, and how the connector descriptors are
+// stamped. Two fetches would be two answers that can disagree.
+//
+// Never rejects. A deployment whose managed setting cannot be read still has to
+// offer its users their calendars and their rows, so a failure resolves to null
+// — "not managed" — which restores affordances rather than removing them: the
+// recoverable direction, and the honest one when nothing is known.
+const managedPromise = i18nPromise
+  .catch(() => null)
+  .then(() => agendaCaldavService.getManagedMode())
+  .catch(error => {
+    console.error('cannot read whether this instance manages the CalDAV account', error);
+    return null;
+  });
+
+/**
+ * Whether the CalDAV account of the user looking at this page is the
+ * instance's to decide.
+ *
+ * @param {Object} managed what the platform answered, null when unknown
+ * @returns {Boolean} true when managed mode governs this viewer
+ */
+function managedForViewer(managed) {
+  return !!(managed && managed.managedForMe);
+}
+
+// The CalDAV servers section of the agenda administration page, and the rows
+// nested under My Calendars. Registered once the Caldav bundle is merged (a
+// failed bundle fetch still registers — raw keys beat a missing section) and
+// once the managed verdict is known, because that verdict decides which of the
+// nested rows exist at all; then the refresh event the pages listen to, since
+// the module may run before or after the app is created and whichever side
+// arrives second finds the other.
+managedPromise.then(managed => {
   // Ranked first on the page, ahead of agenda's own built-in sections (the
   // connectors table at 20, the embed-map settings at 30): the connectors
   // table's CalDAV rows are DERIVED from this registry, so declaring the
@@ -90,6 +119,11 @@ i18nPromise.finally(() => {
   // the copy switch: what it offers back is a calendar of that account, so it
   // reads as part of it rather than as a fourth unrelated setting. The row
   // draws nothing when no calendar is hidden, which is the usual case.
+  //
+  // Registered under managed mode too. Which of their own calendars a user
+  // syncs is their preference and has nothing to do with who owns the
+  // connection: the instance chose the server, not what the user keeps in
+  // their agenda.
   extensionRegistry.registerExtension('agenda-user-settings', 'sections', {
     id: 'caldavHiddenCalendars',
     rank: 30,
@@ -98,26 +132,48 @@ i18nPromise.finally(() => {
   // Just above the hidden calendars, and for the same reason it sits where it
   // does: a calendar that cannot synchronise is a problem with the account
   // the row above it describes, and the user reads down from there.
-  extensionRegistry.registerExtension('agenda-user-settings', 'sections', {
-    id: 'caldavCalendarStates',
-    rank: 29,
-    vueComponent: Vue.options.components['caldav-calendar-states-section'],
-  });
+  //
+  // Not registered at all under managed mode. It is a diagnostic, and a
+  // managed connection is the administrator's to repair — telling a user their
+  // calendar cannot synchronise, when the account is not theirs and they have
+  // no remedy, names a problem and offers nothing. The gate is on the
+  // REGISTRATION and not on the component's own `displayed`, deliberately: the
+  // row then does not exist rather than existing and hiding, so it fires no
+  // request of its own, and the condition stays in the one file that already
+  // knows the verdict. Agenda never learns the names of these rows.
+  if (!managedForViewer(managed)) {
+    extensionRegistry.registerExtension('agenda-user-settings', 'sections', {
+      id: 'caldavCalendarStates',
+      rank: 29,
+      vueComponent: Vue.options.components['caldav-calendar-states-section'],
+    });
+  }
   // Above the calendars that cannot synchronise, and for the same reason that
   // one sits above the hidden calendars: this row says a meeting the user
   // created is not on their server yet, which is the most urgent of the three
   // and the one they are most likely to have come to the page about. Absent
   // whenever nothing is outstanding, which is the usual case (EXO-89803).
-  extensionRegistry.registerExtension('agenda-user-settings', 'sections', {
-    id: 'caldavPendingCopies',
-    rank: 28,
-    vueComponent: Vue.options.components['caldav-pending-copies-section'],
-  });
+  //
+  // Gone under managed mode, for the same reason as the row above: it reports
+  // on a mechanism the user does not own and cannot repair.
+  if (!managedForViewer(managed)) {
+    extensionRegistry.registerExtension('agenda-user-settings', 'sections', {
+      id: 'caldavPendingCopies',
+      rank: 28,
+      vueComponent: Vue.options.components['caldav-pending-copies-section'],
+    });
+  }
   // Just under the hidden calendars: pointing a phone at the account is an
   // offer, not a problem, so it comes after the rows that name problems. In
   // the healthy case both problem rows are absent and this is the only
   // nested row under My Calendars. Shown only when an account is connected —
   // there is nothing to set up otherwise.
+  //
+  // Registered under managed mode too, and it is the row that made hiding the
+  // whole section visibly wrong: the instance chose the server, but the user
+  // still has to point their phone or desktop client at it themselves. If
+  // anything this is MORE useful once they cannot manage the account, because
+  // it is the only thing left they can act on.
   extensionRegistry.registerExtension('agenda-user-settings', 'sections', {
     id: 'caldavDeviceSetup',
     rank: 31,
@@ -138,23 +194,15 @@ i18nPromise.finally(() => {
 // place asking the platform the same question is a second answer that can
 // disagree with this one.
 //
-// The verdict is read BEFORE the registry, and its own failure is swallowed
-// rather than allowed to take the connectors down: a deployment whose managed
-// setting cannot be read still has to offer its users their calendars. It
-// falls back to "not managed", which restores affordances rather than removing
-// them — the recoverable direction, and the honest one when nothing is known.
-// The mode is read once, when this module loads: an administrator switching it
-// on does not reach into a session already open, which is why hiding a control
-// was never the control (the server-side refusal is its own ticket).
+// The verdict comes from the SHARED promise above rather than a fetch of its
+// own — one question, one answer, whether it is deciding which rows exist or
+// how a descriptor is stamped. The mode is read once, when this module loads:
+// an administrator switching it on does not reach into a session already open,
+// which is why hiding a control was never the control (the server-side refusal
+// is its own ticket).
 let managedMode = null;
-i18nPromise
-  .catch(() => null)
-  .then(() => agendaCaldavService.getManagedMode())
+managedPromise
   .then(managed => managedMode = managed)
-  .catch(error => {
-    console.error('cannot read whether this instance manages the CalDAV account', error);
-    managedMode = null;
-  })
   .then(() => agendaCaldavService.getCaldavServers())
   .then(servers => {
     const activeServers = (servers || []).filter(server => server.active);
