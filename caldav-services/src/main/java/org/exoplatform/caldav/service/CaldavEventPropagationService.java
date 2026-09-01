@@ -801,9 +801,14 @@ public class CaldavEventPropagationService {
    * ORGANIZER line and never on an ATTENDEE line, so there is no participation
    * status of theirs anywhere for a targeted rewrite to find — and, worse, the
    * {@code NOT_NAMED} that resulted queued a full rewrite per holder that
-   * could never satisfy the obligation. See {@link #isOrganizerOf} for what
-   * was measured on the rig and for the product question this deliberately
-   * leaves open.
+   * could never satisfy the obligation. See
+   * {@link CaldavPushService#isOrganizerOf(long, long)} for what was measured
+   * on the rig and for the product question this deliberately leaves open. It
+   * is asked <b>there</b> rather than here so that one notion of who organises
+   * an event serves both halves of answering: EXO-89895 found the answerer's
+   * <b>own</b> copy warning for the same structural reason, and a rule
+   * recognising one side of that pair and not the other is the defect shape
+   * this delivery has already paid for repeatedly.
    *
    * <h4>What is written down before anything is written out</h4>
    *
@@ -836,7 +841,7 @@ public class CaldavEventPropagationService {
                 eventId);
       return 0;
     }
-    if (isOrganizerOf(eventId, answererIdentityId)) {
+    if (caldavPushService.isOrganizerOf(eventId, answererIdentityId)) {
       LOG.debug("User {} organizes event {}; their answer reaches no copy, because a copy names them as its ORGANIZER"
           + " and never as an ATTENDEE, so there is no participation status of theirs on one to rewrite",
                 answererIdentityId,
@@ -882,87 +887,6 @@ public class CaldavEventPropagationService {
              carried,
              holders.size());
     return carried;
-  }
-
-  /**
-   * Whether this user is the person a copy of this event names as its
-   * ORGANIZER.
-   *
-   * <h2>Why the fan-out has to ask (EXO-89868, found on the rig)</h2>
-   *
-   * <p>
-   * Because a copy never carries an organiser's participation status, so there
-   * is nothing on one for the fan-out to rewrite — structurally, on every
-   * holder's copy, by design.
-   * {@link org.exoplatform.caldav.ics.IcsWriter}'s {@code guests} excludes
-   * whoever heads the ORGANIZER line from the ATTENDEE lines (EXO-89768: a
-   * server whose model holds an organizer and a list of attendees that
-   * excludes them silently drops the duplicate, and the repair loop that
-   * followed could never close). In eXo they <i>are</i> an attendee and their
-   * answer is recorded like anybody's; the copy simply never says so.
-   *
-   * <p>
-   * Measured, not reasoned. On the rig, root organised event 1040 and
-   * answered it, and every holder's copy refused the write with "it names none
-   * of [root's address], so there is no participation status of theirs to
-   * rewrite".
-   *
-   * <p>
-   * <b>And it is not benign, which is why this is a skip rather than a
-   * shrug.</b> That refusal is {@code NOT_NAMED}, which deliberately leaves the
-   * obligation standing so that a full rewrite can put a missing line there.
-   * No full rewrite can put <i>this</i> line there — the render is what omits
-   * it — so every organiser's answer scheduled a doomed
-   * {@link #retryOwedPushes} against every other holder's copy, up to the
-   * bound, on the one path that can destroy an unread answer. Refusing here
-   * costs an agenda read and buys back all of it.
-   *
-   * <h2>What this deliberately does not fix</h2>
-   *
-   * <p>
-   * Whether a copy <i>should</i> name an attending organiser on both lines.
-   * RFC 5545 expects both, and Google, Outlook and macOS all emit both, so
-   * there is a real case that the render is what is wrong here. That is a
-   * product decision Benjamin is keeping apart from this change, and it does
-   * not belong to the fan-out either way: if it is ever taken, it is
-   * {@code IcsWriter.guests} that changes, and <b>this method is what comes
-   * out</b> — the skip exists only for as long as the render omits the line.
-   *
-   * <h2>Decided the way the mapper decides it</h2>
-   *
-   * <p>
-   * On {@code getCreatorId()}, by identity, which is what
-   * {@code AgendaEventIcsMapper.organizerOf} and
-   * {@code toIcsEvent}'s {@code organizerIsPusher} both use. Emphatically
-   * <b>not</b> by comparing addresses, although {@code guests} compares
-   * addresses: the creator's own line is spelled with the address their CalDAV
-   * account answers to and their ORGANIZER line with their eXo profile
-   * address, so an address comparison answers differently for the same person
-   * depending on whose copy is being looked at. A skip keyed on anything but
-   * the render's own predicate would drift from the render it mirrors, which
-   * is the matched-pair failure this delivery has already paid for more than
-   * once.
-   *
-   * <p>
-   * Read on the event as given rather than on its series, for the same reason:
-   * {@code toIcsEvent} is handed the occurrence when an occurrence is pushed
-   * and reads {@code getCreatorId()} off that, so an override whose creator
-   * differs from its series' must be judged by its own.
-   *
-   * <p>
-   * An event that cannot be read answers false — the fan-out goes ahead. The
-   * bias {@link #readEvent} already takes: proceeding costs at worst the
-   * doomed retries this method exists to prevent, for as long as agenda cannot
-   * answer, while refusing on an unreadable event would silently drop the
-   * answers of people who are not organisers at all.
-   *
-   * @param eventId the agenda event answered, master or occurrence
-   * @param answererIdentityId identity of the user whose answer was recorded
-   * @return true when a copy of this event would name them as its organizer
-   */
-  private boolean isOrganizerOf(long eventId, long answererIdentityId) {
-    Event event = readEvent(eventId);
-    return event != null && event.getCreatorId() == answererIdentityId;
   }
 
   /**
