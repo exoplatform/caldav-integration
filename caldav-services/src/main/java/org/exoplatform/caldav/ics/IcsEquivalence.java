@@ -150,6 +150,20 @@ import net.fortuna.ical4j.model.component.VTimeZone;
  * from it.
  *
  * <p>
+ * <b>One guest is one statement, however each side spells them.</b> A server
+ * that keeps an attendee but not their answer states that person on a line eXo
+ * does not carry, while eXo's own line for them is carried on no copy — two
+ * divergences, one each way, about one person. Read as two they are read
+ * wrongly, and the tolerance above is what does it: it absorbs eXo's half and
+ * leaves the copy's half to be reported as <i>an attendee the server added</i>,
+ * which is a different event in the world and the wrong thing to tell an
+ * administrator (EXO-89829). So a person both copies name is folded into one
+ * statement about them <b>before</b> any tolerance rule sees either half —
+ * exactly one decision is taken for the pair, and the rules below only ever
+ * meet somebody one side does not name at all. See
+ * {@link #pairAttendeeStatements}.
+ *
+ * <p>
  * <b>Free text is compared for its words, not its layout.</b> A TEXT value is
  * the one place where the document's line discipline and the content are
  * spelled in the same characters, and a server re-serialising a multi-line
@@ -823,8 +837,17 @@ public class IcsEquivalence {
                                    ServerExcusals excusals,
                                    List<IcsDivergence> observed) {
     List<String> divergences = new ArrayList<>();
+    // The two sides' attendee lines are indexed by the person they name before
+    // anything is compared, because that is the only place both the parsed
+    // property and the statement it normalises to are in hand at once. Merging
+    // the two indexes is safe: a statement determines its own person — an
+    // ordinary line carries the address in its value, and every spelling of the
+    // owner collapses to the same token.
+    Map<String, AttendeeLine> attendees = attendeeLines(serverEvent, serverCalendar, ownerAddresses, excusals);
+    attendees.putAll(attendeeLines(exoEvent, exoCalendar, ownerAddresses, excusals));
     diff(eventStatements(serverEvent, serverCalendar, ownerAddresses, excusals),
          eventStatements(exoEvent, exoCalendar, ownerAddresses, excusals),
+         attendees,
          divergences,
          observed,
          excusals);
@@ -1113,15 +1136,83 @@ public class IcsEquivalence {
    * @return the canonical statement
    */
   private String ownerStatement(Property property) {
+    String answer = answerOf(property);
+    return answer == null ? OWNER_ATTENDEE : OWNER_ATTENDEE + ";PARTSTAT=" + answer;
+  }
+
+  /**
+   * The answer an attendee line states, or null when it states none.
+   *
+   * <p>
+   * NEEDS-ACTION is the RFC 5545 default and reads the same as saying nothing —
+   * it is what a server writes for somebody it has attached to an event they
+   * have not replied to yet — so it is returned as no answer at all. That is
+   * the same reduction {@link #DEFAULT_PARAMETERS} performs on the compared
+   * suffix, kept in step with it deliberately: two readers of the same fact
+   * that disagreed about NEEDS-ACTION would make a person's answer depend on
+   * which of them looked.
+   *
+   * <p>
+   * Read here rather than off the canonical statement on purpose. The statement
+   * joins a sorted parameter suffix and a value with the same {@code =} the
+   * parameters themselves use, so recovering a field from it means guessing
+   * where the suffix stops; the parsed property still has each field on its own.
+   *
+   * @param property the ATTENDEE property
+   * @return the upper-cased PARTSTAT, or null when the line states no answer
+   */
+  private String answerOf(Property property) {
     Parameter partStat = property.getParameter("PARTSTAT");
     String answer = partStat == null ? null : StringUtils.trimToNull(partStat.getValue());
     if (answer == null || answer.equalsIgnoreCase(DEFAULT_PARAMETERS.get("PARTSTAT"))) {
-      // No answer stated. NEEDS-ACTION is the RFC default and reads the same as
-      // saying nothing, which is what a server writes when it attaches somebody
-      // to an event they have not replied to yet.
-      return OWNER_ATTENDEE;
+      return null;
     }
-    return OWNER_ATTENDEE + ";PARTSTAT=" + answer.toUpperCase(Locale.ROOT);
+    return answer.toUpperCase(Locale.ROOT);
+  }
+
+  /**
+   * Who each attendee statement of one component names, and what that line
+   * answers for them.
+   *
+   * <p>
+   * The statements are produced by the very same {@link #normaliseProperty}
+   * call {@link #statementsOf} makes, so the index cannot describe a line the
+   * comparison spells differently: one call, one grammar, two readers.
+   *
+   * <p>
+   * <b>The owner is keyed by {@link #OWNER_ATTENDEE}, not by an address.</b> An
+   * account owns two spellings of its owner and they differ in practice, so a
+   * pair matched on one of the two would miss exactly the way EXO-89715 missed
+   * — silently, and on half the copies.
+   *
+   * @param event the component
+   * @param calendar the object it belongs to, for its zone definitions
+   * @param ownerAddresses the bare addresses naming the account's owner
+   * @param excusals what this server has been declared to do
+   * @return the person and the answer behind each attendee statement
+   */
+  private Map<String, AttendeeLine> attendeeLines(VEvent event,
+                                                  Calendar calendar,
+                                                  Set<String> ownerAddresses,
+                                                  ServerExcusals excusals) {
+    Map<String, AttendeeLine> lines = new TreeMap<>();
+    for (Property property : event.getProperties()) {
+      if (!"ATTENDEE".equalsIgnoreCase(property.getName())) {
+        continue;
+      }
+      String address = bareAddress(property.getValue());
+      AttendeeLine line = new AttendeeLine(ownerAddresses.contains(address) ? OWNER_ATTENDEE : address, answerOf(property));
+      for (String statement : normaliseProperty(property,
+                                                calendar,
+                                                EVENT_PROPERTIES,
+                                                IGNORED_EVENT_PROPERTIES,
+                                                ownerAddresses,
+                                                excusals,
+                                                false)) {
+        lines.put(statement, line);
+      }
+    }
+    return lines;
   }
 
   /**
@@ -1290,19 +1381,29 @@ public class IcsEquivalence {
    * attendee it declines to carry and a statement it repeats are normal CalDAV
    * behaviour, and offering them as decisions would bury the ones that are.
    *
+   * <p>
+   * <b>Pairing runs first, and the order is the fix.</b> Two statements about
+   * one guest are one disagreement, and a loop that meets them one at a time
+   * decides each on its own — which is how a tolerance for an attendee the
+   * server did not keep came to swallow the half of a pair it recognised and
+   * report the other half as something else entirely. See
+   * {@link #pairAttendeeStatements}.
+   *
    * @param serverStatements what the server's component says
    * @param exoStatements what eXo's component says
+   * @param attendees the person and the answer behind each attendee statement,
+   *          so a guest both copies name can be folded into one statement
+   *          before the tolerance rules see either half
    * @param divergences the accumulator the reported findings are added to
    * @param observed the accumulator the server's behaviours are added to
    * @param excusals what this server has been declared to do
    */
   private void diff(Map<String, Integer> serverStatements,
                     Map<String, Integer> exoStatements,
+                    Map<String, AttendeeLine> attendees,
                     List<String> divergences,
                     List<IcsDivergence> observed,
                     ServerExcusals excusals) {
-    Set<String> statements = new TreeSet<>(serverStatements.keySet());
-    statements.addAll(exoStatements.keySet());
     Set<String> exoProperties = exoStatements.keySet()
                                              .stream()
                                              .map(IcsStatement::observedPropertyOf)
@@ -1312,7 +1413,21 @@ public class IcsEquivalence {
     // from the shape a server gives an appointment. Read off the render rather
     // than off agenda, because the render is what the copy is compared against.
     boolean soloEvent = exoStatements.keySet().stream().noneMatch(this::isAttendee);
+    // Both of those are read before the pairing, which consumes statements from
+    // the two maps: what a copy is judged against is eXo's render as it stands,
+    // not what is left of it once the pairs have been taken out.
+    List<String> drifts = pairAttendeeStatements(serverStatements, exoStatements, attendees, observed, soloEvent);
+    Set<String> statements = new TreeSet<>(serverStatements.keySet());
+    statements.addAll(exoStatements.keySet());
     int reported = 0;
+    for (String drift : drifts) {
+      // First, and deliberately: a person spelled two ways is the finding an
+      // administrator can act on, and the cap must not spend its three lines on
+      // the alphabetically luckier statements before reaching it.
+      if (reported++ < REPORTED_DIVERGENCES) {
+        divergences.add(drift);
+      }
+    }
     for (String statement : statements) {
       int onServer = serverStatements.getOrDefault(statement, 0);
       int inExo = exoStatements.getOrDefault(statement, 0);
@@ -1338,6 +1453,217 @@ public class IcsEquivalence {
     if (reported > REPORTED_DIVERGENCES) {
       divergences.add("and " + (reported - REPORTED_DIVERGENCES) + " more");
     }
+  }
+
+  /**
+   * Folds each guest both copies name, spelled differently on each, into one
+   * statement about that person — before any tolerance rule sees either half.
+   *
+   * <p>
+   * <b>The defect this exists for</b> (EXO-89829). On the rig's BlueMind
+   * account, eXo rendered {@code ATTENDEE;PARTSTAT=DECLINED:mailto:bob@…} for a
+   * guest whose answer the server does not keep: its copy carried the same
+   * person on a line with no {@code PARTSTAT}, or with an {@code RSVP=TRUE} of
+   * its own. That is one disagreement — <i>the copy does not state this
+   * person's answer</i> — and it arrived at {@link #tolerated} as two
+   * statements, one surplus each way. The rule for an attendee the server did
+   * not keep recognised eXo's half and swallowed it; the copy's half was left,
+   * and was reported as <b>the server names an attendee eXo omits</b>. An
+   * administrator reading that cannot tell an answer drift from a guest a
+   * client actually added: the line is not merely terse, it names the wrong
+   * event in the world.
+   *
+   * <p>
+   * <b>And the loop guard half-applied.</b> That rule exists to stop a copy
+   * being re-pushed for ever when a server will not carry something eXo holds
+   * about a guest. Absorbing one half of a pair and leaving the other to drive
+   * the repair gives its protection to one side only: on the rig the re-push
+   * stuck, but a server that keeps stripping a guest's {@code PARTSTAT} would
+   * be rewritten every five minutes for ever — precisely the case the rule was
+   * written to prevent. One statement gets one decision, so it cannot half-hold
+   * any more.
+   *
+   * <p>
+   * <b>Why here and not as a third rule beside the other two.</b> A third rule
+   * would patch this spelling of the defect and leave its shape — a rule that
+   * recognises one side of a matched pair and not its neighbour — standing for
+   * the next one. Pairing is a statement about the <i>grammar</i>: two lines
+   * naming one person are one statement about that person, and the rules that
+   * follow are then free to be what they always claimed to be, rules about a
+   * guest one side does not name at all.
+   *
+   * <p>
+   * <b>Three outcomes, and the direction decides between them.</b>
+   * <ul>
+   * <li><b>The copy states an answer eXo's line does not</b> — somebody replied
+   * from their own client. Reported, always: this is the divergence EXO-89807
+   * and EXO-89814 read an answer back from, and it is now reported as the one
+   * thing it is rather than as an attendee added and an attendee dropped.</li>
+   * <li><b>eXo states an answer and the copy's line states none</b> — the
+   * server did not keep the answer. Tolerated, for the reason the whole guest
+   * is tolerated in {@link #tolerated}: re-pushing what a server declines to
+   * store is not a repair, it is a loop. This is <b>narrower</b> than the rule
+   * it completes, which gives up the guest entirely; here the copy still names
+   * them and understates only their reply.</li>
+   * <li><b>The two lines agree on the answer and differ otherwise</b> — a role,
+   * a type, a parameter nobody expected. Reported, as before, and now as one
+   * finding naming the person rather than as two halves.</li>
+   * </ul>
+   *
+   * <p>
+   * <b>What it cannot hide.</b> Pairing needs the <i>same</i> person on both
+   * sides: a guest only the copy names is untouched by it and is still reported
+   * as somebody a client added, and a guest only eXo names still meets the rule
+   * written for them. A changed address is two different people to this method,
+   * so it survives as a surplus each way and the copy's surplus is reported.
+   * The cost is stated plainly: on a paired guest whose answer the copy has
+   * dropped, a client that also changed their role in the same breath goes
+   * unnoticed — one notch less than the rule this completes already gives up,
+   * which is that guest's entire line.
+   *
+   * @param serverStatements what the server's component says; the paired halves
+   *          are consumed from it
+   * @param exoStatements what eXo's component says; likewise
+   * @param attendees the person and the answer behind each attendee statement
+   * @param observed the accumulator the server's behaviours are added to
+   * @param soloEvent whether eXo's render names no participant other than the
+   *          account's own owner, read before any pair was consumed
+   * @return one reportable finding per pair worth reporting, in the order the
+   *         people are named
+   */
+  private List<String> pairAttendeeStatements(Map<String, Integer> serverStatements,
+                                              Map<String, Integer> exoStatements,
+                                              Map<String, AttendeeLine> attendees,
+                                              List<IcsDivergence> observed,
+                                              boolean soloEvent) {
+    Map<String, List<String>> serverSurplus = surplusByPerson(serverStatements, exoStatements, attendees);
+    Map<String, List<String>> exoSurplus = surplusByPerson(exoStatements, serverStatements, attendees);
+    List<String> drifts = new ArrayList<>();
+    for (Map.Entry<String, List<String>> person : serverSurplus.entrySet()) {
+      List<String> inExoLines = exoSurplus.get(person.getKey());
+      if (inExoLines == null) {
+        continue;
+      }
+      List<String> onServerLines = person.getValue();
+      for (int index = 0; index < Math.min(onServerLines.size(), inExoLines.size()); index++) {
+        String onServer = onServerLines.get(index);
+        String inExo = inExoLines.get(index);
+        // Consumed from both maps, so the loop that follows never sees either
+        // half. A surplus of two lines against one leaves the third line where
+        // it was: the server really does name that person twice, and the line
+        // it has over and above the pair is a surplus like any other.
+        cancel(serverStatements, onServer);
+        cancel(exoStatements, inExo);
+        String serverAnswer = attendees.get(onServer).answer();
+        String exoAnswer = attendees.get(inExo).answer();
+        if (serverAnswer == null && exoAnswer != null) {
+          // Tolerated, and therefore not observed either: what a built-in rule
+          // excuses is never offered to an administrator as a decision. Said at
+          // DEBUG all the same, because a copy that keeps understating an answer
+          // is diagnosed by reading what the two sides say.
+          LOG.debug("The copy does not carry the answer eXo states for {}: [{}] against [{}]. "
+              + "Left alone, as an answer a server declines to store cannot be repaired into it", person.getKey(), onServer, inExo);
+          continue;
+        }
+        // Both halves are observed, so IcsStatement.collapse folds them into the
+        // one behaviour they are: this server REWRITES the line, which is what
+        // an administrator has to be shown rather than a bare addition.
+        IcsStatement.observe(onServer, 1, 0, observed, soloEvent);
+        IcsStatement.observe(inExo, 0, 1, observed, soloEvent);
+        drifts.add(describeDrift(person.getKey(), onServer, inExo, serverAnswer, exoAnswer));
+      }
+    }
+    return drifts;
+  }
+
+  /**
+   * The attendee statements one side makes over and above the other, grouped by
+   * the person each names and repeated once per surplus.
+   *
+   * <p>
+   * A surplus rather than a presence: a line both sides state the same number
+   * of times is not a disagreement about anybody, and must not be paired with
+   * one that is.
+   *
+   * @param statements the side being read
+   * @param other the side it is read against
+   * @param attendees the person behind each attendee statement; a statement
+   *          absent from it is not an attendee line and is skipped
+   * @return the surplus statements by person, each repeated as often as it is
+   *         surplus
+   */
+  private Map<String, List<String>> surplusByPerson(Map<String, Integer> statements,
+                                                    Map<String, Integer> other,
+                                                    Map<String, AttendeeLine> attendees) {
+    Map<String, List<String>> surplus = new TreeMap<>();
+    for (Map.Entry<String, Integer> statement : statements.entrySet()) {
+      AttendeeLine line = attendees.get(statement.getKey());
+      if (line == null) {
+        continue;
+      }
+      int extra = statement.getValue() - other.getOrDefault(statement.getKey(), 0);
+      for (int index = 0; index < extra; index++) {
+        surplus.computeIfAbsent(line.identity(), person -> new ArrayList<>()).add(statement.getKey());
+      }
+    }
+    return surplus;
+  }
+
+  /**
+   * Takes one occurrence of a statement out of a side's multiset, removing the
+   * entry when nothing is left of it.
+   *
+   * <p>
+   * Removed rather than left at zero so that the union the comparison iterates
+   * carries only statements somebody still makes.
+   *
+   * @param statements the multiset
+   * @param statement the statement one occurrence of which has been accounted
+   *          for
+   */
+  private void cancel(Map<String, Integer> statements, String statement) {
+    statements.merge(statement, -1, (count, decrement) -> count + decrement <= 0 ? null : count + decrement);
+  }
+
+  /**
+   * How a paired guest is reported: one finding, naming the person, saying what
+   * each side states about them and saying in so many words that this is one
+   * guest rather than one added and one dropped.
+   *
+   * <p>
+   * <b>The wording is part of the fix.</b> The line it replaces —
+   * {@code ATTENDEE=mailto:bob@… (server 1, eXo 0)} — is true of an answer
+   * drift and of a guest a client added, and those call for opposite actions
+   * from whoever reads the log. Naming the person once, and both answers beside
+   * each other, is what lets the two be told apart at a glance.
+   *
+   * @param identity the person both copies name
+   * @param onServer the statement the copy makes about them
+   * @param inExo the statement eXo's render makes about them
+   * @param serverAnswer what the copy says they answered, or null for none
+   * @param exoAnswer what eXo says they answered, or null for none
+   * @return the finding, bounded like every other reported statement
+   */
+  private String describeDrift(String identity, String onServer, String inExo, String serverAnswer, String exoAnswer) {
+    String who = OWNER_ATTENDEE.equals(identity) ? "the calendar's own owner"
+                                                 : StringUtils.abbreviate(identity, REPORTED_STATEMENT);
+    if (!StringUtils.equals(serverAnswer, exoAnswer)) {
+      return "the answer for " + who + " differs: " + StringUtils.defaultString(serverAnswer, "no answer") + " on the server, "
+          + StringUtils.defaultString(exoAnswer, "no answer") + " in eXo (one attendee, not one added and one dropped)";
+    }
+    return "the line for " + who + " differs: [" + StringUtils.abbreviate(onServer, REPORTED_STATEMENT) + "] on the server, ["
+        + StringUtils.abbreviate(inExo, REPORTED_STATEMENT) + "] in eXo (one attendee, not one added and one dropped)";
+  }
+
+  /**
+   * What one attendee statement says: the person it names, and the answer it
+   * states for them.
+   *
+   * @param identity the person, as a bare address — or {@link #OWNER_ATTENDEE}
+   *          for the account's own owner, who has two spellings and one identity
+   * @param answer the answer the line states, or null when it states none
+   */
+  private record AttendeeLine(String identity, String answer) {
   }
 
   /**
@@ -1382,6 +1708,17 @@ public class IcsEquivalence {
    * PARTSTAT change always leaves a server-side surplus that neither rule
    * covers, and a client adding somebody is a server-side surplus of a
    * non-owner, which neither covers either.
+   *
+   * <p>
+   * <b>And the second rule only ever meets a guest the copy does not name at
+   * all</b>, since EXO-89829. It used to meet half a matched pair as well: a
+   * server that keeps an attendee but not their answer states that person on a
+   * line of its own, and eXo's answered line for them arrived here as a surplus
+   * this rule swallowed — leaving the copy's line to be reported as an attendee
+   * the server had added, and leaving the loop guard applying to one side of
+   * one disagreement. {@link #pairAttendeeStatements} folds such a pair into
+   * one statement before anything reaches this method, so what it decides is
+   * again what it was written for.
    *
    * <p>
    * The owner is deliberately outside the second rule. The architect's reason
