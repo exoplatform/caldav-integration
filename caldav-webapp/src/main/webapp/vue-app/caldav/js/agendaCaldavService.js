@@ -100,7 +100,31 @@ export const updateCaldavServer = (server) => {
 };
 
 /**
+ * The message code a refusal carries, read out of the JSON body Spring builds
+ * for a ResponseStatusException.
+ *
+ * Read as JSON and not as text: the body is an object whose `message` holds
+ * the code, so taking the raw text would hand the screen a blob of JSON where
+ * it expects a translation key, and every refusal would read as the generic
+ * failure. A body that will not parse yields nothing rather than a wrong code.
+ *
+ * @param {Object} resp the failed response
+ * @returns {Promise<String>} the message code, empty when the body carries none
+ */
+function refusalCode(resp) {
+  if (!resp || typeof resp.json !== 'function') {
+    return Promise.resolve('');
+  }
+  return resp.json().then(body => body && body.message || '', () => '');
+}
+
+/**
  * Activates or deactivates a declared CalDAV server (administrators only).
+ *
+ * A refusal comes back as a 400 whose body is the message code: deactivating
+ * the server managed mode points the whole instance at is refused with
+ * `caldav.managed.serverInUse`, and the rejection carries it as `message` so
+ * the snackbar can say which rule was hit rather than that something failed.
  *
  * @param {Number} serverId technical identifier of the registration
  * @param {Boolean} active whether users may connect to this server
@@ -111,11 +135,15 @@ export const setCaldavServerStatus = (serverId, active) => {
     credentials: 'include',
     method: 'PATCH',
   }).then(resp => {
-    if (!resp || !resp.ok) {
-      throw new Error('Response code indicates a server error', resp);
-    } else {
+    if (resp && resp.ok) {
       return resp.json();
     }
+    return refusalCode(resp).then(code => {
+      const error = new Error(code || 'Response code indicates a server error');
+      error.status = resp && resp.status;
+      error.messageCode = code;
+      throw error;
+    });
   });
 };
 
@@ -126,8 +154,12 @@ export const setCaldavServerStatus = (serverId, active) => {
  * (caldav.server.referenced:<count>), so the UI can explain rather than
  * merely fail.
  *
+ * A 400 means a rule refused the deletion outright — today, that the row is
+ * the one managed mode points the whole instance at — and the rejection
+ * carries that message code as `messageCode`.
+ *
  * @param {Number} serverId technical identifier of the registration
- * @returns {Promise} resolves when deleted, rejects with {status, referenceCount}
+ * @returns {Promise} resolves when deleted, rejects with {status, referenceCount, messageCode}
  */
 export const deleteCaldavServer = (serverId) => {
   return fetch(`/caldav/rest/servers/${serverId}`, {
@@ -139,13 +171,11 @@ export const deleteCaldavServer = (serverId) => {
     }
     const error = new Error('Response code indicates a server error');
     error.status = resp && resp.status;
-    if (error.status === 409) {
-      return resp.json().then(body => {
-        const message = body && body.message || '';
-        const count = message.split(':')[1];
+    if (error.status === 409 || error.status === 400) {
+      return refusalCode(resp).then(code => {
+        error.messageCode = code;
+        const count = code.split(':')[1];
         error.referenceCount = count && parseInt(count) || null;
-        throw error;
-      }, () => {
         throw error;
       });
     }
@@ -442,6 +472,75 @@ export const getSyncTuning = () => {
   return fetch(`${window.location.origin}/caldav/rest/servers/tuning`, {
     credentials: 'include',
     method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
+ * Whether this deployment chooses the CalDAV server on its users' behalf.
+ *
+ * <p>Two different answers in one payload: `serverId`/`serverName` are what
+ * the INSTANCE decided and are the same for everybody, while `managedForMe`
+ * is the verdict for the calling user — the only one a screen may act on when
+ * it takes an affordance away. Today they cannot disagree; group exclusions
+ * are what will make them, and reading the wrong one now is what would cost a
+ * change in every component then.</p>
+ *
+ * @returns {Promise<Object>} {serverId, serverName, managedForMe}
+ */
+export const getManagedMode = () => {
+  return fetch(`${window.location.origin}/caldav/rest/servers/managed`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
+ * Points the whole instance at one declared server. Administrators only.
+ *
+ * A server that is unknown or deactivated is refused with a 400 whose body is
+ * the message code the drawer shows, so the administrator is told why rather
+ * than left with a switch that flicked back.
+ *
+ * @param {Number} serverId technical identifier of the registration
+ * @returns {Promise<Object>} the mode now in force
+ */
+export const saveManagedMode = serverId => {
+  return fetch(`${window.location.origin}/caldav/rest/servers/managed?serverId=${serverId}`, {
+    credentials: 'include',
+    method: 'PUT',
+  }).then(resp => {
+    if (resp && resp.ok) {
+      return resp.json();
+    }
+    return refusalCode(resp).then(code => {
+      throw new Error(code || 'caldav.admin.managed.saveFailed');
+    });
+  });
+};
+
+/**
+ * Gives every user back the choice of their own CalDAV server. Administrators
+ * only.
+ *
+ * Nothing is severed: the mode governs which affordances are offered, never
+ * the connections that already exist.
+ *
+ * @returns {Promise<Object>} the mode now in force, naming no server
+ */
+export const clearManagedMode = () => {
+  return fetch(`${window.location.origin}/caldav/rest/servers/managed`, {
+    credentials: 'include',
+    method: 'DELETE',
   }).then(resp => {
     if (!resp || !resp.ok) {
       throw new Error('Response code indicates a server error', resp);

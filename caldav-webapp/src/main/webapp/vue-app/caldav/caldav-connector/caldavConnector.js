@@ -52,6 +52,18 @@ const caldavConnector = {
   // day. Testing the name is not an option either — createCaldavConnector
   // overrides it with the declared server's providerName.
   isCaldav: true,
+  // Whether the instance chose this user's CalDAV server for them. Declared
+  // false here so the property EXISTS on every descriptor shape rather than
+  // being undefined on some of them: agenda reads it to decide whether to
+  // offer connecting and disconnecting at all, and `undefined` and `false`
+  // read alike right up to the day somebody writes `!== false`.
+  //
+  // The value is per viewer, not per server: it answers "is this user's CalDAV
+  // account the instance's to decide", which is the same answer for every
+  // CalDAV row on the page. Which server was chosen travels beside it, in
+  // managedServerName, because the settings row names it.
+  managed: false,
+  managedServerName: null,
   /**
    * Opens the settings drawer and resolves once the CalDAV server itself has
    * accepted the account. The drawer verifies the credentials against the
@@ -495,12 +507,20 @@ export default caldavConnector;
  * agenda's enabled-check and connected-provider binding key on — so every
  * declared server becomes a full connector with zero agenda backend change.
  *
+ * The managed verdict is stamped onto EVERY CalDAV descriptor, not only onto
+ * the chosen server's: managed mode governs the CalDAV family as a whole, and
+ * the affordances agenda hides — connect, disconnect — are the family's, not
+ * one row's. A user offered to connect a different CalDAV server would be
+ * offered exactly the act the mode exists to take away.
+ *
  * @param {Object} server a declared server {id, providerName, name, description, serverUrl}
  * @param {Number} index position of the server in the declared list, keeps ranks distinct
+ * @param {Object} managed the mode in force, {managedForMe, serverName}; absent
+ *          or false-verdicted leaves the descriptor unmanaged
  * @returns {Object} the connector descriptor to register under agenda/connectors
  */
-export function createCaldavConnector(server, index) {
-  return Object.assign({}, caldavConnector, {
+export function createCaldavConnector(server, index, managed) {
+  return Object.assign({}, caldavConnector, stampManaged(managed), {
     name: server.providerName,
     description: `${server.providerName}.description`,
     serverId: server.id,
@@ -516,6 +536,43 @@ export function createCaldavConnector(server, index) {
     imageUrl: server.imageUrl || null,
     rank: caldavConnector.rank + (index || 0),
   });
+}
+
+/**
+ * The managed half of a descriptor, from what the platform answered.
+ *
+ * `managedForMe` is what is read and nothing else: the payload also carries
+ * which server the INSTANCE chose, which is the same for everybody and is
+ * therefore not an answer about this viewer. Group exclusions are what will
+ * make the two disagree, and a descriptor stamped from the global half would
+ * then hide the connect button from the very users the exclusion exists to
+ * let connect.
+ *
+ * @param {Object} managed the mode as the platform answered it for this viewer
+ * @returns {Object} the properties to stamp onto a descriptor
+ */
+export function stampManaged(managed) {
+  if (!managed || !managed.managedForMe) {
+    return {managed: false, managedServerName: null};
+  }
+  return {managed: true, managedServerName: managed.serverName || null};
+}
+
+/**
+ * The legacy fallback descriptor, carrying the managed verdict.
+ *
+ * The fallback is registered when the registry answers nothing — an empty
+ * registry, or a REST call that failed — and it has to be stamped too: an
+ * instance can be managed and still fail to list its servers, and the
+ * unstamped singleton would hand that user back every affordance the mode took
+ * away. A copy rather than the singleton itself, so nothing mutates the object
+ * every other descriptor is built from.
+ *
+ * @param {Object} managed the mode in force, {managedForMe, serverName}
+ * @returns {Object} the fallback descriptor to register
+ */
+export function createLegacyCaldavConnector(managed) {
+  return Object.assign({}, caldavConnector, stampManaged(managed));
 }
 
 /**

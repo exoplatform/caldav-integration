@@ -44,6 +44,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
+import org.exoplatform.caldav.model.CaldavManagedMode;
+import org.exoplatform.caldav.service.CaldavManagedModeService;
 import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.caldav.service.CaldavTuningService;
 import org.exoplatform.caldav.model.CaldavSyncTuning;
@@ -71,6 +73,9 @@ public class CaldavServerRestTest {
 
   @Mock
   private CaldavTuningService caldavTuningService;
+
+  @Mock
+  private CaldavManagedModeService caldavManagedModeService;
 
   @Mock
   private HttpServletRequest  request;
@@ -399,6 +404,111 @@ public class CaldavServerRestTest {
 
     assertEquals(HttpStatus.BAD_REQUEST, refused.getStatusCode());
     assertEquals("caldav.tuning.futureDaysOutOfRange", refused.getReason());
+  }
+
+
+  /**
+   * The managed-mode read hands back exactly what the service decided,
+   * per viewer.
+   *
+   * <p>
+   * The username is passed down rather than the verdict computed here: this
+   * layer holds no ACL knowledge by contract, and the whole point of answering
+   * per viewer is that the decision stays in one service method when group
+   * exclusions arrive.
+   */
+  @Test
+  public void theManagedReadIsAnsweredPerViewer() {
+    when(request.getRemoteUser()).thenReturn("mary");
+    CaldavManagedMode mode = new CaldavManagedMode(7L, "Bluemind", true);
+    when(caldavManagedModeService.getManagedMode("mary")).thenReturn(mode);
+
+    assertEquals(mode, caldavServerRest.getManagedMode(request));
+  }
+
+  /**
+   * Turning managed mode on answers with what is now in force, not with what
+   * was asked for.
+   */
+  @Test
+  public void turningManagedModeOnAnswersWithWhatIsNowInForce() {
+    when(request.getRemoteUser()).thenReturn("root");
+    CaldavManagedMode stored = new CaldavManagedMode(7L, "Bluemind", true);
+    when(caldavManagedModeService.getManagedMode("root")).thenReturn(stored);
+
+    assertEquals(stored, caldavServerRest.saveManagedMode(request, 7));
+
+    verify(caldavManagedModeService).saveManagedServer(7);
+  }
+
+  /**
+   * A server that is not a candidate comes back as a 400 carrying its message
+   * code, which is what lets the drawer say why rather than flick its switch
+   * back without a word.
+   */
+  @Test
+  public void anIneligibleServerIsFourHundredWithItsCode() {
+    doThrow(new IllegalArgumentException("caldav.managed.serverNotEligible")).when(caldavManagedModeService)
+                                                                            .saveManagedServer(9);
+
+    ResponseStatusException refused = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavServerRest.saveManagedMode(request, 9));
+
+    assertEquals(HttpStatus.BAD_REQUEST, refused.getStatusCode());
+    assertEquals("caldav.managed.serverNotEligible", refused.getReason());
+  }
+
+  /**
+   * Turning managed mode off clears the choice and answers the mode that now
+   * stands, which names no server.
+   */
+  @Test
+  public void turningManagedModeOffClearsTheChoice() {
+    when(request.getRemoteUser()).thenReturn("root");
+    CaldavManagedMode off = new CaldavManagedMode(null, null, false);
+    when(caldavManagedModeService.getManagedMode("root")).thenReturn(off);
+
+    assertEquals(off, caldavServerRest.clearManagedMode(request));
+
+    verify(caldavManagedModeService).clearManagedServer();
+  }
+
+  /**
+   * Deleting the managed server is a 400 carrying its code, not a 409 and not
+   * a 500.
+   *
+   * <p>
+   * A 409 would say another object is in the way, which is not what happened:
+   * nothing references the row, a rule refuses it. And without the catch this
+   * pins, the message code reached the browser as a 500 and the snackbar had
+   * nothing to say.
+   */
+  @Test
+  public void deletingTheManagedServerIsFourHundredWithItsCode() throws Exception {
+    doThrow(new IllegalArgumentException("caldav.managed.serverInUse")).when(caldavServerService)
+                                                                      .deleteServer(anyLong(), any());
+
+    ResponseStatusException refused = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavServerRest.deleteServer(request, 7));
+
+    assertEquals(HttpStatus.BAD_REQUEST, refused.getStatusCode());
+    assertEquals("caldav.managed.serverInUse", refused.getReason());
+  }
+
+  /**
+   * Deactivating it is refused the same way, through the status the registry
+   * endpoint already maps IllegalArgumentException onto.
+   */
+  @Test
+  public void deactivatingTheManagedServerIsFourHundredWithItsCode() throws Exception {
+    doThrow(new IllegalArgumentException("caldav.managed.serverInUse")).when(caldavServerService)
+                                                                      .setServerActive(anyLong(), anyBoolean(), any());
+
+    ResponseStatusException refused = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavServerRest.setServerActive(request, 7, false));
+
+    assertEquals(HttpStatus.BAD_REQUEST, refused.getStatusCode());
+    assertEquals("caldav.managed.serverInUse", refused.getReason());
   }
 
 }
