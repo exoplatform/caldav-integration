@@ -18,15 +18,12 @@ package org.exoplatform.caldav.entity;
 
 import java.util.Date;
 
+import io.meeds.common.persistence.PortableSequence;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
-import jakarta.persistence.Temporal;
-import jakarta.persistence.TemporalType;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -50,8 +47,7 @@ import lombok.NoArgsConstructor;
 public class CaldavObjectSyncEntity {
 
   @Id
-  @SequenceGenerator(name = "SEQ_CALDAV_OBJECT_SYNC_ID", sequenceName = "SEQ_CALDAV_OBJECT_SYNC_ID", allocationSize = 1)
-  @GeneratedValue(strategy = GenerationType.AUTO, generator = "SEQ_CALDAV_OBJECT_SYNC_ID")
+  @PortableSequence(name = "SEQ_CALDAV_OBJECT_SYNC_ID")
   @Column(name = "ID")
   private Long   id;
 
@@ -95,7 +91,6 @@ public class CaldavObjectSyncEntity {
   private String pushedHash;
 
   /** When this object was last written or verified. */
-  @Temporal(TemporalType.TIMESTAMP)
   @Column(name = "LAST_SYNC")
   private Date   lastSync;
 }

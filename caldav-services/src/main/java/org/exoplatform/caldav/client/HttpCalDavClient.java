@@ -45,6 +45,7 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.Strings;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.w3c.dom.Element;
@@ -243,7 +244,7 @@ public class HttpCalDavClient implements CalDavClient {
       url = url.replace("{username}", URLEncoder.encode(davUsername, StandardCharsets.UTF_8));
     }
     URI base = uri(url.trim());
-    if (!StringUtils.equalsAnyIgnoreCase(base.getScheme(), "http", "https") || StringUtils.isBlank(base.getHost())) {
+    if (!Strings.CI.equalsAny(base.getScheme(), "http", "https") || StringUtils.isBlank(base.getHost())) {
       throw new CalDavException("The declared CalDAV server URL is not a usable http(s) URL");
     }
     return new CalDavEndpoint(serverId, base);
@@ -378,7 +379,7 @@ public class HttpCalDavClient implements CalDavClient {
     // generic status policy so a 403 carrying the valid-sync-token
     // precondition is never misread as a credential refusal.
     if (response.status() == 507
-        || (response.status() == 403 && StringUtils.contains(response.body(), "valid-sync-token"))) {
+        || (response.status() == 403 && Strings.CS.contains(response.body(), "valid-sync-token"))) {
       return SyncCollectionResult.invalidToken();
     }
     checkReadStatus(response, request);
@@ -756,7 +757,7 @@ public class HttpCalDavClient implements CalDavClient {
    */
   private URI target(CalDavEndpoint endpoint, String href) {
     String path = StringUtils.defaultIfBlank(StringUtils.trimToNull(href), endpoint.getBasePath());
-    if (StringUtils.startsWithIgnoreCase(path, "http")) {
+    if (Strings.CI.startsWith(path, "http")) {
       URI absolute = uri(path);
       if (!sameAuthority(absolute, endpoint.getBaseUri())) {
         throw new CalDavException("Refusing to address " + absolute.getHost() + ", which is not the declared CalDAV server");
@@ -1040,7 +1041,7 @@ public class HttpCalDavClient implements CalDavClient {
     if (trimmed == null) {
       return null;
     }
-    if (StringUtils.startsWithIgnoreCase(trimmed, "http")) {
+    if (Strings.CI.startsWith(trimmed, "http")) {
       URI absolute = uri(trimmed);
       if (!sameAuthority(absolute, endpoint.getBaseUri())) {
         throw new CalDavException("Refusing an href naming " + absolute.getHost()
@@ -1077,8 +1078,8 @@ public class HttpCalDavClient implements CalDavClient {
    * @return true when both name the same authority
    */
   private boolean sameAuthority(URI first, URI second) {
-    return StringUtils.equalsIgnoreCase(first.getScheme(), second.getScheme())
-        && StringUtils.equalsIgnoreCase(first.getHost(), second.getHost())
+    return Strings.CI.equals(first.getScheme(), second.getScheme())
+        && Strings.CI.equals(first.getHost(), second.getHost())
         && effectivePort(first) == effectivePort(second);
   }
 
@@ -1093,7 +1094,7 @@ public class HttpCalDavClient implements CalDavClient {
     if (uri.getPort() != -1) {
       return uri.getPort();
     }
-    return StringUtils.equalsIgnoreCase(uri.getScheme(), "https") ? 443 : 80;
+    return Strings.CI.equals(uri.getScheme(), "https") ? 443 : 80;
   }
 
   /**
