@@ -36,6 +36,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -54,8 +55,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.caldav.client.CalDavClient;
@@ -150,6 +153,9 @@ public class CaldavMirrorVerificationServiceTest {
       + "END:VCALENDAR\r\n";
 
   /** The same copy after a client rewrote the one thing eXo cannot let stand. */
+  /** When the meeting a copy stands for was last edited, in the tests that care. */
+  private static final ZonedDateTime         EDITED   = ZonedDateTime.parse("2026-09-01T09:00:00Z");
+
   private static final String                HIJACKED = ICS.replace("SUMMARY:Sprint review", "SUMMARY:Hijacked");
 
   @Mock
@@ -230,6 +236,16 @@ public class CaldavMirrorVerificationServiceTest {
    */
   @Mock
   private AgendaEventService                agendaEventService;
+
+  /**
+   * Agenda's attendee side, read for one thing: the answer eXo holds for the
+   * owner of a copy, which is half of the statement the repair budget is keyed
+   * on. Unstubbed it answers null, which the service reads as "unstated" — a
+   * constant, so every scenario written before EXO-89863 keeps the stable
+   * statement its abandonment arithmetic depends on.
+   */
+  @Mock
+  private AgendaEventAttendeeService        agendaEventAttendeeService;
 
   /**
    * The real rule rather than a mock, and deliberately so: what a copy may
@@ -1061,6 +1077,164 @@ public class CaldavMirrorVerificationServiceTest {
     verify(calDavClient, times(4)).fetchObject(any(), eq(HREF), anyString(), anyString());
   }
 
+  // -------------------------- the repair bound, per statement (EXO-89863)
+
+  /**
+   * Gap 1: the budget never re-armed, so a server that swallowed yesterday's
+   * answer swallowed every answer after it.
+   *
+   * <p>
+   * The budget used to be keyed by the copy alone. Once a copy had spent its
+   * three repairs it was abandoned for the life of the process, so an answer
+   * the user gave <b>today</b> got no sweep at all — not one attempt, not one
+   * log line. It is keyed by what eXo is trying to say now, so a genuinely new
+   * answer is a new statement and gets a budget of its own.
+   */
+  @Test
+  public void anAnswerRecordedAfterACopyWasAbandonedIsPushedAgain() throws Exception {
+    givenAnUnwinnableFight();
+    givenTheAnswerIs(EventAttendeeResponse.NEEDS_ACTION);
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+    assertEquals(1, service.verify(USER).abandoned(), "the copy has to be abandoned before the point can be made");
+
+    givenTheAnswerIs(EventAttendeeResponse.ACCEPTED);
+    MirrorVerification afterTheAnswer = service.verify(USER);
+
+    assertEquals(1, afterTheAnswer.repaired(), "a new answer is a new statement and gets its own attempts");
+    assertEquals(0, afterTheAnswer.abandoned());
+  }
+
+  /**
+   * Gap 2: abandonment used to be all-or-nothing per copy.
+   *
+   * <p>
+   * Three repairs spent fighting over a stripped property also abandoned that
+   * copy for every <b>other</b> divergence — so a real edit weeks later was
+   * never carried, for a reason that had nothing to do with it. The old fight
+   * here is still unwinnable and still unresolved; the edit is repaired anyway,
+   * because it is a different thing to say.
+   */
+  @Test
+  public void anEditAfterACopyWasAbandonedIsRepairedAlthoughTheOldFightIsUnresolved() {
+    givenAnUnwinnableFight();
+    givenTheMeetingWasEditedAt(EDITED);
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+    assertEquals(1, service.verify(USER).abandoned());
+
+    givenTheMeetingWasEditedAt(EDITED.plusMinutes(5));
+    MirrorVerification afterTheEdit = service.verify(USER);
+
+    assertEquals(1, afterTheEdit.repaired(), "an edit is not the divergence the budget was spent on");
+  }
+
+  /**
+   * Re-arming gives a whole budget, not the remainder of the spent one.
+   *
+   * <p>
+   * The distinction is the difference between a copy that gets three real
+   * attempts at every new statement and one that gets a single token attempt
+   * for ever after its first bad week. Three writes before, three after.
+   */
+  @Test
+  public void aReArmedCopyGetsAWholeBudgetRatherThanTheRemainderOfTheOldOne() {
+    givenAnUnwinnableFight();
+    givenTheMeetingWasEditedAt(EDITED);
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
+
+    givenTheMeetingWasEditedAt(EDITED.plusMinutes(5));
+    for (int pass = 0; pass < 4; pass++) {
+      service.verify(USER);
+    }
+
+    verify(caldavPushService, times(6)).rewriteAgendaEvent(USER, 5L);
+  }
+
+  /**
+   * The guarantee this change must not weaken: a stubborn server is still given
+   * up on.
+   *
+   * <p>
+   * Keying the budget on a statement is only safe while the statement is stable
+   * for as long as eXo is saying the same thing. Ten passes, one statement,
+   * three writes and no more.
+   */
+  @Test
+  public void aServerRefusingTheSameStatementForEverIsStillGivenUpOn() throws Exception {
+    givenAnUnwinnableFight();
+    givenTheAnswerIs(EventAttendeeResponse.ACCEPTED);
+    givenTheMeetingWasEditedAt(EDITED);
+
+    for (int pass = 0; pass < 10; pass++) {
+      service.verify(USER);
+    }
+
+    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
+  }
+
+  /**
+   * And the same guarantee where it is easiest to lose: an event agenda cannot
+   * read at all.
+   *
+   * <p>
+   * The unreadable statement is a <b>constant</b>. Anything derived from the
+   * moment of the read — a timestamp, a counter, an exception's identity —
+   * would look like a new statement on every pass, re-arm the budget every five
+   * minutes and abolish abandonment altogether, on precisely the accounts that
+   * are already in trouble.
+   */
+  @Test
+  public void anEventAgendaCannotReadDoesNotReArmTheBudgetForEver() {
+    givenAnUnwinnableFight();
+    when(agendaEventService.getEventById(5L)).thenThrow(new IllegalStateException("agenda is unavailable"));
+
+    for (int pass = 0; pass < 10; pass++) {
+      service.verify(USER);
+    }
+
+    verify(caldavPushService, times(3)).rewriteAgendaEvent(USER, 5L);
+  }
+
+  /**
+   * Gap 3: the give-up line named the copy and nothing else.
+   *
+   * <p>
+   * An href alone tells an administrator that something was given up on without
+   * telling them what, and "a copy is wrong" is not something anybody can act
+   * on. The person and the answer eXo was trying to get onto that copy are what
+   * make it actionable — and they are also the statement the budget is keyed
+   * on, so they name the thing that has to change before eXo tries again.
+   */
+  @Test
+  public void theGiveUpWarningNamesThePersonAndTheAnswer() throws Exception {
+    givenAnUnwinnableFight();
+    givenTheAnswerIs(EventAttendeeResponse.ACCEPTED);
+
+    List<ILoggingEvent> warnings;
+    try (LogRecorder log = new LogRecorder(CaldavMirrorVerificationService.class)) {
+      for (int pass = 0; pass < 6; pass++) {
+        service.verify(USER);
+      }
+      warnings = log.events()
+                    .stream()
+                    .filter(recorded -> recorded.getFormattedMessage().contains("stops re-pushing it"))
+                    .toList();
+    }
+
+    assertEquals(1, warnings.size(), "said once when it happens, never again on every pass");
+    assertEquals(Level.WARN, warnings.get(0).getLevel());
+    String said = warnings.get(0).getFormattedMessage();
+    assertTrue(said.contains(HREF), "which copy");
+    assertTrue(said.contains(String.valueOf(USER)), "whose copy");
+    assertTrue(said.contains("ACCEPTED"), "and what eXo could not get onto it");
+  }
+
   @Test
   public void anAbandonedCopyTheUserAnswersOnTheirPhoneIsStillReadBack() {
     // The pair, and the reason the settled state records the version rather
@@ -1110,6 +1284,31 @@ public class CaldavMirrorVerificationServiceTest {
 
     assertEquals(1, afterForgetting.altered());
     assertEquals(1, afterForgetting.repaired());
+  }
+
+  /**
+   * Declares the answer eXo holds for this user on the meeting a copy stands
+   * for — half of the statement the repair budget is keyed on.
+   *
+   * @param response what agenda records
+   * @throws Exception which agenda's reader declares
+   */
+  private void givenTheAnswerIs(EventAttendeeResponse response) throws Exception {
+    when(agendaEventAttendeeService.getEventResponse(5L, null, USER)).thenReturn(response);
+  }
+
+  /**
+   * Declares when the meeting a copy stands for was last edited — the other
+   * half of that statement. {@code EventDAO.update} stamps this on every
+   * update, which is what makes an edit visible to the bound.
+   *
+   * @param updated the moment agenda recorded
+   */
+  private void givenTheMeetingWasEditedAt(ZonedDateTime updated) {
+    Event event = new Event();
+    event.setId(5L);
+    event.setUpdated(updated);
+    when(agendaEventService.getEventById(5L)).thenReturn(event);
   }
 
   /**
