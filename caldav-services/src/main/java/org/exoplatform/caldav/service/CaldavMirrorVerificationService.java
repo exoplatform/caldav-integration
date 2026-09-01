@@ -27,6 +27,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarObject;
@@ -204,6 +206,12 @@ public class CaldavMirrorVerificationService {
    */
   @Autowired
   private CaldavMirrorAnswerService    caldavMirrorAnswerService;
+
+  @Autowired
+  private CaldavCopyPolicy             caldavCopyPolicy;
+
+  @Autowired
+  private AgendaEventService           agendaEventService;
 
   /**
    * How many times one object may be repaired before the pass stops trying.
@@ -543,6 +551,9 @@ public class CaldavMirrorVerificationService {
           continue;
         }
         checked++;
+        if (retireIfNoLongerAllowed(userIdentityId, object, etags)) {
+          continue;
+        }
         if (hasSettled(userIdentityId, object, etags)) {
           // Abandoned, and the server still publishes the version it was
           // abandoned at. There is nothing here a fetch could tell this pass
@@ -608,6 +619,137 @@ public class CaldavMirrorVerificationService {
                held);
     }
     return new MirrorVerification(checked, missing, altered, adopted, repaired, abandoned);
+  }
+
+  /**
+   * Takes away a copy standing for an event that may no longer hold one, before
+   * anything compares or repairs it.
+   *
+   * <h2>Why this runs before the comparison, not after it</h2>
+   *
+   * <p>
+   * Because the comparison's whole job is to make the copy match the event
+   * again, and here the copy must not exist. A date poll renders to a
+   * multi-day block spanning every option proposed — see
+   * {@link CaldavCopyPolicy} — so a poll copy left to the comparison is judged
+   * {@code ALTERED} against that block and <b>repaired into it</b>, which is
+   * the pass putting back the very entry this change exists to remove. There is
+   * no ordering of the existing steps that avoids it; the row has to leave
+   * before any of them look at it.
+   *
+   * <h2>This is also the migration, and the reason there is no script</h2>
+   *
+   * <p>
+   * Every poll copy pushed before this change is still on somebody's calendar,
+   * and the sweep is what takes them off: the first pass over each account
+   * after the deploy walks its mapping rows, meets each poll copy, and retires
+   * it here. A one-off migration would have had to do exactly this — walk the
+   * rows, ask agenda for each event's status, delete the ones that are polls —
+   * against every connected account, with its own credentials handling and its
+   * own failure story. The sweep already has all of that and already runs. So
+   * this method is the migration, and it is also the ongoing rule; a copy the
+   * immediate retirement in {@code CaldavEventPropagationService} could not
+   * land converges here too.
+   *
+   * <h2>No re-push loop</h2>
+   *
+   * <p>
+   * The three ways this could have become a pass that deletes and re-writes for
+   * ever are each closed somewhere different, which is why they are listed
+   * together here. The removal clears the row's href
+   * ({@code CaldavPushService.deleteEvent} saves the mapping with a null href),
+   * and a blank-href row is skipped at the top of this very loop. The seeding
+   * pass refuses a poll ({@code CaldavCopyPolicy.maySeedCopy}), so nothing
+   * writes a fresh copy of it either. And the push core refuses it too, so even
+   * a repair asked for by name writes nothing.
+   *
+   * <h2>What it does not touch</h2>
+   *
+   * <p>
+   * A row that names no eXo event is left alone. It cannot be asked about — the
+   * question is the event's status and there is no event to ask after — and the
+   * existing repair path already has an answer for such a row. Old copies
+   * pushed by the browser-era client that never got a mapping row are out of
+   * scope by the same reasoning: this pass walks rows, and one that does not
+   * exist is not walked.
+   *
+   * @param userIdentityId identity of the user whose copy it is
+   * @param object the mapping row about to be judged
+   * @param etags what the server currently holds, by href
+   * @return true when the row has been retired and must not be judged
+   */
+  private boolean retireIfNoLongerAllowed(long userIdentityId, ObjectSync object, Map<String, String> etags) {
+    Long localEventId = object.getLocalEventId();
+    if (localEventId == null || localEventId <= 0) {
+      return false;
+    }
+    Event event;
+    try {
+      event = agendaEventService.getEventById(localEventId);
+    } catch (Exception | LinkageError e) {
+      // Nothing is concluded from a read that failed. Answering "retire" on
+      // ignorance would delete copies of live meetings whenever agenda was
+      // momentarily unavailable, and the pass runs every few minutes.
+      LOG.debug("Event {} could not be read; the copy of user {} is judged as it always was",
+                localEventId,
+                userIdentityId,
+                e);
+      return false;
+    }
+    if (caldavCopyPolicy.mayHoldCopy(event)) {
+      return false;
+    }
+    if (etagOf(object.getRemoteHref(), etags) == null) {
+      // Already gone from the server. There is nothing to delete, and above all
+      // nothing to repair: left to the comparison this row is MISSING, and
+      // MISSING is the verdict that re-pushes. Clearing it is what stops the
+      // very next pass writing the poll back.
+      clearCopy(object);
+      LOG.info("The copy of date poll {} held by user {} is already gone from the server; its mapping is cleared",
+               localEventId,
+               userIdentityId);
+      return true;
+    }
+    try {
+      caldavPushService.deleteEvent(userIdentityId, object.getIcsUid());
+      // At INFO and one line per copy: an administrator watching the first
+      // sweep after this deploy should be able to see the migration happen,
+      // account by account, rather than infer it from a total.
+      LOG.info("The copy of date poll {} held by user {} at {} has been retired",
+               localEventId,
+               userIdentityId,
+               object.getRemoteHref());
+      return true;
+    } catch (RuntimeException e) {
+      // The account may be down or refusing writes. The row keeps its href, so
+      // the next pass meets it here again — and until then the copy is left
+      // alone rather than repaired, which is what returning true buys: a poll
+      // copy nobody could remove must still not be written back.
+      LOG.warn("The copy of date poll {} held by user {} could not be retired; the next pass tries again",
+               localEventId,
+               userIdentityId,
+               e);
+      return true;
+    }
+  }
+
+  /**
+   * Forgets where a copy used to live, keeping the row that names the event.
+   *
+   * <p>
+   * The row is cleared rather than deleted, matching what a removal through
+   * {@code CaldavPushService.deleteEvent} leaves behind: it is the record that
+   * this user's copy of this event has an iCalendar identity, and a poll that
+   * is confirmed later is written under that same identity rather than a second
+   * one.
+   *
+   * @param object the mapping row whose copy is gone
+   */
+  private void clearCopy(ObjectSync object) {
+    object.setRemoteHref(null);
+    object.setEtag(null);
+    object.setLastSync(new Date());
+    caldavSyncStorage.saveObject(object);
   }
 
   /**
