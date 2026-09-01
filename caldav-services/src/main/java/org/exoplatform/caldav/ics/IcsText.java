@@ -42,8 +42,20 @@ public final class IcsText {
   /** PARTSTAT values agenda can produce that RFC 5545 also defines. */
   private static final Set<String> KNOWN_PART_STATS = Set.of("ACCEPTED", "DECLINED", "TENTATIVE");
 
-  /** The PARTSTAT default, both what RFC 5545 assumes and what agenda calls NEEDS_ACTION. */
-  private static final String      NEEDS_ACTION     = "NEEDS-ACTION";
+  /**
+   * The PARTSTAT default, both what RFC 5545 assumes and what agenda calls
+   * NEEDS_ACTION.
+   *
+   * <p>
+   * Public since EXO-89868, which has to recognise the token rather than the
+   * response name. The answer fan-out declines to write a reset, and
+   * {@link #partStat(String)} maps <b>anything unrecognised</b> to this value
+   * — so a caller comparing against {@code "NEEDS_ACTION"} would let a
+   * response agenda grows tomorrow through, and fan a reset out to every copy
+   * in the name of an answer nobody gave. Comparing against what would
+   * actually be written cannot make that mistake.
+   */
+  public static final String       NEEDS_ACTION     = "NEEDS-ACTION";
 
   /** Tags that end a line of text when they close. */
   private static final Pattern     BLOCK_END        = Pattern.compile("(?i)<\\s*/\\s*(p|div|li|tr|h[1-6])\\s*>");
