@@ -175,6 +175,9 @@ public class CaldavPushService {
   @Autowired
   private AgendaCalendarService  agendaCalendarService;
 
+  @Autowired
+  private CaldavCopyPolicy       caldavCopyPolicy;
+
   /**
    * The registry the destination setting is read from. Injected here and
    * nowhere else on this path: the mapper, the sweep and the listeners all
@@ -591,9 +594,15 @@ public class CaldavPushService {
    * is derived from the event by the mapper now, so every path renders the
    * same one (EXO-89751).
    *
+   * <p>
+   * A date poll is refused here and nothing is written for it — see
+   * {@link CaldavCopyPolicy} for why, and the private core below for why this
+   * is the only place that has to say so.
+   *
    * @param userIdentityId identity of the user whose account is written to
    * @param eventId the agenda event to copy
-   * @return the mapping row as it now stands
+   * @return the mapping row as it now stands, or null when nothing was written
+   *         — the event is a date poll, or its calendar has no collection
    * @throws CaldavPushException when the event cannot be read or written
    */
   public ObjectSync pushAgendaEvent(long userIdentityId, long eventId) {
@@ -613,9 +622,15 @@ public class CaldavPushService {
    * already read the object, compared it against the eXo event, and decided
    * which copy wins.
    *
+   * <p>
+   * A repair is a write like any other, so it meets the same refusal: an event
+   * that has become a date poll is not repaired into place, it is left for the
+   * retirement that removes its copy.
+   *
    * @param userIdentityId identity of the user whose account is written to
    * @param eventId the agenda event whose copy is rebuilt
-   * @return the mapping row as it now stands
+   * @return the mapping row as it now stands, or null when nothing was written
+   *         — the event is a date poll, or its calendar has no collection
    * @throws CaldavPushException when the event cannot be read or written
    */
   public ObjectSync rewriteAgendaEvent(long userIdentityId, long eventId) {
@@ -702,6 +717,25 @@ public class CaldavPushService {
     }
     if (event == null) {
       throw new CaldavPushException(SAVE, "Event " + eventId + " does not exist");
+    }
+    if (!caldavCopyPolicy.mayHoldCopy(event)) {
+      // The one place a date poll is refused, and the reason it only needs to
+      // be said once: every path that writes an event's copy arrives here.
+      // The author's own browser (CaldavPushRest.push), the fan-out and the
+      // seeding pass (through pushAgendaEvent), the mirror repair and the
+      // retry of an owed write (through rewriteAgendaEvent, which is this
+      // method with overwrite set) all read the event through this core. A
+      // guard placed in any one of them would have been a guard the other
+      // three walked past.
+      //
+      // Null, not an exception, because nothing failed. The caller asked for a
+      // copy of something a calendar has no truthful way to show — see
+      // CaldavCopyPolicy for what a poll looks like once it is written — and
+      // "nothing was written" is the honest answer to that. Every caller
+      // already handles it: the REST layer answers 204, the seeding pass reads
+      // it as "not written", the fan-out as "not carried".
+      LOG.debug("Event {} is a date poll; no copy of it is written into the account of user {}", eventId, userIdentityId);
+      return null;
     }
     long seriesId = event.getParentId() > 0 ? event.getParentId() : event.getId();
     String icsUid = adoptOrMintUid(seriesId, userIdentityId);

@@ -45,8 +45,10 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaEventService;
@@ -151,6 +153,15 @@ public class CaldavPushServiceTest {
 
   @Mock
   private CaldavServerService        caldavServerService;
+
+  /**
+   * The real rule rather than a mock, and deliberately so: what a copy may
+   * stand for is one decision this suite has to exercise, not stage. A mocked
+   * policy would answer whatever the test told it to and prove nothing about
+   * the event statuses these scenarios actually build.
+   */
+  @Spy
+  private CaldavCopyPolicy         caldavCopyPolicy = new CaldavCopyPolicy();
 
   @InjectMocks
   private CaldavPushService          service;
@@ -860,6 +871,77 @@ public class CaldavPushServiceTest {
     ObjectSync mapping = service.pushAgendaEvent(USER, 104L);
 
     assertEquals(104L, mapping.getLocalEventId());
+  }
+
+  /**
+   * The decision of EXO-89863, pinned at the one place that can enforce it.
+   *
+   * <p>
+   * A date poll is stored as one TENTATIVE event stretched over the envelope of
+   * every option proposed, so a copy of it is a multi-day block on somebody's
+   * calendar describing a meeting that is not happening. Nothing is written for
+   * one — not by the author's own browser, which is the caller that reaches
+   * this method here, and not by anything else, because every writer of an
+   * event's copy comes through this same private core.
+   *
+   * <p>
+   * The mirror is staged in full, deliberately. A test that let a missing
+   * collection or an unresolvable identifier do the refusing would pass against
+   * the very bug it pins: everything else about this push works, and the status
+   * is the only thing that stops it.
+   */
+  @Test
+  public void aDatePollIsNotWrittenAtAll() throws Exception {
+    givenEverythingAWriteNeeds();
+    givenAnAgendaEvent(150L, 0L, EventStatus.TENTATIVE);
+
+    assertNull(service.pushAgendaEvent(USER, 150L));
+
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).saveObject(any());
+    // Not even an identifier: minting one records a remote event in agenda for
+    // an object that is never going to exist.
+    verify(agendaRemoteEventService, never()).saveRemoteEvent(anyLong(), any(), anyLong());
+  }
+
+  /**
+   * The repair entry point is this same core with the guard lifted off the
+   * conditional write — not off the policy. A poll that somehow still has a
+   * copy must not be repaired back into place; it is retired instead, by the
+   * pass that found it.
+   */
+  @Test
+  public void aDatePollIsNotRepairedEither() throws Exception {
+    givenEverythingAWriteNeeds();
+    givenAnAgendaEvent(151L, 0L, EventStatus.TENTATIVE);
+
+    assertNull(service.rewriteAgendaEvent(USER, 151L));
+
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * The other half of the pin. A cancelled meeting keeps being written, because
+   * its copy is the tombstone that tells the attendee the meeting is off — and
+   * a guard written as "only CONFIRMED is pushed" would have silently taken
+   * that away.
+   */
+  @Test
+  public void aCancelledMeetingIsStillWritten() throws Exception {
+    givenAMirror();
+    givenAnAgendaEvent(152L, 0L, EventStatus.CANCELLED);
+    when(agendaRemoteEventService.findRemoteEvent(152L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-152"));
+    when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+                                                                                          .thenReturn(new PutResult(201,
+                                                                                                                    "\"e\"",
+                                                                                                                    null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    assertNotNull(service.pushAgendaEvent(USER, 152L));
+
+    verify(calDavClient).putObject(any(), anyString(), anyString(), anyString(), anyString());
   }
 
   @Test
@@ -1903,8 +1985,51 @@ public class CaldavPushServiceTest {
   }
 
   /**
+   * The same event, in a stated agenda status.
+   *
+   * @param eventId the agenda event id
+   * @param parentId the series it belongs to, 0 for a stand-alone event
+   * @param status what agenda holds for it — the thing under test in the
+   *          EXO-89863 scenarios
+   * @throws Exception when the stubbed read declares one
+   */
+  private void givenAnAgendaEvent(long eventId, long parentId, EventStatus status) throws Exception {
+    Event event = new Event();
+    event.setId(eventId);
+    event.setParentId(parentId);
+    event.setCalendarId(eventId >= 110L ? eventId - 103L : 0L);
+    event.setStatus(status);
+    when(agendaEventService.getEventById(eq(eventId), isNull(), eq(USER))).thenReturn(event);
+  }
+
+  /**
    * A mirror pair and collection already in place.
    */
+  /**
+   * A mirror, an identifier, a mapper and a server that accepts writes — every
+   * collaborator a successful push consults, staged and none of them required.
+   *
+   * <p>
+   * Leniently, and that is the whole point of the helper. What an EXO-89863
+   * scenario has to prove is that the <b>status</b> is what stopped the write,
+   * not a collection that could not be resolved or an identifier that could not
+   * be minted; so everything else is put in place and then observed to go
+   * unused. Under strict stubbing that is an error, which is why these are
+   * declared lenient rather than left out.
+   */
+  private void givenEverythingAWriteNeeds() {
+    lenient().when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString()))
+             .thenReturn(List.of(calendar(MIRROR, "eXo Meetings")));
+    lenient().when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    lenient().when(agendaRemoteEventService.findRemoteEvent(anyLong(), eq(USER))).thenReturn(null);
+    lenient().when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-poll"));
+    lenient().when(calDavClient.putObject(any(), anyString(), anyString(), anyString(), anyString()))
+             .thenReturn(new PutResult(201, "\"e\"", null));
+    lenient().when(calDavClient.overwriteObject(any(), anyString(), anyString(), anyString(), anyString()))
+             .thenReturn(new PutResult(204, "\"e\"", null));
+    lenient().when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+  }
+
   private void givenAMirror() {
     when(calDavClient.listCalendars(any(), eq(HOME), anyString(), anyString())).thenReturn(List.of(calendar(MIRROR,
                                                                                                             "eXo Meetings")));

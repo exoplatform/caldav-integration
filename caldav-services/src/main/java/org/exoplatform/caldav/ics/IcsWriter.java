@@ -144,15 +144,21 @@ public class IcsWriter {
 
     // CONFIRMED for every event pushed, deliberately, rather than a mapping of
     // the agenda status: eXo spells a date poll TENTATIVE, which in RFC 5545
-    // means "provisionally scheduled". This comment used to add that a poll
-    // never reaches this engine because "an event only reaches this engine once
-    // it is scheduled" — which is not true: the fan-out refuses a poll, but its
-    // author's own browser pushes their own copy of it on save, and every path
-    // afterwards keeps that copy in step. The constant stays all the same, and
-    // the copy is written CONFIRMED rather than TENTATIVE: STATUS is how a
-    // client decides whether to show an entry at all, and an entry spelled
-    // TENTATIVE is hidden outright by some clients. Whether a poll should be
-    // copied at all is a separate question, tracked as EXO-89863.
+    // means "provisionally scheduled".
+    //
+    // A poll no longer reaches this engine at all — CaldavPushService refuses
+    // to write a copy of one (EXO-89863) — but the constant stays, and stays
+    // stated rather than mapped, for two reasons. It is a claim about what a
+    // copy IS: everything this engine writes is a scheduled meeting, and
+    // reading the status through would make that depend on a field rather than
+    // on the rule. And an entry spelled TENTATIVE is hidden outright by some
+    // clients, so a status mapping that ever let one through would produce a
+    // copy nobody can see — a failure with no symptom.
+    //
+    // The sentence that used to stand here, that a poll's own author pushed
+    // their copy of it from the browser while the fan-out refused everyone
+    // else, is what EXO-89863 ended: the refusal now lives in the one core
+    // every writer comes through, the author's browser included.
     //
     // CANCELLED is the one exception, and it is not a status mapping either:
     // it is the whole point of writing the copy again after a meeting is
