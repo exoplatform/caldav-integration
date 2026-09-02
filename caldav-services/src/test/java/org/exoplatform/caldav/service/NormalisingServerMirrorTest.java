@@ -121,6 +121,9 @@ public class NormalisingServerMirrorTest {
 
   private static final String                  HREF    = MIRROR + "evt-1.ics";
 
+  /** The address a copy on this account names its owner by. */
+  private static final String                  OWNER   = "john@acme.test";
+
   /** The zone the fake server restates the meeting's wall clock on. */
   private static final String                  ZONE    = "Europe/Paris";
 
@@ -249,6 +252,13 @@ public class NormalisingServerMirrorTest {
                                  org.mockito.Mockito.mock(CaldavMirrorAnswerService.class));
     ReflectionTestUtils.setField(icsEquivalence, "ignoredProperties", "");
     ReflectionTestUtils.setField(verification, "maxRepairs", 3);
+    // EXO-89681 gave the pass an answer-adoption collaborator that did not exist
+    // when this test was written. It is stubbed rather than exercised: what is
+    // under test here is which copies the pass calls altered on a normalising
+    // server, not what it does with an answer found on one.
+    ReflectionTestUtils.setField(verification,
+                                 "caldavAnswerAdoptionService",
+                                 org.mockito.Mockito.mock(CaldavAnswerAdoptionService.class));
 
     mirror = new CalendarSync();
     mirror.setId(3L);
