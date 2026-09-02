@@ -928,34 +928,12 @@ public class CaldavServerServiceTest {
   }
 
   /**
-   * URL resolution, in the documented order: the account's own registration
-   * when it exists; the seed row when the account references none (or a row
-   * that has disappeared); null when the registry answers nothing — at which
-   * point the caller keeps the legacy property URL.
-   */
-  @Test
-  public void shouldResolveServerUrlInOrder() {
-    CaldavServer declared = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
-    CaldavServer seed = server(1, "agenda.caldavCalendar", "CalDAV", null, "https://seed.example.org/", true);
-
-    when(caldavServerStorage.getServerById(7)).thenReturn(declared);
-    assertEquals(SERVER_URL, caldavServerService.resolveServerUrl(7L));
-
-    when(caldavServerStorage.getServerById(99)).thenReturn(null);
-    when(caldavServerStorage.getServerByProviderName(CaldavServerService.CALDAV_PROVIDER_NAME)).thenReturn(seed);
-    assertEquals("https://seed.example.org/", caldavServerService.resolveServerUrl(99L));
-
-    assertEquals("https://seed.example.org/", caldavServerService.resolveServerUrl(null));
-
-    when(caldavServerStorage.getServerByProviderName(CaldavServerService.CALDAV_PROVIDER_NAME)).thenReturn(null);
-    assertNull(caldavServerService.resolveServerUrl(null));
-  }
-
-  /**
-   * The row resolution the relay's authorization rides: same order as the
-   * URL resolution, but answering the whole registration — the relay needs
-   * its id and activation, not just its URL, to decide whether a target may
-   * receive the user's stored credentials.
+   * The one resolution order every caller rides, minting an endpoint or
+   * authorizing a relayed request alike: the account's own registration when
+   * it exists; the seed row when the account references none (or a row that
+   * has disappeared); null when the registry answers nothing — at which point
+   * the caller keeps the legacy property URL. The whole row is answered, not
+   * just its URL: a caller needs its id, its provider and its activation.
    */
   @Test
   public void shouldResolveTheServerRowInTheSameOrder() {
@@ -1273,6 +1251,6 @@ public class CaldavServerServiceTest {
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
     return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null,
-                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR);
+                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null);
   }
 }

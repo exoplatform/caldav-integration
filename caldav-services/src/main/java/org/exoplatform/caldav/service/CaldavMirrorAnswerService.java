@@ -155,11 +155,13 @@ public class CaldavMirrorAnswerService {
    * because a report could not be made.
    *
    * @param userIdentityId identity of the account's owner
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param settings the connected account
    * @param mirror the binding recording where the copies are written
    * @return how many answers were recorded in agenda
    */
-  public int readAnswers(long userIdentityId, CaldavUserSetting settings, CalendarSync mirror) {
+  public int readAnswers(long userIdentityId, String username, CaldavUserSetting settings, CalendarSync mirror) {
     if (settings == null || mirror == null || StringUtils.isBlank(mirror.getRemoteHref())
         || StringUtils.isBlank(settings.getUsername())) {
       return 0;
@@ -173,7 +175,7 @@ public class CaldavMirrorAnswerService {
                   mirror.getRemoteHref());
         return 0;
       }
-      return readWhatChanged(userIdentityId, settings, mirror);
+      return readWhatChanged(userIdentityId, username, settings, mirror);
     } catch (RuntimeException | LinkageError e) {
       // One field on some objects, against the copies still being verified and
       // repaired around it. The pass goes on.
@@ -217,21 +219,21 @@ public class CaldavMirrorAnswerService {
    * reads an answer off each object it names.
    *
    * @param userIdentityId identity of the account's owner
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param settings the connected account
    * @param mirror the binding recording where the copies are written
    * @return how many answers were recorded in agenda
    */
-  private int readWhatChanged(long userIdentityId, CaldavUserSetting settings, CalendarSync mirror) {
-    CalDavEndpoint endpoint = calDavClient.endpoint(mirror.getServerId(), settings.getUsername());
+  private int readWhatChanged(long userIdentityId, String username, CaldavUserSetting settings, CalendarSync mirror) {
+    CalDavEndpoint endpoint = calDavClient.endpoint(mirror.getServerId(), username);
     String collection = StringUtils.appendIfMissing(mirror.getRemoteHref(), "/");
     boolean establishing = StringUtils.isBlank(mirror.getSyncToken());
     SyncCollectionResult report;
     try {
       report = calDavClient.syncCollection(endpoint,
                                            collection,
-                                           mirror.getSyncToken(),
-                                           settings.getUsername(),
-                                           settings.getPassword());
+                                           mirror.getSyncToken());
     } catch (RuntimeException e) {
       // A report that could not be made says nothing: not that the collection
       // is empty, and not that it is unchanged. The token stays where it is and
@@ -309,7 +311,7 @@ public class CaldavMirrorAnswerService {
                       List<String> hrefs) {
     List<CalendarObject> objects;
     try {
-      objects = calDavClient.multiget(endpoint, collection, hrefs, settings.getUsername(), settings.getPassword());
+      objects = calDavClient.multiget(endpoint, collection, hrefs);
     } catch (RuntimeException e) {
       LOG.debug("The {} changed copies of collection {} could not be fetched; no answer is read this round",
                 hrefs.size(),

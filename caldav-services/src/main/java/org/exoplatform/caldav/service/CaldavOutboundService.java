@@ -105,12 +105,12 @@ public class CaldavOutboundService {
     if (!connected(settings)) {
       return List.of();
     }
-    CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+    CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
     String home;
     List<CalendarCollection> collections;
     try {
-      home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
-      collections = calDavClient.listCalendars(endpoint, home, settings.getUsername(), settings.getPassword());
+      home = calDavClient.discoverCalendarHome(endpoint);
+      collections = calDavClient.listCalendars(endpoint, home);
     } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
       // Not logged here, and that is the point: the caller says it once, for
       // the whole sequence it is abandoning. Logging here as well would put
@@ -262,12 +262,10 @@ public class CaldavOutboundService {
       MkCalendarResult creation = calDavClient.mkCalendar(endpoint,
                                                           wanted,
                                                           displayNameOf(calendar),
-                                                          null,
-                                                          settings.getUsername(),
-                                                          settings.getPassword());
+                                                          null);
       // The status is never proof. One server answers 201 while creating
       // nothing; only reading the home back settles it.
-      boolean created = calDavClient.listCalendars(endpoint, home, settings.getUsername(), settings.getPassword())
+      boolean created = calDavClient.listCalendars(endpoint, home)
                                     .stream()
                                     .anyMatch(collection -> isSameCollection(collection.href(), null, wanted))
           || stillThere(settings, endpoint, wanted);
@@ -359,9 +357,7 @@ public class CaldavOutboundService {
     }
     try {
       return calDavClient.readCalendar(endpoint,
-                                       StringUtils.appendIfMissing(href, "/"),
-                                       settings.getUsername(),
-                                       settings.getPassword()) != null;
+                                       StringUtils.appendIfMissing(href, "/")) != null;
     } catch (CalDavException e) {
       LOG.debug("Collection {} could not be asked about directly", href, e);
       return false;

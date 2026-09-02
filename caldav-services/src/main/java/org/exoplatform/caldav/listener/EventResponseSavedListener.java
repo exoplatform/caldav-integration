@@ -20,12 +20,14 @@ import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.model.EventAttendee;
 import org.exoplatform.caldav.service.CaldavEventPropagationService;
 import org.exoplatform.caldav.service.CaldavPushService;
+import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.services.listener.Asynchronous;
 import org.exoplatform.services.listener.Event;
 import org.exoplatform.services.listener.Listener;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.social.core.manager.IdentityManager;
 
 /**
  * Carries an answer recorded in eXo out to the copy on the user's calendar
@@ -85,6 +87,8 @@ public class EventResponseSavedListener extends Listener<EventAttendee, EventAtt
 
   private CaldavPushService             caldavPushService;
 
+  private IdentityManager               identityManager;
+
   private CaldavEventPropagationService caldavEventPropagationService;
 
   /**
@@ -130,7 +134,11 @@ public class EventResponseSavedListener extends Listener<EventAttendee, EventAtt
       return;
     }
     try {
-      pushService.pushAnswer(answer.getIdentityId(), answer.getEventId(), answer.getResponse().name());
+      // A listener is an entry point: it holds an identity id and no
+      // conversation state, so it resolves the login the credentials provider
+      // needs rather than receiving one.
+      String username = CaldavConnectorUtils.loginOf(getIdentityManager(), answer.getIdentityId());
+      pushService.pushAnswer(answer.getIdentityId(), username, answer.getEventId(), answer.getResponse().name());
     } catch (Exception | LinkageError e) {
       // The answer is recorded in eXo and that must stand whatever the
       // calendar server says. Carrying it outward is a convenience the
@@ -227,6 +235,33 @@ public class EventResponseSavedListener extends Listener<EventAttendee, EventAtt
       }
     }
     return caldavEventPropagationService;
+  }
+
+  /**
+   * The identity registry, resolved from the container the same guarded way the
+   * push service is - and settable, so a unit test can hand one in without a
+   * container.
+   *
+   * @return the registry, or null when it cannot be resolved
+   */
+  private IdentityManager getIdentityManager() {
+    if (identityManager == null) {
+      try {
+        identityManager = ExoContainerContext.getService(IdentityManager.class);
+      } catch (Exception | LinkageError e) {
+        LOG.debug("Identity manager not resolvable; the answer stays in eXo until the next verification pass", e);
+      }
+    }
+    return identityManager;
+  }
+
+  /**
+   * Hands the registry to tests, which have no container to resolve it from.
+   *
+   * @param identityManager the registry to use
+   */
+  protected void setIdentityManager(IdentityManager identityManager) {
+    this.identityManager = identityManager;
   }
 
   /**

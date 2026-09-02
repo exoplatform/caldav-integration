@@ -24,15 +24,19 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URI;
 import java.time.Instant;
 import java.util.List;
+import java.util.Base64;
 import java.util.Map;
 import java.util.UUID;
 
@@ -43,6 +47,11 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.TestMethodOrder;
 
 import org.exoplatform.caldav.service.CaldavServerService;
+import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
+import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
 
 /**
  * The client against the real containerised Stalwart rig — the same server
@@ -97,9 +106,37 @@ public class HttpCalDavClientStalwartTest {
    * @return the client under test
    */
   private HttpCalDavClient newClient() {
+    return clientAuthenticatingAs(PASSWORD);
+  }
+
+  /**
+   * A client whose credentials provider answers the rig's Basic header. The
+   * password is a parameter because one test needs a wrong one, and since the
+   * client no longer takes credentials, the only way to hand it a bad
+   * credential is through the provider — which is also where a bad credential
+   * would come from in production.
+   *
+   * @param password the password the provider's material carries
+   * @return the client under test
+   */
+  private HttpCalDavClient clientAuthenticatingAs(String password) {
     CaldavServerService registry = mock(CaldavServerService.class);
-    lenient().when(registry.resolveServerUrl(1L)).thenReturn(SERVER_URL);
-    return new HttpCalDavClient(registry);
+    lenient().when(registry.resolveServer(1L))
+             .thenReturn(new CaldavServer(1L, "agenda.caldavCalendar", "Stalwart", null, SERVER_URL, true, null, null, null,
+                                          null, true, null, null, null,
+                                          null, null, null, "personal"));
+    ConnectorCredentialsService credentials = mock(ConnectorCredentialsService.class);
+    String token = Base64.getEncoder().encodeToString((USER + ":" + password).getBytes(StandardCharsets.UTF_8));
+    try {
+      doReturn(new HttpConnectorCredentials("Basic " + token, null)).when(credentials).produce(any());
+      // The rig's own account, named by the provider like any other.
+      lenient().doReturn(USER).when(credentials).resolveTargetIdentity(any());
+    } catch (ConnectorCredentialsException e) {
+      // Unreachable: stubbing a mock never calls the real method. Declared
+      // because produce() is checked, and a field initialiser cannot throw.
+      throw new IllegalStateException(e);
+    }
+    return new HttpCalDavClient(registry, new CaldavCredentialsResolver(credentials));
   }
 
   /**
@@ -121,7 +158,7 @@ public class HttpCalDavClientStalwartTest {
     assumeRigIsUp();
     endpoint = client.endpoint(1L, USER);
 
-    homeHref = client.discoverCalendarHome(endpoint, USER, PASSWORD);
+    homeHref = client.discoverCalendarHome(endpoint);
 
     assertNotNull(homeHref);
     assertTrue(homeHref.startsWith("/"), "hrefs are answered as server-absolute paths");
@@ -133,7 +170,7 @@ public class HttpCalDavClientStalwartTest {
     assumeRigIsUp();
     discoveryWalksToTheRealCalendarHome();
 
-    List<CalendarCollection> calendars = client.listCalendars(endpoint, homeHref, USER, PASSWORD);
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, homeHref);
 
     assertFalse(calendars.isEmpty());
     calendarHref = calendars.stream()
@@ -149,7 +186,7 @@ public class HttpCalDavClientStalwartTest {
     assumeRigIsUp();
     theHomeListsAtLeastOneWritableCalendar();
 
-    ServerCapabilities capabilities = client.probeCapabilities(endpoint, calendarHref, USER, PASSWORD);
+    ServerCapabilities capabilities = client.probeCapabilities(endpoint, calendarHref);
 
     assertEquals(ServerCapabilities.SyncTier.SYNC_COLLECTION, capabilities.tier(),
                  "Stalwart advertises sync-collection — if this downgrades, the probe broke, not the rig");
@@ -164,18 +201,18 @@ public class HttpCalDavClientStalwartTest {
     objectHref = calendarHref + "exo-test-" + runId + ".ics";
     String uid = "exo-test-" + runId;
     String ics = icsFor(uid, "Client IT event");
-    syncToken = client.syncCollection(endpoint, calendarHref, null, USER, PASSWORD).syncToken();
+    syncToken = client.syncCollection(endpoint, calendarHref, null).syncToken();
 
     // Create insists on creating.
-    PutResult created = client.putObject(endpoint, objectHref, ics, USER, PASSWORD);
+    PutResult created = client.putObject(endpoint, objectHref, ics);
     assertFalse(created.preconditionFailed());
 
     // Creating the same object again is refused by the server, not merged.
-    PutResult duplicate = client.putObject(endpoint, objectHref, ics, USER, PASSWORD);
+    PutResult duplicate = client.putObject(endpoint, objectHref, ics);
     assertTrue(duplicate.preconditionFailed(), "If-None-Match:* means the server itself refuses the second create");
 
     // The object reads back with the server's own version.
-    CalendarObject fetched = client.fetchObject(endpoint, objectHref, USER, PASSWORD);
+    CalendarObject fetched = client.fetchObject(endpoint, objectHref);
     assertNotNull(fetched);
     assertNotNull(fetched.etag());
     assertTrue(fetched.calendarData().contains(uid));
@@ -183,37 +220,35 @@ public class HttpCalDavClientStalwartTest {
 
     // A stale precondition is refused; the fresh one is accepted.
     assertEquals(PutResult.PRECONDITION_FAILED,
-                 client.updateObject(endpoint, objectHref, icsFor(uid, "Renamed"), "\"stale-etag\"", USER, PASSWORD)
+                 client.updateObject(endpoint, objectHref, icsFor(uid, "Renamed"), "\"stale-etag\"")
                        .status(),
                  "the server protects somebody else's change when the etag is not current");
-    PutResult updated = client.updateObject(endpoint, objectHref, icsFor(uid, "Renamed"), createdEtag, USER, PASSWORD);
+    PutResult updated = client.updateObject(endpoint, objectHref, icsFor(uid, "Renamed"), createdEtag);
     assertFalse(updated.preconditionFailed());
 
     // The listing shows the object with a version; sync-collection reports it.
-    Map<String, String> etags = client.listResourceEtags(endpoint, calendarHref, USER, PASSWORD);
+    Map<String, String> etags = client.listResourceEtags(endpoint, calendarHref);
     assertTrue(etags.containsKey(objectHref), "the listing names the object this run created");
-    SyncCollectionResult changes = client.syncCollection(endpoint, calendarHref, syncToken, USER, PASSWORD);
+    SyncCollectionResult changes = client.syncCollection(endpoint, calendarHref, syncToken);
     assertTrue(changes.tokenValid());
     assertTrue(changes.changed().stream().anyMatch(object -> object.href().equals(objectHref)),
                "the token from before the create must report it as changed");
 
     // Multiget and ranged query both return the object's data.
-    List<CalendarObject> multi = client.multiget(endpoint, calendarHref, List.of(objectHref), USER, PASSWORD);
+    List<CalendarObject> multi = client.multiget(endpoint, calendarHref, List.of(objectHref));
     assertEquals(1, multi.size());
     List<CalendarObject> queried = client.calendarQuery(endpoint,
                                                         calendarHref,
                                                         Instant.parse("2030-01-01T00:00:00Z"),
-                                                        Instant.parse("2030-01-03T00:00:00Z"),
-                                                        USER,
-                                                        PASSWORD);
+                                                        Instant.parse("2030-01-03T00:00:00Z"));
     assertTrue(queried.stream().anyMatch(object -> object.href().equals(objectHref)));
 
     // Conditional delete: gone is gone, and gone again is a fact.
-    String currentEtag = client.fetchObject(endpoint, objectHref, USER, PASSWORD).etag();
-    int deleteStatus = client.deleteObject(endpoint, objectHref, currentEtag, USER, PASSWORD);
+    String currentEtag = client.fetchObject(endpoint, objectHref).etag();
+    int deleteStatus = client.deleteObject(endpoint, objectHref, currentEtag);
     assertTrue(deleteStatus == 200 || deleteStatus == 204);
-    assertNull(client.fetchObject(endpoint, objectHref, USER, PASSWORD));
-    int again = client.deleteObject(endpoint, objectHref, null, USER, PASSWORD);
+    assertNull(client.fetchObject(endpoint, objectHref));
+    int again = client.deleteObject(endpoint, objectHref, null);
     assertTrue(again == 404 || again == 410, "a retried delete is idempotent, answered as a fact");
   }
 
@@ -224,16 +259,15 @@ public class HttpCalDavClientStalwartTest {
     discoveryWalksToTheRealCalendarHome();
     String collectionHref = homeHref + "exo-cal-it-" + runId + "/";
 
-    MkCalendarResult result = client.mkCalendar(endpoint, collectionHref, "eXo client IT " + runId, "#FF8800", USER,
-                                                PASSWORD);
+    MkCalendarResult result = client.mkCalendar(endpoint, collectionHref, "eXo client IT " + runId, "#FF8800");
 
     assertFalse(result.refused());
     // The read-back discipline: the answer is a claim, the listing is the fact.
-    List<CalendarCollection> calendars = client.listCalendars(endpoint, homeHref, USER, PASSWORD);
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, homeHref);
     assertTrue(calendars.stream().anyMatch(calendar -> calendar.href().equals(collectionHref)),
                "presence in a fresh listing is the only statement of success MKCALENDAR gets credit for");
 
-    int deleteStatus = client.deleteObject(endpoint, collectionHref, null, USER, PASSWORD);
+    int deleteStatus = client.deleteObject(endpoint, collectionHref, null);
     assertTrue(deleteStatus == 200 || deleteStatus == 204, "the run cleans its own collection up");
   }
 
@@ -267,16 +301,16 @@ public class HttpCalDavClientStalwartTest {
     String href = calendarHref + "exo-transp-" + runId + ".ics";
     String uid = "exo-transp-" + runId;
 
-    client.putObject(endpoint, href, freeIcsFor(uid), USER, PASSWORD);
+    client.putObject(endpoint, href, freeIcsFor(uid));
 
     try {
-      CalendarObject fetched = client.fetchObject(endpoint, href, USER, PASSWORD);
+      CalendarObject fetched = client.fetchObject(endpoint, href);
       assertNotNull(fetched, "the object this run created must read back");
       assertTrue(fetched.calendarData().contains("TRANSP:TRANSPARENT"),
                  "the rig must give back the availability eXo wrote, or the copy claims the time anyway:\n"
                      + fetched.calendarData());
     } finally {
-      client.deleteObject(endpoint, href, null, USER, PASSWORD);
+      client.deleteObject(endpoint, href, null);
     }
   }
 
@@ -284,10 +318,10 @@ public class HttpCalDavClientStalwartTest {
   @Order(7)
   void wrongCredentialsClassifyAsACredentialRefusal() {
     assumeRigIsUp();
-    CalDavEndpoint rigEndpoint = client.endpoint(1L, USER);
+    HttpCalDavClient refused = clientAuthenticatingAs("definitely-not-the-password");
+    CalDavEndpoint rigEndpoint = refused.endpoint(1L, USER);
 
-    assertThrows(CalDavAuthenticationException.class,
-                 () -> client.discoverCalendarHome(rigEndpoint, USER, "definitely-not-the-password"));
+    assertThrows(CalDavAuthenticationException.class, () -> refused.discoverCalendarHome(rigEndpoint));
   }
 
   /**

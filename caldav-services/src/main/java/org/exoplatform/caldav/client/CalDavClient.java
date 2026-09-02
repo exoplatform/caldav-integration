@@ -49,21 +49,29 @@ import org.exoplatform.caldav.model.SyncOrigin;
 public interface CalDavClient {
 
   /**
-   * Mints the one kind of target this client will talk to: the account base
-   * of a declared server, resolved exclusively from the server registry —
-   * the row the account references, else the seed row, else the legacy
-   * deployment property — with the {@code {username}} placeholder replaced
-   * by the account's DAV username, percent-encoded for its path position.
+   * Mints the one kind of target this client will talk to: the account base of
+   * a declared server, resolved exclusively from the server registry — the row
+   * the account references, else the seed row, else the legacy deployment
+   * property — with the {@code {username}} placeholder replaced by the
+   * account's DAV username, percent-encoded for its path position.
+   * <p>
+   * The caller names an <b>eXo user</b>, never a DAV account: the account
+   * segment of the URL comes from the credentials provider the server is
+   * configured with. Which matters as soon as a provider authenticates as one
+   * identity and addresses another — a technical account acting for a user. The
+   * account the URL names and the credentials the header carries are then two
+   * halves of one answer, and asking the provider for both is what keeps them
+   * from drifting into a valid session pointed at somebody else's calendar.
    *
    * @param serverId registry row the user's account references, or null for
    *          the seed-row / legacy-property resolution
-   * @param davUsername the account's username on the CalDAV server
+   * @param exoLogin the eXo login of the user this conversation is for
    * @return the endpoint every other method addresses
-   * @throws CalDavException when no server is declared anywhere, the
-   *           resolved URL is unusable, or the username cannot be part of a
-   *           URL path
+   * @throws CalDavException when no server is declared anywhere, the resolved
+   *           URL is unusable, or no account name can be resolved for a URL
+   *           that needs one
    */
-  CalDavEndpoint endpoint(Long serverId, String davUsername);
+  CalDavEndpoint endpoint(Long serverId, String exoLogin);
 
   /**
    * Walks discovery from the endpoint base: asks who the authenticated user
@@ -73,14 +81,12 @@ public interface CalDavClient {
    * contract is a redirect and this client follows none.
    *
    * @param endpoint the declared server to discover on
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the calendar home's server-absolute raw path
    * @throws CalDavAuthenticationException when the credentials are refused
    * @throws CalDavException when the server cannot be reached or answers no
    *           principal or no home
    */
-  String discoverCalendarHome(CalDavEndpoint endpoint, String username, String password);
+  String discoverCalendarHome(CalDavEndpoint endpoint);
 
   /**
    * Asks the account which of its calendars it treats as the default one —
@@ -112,15 +118,13 @@ public interface CalDavClient {
    * has seen it in a listing of the account's own home.
    *
    * @param endpoint the declared server
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the default calendar's server-absolute raw path, or null when the
    *         account names none
    * @throws CalDavAuthenticationException when the credentials are refused
    * @throws CalDavException when the server cannot be reached or answers no
    *           principal at all
    */
-  String discoverDefaultCalendar(CalDavEndpoint endpoint, String username, String password);
+  String discoverDefaultCalendar(CalDavEndpoint endpoint);
 
   /**
    * Lists the calendar collections of a home with every property the sync
@@ -129,15 +133,13 @@ public interface CalDavClient {
    *
    * @param endpoint the declared server
    * @param homeHref the calendar home's server-absolute path
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the calendar collections, never null — non-calendar members of
    *         the home (the home itself included) are filtered out here by
    *         resource type, never guessed from the path
    * @throws CalDavAuthenticationException when the credentials are refused
    * @throws CalDavException when the server cannot be reached or errors
    */
-  List<CalendarCollection> listCalendars(CalDavEndpoint endpoint, String homeHref, String username, String password);
+  List<CalendarCollection> listCalendars(CalDavEndpoint endpoint, String homeHref);
 
   /**
    * Reads one collection's properties at Depth:0 — what a bound pair
@@ -145,14 +147,12 @@ public interface CalDavClient {
    *
    * @param endpoint the declared server
    * @param href the collection's server-absolute path
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the collection, or null when the resource exists but is not a
    *         calendar collection
    * @throws CalDavAuthenticationException when the credentials are refused
    * @throws CalDavException when the server cannot be reached or errors
    */
-  CalendarCollection readCalendar(CalDavEndpoint endpoint, String href, String username, String password);
+  CalendarCollection readCalendar(CalDavEndpoint endpoint, String href);
 
   /**
    * Reads the collection's current ctag, the cheap tier-2 question asked
@@ -160,13 +160,11 @@ public interface CalDavClient {
    *
    * @param endpoint the declared server
    * @param href the collection's server-absolute path
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the current ctag, or null when the server does not implement it
    * @throws CalDavAuthenticationException when the credentials are refused
    * @throws CalDavException when the server cannot be reached or errors
    */
-  String getCtag(CalDavEndpoint endpoint, String href, String username, String password);
+  String getCtag(CalDavEndpoint endpoint, String href);
 
   /**
    * Lists every object in the collection with its version — the
@@ -177,15 +175,13 @@ public interface CalDavClient {
    *
    * @param endpoint the declared server
    * @param collectionHref the collection's server-absolute path
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return object path to object version, insertion-ordered, never null —
    *         the collection itself and any member without an ETag are
    *         skipped by that one rule, never by guessing from the path
    * @throws CalDavAuthenticationException when the credentials are refused
    * @throws CalDavException when the server cannot be reached or errors
    */
-  Map<String, String> listResourceEtags(CalDavEndpoint endpoint, String collectionHref, String username, String password);
+  Map<String, String> listResourceEtags(CalDavEndpoint endpoint, String collectionHref);
 
   /**
    * Runs a calendar-query REPORT for the VEVENTs of a time window — the
@@ -196,8 +192,6 @@ public interface CalDavClient {
    * @param collectionHref the collection's server-absolute path
    * @param start window start, inclusive, or null for an unbounded start
    * @param end window end, exclusive, or null for an unbounded end
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the matching objects with their calendar data, never null
    * @throws CalDavAuthenticationException when the credentials are refused
    * @throws CalDavException when the server cannot be reached or errors
@@ -205,9 +199,7 @@ public interface CalDavClient {
   List<CalendarObject> calendarQuery(CalDavEndpoint endpoint,
                                      String collectionHref,
                                      Instant start,
-                                     Instant end,
-                                     String username,
-                                     String password);
+                                     Instant end);
 
   /**
    * Fetches the calendar data of the given objects in one calendar-multiget
@@ -217,8 +209,6 @@ public interface CalDavClient {
    * @param endpoint the declared server
    * @param collectionHref the collection's server-absolute path
    * @param hrefs the object paths to fetch
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the objects the server returned, never null; an href it did not
    *         return is simply absent, which the caller must tolerate
    * @throws CalDavAuthenticationException when the credentials are refused
@@ -226,9 +216,7 @@ public interface CalDavClient {
    */
   List<CalendarObject> multiget(CalDavEndpoint endpoint,
                                 String collectionHref,
-                                List<String> hrefs,
-                                String username,
-                                String password);
+                                List<String> hrefs);
 
   /**
    * Runs an RFC 6578 sync-collection REPORT with a stored token — tier 1,
@@ -238,8 +226,6 @@ public interface CalDavClient {
    * @param collectionHref the collection's server-absolute path
    * @param syncToken the stored token, or null/blank for the initial sync
    *          that establishes one
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the changes and the token to store — or the invalid-token
    *         result when the server rejected the presented token, which the
    *         caller answers by falling through to the listing tier for this
@@ -249,9 +235,7 @@ public interface CalDavClient {
    */
   SyncCollectionResult syncCollection(CalDavEndpoint endpoint,
                                       String collectionHref,
-                                      String syncToken,
-                                      String username,
-                                      String password);
+                                      String syncToken);
 
   /**
    * Probes which report tiers a collection's server can serve, in one
@@ -260,13 +244,11 @@ public interface CalDavClient {
    *
    * @param endpoint the declared server
    * @param collectionHref the collection's server-absolute path
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the capability answer, never null
    * @throws CalDavAuthenticationException when the credentials are refused
    * @throws CalDavException when the server cannot be reached or errors
    */
-  ServerCapabilities probeCapabilities(CalDavEndpoint endpoint, String collectionHref, String username, String password);
+  ServerCapabilities probeCapabilities(CalDavEndpoint endpoint, String collectionHref);
 
   /**
    * Reads one object's current data and version in a single GET — what a
@@ -275,8 +257,6 @@ public interface CalDavClient {
    *
    * @param endpoint the declared server
    * @param href the object's server-absolute path
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the object as the server returned it, or null when the server
    *         says there is no such object — including BlueMind's way of
    *         saying it, a <b>500</b> for an .ics that is simply not there;
@@ -287,7 +267,7 @@ public interface CalDavClient {
    * @throws CalDavAuthenticationException when the credentials are refused
    * @throws CalDavException when the server cannot be reached or errors
    */
-  CalendarObject fetchObject(CalDavEndpoint endpoint, String href, String username, String password);
+  CalendarObject fetchObject(CalDavEndpoint endpoint, String href);
 
   /**
    * Creates one object — always under {@code If-None-Match: *}, with no
@@ -298,15 +278,13 @@ public interface CalDavClient {
    * @param endpoint the declared server
    * @param href the object's server-absolute path to create at
    * @param icsData the iCalendar text to store
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the status and, when the server sent them, the stored version
    *         and the object's real location; a 412 is answered, not thrown
    * @throws CalDavAuthenticationException when the credentials are refused
    * @throws CalDavException when the server cannot be reached or answers a
    *           status that is neither a write nor a precondition refusal
    */
-  PutResult putObject(CalDavEndpoint endpoint, String href, String icsData, String username, String password);
+  PutResult putObject(CalDavEndpoint endpoint, String href, String icsData);
 
   /**
    * Replaces one existing object — guarded the opposite way from
@@ -322,8 +300,6 @@ public interface CalDavClient {
    * @param icsData the iCalendar text to store
    * @param ifMatch the {@code If-Match} value — the ETag the caller's own
    *          read just answered, exactly as sent, quotes and all
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the status and the stored version when the server sent one; a
    *         412 is answered, not thrown
    * @throws CalDavAuthenticationException when the credentials are refused
@@ -353,18 +329,14 @@ public interface CalDavClient {
    * @param endpoint the account's endpoint
    * @param href the object's path
    * @param icsData the iCalendar object to write
-   * @param username the account's login
-   * @param password the account's password
    * @return the result, which cannot be a precondition failure
    */
-  PutResult overwriteObject(CalDavEndpoint endpoint, String href, String icsData, String username, String password);
+  PutResult overwriteObject(CalDavEndpoint endpoint, String href, String icsData);
 
   PutResult updateObject(CalDavEndpoint endpoint,
                          String href,
                          String icsData,
-                         String ifMatch,
-                         String username,
-                         String password);
+                         String ifMatch);
 
   /**
    * Deletes one object, conditionally when a version is given.
@@ -376,8 +348,6 @@ public interface CalDavClient {
    *          {@link #updateObject}) because a delete of an already-diverged
    *          object is recoverable where an overwrite is not, and some
    *          flows legitimately hold no version
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the status the server answered: 200/204 deleted, 404/410
    *         already gone — a fact, not a fault — and 412 a refused
    *         precondition
@@ -385,7 +355,7 @@ public interface CalDavClient {
    * @throws CalDavException when the server cannot be reached or answers
    *           any other status
    */
-  int deleteObject(CalDavEndpoint endpoint, String href, String ifMatch, String username, String password);
+  int deleteObject(CalDavEndpoint endpoint, String href, String ifMatch);
 
   /**
    * Asks the server to create a calendar collection, display name and
@@ -401,8 +371,6 @@ public interface CalDavClient {
    * @param href the collection's server-absolute path to create at
    * @param displayName the display name to create with
    * @param color the Apple calendar-color to set, or null to set none
-   * @param username the account to authenticate as
-   * @param password that account's password
    * @return the raw outcome, refusals included — a server declining
    *         MKCALENDAR gives an answer the caller maps to its degraded
    *         states, not an error
@@ -413,9 +381,7 @@ public interface CalDavClient {
   MkCalendarResult mkCalendar(CalDavEndpoint endpoint,
                               String href,
                               String displayName,
-                              String color,
-                              String username,
-                              String password);
+                              String color);
 
   /**
    * Removes a whole collection, and everything in it.
@@ -436,8 +402,6 @@ public interface CalDavClient {
    *
    * @param endpoint the declared server
    * @param pair the binding whose collection is to be removed
-   * @param username the account's username
-   * @param password the account's password
    * @return the HTTP status; 404 and 410 mean it was already gone
    * @throws IllegalArgumentException when the pair does not authorise the
    *           deletion — never a runtime refusal to be caught and worked
@@ -445,5 +409,5 @@ public interface CalDavClient {
    * @throws CalDavAuthenticationException when the credentials are refused
    * @throws CalDavException when the server refuses or cannot be reached
    */
-  int deleteCollection(CalDavEndpoint endpoint, CalendarSync pair, String username, String password);
+  int deleteCollection(CalDavEndpoint endpoint, CalendarSync pair);
 }

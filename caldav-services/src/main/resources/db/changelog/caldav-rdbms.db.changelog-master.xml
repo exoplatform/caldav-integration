@@ -637,4 +637,26 @@
     </addColumn>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-42">
+    <comment>
+      Which ConnectorCredentialsProvider this server uses ("personal",
+      "bluemind-sudo"...) - the admin-facing counterpart of the shared
+      credentials contract (commons-exo). Not PROVIDER_NAME above, which
+      names the remote server product rather than how credentials are
+      obtained for it. Defaulted to "personal" so every server declared
+      before this field existed keeps working exactly as it does today,
+      with no administrator action required.
+
+      Numbered after the last changeset the branch carries, not where it was
+      written: a changeset's identity is its file, id and author, so an id
+      another changeset already used on any database would be read as
+      "already ran" and this column would never be created.
+    </comment>
+    <addColumn tableName="CALDAV_SERVER">
+      <column name="AUTH_PROVIDER_NAME" type="NVARCHAR(100)" defaultValue="personal">
+        <constraints nullable="false"/>
+      </column>
+    </addColumn>
+  </changeSet>
+
 </databaseChangeLog>

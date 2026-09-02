@@ -295,9 +295,11 @@ public class CaldavMirrorVerificationService {
    * Compares every copy eXo pushed for a user against what the server holds.
    *
    * @param userIdentityId identity of the user whose mirror is checked
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @return what the pass found and did
    */
-  public MirrorVerification verify(long userIdentityId) {
+  public MirrorVerification verify(long userIdentityId, String username) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (settings == null || StringUtils.isBlank(settings.getUsername())) {
       return MirrorVerification.nothing();
@@ -315,7 +317,7 @@ public class CaldavMirrorVerificationService {
     // Before the listing, deliberately. A setting that moved the destination
     // moves this collection too, and listing first would spend the pass
     // comparing the contents of a calendar the copies are about to leave.
-    MirrorRelocation relocation = relocate(userIdentityId, settings, mirror, owed);
+    MirrorRelocation relocation = relocate(userIdentityId, username, settings, mirror, owed);
     if (relocation.applicable()) {
       mirror.setRemoteHref(relocation.destination());
     }
@@ -326,19 +328,17 @@ public class CaldavMirrorVerificationService {
     // answer nothing had read yet. The relocation runs first for its own
     // reason — asking the collection the copies are about to leave what changed
     // in it would spend a report on the wrong calendar.
-    caldavMirrorAnswerService.readAnswers(userIdentityId, settings, mirror);
+    caldavMirrorAnswerService.readAnswers(userIdentityId, username, settings, mirror);
     Map<String, String> etags;
     try {
-      CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+      CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
       // Slashed: the stored href is canonical so that two spellings compare
       // equal, but addressing a collection is a different job and a server may
       // answer one spelling and not the other. BlueMind ignores the slashless
       // form without answering or redirecting, so this call spent the whole
       // request timeout on every sweep.
       etags = calDavClient.listResourceEtags(endpoint,
-                                             StringUtils.appendIfMissing(mirror.getRemoteHref(), "/"),
-                                             settings.getUsername(),
-                                             settings.getPassword());
+                                             StringUtils.appendIfMissing(mirror.getRemoteHref(), "/"));
     } catch (RuntimeException e) {
       // A collection that cannot be listed says nothing about the copies in
       // it. Treating an unreachable server as "everything was deleted" would
@@ -358,6 +358,7 @@ public class CaldavMirrorVerificationService {
     // stopped producing them.
     caldavServerQuirkService.settle(server == null ? null : server.getId());
     MirrorVerification verification = comparePages(userIdentityId,
+                                                   username,
                                                    mirror,
                                                    settings,
                                                    etags,
@@ -431,19 +432,21 @@ public class CaldavMirrorVerificationService {
    * settings change already pays for.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param settings the connected account
    * @param mirror the binding standing for the mirror collection
    * @param owed the server stamp this round would apply, or null when none is
    *          owed
    * @return what the relocation moved, or a deferred one when nothing was owed
    */
-  private MirrorRelocation relocate(long userIdentityId, CaldavUserSetting settings, CalendarSync mirror, Date owed) {
+  private MirrorRelocation relocate(long userIdentityId, String username, CaldavUserSetting settings, CalendarSync mirror, Date owed) {
     if (owed == null) {
       return MirrorRelocation.deferred();
     }
     LOG.info("A copy setting of user {}'s server changed; every copy of theirs is compared once this round",
              userIdentityId);
-    return caldavMirrorRelocationService.relocate(userIdentityId, settings, mirror);
+    return caldavMirrorRelocationService.relocate(userIdentityId, username, settings, mirror);
   }
 
   /**
@@ -546,6 +549,8 @@ public class CaldavMirrorVerificationService {
    * Walks the mapping rows of the mirror, a page at a time.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param mirror the binding standing for the mirror collection
    * @param settings the connected account
    * @param etags what the server currently holds, by href
@@ -558,6 +563,7 @@ public class CaldavMirrorVerificationService {
    * @return the tally
    */
   private MirrorVerification comparePages(long userIdentityId,
+                                          String username,
                                           CalendarSync mirror,
                                           CaldavUserSetting settings,
                                           Map<String, String> etags,
@@ -578,7 +584,7 @@ public class CaldavMirrorVerificationService {
           continue;
         }
         checked++;
-        if (retireIfNoLongerAllowed(userIdentityId, object, etags)) {
+        if (retireIfNoLongerAllowed(userIdentityId, username, object, etags)) {
           continue;
         }
         if (hasSettled(userIdentityId, object, etags)) {
@@ -589,7 +595,7 @@ public class CaldavMirrorVerificationService {
           abandoned++;
           continue;
         }
-        Assessment assessment = judge(userIdentityId, object, settings, etags, settingsRound, server);
+        Assessment assessment = judge(userIdentityId, username, object, settings, etags, settingsRound, server);
         if (assessment.verdict() == Verdict.UNTOUCHED) {
           continue;
         }
@@ -632,7 +638,7 @@ public class CaldavMirrorVerificationService {
         if (giveUpOn(userIdentityId, object, statement)) {
           abandoned++;
           settled.put(keyOf(userIdentityId, object), new Settlement(statement.stamp(), versionOf(object, etags)));
-        } else if (repair(userIdentityId, object, assessment.verdict())) {
+        } else if (repair(userIdentityId, username, object, assessment.verdict())) {
           repaired++;
         }
       }
@@ -706,11 +712,13 @@ public class CaldavMirrorVerificationService {
    * exist is not walked.
    *
    * @param userIdentityId identity of the user whose copy it is
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param object the mapping row about to be judged
    * @param etags what the server currently holds, by href
    * @return true when the row has been retired and must not be judged
    */
-  private boolean retireIfNoLongerAllowed(long userIdentityId, ObjectSync object, Map<String, String> etags) {
+  private boolean retireIfNoLongerAllowed(long userIdentityId, String username, ObjectSync object, Map<String, String> etags) {
     Long localEventId = object.getLocalEventId();
     if (localEventId == null || localEventId <= 0) {
       return false;
@@ -743,7 +751,7 @@ public class CaldavMirrorVerificationService {
       return true;
     }
     try {
-      caldavPushService.deleteEvent(userIdentityId, object.getIcsUid());
+      caldavPushService.deleteEvent(userIdentityId, username, object.getIcsUid());
       // At INFO and one line per copy: an administrator watching the first
       // sweep after this deploy should be able to see the migration happen,
       // account by account, rather than infer it from a total.
@@ -933,6 +941,8 @@ public class CaldavMirrorVerificationService {
    * carrying the user's latest answer.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param object the mapping row
    * @param settings the connected account
    * @param etags what the server currently holds, by href
@@ -941,7 +951,7 @@ public class CaldavMirrorVerificationService {
    *          null
    * @return the verdict, carrying the fetched copy when there is one to act on
    */
-  private Assessment judge(long userIdentityId,
+  private Assessment judge(long userIdentityId, String username,
                            ObjectSync object,
                            CaldavUserSetting settings,
                            Map<String, String> etags,
@@ -963,7 +973,7 @@ public class CaldavMirrorVerificationService {
       // copy.
       return new Assessment(Verdict.UNTOUCHED, null, false);
     }
-    return assessContent(userIdentityId, object, settings, etag, clientWrote, server);
+    return assessContent(userIdentityId, username, object, settings, etag, clientWrote, server);
   }
 
   /**
@@ -1007,6 +1017,8 @@ public class CaldavMirrorVerificationService {
    * end the pass.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param object the mapping row
    * @param settings the connected account
    * @param currentEtag the version the listing published for it
@@ -1018,6 +1030,7 @@ public class CaldavMirrorVerificationService {
    * @return the verdict, carrying the fetched copy when there is one to act on
    */
   private Assessment assessContent(long userIdentityId,
+                                   String username,
                                    ObjectSync object,
                                    CaldavUserSetting settings,
                                    String currentEtag,
@@ -1042,11 +1055,9 @@ public class CaldavMirrorVerificationService {
     }
     CalendarObject remote;
     try {
-      CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+      CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
       remote = calDavClient.fetchObject(endpoint,
-                                        object.getRemoteHref(),
-                                        settings.getUsername(),
-                                        settings.getPassword());
+                                        object.getRemoteHref());
     } catch (RuntimeException | LinkageError e) {
       // Unreadable is not the same as rewritten, and a re-push on this path
       // would overwrite whatever is there on the strength of a network error.
@@ -1189,11 +1200,13 @@ public class CaldavMirrorVerificationService {
    * comparison that led here has already read both copies.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param object the mapping row to repair
    * @param verdict why it is being repaired
    * @return true when the copy was written
    */
-  private boolean repair(long userIdentityId, ObjectSync object, Verdict verdict) {
+  private boolean repair(long userIdentityId, String username, ObjectSync object, Verdict verdict) {
     if (object.getLocalEventId() == null || object.getLocalEventId() <= 0) {
       // A copy whose eXo event is not recorded cannot be rebuilt from
       // anything. What happens next depends on which side is still there.
@@ -1216,7 +1229,7 @@ public class CaldavMirrorVerificationService {
       return false;
     }
     try {
-      ObjectSync written = caldavPushService.rewriteAgendaEvent(userIdentityId, object.getLocalEventId());
+      ObjectSync written = caldavPushService.rewriteAgendaEvent(userIdentityId, username, object.getLocalEventId());
       LOG.info("The copy of event {} was {} on the server and has been written again",
                object.getLocalEventId(),
                verdict == Verdict.MISSING ? "deleted" : "rewritten");

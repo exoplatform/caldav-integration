@@ -48,7 +48,7 @@ public class CollectionDeleteGuardTest {
    * a null registry: the guard runs before either is touched, and a test that
    * needed them working would not be testing the guard.
    */
-  private final HttpCalDavClient client = new HttpCalDavClient(java.net.http.HttpClient.newHttpClient(), null);
+  private final HttpCalDavClient client = new HttpCalDavClient(java.net.http.HttpClient.newHttpClient(), null, null);
 
   @Test
   public void aCollectionEXoDidNotCreateCannotBeDeleted() {
@@ -119,7 +119,7 @@ public class CollectionDeleteGuardTest {
    */
   private void assertRefused(CalendarSync pair, String expectedInMessage) {
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                    () -> client.deleteCollection(null, pair, "john", "secret"));
+                                                    () -> client.deleteCollection(null, pair));
 
     assertTrue(refusal.getMessage().contains(expectedInMessage),
                () -> "expected a refusal mentioning '" + expectedInMessage + "' but got: " + refusal.getMessage());

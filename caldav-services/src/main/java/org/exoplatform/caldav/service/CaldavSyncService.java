@@ -550,7 +550,7 @@ public class CaldavSyncService {
     // After the pass, not inside it: the copies are written into the
     // collections the pass has just bound, so starting them earlier would be
     // starting them without a destination.
-    startOutboundBurst(userIdentityId);
+    startOutboundBurst(userIdentityId, username);
   }
 
   /**
@@ -587,8 +587,10 @@ public class CaldavSyncService {
    *
    * @param userIdentityId identity of the user whose copies are brought up to
    *          date
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    */
-  private void startOutboundBurst(long userIdentityId) {
+  private void startOutboundBurst(long userIdentityId, String username) {
     if (!connected(caldavConnectorStorage.getCaldavSetting(userIdentityId))) {
       return;
     }
@@ -608,7 +610,7 @@ public class CaldavSyncService {
     try {
       outboundExecutor.execute(() -> {
         try {
-          runOutboundBurst(userIdentityId);
+          runOutboundBurst(userIdentityId, username);
         } finally {
           outboundInFlight.remove(userIdentityId);
         }
@@ -651,10 +653,12 @@ public class CaldavSyncService {
    * failing.
    *
    * @param userIdentityId identity of the user whose account receives copies
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    */
   @ContainerTransactional
-  public void runOutboundBurst(long userIdentityId) {
-    runOutboundPhases(userIdentityId, ALL_OUTBOUND_PHASES);
+  public void runOutboundBurst(long userIdentityId, String username) {
+    runOutboundPhases(userIdentityId, username, ALL_OUTBOUND_PHASES);
   }
 
   /**
@@ -756,7 +760,7 @@ public class CaldavSyncService {
       return;
     }
     if (bindOwnCalendarsNow(userIdentityId, username, settings)) {
-      ensureMirrorNow(userIdentityId);
+      ensureMirrorNow(userIdentityId, username);
     }
   }
 
@@ -826,10 +830,12 @@ public class CaldavSyncService {
    * in words the user can act on.
    *
    * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    */
-  private void ensureMirrorNow(long userIdentityId) {
+  private void ensureMirrorNow(long userIdentityId, String username) {
     try {
-      caldavPushService.ensureMirror(userIdentityId);
+      caldavPushService.ensureMirror(userIdentityId, username);
     } catch (CaldavPushException e) {
       if (CaldavPushService.isKnownState(e.getCode())) {
         LOG.debug("The copies of user {} have no destination yet: {} ({})", userIdentityId, e.getMessage(), e.getCode());
@@ -907,7 +913,7 @@ public class CaldavSyncService {
       pruneOrphanBindings(userIdentityId, username, settings);
       List<CalendarCollection> collections = materialiseRemoteCalendars(userIdentityId, username, settings);
       importRemoteEvents(userIdentityId, username, settings, collections);
-      runOutboundPhasesUnlessAlreadyRunning(userIdentityId, outboundPhases);
+      runOutboundPhasesUnlessAlreadyRunning(userIdentityId, username, outboundPhases);
       lastSync.put(userIdentityId, Instant.now());
     } catch (CalDavAuthenticationException e) {
       // Immediately, and before anything else is tried: a stale password
@@ -966,9 +972,11 @@ public class CaldavSyncService {
    * make a burst wait its turn for work that page was never going to do.
    *
    * @param userIdentityId identity of the user whose account receives copies
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param phases the pieces of work to do, in the set the caller named
    */
-  private void runOutboundPhasesUnlessAlreadyRunning(long userIdentityId, Set<OutboundPhase> phases) {
+  private void runOutboundPhasesUnlessAlreadyRunning(long userIdentityId, String username, Set<OutboundPhase> phases) {
     if (phases.isEmpty()) {
       return;
     }
@@ -977,7 +985,7 @@ public class CaldavSyncService {
       return;
     }
     try {
-      runOutboundPhases(userIdentityId, phases);
+      runOutboundPhases(userIdentityId, username, phases);
     } finally {
       outboundInFlight.remove(userIdentityId);
     }
@@ -1001,12 +1009,14 @@ public class CaldavSyncService {
    * connection, whatever set each of them names.
    *
    * @param userIdentityId identity of the user whose account receives copies
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param phases the pieces of work to do, in the set the caller named
    */
-  private void runOutboundPhases(long userIdentityId, Set<OutboundPhase> phases) {
+  private void runOutboundPhases(long userIdentityId, String username, Set<OutboundPhase> phases) {
     for (OutboundPhase phase : OutboundPhase.values()) {
       if (phases.contains(phase)) {
-        runOutboundPhase(userIdentityId, phase);
+        runOutboundPhase(userIdentityId, username, phase);
       }
     }
   }
@@ -1030,14 +1040,16 @@ public class CaldavSyncService {
    * seeding thread there is no caller left to tell.
    *
    * @param userIdentityId identity of the user whose account receives copies
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
    * @param phase the piece of work to do
    */
-  private void runOutboundPhase(long userIdentityId, OutboundPhase phase) {
+  private void runOutboundPhase(long userIdentityId, String username, OutboundPhase phase) {
     try {
       switch (phase) {
       case SETTLE_OWED_COPIES -> caldavEventPropagationService.retryOwedPushes(userIdentityId);
-      case SEED_UPCOMING_COPIES -> caldavPendingInvitationService.pushUpcomingMeetings(userIdentityId);
-      case VERIFY_MIRROR -> caldavMirrorVerificationService.verify(userIdentityId);
+      case SEED_UPCOMING_COPIES -> caldavPendingInvitationService.pushUpcomingMeetings(userIdentityId, username);
+      case VERIFY_MIRROR -> caldavMirrorVerificationService.verify(userIdentityId, username);
       }
     } catch (RuntimeException | LinkageError e) {
       LOG.warn("The {} of the copies of user {} did not complete this round", phase, userIdentityId, e);
@@ -1299,7 +1311,7 @@ public class CaldavSyncService {
         boolean fullRead = StringUtils.isBlank(pair.getSyncToken())
             || pair.getLastSyncEnd() == null
             || pair.getLastSyncEnd().toInstant().isBefore(today);
-        CaldavInboundService.VanishedCleanup cleanup = caldavInboundService.syncContents(userIdentityId,
+        CaldavInboundService.VanishedCleanup cleanup = caldavInboundService.syncContents(userIdentityId, username,
                                                                                         pair,
                                                                                         calendar,
                                                                                         from,
@@ -1489,16 +1501,17 @@ public class CaldavSyncService {
    * @param userIdentityId identity of the user
    * @param username the user's login
    * @param settings the connected account
+   * @return the collections the account holds, empty when it cannot be read
    */
   private List<CalendarCollection> materialiseRemoteCalendars(long userIdentityId,
                                                               String username,
                                                               CaldavUserSetting settings) {
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
-    CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), settings.getUsername());
+    CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
     List<CalendarCollection> collections;
     try {
-      String home = calDavClient.discoverCalendarHome(endpoint, settings.getUsername(), settings.getPassword());
-      collections = calDavClient.listCalendars(endpoint, home, settings.getUsername(), settings.getPassword());
+      String home = calDavClient.discoverCalendarHome(endpoint);
+      collections = calDavClient.listCalendars(endpoint, home);
     } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
       // Not swallowed with the rest, and for the same reason in both cases:
       // neither is "this round did not work". A refused credential is an

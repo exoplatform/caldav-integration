@@ -16,6 +16,8 @@
  */
 package org.exoplatform.caldav.utils;
 
+import org.apache.commons.lang3.StringUtils;
+
 import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.services.log.ExoLogger;
@@ -53,6 +55,27 @@ public class CaldavConnectorUtils {
     String currentUser = getCurrentUser();
     Identity identity = identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, currentUser);
     return identity == null ? 0 : Long.parseLong(identity.getId());
+  }
+
+  /**
+   * The eXo login of an identity, which is what a credentials provider resolves
+   * a remote account from - the mirror image of
+   * {@link #getCurrentUserIdentityId(IdentityManager)}, for the paths that hold
+   * an identity id and no conversation state: a scheduled sweep, a listener, a
+   * service acting for several users at once.
+   *
+   * @param identityManager the identity registry, null when a caller could not
+   *          resolve it
+   * @param userIdentityId identity of the user
+   * @return the login, or null when it cannot be resolved - which a caller
+   *         treats as "leave this account for the next run", never as a failure
+   */
+  public static String loginOf(IdentityManager identityManager, long userIdentityId) {
+    if (identityManager == null) {
+      return null;
+    }
+    Identity identity = identityManager.getIdentity(String.valueOf(userIdentityId));
+    return identity == null || StringUtils.isBlank(identity.getRemoteId()) ? null : identity.getRemoteId();
   }
 
   public static String encode(String password) {

@@ -168,14 +168,14 @@ public class CaldavMirrorRelocationServiceTest {
     givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\""));
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
     givenTheWriteSucceeds(IN_MAIN, "\"etag-9\"");
-    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"", LOGIN, PASSWORD)).thenReturn(204);
+    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"")).thenReturn(204);
 
-    MirrorRelocation relocation = service.relocate(USER, settings(), mirror(DEDICATED));
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertEquals(1, relocation.moved());
     assertTrue(relocation.complete(), "nothing failed, so the change may be recorded as applied");
-    verify(calDavClient).overwriteObject(endpoint, IN_MAIN, ICS, LOGIN, PASSWORD);
-    verify(calDavClient).deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"", LOGIN, PASSWORD);
+    verify(calDavClient).overwriteObject(endpoint, IN_MAIN, ICS);
+    verify(calDavClient).deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"");
   }
 
   @Test
@@ -189,9 +189,9 @@ public class CaldavMirrorRelocationServiceTest {
     givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\""));
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
     givenTheWriteSucceeds(IN_MAIN, "\"etag-9\"");
-    when(calDavClient.deleteObject(any(), anyString(), anyString(), anyString(), anyString())).thenReturn(204);
+    when(calDavClient.deleteObject(any(), anyString(), anyString())).thenReturn(204);
 
-    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
     verify(caldavSyncStorage).saveObject(saved.capture());
@@ -209,13 +209,13 @@ public class CaldavMirrorRelocationServiceTest {
     givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\""));
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
     givenTheWriteSucceeds(IN_MAIN, "\"etag-9\"");
-    when(calDavClient.deleteObject(any(), anyString(), anyString(), anyString(), anyString())).thenReturn(204);
+    when(calDavClient.deleteObject(any(), anyString(), anyString())).thenReturn(204);
 
-    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     InOrder order = inOrder(caldavSyncStorage, calDavClient);
     order.verify(caldavSyncStorage).savePair(any());
-    order.verify(calDavClient).overwriteObject(endpoint, IN_MAIN, ICS, LOGIN, PASSWORD);
+    order.verify(calDavClient).overwriteObject(endpoint, IN_MAIN, ICS);
     ArgumentCaptor<CalendarSync> repointed = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(repointed.capture());
     assertEquals(MAIN, repointed.getValue().getRemoteHref());
@@ -233,14 +233,14 @@ public class CaldavMirrorRelocationServiceTest {
     givenTheOldCollectionHolds(MAIN, Map.of(IN_MAIN, "\"etag-9\""));
     givenMappings(mapping(IN_MAIN, "\"etag-9\"", EVENT));
     givenTheWriteSucceeds(IN_DEDICATED, "\"etag-11\"");
-    when(calDavClient.deleteObject(endpoint, IN_MAIN, "\"etag-9\"", LOGIN, PASSWORD)).thenReturn(204);
+    when(calDavClient.deleteObject(endpoint, IN_MAIN, "\"etag-9\"")).thenReturn(204);
 
-    MirrorRelocation relocation = service.relocate(USER, settings(), mirror(MAIN));
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(MAIN));
 
     assertEquals(1, relocation.moved());
     assertTrue(relocation.complete());
-    verify(calDavClient).overwriteObject(endpoint, IN_DEDICATED, ICS, LOGIN, PASSWORD);
-    verify(calDavClient).deleteObject(endpoint, IN_MAIN, "\"etag-9\"", LOGIN, PASSWORD);
+    verify(calDavClient).overwriteObject(endpoint, IN_DEDICATED, ICS);
+    verify(calDavClient).deleteObject(endpoint, IN_MAIN, "\"etag-9\"");
   }
 
   @Test
@@ -253,11 +253,11 @@ public class CaldavMirrorRelocationServiceTest {
     givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\""));
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
     givenTheWriteSucceeds(IN_MAIN, "\"etag-9\"");
-    when(calDavClient.deleteObject(any(), anyString(), anyString(), anyString(), anyString())).thenReturn(204);
+    when(calDavClient.deleteObject(any(), anyString(), anyString())).thenReturn(204);
 
-    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
-    verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteCollection(any(), any());
   }
 
   // ------------------------------------------------------- the converged case
@@ -272,17 +272,17 @@ public class CaldavMirrorRelocationServiceTest {
     givenThePairPointsAt(MAIN);
     givenMappings(mapping(IN_MAIN, "\"etag-9\"", EVENT));
 
-    MirrorRelocation relocation = service.relocate(USER, settings(), mirror(MAIN));
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(MAIN));
 
     assertEquals(0, relocation.moved());
     assertEquals(0, relocation.refused());
     assertTrue(relocation.complete());
     verify(caldavSyncStorage, never()).savePair(any());
     verify(caldavSyncStorage, never()).saveObject(any());
-    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString(), anyString(), anyString());
-    verify(calDavClient, never()).deleteObject(any(), anyString(), any(), anyString(), anyString());
-    verify(calDavClient, never()).listResourceEtags(any(), anyString(), anyString(), anyString());
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any());
+    verify(calDavClient, never()).listResourceEtags(any(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
   }
 
   // ------------------------------------------------- the answer, read in time
@@ -297,22 +297,22 @@ public class CaldavMirrorRelocationServiceTest {
     givenThePairPointsAt(DEDICATED);
     givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-2\""));
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
-    when(calDavClient.fetchObject(endpoint, IN_DEDICATED, LOGIN, PASSWORD))
+    when(calDavClient.fetchObject(endpoint, IN_DEDICATED))
                                                           .thenReturn(new CalendarObject(IN_DEDICATED,
                                                                                          "\"etag-2\"",
                                                                                          ANSWERED));
     when(caldavAnswerAdoptionService.adoptAnswer(USER, EVENT, ANSWERED))
                                                           .thenReturn(CaldavAnswerAdoptionService.Outcome.ADOPTED);
     givenTheWriteSucceeds(IN_MAIN, "\"etag-9\"");
-    when(calDavClient.deleteObject(any(), anyString(), anyString(), anyString(), anyString())).thenReturn(204);
+    when(calDavClient.deleteObject(any(), anyString(), anyString())).thenReturn(204);
 
-    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     InOrder order = inOrder(caldavAnswerAdoptionService, calDavClient, caldavSyncStorage);
     order.verify(caldavAnswerAdoptionService).adoptAnswer(USER, EVENT, ANSWERED);
-    order.verify(calDavClient).overwriteObject(endpoint, IN_MAIN, ICS, LOGIN, PASSWORD);
+    order.verify(calDavClient).overwriteObject(endpoint, IN_MAIN, ICS);
     order.verify(caldavSyncStorage).saveObject(any());
-    order.verify(calDavClient).deleteObject(endpoint, IN_DEDICATED, "\"etag-2\"", LOGIN, PASSWORD);
+    order.verify(calDavClient).deleteObject(endpoint, IN_DEDICATED, "\"etag-2\"");
   }
 
   @Test
@@ -323,20 +323,20 @@ public class CaldavMirrorRelocationServiceTest {
     givenThePairPointsAt(DEDICATED);
     givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-2\""));
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
-    when(calDavClient.fetchObject(endpoint, IN_DEDICATED, LOGIN, PASSWORD))
+    when(calDavClient.fetchObject(endpoint, IN_DEDICATED))
                                                           .thenReturn(new CalendarObject(IN_DEDICATED,
                                                                                          "\"etag-2\"",
                                                                                          ANSWERED));
     when(caldavAnswerAdoptionService.adoptAnswer(USER, EVENT, ANSWERED))
                                                           .thenReturn(CaldavAnswerAdoptionService.Outcome.FAILED);
 
-    MirrorRelocation relocation = service.relocate(USER, settings(), mirror(DEDICATED));
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertEquals(0, relocation.moved());
     assertEquals(1, relocation.failed());
     assertFalse(relocation.complete(), "the change is not applied while a copy is still to move");
-    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString(), anyString(), anyString());
-    verify(calDavClient, never()).deleteObject(any(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any());
     verify(caldavSyncStorage, never()).saveObject(any());
   }
 
@@ -350,11 +350,11 @@ public class CaldavMirrorRelocationServiceTest {
     givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\""));
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
     givenTheWriteSucceeds(IN_MAIN, "\"etag-9\"");
-    when(calDavClient.deleteObject(any(), anyString(), anyString(), anyString(), anyString())).thenReturn(204);
+    when(calDavClient.deleteObject(any(), anyString(), anyString())).thenReturn(204);
 
-    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
-    verify(calDavClient, never()).fetchObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).fetchObject(any(), anyString());
     verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
   }
 
@@ -370,17 +370,17 @@ public class CaldavMirrorRelocationServiceTest {
     givenThePairPointsAt(MAIN);
     givenTheOldCollectionHolds(DEDICATED, Map.of(DEDICATED + "evt-2.ics", "\"etag-1\""));
     givenMappings(mapping(IN_MAIN, "\"etag-9\"", EVENT), stillBehind());
-    when(calDavClient.overwriteObject(eq(endpoint), eq(MAIN + "evt-2.ics"), anyString(), anyString(), anyString()))
+    when(calDavClient.overwriteObject(eq(endpoint), eq(MAIN + "evt-2.ics"), anyString()))
                                                                         .thenReturn(new PutResult(201, "\"etag-12\"", null));
     when(caldavPushService.renderAgendaEvent(USER, 6L, "evt-2")).thenReturn(ICS);
-    when(calDavClient.deleteObject(endpoint, DEDICATED + "evt-2.ics", "\"etag-1\"", LOGIN, PASSWORD)).thenReturn(204);
+    when(calDavClient.deleteObject(endpoint, DEDICATED + "evt-2.ics", "\"etag-1\"")).thenReturn(204);
 
-    MirrorRelocation relocation = service.relocate(USER, settings(), mirror(MAIN));
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(MAIN));
 
     assertEquals(1, relocation.moved(), "the row left behind by the interrupted pass, and only that one");
     verify(caldavSyncStorage, never()).savePair(any());
-    verify(calDavClient, never()).overwriteObject(any(), eq(IN_MAIN), anyString(), anyString(), anyString());
-    verify(calDavClient).overwriteObject(eq(endpoint), eq(MAIN + "evt-2.ics"), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).overwriteObject(any(), eq(IN_MAIN), anyString());
+    verify(calDavClient).overwriteObject(eq(endpoint), eq(MAIN + "evt-2.ics"), anyString());
   }
 
   // ------------------------------------------------------- what refuses to move
@@ -396,10 +396,10 @@ public class CaldavMirrorRelocationServiceTest {
     givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\""));
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
     givenTheWriteSucceeds(IN_MAIN, "\"etag-9\"");
-    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"", LOGIN, PASSWORD))
+    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\""))
                                                                           .thenReturn(PutResult.PRECONDITION_FAILED);
 
-    MirrorRelocation relocation = service.relocate(USER, settings(), mirror(DEDICATED));
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertEquals(0, relocation.moved());
     assertEquals(1, relocation.refused());
@@ -407,7 +407,7 @@ public class CaldavMirrorRelocationServiceTest {
     // The copy IS in the new calendar and the row points at it: the user's
     // meeting is where it belongs, and what is left over is a duplicate they
     // can see rather than a meeting they cannot find.
-    verify(calDavClient).overwriteObject(endpoint, IN_MAIN, ICS, LOGIN, PASSWORD);
+    verify(calDavClient).overwriteObject(endpoint, IN_MAIN, ICS);
     ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
     verify(caldavSyncStorage).saveObject(saved.capture());
     assertEquals(IN_MAIN, saved.getValue().getRemoteHref());
@@ -422,10 +422,10 @@ public class CaldavMirrorRelocationServiceTest {
     givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\""));
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
     givenTheWriteSucceeds(IN_MAIN, "\"etag-9\"");
-    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"", LOGIN, PASSWORD))
+    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\""))
                                                                     .thenThrow(new IllegalStateException("connection reset"));
 
-    MirrorRelocation relocation = service.relocate(USER, settings(), mirror(DEDICATED));
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertEquals(1, relocation.refused());
     assertFalse(relocation.complete());
@@ -440,9 +440,9 @@ public class CaldavMirrorRelocationServiceTest {
     givenTheOldCollectionHolds(DEDICATED, Map.of());
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
     givenTheWriteSucceeds(IN_MAIN, "\"etag-9\"");
-    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"", LOGIN, PASSWORD)).thenReturn(404);
+    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"")).thenReturn(404);
 
-    MirrorRelocation relocation = service.relocate(USER, settings(), mirror(DEDICATED));
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertEquals(1, relocation.moved());
     assertTrue(relocation.complete());
@@ -457,14 +457,14 @@ public class CaldavMirrorRelocationServiceTest {
     givenThePairPointsAt(DEDICATED);
     givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\""));
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
-    when(calDavClient.overwriteObject(endpoint, IN_MAIN, ICS, LOGIN, PASSWORD))
+    when(calDavClient.overwriteObject(endpoint, IN_MAIN, ICS))
                                                                     .thenThrow(new IllegalStateException("507 insufficient storage"));
 
-    MirrorRelocation relocation = service.relocate(USER, settings(), mirror(DEDICATED));
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertEquals(1, relocation.failed());
     assertFalse(relocation.complete());
-    verify(calDavClient, never()).deleteObject(any(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any());
     verify(caldavSyncStorage, never()).saveObject(any());
   }
 
@@ -479,13 +479,13 @@ public class CaldavMirrorRelocationServiceTest {
     givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\""));
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", null));
 
-    MirrorRelocation relocation = service.relocate(USER, settings(), mirror(DEDICATED));
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertEquals(1, relocation.unmovable());
     assertEquals(0, relocation.failed());
     assertTrue(relocation.complete(), "a permanent condition must not keep the change owed for ever");
-    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString(), anyString(), anyString());
-    verify(calDavClient, never()).deleteObject(any(), anyString(), any(), anyString(), anyString());
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any());
   }
 
   @Test
@@ -496,12 +496,12 @@ public class CaldavMirrorRelocationServiceTest {
     givenThePairPointsAt(DEDICATED);
     givenMappings(mapping(null, null, EVENT));
 
-    MirrorRelocation relocation = service.relocate(USER, settings(), mirror(DEDICATED));
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertEquals(0, relocation.moved());
     assertEquals(0, relocation.unmovable());
     assertTrue(relocation.complete());
-    verify(calDavClient, never()).listResourceEtags(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).listResourceEtags(any(), anyString());
   }
 
   // ------------------------------------------------------ when to do nothing
@@ -514,10 +514,10 @@ public class CaldavMirrorRelocationServiceTest {
     // Asserted through the refusal rather than a specific code: what this pins
     // is that ANY refusal from ensureMirror defers, which is the catch-all in
     // destinationOf and the only test that covers it.
-    when(caldavPushService.ensureMirror(USER)).thenThrow(new CaldavPushException(CaldavPushService.MAIN_CALENDAR_UNKNOWN,
+    when(caldavPushService.ensureMirror(USER, LOGIN)).thenThrow(new CaldavPushException(CaldavPushService.MAIN_CALENDAR_UNKNOWN,
                                                                                  "the account names no default calendar"));
 
-    MirrorRelocation relocation = service.relocate(USER, settings(), mirror(DEDICATED));
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertNull(relocation.destination());
     assertFalse(relocation.applicable());
@@ -536,10 +536,10 @@ public class CaldavMirrorRelocationServiceTest {
     // credentials and a user who has not chosen read identically in a log — to
     // say, not at all. A failure of the attempt is an incident and carries its
     // trace.
-    when(caldavPushService.ensureMirror(USER)).thenThrow(new CaldavPushException(CaldavPushService.CREDENTIALS,
+    when(caldavPushService.ensureMirror(USER, LOGIN)).thenThrow(new CaldavPushException(CaldavPushService.CREDENTIALS,
                                                                                  "rejected"));
 
-    assertFalse(service.relocate(USER, settings(), mirror(DEDICATED)).applicable());
+    assertFalse(service.relocate(USER, LOGIN, settings(), mirror(DEDICATED)).applicable());
 
     ILoggingEvent said = onlyWarning();
     assertTrue(said.getFormattedMessage().contains(String.valueOf(USER)), "the line names the user: " + said);
@@ -554,11 +554,11 @@ public class CaldavMirrorRelocationServiceTest {
     // A relocation that cannot finish is retried every five minutes for as long
     // as the cause lasts. Said each time, the line an administrator has to look
     // at is buried under its own repetitions within the hour.
-    when(caldavPushService.ensureMirror(USER)).thenThrow(new IllegalStateException("the server is down"));
+    when(caldavPushService.ensureMirror(USER, LOGIN)).thenThrow(new IllegalStateException("the server is down"));
 
-    service.relocate(USER, settings(), mirror(DEDICATED));
-    service.relocate(USER, settings(), mirror(DEDICATED));
-    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertEquals(1, warnings().size(), "one line for one spell of one cause");
   }
@@ -573,11 +573,11 @@ public class CaldavMirrorRelocationServiceTest {
     // server and what was asked for. Repeating it here — per user, per sweep,
     // with a trace — is exactly the noise EXO-89798 is removing from this
     // add-on.
-    when(caldavPushService.ensureMirror(USER)).thenThrow(new CaldavPushException(CaldavPushService.MAIN_CALENDAR_UNKNOWN,
+    when(caldavPushService.ensureMirror(USER, LOGIN)).thenThrow(new CaldavPushException(CaldavPushService.MAIN_CALENDAR_UNKNOWN,
                                                                                  "no default calendar"));
 
-    service.relocate(USER, settings(), mirror(DEDICATED));
-    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertTrue(warnings().isEmpty(), "a state of the account is not an incident of the pass: " + warnings());
   }
@@ -589,15 +589,15 @@ public class CaldavMirrorRelocationServiceTest {
   public void aDestinationRecoveredAndLostAgainIsSaidAgain() {
     // The line marks the edge into the state. Remembering the account for ever
     // would make the second outage as silent as the first was before this.
-    when(caldavPushService.ensureMirror(USER)).thenThrow(new IllegalStateException("the server is down"))
+    when(caldavPushService.ensureMirror(USER, LOGIN)).thenThrow(new IllegalStateException("the server is down"))
                                               .thenReturn(new MirrorTarget(MAIN, false, "wherever"))
                                               .thenThrow(new IllegalStateException("and down again"));
     when(caldavSyncStorage.getPair(PAIR)).thenReturn(mirror(MAIN));
     when(caldavSyncStorage.getObjects(eq(PAIR), eq(0), anyInt())).thenReturn(new PageImpl<>(List.of()));
 
-    service.relocate(USER, settings(), mirror(DEDICATED));
-    service.relocate(USER, settings(), mirror(DEDICATED));
-    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertEquals(2, warnings().size(), "one line per spell, not one per lifetime");
   }
@@ -608,11 +608,11 @@ public class CaldavMirrorRelocationServiceTest {
    */
   @Test
   public void anAccountForgottenSaysItsFailureAgain() {
-    when(caldavPushService.ensureMirror(USER)).thenThrow(new IllegalStateException("the server is down"));
+    when(caldavPushService.ensureMirror(USER, LOGIN)).thenThrow(new IllegalStateException("the server is down"));
 
-    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
     service.forget(USER);
-    service.relocate(USER, settings(), mirror(DEDICATED));
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertEquals(2, warnings().size());
   }
@@ -625,7 +625,7 @@ public class CaldavMirrorRelocationServiceTest {
     givenTheDestinationIsNow(MAIN);
     when(caldavSyncStorage.getPair(PAIR)).thenReturn(null);
 
-    MirrorRelocation relocation = service.relocate(USER, settings(), mirror(DEDICATED));
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertFalse(relocation.applicable());
     verify(caldavSyncStorage, never()).savePair(any());
@@ -639,13 +639,13 @@ public class CaldavMirrorRelocationServiceTest {
     // reading in both directions.
     givenTheDestinationIsNow(MAIN);
     givenThePairPointsAt(DEDICATED);
-    when(calDavClient.listResourceEtags(eq(endpoint), eq(DEDICATED), anyString(), anyString()))
+    when(calDavClient.listResourceEtags(eq(endpoint), eq(DEDICATED)))
                                                                       .thenThrow(new IllegalStateException("504"));
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
     givenTheWriteSucceeds(IN_MAIN, "\"etag-9\"");
-    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"", LOGIN, PASSWORD)).thenReturn(204);
+    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"")).thenReturn(204);
 
-    assertEquals(1, service.relocate(USER, settings(), mirror(DEDICATED)).moved());
+    assertEquals(1, service.relocate(USER, LOGIN, settings(), mirror(DEDICATED)).moved());
     verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
   }
 
@@ -700,7 +700,7 @@ public class CaldavMirrorRelocationServiceTest {
    * @param href where the copies go
    */
   private void givenTheDestinationIsNow(String href) {
-    when(caldavPushService.ensureMirror(USER)).thenReturn(new MirrorTarget(href, false, "wherever"));
+    when(caldavPushService.ensureMirror(USER, LOGIN)).thenReturn(new MirrorTarget(href, false, "wherever"));
   }
 
   /**
@@ -719,7 +719,7 @@ public class CaldavMirrorRelocationServiceTest {
    * @param etags its objects, by href
    */
   private void givenTheOldCollectionHolds(String collection, Map<String, String> etags) {
-    when(calDavClient.listResourceEtags(eq(endpoint), eq(collection), anyString(), anyString())).thenReturn(etags);
+    when(calDavClient.listResourceEtags(eq(endpoint), eq(collection))).thenReturn(etags);
   }
 
   /**
@@ -729,7 +729,7 @@ public class CaldavMirrorRelocationServiceTest {
    * @param etag the version the server answers with
    */
   private void givenTheWriteSucceeds(String href, String etag) {
-    when(calDavClient.overwriteObject(endpoint, href, ICS, LOGIN, PASSWORD)).thenReturn(new PutResult(201, etag, null));
+    when(calDavClient.overwriteObject(endpoint, href, ICS)).thenReturn(new PutResult(201, etag, null));
   }
 
   /**

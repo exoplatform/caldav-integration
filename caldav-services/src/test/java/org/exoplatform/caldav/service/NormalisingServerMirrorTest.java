@@ -279,12 +279,12 @@ public class NormalisingServerMirrorTest {
     // The bug, stated as the live rig stated it: pass after pass of "19
     // checked, 0 missing, 19 altered". One object is enough to reproduce it;
     // the count only multiplied it.
-    push.writeInto(USER, mirror, event(), EVENT);
+    push.writeInto(USER, LOGIN, mirror, event(), EVENT);
     // What the server holds is not what eXo sent, and that is legitimate.
     assertNotEquals(exoRender(), server.stored(HREF));
 
     for (int pass = 0; pass < 4; pass++) {
-      MirrorVerification result = verification.verify(USER);
+      MirrorVerification result = verification.verify(USER, LOGIN);
 
       assertEquals(1, result.checked(), "pass " + pass);
       assertEquals(0, result.altered(), "pass " + pass);
@@ -304,15 +304,15 @@ public class NormalisingServerMirrorTest {
     // again the same meeting. No digest taken at any moment is stable, and it
     // does not matter, because none is taken.
     server.settlesLate();
-    push.writeInto(USER, mirror, event(), EVENT);
+    push.writeInto(USER, LOGIN, mirror, event(), EVENT);
     String first = server.stored(HREF);
 
-    MirrorVerification pass = verification.verify(USER);
+    MirrorVerification pass = verification.verify(USER, LOGIN);
 
     assertNotEquals(first, server.stored(HREF), "the server was supposed to settle into another form");
     assertEquals(0, pass.altered());
-    assertEquals(0, verification.verify(USER).altered());
-    assertEquals(0, verification.verify(USER).altered());
+    assertEquals(0, verification.verify(USER, LOGIN).altered());
+    assertEquals(0, verification.verify(USER, LOGIN).altered());
   }
 
   @Test
@@ -323,10 +323,10 @@ public class NormalisingServerMirrorTest {
     inject(push);
     inject(verification);
 
-    ObjectSync mapping = push.writeInto(USER, mirror, event(), EVENT);
+    ObjectSync mapping = push.writeInto(USER, LOGIN, mirror, event(), EVENT);
 
     assertEquals(exoRender(), server.stored(HREF));
-    assertEquals(0, verification.verify(USER).altered());
+    assertEquals(0, verification.verify(USER, LOGIN).altered());
     assertEquals(server.etag(HREF), mapping.getEtag());
   }
 
@@ -337,13 +337,13 @@ public class NormalisingServerMirrorTest {
     // server has left behind is an eXo-side edit the user never sees arrive.
     // The verification pass is what keeps that version current, by adopting it
     // the first time it reads a copy and finds it equivalent.
-    push.writeInto(USER, mirror, event(), EVENT);
-    verification.verify(USER);
+    push.writeInto(USER, LOGIN, mirror, event(), EVENT);
+    verification.verify(USER, LOGIN);
 
     IcsEvent moved = event();
     moved.setStart(START.plusSeconds(6 * 3600));
     moved.setEnd(END.plusSeconds(6 * 3600));
-    push.writeInto(USER, mirror, moved, EVENT);
+    push.writeInto(USER, LOGIN, mirror, moved, EVENT);
 
     // 15:00 UTC, which this server restates as 17:00 on Europe/Paris — the very
     // re-anchoring that used to make the copy look rewritten.
@@ -355,10 +355,10 @@ public class NormalisingServerMirrorTest {
     // The whole point of the pass, and the thing a fix must not buy its silence
     // with. Somebody opened the copy on their phone and renamed the meeting;
     // the mirror is eXo's projection, so eXo writes it back.
-    push.writeInto(USER, mirror, event(), EVENT);
+    push.writeInto(USER, LOGIN, mirror, event(), EVENT);
 
     server.editedByAClient(HREF, server.stored(HREF).replace("Sprint review", "Sprint review (moved to the pub)"));
-    MirrorVerification result = verification.verify(USER);
+    MirrorVerification result = verification.verify(USER, LOGIN);
 
     assertEquals(1, result.altered());
     assertEquals(1, result.repaired());
@@ -366,7 +366,7 @@ public class NormalisingServerMirrorTest {
     // And the repair converges: what the server now holds says what eXo says,
     // so the next pass has nothing to report. Before EXO-89716 this second pass
     // said "altered" once more, which is how an object reached maxRepairs.
-    assertEquals(0, verification.verify(USER).altered());
+    assertEquals(0, verification.verify(USER, LOGIN).altered());
   }
 
   @Test
@@ -374,11 +374,11 @@ public class NormalisingServerMirrorTest {
     // The comparison folds a wall clock on a zone into the instant it denotes,
     // which is what stops a re-serialisation counting as a rewrite. It must not
     // also let a real move through: same form, different meeting.
-    push.writeInto(USER, mirror, event(), EVENT);
+    push.writeInto(USER, LOGIN, mirror, event(), EVENT);
 
     server.editedByAClient(HREF, server.stored(HREF).replace("T110000", "T160000"));
 
-    assertEquals(1, verification.verify(USER).altered());
+    assertEquals(1, verification.verify(USER, LOGIN).altered());
   }
 
   @Test
@@ -392,7 +392,7 @@ public class NormalisingServerMirrorTest {
     invited.setOrganizer(person("boss@acme.test", "The Boss"));
     invited.setAttendees(List.of(person("ann@acme.test", "Ann"), person("bob@acme.test", "Bob")));
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(invited);
-    push.writeInto(USER, mirror, invited, EVENT);
+    push.writeInto(USER, LOGIN, mirror, invited, EVENT);
 
     server.editedByAClient(HREF,
                            Arrays.stream(server.stored(HREF).split("\r\n"))
@@ -401,7 +401,7 @@ public class NormalisingServerMirrorTest {
                               + "\r\n");
 
     for (int pass = 0; pass < 4; pass++) {
-      MirrorVerification result = verification.verify(USER);
+      MirrorVerification result = verification.verify(USER, LOGIN);
 
       assertEquals(0, result.altered(), "pass " + pass);
       assertEquals(0, result.repaired(), "pass " + pass);
@@ -418,7 +418,7 @@ public class NormalisingServerMirrorTest {
     invited.setOrganizer(person("boss@acme.test", "The Boss"));
     invited.setAttendees(List.of(person("ann@acme.test", "Ann"), person("bob@acme.test", "Bob")));
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(invited);
-    push.writeInto(USER, mirror, invited, EVENT);
+    push.writeInto(USER, LOGIN, mirror, invited, EVENT);
 
     // Inside the VEVENT, not appended to the document. Written the lazy way the
     // added line lands after END:VCALENDAR, where it is not an attendee of
@@ -433,7 +433,7 @@ public class NormalisingServerMirrorTest {
                                           "ATTENDEE;CN=Mallory:mailto:mallory@acme.test\r\nEND:VEVENT")
                               + "\r\n");
 
-    assertEquals(1, verification.verify(USER).altered());
+    assertEquals(1, verification.verify(USER, LOGIN).altered());
   }
 
   @Test
@@ -446,9 +446,9 @@ public class NormalisingServerMirrorTest {
     server = new FakeCalDavServer(Normalisation.RESERIALISE_AND_ANNOTATE);
     inject(push);
     inject(verification);
-    push.writeInto(USER, mirror, event(), EVENT);
+    push.writeInto(USER, LOGIN, mirror, event(), EVENT);
 
-    assertEquals(1, verification.verify(USER).altered());
+    assertEquals(1, verification.verify(USER, LOGIN).altered());
   }
 
   @Test
@@ -461,9 +461,9 @@ public class NormalisingServerMirrorTest {
     inject(push);
     inject(verification);
     ReflectionTestUtils.setField(icsEquivalence, "ignoredProperties", "X-FAKEMIND-SEQ");
-    push.writeInto(USER, mirror, event(), EVENT);
+    push.writeInto(USER, LOGIN, mirror, event(), EVENT);
 
-    assertEquals(0, verification.verify(USER).altered());
+    assertEquals(0, verification.verify(USER, LOGIN).altered());
   }
 
   @Test
@@ -474,12 +474,12 @@ public class NormalisingServerMirrorTest {
     // What is left is a stale ETag, and it costs a fetch rather than a rewrite:
     // the copy still says what eXo says, so the version is adopted and nothing
     // is pushed at all.
-    ObjectSync legacy = push.writeInto(USER, mirror, event(), EVENT);
+    ObjectSync legacy = push.writeInto(USER, LOGIN, mirror, event(), EVENT);
     legacy.setEtag("\"v0\"");
     caldavSyncStorage.saveObject(legacy);
 
-    MirrorVerification first = verification.verify(USER);
-    MirrorVerification second = verification.verify(USER);
+    MirrorVerification first = verification.verify(USER, LOGIN);
+    MirrorVerification second = verification.verify(USER, LOGIN);
 
     assertEquals(0, first.altered());
     assertEquals(0, first.repaired());
@@ -494,15 +494,15 @@ public class NormalisingServerMirrorTest {
     // pass paying another fetch to reach the same conclusion, and — the reason
     // it matters — stops the next ordinary update carrying an If-Match the
     // server has already left behind, which it would refuse.
-    ObjectSync mapping = push.writeInto(USER, mirror, event(), EVENT);
-    verification.verify(USER);
+    ObjectSync mapping = push.writeInto(USER, LOGIN, mirror, event(), EVENT);
+    verification.verify(USER, LOGIN);
     server.touchedItsOwnMetadata(HREF);
 
-    assertEquals(0, verification.verify(USER).altered());
+    assertEquals(0, verification.verify(USER, LOGIN).altered());
     assertEquals(server.etag(HREF), rows.get(mapping.getId()).getEtag());
     // Cheap from now on: the listing and the row agree, so nothing is fetched.
     int before = server.fetches();
-    verification.verify(USER);
+    verification.verify(USER, LOGIN);
     assertEquals(before, server.fetches());
   }
 
@@ -520,14 +520,14 @@ public class NormalisingServerMirrorTest {
     // Four passes, because one proves nothing about a loop, and the assertion
     // is the fetch count rather than a verdict: the verdicts were always 0.
     server.spellsItsVersionsTwoWays();
-    push.writeInto(USER, mirror, event(), EVENT);
+    push.writeInto(USER, LOGIN, mirror, event(), EVENT);
 
-    verification.verify(USER);
+    verification.verify(USER, LOGIN);
     int afterTheFirstPass = server.fetches();
     assertTrue(afterTheFirstPass > 0, "the first pass had to read the copy to know it was ours");
 
     for (int pass = 0; pass < 4; pass++) {
-      MirrorVerification later = verification.verify(USER);
+      MirrorVerification later = verification.verify(USER, LOGIN);
 
       assertEquals(0, later.altered(), "pass " + pass);
       assertEquals(0, later.repaired(), "pass " + pass);
@@ -543,9 +543,9 @@ public class NormalisingServerMirrorTest {
     // is the same thing on a server whose channels agree and a row that never
     // agrees with anything on a server whose channels do not.
     server.spellsItsVersionsTwoWays();
-    ObjectSync mapping = push.writeInto(USER, mirror, event(), EVENT);
+    ObjectSync mapping = push.writeInto(USER, LOGIN, mirror, event(), EVENT);
 
-    verification.verify(USER);
+    verification.verify(USER, LOGIN);
 
     assertEquals(server.listed(HREF), rows.get(mapping.getId()).getEtag());
     assertNotEquals(server.etag(HREF),
@@ -566,17 +566,17 @@ public class NormalisingServerMirrorTest {
     when(adoption.adoptAnswer(anyLong(), anyLong(), anyString())).thenReturn(CaldavAnswerAdoptionService.Outcome.ADOPTED);
     ReflectionTestUtils.setField(verification, "caldavAnswerAdoptionService", adoption);
     server.spellsItsVersionsTwoWays();
-    push.writeInto(USER, mirror, event(), EVENT);
-    verification.verify(USER);
+    push.writeInto(USER, LOGIN, mirror, event(), EVENT);
+    verification.verify(USER, LOGIN);
     server.editedByAClient(HREF, server.stored(HREF).replace("Sprint review", "Sprint review (accepted)"));
     server.refuseWrites();
 
-    MirrorVerification first = verification.verify(USER);
+    MirrorVerification first = verification.verify(USER, LOGIN);
     int afterTheAnswerWasRead = server.fetches();
 
     assertEquals(1, first.adopted());
     for (int pass = 0; pass < 3; pass++) {
-      verification.verify(USER);
+      verification.verify(USER, LOGIN);
 
       assertEquals(afterTheAnswerWasRead, server.fetches(), "pass " + pass);
     }
@@ -603,8 +603,8 @@ public class NormalisingServerMirrorTest {
     invited.setAttendees(List.of(person(OWNER, "John")));
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(invited);
     when(agendaEventIcsMapper.addressOf(USER)).thenReturn(OWNER);
-    push.writeInto(USER, mirror, invited, EVENT);
-    assertEquals(0, verification.verify(USER).altered());
+    push.writeInto(USER, LOGIN, mirror, invited, EVENT);
+    assertEquals(0, verification.verify(USER, LOGIN).altered());
 
     // The answer is recorded in eXo first — that is what triggers the push —
     // so what eXo would render from now on carries it.
@@ -615,11 +615,11 @@ public class NormalisingServerMirrorTest {
     answered.setAttendees(List.of(accepted));
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(answered);
 
-    assertTrue(push.pushAnswer(USER, EVENT, "ACCEPTED"), "the answer should have reached the copy");
+    assertTrue(push.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"), "the answer should have reached the copy");
     assertTrue(server.stored(HREF).contains("PARTSTAT=ACCEPTED"), server.stored(HREF));
 
     // And the pass says nothing about the write eXo has just made.
-    MirrorVerification after = verification.verify(USER);
+    MirrorVerification after = verification.verify(USER, LOGIN);
 
     assertEquals(0, after.altered());
     assertEquals(0, after.repaired());
@@ -637,11 +637,11 @@ public class NormalisingServerMirrorTest {
     inject(push);
     inject(verification);
     when(agendaEventIcsMapper.addressOf(USER)).thenReturn(OWNER);
-    push.writeInto(USER, mirror, event(), EVENT);
+    push.writeInto(USER, LOGIN, mirror, event(), EVENT);
     assertTrue(server.stored(HREF).contains("mailto:" + OWNER), server.stored(HREF));
 
     for (int pass = 0; pass < 4; pass++) {
-      MirrorVerification result = verification.verify(USER);
+      MirrorVerification result = verification.verify(USER, LOGIN);
 
       assertEquals(1, result.checked(), "pass " + pass);
       assertEquals(0, result.altered(), "pass " + pass);
@@ -659,14 +659,14 @@ public class NormalisingServerMirrorTest {
     inject(push);
     inject(verification);
     when(agendaEventIcsMapper.addressOf(USER)).thenReturn(OWNER);
-    push.writeInto(USER, mirror, event(), EVENT);
-    assertEquals(0, verification.verify(USER).altered());
+    push.writeInto(USER, LOGIN, mirror, event(), EVENT);
+    assertEquals(0, verification.verify(USER, LOGIN).altered());
 
     server.editedByAClient(HREF, server.stored(HREF).replace("mailto:" + OWNER,
                                                              "mailto:" + OWNER).replace("CN=FRANCOIS",
                                                                                         "CN=FRANCOIS;PARTSTAT=ACCEPTED"));
 
-    assertEquals(1, verification.verify(USER).altered());
+    assertEquals(1, verification.verify(USER, LOGIN).altered());
   }
 
   @Test
@@ -693,10 +693,10 @@ public class NormalisingServerMirrorTest {
     own.setAttendees(List.of(accepted, person("guest@acme.test", "A Guest")));
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(own);
 
-    push.writeInto(USER, mirror, own, EVENT);
+    push.writeInto(USER, LOGIN, mirror, own, EVENT);
 
     for (int pass = 0; pass < 4; pass++) {
-      MirrorVerification result = verification.verify(USER);
+      MirrorVerification result = verification.verify(USER, LOGIN);
 
       assertEquals(1, result.checked(), "pass " + pass);
       assertEquals(0, result.altered(), "pass " + pass);
@@ -719,8 +719,8 @@ public class NormalisingServerMirrorTest {
     invited.setOrganizer(person("boss@acme.test", "The Boss"));
     invited.setAttendees(List.of(person(OWNER, "John")));
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(invited);
-    push.writeInto(USER, mirror, invited, EVENT);
-    assertEquals(0, verification.verify(USER).altered());
+    push.writeInto(USER, LOGIN, mirror, invited, EVENT);
+    assertEquals(0, verification.verify(USER, LOGIN).altered());
 
     IcsEvent answered = event();
     answered.setOrganizer(person("boss@acme.test", "The Boss"));
@@ -729,9 +729,9 @@ public class NormalisingServerMirrorTest {
     answered.setAttendees(List.of(accepted));
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(answered);
 
-    assertTrue(push.pushAnswer(USER, EVENT, "ACCEPTED"), "the answer should have reached the copy");
+    assertTrue(push.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"), "the answer should have reached the copy");
     assertTrue(server.stored(HREF).contains("PARTSTAT=ACCEPTED"), server.stored(HREF));
-    assertEquals(0, verification.verify(USER).altered());
+    assertEquals(0, verification.verify(USER, LOGIN).altered());
   }
 
   @Test
@@ -739,11 +739,11 @@ public class NormalisingServerMirrorTest {
     // Unreadable is not the same as rewritten. A re-push here would overwrite
     // whatever is on the user's calendar on the strength of a network error,
     // and the pass has to be able to say nothing at all.
-    push.writeInto(USER, mirror, event(), EVENT);
+    push.writeInto(USER, LOGIN, mirror, event(), EVENT);
     server.touchedItsOwnMetadata(HREF);
     server.refuseReads();
 
-    MirrorVerification result = verification.verify(USER);
+    MirrorVerification result = verification.verify(USER, LOGIN);
 
     assertEquals(1, result.checked());
     assertEquals(0, result.altered());
@@ -755,11 +755,11 @@ public class NormalisingServerMirrorTest {
     // The baseline is regenerated, so there is a case where it cannot be: the
     // event was deleted in eXo, or is no longer visible to this user. Nothing
     // is concluded from an absence, and above all nothing is written.
-    push.writeInto(USER, mirror, event(), EVENT);
+    push.writeInto(USER, LOGIN, mirror, event(), EVENT);
     server.touchedItsOwnMetadata(HREF);
     givenTheEventCannotBeRead();
 
-    MirrorVerification result = verification.verify(USER);
+    MirrorVerification result = verification.verify(USER, LOGIN);
 
     assertEquals(1, result.checked());
     assertEquals(0, result.altered());
@@ -1330,7 +1330,7 @@ public class NormalisingServerMirrorTest {
     }
 
     @Override
-    public String discoverCalendarHome(CalDavEndpoint endpoint, String username, String password) {
+    public String discoverCalendarHome(CalDavEndpoint endpoint) {
       return HOME;
     }
 
@@ -1345,33 +1345,29 @@ public class NormalisingServerMirrorTest {
      * @return null, the answer of a server naming no default calendar
      */
     @Override
-    public String discoverDefaultCalendar(CalDavEndpoint endpoint, String username, String password) {
+    public String discoverDefaultCalendar(CalDavEndpoint endpoint) {
       return null;
     }
 
     @Override
     public List<CalendarCollection> listCalendars(CalDavEndpoint endpoint,
-                                                  String homeHref,
-                                                  String username,
-                                                  String password) {
+                                                  String homeHref) {
       return List.of(new CalendarCollection(MIRROR, "eXo Meetings", null, null, null, true));
     }
 
     @Override
-    public CalendarCollection readCalendar(CalDavEndpoint endpoint, String href, String username, String password) {
+    public CalendarCollection readCalendar(CalDavEndpoint endpoint, String href) {
       return null;
     }
 
     @Override
-    public String getCtag(CalDavEndpoint endpoint, String href, String username, String password) {
+    public String getCtag(CalDavEndpoint endpoint, String href) {
       return null;
     }
 
     @Override
     public Map<String, String> listResourceEtags(CalDavEndpoint endpoint,
-                                                 String collectionHref,
-                                                 String username,
-                                                 String password) {
+                                                 String collectionHref) {
       Map<String, String> listed = new LinkedHashMap<>();
       etags.forEach((href, etag) -> listed.put(href, asListed(etag)));
       return listed;
@@ -1381,40 +1377,32 @@ public class NormalisingServerMirrorTest {
     public List<CalendarObject> calendarQuery(CalDavEndpoint endpoint,
                                               String collectionHref,
                                               Instant start,
-                                              Instant end,
-                                              String username,
-                                              String password) {
+                                              Instant end) {
       return List.of();
     }
 
     @Override
     public List<CalendarObject> multiget(CalDavEndpoint endpoint,
                                          String collectionHref,
-                                         List<String> hrefs,
-                                         String username,
-                                         String password) {
+                                         List<String> hrefs) {
       return List.of();
     }
 
     @Override
     public SyncCollectionResult syncCollection(CalDavEndpoint endpoint,
                                                String collectionHref,
-                                               String syncToken,
-                                               String username,
-                                               String password) {
+                                               String syncToken) {
       throw new UnsupportedOperationException("not part of this test");
     }
 
     @Override
     public ServerCapabilities probeCapabilities(CalDavEndpoint endpoint,
-                                                String collectionHref,
-                                                String username,
-                                                String password) {
+                                                String collectionHref) {
       throw new UnsupportedOperationException("not part of this test");
     }
 
     @Override
-    public CalendarObject fetchObject(CalDavEndpoint endpoint, String href, String username, String password) {
+    public CalendarObject fetchObject(CalDavEndpoint endpoint, String href) {
       fetches++;
       if (readsRefused) {
         throw new IllegalStateException("the server cannot be reached");
@@ -1430,7 +1418,7 @@ public class NormalisingServerMirrorTest {
     }
 
     @Override
-    public PutResult putObject(CalDavEndpoint endpoint, String href, String icsData, String username, String password) {
+    public PutResult putObject(CalDavEndpoint endpoint, String href, String icsData) {
       // If-None-Match: * — a create, and only a create.
       return objects.containsKey(href) ? new PutResult(412, null, null) : accept(href, icsData, 201);
     }
@@ -1438,9 +1426,7 @@ public class NormalisingServerMirrorTest {
     @Override
     public PutResult overwriteObject(CalDavEndpoint endpoint,
                                      String href,
-                                     String icsData,
-                                     String username,
-                                     String password) {
+                                     String icsData) {
       return accept(href, icsData, 200);
     }
 
@@ -1448,9 +1434,7 @@ public class NormalisingServerMirrorTest {
     public PutResult updateObject(CalDavEndpoint endpoint,
                                   String href,
                                   String icsData,
-                                  String ifMatch,
-                                  String username,
-                                  String password) {
+                                  String ifMatch) {
       // If-Match — refused when the caller's version is not the current one,
       // which is how a stale recorded ETag stops an eXo edit from landing.
       //
@@ -1466,7 +1450,7 @@ public class NormalisingServerMirrorTest {
     }
 
     @Override
-    public int deleteObject(CalDavEndpoint endpoint, String href, String ifMatch, String username, String password) {
+    public int deleteObject(CalDavEndpoint endpoint, String href, String ifMatch) {
       objects.remove(href);
       etags.remove(href);
       return 204;
@@ -1476,14 +1460,12 @@ public class NormalisingServerMirrorTest {
     public MkCalendarResult mkCalendar(CalDavEndpoint endpoint,
                                        String href,
                                        String displayName,
-                                       String color,
-                                       String username,
-                                       String password) {
+                                       String color) {
       return new MkCalendarResult(201, List.of());
     }
 
     @Override
-    public int deleteCollection(CalDavEndpoint endpoint, CalendarSync pair, String username, String password) {
+    public int deleteCollection(CalDavEndpoint endpoint, CalendarSync pair) {
       return 204;
     }
   }

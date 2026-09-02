@@ -60,6 +60,11 @@
       <artifactId>swagger-annotations-jakarta</artifactId>
       <scope>provided</scope>
     </dependency>
+    <dependency>
+      <groupId>org.exoplatform.commons-exo</groupId>
+      <artifactId>exo.core.component.connector.credentials</artifactId>
+      <scope>provided</scope>
+    </dependency>
   </dependencies>
   <build>
     <finalName>caldav-services</finalName>

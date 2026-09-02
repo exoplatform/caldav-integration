@@ -89,6 +89,13 @@ public class CaldavDeletionServiceTest {
 
   private static final String        LOGIN    = "john";
 
+  /**
+   * The account on the CalDAV server, deliberately NOT the eXo login: the two
+   * are different identities, and a test where they share a string cannot tell
+   * which one a call was made with.
+   */
+  private static final String        DAV_ACCOUNT = "john@dav.example";
+
   private static final long          CALENDAR = 11L;
 
   private static final String        ANCHOR   = "cal-anchor";
@@ -126,7 +133,7 @@ public class CaldavDeletionServiceTest {
   public void connectAnAccount() {
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    lenient().when(calDavClient.discoverCalendarHome(any(), anyString(), anyString())).thenReturn("/dav/calendars/john/");
+    lenient().when(calDavClient.discoverCalendarHome(any())).thenReturn("/dav/calendars/john/");
     lenient().when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(calendar());
   }
 
@@ -139,7 +146,12 @@ public class CaldavDeletionServiceTest {
     givenBoundCalendar();
     givenCollectionGoneAfterDelete();
 
-    service.deleteRemoteCounterpart(USER, CALENDAR);
+    service.deleteRemoteCounterpart(USER, LOGIN, CALENDAR);
+
+    // The endpoint is asked for THIS user, by their eXo login: the account in
+    // the URL comes from their credentials provider, and nothing else in this
+    // suite would notice if it came from somewhere else.
+    verify(calDavClient).endpoint(SERVER, LOGIN);
 
     // Agenda deletes the calendar itself, after this returns without throwing.
     // What has to be true first is that the collection is gone AND the binding
@@ -147,7 +159,7 @@ public class CaldavDeletionServiceTest {
     // the two leaves a binding pointing at nothing rather than nothing
     // pointing at a collection.
     InOrder order = inOrder(calDavClient, caldavSyncStorage);
-    order.verify(calDavClient).deleteCollection(any(), any(), anyString(), anyString());
+    order.verify(calDavClient).deleteCollection(any(), any());
     order.verify(caldavSyncStorage).deletePair(3L);
     verify(agendaCalendarService, never()).deleteCalendarById(anyLong(), anyString());
   }
@@ -159,7 +171,7 @@ public class CaldavDeletionServiceTest {
     givenBoundCalendar();
     givenCollectionGoneAfterDelete();
 
-    service.deleteRemoteCounterpart(USER, CALENDAR);
+    service.deleteRemoteCounterpart(USER, LOGIN, CALENDAR);
 
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
@@ -172,10 +184,10 @@ public class CaldavDeletionServiceTest {
     // nothing. A deletion that reported done while the collection still stood
     // would take the local calendar with it.
     givenBoundCalendar();
-    when(calDavClient.listCalendars(any(), anyString(), anyString(), anyString())).thenReturn(List.of(collection(HREF)));
+    when(calDavClient.listCalendars(any(), anyString())).thenReturn(List.of(collection(HREF)));
 
     CaldavPushException failure = assertThrows(CaldavPushException.class,
-                                               () -> service.deleteRemoteCounterpart(USER, CALENDAR));
+                                               () -> service.deleteRemoteCounterpart(USER, LOGIN, CALENDAR));
 
     assertEquals(CaldavDeletionService.NOTHING_DELETED, failure.getCode());
     verify(agendaCalendarService, never()).deleteCalendarById(anyLong(), anyString());
@@ -184,11 +196,11 @@ public class CaldavDeletionServiceTest {
   @Test
   public void aServerThatCannotBeReachedLeavesBothSidesUntouched() throws Exception {
     givenBoundCalendar();
-    when(calDavClient.deleteCollection(any(), any(), anyString(), anyString()))
+    when(calDavClient.deleteCollection(any(), any()))
                                                                                .thenThrow(new CalDavException("unreachable"));
 
     CaldavPushException failure = assertThrows(CaldavPushException.class,
-                                               () -> service.deleteRemoteCounterpart(USER, CALENDAR));
+                                               () -> service.deleteRemoteCounterpart(USER, LOGIN, CALENDAR));
 
     assertEquals(CaldavDeletionService.NOTHING_DELETED, failure.getCode());
     verify(agendaCalendarService, never()).deleteCalendarById(anyLong(), anyString());
@@ -200,10 +212,10 @@ public class CaldavDeletionServiceTest {
     // transient network failure would quietly stop synchronising a calendar
     // nobody deleted.
     givenBoundCalendar();
-    when(calDavClient.deleteCollection(any(), any(), anyString(), anyString()))
+    when(calDavClient.deleteCollection(any(), any()))
                                                                                .thenThrow(new CalDavException("unreachable"));
 
-    assertThrows(CaldavPushException.class, () -> service.deleteRemoteCounterpart(USER, CALENDAR));
+    assertThrows(CaldavPushException.class, () -> service.deleteRemoteCounterpart(USER, LOGIN, CALENDAR));
 
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage, org.mockito.Mockito.times(2)).savePair(saved.capture());
@@ -216,9 +228,9 @@ public class CaldavDeletionServiceTest {
     // Deleting it in eXo is a decision about eXo.
     givenBoundCalendar(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
 
-    service.deleteRemoteCounterpart(USER, CALENDAR);
+    service.deleteRemoteCounterpart(USER, LOGIN, CALENDAR);
 
-    verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteCollection(any(), any());
   }
 
   @Test
@@ -228,7 +240,7 @@ public class CaldavDeletionServiceTest {
     // the user.
     givenBoundCalendar(SyncOrigin.REMOTE, CalendarSyncStatus.ACTIVE);
 
-    service.deleteRemoteCounterpart(USER, CALENDAR);
+    service.deleteRemoteCounterpart(USER, LOGIN, CALENDAR);
 
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
@@ -248,7 +260,7 @@ public class CaldavDeletionServiceTest {
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
     assertEquals(CalendarSyncStatus.EXO_ORPHANED, saved.getValue().getStatus());
-    verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteCollection(any(), any());
   }
 
   @Test
@@ -256,7 +268,7 @@ public class CaldavDeletionServiceTest {
     givenBoundCalendar();
     givenCollectionGoneAfterDelete();
 
-    service.deleteRemoteCounterpart(USER, CALENDAR);
+    service.deleteRemoteCounterpart(USER, LOGIN, CALENDAR);
 
     // Both sides are gone; the binding has nothing left to describe.
     verify(caldavSyncStorage).deleteObjects(3L);
@@ -316,7 +328,7 @@ public class CaldavDeletionServiceTest {
 
     service.freezeOnDisconnect(USER, SERVER, LOGIN);
 
-    verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteCollection(any(), any());
   }
 
   @Test
@@ -359,9 +371,9 @@ public class CaldavDeletionServiceTest {
     // reason a plain local deletion fails.
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(null);
 
-    service.deleteRemoteCounterpart(USER, CALENDAR);
+    service.deleteRemoteCounterpart(USER, LOGIN, CALENDAR);
 
-    verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteCollection(any(), any());
     verify(caldavSyncStorage, never()).savePair(any());
   }
 
@@ -371,7 +383,7 @@ public class CaldavDeletionServiceTest {
     unanchored.setSyncUid(null);
     when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(unanchored);
 
-    service.deleteRemoteCounterpart(USER, CALENDAR);
+    service.deleteRemoteCounterpart(USER, LOGIN, CALENDAR);
 
     verify(caldavSyncStorage, never()).getPairByLocalCalendar(anyLong(), anyLong(), anyString());
   }
@@ -392,9 +404,9 @@ public class CaldavDeletionServiceTest {
     // the settings surface lands (PR11).
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
 
-    service.deleteRemoteCounterpart(USER, CALENDAR);
+    service.deleteRemoteCounterpart(USER, LOGIN, CALENDAR);
 
-    verify(calDavClient, never()).deleteCollection(any(), any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteCollection(any(), any());
     verify(caldavSyncStorage, never()).savePair(any());
   }
 
@@ -642,7 +654,7 @@ public class CaldavDeletionServiceTest {
    * A server that no longer lists the collection once it has been deleted.
    */
   private void givenCollectionGoneAfterDelete() {
-    when(calDavClient.listCalendars(any(), anyString(), anyString(), anyString())).thenReturn(List.of());
+    when(calDavClient.listCalendars(any(), anyString())).thenReturn(List.of());
   }
 
   /**
@@ -731,7 +743,7 @@ public class CaldavDeletionServiceTest {
     // drawer wait on a server to discover it has nothing to say.
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(activeBinding()));
 
-    assertTrue(service.listHidden(USER).isEmpty());
+    assertTrue(service.listHidden(USER, LOGIN).isEmpty());
 
     verifyNoInteractions(calDavClient);
   }
@@ -743,11 +755,15 @@ public class CaldavDeletionServiceTest {
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(tombstone()));
     givenServerCollections("/dav/calendars/john/private/", "Renamed since");
 
-    List<HiddenCalendar> hidden = service.listHidden(USER);
+    List<HiddenCalendar> hidden = service.listHidden(USER, LOGIN);
 
     assertEquals(1, hidden.size());
     assertEquals("Renamed since", hidden.get(0).name());
     assertEquals(9L, hidden.get(0).id());
+    // The endpoint is asked for THIS user, by their eXo login: the account in
+    // the URL comes from their credentials provider, and nothing else in this
+    // suite would notice if it came from somewhere else.
+    verify(calDavClient).endpoint(SERVER, LOGIN);
   }
 
   @Test
@@ -757,7 +773,7 @@ public class CaldavDeletionServiceTest {
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(tombstone()));
     givenServerCollections("/dav/calendars/john/other/", "Something else");
 
-    assertTrue(service.listHidden(USER).isEmpty());
+    assertTrue(service.listHidden(USER, LOGIN).isEmpty());
   }
 
   /**
@@ -765,8 +781,8 @@ public class CaldavDeletionServiceTest {
    * @param name its display name
    */
   private void givenServerCollections(String href, String name) {
-    when(calDavClient.discoverCalendarHome(any(), anyString(), anyString())).thenReturn("/dav/calendars/john/");
-    when(calDavClient.listCalendars(any(), anyString(), anyString(), anyString()))
+    when(calDavClient.discoverCalendarHome(any())).thenReturn("/dav/calendars/john/");
+    when(calDavClient.listCalendars(any(), anyString()))
                                                                                  .thenReturn(List.of(new CalendarCollection(href,
                                                                                                                             name,
                                                                                                                             null,
@@ -965,7 +981,7 @@ public class CaldavDeletionServiceTest {
    * @param name what the server calls the collection the binding points at
    */
   private void givenServerCollectionNamed(String name) {
-    when(calDavClient.listCalendars(any(), anyString(), anyString(), anyString()))
+    when(calDavClient.listCalendars(any(), anyString()))
                                                                                  .thenReturn(List.of(new CalendarCollection(HREF,
                                                                                                                             name,
                                                                                                                             null,
@@ -978,7 +994,7 @@ public class CaldavDeletionServiceTest {
    * The server cannot be listed at all.
    */
   private void givenServerListingFails() {
-    when(calDavClient.listCalendars(any(), anyString(), anyString(), anyString())).thenThrow(new IllegalStateException("down"));
+    when(calDavClient.listCalendars(any(), anyString())).thenThrow(new IllegalStateException("down"));
   }
 
 
@@ -1014,7 +1030,7 @@ public class CaldavDeletionServiceTest {
 
   private CaldavUserSetting settings() {
     CaldavUserSetting setting = new CaldavUserSetting();
-    setting.setUsername(LOGIN);
+    setting.setUsername(DAV_ACCOUNT);
     setting.setPassword("secret");
     setting.setServerId(SERVER);
     setting.setCaldavUrl(URL);
