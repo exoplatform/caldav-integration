@@ -519,12 +519,18 @@ public class CaldavAnswerPushTest {
 
     service.pushAnswer(USER, EVENT, "DECLINED");
 
+    // The version the write produced, and nothing else recorded against the
+    // copy. EXO-89716 removed the digest this used to assert: the guarantee it
+    // bought — that the next verification pass does not judge eXo's own answer
+    // a client's doing and repair it away — now comes from the pass comparing
+    // the copy against what eXo would render, which already carries the answer
+    // because agenda recorded it before this method was called. That is a
+    // statement about two services agreeing, so it is pinned where both are
+    // real: NormalisingServerMirrorTest
+    // #anAnswerExoWritesOntoTheCopyIsNotThenUndoneByTheVerificationPass.
     ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
     verify(caldavSyncStorage).saveObject(saved.capture());
     assertEquals("\"etag-2\"", saved.getValue().getEtag());
-    ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
-    verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString(), anyString(), anyString());
-    assertEquals(sha256(written.getValue()), saved.getValue().getPushedHash());
   }
 
   /**
@@ -1098,7 +1104,6 @@ public class CaldavAnswerPushTest {
     mapping.setIcsUid("evt-1");
     mapping.setRemoteHref(HREF);
     mapping.setEtag("\"etag-1\"");
-    mapping.setPushedHash("whatever-was-pushed");
     return mapping;
   }
 
@@ -1113,16 +1118,4 @@ public class CaldavAnswerPushTest {
     return remoteEvent;
   }
 
-  /**
-   * @param value the document that was written
-   * @return its digest, as the mapping records it
-   */
-  private String sha256(String value) {
-    try {
-      java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-      return java.util.HexFormat.of().formatHex(digest.digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-    } catch (java.security.NoSuchAlgorithmException e) {
-      throw new IllegalStateException(e);
-    }
-  }
 }
