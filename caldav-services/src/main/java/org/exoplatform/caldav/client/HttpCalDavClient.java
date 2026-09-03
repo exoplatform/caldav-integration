@@ -642,6 +642,25 @@ public class HttpCalDavClient implements CalDavClient {
     return new MkCalendarResult(response.status(), failedPropstatStatuses(response.body(), request.uri()));
   }
 
+  @Override
+  public PropPatchResult setDisplayName(CalDavEndpoint endpoint,
+                                        String href,
+                                        String displayName,
+                                        String username,
+                                        String password) {
+    String body = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <d:propertyupdate xmlns:d="DAV:">
+          <d:set><d:prop><d:displayname>%s</d:displayname></d:prop></d:set>
+        </d:propertyupdate>""".formatted(escape(displayName));
+    HttpRequest request = request(endpoint, href, "PROPPATCH", body, username, password).build();
+    DavResponse response = exchange(request);
+    // 401/407 only, for the same reason as MKCALENDAR: on a write verb a 403
+    // is the server declining the change, with credentials that are fine.
+    checkAuthStatus(response.status(), false, request);
+    return new PropPatchResult(response.status(), failedPropstatStatuses(response.body(), request.uri()));
+  }
+
   /**
    * The one PUT both writes share; only the precondition header differs —
    * {@code If-None-Match: *} to insist on creating, {@code If-Match: etag}
@@ -827,7 +846,7 @@ public class HttpCalDavClient implements CalDavClient {
    *
    * @param endpoint the declared server
    * @param href the target's server-absolute path
-   * @param method PROPFIND, REPORT or MKCALENDAR
+   * @param method PROPFIND, REPORT, MKCALENDAR or PROPPATCH
    * @param body the XML body
    * @param username the account to authenticate as
    * @param password that account's password
@@ -1029,7 +1048,7 @@ public class HttpCalDavClient implements CalDavClient {
     try {
       root = parse(body, uri);
     } catch (CalDavException e) {
-      LOG.debug("MKCALENDAR answer from {} carries no readable XML body", uri, e);
+      LOG.debug("The answer from {} carries no readable XML body", uri, e);
       return failed;
     }
     for (Element propstat : descendants(root, DAV_NS, "propstat")) {
