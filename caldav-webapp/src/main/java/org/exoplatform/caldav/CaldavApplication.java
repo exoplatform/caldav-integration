@@ -32,8 +32,13 @@ import io.meeds.spring.kernel.PortalApplicationContextInitializer;
  * storage and service) stay kernel-configured and coexist with the Spring
  * beans through the bridge, exactly as in email-connector.
  */
-@SpringBootApplication(scanBasePackages = { CaldavApplication.MODULE_NAME, AvailableIntegration.KERNEL_MODULE,
-    AvailableIntegration.JPA_MODULE, AvailableIntegration.LIQUIBASE_MODULE, AvailableIntegration.WEB_MODULE })
+@SpringBootApplication(scanBasePackages = {
+  CaldavApplication.MODULE_NAME,
+  AvailableIntegration.KERNEL_MODULE,
+  AvailableIntegration.JPA_MODULE,
+  AvailableIntegration.LIQUIBASE_MODULE,
+  AvailableIntegration.WEB_MODULE
+})
 @EnableJpaRepositories(basePackages = { CaldavApplication.MODULE_NAME })
 @PropertySource("classpath:application.properties")
 @PropertySource("classpath:application-common.properties")

@@ -18,23 +18,20 @@ package org.exoplatform.caldav.entity;
 
 import java.util.Date;
 
+import org.exoplatform.caldav.model.CalendarSyncStatus;
+import org.exoplatform.caldav.model.SyncOrigin;
+
+import io.meeds.common.persistence.PortableSequence;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
-import jakarta.persistence.Temporal;
-import jakarta.persistence.TemporalType;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-
-import org.exoplatform.caldav.model.CalendarSyncStatus;
-import org.exoplatform.caldav.model.SyncOrigin;
 
 /**
  * The binding between one eXo calendar and one remote collection, for one user
@@ -56,8 +53,7 @@ import org.exoplatform.caldav.model.SyncOrigin;
 public class CaldavCalendarSyncEntity {
 
   @Id
-  @SequenceGenerator(name = "SEQ_CALDAV_CALENDAR_SYNC_ID", sequenceName = "SEQ_CALDAV_CALENDAR_SYNC_ID", allocationSize = 1)
-  @GeneratedValue(strategy = GenerationType.AUTO, generator = "SEQ_CALDAV_CALENDAR_SYNC_ID")
+  @PortableSequence(name = "SEQ_CALDAV_CALENDAR_SYNC_ID")
   @Column(name = "ID")
   private Long               id;
 
@@ -121,12 +117,10 @@ public class CaldavCalendarSyncEntity {
    * run that never finished is visible as a start without an end rather than
    * as no run at all.
    */
-  @Temporal(TemporalType.TIMESTAMP)
   @Column(name = "LAST_SYNC_START")
   private Date               lastSyncStart;
 
   /** When the last synchronisation completed, successfully or not. */
-  @Temporal(TemporalType.TIMESTAMP)
   @Column(name = "LAST_SYNC_END")
   private Date               lastSyncEnd;
 

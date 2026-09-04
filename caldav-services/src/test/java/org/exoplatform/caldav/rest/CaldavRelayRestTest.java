@@ -39,8 +39,12 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.CaldavProbeResult;
@@ -232,6 +236,48 @@ public class CaldavRelayRestTest {
   }
 
   /**
+   * Every relay refusal carries its machine-readable code in the relay-code
+   * header of the thrown exception — the header the browser reads to tell a
+   * relay verdict from an upstream answer, copied onto the response by
+   * Spring from the exception's own headers.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void shouldCarryTheRelayCodeHeaderOnARefusal() throws Exception {
+    when(request.getRequestURI()).thenReturn("/caldav/rest/dav/5/dav/");
+    org.mockito.Mockito.doThrow(new ObjectNotFoundException("no row")).when(caldavRelayService).relay(any());
+
+    ResponseStatusException refusal = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavRelayRest.relay(request, SERVER_ID));
+
+    assertEquals("caldav.relay.unknownServer", refusal.getHeaders().getFirst(CaldavRelayService.RELAY_CODE_HEADER));
+  }
+
+  /**
+   * The relay-code header on the rendered HTTP response itself, through a
+   * dispatched request: the hop from the thrown exception to the response is
+   * framework behavior — the resolver reading the exception's header
+   * accessor — and that accessor is exactly what Spring renamed between 6
+   * and 7, so only a dispatched assertion notices the next move.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void shouldRenderTheRelayCodeHeaderOnTheHttpResponse() throws Exception {
+    org.mockito.Mockito.doThrow(new ObjectNotFoundException("no row")).when(caldavRelayService).relay(any());
+    when(caldavRelayService.getMaxBodyBytes()).thenReturn(1024L);
+
+    MockMvcBuilders.standaloneSetup(caldavRelayRest)
+                   .build()
+                   .perform(MockMvcRequestBuilders.request(HttpMethod.valueOf("PROPFIND"), "/dav/5/dav/cal/john/"))
+                   .andExpect(MockMvcResultMatchers.status().isNotFound())
+                   .andExpect(MockMvcResultMatchers.header()
+                                                   .string(CaldavRelayService.RELAY_CODE_HEADER,
+                                                           "caldav.relay.unknownServer"));
+  }
+
+  /**
    * A request whose URI does not sit under the relay prefix — unreachable
    * through normal routing, conceivable through a crafted dispatch — is a
    * plain 400, never forwarded.
@@ -261,7 +307,7 @@ public class CaldavRelayRestTest {
     ResponseStatusException refusal = assertThrows(ResponseStatusException.class,
                                                    () -> caldavRelayRest.relay(request, SERVER_ID));
 
-    assertEquals(HttpStatus.PAYLOAD_TOO_LARGE, refusal.getStatusCode());
+    assertEquals(HttpStatus.CONTENT_TOO_LARGE, refusal.getStatusCode());
     verify(caldavRelayService, org.mockito.Mockito.never()).relay(any());
   }
 
