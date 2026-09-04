@@ -33,6 +33,7 @@ import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.MkCalendarResult;
+import org.exoplatform.caldav.client.PropPatchResult;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
@@ -50,6 +51,17 @@ import org.exoplatform.services.log.Log;
  * This is the first code that creates collections in the customer's own
  * calendar space. Until now eXo only ever wrote into a collection it had made
  * for itself, and everything here is shaped by that difference.
+ *
+ * <p>
+ * The path is the identity of a binding and the display name is data carried
+ * along it: every pass that settles on a collection — listed, answered
+ * directly, or just created — also makes sure the collection reads under the
+ * calendar's current eXo name, and confirms that by reading the name back.
+ * Before EXO-89528's fix the name was written once, inside MKCALENDAR, and
+ * never again, so a calendar renamed in eXo kept its first name on the server
+ * for good — and re-connecting the account could not help, because the
+ * binding is recovered by path and found the same collection under the same
+ * stale name.
  */
 @Service
 public class CaldavOutboundService {
@@ -209,15 +221,18 @@ public class CaldavOutboundService {
                                                                                               wanted))
                                                        .findFirst();
     if (existing.isPresent()) {
+      reconcileDisplayName(settings, endpoint, existing.get(), calendar);
       return record(userIdentityId, serverId, anchor, existing.get().href(), CalendarSyncStatus.ACTIVE, pair);
     }
-    if (pair != null && stillThere(settings, endpoint, pair.getRemoteHref())) {
+    CalendarCollection answering = pair == null ? null : askDirectly(settings, endpoint, pair.getRemoteHref());
+    if (answering != null) {
       // The listing did not show it, the collection itself answers. Observed
       // live: a collection vanished from an account's home for a quarter of an
       // hour and came back, and the only reason eXo did not create a duplicate
       // is that the path it derives happens to be stable. A listing is a fair
       // way to confirm a collection is *there*; it is not evidence that one is
       // gone.
+      reconcileDisplayName(settings, endpoint, answering, calendar);
       return record(userIdentityId, serverId, anchor, pair.getRemoteHref(), CalendarSyncStatus.ACTIVE, pair);
     }
     if (pair != null && pair.getStatus() == CalendarSyncStatus.REMOTE_CREATE_REFUSED) {
@@ -267,11 +282,22 @@ public class CaldavOutboundService {
                                                           settings.getPassword());
       // The status is never proof. One server answers 201 while creating
       // nothing; only reading the home back settles it.
-      boolean created = calDavClient.listCalendars(endpoint, home, settings.getUsername(), settings.getPassword())
-                                    .stream()
-                                    .anyMatch(collection -> isSameCollection(collection.href(), null, wanted))
-          || stillThere(settings, endpoint, wanted);
-      if (created) {
+      Optional<CalendarCollection> created = calDavClient.listCalendars(endpoint,
+                                                                        home,
+                                                                        settings.getUsername(),
+                                                                        settings.getPassword())
+                                                         .stream()
+                                                         .filter(collection -> isSameCollection(collection.href(),
+                                                                                                null,
+                                                                                                wanted))
+                                                         .findFirst()
+                                                         .or(() -> Optional.ofNullable(askDirectly(settings,
+                                                                                                   endpoint,
+                                                                                                   wanted)));
+      if (created.isPresent()) {
+        // MKCALENDAR carried the name, and the same rule applies to it: what
+        // counts is the name the server holds, not the one the request asked.
+        reconcileDisplayName(settings, endpoint, created.get(), calendar);
         return record(userIdentityId, serverId, anchor, wanted, CalendarSyncStatus.ACTIVE, pair);
       }
       LOG.info("The server would not create a collection for calendar {} (status {}); outbound is unavailable there",
@@ -334,7 +360,72 @@ public class CaldavOutboundService {
   }
 
   /**
-   * Whether the collection answers for itself, whatever a listing said.
+   * Makes the collection read under the calendar's current eXo name, and
+   * confirms that it does.
+   *
+   * <p>
+   * Nothing is sent when the listing already shows the name eXo would set, so
+   * a pass over calendars nobody renamed costs no request. Otherwise the name
+   * is written with a PROPPATCH and then <b>read back</b>: the status is never
+   * the proof, exactly as it is not for MKCALENDAR — a server free to answer
+   * 201 having created nothing is as free to answer 207 having changed nothing
+   * — and only the name the collection reports afterwards says whether the
+   * rename happened. A read-back that still shows the old name is logged as
+   * such, so an administrator reads the fact rather than the claim.
+   *
+   * <p>
+   * The name is data, never identity. Whatever the server did with it, the
+   * binding is untouched: the pair still points at the same path, and a
+   * refused or ignored rename leaves the calendar syncing under its old name
+   * rather than unbound. eXo's name wins over one set from the user's own
+   * client on a collection eXo created, because the collection is the
+   * calendar's — a user who wants their calendar called something else
+   * renames it in eXo, and every client of theirs follows.
+   *
+   * @param settings the connected account
+   * @param endpoint the declared server
+   * @param collection the collection as the server currently describes it
+   * @param calendar the eXo calendar it is bound to
+   */
+  private void reconcileDisplayName(CaldavUserSetting settings,
+                                    CalDavEndpoint endpoint,
+                                    CalendarCollection collection,
+                                    Calendar calendar) {
+    String wanted = displayNameOf(calendar);
+    if (StringUtils.equals(collection.displayName(), wanted)) {
+      return;
+    }
+    String href = StringUtils.appendIfMissing(collection.href(), "/");
+    try {
+      PropPatchResult answer = calDavClient.setDisplayName(endpoint,
+                                                           href,
+                                                           wanted,
+                                                           settings.getUsername(),
+                                                           settings.getPassword());
+      CalendarCollection readBack = calDavClient.readCalendar(endpoint,
+                                                              href,
+                                                              settings.getUsername(),
+                                                              settings.getPassword());
+      String actual = readBack == null ? null : readBack.displayName();
+      if (StringUtils.equals(actual, wanted)) {
+        LOG.debug("Collection {} now reads under the current name of calendar {}", href, calendar.getId());
+      } else {
+        LOG.warn("The server answered {} to renaming collection {} for calendar {}, but read back it is still called"
+            + " '{}' rather than '{}'; the binding stands and the next sync asks again",
+                 answer.status(),
+                 href,
+                 calendar.getId(),
+                 actual,
+                 wanted);
+      }
+    } catch (CalDavException e) {
+      LOG.warn("The name of calendar {} could not be carried to collection {}; the binding stands and the next sync"
+          + " asks again", calendar.getId(), href, e);
+    }
+  }
+
+  /**
+   * The collection as it answers for itself, whatever a listing said.
    *
    * <p>
    * A home listing omitting a collection is not proof the collection is gone —
@@ -344,27 +435,28 @@ public class CaldavOutboundService {
    * calendars where they had one.
    *
    * <p>
-   * A server that cannot be reached answers false: an unreachable server is
+   * A server that cannot be reached answers null: an unreachable server is
    * not evidence either way, and treating it as "still there" would leave a
    * binding pointing at something nobody has confirmed.
    *
    * @param settings the connected account
    * @param endpoint the declared server
    * @param href the collection to ask about, or null
-   * @return true when the collection itself answers
+   * @return the collection as it describes itself, or null when it does not
+   *         answer
    */
-  private boolean stillThere(CaldavUserSetting settings, CalDavEndpoint endpoint, String href) {
+  private CalendarCollection askDirectly(CaldavUserSetting settings, CalDavEndpoint endpoint, String href) {
     if (StringUtils.isBlank(href)) {
-      return false;
+      return null;
     }
     try {
       return calDavClient.readCalendar(endpoint,
                                        StringUtils.appendIfMissing(href, "/"),
                                        settings.getUsername(),
-                                       settings.getPassword()) != null;
+                                       settings.getPassword());
     } catch (CalDavException e) {
       LOG.debug("Collection {} could not be asked about directly", href, e);
-      return false;
+      return null;
     }
   }
 

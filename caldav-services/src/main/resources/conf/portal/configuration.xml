@@ -56,6 +56,18 @@
       <description>Pushes a newly created calendar to the user's CalDAV server without waiting for the throttled sync</description>
     </component-plugin>
   </external-component-plugins>
+  <!-- A rename is the edit that shows: the collection eXo created for a
+       personal calendar reads under the calendar's name, and until EXO-89528
+       that name was written once, inside MKCALENDAR, and never again. -->
+  <external-component-plugins>
+    <target-component>org.exoplatform.services.listener.ListenerService</target-component>
+    <component-plugin>
+      <name>exo.agenda.calendar.updated</name>
+      <set-method>addListener</set-method>
+      <type>org.exoplatform.caldav.listener.CalendarUpdatedListener</type>
+      <description>Carries a calendar's new name to its collection on the user's CalDAV server without waiting for the throttled sync</description>
+    </component-plugin>
+  </external-component-plugins>
   <!-- The outward half of answering a meeting. Bound to responseSaved rather
        than responseSent: the copy has to track what agenda holds, which
        includes the reset to NEEDS-ACTION after a material edit and the
