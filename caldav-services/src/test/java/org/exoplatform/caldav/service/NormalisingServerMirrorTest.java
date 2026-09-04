@@ -54,6 +54,7 @@ import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.client.MkCalendarResult;
+import org.exoplatform.caldav.client.PropPatchResult;
 import org.exoplatform.caldav.client.PutResult;
 import org.exoplatform.caldav.client.ServerCapabilities;
 import org.exoplatform.caldav.client.SyncCollectionResult;
@@ -1480,6 +1481,15 @@ public class NormalisingServerMirrorTest {
                                        String username,
                                        String password) {
       return new MkCalendarResult(201, List.of());
+    }
+
+    @Override
+    public PropPatchResult setDisplayName(CalDavEndpoint endpoint,
+                                          String href,
+                                          String displayName,
+                                          String username,
+                                          String password) {
+      return new PropPatchResult(207, List.of());
     }
 
     @Override
