@@ -234,6 +234,16 @@ public class EventPropagationWiringTest {
    * @throws Exception when the configuration cannot be read
    */
   @Test
+  public void aCalendarEditIsListenedToAndCarriedOutsideTheSavingTransaction() throws Exception {
+    // EXO-89528: nothing listened to a calendar's edit, so a rename in eXo
+    // reached the server only through a sweep — which did not carry it either.
+    Class<?> listener = classDeclaredFor("exo.agenda.calendar.updated");
+    assertEquals(CalendarUpdatedListener.class, listener);
+    assertTrue(listener.isAnnotationPresent(Asynchronous.class),
+               "the rename listener must not run inside the saving transaction");
+  }
+
+  @Test
   public void everyDeclaredListenerIsAsynchronous() throws Exception {
     assertTrue(classDeclaredFor("exo.agenda.event.created").isAnnotationPresent(Asynchronous.class),
                "the creation listener must not run inside the saving transaction");
