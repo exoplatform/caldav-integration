@@ -192,7 +192,7 @@ public class CaldavRelayRest {
     headers.set(CaldavRelayService.RELAY_CODE_HEADER, code);
     return new ResponseStatusException(status, code, null) {
       @Override
-      public HttpHeaders getResponseHeaders() {
+      public HttpHeaders getHeaders() {
         return headers;
       }
     };
