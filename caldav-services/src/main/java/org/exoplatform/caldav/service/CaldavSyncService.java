@@ -673,6 +673,30 @@ public class CaldavSyncService {
    * @param userIdentityId identity of the calendar's owner
    */
   public void syncAfterCalendarCreated(long userIdentityId) {
+    syncForCalendarOwner(userIdentityId);
+  }
+
+  /**
+   * Synchronises because a calendar has just been edited — renamed, above all.
+   *
+   * <p>
+   * The same pass as after a creation, for the same reason: the user who just
+   * renamed a calendar should see the name on their phone without waiting for
+   * the throttle, and the binding step of a pass is where the collection's
+   * name is reconciled and read back (EXO-89528).
+   *
+   * @param userIdentityId identity of the calendar's owner
+   */
+  public void syncAfterCalendarUpdated(long userIdentityId) {
+    syncForCalendarOwner(userIdentityId);
+  }
+
+  /**
+   * The pass a calendar's creation or edit triggers for its owner.
+   *
+   * @param userIdentityId identity of the calendar's owner
+   */
+  private void syncForCalendarOwner(long userIdentityId) {
     if (!connected(caldavConnectorStorage.getCaldavSetting(userIdentityId))) {
       return;
     }
