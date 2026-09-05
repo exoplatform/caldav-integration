@@ -34,8 +34,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import org.hibernate.annotations.DynamicUpdate;
-import org.exoplatform.caldav.model.CalendarSyncStatus;
-import org.exoplatform.caldav.model.SyncOrigin;
+import jakarta.persistence.Temporal;
+import jakarta.persistence.TemporalType;
 /**
  * The binding between one eXo calendar and one remote collection, for one user
  * on one declared server. This is the row the engine reconciles against: it
