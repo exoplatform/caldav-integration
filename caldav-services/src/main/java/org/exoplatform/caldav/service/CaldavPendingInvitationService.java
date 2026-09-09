@@ -85,7 +85,7 @@ import org.exoplatform.services.log.Log;
  * <p>
  * So the pass now asks two questions — the events the user attends, and the
  * events of the user's own calendars — and stops refusing the second. Nothing
- * is mixed by that: {@link CaldavPushService#pushAgendaEvent(long, long)} is
+ * is mixed by that: {@link CaldavPushService#pushAgendaEvent(long, String, long)} is
  * what routes an event, and it sends an event of the user's own calendar to
  * that calendar's own collection, never to the mirror, answering null when
  * there is no collection to write into.
@@ -93,10 +93,10 @@ import org.exoplatform.services.log.Log;
  * <h2>The one question both paths ask</h2>
  *
  * <p>
- * {@link #seedOne(long, long)} is the whole decision, and it is deliberately
+ * {@link #seedOne(long, String, long)} is the whole decision, and it is deliberately
  * the only one: the background pass reaches it through
- * {@link #pushUpcomingMeetings(long)} and the creation listener reaches it
- * through {@link #seedMeeting(long, long)}, so an event that would be copied
+ * {@link #pushUpcomingMeetings(long, String)} and the creation listener reaches it
+ * through {@link #seedMeeting(long, String, long)}, so an event that would be copied
  * were it created now is the same event this pass backfills. The listing above
  * is candidate selection and nothing more — a cheap way to name events, never
  * a second set of rules. That is why the "not DECLINED" rule lives in
