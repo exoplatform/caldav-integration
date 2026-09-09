@@ -142,7 +142,7 @@ public class CaldavSyncService {
    *
    * <p>
    * <b>The order they are declared in is the order they are done in</b>
-   * ({@link #runOutboundPhases(long, Set)} walks {@code values()}), so the
+   * ({@link #runOutboundPhases(long, String, Set)} walks {@code values()}), so the
    * ordering is stated once and cannot drift between a sweep and a connection.
    */
   public enum OutboundPhase {
@@ -178,7 +178,7 @@ public class CaldavSyncService {
    *
    * <p>
    * Two callers name this set and they are the same kind of caller: the sweep,
-   * and the burst {@link #startOutboundBurst(long)} hands to the executor. What
+   * and the burst {@link #startOutboundBurst(long, String)} hands to the executor. What
    * they have in common is the only property that ever mattered — no request is
    * blocked on either of them — and it is the property the expensive phase asks
    * for.
@@ -493,7 +493,7 @@ public class CaldavSyncService {
    * <p>
    * That rule is about <i>waiting</i>, not about the check. A user pressing the
    * button also starts it (EXO-89821), on the executor thread and without
-   * waiting for it — see {@link #startOutboundBurst(long)}. Both paths take the
+   * waiting for it — see {@link #startOutboundBurst(long, String)}. Both paths take the
    * same {@code outboundInFlight} key, so an account is never verified twice at
    * once.
    *
@@ -540,7 +540,7 @@ public class CaldavSyncService {
    * started here settles, seeds <i>and</i> verifies, so an answer the user gave
    * in their own calendar is read the moment they ask for it rather than
    * whenever the next sweep comes round. Started, never awaited: see
-   * {@link #startOutboundBurst(long)} below.
+   * {@link #startOutboundBurst(long, String)} below.
    *
    * @param userIdentityId identity of the user
    * @param username the user's login
@@ -640,7 +640,7 @@ public class CaldavSyncService {
    *
    * <p>
    * The key is <b>not</b> taken here. It is taken in
-   * {@link #startOutboundBurst(long)} before the hand-over, so that an account
+   * {@link #startOutboundBurst(long, String)} before the hand-over, so that an account
    * queued behind another one is already spoken for; taking it here as well
    * would find it held by this very burst.
    *
@@ -733,7 +733,7 @@ public class CaldavSyncService {
    *
    * <p>
    * Until one exists, every copy is refused in a way nobody can see:
-   * {@link CaldavPushService#pushAgendaEvent(long, long)} answers null for an
+   * {@link CaldavPushService#pushAgendaEvent(long, String, long)} answers null for an
    * event of a calendar with no collection — a 204 the page renders as
    * nothing — and refuses a space meeting with a known-state code the seeding
    * pass logs at debug. No error, no queue, no trace: exactly the "it does not
