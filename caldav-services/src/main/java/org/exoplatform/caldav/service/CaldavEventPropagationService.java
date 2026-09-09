@@ -287,7 +287,7 @@ public class CaldavEventPropagationService {
    * in practice: an event somebody made for themselves was copied by their
    * browser on save and never seeded afterwards, so the same event was copied
    * or not according only to whether it predated the connection. Where an event
-   * belongs is {@link CaldavPushService#pushAgendaEvent(long, long)}'s question
+   * belongs is {@link CaldavPushService#pushAgendaEvent(long, String, long)}'s question
    * and it answers it — own calendar to its own collection, anything else to
    * the mirror — so the shared decision no longer duplicates it.
    *
