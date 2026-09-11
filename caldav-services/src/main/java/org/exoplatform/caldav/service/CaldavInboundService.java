@@ -141,6 +141,14 @@ public class CaldavInboundService {
   @Autowired
   private AgendaRemoteEventService agendaRemoteEventService;
 
+  /**
+   * Told, before agenda is asked to apply a change read from the server, which
+   * copy the change came from — so the listener that carries agenda's
+   * broadcast to every holder of a copy leaves that one alone (EXO-90190).
+   */
+  @Autowired
+  private CaldavEventPropagationService caldavEventPropagationService;
+
   @Autowired
   private IcsParser              icsParser;
 
@@ -313,9 +321,10 @@ public class CaldavInboundService {
       // EXO-89807. The object is in hand, its owner's answer is on it, and
       // this is the only reader that was told it changed.
       adoptAnswerOnCopy(userIdentityId, pair, object, master.getUid());
-      // A copy eXo wrote itself. Importing it would show the user a second,
-      // personal event standing for a space meeting they already see.
-      LOG.debug("Object {} is a copy eXo wrote into the mirror and is not imported back", object.href());
+      // A copy eXo wrote itself — into this user's mirror, or into another
+      // user's on an account they share. Importing it would show the user a
+      // second, personal event standing for a meeting eXo already holds.
+      LOG.debug("Object {} is a copy eXo wrote into a mirror and is not imported back", object.href());
       return false;
     }
     ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), master.getUid());
@@ -392,17 +401,20 @@ public class CaldavInboundService {
       }
       Long localEventId = caldavSyncStorage.getMirrorEventId(userIdentityId, pair.getServerId(), icsUid);
       if (localEventId == null || localEventId <= 0) {
-        // The copy is ours by UID but names no event we can record against —
-        // an interrupted push, an event since deleted. Nothing to do, and
-        // nothing wrong.
-        LOG.debug("The copy at {} stands for no event of ours; no answer is read off it", object.href());
+        // The copy is eXo's by UID but names no event in THIS user's mirror:
+        // another user's copy on an account they share (EXO-90190), an
+        // interrupted push, an event since deleted. Nothing to do, and nothing
+        // wrong — whatever answer it carries belongs to whoever wrote it, and
+        // recording it as this user's would be the attribution error the
+        // user-scoped question exists to prevent.
+        LOG.debug("The copy at {} is eXo's but not user {}'s own; no answer is read off it", object.href(), userIdentityId);
         return;
       }
       CaldavAnswerAdoptionService.Outcome outcome = caldavAnswerAdoptionService.adoptAnswer(userIdentityId,
                                                                                            localEventId,
                                                                                            object.calendarData());
       if (outcome == CaldavAnswerAdoptionService.Outcome.ADOPTED) {
-        LOG.debug("An answer of user {} was read off the copy at {} before it was left where it is",
+        LOG.debug("An answer of user {} was read off their own copy at {} before it was left where it is",
                   userIdentityId,
                   object.href());
       }
@@ -435,19 +447,37 @@ public class CaldavInboundService {
    * less because this pair happens to hold a stale row for the same UID.
    *
    * <p>
+   * Asked for the account the collection sits in — not for the reading user,
+   * and not for the whole server registration (EXO-90190). The first version
+   * of this rule asked "did <em>this user's</em> mirror write it?", which is
+   * one level short: on an account two eXo users share, the copy was written
+   * by the other one, the user-scoped question answered no, and the copy was
+   * imported as a genuine remote event — then pushed back under a fresh UID,
+   * imported by the other user in turn, and so on every sweep. A mirror copy
+   * is eXo's whoever wrote it, and the mapping table says so for every user
+   * at once. The second version asked for every account of the server, which
+   * is one level too far: an externally organised meeting keeps the
+   * organiser's UID, so a third user with their own account on the same
+   * server found their own copy "owned" and never saw the meeting. Copies
+   * live in accounts; the storage names the account by the collection's
+   * calendar home.
+   *
+   * <p>
    * The mirror pair itself is exempt. Reading the mirror back is not importing
    * a foreign object, and answering true there would make the mirror unable to
-   * reconcile the copies it owns.
+   * reconcile the copies it owns. The sweep never reads through a mirror pair
+   * in the first place; the exemption states the intent where the rule lives.
    *
    * @param pair the binding being read
    * @param icsUid the object's iCalendar UID
-   * @return true when a mirror pair of this user already maps that UID
+   * @return true when a mirror pair of any user on the pair's account already
+   *         maps that UID
    */
   private boolean isMirrorOwned(CalendarSync pair, String icsUid) {
     if (pair.getOrigin() == SyncOrigin.MIRROR) {
       return false;
     }
-    return caldavSyncStorage.isMirrorOwned(pair.getUserIdentityId(), pair.getServerId(), icsUid);
+    return caldavSyncStorage.isMirrorOwned(pair.getServerId(), pair.getRemoteHref(), icsUid);
   }
 
   /**
@@ -467,6 +497,13 @@ public class CaldavInboundService {
    * The UID is the server's own, taken from the object being imported, so a
    * later push addresses the object this event came from rather than a new
    * one beside it.
+   *
+   * <p>
+   * Recorded on update as well as on creation, and from the object rather than
+   * from what agenda already holds: the object's UID <em>is</em> the identity,
+   * the two agree by construction wherever a record exists, and an event
+   * imported before EXO-89530 — which has no record — gets one on its first
+   * remote edit instead of a duplicate on its first push.
    *
    * @param master the parsed remote event
    * @return the remote identity to record with the event
@@ -601,8 +638,8 @@ public class CaldavInboundService {
     mapping.setRemoteHref(object.href());
     mapping.setEtag(object.etag());
     mapping.setLastSync(new Date());
-    caldavSyncStorage.saveObject(mapping);
-    applyOccurrences(userIdentityId, calendar, created.getId(), master, parsed);
+    ObjectSync recorded = caldavSyncStorage.saveObject(mapping);
+    applyOccurrences(userIdentityId, calendar, created.getId(), mappingIdOf(recorded), master, parsed);
     return true;
   }
 
@@ -696,6 +733,22 @@ public class CaldavInboundService {
    * recorded, so the next run reconsiders instead of believing the two sides
    * agree.
    *
+   * <h4>The identity that the update threw away (EXO-90190)</h4>
+   *
+   * <p>
+   * Agenda's update takes the event's remote identity as an argument and reads
+   * a null there as "forget it": the mapping row goes, exactly as a blank
+   * identifier or an unnamed provider would make it go. This method passed
+   * null. So every remote edit applied here silently unrecorded what the event
+   * is called on the server, and the next push of that event — which the
+   * update itself set off, through agenda's broadcast — found no identifier,
+   * minted one, and wrote a second object beside the one it had just read.
+   * Two eXo users on one account then imported each other's second objects,
+   * and one edit became three meetings. The identity is now recorded again
+   * with the update, in the shape {@link #remoteIdentity(IcsEvent)} gives a
+   * new import, and the change is announced as the server's own before agenda
+   * is asked, so its own copy is not written back to at all.
+   *
    * @param userIdentityId identity of the user
    * @param pair the binding being read
    * @param calendar the eXo calendar standing for it
@@ -740,6 +793,8 @@ public class CaldavInboundService {
     updated.setId(local.getId());
     updated.setParentId(local.getParentId());
     updated.setCreatorId(local.getCreatorId());
+    long originId = mappingIdOf(known);
+    caldavEventPropagationService.changedOnTheServer(local.getId(), originId);
     try {
       // sendInvitation false, for the same reason as on creation: these people
       // were invited by whoever organised the meeting, and telling them again
@@ -750,10 +805,11 @@ public class CaldavInboundService {
                                      List.of(),
                                      List.of(),
                                      List.of(),
-                                     null,
+                                     remoteIdentity(master),
                                      false,
                                      userIdentityId);
     } catch (Exception e) { // NOSONAR agenda declares several checked exceptions here
+      caldavEventPropagationService.notChangedAfterAll(local.getId());
       LOG.warn("The event of object {} could not be updated in calendar {}", object.href(), calendar.getId(), e);
       return false;
     }
@@ -761,7 +817,7 @@ public class CaldavInboundService {
     known.setRemoteHref(object.href());
     known.setLastSync(new Date());
     caldavSyncStorage.saveObject(known);
-    applyOccurrences(userIdentityId, calendar, local.getId(), master, parsed);
+    applyOccurrences(userIdentityId, calendar, local.getId(), originId, master, parsed);
     return true;
   }
 
@@ -819,26 +875,46 @@ public class CaldavInboundService {
    * @param userIdentityId identity of the user
    * @param calendar the eXo calendar standing for the collection
    * @param masterEventId the series in agenda
+   * @param objectSyncId the mapping the object was read through — an override
+   *          and its series share one object, so every occurrence applied here
+   *          is the server's own change to that mapping's copy; 0 when the
+   *          mapping is not recorded yet
    * @param master the parsed master
    * @param parsed every event the object carried, master first
    */
   private void applyOccurrences(long userIdentityId,
                                 Calendar calendar,
                                 long masterEventId,
+                                long objectSyncId,
                                 IcsEvent master,
                                 List<IcsEvent> parsed) {
     for (IcsEvent override : parsed) {
       if (StringUtils.isBlank(override.getOccurrenceId())) {
         continue;
       }
-      amendOccurrence(userIdentityId, calendar, masterEventId, override);
+      amendOccurrence(userIdentityId, calendar, masterEventId, objectSyncId, override);
     }
     if (master.getExceptionDates() == null) {
       return;
     }
     for (String excluded : master.getExceptionDates()) {
-      cancelOccurrence(userIdentityId, masterEventId, excluded, master.getTimeZoneId());
+      cancelOccurrence(userIdentityId, masterEventId, objectSyncId, excluded, master.getTimeZoneId());
     }
+  }
+
+  /**
+   * A mapping's identifier as the propagation ledger takes it.
+   *
+   * <p>
+   * A mapping the storage never returned, or an adopted one not persisted yet,
+   * has no identifier; 0 stands for "no copy to leave alone", which the ledger
+   * ignores rather than records.
+   *
+   * @param mapping the mapping, possibly null or unpersisted
+   * @return its identifier, or 0
+   */
+  private static long mappingIdOf(ObjectSync mapping) {
+    return mapping == null || mapping.getId() == null ? 0 : mapping.getId();
   }
 
   /**
@@ -847,9 +923,14 @@ public class CaldavInboundService {
    * @param userIdentityId identity of the user
    * @param calendar the eXo calendar standing for the collection
    * @param masterEventId the series in agenda
+   * @param objectSyncId the mapping the series' object was read through
    * @param override the parsed override
    */
-  private void amendOccurrence(long userIdentityId, Calendar calendar, long masterEventId, IcsEvent override) {
+  private void amendOccurrence(long userIdentityId,
+                               Calendar calendar,
+                               long masterEventId,
+                               long objectSyncId,
+                               IcsEvent override) {
     ZonedDateTime occurrenceId = icsEventMapper.occurrenceOf(override);
     if (occurrenceId == null) {
       LOG.debug("An override of series {} names an occurrence that cannot be read; it is skipped", masterEventId);
@@ -868,14 +949,24 @@ public class CaldavInboundService {
       // second series running beside the first.
       amended.setRecurrence(null);
       amended.setOccurrence(occurrence.getOccurrence());
-      agendaEventService.updateEvent(amended,
-                                     keptAttendees(occurrence.getId(), userIdentityId),
-                                     List.of(),
-                                     List.of(),
-                                     List.of(),
-                                     null,
-                                     false,
-                                     userIdentityId);
+      // The identity stays null here on purpose: an occurrence carries no
+      // identity of its own. The UID is the series', recorded against the
+      // series, and that is the only row either the push or the adoption pass
+      // ever reads — both resolve an occurrence to its series first.
+      caldavEventPropagationService.changedOnTheServer(occurrence.getId(), objectSyncId);
+      try {
+        agendaEventService.updateEvent(amended,
+                                       keptAttendees(occurrence.getId(), userIdentityId),
+                                       List.of(),
+                                       List.of(),
+                                       List.of(),
+                                       null,
+                                       false,
+                                       userIdentityId);
+      } catch (Exception e) { // NOSONAR rethrown once the announcement is withdrawn
+        caldavEventPropagationService.notChangedAfterAll(occurrence.getId());
+        throw e;
+      }
     } catch (Exception e) { // NOSONAR agenda declares several checked exceptions here
       // One occurrence that will not take must not cost the series, which is
       // already in place and correct for every other date.
@@ -894,10 +985,15 @@ public class CaldavInboundService {
    *
    * @param userIdentityId identity of the user
    * @param masterEventId the series in agenda
+   * @param objectSyncId the mapping the series' object was read through
    * @param excluded the raw excluded date
    * @param zoneId the zone the series is anchored on
    */
-  private void cancelOccurrence(long userIdentityId, long masterEventId, String excluded, String zoneId) {
+  private void cancelOccurrence(long userIdentityId,
+                                long masterEventId,
+                                long objectSyncId,
+                                String excluded,
+                                String zoneId) {
     ZonedDateTime occurrenceId = icsEventMapper.occurrenceOf(excluded, zoneId);
     if (occurrenceId == null) {
       return;
@@ -913,14 +1009,20 @@ public class CaldavInboundService {
       // first live run.
       occurrence.setStatus(EventStatus.CANCELLED);
       occurrence.setRecurrence(null);
-      agendaEventService.updateEvent(occurrence,
-                                     keptAttendees(occurrence.getId(), userIdentityId),
-                                     List.of(),
-                                     List.of(),
-                                     List.of(),
-                                     null,
-                                     false,
-                                     userIdentityId);
+      caldavEventPropagationService.changedOnTheServer(occurrence.getId(), objectSyncId);
+      try {
+        agendaEventService.updateEvent(occurrence,
+                                       keptAttendees(occurrence.getId(), userIdentityId),
+                                       List.of(),
+                                       List.of(),
+                                       List.of(),
+                                       null,
+                                       false,
+                                       userIdentityId);
+      } catch (Exception e) { // NOSONAR rethrown once the announcement is withdrawn
+        caldavEventPropagationService.notChangedAfterAll(occurrence.getId());
+        throw e;
+      }
     } catch (Exception e) { // NOSONAR agenda declares several checked exceptions here
       // A meeting the user cancelled elsewhere still showing here is wrong,
       // but it is a smaller wrong than losing the series over it.
@@ -1634,18 +1736,42 @@ public class CaldavInboundService {
     return last != null && last.isAfter(Instant.now().minus(NOT_ANSWERING_FOR));
   }
 
+  /**
+   * Removes from agenda the event of an object that vanished from the server.
+   *
+   * <p>
+   * The deletion is announced as the server's own before agenda is asked, for
+   * the same reason an update is: agenda broadcasts the deletion, the listener
+   * carries it to every holder of a copy, and the mapping this object was
+   * read through is one of them — still recorded at that moment, since it is
+   * dropped only once agenda has agreed. Without the announcement the listener
+   * asked the server to remove an object the server had just told us was
+   * gone, and recorded that removal as owed against a mapping about to be
+   * deleted — the retry the rig saw "stay owed" after a deletion (EXO-90190).
+   *
+   * @param userIdentityId identity of the user
+   * @param object the mapping whose object vanished
+   * @return true when the event is gone and the mapping dropped
+   */
   private boolean removeOne(long userIdentityId, ObjectSync object) {
+    // The selection never hands over a mapping with no event, so this is
+    // 0 only in theory; 0 is what the ledger ignores.
+    long localEventId = object.getLocalEventId() == null ? 0 : object.getLocalEventId();
+    caldavEventPropagationService.changedOnTheServer(localEventId, mappingIdOf(object));
     try {
       agendaEventService.deleteEventById(object.getLocalEventId(), userIdentityId);
     } catch (ObjectNotFoundException e) {
+      caldavEventPropagationService.notChangedAfterAll(localEventId);
       LOG.debug("Event {} was already gone from agenda; only its mapping is dropped", object.getLocalEventId(), e);
     } catch (IllegalAccessException e) {
+      caldavEventPropagationService.notChangedAfterAll(localEventId);
       // Their own calendar, so this should not happen — and if it does, the
       // mapping is kept, because dropping it would hide an event eXo can no
       // longer account for.
       LOG.warn("User {} may not delete event {}; it stays as it is", userIdentityId, object.getLocalEventId(), e);
       return false;
     } catch (RuntimeException e) {
+      caldavEventPropagationService.notChangedAfterAll(localEventId);
       Throwable cause = e;
       while (cause.getCause() != null && cause.getCause() != cause) {
         cause = cause.getCause();

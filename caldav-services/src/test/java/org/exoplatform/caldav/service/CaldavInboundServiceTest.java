@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.lenient;
@@ -169,6 +170,10 @@ public class CaldavInboundServiceTest {
   /** The narrow inbound mapping of the owner's own PARTSTAT (EXO-89681). */
   @Mock
   private CaldavAnswerAdoptionService caldavAnswerAdoptionService;
+
+  /** Told which copy a change came from, so it is not written back to (EXO-90190). */
+  @Mock
+  private CaldavEventPropagationService caldavEventPropagationService;
 
   @Spy
   private IcsParser              icsParser;
@@ -577,6 +582,75 @@ public class CaldavInboundServiceTest {
     assertEquals(501L, saved.getValue().getId());
   }
 
+  /**
+   * The defect the rig reproduced twice (EXO-90190): the update passed
+   * {@code null} as the event's remote identity, which agenda reads as "delete
+   * the mapping". The next push then found no UID, minted one, and wrote a
+   * second object. The identity must survive a remote edit, in the one shape
+   * agenda keeps: a remote id, and a provider named — every other shape is a
+   * deletion.
+   */
+  @Test
+  public void aRemoteEditKeepsTheEventsRemoteIdentity() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-2", icsModifiedAt("uid-1@example.test", "Moved", "20261005T120000Z")));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
+
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
+
+    ArgumentCaptor<RemoteEvent> identity = ArgumentCaptor.forClass(RemoteEvent.class);
+    verify(agendaEventService).updateEvent(any(), any(), any(), any(), any(), identity.capture(), eq(false), eq(USER));
+    RemoteEvent recorded = identity.getValue();
+    assertNotNull(recorded, "a null identity is an instruction to delete the mapping");
+    assertEquals("uid-1@example.test", recorded.getRemoteId());
+    assertEquals("agenda.caldavCalendar", recorded.getRemoteProviderName());
+    // Exactly what agenda tests before deciding to delete rather than store.
+    assertFalse(recorded.getRemoteId() == null || recorded.getRemoteId().isBlank()
+        || (recorded.getRemoteProviderId() <= 0
+            && (recorded.getRemoteProviderName() == null || recorded.getRemoteProviderName().isBlank())),
+                "the record must fail every one of agenda's three deletion conditions");
+  }
+
+  /**
+   * The other half of EXO-90190: agenda broadcasts the update the inbound pass
+   * asks for, and the listener carries it to every holder of a copy — the
+   * copy it was just read from included. The change is announced as the
+   * server's own, through the mapping it came through, <em>before</em> agenda
+   * is asked, so the announcement is in place when the broadcast arrives.
+   */
+  @Test
+  public void aRemoteEditIsAnnouncedAsTheServersOwnBeforeAgendaIsAsked() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-2", icsModifiedAt("uid-1@example.test", "Moved", "20261005T120000Z")));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
+
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
+
+    InOrder order = inOrder(caldavEventPropagationService, agendaEventService);
+    order.verify(caldavEventPropagationService).changedOnTheServer(501L, 1L);
+    order.verify(agendaEventService).updateEvent(any(), any(), any(), any(), any(), any(), eq(false), eq(USER));
+    verify(caldavEventPropagationService, never()).notChangedAfterAll(anyLong());
+  }
+
+  /**
+   * An update agenda refuses broadcasts nothing, so nothing would consume the
+   * announcement; left in place it would silence the next genuine edit of the
+   * event. It is withdrawn.
+   */
+  @Test
+  public void anAnnouncementIsWithdrawnWhenAgendaRefusesTheUpdate() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-2", icsModifiedAt("uid-1@example.test", "Moved", "20261005T120000Z")));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
+    when(agendaEventService.updateEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong()))
+                                                                                                          .thenThrow(new IllegalStateException("refused"));
+
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    verify(caldavEventPropagationService).changedOnTheServer(501L, 1L);
+    verify(caldavEventPropagationService).notChangedAfterAll(501L);
+  }
+
   @Test
   public void aLocalEditMoreRecentThanTheRemoteOneIsNotOverwritten() throws Exception {
     // The edit is not lost — the outbound half carries it. What matters here
@@ -757,6 +831,65 @@ public class CaldavInboundServiceTest {
     assertNull(emptied.getRecurrence());
   }
 
+  /**
+   * The occurrence half of EXO-90190. An override amends an occurrence through
+   * the series' object, so the change is announced as the server's own under
+   * the <em>series'</em> mapping — the occurrence has none — before agenda is
+   * asked. Announced under 0 instead, the ledger ignores it and the amended
+   * occurrence is written back to the very copy it was read from, for every
+   * recurring event.
+   */
+  @Test
+  public void anAmendedOccurrenceIsAnnouncedUnderTheSeriesMappingBeforeAgendaIsAsked() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-2", SERIES));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(event(501L));
+    Event moved = new Event();
+    moved.setId(777L);
+    Event cancelled = new Event();
+    cancelled.setId(888L);
+    when(agendaEventService.saveEventExceptionalOccurrence(eq(501L), any())).thenReturn(moved).thenReturn(cancelled);
+
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
+
+    InOrder order = inOrder(caldavEventPropagationService, agendaEventService);
+    order.verify(caldavEventPropagationService).changedOnTheServer(777L, 1L);
+    order.verify(agendaEventService)
+         .updateEvent(argThat(e -> e.getId() == 777L), any(), any(), any(), any(), any(), eq(false), eq(USER));
+    verify(caldavEventPropagationService, never()).notChangedAfterAll(anyLong());
+  }
+
+  /**
+   * The same for the other occurrence path: a cancelled date is announced
+   * under the series' mapping before agenda is asked to mark it cancelled.
+   */
+  @Test
+  public void aCancelledOccurrenceIsAnnouncedUnderTheSeriesMappingBeforeAgendaIsAsked() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-2", SERIES));
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(event(501L));
+    Event moved = new Event();
+    moved.setId(777L);
+    Event cancelled = new Event();
+    cancelled.setId(888L);
+    when(agendaEventService.saveEventExceptionalOccurrence(eq(501L), any())).thenReturn(moved).thenReturn(cancelled);
+
+    service.importInto(USER, LOGIN, pair(), calendar(), from(), to());
+
+    InOrder order = inOrder(caldavEventPropagationService, agendaEventService);
+    order.verify(caldavEventPropagationService).changedOnTheServer(888L, 1L);
+    order.verify(agendaEventService)
+         .updateEvent(argThat(e -> e.getId() == 888L && e.getStatus() == EventStatus.CANCELLED),
+                      any(),
+                      any(),
+                      any(),
+                      any(),
+                      any(),
+                      eq(false),
+                      eq(USER));
+    verify(caldavEventPropagationService, never()).notChangedAfterAll(anyLong());
+  }
+
   @Test
   public void oneOccurrenceThatWillNotTakeDoesNotCostTheSeries() throws Exception {
     // The series is already in place and correct for every other date.
@@ -926,6 +1059,31 @@ public class CaldavInboundServiceTest {
     verify(agendaEventService, never()).deleteEventById(eq(501L), anyLong());
     verify(caldavSyncStorage).deleteObject(102L);
     verify(caldavSyncStorage, never()).deleteObject(101L);
+  }
+
+  /**
+   * The same {@code null}-shaped echo on the deletion path (EXO-90190): the
+   * mapping is still recorded when agenda broadcasts the deletion, so the
+   * listener would ask the server to remove an object the server just said
+   * was gone, and owe that removal to a mapping about to be dropped. Announced
+   * before agenda is asked, through the mapping the vanishing was seen on.
+   */
+  @Test
+  public void aDeletionSeenOnTheAccountIsAnnouncedAsTheServersOwnBeforeAgendaIsAsked() throws Exception {
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
+    when(calDavClient.listResourceEtags(any(), eq(HREF)))
+        .thenReturn(Map.of(HREF + "kept.ics", "etag-1"));
+    givenMappings(objectSync(101L, 501L, HREF + "kept.ics"),
+                  objectSync(102L, 502L, HREF + "vanished.ics"));
+
+    service.removeVanishedObjects(USER, LOGIN, pair());
+
+    InOrder order = inOrder(caldavEventPropagationService, agendaEventService);
+    order.verify(caldavEventPropagationService).changedOnTheServer(502L, 102L);
+    order.verify(agendaEventService).deleteEventById(502L, USER);
+    verify(caldavEventPropagationService, never()).changedOnTheServer(eq(501L), anyLong());
+    verify(caldavEventPropagationService, never()).notChangedAfterAll(anyLong());
   }
 
   @Test
@@ -1350,7 +1508,7 @@ public class CaldavInboundServiceTest {
     // carries its mapping on the MIRROR pair, so eXo imports its own copy of a
     // space meeting back as a second, personal event beside it.
     givenServerObjects(object("o1.ics", "etag-1", ics("uid-1@example.test", "Sprint review")));
-    lenient().when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
+    lenient().when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(true);
     // Stubbed leniently so that removing the guard fails this test on its
     // assertion — an event created — rather than on a missing stub.
     lenient().when(agendaEventService.createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong()))
@@ -1380,7 +1538,7 @@ public class CaldavInboundServiceTest {
     // user's own event.
     givenServerObjects(object("o1.ics", "etag-2", icsModifiedAt("uid-1@example.test", "Moved", "20261005T120000Z")));
     lenient().when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
-    lenient().when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
+    lenient().when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(true);
     // Everything the update path would need, stubbed leniently: removing the
     // guard must fail this test on the update it then performs, not on a stub
     // it happens to be missing.
@@ -1423,7 +1581,7 @@ public class CaldavInboundServiceTest {
     // across 35 sweeps while eXo went on showing the meeting unanswered.
     String answered = icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED");
     givenServerObjects(object("o1.ics", "etag-1", answered));
-    when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(true);
     when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-1@example.test")).thenReturn(777L);
 
     assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
@@ -1441,7 +1599,7 @@ public class CaldavInboundServiceTest {
     // user would get a second, personal event standing beside the space
     // meeting it was copied from.
     givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED")));
-    when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(true);
     lenient().when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-1@example.test")).thenReturn(777L);
     lenient().when(agendaEventService.createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong()))
              .thenReturn(event(501L));
@@ -1468,7 +1626,7 @@ public class CaldavInboundServiceTest {
     // record an answer against would attribute somebody's answer to whatever
     // meeting came to hand.
     givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED")));
-    when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(true);
     when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-1@example.test")).thenReturn(null);
 
     assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
@@ -1486,8 +1644,8 @@ public class CaldavInboundServiceTest {
     // have nothing to do with it.
     givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED")),
                        object("o2.ics", "etag-2", ics("uid-9@example.test", "Dentist")));
-    when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-1@example.test")).thenReturn(true);
-    lenient().when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-9@example.test")).thenReturn(false);
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(true);
+    lenient().when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-9@example.test")).thenReturn(false);
     when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-1@example.test")).thenReturn(777L);
     when(caldavAnswerAdoptionService.adoptAnswer(eq(USER), eq(777L), anyString()))
                                                                                  .thenThrow(new IllegalStateException("agenda is down"));
@@ -1506,7 +1664,7 @@ public class CaldavInboundServiceTest {
     // meeting in the user's own calendar carries attendee lines that are
     // content, not identity, and must never act on a platform user's behalf.
     givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-9@example.test", "Dentist", "ACCEPTED")));
-    when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-9@example.test")).thenReturn(false);
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-9@example.test")).thenReturn(false);
     // Answering as though a mapping existed, deliberately: it makes the
     // ownership check the only thing standing between this object and the
     // adoption, so a pass that asked before checking fails here rather than
@@ -1528,7 +1686,7 @@ public class CaldavInboundServiceTest {
     // than a wall: the meeting a colleague put in the user's own calendar has
     // no mapping anywhere, and the whole feature is that it appears in eXo.
     givenServerObjects(object("o1.ics", "etag-1", ics("uid-9@example.test", "Dentist")));
-    lenient().when(caldavSyncStorage.isMirrorOwned(USER, SERVER, "uid-9@example.test")).thenReturn(false);
+    lenient().when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-9@example.test")).thenReturn(false);
     givenAgendaCreates(501L);
 
     assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
@@ -1560,7 +1718,7 @@ public class CaldavInboundServiceTest {
 
     assertEquals(1, service.importInto(USER, LOGIN, mirror, calendar(), from(), to()));
 
-    verify(caldavSyncStorage, never()).isMirrorOwned(anyLong(), anyLong(), anyString());
+    verify(caldavSyncStorage, never()).isMirrorOwned(anyLong(), anyString(), anyString());
   }
 
   /**
@@ -1675,6 +1833,52 @@ public class CaldavInboundServiceTest {
    */
   private Instant to() {
     return Instant.parse("2026-11-01T00:00:00Z");
+  }
+
+  // ---------------------------------------------------------------------
+  // EXO-90190 — two eXo users on one account: the copy one of them wrote is
+  // eXo's, and is neither imported by the other nor answered for by them.
+  // ---------------------------------------------------------------------
+
+  /**
+   * A copy another user's mirror wrote into the shared account is not imported.
+   */
+  @Test
+  public void aCopyAnotherUserWroteIntoTheSharedAccountIsNotImportedAsAnEvent() throws Exception {
+    // The loop this pins. Users one and six share one CalDAV account. User
+    // one's mirror writes a copy of a meeting; user six's inbound pass meets
+    // it, and the ownership question — asked for the reading USER — answered
+    // "not yours", so the copy was imported as a genuine remote event, pushed
+    // back under a fresh UID, imported by user one in turn, every five
+    // minutes: 566 phantom events in one night on acceptance.
+    givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED")));
+    // Ownership is a fact about the deployment: SOME mirror on this server
+    // maps the UID, so the object is eXo's...
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(true);
+    // ...but no mirror of THIS user does, so it stands for no event of theirs.
+    // That asymmetry is the point, not an accident of stubbing: the answer on
+    // the copy is user one's, and recording it as user six's would be the
+    // attribution error the user-scoped answer question exists to prevent.
+    when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-1@example.test")).thenReturn(null);
+    // Stubbed leniently so that routing the ownership question back to the
+    // reading user fails this test on its assertions — an event created, a
+    // row written — rather than on a missing stub.
+    lenient().when(agendaEventService.createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong()))
+             .thenReturn(event(501L));
+    lenient().when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    verify(agendaEventService, never()).createEvent(any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    any(),
+                                                    anyBoolean(),
+                                                    anyLong());
+    verify(caldavSyncStorage, never()).saveObject(any());
+    verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
   }
 
   // ---------------------------------------------------------------------
