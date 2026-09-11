@@ -49,6 +49,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.caldav.dao.CaldavServerDAO;
 import org.exoplatform.caldav.entity.CaldavServerEntity;
+import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.ObservedQuirk;
@@ -897,6 +898,53 @@ public class CaldavServerStorageTest {
    */
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
-    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null, null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null);
+    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null, null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null, null);
+  }
+
+  /**
+   * The drawer now carries the provider choice (EXO-89648), so an explicit value has
+   * to reach the column. It never did: the update rewrote every user-editable field
+   * except this one, so an administrator could pick a provider, see the save succeed,
+   * and find the row back on the previous one at the next opening - with the
+   * configuration written under the provider the row still claimed.
+   */
+  @Test
+  public void shouldWriteAnExplicitAuthProviderNameOnUpdate() {
+    CaldavServerEntity entity = new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://declared/", true, null,
+                                                       null, true, null, null, null, null, null, null, "personal");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(entity));
+    when(caldavServerDAO.save(any(CaldavServerEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    CaldavServer posted = server(7L, PREFIX + ".7", "Bluemind", null, "https://declared/", true);
+    posted.setAuthProviderName("bluemind-sudo");
+
+    assertEquals("bluemind-sudo", caldavServerStorage.updateServer(posted).getAuthProviderName());
+  }
+
+  /** And a creation carries it too, or the first save of a new server loses the choice. */
+  @Test
+  public void shouldWriteTheAuthProviderNameOnCreate() {
+    when(caldavServerDAO.save(any(CaldavServerEntity.class))).thenAnswer(invocation -> {
+      CaldavServerEntity saved = invocation.getArgument(0);
+      saved.setId(7L);
+      return saved;
+    });
+    CaldavServer posted = server(0L, null, "Bluemind", null, "https://declared/", true);
+    posted.setAuthProviderName("bluemind-sudo");
+
+    assertEquals("bluemind-sudo", caldavServerStorage.createServer(posted, PREFIX).getAuthProviderName());
+  }
+
+  /** Saying nothing keeps the entity's own default, never a null in a NOT NULL column. */
+  @Test
+  public void shouldLeaveTheDefaultAuthProviderNameOnACreateThatSaysNothing() {
+    when(caldavServerDAO.save(any(CaldavServerEntity.class))).thenAnswer(invocation -> {
+      CaldavServerEntity saved = invocation.getArgument(0);
+      saved.setId(7L);
+      return saved;
+    });
+
+    assertEquals(PersonalCredentialsProvider.NAME,
+                 caldavServerStorage.createServer(server(0L, null, "Plain", null, "https://declared/", true), PREFIX)
+                                    .getAuthProviderName());
   }
 }

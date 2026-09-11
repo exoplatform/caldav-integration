@@ -53,6 +53,8 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.util.Map;
+
 import jakarta.servlet.http.HttpServletRequest;
 
 /**
@@ -354,7 +356,7 @@ public class CaldavServerRestTest {
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
     return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null,
-                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null);
+                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null, null);
   }
 
   /**
@@ -511,4 +513,28 @@ public class CaldavServerRestTest {
     assertEquals("caldav.managed.serverInUse", refused.getReason());
   }
 
+
+  /**
+   * The endpoint the drawer reads its provider fields back from - it relays what the
+   * service hands it, which is everything but the secret.
+   */
+  @Test
+  public void shouldRelayTheProviderConfiguration() throws Exception {
+    when(request.getRemoteUser()).thenReturn("root");
+    when(caldavServerService.getProviderConfig(7, "root")).thenReturn(Map.of("technicalLogin", "svc"));
+
+    assertEquals(Map.of("technicalLogin", "svc"), caldavServerRest.getProviderConfig(request, 7));
+  }
+
+  /** A refusal by the service is a 403 here, as on every other write of this resource. */
+  @Test
+  public void shouldAnswer403OnProviderConfigOfNonAdministrator() throws Exception {
+    when(request.getRemoteUser()).thenReturn("mary");
+    doThrow(new IllegalAccessException()).when(caldavServerService).getProviderConfig(7, "mary");
+
+    ResponseStatusException refusal = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavServerRest.getProviderConfig(request, 7));
+
+    assertEquals(HttpStatus.FORBIDDEN, refusal.getStatusCode());
+  }
 }
