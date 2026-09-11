@@ -31,9 +31,13 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.sql.SQLException;
+import java.sql.SQLIntegrityConstraintViolationException;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
+
+import jakarta.persistence.PersistenceException;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -42,9 +46,11 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.orm.jpa.JpaSystemException;
 import org.exoplatform.caldav.dao.CaldavCalendarSyncDAO;
 import org.exoplatform.caldav.dao.CaldavObjectSyncDAO;
 import org.exoplatform.caldav.entity.CaldavCalendarSyncEntity;
@@ -316,33 +322,193 @@ public class CaldavSyncStorageTest {
   }
 
   /**
-   * Ownership asked across every pair, not inside one.
+   * Ownership asked for the account: every user's mirrors under one calendar
+   * home — not one's own, and not the whole server's.
    */
   @Test
-  public void aUidOneOfTheUsersMirrorsHoldsIsRecognisedAsTheirOwnCopy() {
-    // The question no pair-scoped lookup can answer: a copy eXo wrote carries
-    // its mapping on the pair it was WRITTEN into, and the pair asking is a
-    // different one. Scoped to the user and the server, because a UID on one
-    // account says nothing about an object on another.
-    when(objectSyncDAO.countByOwnerAndOriginAndIcsUid(USER, 2L, SyncOrigin.MIRROR, "uid-1")).thenReturn(1L);
+  public void aUidAnyMirrorOnTheAccountHoldsIsRecognisedAsEXosOwnCopy() {
+    // EXO-90190. The question no pair-scoped lookup can answer — a copy eXo
+    // wrote carries its mapping on the pair it was WRITTEN into — and no
+    // user-scoped one either: on an account two eXo users share, the copy was
+    // written by the other user, and it is still eXo's. And not the whole
+    // server's either: a mirror on another account of the same registration
+    // holds nothing that sits in this one. What a mock can pin is the shape of
+    // the question: the DAO method takes no user, and takes the account as the
+    // escaped prefix of the calendar home the collection sits under.
+    when(objectSyncDAO.countByHomeAndOriginAndIcsUid(2L, SyncOrigin.MIRROR, "uid-1", "/dav/calendars/john/%")).thenReturn(1L);
 
-    assertTrue(storage.isMirrorOwned(USER, 2L, "uid-1"));
+    assertTrue(storage.isMirrorOwned(2L, "/dav/calendars/john/private/", "uid-1"));
   }
 
+  /**
+   * No mirror under the home maps the UID: not eXo's.
+   */
   @Test
-  public void aUidNoMirrorHoldsIsNotTheUsersOwnCopy() {
-    when(objectSyncDAO.countByOwnerAndOriginAndIcsUid(USER, 2L, SyncOrigin.MIRROR, "uid-2")).thenReturn(0L);
+  public void aUidNoMirrorOnTheAccountHoldsIsNotEXosCopy() {
+    when(objectSyncDAO.countByHomeAndOriginAndIcsUid(2L, SyncOrigin.MIRROR, "uid-2", "/dav/calendars/john/%")).thenReturn(0L);
 
-    assertFalse(storage.isMirrorOwned(USER, 2L, "uid-2"));
+    assertFalse(storage.isMirrorOwned(2L, "/dav/calendars/john/private/", "uid-2"));
   }
 
+  /**
+   * A blank UID is nobody's copy, and the engine is not asked.
+   */
   @Test
   public void anObjectWithNoUidIsNobodysCopyAndIsNotAskedAbout() {
     // A blank UID matches every blank UID, so asking would be a way to call an
     // unrelated object ours and refuse to import it.
-    assertFalse(storage.isMirrorOwned(USER, 2L, " "));
+    assertFalse(storage.isMirrorOwned(2L, "/dav/calendars/john/private/", " "));
 
-    verify(objectSyncDAO, never()).countByOwnerAndOriginAndIcsUid(anyLong(), anyLong(), any(), anyString());
+    verify(objectSyncDAO, never()).countByHomeAndOriginAndIcsUid(anyLong(), any(), anyString(), anyString());
+  }
+
+  /**
+   * An href with no parent names no account, and the engine is not asked.
+   */
+  @Test
+  public void aCollectionUnderNoHomeNamesNoAccountAndIsNotAskedAbout() {
+    // No parent, no account. A pattern built from an empty home would be
+    // "/%", which is the whole server — the scope round one shipped and this
+    // round takes back — so the question is not asked and the object is not
+    // ours to refuse.
+    assertFalse(storage.isMirrorOwned(2L, "/private", "uid-1"));
+    assertFalse(storage.isMirrorOwned(2L, "private", "uid-1"));
+    assertFalse(storage.isMirrorOwnedByAnotherUser(USER, 2L, "/private", "uid-1"));
+
+    verify(objectSyncDAO, never()).countByHomeAndOriginAndIcsUid(anyLong(), any(), anyString(), anyString());
+    verify(objectSyncDAO, never()).countByOtherOwnerAndHomeAndOriginAndIcsUid(anyLong(), anyLong(), any(), anyString(), anyString());
+  }
+
+  /**
+   * The account a collection belongs to is the calendar home it sits under.
+   */
+  @Test
+  public void theCalendarHomeOfACollectionIsItsParent() {
+    assertEquals("/dav/calendars/john", CaldavSyncStorage.calendarHomeOf("/dav/calendars/john/private/"));
+    assertEquals("/dav/calendars/john", CaldavSyncStorage.calendarHomeOf("https://dav.example/dav/calendars/john/exo-meetings"));
+    // Canonical first, so two spellings of one home are one home.
+    assertEquals("/dav/calendars/john@acme.com", CaldavSyncStorage.calendarHomeOf("/dav/calendars/john%40acme.com/work/"));
+    // Nothing above it to name an account by.
+    assertNull(CaldavSyncStorage.calendarHomeOf("/private"));
+    assertNull(CaldavSyncStorage.calendarHomeOf("private"));
+    assertNull(CaldavSyncStorage.calendarHomeOf(" "));
+    assertNull(CaldavSyncStorage.calendarHomeOf(null));
+  }
+
+  /**
+   * The outbound lock: a UID another user's mirror maps is not this user's to
+   * write over.
+   */
+  @Test
+  public void aUidAnotherUsersMirrorMapsIsRecognisedAsTheirs() {
+    when(objectSyncDAO.countByOtherOwnerAndHomeAndOriginAndIcsUid(USER, 2L, SyncOrigin.MIRROR, "uid-1", "/dav/calendars/john/%"))
+                                                                                                                              .thenReturn(1L);
+
+    assertTrue(storage.isMirrorOwnedByAnotherUser(USER, 2L, "/dav/calendars/john/exo-cal-anchor/", "uid-1"));
+  }
+
+  /**
+   * One's own mirror is excluded from the outbound lock.
+   */
+  @Test
+  public void aUidOnlyOnesOwnMirrorMapsIsNotAnotherUsers() {
+    // The user's own mirror is excluded from the question at the DAO, and the
+    // storage asks it with this user as the one to exclude.
+    when(objectSyncDAO.countByOtherOwnerAndHomeAndOriginAndIcsUid(USER, 2L, SyncOrigin.MIRROR, "uid-1", "/dav/calendars/john/%"))
+                                                                                                                              .thenReturn(0L);
+
+    assertFalse(storage.isMirrorOwnedByAnotherUser(USER, 2L, "/dav/calendars/john/exo-cal-anchor/", "uid-1"));
+  }
+
+  /**
+   * A blank UID is not asked about on the outbound side either.
+   */
+  @Test
+  public void anObjectWithNoUidIsNotAskedAboutForTheOutboundLockEither() {
+    assertFalse(storage.isMirrorOwnedByAnotherUser(USER, 2L, "/dav/calendars/john/exo-cal-anchor/", ""));
+
+    verify(objectSyncDAO, never()).countByOtherOwnerAndHomeAndOriginAndIcsUid(anyLong(), anyLong(), any(), anyString(), anyString());
+  }
+
+  /**
+   * The shared-account question is asked with a canonical, escaped, bounded
+   * prefix.
+   */
+  @Test
+  public void theCalendarHomeIsAskedAsACanonicalEscapedPrefix() {
+    // The home arrives as the server spelled it — a full URL, a trailing slash
+    // — while the rows hold canonical paths; and it may carry the pattern's
+    // own wildcards, an underscore above all, which unescaped matches any
+    // character and would call an unrelated account this one. The escape
+    // character itself is escaped too, or a "!" in a path would swallow the
+    // character after it. And the answer is bounded: the question walks the
+    // href column, and a shared account names who is on it, not a deployment.
+    when(calendarSyncDAO.findOtherUsersUnderHref(eq(USER), eq(SERVER), eq(CalendarSyncStatus.ACTIVE), anyString(), any(Pageable.class)))
+                                                                                                                                       .thenReturn(List.of(6L));
+
+    assertEquals(List.of(6L),
+                 storage.getOtherUsersUnderCalendarHome(USER, SERVER, "https://dav.example/dav/cal/a_b!d/"));
+
+    ArgumentCaptor<String> prefix = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<Pageable> page = ArgumentCaptor.forClass(Pageable.class);
+    verify(calendarSyncDAO).findOtherUsersUnderHref(eq(USER), eq(SERVER), eq(CalendarSyncStatus.ACTIVE), prefix.capture(), page.capture());
+    assertEquals("/dav/cal/a!_b!!d/%", prefix.getValue());
+    assertEquals(CaldavSyncStorage.OTHER_USERS_NAMED, page.getValue().getPageSize());
+    assertEquals(0, page.getValue().getPageNumber());
+  }
+
+  /**
+   * A blank home names no account to ask about.
+   */
+  @Test
+  public void aBlankCalendarHomeAsksNobody() {
+    assertTrue(storage.getOtherUsersUnderCalendarHome(USER, SERVER, " ").isEmpty());
+
+    verify(calendarSyncDAO, never()).findOtherUsersUnderHref(anyLong(), anyLong(), any(), anyString(), any());
+  }
+
+  /**
+   * A refused insert is told by its JDBC cause, in every shape the platform
+   * surfaces it.
+   */
+  @Test
+  public void aDuplicateKeyIsToldByItsJdbcCauseWhateverSpringTypeCarriesIt() {
+    SQLException mysql = new SQLIntegrityConstraintViolationException("Duplicate entry '1-evt-1' for key 'UQ_CALDAV_OBJECT_SYNC_UID'",
+                                                                      "23000",
+                                                                      1062);
+    // The production shape at commit: DefaultJpaDialect wraps Hibernate's
+    // exception in a JpaSystemException.
+    assertTrue(CaldavSyncStorage.isDuplicateKey(new JpaSystemException(new PersistenceException("could not execute statement", mysql))));
+    // The production shape inside the repository call: Hibernate's own,
+    // untranslated.
+    assertTrue(CaldavSyncStorage.isDuplicateKey(new PersistenceException("could not execute statement", mysql)));
+    // The test slice's shape, HibernateJpaDialect's.
+    assertTrue(CaldavSyncStorage.isDuplicateKey(new DataIntegrityViolationException("could not execute statement",
+                                                                                    new PersistenceException(mysql))));
+    // PostgreSQL's driver types nothing; its SQLState says it.
+    assertTrue(CaldavSyncStorage.isDuplicateKey(new JpaSystemException(new PersistenceException(new SQLException("duplicate key value violates unique constraint",
+                                                                                                                 "23505")))));
+    // HSQLDB hangs its own exception below the SQLException; the deepest
+    // SQLException is the one read, not the deepest cause.
+    SQLException hsqldb = new SQLIntegrityConstraintViolationException("integrity constraint violation",
+                                                                       "23505",
+                                                                       -104,
+                                                                       new RuntimeException("HsqlException"));
+    assertTrue(CaldavSyncStorage.isDuplicateKey(new JpaSystemException(new PersistenceException(hsqldb))));
+  }
+
+  /**
+   * Anything without an integrity violation at its root is not this race —
+   * a Spring type alone included.
+   */
+  @Test
+  public void aFailureThatIsNotAnIntegrityViolationIsNotADuplicateKey() {
+    assertFalse(CaldavSyncStorage.isDuplicateKey(new JpaSystemException(new PersistenceException(new SQLException("lock wait timeout", "40001")))));
+    assertFalse(CaldavSyncStorage.isDuplicateKey(new JpaSystemException(new PersistenceException("no connection"))));
+    assertFalse(CaldavSyncStorage.isDuplicateKey(new IllegalStateException("not persistence at all")));
+    // A Spring type with no JDBC cause proves nothing: the type round one
+    // caught, thrown by a stub, never carried the constraint's refusal.
+    assertFalse(CaldavSyncStorage.isDuplicateKey(new DataIntegrityViolationException("Duplicate entry")));
   }
 
   /**

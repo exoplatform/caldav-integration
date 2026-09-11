@@ -16,12 +16,16 @@
  */
 package org.exoplatform.caldav.service;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -174,6 +178,33 @@ public class CaldavEventPropagationService {
   private static final int                                     RETRY_BATCH         = 200;
 
   /**
+   * How long a change announced as the server's own stays announced, in
+   * seconds.
+   *
+   * <p>
+   * The announcement is consumed by the first broadcast that meets it, so in
+   * the ordinary case it lives for the few milliseconds between agenda saving
+   * the event and the listener running. The bound is for the case where that
+   * broadcast never arrives — a listener running with no container, or agenda
+   * throwing before it broadcasts. An announcement that outlived its broadcast
+   * is honoured by the next genuine edit of the same event made in eXo: that
+   * edit is <em>not</em> written to the origin holder's copy, and because the
+   * origin is taken out of the holders before the obligations are recorded
+   * ({@code leaveOrigin}), it is not owed to them either, so the retry pass
+   * never carries it. Nothing else does: the mirror verification reads back
+   * MIRROR pairs only, and the origin of a remote change is a REMOTE pair. So
+   * a leak costs one <em>missing</em> rewrite — one attendee's copy stays a
+   * step behind until the event is edited again — which is why the window is
+   * short. Five minutes is long enough for any listener queue and no longer.
+   *
+   * <p>
+   * Injected so a test can drive it to zero; there is no deployment reason to
+   * change it.
+   */
+  @Value("${exo.agenda.caldav.push.fromServerSeconds:300}")
+  private long                                                 fromServerSeconds;
+
+  /**
    * The modifications a copy cannot show, so no copy is rewritten for them
    * alone.
    *
@@ -255,6 +286,113 @@ public class CaldavEventPropagationService {
    */
   @Value("${exo.agenda.caldav.push.maxAttempts:5}")
   private int                                                  maxPushAttempts;
+
+  /**
+   * The changes the inbound pass is applying from the server right now, by
+   * event, each naming the mapping the change was read through.
+   *
+   * <p>
+   * In memory and node-local on purpose: agenda's listeners fire in the JVM
+   * that saved the event, which is the JVM the inbound pass runs in, so the
+   * announcement and the broadcast that consumes it always meet here. A
+   * {@code ThreadLocal} would not do — every propagation listener is
+   * {@code @Asynchronous}, and the broadcast is handled on another thread.
+   *
+   * <p>
+   * One entry per event, the latest announcement winning: a space meeting held
+   * in two users' mirrors can be announced by two passes in the same window,
+   * and the second announcement replaces the first, so one of the two
+   * broadcasts leaves out the wrong copy — one redundant PUT and an etag bump
+   * on a copy that already carries the content, never a duplicate object.
+   */
+  private final Map<Long, FromServer>                          fromServer          = new ConcurrentHashMap<>();
+
+  /**
+   * Announces that the next change to this event is the server's own, read
+   * through the given mapping, so that copy is not written back to.
+   *
+   * <h4>The write that echoed the server to itself (EXO-90190)</h4>
+   *
+   * <p>
+   * The inbound pass applies a change it read from a collection by asking
+   * agenda to update the event, and agenda broadcasts that update like any
+   * other. The listener then carried the "edit" to every holder of a copy —
+   * including the very mapping it had just been read through. That rewrite
+   * was redundant on a good day: the object already carried the content, and
+   * eXo re-rendered it over the client's own authoring, bumped the etag, and
+   * made every other reader of the collection import the same change a second
+   * time. On a bad day, with the event's remote identity lost in the update,
+   * the rewrite minted a fresh UID and wrote a <em>second</em> object beside
+   * the first — the duplication the live rig reproduced twice.
+   *
+   * <p>
+   * Only the origin is skipped. Every other holder still receives the change:
+   * a meeting the organiser moved from their phone must still reach the copy
+   * each attendee holds on their own account. That is the fan-out this service
+   * exists for, and it is not touched.
+   *
+   * <p>
+   * The announcement is consumed by the first broadcast for the event that
+   * meets it, whichever thread carries it. Agenda broadcasts exactly once per
+   * update or deletion, so one announcement covers one change and nothing
+   * more: a genuine edit made in eXo a moment later arrives as its own
+   * broadcast, finds nothing announced, and is carried to the origin like to
+   * everyone else. Should the two broadcasts cross, each reads the event as it
+   * stands when it runs, so whichever is not skipped writes the later state —
+   * the order does not matter to what the copy ends up showing.
+   *
+   * @param eventId the agenda event the change is about to be applied to
+   * @param objectSyncId the mapping the change was read through, whose copy
+   *          is the change's source and must not be rewritten for it
+   */
+  public void changedOnTheServer(long eventId, long objectSyncId) {
+    if (eventId <= 0 || objectSyncId <= 0) {
+      return;
+    }
+    Instant now = Instant.now();
+    fromServer.values().removeIf(origin -> !origin.until().isAfter(now));
+    // Replaces, never accumulates: see the field for what a crossed pass costs.
+    fromServer.put(eventId, new FromServer(objectSyncId, now.plus(Duration.ofSeconds(fromServerSeconds))));
+  }
+
+  /**
+   * Withdraws an announcement whose change was never applied.
+   *
+   * <p>
+   * Called when agenda refused the update or deletion: no broadcast followed,
+   * so nothing would consume the announcement, and left in place it would
+   * silence the next genuine edit of the event until it expired.
+   *
+   * @param eventId the agenda event the announcement was made for
+   */
+  public void notChangedAfterAll(long eventId) {
+    fromServer.remove(eventId);
+  }
+
+  /**
+   * The mapping the change being propagated was read through, consumed, or
+   * null when the change did not come from the server.
+   *
+   * @param eventId the agenda event being propagated
+   * @return the origin mapping id, or null
+   */
+  private Long originOf(long eventId) {
+    FromServer origin = fromServer.remove(eventId);
+    if (origin == null || !origin.until().isAfter(Instant.now())) {
+      return null;
+    }
+    return origin.objectSyncId();
+  }
+
+  /**
+   * A change announced as the server's own: the mapping it was read through,
+   * and when the announcement stops being trusted.
+   *
+   * @param objectSyncId the mapping the change came through
+   * @param until the instant from which the announcement is no longer trusted
+   */
+  private record FromServer(long objectSyncId, Instant until) {
+  }
 
   /**
    * Copies a meeting that has just been created into the calendar of everybody
@@ -500,6 +638,9 @@ public class CaldavEventPropagationService {
     if (eventId <= 0) {
       return 0;
     }
+    // Taken first, whatever happens next: an announcement is for one
+    // broadcast, and this is that broadcast even when it carries nothing.
+    Long origin = originOf(eventId);
     Event event = readEvent(eventId);
     if (!caldavCopyPolicy.mayHoldCopy(event)) {
       return retireCopies(eventId);
@@ -519,6 +660,7 @@ public class CaldavEventPropagationService {
       LOG.debug("Event {} was edited but nobody holds a copy of it; nothing to carry out", eventId);
       return 0;
     }
+    int skipped = leaveOrigin(holders, origin, eventId);
     // Every obligation first, then every write. Not interleaved, deliberately:
     // a thread killed at the third of fifty attendees must leave the other
     // forty-seven recorded as owed, and interleaving would leave them looking
@@ -528,12 +670,44 @@ public class CaldavEventPropagationService {
     }
     int carried = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
-      if (rewriteOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), eventId, holder.getValue().getId())) {
+      if (rewriteOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), eventId, holder.getValue().getId()).landed()) {
         carried++;
       }
     }
-    LOG.info("Event {} was edited; its copy was rewritten for {} of {} holders", eventId, carried, holders.size());
+    LOG.info("Event {} was edited; its copy was rewritten for {} of {} holders", eventId, carried, holders.size() + skipped);
     return carried;
+  }
+
+  /**
+   * Takes the copy a change was read from out of the holders it is carried to.
+   *
+   * <p>
+   * Removed from the map rather than tested for in each loop, so the two loops
+   * that follow — recording what is owed, then writing — cannot disagree about
+   * it: a write that is not attempted must not be owed either, or the retry
+   * pass would carry out the very echo the listener declined.
+   *
+   * @param holders the holders of a copy, by user, edited in place
+   * @param origin the mapping the change was read through, or null when the
+   *          change did not come from the server
+   * @param eventId the agenda event, for the log
+   * @return how many holders were left out — one or none
+   */
+  private int leaveOrigin(Map<Long, ObjectSync> holders, Long origin, long eventId) {
+    if (origin == null) {
+      return 0;
+    }
+    int skipped = 0;
+    for (Map.Entry<Long, ObjectSync> holder : new ArrayList<>(holders.entrySet())) {
+      if (origin.equals(holder.getValue().getId())) {
+        LOG.debug("The change to event {} was read from the copy of user {}; that copy is not written back to",
+                  eventId,
+                  holder.getKey());
+        holders.remove(holder.getKey());
+        skipped++;
+      }
+    }
+    return skipped;
   }
 
   /**
@@ -608,7 +782,7 @@ public class CaldavEventPropagationService {
     int removed = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
       ObjectSync mapping = holder.getValue();
-      if (removeOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref())) {
+      if (removeOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref()).landed()) {
         // At INFO and one line per copy, deliberately: this is the line an
         // administrator watching the first sweep after the deploy is looking
         // for, and a per-pass total would tell them how many without telling
@@ -696,6 +870,7 @@ public class CaldavEventPropagationService {
     if (eventId <= 0) {
       return 0;
     }
+    Long origin = originOf(eventId);
     // Not resolving the series here, and not able to: the event row is already
     // gone by the time this event is broadcast, so there is nothing left to
     // read a parent from.
@@ -704,6 +879,14 @@ public class CaldavEventPropagationService {
       LOG.debug("Event {} was deleted but nobody holds a copy of it; nothing to carry out", eventId);
       return 0;
     }
+    // The object the deletion was read from is already gone from the server;
+    // asking the server to remove it again is the echo EXO-90190 stops, and
+    // owing that removal would leave a retry chasing a mapping the inbound
+    // pass drops right after this. Left out after the empty check, as in
+    // propagateUpdate, so a deletion whose only holder is the origin still
+    // reaches the INFO line below as "0 of 1" rather than a line saying nobody
+    // held a copy.
+    int skipped = leaveOrigin(holders, origin, eventId);
     // Recorded before any of them is attempted, for the reason propagateUpdate
     // gives — and it matters more here: a removal that is not carried out has
     // no other safety net at all, so this record is the only thing standing
@@ -715,11 +898,11 @@ public class CaldavEventPropagationService {
     int removed = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
       ObjectSync mapping = holder.getValue();
-      if (removeOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref())) {
+      if (removeOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref()).landed()) {
         removed++;
       }
     }
-    LOG.info("Event {} was deleted; its copy was removed for {} of {} holders", eventId, removed, holders.size());
+    LOG.info("Event {} was deleted; its copy was removed for {} of {} holders", eventId, removed, holders.size() + skipped);
     return removed;
   }
 
@@ -958,9 +1141,12 @@ public class CaldavEventPropagationService {
         settled(copy.getId());
       } else if (CaldavPushService.isKnownState(e.getCode())) {
         // A state of the holder rather than a failure of this write: they have
-        // no connected account, or none that names a destination. Recorded
-        // without a trace and without the word failure. The obligation still
-        // stands, so the day they connect the sweep writes their copy.
+        // no connected account, none that names a destination, or the object
+        // is another user's copy. Recorded without a trace and without the
+        // word failure. The obligation still stands and is retried by the
+        // sweep like any refusal — and abandoned after maxPushAttempts like
+        // any refusal, so a holder who connects later gets the copy only if
+        // an edit renews it.
         LOG.debug("The answer of user {} to event {} is not carried to the copy of user {}: {} ({})",
                   answererIdentityId,
                   eventId,
@@ -1109,15 +1295,15 @@ public class CaldavEventPropagationService {
    * @param eventId the agenda event to write again
    * @param objectSyncId the mapping row the copy is recorded under, null when
    *          the caller has no row to settle an obligation against
-   * @return true when the copy was rewritten
+   * @return how it went: landed, or the code it was refused with
    */
-  private boolean rewriteOne(long userIdentityId, String username, long eventId, Long objectSyncId) {
+  private Settlement rewriteOne(long userIdentityId, String username, long eventId, Long objectSyncId) {
     try {
       boolean written = caldavPushService.pushAgendaEvent(userIdentityId, username, eventId) != null;
       if (written) {
         settled(objectSyncId);
       }
-      return written;
+      return written ? Settlement.WRITE_LANDED : Settlement.refused(null);
     } catch (CaldavPushException e) {
       if (CaldavPushService.CONFLICT.equals(e.getCode())) {
         // Somebody wrote that object between the read and the write — very
@@ -1134,11 +1320,14 @@ public class CaldavEventPropagationService {
         settled(objectSyncId);
       } else if (CaldavPushService.isKnownState(e.getCode())) {
         // A state of the holder rather than a failure of this write: they have
-        // no connected account, or none that names a destination. Retrying
-        // cannot move it and nobody but they can, so it is recorded without a
-        // trace and without the word failure. The obligation still stands —
-        // this branch changes what is printed, not what is owed, and the day
-        // they connect the sweep writes the copy.
+        // no connected account, none that names a destination, or the object
+        // is another user's copy. Retrying cannot move it and nobody but a
+        // person can, so it is recorded without a trace and without the word
+        // failure. This branch changes what is printed, not what is owed: the
+        // obligation still stands, the sweep retries it like any refusal, and
+        // after maxPushAttempts it is abandoned like any refusal — so a holder
+        // who connects later gets the copy only if an edit renews it. The
+        // abandonment line, in refuse, says which kind it was.
         LOG.debug("The edit of event {} is not carried to the copy of user {}: {} ({})",
                   eventId,
                   userIdentityId,
@@ -1151,13 +1340,13 @@ public class CaldavEventPropagationService {
                  e.getCode(),
                  e);
       }
-      return false;
+      return Settlement.refused(e.getCode());
     } catch (Exception | LinkageError e) {
       LOG.warn("The edit of event {} could not be carried to the copy held by user {}; it stays owed and is retried",
                eventId,
                userIdentityId,
                e);
-      return false;
+      return Settlement.refused(null);
     }
   }
 
@@ -1180,24 +1369,25 @@ public class CaldavEventPropagationService {
    * @param objectSyncId the mapping row the copy is recorded under, null when
    *          the caller has no row to settle an obligation against
    * @param remoteHref where the copy sits, for the log only; may be null
-   * @return true when the copy was removed
+   * @return how it went: landed, or the code it was refused with
    */
-  private boolean removeOne(long userIdentityId, String username, String icsUid, Long objectSyncId, String remoteHref) {
+  private Settlement removeOne(long userIdentityId, String username, String icsUid, Long objectSyncId, String remoteHref) {
     if (StringUtils.isBlank(icsUid)) {
       LOG.warn("Mapping {} of user {} carries no iCalendar identity; the copy it names cannot be removed",
                objectSyncId,
                userIdentityId);
-      return false;
+      return Settlement.refused(null);
     }
     try {
       caldavPushService.deleteEvent(userIdentityId, username, icsUid);
       settled(objectSyncId);
-      return true;
+      return Settlement.WRITE_LANDED;
     } catch (Exception | LinkageError e) {
       if (e instanceof CaldavPushException refusal && CaldavPushService.isKnownState(refusal.getCode())) {
         // Nowhere to remove it from, because there is no account: a removal
         // owed to a user who never connected one is the same ordinary state as
-        // a copy never written for them, and it recurs on every sweep.
+        // a copy never written for them, and it recurs on every sweep until
+        // the attempt bound abandons it.
         //
         // Tested on the caught throwable rather than caught in a clause of its
         // own, so that the one message this method has stays written once.
@@ -1206,13 +1396,13 @@ public class CaldavEventPropagationService {
                   remoteHref,
                   refusal.getMessage(),
                   refusal.getCode());
-        return false;
+        return Settlement.refused(refusal.getCode());
       }
       LOG.warn("The copy of the deleted event held by user {} at {} could not be removed; it stays owed and is retried",
                userIdentityId,
                remoteHref,
                e);
-      return false;
+      return Settlement.refused(null);
     }
   }
 
@@ -1397,23 +1587,55 @@ public class CaldavEventPropagationService {
    * @return true when the write landed
    */
   private boolean settleOwed(long userIdentityId, String username, PendingPush pending) {
-    boolean landed;
+    Settlement settlement;
     if (pending.getKind() == PendingPushKind.REMOVE) {
-      landed = removeOne(userIdentityId, username, pending.getIcsUid(), pending.getObjectSyncId(), null);
+      settlement = removeOne(userIdentityId, username, pending.getIcsUid(), pending.getObjectSyncId(), null);
     } else if (pending.getLocalEventId() == null || pending.getLocalEventId() <= 0) {
       // A rewrite with no event to render is one nothing can ever satisfy.
       // Counted as a refusal rather than skipped, so the bound below takes it
       // off the pass instead of it being read for ever.
       LOG.warn("The copy of user {} is owed a rewrite that names no event; there is nothing to render for it",
                userIdentityId);
-      landed = false;
+      settlement = Settlement.refused(null);
     } else {
-      landed = rewriteOne(userIdentityId, username, pending.getLocalEventId(), pending.getObjectSyncId());
+      settlement = rewriteOne(userIdentityId, username, pending.getLocalEventId(), pending.getObjectSyncId());
     }
-    if (!landed) {
-      refuse(userIdentityId, pending);
+    if (!settlement.landed()) {
+      refuse(userIdentityId, pending, settlement.code());
     }
-    return landed;
+    return settlement.landed();
+  }
+
+  /**
+   * How one owed write went: it landed, or it did not, with the code the push
+   * gave for not landing when it gave one.
+   *
+   * <p>
+   * A boolean was enough while a refusal was only counted; it is not enough
+   * to say, on the attempt that abandons an obligation, whether a calendar
+   * server refused five writes or eXo declined to send any — which is what
+   * {@link #refuse} has to tell an operator (EXO-90190).
+   *
+   * @param landed true when the copy now holds what was owed
+   * @param code the {@link CaldavPushException} code the attempt was refused
+   *          with; null when it landed, and null when nothing was refused —
+   *          a date poll, a calendar with no collection, an unclassified
+   *          failure
+   */
+  private record Settlement(boolean landed, String code) {
+
+    /** The write landed. */
+    private static final Settlement WRITE_LANDED = new Settlement(true, null);
+
+    /**
+     * A write that did not land.
+     *
+     * @param code the refusal's code, null when there was no refusal to name
+     * @return the settlement
+     */
+    private static Settlement refused(String code) {
+      return new Settlement(false, code);
+    }
   }
 
   /**
@@ -1427,10 +1649,24 @@ public class CaldavEventPropagationService {
    * anybody can see that a copy is wrong and that eXo has stopped trying to
    * put it right.
    *
+   * <p>
+   * The abandonment line says what kind of refusal it was, because the
+   * operator it is written for acts on it (EXO-90190): a write a calendar
+   * server refused five times sends them to that server; a write eXo itself
+   * declined to send five times — no account, no destination, another user's
+   * copy — sends them to the user's account in eXo, and a message about a
+   * server refusing what was never sent would send them the wrong way.
+   *
    * @param userIdentityId whose calendar the copy sits in, for the log
    * @param pending what is owed to it, carrying the count as it stood
+   * @param code the code the attempt was refused with, null when nothing
+   *          named a reason
    */
-  private void refuse(long userIdentityId, PendingPush pending) {
+  private void refuse(long userIdentityId, PendingPush pending, String code) {
+    if (CaldavPushService.FOREIGN_COPY.equals(code)) {
+      abandonOnForeignCopy(userIdentityId, pending);
+      return;
+    }
     try {
       caldavPendingPushStorage.refused(pending.getId());
     } catch (Exception | LinkageError e) {
@@ -1439,14 +1675,74 @@ public class CaldavEventPropagationService {
                e);
       return;
     }
-    if (pending.getAttempts() + 1 >= maxPushAttempts) {
-      // Once, on the attempt that reaches the bound, and never again: the next
-      // pass does not read this record at all. Said at WARN because it is the
-      // one state in this whole mechanism a human has to know about — a
-      // calendar copy that is wrong and is going to stay wrong.
-      LOG.warn("The copy of user {} has refused the write eXo owes it {} times; eXo stops trying to settle it",
+    if (pending.getAttempts() + 1 < maxPushAttempts) {
+      return;
+    }
+    // Once, on the attempt that reaches the bound, and never again: the next
+    // pass does not read this record at all. Said at WARN because it is the
+    // one state in this whole mechanism a human has to know about — a
+    // calendar copy that is wrong and is going to stay wrong.
+    if (CaldavPushService.isKnownState(code)) {
+      LOG.warn("The copy of user {} at mapping {} cannot take the write eXo owes it because of a state of that account ({});"
+          + " eXo declined to send it {} times and stops trying to settle it — nothing was sent to the calendar server,"
+          + " and only an edit of the meeting renews the obligation",
                userIdentityId,
+               pending.getObjectSyncId(),
+               code,
+               maxPushAttempts);
+    } else if (code != null) {
+      LOG.warn("The copy of user {} at mapping {} has refused the write eXo owes it {} times ({}); eXo stops trying to settle it",
+               userIdentityId,
+               pending.getObjectSyncId(),
+               maxPushAttempts,
+               code);
+    } else {
+      LOG.warn("The write eXo owes the copy of user {} at mapping {} did not land in {} attempts and no refusal names why"
+          + " — nothing to render, nowhere to write, or a failure the log above carries; eXo stops trying to settle it",
+               userIdentityId,
+               pending.getObjectSyncId(),
                maxPushAttempts);
     }
+  }
+  /**
+   * Gives up on an obligation the first time it is refused as another user's
+   * copy, rather than counting it toward the bound.
+   *
+   * <p>
+   * The bound exists for a calendar server having a bad day: five attempts
+   * over twenty-five minutes, then eXo stops arguing. A foreign copy is a
+   * different thing entirely. Nothing was sent, no server refused anything,
+   * and no amount of waiting changes it — the account is shared, or a binding
+   * was left behind, and until somebody repairs that the answer is the same
+   * on every sweep. Four further identical refusals buy nothing and, worse,
+   * spend twenty-five minutes looking to an operator as though eXo were still
+   * working on it.
+   *
+   * <p>
+   * The record is left in place, like any abandoned obligation: it is the only
+   * place the wrongness of that copy is visible, and the write is made the
+   * moment a later edit of the meeting renews it — by which time the account
+   * may well have been repaired.
+   *
+   * @param userIdentityId whose calendar the copy sits in, for the log
+   * @param pending the obligation given up on
+   */
+  private void abandonOnForeignCopy(long userIdentityId, PendingPush pending) {
+    try {
+      caldavPendingPushStorage.abandoned(pending.getId(), maxPushAttempts);
+    } catch (Exception | LinkageError e) {
+      LOG.warn("What eXo owes the copy of user {} could not be given up on; it will be attempted again",
+               pending.getObjectSyncId(),
+               e);
+      return;
+    }
+    // Once, at WARN, and phrased as an instruction rather than a failure: this
+    // is a state of the eXo account setup that a human repairs, and the line
+    // is the only notice they get of it.
+    LOG.warn("The copy of user {} at mapping {} belongs to another eXo user, so eXo will not write to it and stops now"
+        + " rather than repeating the refusal — nothing was sent to the calendar server. Two eXo users share one calendar"
+        + " account, or a binding was left behind; repair that, and an edit of the meeting settles the copy",
+             userIdentityId,
+             pending.getObjectSyncId());
   }
 }

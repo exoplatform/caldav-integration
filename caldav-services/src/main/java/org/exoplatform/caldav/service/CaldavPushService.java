@@ -108,6 +108,28 @@ public class CaldavPushService {
   public static final String     MAIN_CALENDAR_UNKNOWN  = "caldav.error.mainCalendarUnknown";
 
   /**
+   * The object about to be written is another eXo user's copy of a meeting: a
+   * mirror pair of a different user on the same server maps its UID, and the
+   * two pairs derive the same href from it (EXO-90190).
+   *
+   * <p>
+   * A state, not a failure: the copy stays that user's for as long as the
+   * meeting does, and no retry changes whose it is. It arises on an account two
+   * users share, when one of them holds — from before the ownership question
+   * was widened — a personal event imported from the other's copy, and the
+   * push would carry it back onto the very object it came from.
+   *
+   * <p>
+   * Classified a known state so that it is logged without a trace, and that
+   * is all the classification does: the obligation behind a refused push is
+   * retried by the sweep and abandoned after
+   * {@code exo.agenda.caldav.push.maxAttempts} refusals like any other, and
+   * this code burns that budget although no user action clears the
+   * condition. Whether it should is a product question, not settled here.
+   */
+  public static final String     FOREIGN_COPY           = "caldav.error.foreignCopy";
+
+  /**
    * The name this add-on registers itself under as an agenda remote provider,
    * in caldav-configuration.xml. It has to match that declaration exactly:
    * agenda resolves the provider by name when it stores the mapping between
@@ -127,7 +149,7 @@ public class CaldavPushService {
    * failure, which is the safe default: a state nobody classified is exactly
    * the thing worth hearing about.
    */
-  private static final Set<String> KNOWN_STATE_CODES = Set.of(NOT_CONNECTED, MAIN_CALENDAR_UNKNOWN);
+  private static final Set<String> KNOWN_STATE_CODES = Set.of(NOT_CONNECTED, MAIN_CALENDAR_UNKNOWN, FOREIGN_COPY);
 
   /**
    * The codes that describe an attempt that failed — a refused save, a
@@ -147,6 +169,14 @@ public class CaldavPushService {
                                                               CREATION_REFUSED);
 
   private static final Log       LOG                    = ExoLogger.getLogger(CaldavPushService.class);
+
+  /**
+   * The leftover bindings already said to be skipped on the outbound path,
+   * by pair — see {@link #personalPairFor}. Once per process rather than once
+   * per push: a personal calendar's events are pushed one at a time, and a
+   * line per event per sweep would bury the list the warning exists to give.
+   */
+  private final Set<Long>        leftoverBindingsSaid   = ConcurrentHashMap.newKeySet();
 
   @Autowired
   private CalDavClient           calDavClient;
@@ -197,6 +227,15 @@ public class CaldavPushService {
    * not an incident — printing eleven frames for it, once per attendee per
    * meeting, buries the copies that genuinely failed under the ones that were
    * never going to be made.
+   *
+   * <p>
+   * It changes nothing about retries. A refused write stays owed either way,
+   * the sweep attempts it again either way, and after
+   * {@code exo.agenda.caldav.push.maxAttempts} refusals — five, about
+   * twenty-five minutes at the sweep's cadence — it is abandoned either way
+   * and not read again until an edit of the meeting renews it. A known state
+   * is not "retried until the person acts": it is retried five times and then
+   * given up on, and the abandonment line says which kind it was.
    *
    * <p>
    * <b>Anything unrecognised is a failure.</b> Not silence: a code nobody
@@ -330,12 +369,13 @@ public class CaldavPushService {
    * The collection bound to one of this user's own calendars.
    *
    * <p>
-   * Answers null in two cases, and neither sends the event to the mirror —
+   * Answers null in three cases, and none sends the event to the mirror —
    * that decision belongs to the caller now, which is what makes the refusal
    * enforceable rather than merely documented. Either the calendar carries no
    * anchor, so nothing stable identifies it; or the server refused to create
    * its collection, and outbound stays unavailable for that calendar until it
-   * allows one.
+   * allows one; or the binding is a leftover pointed at a collection eXo made
+   * for <em>another</em> eXo calendar, which is never written through.
    *
    * @param calendar one of the user's own calendars, already loaded
    * @param userIdentityId identity of the user
@@ -350,6 +390,28 @@ public class CaldavPushService {
     CalendarSync pair = caldavSyncStorage.getPairByLocalCalendar(userIdentityId, serverId, calendar.getSyncUid());
     if (pair == null || pair.getStatus() != CalendarSyncStatus.ACTIVE) {
       LOG.debug("Personal calendar {} has no usable collection; its events are not copied out", calendar.getSyncUid());
+      return null;
+    }
+    if (pair.getOrigin() != SyncOrigin.EXO
+        && CaldavOutboundService.isExoCreated(CaldavSyncStorage.canonicalHref(pair.getRemoteHref()))) {
+      // The outbound half of the guard the sweep applies before reading
+      // (EXO-90190): a calendar binding pointed at a collection eXo minted for
+      // ANOTHER eXo calendar — one user's outbound copy of their own calendar,
+      // materialised by a second user on the same account before
+      // materialisation learned to skip such paths (EXO-89530). The sweep
+      // refuses to read through it; left open, this side would still PUT this
+      // user's events into the first user's collection, where that user's EXO
+      // pair reads them, imports them and pushes them back onto the same href
+      // — a ping-pong overwrite the inbound skip alone does not close. The
+      // path is the signal, as it is there. Skipped rather than removed, for
+      // the reason given there, and said at warn once per pair per process so
+      // the cleanup has a list.
+      if (leftoverBindingsSaid.add(pair.getId())) {
+        LOG.warn("Binding {} of user {} writes into {}, a collection eXo created for another eXo calendar; it is skipped and should be removed",
+                 pair.getId(),
+                 userIdentityId,
+                 pair.getRemoteHref());
+      }
       return null;
     }
     return pair;
@@ -400,6 +462,30 @@ public class CaldavPushService {
                                boolean overwrite) {
     CaldavUserSetting settings = connectedSettings(userIdentityId);
     CalDavEndpoint endpoint = endpointOf(settings, username);
+    if (pair.getOrigin() != SyncOrigin.MIRROR
+        && caldavSyncStorage.isMirrorOwnedByAnotherUser(userIdentityId,
+                                                        pair.getServerId(),
+                                                        pair.getRemoteHref(),
+                                                        event.getUid())) {
+      // The second lock of EXO-90190, in the spirit of removeWhatWasLeftBehind:
+      // the href below is derived from the collection and the UID, so two
+      // users' pairs on one collection address the SAME object, and a
+      // personal-calendar write of a UID another user's mirror maps would
+      // replace that user's copy in place — once per sweep, for ever, while
+      // the two users' rows keep moving each other's ETag. The inbound guard
+      // stops such an event from being imported; this stops one imported
+      // before the guard existed from being pushed back. Asked before anything
+      // is WRITTEN — the ICS is rendered and the mapping looked up after it,
+      // and the caller has already read the event, its roster and its
+      // calendar to get here; what this protects is the PUT. Scoped to the
+      // account the collection sits in: a mirror on another account of the
+      // server holds nothing this write could reach. The mirror is exempt: a
+      // UID it maps is this user's own copy.
+      throw new CaldavPushException(FOREIGN_COPY,
+                                    "Object " + event.getUid() + " in " + pair.getRemoteHref()
+                                        + " is another user's copy of a meeting; it is not overwritten with an event of user "
+                                        + userIdentityId);
+    }
 
     String ics = icsWriter.write(event);
     ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), event.getUid());
@@ -429,12 +515,87 @@ public class CaldavPushService {
     mapping.setRemoteHref(href);
     mapping.setEtag(result.etag());
     mapping.setLastSync(new Date());
-    ObjectSync saved = caldavSyncStorage.saveObject(mapping);
+    ObjectSync saved = saveMapping(pair, event.getUid(), mapping);
     // Last, and only once the destination holds the event: a move that failed
     // here would otherwise take the copy away without having written the new
     // one, which loses the user's event rather than tidying it.
     removeWhatWasLeftBehind(userIdentityId, leftBehind, href, endpoint, settings);
     return saved;
+  }
+
+  /**
+   * Persists the mapping row of a write, converging on a row inserted
+   * meanwhile rather than failing on it.
+   *
+   * <p>
+   * Two pushes of one event can overlap — the listener that carries an edit
+   * and the sweep that retries what is owed were measured 20 ms apart on
+   * acceptance (EXO-90190) — and each reads "no row", writes the object, and
+   * inserts. The unique index on (pair, UID) refuses the second insert, which
+   * is the index doing its job: there must be one row. What was wrong is what
+   * happened next — the refusal surfaced as a warning with a trace, 137 times
+   * a night, and the obligation stayed owed as though nothing had been
+   * written, when the object was on the server and the first row described
+   * it. So the refusal is met by reading the row that won and recording this
+   * write's href and ETag on it, which is what the update path would have done
+   * had the read come a moment later.
+   *
+   * <p>
+   * Only when a row actually exists, and only on an insert. A refusal with no
+   * row behind it is not this race, and a refusal of an update is not a
+   * duplicate at all; both are rethrown as the failures they are. This is a
+   * hardening of the site the collisions hit, not a cure for what caused them
+   * to collide.
+   *
+   * <p>
+   * Caught as a {@code RuntimeException} and told apart by its JDBC cause,
+   * not by a Spring type. The first version caught
+   * {@code DataIntegrityViolationException}, which is what the test slice
+   * throws and what production never does: with the Kernel's own
+   * {@code EntityManagerFactory} the transaction manager runs
+   * {@code DefaultJpaDialect} and surfaces the refused insert as a
+   * {@code JpaSystemException} at commit, or — where the insert runs at
+   * persist time, as it does on MySQL's identity columns — as Hibernate's raw
+   * {@code ConstraintViolationException}, untranslated. Either way that catch
+   * was dead code, and the 137 collisions a night would have gone on.
+   * {@link CaldavSyncStorage#isDuplicateKey} names what every shape shares.
+   *
+   * <p>
+   * Safe to converge on because the failed save's transaction has ended by
+   * the time this catches: the storage opens its own transaction per call and
+   * nothing wraps the push in an outer one, so the re-read and the second
+   * save run in fresh transactions and never touch the persistence context
+   * the refusal poisoned. That is why the convergence lives here rather than
+   * inside the storage's transactional save, where the catch would run in the
+   * very transaction that is already marked for rollback.
+   *
+   * @param pair the collection written into
+   * @param icsUid the object's iCalendar UID
+   * @param mapping the row as this write would record it
+   * @return the row as it now stands
+   */
+  private ObjectSync saveMapping(CalendarSync pair, String icsUid, ObjectSync mapping) {
+    try {
+      return caldavSyncStorage.saveObject(mapping);
+    } catch (RuntimeException e) {
+      if (mapping.getId() != null || !CaldavSyncStorage.isDuplicateKey(e)) {
+        throw e;
+      }
+      ObjectSync existing = caldavSyncStorage.getObjectByUid(pair.getId(), icsUid);
+      if (existing == null) {
+        throw e;
+      }
+      LOG.debug("The mapping of {} in pair {} was inserted by a concurrent push; this write is recorded on that row",
+                icsUid,
+                pair.getId());
+      existing.setRemoteHref(mapping.getRemoteHref());
+      existing.setEtag(mapping.getEtag());
+      existing.setLastSync(mapping.getLastSync());
+      if (mapping.getLocalEventId() != null) {
+        existing.setLocalEventId(mapping.getLocalEventId());
+      }
+      return caldavSyncStorage.saveObject(existing);
+    }
   }
 
   /**
