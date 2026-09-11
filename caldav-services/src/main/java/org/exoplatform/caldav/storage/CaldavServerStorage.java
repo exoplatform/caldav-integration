@@ -201,6 +201,15 @@ public class CaldavServerStorage {
       if (server.getMirrorTarget() != null) {
         entity.setMirrorTarget(server.getMirrorTarget().name());
       }
+      // Only an explicit value moves the provider, for the reason above and its
+      // mirror image: a drawer that carries the control sends the administrator's
+      // choice and it must be written - an update that rewrote every field except
+      // this one let a save succeed while the row stayed on its previous provider,
+      // and the configuration was then stored under a provider nothing selected.
+      // A payload that states nothing still keeps what the row already had.
+      if (StringUtils.isNotBlank(server.getAuthProviderName())) {
+        entity.setAuthProviderName(server.getAuthProviderName());
+      }
       Long oldImageFileId = entity.getImageFileId();
       boolean imageRemoved = (server.getImageFileId() == null || server.getImageFileId() == 0)
           && oldImageFileId != null && oldImageFileId > 0;
@@ -296,7 +305,11 @@ public class CaldavServerStorage {
                             entity.getOmittedProperties(),
                             observedQuirks(entity.getObservedQuirks()),
                             entity.getCopySettingsUpdated(),
-                            MirrorTargetKind.of(entity.getMirrorTarget()), entity.getAuthProviderName());
+                            MirrorTargetKind.of(entity.getMirrorTarget()),
+                            entity.getAuthProviderName(),
+                            // providerConfig is inbound only: it lives in the settings,
+                            // and the secret in it must not travel back out.
+                            null);
   }
 
   /**
@@ -547,6 +560,12 @@ public class CaldavServerStorage {
     // writing a null into a NOT NULL column.
     if (server.getMirrorTarget() != null) {
       entity.setMirrorTarget(server.getMirrorTarget().name());
+    }
+    // Same rule, same reason: the drawer carries the provider choice since
+    // EXO-89648, and a payload that states one must reach the column - while a
+    // payload that states nothing must leave the entity's own default alone.
+    if (StringUtils.isNotBlank(server.getAuthProviderName())) {
+      entity.setAuthProviderName(server.getAuthProviderName());
     }
     return entity;
   }
