@@ -201,6 +201,36 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </div>
           </v-list-item-content>
         </v-list-item>
+        <!-- How this server authenticates. One section, two halves: the
+             provider is chosen here, and whatever that provider needs
+             configured is drawn by commons-exo's generic renderer from the
+             descriptor the provider publishes - so a new provider adds fields
+             to this drawer without a line changing in it. -->
+        <template v-if="providerSelectable">
+          <v-list-item-title class="pa-0 mt-7 mb-4 text-header">
+            {{ $t('caldav.admin.servers.drawer.authentication') }}
+          </v-list-item-title>
+          <v-label for="caldavServerAuthProvider">
+            {{ $t('caldav.admin.servers.drawer.authProvider') }}
+          </v-label>
+          <v-select
+            id="caldavServerAuthProvider"
+            ref="caldavServerAuthProvider"
+            v-model="server.authProviderName"
+            :items="providerItems"
+            name="caldavServerAuthProvider"
+            class="pt-0 mt-2 mb-3"
+            item-text="text"
+            item-value="value"
+            outlined
+            dense
+            @change="providerConfig = {}" />
+        </template>
+        <provider-config-fields
+          v-model="providerConfig"
+          :fields="selectedProviderFields"
+          :secrets-stored="!!server.id"
+          @valid="providerConfigValid = $event" />
       </form>
     </template>
     <template #footer>
@@ -267,10 +297,53 @@ export default {
     // them. Copied out of the row on open so an abandoned drawer leaves the
     // registration untouched, exactly like every other field here.
     observedQuirks: [],
+    // The registered credentials providers, as the REST endpoint describes
+    // them: a name and the fields each one wants configured.
+    providers: [],
+    // What the drawer is editing for the selected provider. Read back without
+    // any secret, so a secret field shows empty and an unrelated save leaves
+    // the stored one alone.
+    providerConfig: {},
+    // Whether the selected provider's required fields are all filled. The drawer does
+    // not know what those fields are - the renderer tells it, so the save button can
+    // be disabled without this file learning anything about any provider.
+    providerConfigValid: true,
   }),
   computed: {
     disabled() {
-      return !this.server.name || !this.server.serverUrl;
+      return !this.server.name || !this.server.serverUrl || !this.providerConfigValid;
+    },
+    /**
+     * Whether the provider choice is worth showing. With a single provider
+     * registered - the state before EXO-89646 ships the sudo one - a select
+     * with one entry is noise, and the registration keeps the default it has.
+     *
+     * @returns {boolean} true when more than one provider is registered
+     */
+    providerSelectable() {
+      return this.providers.length > 1;
+    },
+    /**
+     * The provider choices, labelled through i18n so a provider name stays a
+     * technical key.
+     *
+     * @returns {Array} items for the provider select
+     */
+    providerItems() {
+      return this.providers.map(provider => ({
+        text: this.$t(`credentials.provider.${provider.name}`),
+        value: provider.name,
+      }));
+    },
+    /**
+     * The configuration fields the selected provider publishes, or none when it
+     * publishes none - which is the case of the personal provider.
+     *
+     * @returns {Array} the selected provider's field descriptors
+     */
+    selectedProviderFields() {
+      const selected = this.providers.find(provider => provider.name === this.server.authProviderName);
+      return selected && selected.fields || [];
     },
     /**
      * The address shape shown in the URL field: the chosen preset's, else the
@@ -295,6 +368,13 @@ export default {
   },
   created() {
     this.$root.$on('open-caldav-server-drawer', this.open);
+    // Once for the drawer's life: the registered providers change with what is
+    // deployed, not with what the administrator is editing. A failure here is
+    // not worth an alert - the section simply does not appear, and the
+    // registration keeps the provider it has.
+    this.$credentialsProviderService.getCredentialsProviders()
+      .then(providers => this.providers = providers)
+      .catch(() => this.providers = []);
   },
   methods: {
     /**
@@ -315,6 +395,12 @@ export default {
       this.server.mirrorTarget = mirrorTargetOf(this.server.mirrorTarget);
       this.storedMirrorTarget = this.server.id && this.server.mirrorTarget || null;
       this.observedQuirks = (this.server.observedQuirks || []).map(describeQuirk);
+      this.providerConfig = {};
+      if (this.server.id) {
+        this.$agendaCaldavService.getCaldavServerProviderConfig(this.server.id)
+          .then(values => this.providerConfig = values || {})
+          .catch(() => this.providerConfig = {});
+      }
       this.$refs.caldavServerDrawer.open();
     },
     /**
@@ -356,6 +442,9 @@ export default {
       };
       this.observedQuirks = [];
       this.storedMirrorTarget = null;
+      // Not kept between two openings: it holds what an administrator typed for
+      // one registration, and the next one they open is not the same one.
+      this.providerConfig = {};
       this.$refs.caldavServerDrawer.close();
     },
     /**
@@ -411,6 +500,9 @@ export default {
       // while this drawer had nothing to say about it, and a save that left it
       // out now would be relying on a guard that no longer guards anything.
       payload.mirrorTarget = mirrorTargetOf(this.server.mirrorTarget);
+      // Relayed as typed. The keys belong to the provider's descriptor, and the
+      // server validates them against it before anything is written.
+      payload.providerConfig = this.providerConfig;
       try {
         if (isNew) {
           await this.$agendaCaldavService.createCaldavServer(payload);
@@ -426,7 +518,12 @@ export default {
         document.dispatchEvent(new CustomEvent('agenda-connectors-refresh'));
         this.close();
       } catch (e) {
-        if (isNew) {
+        // A refused configuration comes back as a message code the provider's
+        // own bundle translates. Showing the generic "error" instead would tell
+        // the administrator nothing about a form they can correct.
+        if (e && e.messageCode && e.messageCode.startsWith('connector.credentials.')) {
+          this.$root.$emit('alert-message', this.$t(e.messageCode), 'error');
+        } else if (isNew) {
           this.$root.$emit('alert-message', this.$t('caldav.admin.servers.drawer.add.error'), 'error');
         } else {
           this.$root.$emit('alert-message', this.$t('caldav.admin.servers.drawer.edit.error'), 'error');
