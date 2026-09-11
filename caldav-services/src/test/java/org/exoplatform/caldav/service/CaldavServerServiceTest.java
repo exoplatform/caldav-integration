@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -34,6 +35,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -48,6 +50,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.Spy;
@@ -60,10 +63,13 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorProviderConfigStorage;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
@@ -135,6 +141,9 @@ public class CaldavServerServiceTest {
    */
   @Mock
   private CaldavManagedModeService caldavManagedModeService;
+
+  @Mock
+  private ConnectorProviderConfigStorage providerConfigStorage;
 
   /**
    * The address check, REAL rather than mocked, so these tests keep measuring
@@ -1251,6 +1260,172 @@ public class CaldavServerServiceTest {
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
     return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null,
-                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null);
+                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null, null);
+  }
+
+  /**
+   * A registration built for these scenarios, on the sudo provider and carrying a
+   * technical account.
+   *
+   * @param id technical id, 0 for a creation
+   * @param values what the drawer posted, null for none
+   * @return the registration
+   */
+  private static CaldavServer sudoServer(long id, Map<String, String> values) {
+    CaldavServer server = server(id, "caldav", "sudoServer", "d", SERVER_URL, true);
+    server.setAuthProviderName("bluemind-sudo");
+    server.setProviderConfig(values);
+    return server;
+  }
+
+  /**
+   * The configuration is written under the id the storage attributed, not the zero the
+   * drawer posted - the id is part of the setting key.
+   */
+  @Test
+  public void shouldStoreTheProviderConfigurationOnCreate() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer posted = sudoServer(0, Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    when(caldavServerStorage.createServer(any(), anyString())).thenReturn(sudoServer(7L, null));
+
+    caldavServerService.createServer(posted, ADMIN_USER);
+
+    verify(providerConfigStorage).store(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())
+        && "caldav".equals(context.getConnectorKind())),
+                                        eq(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret")));
+  }
+
+  /**
+   * And it is checked before the insert: a refused value must leave no registration
+   * behind, or the administrator answers the error by declaring a second server.
+   */
+  @Test
+  public void shouldValidateTheProviderConfigurationBeforeInserting() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer posted = sudoServer(0, Map.of("technicalLogin", "svc"));
+    doThrow(new ConnectorCredentialsException("connector.credentials.missingConfigurationField")).when(providerConfigStorage)
+                                                                                                 .validate(any(), any());
+
+    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.createServer(posted, ADMIN_USER));
+
+    assertEquals("connector.credentials.missingConfigurationField", thrown.getMessage());
+    verify(caldavServerStorage, never()).createServer(any(), anyString());
+  }
+
+  /** The same write on the update path. */
+  @Test
+  public void shouldStoreTheProviderConfigurationOnUpdate() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer posted = sudoServer(7L, Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+    when(caldavServerStorage.updateServer(any())).thenReturn(sudoServer(7L, null));
+
+    caldavServerService.updateServer(posted, ADMIN_USER);
+
+    verify(providerConfigStorage).store(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())),
+                                        eq(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret")));
+  }
+
+  /**
+   * Moving a registration back to the personal provider removes the technical account of
+   * the one it leaves: nothing administers a credential no screen shows any more.
+   */
+  @Test
+  public void shouldRemoveTheConfigurationOfTheProviderBeingLeft() throws Exception {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+    CaldavServer posted = server(7L, "caldav", "sudoServer", "d", SERVER_URL, true);
+    posted.setAuthProviderName("personal");
+    when(caldavServerStorage.updateServer(any())).thenReturn(posted);
+
+    caldavServerService.updateServer(posted, ADMIN_USER);
+
+    verify(providerConfigStorage).delete(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())));
+  }
+
+  /**
+   * The registration's deletion takes its configuration with it, and takes it FIRST: the
+   * two writes share no transaction - the row goes through JPA, the settings through the
+   * kernel's own RequestLifeCycle - so this order is the guarantee. A failure here leaves
+   * the registration, which an administrator sees and retries; the other way round it
+   * leaves a technical secret with no server to reach it from.
+   */
+  @Test
+  public void shouldRemoveTheProviderConfigurationBeforeTheRegistration() throws Exception {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+
+    caldavServerService.deleteServer(7L, ADMIN_USER);
+
+    InOrder order = inOrder(providerConfigStorage, caldavServerStorage);
+    order.verify(providerConfigStorage).delete(any());
+    order.verify(caldavServerStorage).deleteServer(7L);
+  }
+
+  /**
+   * What the drawer reads back: everything but the secret, on a path that never
+   * decrypts one.
+   */
+  @Test
+  public void shouldReadTheProviderConfigurationWithoutTheSecret() throws Exception {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+    when(providerConfigStorage.readWithoutSecrets(any())).thenReturn(Map.of("technicalLogin", "svc"));
+
+    assertEquals(Map.of("technicalLogin", "svc"), caldavServerService.getProviderConfig(7L, ADMIN_USER));
+    verify(providerConfigStorage, never()).readDecrypted(any());
+  }
+
+  /** Reading a technical account is an administration act. */
+  @Test
+  public void shouldRefuseTheProviderConfigurationToNonAdministrator() {
+    withUser(REGULAR_USER, false);
+
+    assertThrows(IllegalAccessException.class, () -> caldavServerService.getProviderConfig(7L, REGULAR_USER));
+  }
+
+  /**
+   * A save carrying no configuration - an edit of the registration's own fields, a
+   * provider that asks for nothing - writes nothing. Taking an absent map for an empty
+   * one would erase a working technical account on every unrelated edit.
+   */
+  @Test
+  public void shouldWriteNoConfigurationWhenTheSaveCarriesNone() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer posted = server(0, "caldav", "plainServer", "d", SERVER_URL, true);
+    posted.setAuthProviderName("personal");
+    when(caldavServerStorage.createServer(any(), anyString())).thenReturn(server(7L, "caldav", "plainServer", "d",
+                                                                                 SERVER_URL, true));
+
+    caldavServerService.createServer(posted, ADMIN_USER);
+
+    verify(providerConfigStorage, never()).store(any(), any());
+    verify(providerConfigStorage, never()).validate(any(), any());
+  }
+
+  /**
+   * A refused configuration must leave the registration exactly as it was. It did not:
+   * the row was written first and the configuration validated after, so an
+   * administrator who moved a server to a provider without filling its password got an
+   * error AND a server sitting on the new provider with nothing configured for it -
+   * which no screen then showed as broken.
+   */
+  @Test
+  public void shouldWriteNothingAtAllWhenTheConfigurationIsRefusedOnUpdate() throws Exception {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+    CaldavServer posted = sudoServer(7L, Map.of("technicalLogin", "svc"));
+    doThrow(new ConnectorCredentialsException("connector.credentials.missingConfigurationField")).when(providerConfigStorage)
+                                                                                                 .validate(any(), any());
+
+    assertThrows(IllegalArgumentException.class, () -> caldavServerService.updateServer(posted, ADMIN_USER));
+
+    verify(caldavServerStorage, never()).updateServer(any());
+    verify(providerConfigStorage, never()).store(any(), any());
+    verify(providerConfigStorage, never()).delete(any());
   }
 }

@@ -113,7 +113,7 @@ public class HttpCalDavClientServerQuirksTest {
     lenient().when(caldavServerService.resolveServer(1L))
              .thenReturn(new CaldavServer(1L, "agenda.caldavCalendar", "BlueMind", null, SERVER_URL, true, null, null, null,
                                           null, true, null, null, null,
-                                          null, null, null, "personal"));
+                                          null, null, null, "personal", null));
     // The declared URL carries no {username}, so minting never asks the
     // provider for an account — only the requests on this endpoint do.
     endpoint = client.endpoint(1L, USER);
