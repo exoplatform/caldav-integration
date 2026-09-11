@@ -122,6 +122,18 @@ public class CaldavPendingPushStorage {
   }
 
   /**
+   * Records that an obligation is given up on, without counting toward the
+   * bound first.
+   *
+   * @param id the obligation
+   * @param maxAttempts the configured bound, written whole
+   */
+  @Transactional
+  public void abandoned(long id, int maxAttempts) {
+    pendingPushDAO.spendBudget(id, maxAttempts);
+  }
+
+  /**
    * What one account is owed and is still worth attempting, oldest first.
    *
    * <p>

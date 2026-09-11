@@ -267,6 +267,12 @@ public class CaldavSyncService {
   private final Set<Long>                 outboundInFlight    = ConcurrentHashMap.newKeySet();
 
   /**
+   * The accounts already asked whether other users connected them too, keyed
+   * by user and server — see {@link #warnOnceIfAccountIsShared}.
+   */
+  private final Set<String>               sharedAccountsSaid  = ConcurrentHashMap.newKeySet();
+
+  /**
    * The pass running for a user, so two page loads a second apart do not run
    * two syncs against the same account at once — and so a caller who was
    * promised the sync had run can wait for the one that is actually doing it.
@@ -1252,6 +1258,24 @@ public class CaldavSyncService {
         // filling it back up is precisely what they asked not to happen.
         continue;
       }
+      if (pair.getOrigin() != SyncOrigin.EXO && isExoCreated(CaldavSyncStorage.canonicalHref(pair.getRemoteHref()))) {
+        // A calendar binding pointed at a collection eXo minted for another
+        // eXo calendar: one user's outbound copy of their own calendar,
+        // materialised by a second user on the same account before the
+        // materialisation learned to skip such paths (EXO-89530). Reading it
+        // imports the first user's events into the second user's calendar,
+        // which is the loop of EXO-90190 by another route. The path is the
+        // signal here exactly as it is for materialisation — whichever user
+        // asked for it, a collection under the outbound prefix is eXo's own.
+        // Skipped rather than removed: what the calendar already holds is the
+        // user's, and removing bindings is a cleanup with its own review. Said
+        // at warn, once per pair per pass, so that cleanup has a list.
+        LOG.warn("Binding {} of user {} reads {}, a collection eXo created for another eXo calendar; it is skipped and should be removed",
+                 pair.getId(),
+                 userIdentityId,
+                 pair.getRemoteHref());
+        continue;
+      }
       Calendar calendar = byAnchor.get(pair.getLocalCalendarSyncUid());
       if (calendar == null) {
         // Pruned earlier in this pass, or created between the two steps.
@@ -1533,8 +1557,9 @@ public class CaldavSyncService {
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
     CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
     List<CalendarCollection> collections;
+    String home;
     try {
-      String home = calDavClient.discoverCalendarHome(endpoint);
+      home = calDavClient.discoverCalendarHome(endpoint);
       collections = calDavClient.listCalendars(endpoint, home);
     } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
       // Not swallowed with the rest, and for the same reason in both cases:
@@ -1553,6 +1578,7 @@ public class CaldavSyncService {
       LOG.warn("The account's calendars could not be listed; nothing is materialised this round", e);
       return null;
     }
+    warnOnceIfAccountIsShared(userIdentityId, serverId, home);
     List<CalendarSync> known = caldavSyncStorage.getPairs(userIdentityId, serverId);
     for (CalendarCollection collection : collections) {
       if (isAlreadyOurs(collection, known)) {
@@ -1573,6 +1599,57 @@ public class CaldavSyncService {
     // collection's ctag to decide whether it has anything to read, and one
     // PROPFIND already carries them all.
     return collections;
+  }
+
+  /**
+   * Says once, at warn, that other eXo users have connected this same account.
+   *
+   * <p>
+   * The condition behind EXO-90190 is otherwise invisible: two users each
+   * connect their credentials, each sees their calendars, and nothing tells an
+   * administrator that both sets of copies now go into one account — where
+   * every shared meeting is written once per connected user, and each user's
+   * own calendars are exported next to the other's. Refusing the second
+   * connection was rejected: it breaks legitimate shared accounts and the
+   * providers that connect a whole deployment through one login. So it is
+   * said, and said where the account's calendar home is first in hand — the
+   * listing — rather than at connect time, which would have missed every
+   * account connected before this line existed.
+   *
+   * <p>
+   * Once per account per process, remembered whichever way it answered. The
+   * question walks the href column, which this schema cannot index on MySQL,
+   * and asked on every sweep it would cost more than it says. A restart says it
+   * again, which is the right bias after a deploy. Never allowed to fail the
+   * pass: a warning is not worth a calendar.
+   *
+   * @param userIdentityId identity of the user whose account was just listed
+   * @param serverId the declared server registration
+   * @param home the account's calendar home, as the server answered it
+   */
+  private void warnOnceIfAccountIsShared(long userIdentityId, long serverId, String home) {
+    String account = userIdentityId + ":" + serverId;
+    if (StringUtils.isBlank(home) || sharedAccountsSaid.contains(account)) {
+      return;
+    }
+    try {
+      List<Long> others = caldavSyncStorage.getOtherUsersUnderCalendarHome(userIdentityId, serverId, home);
+      sharedAccountsSaid.add(account);
+      if (!others.isEmpty()) {
+        LOG.warn("The CalDAV account of user {} on server {} (calendar home {}) is also connected by eXo users {}."
+            + " Copies each of them writes are recognised as eXo's own and not imported back, but every shared"
+            + " meeting is written into it once per connected user, and each user's own calendars are exported"
+            + " into it beside the others'",
+                 userIdentityId,
+                 serverId,
+                 home,
+                 others);
+      }
+    } catch (RuntimeException e) {
+      LOG.debug("Whether the account of user {} is shared could not be asked; it is asked again next pass",
+                userIdentityId,
+                e);
+    }
   }
 
   /**
@@ -1714,14 +1791,15 @@ public class CaldavSyncService {
    * <p>
    * The path is the reliable signal because eXo mints it: a collection under
    * the outbound prefix was created by eXo, whichever user asked for it, and
-   * is never something to import.
+   * is never something to import. One definition, the outbound service's,
+   * since EXO-90190: the push asks the same question before writing through a
+   * binding, and the two answers must not drift.
    *
    * @param href the collection path, canonical
    * @return true when the path is one eXo derives
    */
   private boolean isExoCreated(String href) {
-    String slug = StringUtils.substringAfterLast(StringUtils.stripEnd(href, "/"), "/");
-    return StringUtils.startsWith(slug, CaldavOutboundService.COLLECTION_PREFIX);
+    return CaldavOutboundService.isExoCreated(href);
   }
 
   /**
