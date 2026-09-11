@@ -18,6 +18,8 @@ package org.exoplatform.caldav.service;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -25,11 +27,13 @@ import java.util.Map;
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
@@ -185,6 +189,24 @@ public class CaldavServerService {
 
   @Autowired
   private PortalContainer         portalContainer;
+
+  /**
+   * How long a deployment stays on a server's list after the last time a copy
+   * of its was read there.
+   *
+   * <p>
+   * A month, the same window {@code quirkRetentionDays} holds a behaviour for,
+   * and for the same reason: the entry answers "is another deployment writing
+   * here", and one nothing has seen for a month is not a thing to act on today.
+   * It is also what lets the section empty itself — an administrator who moved
+   * one of the two deployments to its own account, and removed the copies the
+   * other left behind, gets their drawer back without having to clear anything.
+   * Long enough that a quiet fortnight does not erase a live finding: the
+   * sweep reads every account every few minutes, so a condition that still
+   * holds is re-seen the same day.
+   */
+  @Value("${exo.agenda.caldav.mirror.foreignWriterRetentionDays:30}")
+  private long                        foreignWriterRetentionDays;
 
   /**
    * Defers the seeding of the registry to the portal container's post-create
@@ -396,6 +418,47 @@ public class CaldavServerService {
    *         the storage is not deployed
    * @throws IllegalAccessException when the user is not a platform administrator
    */
+  /**
+   * Which other eXo deployments have been seen writing meeting copies into this
+   * server's accounts (EXO-89824) — what the administration drawer shows under
+   * the behaviours this server has been seen having.
+   *
+   * @param serverId technical identifier of the registration
+   * @param username the user asking
+   * @return the deployments seen writing here, most recently seen first, empty
+   *         when none has been
+   * @throws IllegalAccessException when the user may not administer servers
+   */
+  public List<ForeignWriter> getForeignWriters(long serverId, String username) throws IllegalAccessException {
+    checkCanEdit(username);
+    return caldavServerStorage.getForeignWriters(serverId);
+  }
+
+  /**
+   * Records that another eXo deployment was seen writing a meeting copy into an
+   * account on this server.
+   *
+   * <p>
+   * <b>Called from the inbound pass, and never allowed to matter to it.</b>
+   * Nothing is imported, skipped, removed or repaired differently on the
+   * strength of this record: what to do with a foreign copy is a product
+   * decision nobody has taken, and the wrong one destroys real calendar
+   * entries. It is written so that an administrator opening the drawer can see
+   * what until now existed only as a line in {@code platform.log}.
+   *
+   * @param serverId technical identifier of the registration the copy was read
+   *          from
+   * @param authority how the other deployment names itself in the copies it
+   *          writes — host and port, as {@code CaldavInboundService} read it
+   *          off the copy's event link
+   */
+  public void recordForeignWriter(long serverId, String authority) {
+    caldavServerStorage.mergeForeignWriter(serverId,
+                                           authority,
+                                           LocalDate.now(ZoneOffset.UTC).toEpochDay(),
+                                           foreignWriterRetentionDays);
+  }
+
   public Map<String, String> getProviderConfig(long serverId, String username) throws IllegalAccessException {
     checkCanEdit(username);
     CaldavServer stored = caldavServerStorage.getServerById(serverId);

@@ -199,7 +199,7 @@ public class ChangelogExecutionTest {
     assertEquals(List.of("SERVER_ID", "ORIGIN", "LOCAL_CALENDAR_SYNC_UID"),
                  indexColumns("CALDAV_CALENDAR_SYNC", "IDX_CALDAV_CALENDAR_SYNC_ORIGIN"));
 
-    rollbackCount(1);
+    rollbackCount(changesetsFrom("1.0.0-48"));
 
     assertTrue(indexColumns("CALDAV_CALENDAR_SYNC", "IDX_CALDAV_CALENDAR_SYNC_ORIGIN").isEmpty(),
                "rolling 1.0.0-48 back must drop the index");
@@ -514,6 +514,24 @@ public class ChangelogExecutionTest {
    *
    * @throws Exception when a changeset cannot be rolled back
    */
+  /**
+   * How many changesets ran from the given one onward, that one included: the
+   * count that rolls the database back to just before it, however many
+   * changesets the changelog runs after it.
+   *
+   * @param id the changeset id
+   * @return the count
+   * @throws Exception when the changelog table cannot be read
+   */
+  private int changesetsFrom(String id) throws Exception {
+    try (Statement statement = connection.createStatement();
+         ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM DATABASECHANGELOG WHERE ORDEREXECUTED >= "
+             + "(SELECT ORDEREXECUTED FROM DATABASECHANGELOG WHERE AUTHOR = 'caldav' AND ID = '" + id + "')")) {
+      rows.next();
+      return rows.getInt(1);
+    }
+  }
+
   private void rollbackEverything() throws Exception {
     liquibase().rollback(new Date(0), new Contexts(), new LabelExpression());
   }
