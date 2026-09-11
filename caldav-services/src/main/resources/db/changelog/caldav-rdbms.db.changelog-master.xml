@@ -659,4 +659,37 @@
     </addColumn>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-43">
+    <comment>
+      Which other eXo deployments have been seen writing meeting copies into
+      this server's accounts (EXO-89824).
+
+      Evidence, not configuration. Each mirror assumes it is the only writer of
+      the copies in its collection - it lists them, compares each against what
+      eXo would write, and repairs what diverges - and a second deployment
+      writing into the same account breaks that premise silently: a foreign copy
+      has no row in this database, so no query can see it. The inbound pass
+      recognises one by the event link it carries; this column is where that
+      recognition is kept, so the administrator drawer can say it.
+
+      On the server's own row, and bounded, for the reasons OBSERVED_QUIRKS
+      (1.0.0-16) gives: it survives a restart, because an empty section after one
+      is an empty section exactly when somebody is investigating; it is one short
+      column per server rather than a row per copy; the drawer already fetches
+      the registration, so it costs no query; and it is the only shape that works
+      on more than one node, the pass and the drawer being served by whichever
+      node took each. Its own column and not a second meaning for OBSERVED_QUIRKS:
+      that list is behaviours of the SERVER, each excusable by a checkbox, and a
+      foreign deployment is neither.
+
+      NULLABLE WITH NO DEFAULT: null is "nothing seen", which is where every
+      existing registration starts and where one whose last entry has aged out
+      returns. addColumn with no modifySql, and no rollback written, for the
+      reasons 1.0.0-40 gives.
+    </comment>
+    <addColumn tableName="CALDAV_SERVER">
+      <column name="FOREIGN_WRITERS" type="NVARCHAR(1000)"/>
+    </addColumn>
+  </changeSet>
+
 </databaseChangeLog>
