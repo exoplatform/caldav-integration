@@ -23,6 +23,7 @@ import java.time.ZoneOffset;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -36,6 +37,9 @@ import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.model.MirrorTargetKind;
+import org.exoplatform.caldav.model.ServerQuirk;
+import org.exoplatform.caldav.model.ServerQuirkDirection;
+import org.exoplatform.caldav.model.ServerQuirkEffect;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.services.connector.credentials.ConnectorProviderConfigStorage;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
@@ -143,6 +147,69 @@ public class CaldavServerService {
    */
   public static final String       DEFAULT_BLUEMIND_URL          = "https://caldav.example.invalid/dav/";
 
+  /**
+   * The catalogue entries the seeded BlueMind row arrives excused for: the
+   * behaviours a live account was characterised with across EXO-89716 to
+   * EXO-89828, and the same four the browser's BlueMind preset ticks on a
+   * declaration ({@code serverPresets.js}).
+   *
+   * <p>
+   * <b>The two lists are the same list, and that is a constraint rather than
+   * a coincidence.</b> A preset also carries a <i>summary sentence</i> naming
+   * exactly what it ticks — {@code caldav.admin.servers.preset.bluemind.summary}
+   * — so widening the preset is a product-copy change and not only a list
+   * edit, which is why the two were out of step for one commit. They are held
+   * together now by two assertions of the whole string, one where each is
+   * produced ({@code CaldavServerServiceTest}, {@code serverPresets.test.js}),
+   * and by the summary pin that fails a tick without a sentence and a
+   * sentence without a tick. Nothing mechanical can tie a Java enum to a JS
+   * map; two literals that must match is what makes a drift fail a test
+   * instead of reaching an administrator, who would otherwise meet a
+   * drawer-declared row and a seeded row disagreeing about the same server.
+   *
+   * <p>
+   * <b>Why the seed names them at all.</b> The preset is offered on a
+   * declaration only — editing a row is not the moment to overwrite what
+   * somebody decided about it — so the one BlueMind registration eXo ships
+   * was the one registration that could never carry the BlueMind preset. On
+   * a rig connected to a real account that cost every stored object: BlueMind
+   * adds {@code X-ALT-DESC} to each copy eXo writes, the sweep read each as
+   * altered, repaired it three times and then abandoned it.
+   *
+   * <p>
+   * <b>Why the entries and not their patterns.</b> The catalogue is where a
+   * behaviour has its patterns, its direction and its sentence; naming the
+   * entry here means the seed writes exactly what a tick of that box writes,
+   * and a pattern the catalogue later widens (one more {@code X-} family under
+   * {@link ServerQuirk#ADDS_COMPATIBILITY_MARKERS}, say) reaches the next
+   * fresh install without a second spelling to keep in step. The list is what
+   * {@link #seedExcusals(ServerQuirkDirection)} reads.
+   *
+   * <p>
+   * <b>How far that reaches, exactly.</b> A widened pattern reaches this seed
+   * and the drawer's own check-boxes, both of which read the catalogue's
+   * {@link ServerQuirk#getPatterns()} — the drawer over REST. It does
+   * <b>not</b> reach the browser's BlueMind preset: {@code serverPresets.js}
+   * carries its own hardcoded {@code QUIRKS} map of the same ids to the same
+   * patterns, because the ids cross a language boundary with no mechanism to
+   * share them. So a widened family is spelled in two places, not one, and
+   * this constant is the single source of truth for the <i>Java</i> side only.
+   * Generating the catalogue as a JS resource would close it and is more
+   * machinery than three constants justify; what must not happen is the JS
+   * quietly falling behind, so {@code QUIRKS} carries the reciprocal note.
+   *
+   * <p>
+   * <b>Fresh installs only, like everything the seeding does.</b> A row
+   * already declared keeps what was copied into it on the day it was
+   * declared, whatever this list says now — that is the design the preset
+   * states for itself, and a seed that repaired existing rows behind an
+   * administrator's back would break it from the other side.
+   */
+  static final List<ServerQuirk>   BLUEMIND_SEED_QUIRKS          = List.of(ServerQuirk.DROPS_CONFERENCE,
+                                                                             ServerQuirk.ADDS_COMPATIBILITY_MARKERS,
+                                                                             ServerQuirk.ADDS_FORMATTED_DESCRIPTION,
+                                                                             ServerQuirk.STAMPS_DEFAULT_PRIORITY);
+
   private static final String      SERVER_MANDATORY_MESSAGE      = "caldav.server.mandatory";
 
   private static final String      SERVER_NAME_MANDATORY_MESSAGE = "caldav.server.nameMandatory";
@@ -247,7 +314,28 @@ public class CaldavServerService {
    * the legacy property when set, else the literal default, and its
    * activation from the legacy enabled property (historically enabled).</li>
    * <li><b>Bluemind</b>, a normally-named row whose agenda remote provider is
-   * upserted here, since no kernel plugin declares it.</li>
+   * upserted here, since no kernel plugin declares it — and which arrives
+   * excused for what BlueMind is known to do to a copy, see
+   * {@link #BLUEMIND_SEED_QUIRKS}, and pointed at the account's <b>main</b>
+   * calendar, which is where the browser preset points it too.
+   * <p>
+   * The destination is seeded rather than left at the model's default because
+   * on THIS server the default has an established cost: BlueMind's dedicated
+   * calendar is excluded from the account's free/busy — colleagues booking
+   * around the user see eXo meeting times as free — and it carries no answer
+   * buttons. The general caution on the option ("only once copies synchronise
+   * cleanly") is right and stays where it is; it simply does not weigh what is
+   * already known about this one server, which is the same judgement
+   * {@code serverPresets.js} makes for the drawer. A seed that disagreed with
+   * the preset an administrator is about to apply to the very same row would
+   * be teaching two answers to one question.
+   * <p>
+   * {@code answerLinksInCopy} is stated rather than defaulted — the model is
+   * built positionally through its all-arguments constructor, so the field
+   * initialiser is overwritten whatever the seed passes, and the seed passes
+   * {@code true}. It happens to be the model's own default and the preset's
+   * value too, so the three agree; it is simply stated twice rather than
+   * once.</li>
    * </ul>
    *
    * <p>
@@ -321,12 +409,103 @@ public class CaldavServerService {
     LOG.info("Seeded the Stalwart CalDAV server ({}), active: {}", stalwartUrl, stalwartActive);
     boolean bluemindActive = isDeclarableSeedAddress(BLUEMIND_SERVER_NAME, DEFAULT_BLUEMIND_URL);
     CaldavServer bluemind = caldavServerStorage.createServer(new CaldavServer(0, null, BLUEMIND_SERVER_NAME, null, DEFAULT_BLUEMIND_URL,
-                                                                              bluemindActive, null, null, null, null, true, null,
-                                                                              null, null, null, null,
-                                                                              MirrorTargetKind.DEDICATED_CALENDAR, null, null),
+                                                                              bluemindActive, null, null, null, null, true,
+                                                                              seedExcusals(ServerQuirkDirection.ADDED),
+                                                                              seedExcusals(ServerQuirkDirection.DROPPED),
+                                                                              null, null, null,
+                                                                              MirrorTargetKind.MAIN_CALENDAR, null, null),
                                                              CALDAV_PROVIDER_NAME);
     saveAgendaRemoteProvider(bluemind);
     LOG.info("Seeded the Bluemind CalDAV server ({}), active: {}", DEFAULT_BLUEMIND_URL, bluemindActive);
+  }
+
+  /**
+   * The stored list one of the seeded BlueMind row's tolerance columns
+   * receives: the patterns of every entry of {@link #BLUEMIND_SEED_QUIRKS}
+   * pointing in one direction, joined the way a tick in the drawer joins them.
+   *
+   * <p>
+   * Which column an entry belongs in is the entry's own declaration, read the
+   * way {@code CaldavServerQuirkService} reads it: an entry that changes what
+   * eXo writes ({@link ServerQuirkEffect#OMIT}) belongs in neither tolerance
+   * list, an added property in the ignored list, a dropped or rewritten one
+   * in the dropped list. Deciding it here from the direction rather than
+   * spelling the two lists out is what keeps a seed entry from ever being
+   * filed under the wrong column.
+   *
+   * <p>
+   * <b>"Neither tolerance list" means written nowhere — do not add an
+   * {@code OMIT} entry to {@link #BLUEMIND_SEED_QUIRKS} without extending this
+   * method.</b> The seed asks for the two tolerance columns and passes
+   * {@code null} for {@code omittedProperties}, so an {@code OMIT} entry would
+   * be dropped by the filter above with nothing routing it to a third column:
+   * the constant would name a behaviour the seed does not write, with no
+   * compile error and no test failure. The browser path does not behave this
+   * way — {@code serverPresets.js} walks {@code QUIRKS[quirkId].list} and
+   * {@code omitsSoloOrganizer} maps to the omitted list, so a preset naming it
+   * writes it. The gap is held shut by
+   * {@code CaldavServerServiceTest#shouldSeedNoEntryThatWouldBeWrittenNowhere},
+   * which fails the moment such an entry is added.
+   *
+   * <p>
+   * The separator is the comma {@link ServerQuirk#listMatches(String, String)}
+   * splits on and {@code serverQuirks.js} joins with, so the row reads back
+   * exactly as one an administrator ticked.
+   *
+   * @param column which of the two tolerance columns is being filled, named by
+   *          the direction that files an entry into it — {@code ADDED} for the
+   *          ignored list, {@code DROPPED} for the dropped one. Only those two
+   *          are columns; {@code REWRITTEN} names no column of its own, which
+   *          is what {@link #toleranceColumn(ServerQuirkDirection)} says.
+   * @return the comma-joined patterns, empty when no seed entry belongs in
+   *         that column — never null, since null means "this server has never
+   *         been asked" and falls back to the deployment-wide property, while
+   *         an empty string is this row's own "excuse nothing here" and blocks
+   *         that fallback. Both readers agree on it:
+   *         {@code ServerExcusals.of} keeps a non-null server value whatever
+   *         it holds and {@code ServerQuirk.listMatches} matches nothing in a
+   *         blank one, and {@code CaldavServerQuirkService.effective} takes
+   *         the same branch. <b>Stated with one limit</b>: that contract lives
+   *         in the Java readers, not in the column. An RDBMS that folds an
+   *         empty string into NULL on write — Oracle does exactly that for
+   *         {@code VARCHAR2}/{@code NVARCHAR2} — would read the row back as
+   *         "never asked" and silently restore the global fallback. Untested
+   *         here, and moot for this seed, whose two columns both carry
+   *         patterns; it bites the row an administrator empties by unticking
+   *         the last box, and the {@code ''} {@code serverPresets.js} writes
+   *         for Stalwart. Worth one round-trip check on Oracle before the
+   *         empty string is relied on as an answer.
+   */
+  private static String seedExcusals(ServerQuirkDirection column) {
+    return BLUEMIND_SEED_QUIRKS.stream()
+                               .filter(quirk -> quirk.getEffect() == ServerQuirkEffect.TOLERATE)
+                               .filter(quirk -> toleranceColumn(quirk.getDirection()) == column)
+                               .flatMap(quirk -> quirk.getPatterns().stream())
+                               .collect(Collectors.joining(","));
+  }
+
+  /**
+   * Which tolerance column an entry's direction files it under, written as the
+   * same switch {@code CaldavServerQuirkService.listFor} uses, so the two
+   * cannot drift.
+   *
+   * <p>
+   * There are three directions and two columns, and spelling the collapse out
+   * is the point: {@code REWRITTEN} shares the dropped list with
+   * {@code DROPPED} — the invitation text BlueMind rewrites is excused by the
+   * same column as the conference link it drops. Testing
+   * {@code direction == ADDED} would compute the same answer while reading as
+   * though a {@code REWRITTEN} column existed somewhere.
+   *
+   * @param direction the direction an entry declares
+   * @return {@code ADDED} for the ignored column, {@code DROPPED} for the
+   *         dropped one — never {@code REWRITTEN}
+   */
+  private static ServerQuirkDirection toleranceColumn(ServerQuirkDirection direction) {
+    return switch (direction) {
+      case ADDED -> ServerQuirkDirection.ADDED;
+      case DROPPED, REWRITTEN -> ServerQuirkDirection.DROPPED;
+    };
   }
 
   /**
