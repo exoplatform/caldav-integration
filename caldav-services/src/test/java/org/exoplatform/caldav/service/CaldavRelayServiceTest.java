@@ -143,7 +143,7 @@ public class CaldavRelayServiceTest {
    */
   private CaldavServer server(long id, boolean active) {
     return new CaldavServer(id, "agenda.caldavCalendar." + id, "Server " + id, null, SERVER_URL, active, null, null, null,
-                            null, true, null, null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, PROVIDER);
+                            null, true, null, null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, PROVIDER, null);
   }
 
   /**
