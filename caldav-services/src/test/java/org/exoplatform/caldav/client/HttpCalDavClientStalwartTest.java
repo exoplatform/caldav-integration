@@ -124,7 +124,7 @@ public class HttpCalDavClientStalwartTest {
     lenient().when(registry.resolveServer(1L))
              .thenReturn(new CaldavServer(1L, "agenda.caldavCalendar", "Stalwart", null, SERVER_URL, true, null, null, null,
                                           null, true, null, null, null,
-                                          null, null, null, "personal"));
+                                          null, null, null, "personal", null));
     ConnectorCredentialsService credentials = mock(ConnectorCredentialsService.class);
     String token = Base64.getEncoder().encodeToString((USER + ":" + password).getBytes(StandardCharsets.UTF_8));
     try {

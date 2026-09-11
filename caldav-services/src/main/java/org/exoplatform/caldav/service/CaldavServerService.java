@@ -20,7 +20,9 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
+import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -28,8 +30,12 @@ import org.springframework.stereotype.Service;
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
+import org.exoplatform.services.connector.credentials.ConnectorProviderConfigStorage;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.caldav.utils.CopySettingsFingerprint;
 import org.exoplatform.commons.api.settings.SettingService;
@@ -165,6 +171,12 @@ public class CaldavServerService {
   @Autowired
   private AgendaRemoteEventService agendaRemoteEventService;
 
+  // required = false, the same reason CaldavRelayService guards its own resolver: the
+  // storage is a bean of another WAR, so it is undefined in this addon's Spring test
+  // contexts.
+  @Autowired(required = false)
+  private ConnectorProviderConfigStorage providerConfigStorage;
+
   @Autowired
   private SettingService           settingService;
 
@@ -274,7 +286,7 @@ public class CaldavServerService {
         && !StringUtils.equalsIgnoreCase(System.getProperty(CALDAV_ENABLED_PROPERTY), "false");
     caldavServerStorage.createSeedServer(new CaldavServer(0, null, STALWART_SERVER_NAME, null, stalwartUrl, stalwartActive, null, null,
                                                           null, null, true, null, null, null, null, null,
-                                                          MirrorTargetKind.DEDICATED_CALENDAR, null),
+                                                          MirrorTargetKind.DEDICATED_CALENDAR, null, null),
                                          CALDAV_PROVIDER_NAME);
     // The kernel plugin only CREATES the provider when missing — an existing
     // one keeps whatever enabled state it holds (an admin may have disabled
@@ -283,13 +295,13 @@ public class CaldavServerService {
     // fresh install both writes carry the same property-driven value.
     saveAgendaRemoteProvider(new CaldavServer(0, CALDAV_PROVIDER_NAME, STALWART_SERVER_NAME, null, stalwartUrl, stalwartActive, null,
                                               null, null, null, true, null, null, null, null, null,
-                                              MirrorTargetKind.DEDICATED_CALENDAR, null));
+                                              MirrorTargetKind.DEDICATED_CALENDAR, null, null));
     LOG.info("Seeded the Stalwart CalDAV server ({}), active: {}", stalwartUrl, stalwartActive);
     boolean bluemindActive = isDeclarableSeedAddress(BLUEMIND_SERVER_NAME, DEFAULT_BLUEMIND_URL);
     CaldavServer bluemind = caldavServerStorage.createServer(new CaldavServer(0, null, BLUEMIND_SERVER_NAME, null, DEFAULT_BLUEMIND_URL,
                                                                               bluemindActive, null, null, null, null, true, null,
                                                                               null, null, null, null,
-                                                                              MirrorTargetKind.DEDICATED_CALENDAR, null),
+                                                                              MirrorTargetKind.DEDICATED_CALENDAR, null, null),
                                                              CALDAV_PROVIDER_NAME);
     saveAgendaRemoteProvider(bluemind);
     LOG.info("Seeded the Bluemind CalDAV server ({}), active: {}", DEFAULT_BLUEMIND_URL, bluemindActive);
@@ -373,10 +385,133 @@ public class CaldavServerService {
    * @throws IllegalArgumentException when the registration, its name or its
    *           URL is missing
    */
+  /**
+   * The provider configuration of a registration, as an administration screen may see
+   * it: every field except the secret ones, which are never read back on this path.
+   *
+   * @param serverId the registration whose configuration is read
+   * @param username the user asking, checked against the administration ACL - reading a
+   *          technical account is an administration act
+   * @return the stored values without any secret, empty when nothing is stored or when
+   *         the storage is not deployed
+   * @throws IllegalAccessException when the user is not a platform administrator
+   */
+  public Map<String, String> getProviderConfig(long serverId, String username) throws IllegalAccessException {
+    checkCanEdit(username);
+    CaldavServer stored = caldavServerStorage.getServerById(serverId);
+    if (providerConfigStorage == null || stored == null || StringUtils.isBlank(stored.getAuthProviderName())) {
+      return Map.of();
+    }
+    return providerConfigStorage.readWithoutSecrets(providerConfigContext(serverId, stored.getAuthProviderName()));
+  }
+
+  /**
+   * Checks the posted configuration against its provider's descriptor, without writing.
+   * <p>
+   * Before the insert, not after: a setting key carries the registration id, so the
+   * configuration can only be written once the row exists - and a refusal then would
+   * leave a registration declared with nothing configured, which an administrator
+   * answers by declaring a second one.
+   *
+   * @param server the registration as posted
+   * @throws IllegalArgumentException carrying the storage's message code on a refusal
+   */
+  private void validateProviderConfig(CaldavServer server) {
+    if (providerConfigStorage == null || MapUtils.isEmpty(server.getProviderConfig())) {
+      return;
+    }
+    try {
+      providerConfigStorage.validate(providerConfigContext(server.getId(), server.getAuthProviderName()),
+                                     server.getProviderConfig());
+    } catch (ConnectorCredentialsException e) {
+      logProviderConfigRefusal(server, e);
+      throw new IllegalArgumentException(e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Writes the provider configuration an administrator just posted, under the
+   * registration it belongs to.
+   *
+   * @param server the registration as stored, for its id and provider name
+   * @param values what the drawer posted, possibly null
+   * @throws IllegalArgumentException carrying the storage's message code on a refusal
+   */
+  private void storeProviderConfig(CaldavServer server, Map<String, String> values) {
+    if (providerConfigStorage == null || MapUtils.isEmpty(values)) {
+      return;
+    }
+    try {
+      providerConfigStorage.store(providerConfigContext(server.getId(), server.getAuthProviderName()), values);
+    } catch (ConnectorCredentialsException e) {
+      logProviderConfigRefusal(server, e);
+      throw new IllegalArgumentException(e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Removes the configuration of the provider a registration is being moved away from.
+   * <p>
+   * Left alone it would stay under its own key: invisible in every screen, yet a
+   * technical login and secret still stored, and back in use the day someone selects
+   * that provider again.
+   *
+   * @param previous the registration as it was stored, possibly null
+   * @param server the registration as posted
+   */
+  private void discardConfigOfProviderBeingLeft(CaldavServer previous, CaldavServer server) {
+    if (providerConfigStorage == null || previous == null) {
+      return;
+    }
+    String previousProvider = previous.getAuthProviderName();
+    String newProvider = StringUtils.defaultIfBlank(server.getAuthProviderName(), previousProvider);
+    if (StringUtils.isNotBlank(previousProvider) && !StringUtils.equals(previousProvider, newProvider)) {
+      providerConfigStorage.delete(providerConfigContext(previous.getId(), previousProvider));
+    }
+  }
+
+  /**
+   * Says what was refused, and enough to act on it.
+   * <p>
+   * Logged because the refusal reaches the browser as a bare 400 whose message code
+   * the error body does not carry, which left an administrator - and whoever reads the
+   * server afterwards - with nothing at all to go on. The keys are named, never the
+   * values: one of them is a password.
+   *
+   * @param server the registration whose configuration was refused
+   * @param e the refusal, carrying its message code
+   */
+  private void logProviderConfigRefusal(CaldavServer server, ConnectorCredentialsException e) {
+    LOG.warn("Provider configuration refused for CalDAV server {} on provider '{}': {} (submitted keys: {})",
+             server.getId(),
+             server.getAuthProviderName(),
+             e.getMessage(),
+             server.getProviderConfig() == null ? "none" : server.getProviderConfig().keySet());
+  }
+
+  /**
+   * The context a configuration is stored under. No username - a registration's
+   * configuration is not a user's - and no channel: one configuration serves every
+   * channel the registration speaks.
+   *
+   * @param serverId the registration the configuration belongs to
+   * @param providerName the provider whose descriptor the values answer
+   * @return the context to hand to the storage
+   */
+  private ConnectorCredentialsContext providerConfigContext(long serverId, String providerName) {
+    return new ConnectorCredentialsContext(serverId,
+                                           providerName,
+                                           null,
+                                           null,
+                                           CaldavCredentialsResolver.CONNECTOR_KIND);
+  }
+
   public CaldavServer createServer(CaldavServer server, String username) throws IllegalAccessException {
     checkCanEdit(username);
     validate(server);
+    validateProviderConfig(server);
     CaldavServer createdServer = caldavServerStorage.createServer(server, CALDAV_PROVIDER_NAME);
+    storeProviderConfig(createdServer, server.getProviderConfig());
     saveAgendaRemoteProvider(createdServer);
     return caldavServerQuirkService.decorate(createdServer);
   }
@@ -415,10 +550,17 @@ public class CaldavServerService {
       caldavServerUrlValidator.validate(server.getServerUrl());
     }
     stampCopySettings(server);
+    // Before the row is written, for the reason the create path already carries: the
+    // registration and its configuration are two writes, and a refusal on the second
+    // would otherwise leave the row on a provider whose configuration was never
+    // stored - an authentication nothing can perform, that no screen shows as broken.
+    validateProviderConfig(server);
     CaldavServer updatedServer = caldavServerStorage.updateServer(server);
     if (updatedServer == null) {
       throw new ObjectNotFoundException("CalDAV server with id " + server.getId() + " doesn't exist");
     }
+    discardConfigOfProviderBeingLeft(stored, server);
+    storeProviderConfig(updatedServer, server.getProviderConfig());
     saveAgendaRemoteProvider(updatedServer);
     return caldavServerQuirkService.decorate(updatedServer);
   }
@@ -517,7 +659,15 @@ public class CaldavServerService {
     saveAgendaRemoteProvider(new CaldavServer(server.getId(), server.getProviderName(), server.getName(),
                                               server.getDescription(), server.getServerUrl(), false, null, null, null, null,
                                               server.isAnswerLinksInCopy(), null, null, null, null,
-                                              server.getCopySettingsUpdated(), server.getMirrorTarget(), null));
+                                              server.getCopySettingsUpdated(), server.getMirrorTarget(), null, null));
+    // The configuration first, the row second. The two writes share no transaction - the
+    // row goes through JPA, the settings through the kernel's own RequestLifeCycle - so
+    // the order is the guarantee: a failure here leaves the registration, which an
+    // administrator sees and retries. The other way round it would leave a technical
+    // secret with no server to reach it from.
+    if (providerConfigStorage != null && StringUtils.isNotBlank(server.getAuthProviderName())) {
+      providerConfigStorage.delete(providerConfigContext(serverId, server.getAuthProviderName()));
+    }
     caldavServerStorage.deleteServer(serverId);
     caldavServerQuirkService.forget(serverId);
   }
