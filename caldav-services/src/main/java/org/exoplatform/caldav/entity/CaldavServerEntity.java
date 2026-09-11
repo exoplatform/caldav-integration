@@ -204,4 +204,22 @@ public class CaldavServerEntity {
    */
   @Column(name = "AUTH_PROVIDER_NAME")
   private String  authProviderName = PersonalCredentialsProvider.NAME;
+
+  /**
+   * Which other eXo deployments have been seen writing meeting copies into this
+   * server's accounts, as a bounded rolling list - see
+   * {@link org.exoplatform.caldav.utils.ForeignWriterSummary} for the format
+   * and EXO-89824 for why the condition is otherwise invisible.
+   *
+   * <p>
+   * Null is "nothing seen", which is where every registration starts and where
+   * one whose last entry has aged out returns. Written by the inbound pass and
+   * never by an administrator save, exactly like {@link #observedQuirks} above:
+   * it is evidence, and a drawer that could overwrite it would erase the finding
+   * the administrator opened it to read. Declared LAST, after
+   * {@link #authProviderName}, for the positional-constructor reason the fields
+   * above explain - and the next field appended goes after this one.
+   */
+  @Column(name = "FOREIGN_WRITERS")
+  private String  foreignWriters;
 }
