@@ -304,7 +304,7 @@ public class CaldavAnswerHealOnFullReadTest {
                                                                                                    + "copy.ics",
                                                                                                                                       ETAG,
                                                                                                                                       copy(partStat))));
-    when(caldavSyncStorage.isMirrorOwned(USER, SERVER, UID)).thenReturn(true);
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, UID)).thenReturn(true);
     when(caldavSyncStorage.getMirrorEventId(USER, SERVER, UID)).thenReturn(EVENT);
     lenient().when(agendaEventService.getEventById(EVENT)).thenReturn(event());
   }
