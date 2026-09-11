@@ -25,5 +25,13 @@
       <depends>
         <module>fontIcons</module>
       </depends>
+      <!-- commons-exo's generic renderer of a credentials provider's configuration
+           fields, plus the service that lists the registered providers. The server
+           drawer declares the provider selector and lets that component draw
+           whatever the chosen provider describes, so a new provider needs no
+           change here. -->
+      <depends>
+        <module>credentialsProviderConfig</module>
+      </depends>
   </module>
 </gatein-resources>
