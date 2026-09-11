@@ -149,6 +149,55 @@ public class ServerQuirkExcusalTest {
     assertDifferent(without(CONFERENCE), EXO, null, null);
   }
 
+  /**
+   * The priority stamp, end to end, on the instrument EXO-89828 finally chose
+   * for it: the excusal and not a rule about the value.
+   *
+   * <p>
+   * BlueMind writes {@code PRIORITY:5} onto every copy it stores — the RFC
+   * 5545 medium level, what an agent writes for the priority nobody chose —
+   * and eXo writes no {@code PRIORITY} at all, so it arrives as a surplus
+   * unrecognised property on every object and kept them in a repair loop.
+   * {@link ServerQuirk#STAMPS_DEFAULT_PRIORITY} points {@code ADDED}, so the
+   * ignored column is the one that covers it; this pins that the column
+   * actually does, rather than leaving it inferred from the direction.
+   *
+   * <p>
+   * The pair below is the load-bearing half: untouched, the stamp is still
+   * reported, which is how an administrator ever learns there is a box to
+   * tick — and how the seeded BlueMind row differs from a Stalwart that
+   * stamps nothing.
+   */
+  @Test
+  public void aPriorityTheServerStampsIsExcusedOnAServerDeclaredToStampOne() {
+    String stamped = EXO.replace("STATUS:CONFIRMED", "PRIORITY:5\r\nSTATUS:CONFIRMED");
+
+    assertEquivalent(stamped, EXO, "PRIORITY", null);
+    assertDifferent(stamped, EXO, null, null);
+  }
+
+  /**
+   * And what ticking it gives up, pinned so the cost is read off a test rather
+   * than off a promise: an excusal is by name and not by value, so a priority
+   * somebody actually set goes unreported on that server too.
+   *
+   * <p>
+   * It is a loss of reporting and not of data. eXo writes no {@code PRIORITY},
+   * so the repair such a report triggers overwrites the copy with a render
+   * carrying none — the edit was destroyed by the reporting, never saved by
+   * it. That is the whole reason this value-blindness was judged to cost
+   * nothing here, and it is why the sentence beside the box says so.
+   */
+  @Test
+  public void aPriorityAUserSetGoesUnreportedOnThatServerToo() {
+    String urgent = EXO.replace("STATUS:CONFIRMED", "PRIORITY:1\r\nSTATUS:CONFIRMED");
+
+    assertEquivalent(urgent, EXO, "PRIORITY", null);
+    // Untouched, it is still an edit — the excusal is what gives it up, not
+    // the comparison.
+    assertDifferent(urgent, EXO, null, null);
+  }
+
   @Test
   public void aClientThatRewroteTheConferenceLinkIsStillCaughtOnAnExcusedServer() {
     // The excusal is an absence, not a blanket. CONFERENCE is not the
