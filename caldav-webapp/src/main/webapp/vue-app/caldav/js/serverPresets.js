@@ -156,6 +156,15 @@ const COPY_SETTINGS = [ANSWER_LINKS, MIRROR_TARGET];
  * `ServerQuirk` enum, so a preset and the drawer's own check-boxes cannot mean
  * different things by the same name.
  *
+ * This map is a SECOND SPELLING of that enum, not a view of it: the ids and
+ * patterns cross a language boundary with no mechanism to share them, so the
+ * catalogue widening a family — one more `X-` family under
+ * `ADDS_COMPATIBILITY_MARKERS`, say — reaches the Java seed and the drawer's
+ * check-boxes (both read `ServerQuirk.getPatterns()`, the drawer over REST) and
+ * does NOT reach this map. Widen a family on the Java side and widen it here in
+ * the same change, or a preset starts writing less than the box of the same
+ * name. `CaldavServerService.BLUEMIND_SEED_QUIRKS` carries the reciprocal note.
+ *
  * `omitsSoloOrganizer` is the only one here that changes what eXo writes, and
  * the wording beside a preset that carries it says so, because a box that
  * alters somebody's calendar must not look like a box that only alters a
@@ -167,6 +176,7 @@ const QUIRKS = {
   dropsConference: {list: DROPPED, patterns: ['CONFERENCE']},
   addsCompatibilityMarkers: {list: IGNORED, patterns: ['X-MICROSOFT-*', 'X-MOZ-*']},
   addsFormattedDescription: {list: IGNORED, patterns: ['X-ALT-DESC']},
+  stampsDefaultPriority: {list: IGNORED, patterns: ['PRIORITY']},
   omitsSoloOrganizer: {list: OMITTED, patterns: ['SOLO-ORGANIZER']},
 };
 
@@ -219,7 +229,7 @@ export const SERVER_PRESETS = [
     name: 'BlueMind',
     icon: null,
     urlPlaceholder: 'https://bluemind.example.org/dav/',
-    quirks: ['dropsConference', 'addsCompatibilityMarkers', 'addsFormattedDescription'],
+    quirks: ['dropsConference', 'addsCompatibilityMarkers', 'addsFormattedDescription', 'stampsDefaultPriority'],
     [ANSWER_LINKS]: true,
     [MIRROR_TARGET]: MIRROR_TARGET_MAIN_CALENDAR,
   },
