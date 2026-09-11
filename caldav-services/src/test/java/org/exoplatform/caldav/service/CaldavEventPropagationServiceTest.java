@@ -232,6 +232,9 @@ public class CaldavEventPropagationServiceTest {
     // The property is @Value-injected in production and zero here, which would
     // make every obligation look already abandoned.
     ReflectionTestUtils.setField(service, "maxPushAttempts", MAX_ATTEMPTS);
+    // Likewise zero when not injected, which would expire every announcement
+    // before the broadcast that consumes it.
+    ReflectionTestUtils.setField(service, "fromServerSeconds", 300L);
   }
 
   /**
@@ -266,6 +269,101 @@ public class CaldavEventPropagationServiceTest {
 
     verify(caldavPushService).pushAgendaEvent(ALICE, login(ALICE), EVENT);
     verify(caldavPushService).pushAgendaEvent(BOB, login(BOB), EVENT);
+  }
+
+  /**
+   * EXO-90190. A change the inbound pass read from Alice's copy is not written
+   * back to Alice's copy: that object is the change's source, and the rewrite
+   * re-rendered it, bumped its etag, and — with the event's identity lost —
+   * wrote a second object beside it. Bob's copy, which did not have the change,
+   * still gets it: the fan-out is untouched.
+   */
+  @Test
+  public void aChangeReadFromACopyIsNotWrittenBackToThatCopy() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/default/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    when(caldavPushService.pushAgendaEvent(anyLong(), anyString(), eq(EVENT))).thenReturn(new ObjectSync());
+
+    service.changedOnTheServer(EVENT, 1L);
+
+    assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
+    verify(caldavPushService, never()).pushAgendaEvent(eq(ALICE), anyString(), anyLong());
+    verify(caldavPushService).pushAgendaEvent(BOB, login(BOB), EVENT);
+    // Not owed either: the retry pass must not carry out the echo the listener declined.
+    verify(caldavPendingPushStorage, never()).owe(eq(1L), anyLong(), any(), any(), any());
+    verify(caldavPendingPushStorage).owe(eq(2L), eq(BOB), eq(PendingPushKind.REWRITE), eq(EVENT), eq("uid-8801"));
+  }
+
+  /**
+   * One announcement covers one broadcast. The next edit of the same event —
+   * a genuine one, made in eXo — finds nothing announced and reaches Alice's
+   * copy like everyone else's. This is what keeps the mechanism from ever
+   * silencing a real edit.
+   */
+  @Test
+  public void anAnnouncementCoversOneBroadcastOnly() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/default/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(anyLong(), anyString(), eq(EVENT))).thenReturn(new ObjectSync());
+
+    service.changedOnTheServer(EVENT, 1L);
+    assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
+    assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPushService).pushAgendaEvent(ALICE, login(ALICE), EVENT);
+  }
+
+  /**
+   * An announcement withdrawn — agenda refused the update, nothing was
+   * broadcast — is not honoured by the next broadcast.
+   */
+  @Test
+  public void aWithdrawnAnnouncementIsNotHonoured() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/default/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(anyLong(), anyString(), eq(EVENT))).thenReturn(new ObjectSync());
+
+    service.changedOnTheServer(EVENT, 1L);
+    service.notChangedAfterAll(EVENT);
+
+    assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
+  }
+
+  /**
+   * An announcement whose broadcast never came — agenda threw after saving, a
+   * listener ran with no container — is not honoured once it has expired. The
+   * expiry is the only thing standing between such a leak and the next genuine
+   * edit of the event being kept from the origin holder's copy, which nothing
+   * would repair; here it is driven to zero so the pin does not wait on it.
+   */
+  @Test
+  public void anAnnouncementThatOutlivedItsBroadcastIsNotHonoured() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/default/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(anyLong(), anyString(), eq(EVENT))).thenReturn(new ObjectSync());
+    ReflectionTestUtils.setField(service, "fromServerSeconds", 0L);
+
+    service.changedOnTheServer(EVENT, 1L);
+
+    assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
+    verify(caldavPushService).pushAgendaEvent(ALICE, login(ALICE), EVENT);
+  }
+
+  /**
+   * An announcement names one mapping; a broadcast for the same event whose
+   * holders do not include that mapping is carried in full.
+   */
+  @Test
+  public void anAnnouncementForAnotherMappingSkipsNobody() {
+    givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(200L, BOB);
+    when(caldavPushService.pushAgendaEvent(anyLong(), anyString(), eq(EVENT))).thenReturn(new ObjectSync());
+
+    service.changedOnTheServer(EVENT, 1L);
+
+    assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
   }
 
   /**
@@ -672,6 +770,27 @@ public class CaldavEventPropagationServiceTest {
 
     verify(caldavPushService).deleteEvent(ALICE, login(ALICE), "uid-8801");
     verify(caldavPushService).deleteEvent(BOB, login(BOB), "uid-8801");
+  }
+
+  /**
+   * EXO-90190, deletion side. The object the deletion was read from is already
+   * gone from the server: asking the server to remove it again is an echo, and
+   * owing that removal chases a mapping the inbound pass drops next. Bob's
+   * copy, which still exists, is removed.
+   */
+  @Test
+  public void aDeletionReadFromACopyIsNotSentBackToThatCopy() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/default/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+
+    service.changedOnTheServer(EVENT, 1L);
+
+    assertEquals(1, service.propagateDeletion(EVENT));
+    verify(caldavPushService, never()).deleteEvent(eq(ALICE), anyString(), anyString());
+    verify(caldavPushService).deleteEvent(BOB, login(BOB), "uid-8801");
+    verify(caldavPendingPushStorage, never()).owe(eq(1L), anyLong(), any(), any(), any());
   }
 
   /**
@@ -1629,6 +1748,92 @@ public class CaldavEventPropagationServiceTest {
     verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
   }
 
+  // ------------------------------------ the abandonment line, EXO-90190
+
+  /**
+   * A foreign copy is given up on the first time, not after five identical
+   * refusals, and the line an operator gets names the account setup rather
+   * than a calendar server that was never asked for anything.
+   */
+  @Test
+  public void aForeignCopyIsAbandonedOnTheFirstRefusalAndNotReportedAsAServerRefusal() {
+    // FOREIGN_COPY is refused before any PUT: the object is another user's
+    // copy, and no waiting changes whose it is. So it does not burn the budget
+    // a bad-day server gets — it is abandoned at once (EXO-90190, product
+    // decision), and the one line an operator gets has to send them to the eXo
+    // account setup, not to a calendar server.
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, login(ALICE), EVENT))
+                                                        .thenThrow(new CaldavPushException(CaldavPushService.FOREIGN_COPY,
+                                                                                           "another user's copy"));
+
+    List<ILoggingEvent> abandoned;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      service.propagateUpdate(EVENT, A_REAL_EDIT);
+      service.retryOwedPushes(ALICE);
+
+      assertEquals(0,
+                   caldavPendingPushStorage.owedAndStillTrying(ALICE, MAX_ATTEMPTS),
+                   "given up on after one refusal, not after " + MAX_ATTEMPTS);
+
+      // The sweeps that would have followed ask nothing more: the obligation
+      // has left the attemptable set, so no further push is attempted and no
+      // second line is said.
+      for (int sweep = 0; sweep < MAX_ATTEMPTS + 2; sweep++) {
+        service.retryOwedPushes(ALICE);
+      }
+      abandoned = log.events()
+                     .stream()
+                     .filter(recorded -> recorded.getLevel() == Level.WARN
+                         && recorded.getFormattedMessage().contains("belongs to another eXo user"))
+                     .toList();
+    }
+
+    // Two, and no more: the attempt propagateUpdate makes at once, and the one
+    // retry that gives up. The MAX_ATTEMPTS + 2 sweeps that followed added
+    // none, which is the whole point of abandoning on the first refusal.
+    verify(caldavPushService, times(2)).pushAgendaEvent(ALICE, login(ALICE), EVENT);
+    assertEquals(1, abandoned.size(), "said once, on the refusal that gives up");
+    String line = abandoned.get(0).getFormattedMessage();
+    assertTrue(line.contains("stops now"), line);
+    assertTrue(line.contains("nothing was sent to the calendar server"), line);
+    assertFalse(line.contains("refused the write"), "no server refused anything: " + line);
+    assertTrue(line.contains("share one calendar account"), "the line has to name what a human repairs: " + line);
+    assertEquals(1, caldavPendingPushStorage.owed(ALICE), "the record stays: it is where the wrong copy is visible");
+  }
+
+  /**
+   * An obligation abandoned on a server's refusal still says the server
+   * refused it, and which code.
+   */
+  @Test
+  public void anObligationAbandonedOnAServerRefusalSaysSo() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, login(ALICE), EVENT))
+                                                        .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                           "this server will never take it"));
+
+    List<ILoggingEvent> abandoned;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      service.propagateUpdate(EVENT, A_REAL_EDIT);
+      for (int sweep = 0; sweep < MAX_ATTEMPTS + 2; sweep++) {
+        service.retryOwedPushes(ALICE);
+      }
+      abandoned = log.events()
+                     .stream()
+                     .filter(recorded -> recorded.getLevel() == Level.WARN
+                         && recorded.getFormattedMessage().contains("stops trying to settle it"))
+                     .toList();
+    }
+
+    assertEquals(1, abandoned.size());
+    String line = abandoned.get(0).getFormattedMessage();
+    assertTrue(line.contains("has refused the write eXo owes it " + MAX_ATTEMPTS + " times"), line);
+    assertTrue(line.contains(CaldavPushService.SAVE), line);
+  }
+
   // -------------------------------------------- the answer fan-out, EXO-89868
 
   /**
@@ -2480,13 +2685,39 @@ public class CaldavEventPropagationServiceTest {
      * {@inheritDoc}
      */
     @Override
+    public void abandoned(long id, int maxAttempts) {
+      byObject.replaceAll((objectSyncId, pending) -> {
+        if (pending.getId() != null && pending.getId() == id) {
+          pending.setAttempts(maxAttempts);
+        }
+        return pending;
+      });
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
     public List<PendingPush> attemptable(long userIdentityId, int maxAttempts, int limit) {
+      // Snapshots, as the real storage hands out: a DTO mapped off a row, which
+      // the UPDATE behind refused() does not reach. Handing out the stored
+      // instance let refused() move the count under the service's feet, and
+      // the abandonment line — which reads the count as it stood — fired one
+      // attempt early and then again.
       return byObject.values()
                      .stream()
                      .filter(pending -> pending.getUserIdentityId() == userIdentityId)
                      .filter(pending -> pending.getAttempts() < maxAttempts)
                      .sorted(Comparator.comparing(PendingPush::getId))
                      .limit(limit)
+                     .map(pending -> new PendingPush(pending.getId(),
+                                                     pending.getObjectSyncId(),
+                                                     pending.getUserIdentityId(),
+                                                     pending.getKind(),
+                                                     pending.getLocalEventId(),
+                                                     pending.getIcsUid(),
+                                                     pending.getAttempts(),
+                                                     pending.getSince()))
                      .toList();
     }
 
