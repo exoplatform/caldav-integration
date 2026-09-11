@@ -681,3 +681,28 @@ export const getCaldavServerProviderConfig = (serverId) => {
     return resp.json();
   });
 };
+
+/**
+ * Reads the other eXo deployments seen writing meeting copies into a declared
+ * server's accounts (EXO-89824).
+ *
+ * Its own request rather than a field on the registration: the condition is
+ * evidence the inbound pass wrote, and nothing an administrator saves may carry
+ * it back. Empty on every server nobody else writes into, which is what a
+ * healthy deployment looks like.
+ *
+ * @param {number} serverId technical id of the registration
+ * @returns {Promise<Array>} the deployments, most recently seen first, each
+ *          carrying its authority and when a copy of its was last read here
+ */
+export const getCaldavServerForeignWriters = (serverId) => {
+  return fetch(`/caldav/rest/servers/${serverId}/foreign-writers`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
