@@ -98,6 +98,51 @@ public enum ServerQuirk {
                              "X-ALT-DESC"),
 
   /**
+   * The server stamps a priority on every copy it stores. BlueMind writes
+   * {@code PRIORITY:5} — the RFC 5545 medium level, what a calendar agent
+   * writes for the priority nobody chose — onto <i>every</i> stored object:
+   * the sweep of 2026-08-31, on a registration carrying no excusals at all,
+   * reported {@code UNRECOGNISED:PRIORITY=5 (server 1, eXo 0)} on untouched
+   * objects as well as edited ones, each repaired three times and then
+   * abandoned.
+   *
+   * <p>
+   * <b>Why a per-server excusal rather than a rule about the value.</b>
+   * Reading {@code 5} as a spelling of "unset" for every server was the first
+   * answer and is the wrong axis: it would be deployment-wide, carry no
+   * operator lever — the comparison's defaults map has no {@code @Value} —
+   * and, because the defaults are checked before the unrecognised-name
+   * branch, it would reach nested components including {@code VALARM}, where
+   * RFC 5545 defines no {@code PRIORITY} at all. What that bought was an
+   * accuracy nobody could use: <b>eXo never writes {@code PRIORITY}</b>, so no
+   * value of it can be preserved on any copy, and a divergence that is
+   * reported leads to a repair which strips whatever the user set. Reporting a
+   * priority change therefore protected nothing, which is exactly why this
+   * entry's value-blindness costs nothing here.
+   *
+   * <p>
+   * What the per-server route keeps instead: the behaviour is <b>visible</b>
+   * in the drawer with its own count and its own sentence, <b>untickable</b>
+   * by the administrator who ticked it, reversible per deployment without a
+   * release, and <b>scoped to the server that actually does it</b> — a server
+   * that stamps nothing goes on reporting a priority somebody set.
+   *
+   * <p>
+   * <b>The limit, stated rather than discovered.</b> An excusal is by name and
+   * not by value ({@code ServerExcusals.excuse}), so on a server where this is
+   * ticked a genuine priority edit — {@code 1}, {@code 9} — goes unreported
+   * too, inside a {@code VALARM} as on the event. That is a real loss of
+   * reporting and not a loss of data: the repair such a report triggers
+   * overwrites the copy with eXo's render, which carries no priority at all,
+   * so the edit was destroyed by the reporting rather than saved by it.
+   */
+  STAMPS_DEFAULT_PRIORITY("stampsDefaultPriority",
+                          ServerQuirkDirection.ADDED,
+                          ServerQuirkEffect.TOLERATE,
+                          null,
+                          "PRIORITY"),
+
+  /**
    * The server rewrites the invitation text itself.
    *
    * <p>
