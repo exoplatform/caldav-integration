@@ -201,6 +201,58 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </div>
           </v-list-item-content>
         </v-list-item>
+        <!--
+          Another eXo deployment writing into the same accounts (EXO-89824).
+          Its own section and not an entry in the list above: that list is
+          behaviours of the SERVER, each excusable by a tick, and this is
+          neither something the server does nor anything to excuse. No
+          checkbox, and no control of any kind - nothing is imported, removed
+          or repaired differently on the strength of it, and the resolution is
+          an environment one the wording states.
+
+          Always rendered, empty or not, for the reason the section above
+          gives: a missing section reads as "not checked" rather than as the
+          good news it is.
+        -->
+        <v-list-item-title class="pa-0 mt-7 mb-2 text-header">
+          {{ $t('caldav.admin.servers.foreignWriters.title') }}
+        </v-list-item-title>
+        <div class="text-caption text-sub-title mb-4">
+          {{ foreignWriters.length && $t('caldav.admin.servers.foreignWriters.subtitle')
+            || $t('caldav.admin.servers.foreignWriters.none') }}
+        </div>
+        <v-list-item
+          v-for="writer in foreignWriters"
+          :key="writer.authority"
+          class="pa-0 mb-4"
+          dense>
+          <v-list-item-content class="py-0">
+            <div class="d-flex align-start">
+              <v-icon
+                class="me-2 mt-1"
+                color="warning"
+                size="16">
+                fas fa-exclamation-triangle
+              </v-icon>
+              <div class="flex-grow-1 text-start">
+                <div class="font-weight-bold">
+                  {{ writer.authority }}
+                </div>
+                <div class="text-caption mt-1">
+                  {{ $t('caldav.admin.servers.foreignWriters.cost') }}
+                </div>
+                <div class="text-caption text-sub-title mt-1">
+                  {{ $t('caldav.admin.servers.foreignWriters.lastSeen', {0: lastSeenOn(writer)}) }}
+                </div>
+              </div>
+            </div>
+          </v-list-item-content>
+        </v-list-item>
+        <div
+          v-if="foreignWriters.length"
+          class="text-caption text-sub-title mb-2">
+          {{ $t('caldav.admin.servers.foreignWriters.resolution') }}
+        </div>
         <!-- How this server authenticates. One section, two halves: the
              provider is chosen here, and whatever that provider needs
              configured is drawn by commons-exo's generic renderer from the
@@ -297,6 +349,10 @@ export default {
     // them. Copied out of the row on open so an abandoned drawer leaves the
     // registration untouched, exactly like every other field here.
     observedQuirks: [],
+    // The other eXo deployments seen writing meeting copies into this server's
+    // accounts (EXO-89824). Read on open, never edited and never saved: it is
+    // what the inbound pass observed, not a setting.
+    foreignWriters: [],
     // The registered credentials providers, as the REST endpoint describes
     // them: a name and the fields each one wants configured.
     providers: [],
@@ -396,12 +452,43 @@ export default {
       this.storedMirrorTarget = this.server.id && this.server.mirrorTarget || null;
       this.observedQuirks = (this.server.observedQuirks || []).map(describeQuirk);
       this.providerConfig = {};
+      this.foreignWriters = [];
       if (this.server.id) {
         this.$agendaCaldavService.getCaldavServerProviderConfig(this.server.id)
           .then(values => this.providerConfig = values || {})
           .catch(() => this.providerConfig = {});
+        // Read on its own, and its failure kept to itself: the section is
+        // evidence about the environment, and a drawer that would not open
+        // because that read failed is a drawer nobody can save a server with.
+        this.$agendaCaldavService.getCaldavServerForeignWriters(this.server.id)
+          .then(writers => this.foreignWriters = writers || [])
+          .catch(() => this.foreignWriters = []);
       }
       this.$refs.caldavServerDrawer.open();
+    },
+    /**
+     * The day a deployment's copy was last read here, in the reader's own
+     * locale.
+     *
+     * <p>A date and not a time: the value is day-grained by construction, and
+     * rendering a moment inside the day would state a precision the record
+     * does not hold.</p>
+     *
+     * @param {Object} writer one entry of the list
+     * @returns {String} the date, or an empty string when the entry carries
+     *          none
+     */
+    lastSeenOn(writer) {
+      if (!writer || !writer.lastSeen) {
+        return '';
+      }
+      // The locale off the component and not off the eXo global, and guarded:
+      // a render that throws does not fail loudly, it silently keeps whatever
+      // the section drew last — which here is the empty state, so a drawer
+      // would go on saying "nothing seen" while holding a finding.
+      const when = new Date(writer.lastSeen);
+      const locale = this.$i18n && this.$i18n.locale;
+      return locale && when.toLocaleDateString(locale) || when.toLocaleDateString();
     },
     /**
      * Folds the drawer's ticks back into the lists the registration is saved
@@ -441,6 +528,7 @@ export default {
         observedQuirks: [],
       };
       this.observedQuirks = [];
+      this.foreignWriters = [];
       this.storedMirrorTarget = null;
       // Not kept between two openings: it holds what an administrator typed for
       // one registration, and the next one they open is not the same one.
