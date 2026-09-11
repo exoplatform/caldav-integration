@@ -80,6 +80,9 @@ public class CaldavPushCodeClassificationTest {
   @Test
   public void theOtherPersistentStatesAreStatesToo() {
     assertTrue(CaldavPushService.isKnownState(CaldavPushService.MAIN_CALENDAR_UNKNOWN));
+    // Another user's copy stays theirs for as long as the meeting does; no
+    // retry changes whose it is (EXO-90190).
+    assertTrue(CaldavPushService.isKnownState(CaldavPushService.FOREIGN_COPY));
   }
 
   /**

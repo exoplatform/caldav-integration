@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
@@ -65,6 +66,11 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+
+import org.exoplatform.caldav.LogRecorder;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -1264,6 +1270,119 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     assertEquals(null, pair.getLastSyncEnd());
+  }
+
+  // ---------------------------------------------------------------------
+  // EXO-90190 — two eXo users on one account
+  // ---------------------------------------------------------------------
+
+  /**
+   * A calendar binding on a collection eXo minted is not read, and is listed.
+   */
+  @Test
+  public void aRemoteBindingOnACollectionEXoCreatedIsSkippedAndListed() {
+    // A leftover from before materialisation learned to skip eXo's own paths
+    // (EXO-89530): user six materialised user one's exo-cal collection as a
+    // calendar of their own. Reading it imports user one's events into user
+    // six's calendar — the loop by another route. The path is the signal,
+    // as it is for materialisation, and the line names the pair so the
+    // cleanup has a list.
+    String href = "/dav/calendars/john/exo-cal-6bade8c7-7598-48f2-aa24-a40b0ed0ac6c/";
+    givenServerCalendars(collection(href, "Someone else's own calendar"));
+    CalendarSync leftover = remotePair(href, "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(leftover));
+    givenAgendaHasCalendar("anchor-1");
+    List<ILoggingEvent> listed;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      listed = log.events()
+                  .stream()
+                  .filter(recorded -> recorded.getLevel() == Level.WARN
+                      && recorded.getFormattedMessage().contains("it is skipped and should be removed"))
+                  .toList();
+    }
+
+    verify(caldavInboundService, never()).syncContents(anyLong(), anyString(), any(), any(), any(), any(), anyBoolean());
+    assertEquals(1, listed.size(), "once per pair per pass");
+    assertTrue(listed.get(0).getFormattedMessage().startsWith("Binding 2 of user 42 reads " + href),
+               listed.get(0).getFormattedMessage());
+  }
+
+  /**
+   * A binding of eXo's own on such a collection is read as before.
+   */
+  @Test
+  public void anExoBindingOnItsOwnCollectionIsStillRead() {
+    // The same path, the right origin: the user's own eXo calendar, exported
+    // by the outbound half and read back like any calendar they hold on their
+    // devices. The guard is about who the binding says created the
+    // collection, not about the path alone.
+    String href = "/dav/calendars/john/exo-cal-mine/";
+    givenServerCalendars(collection(href, "Mine"));
+    CalendarSync mine = exoPair(href);
+    mine.setLocalCalendarSyncUid("anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mine));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavInboundService).syncContents(eq(USER), eq(LOGIN), same(mine), any(), any(), any(), anyBoolean());
+  }
+
+  /**
+   * An account other users also connected is said once, at warn.
+   */
+  @Test
+  public void anAccountOtherUsersAlsoConnectedIsSaidOnceAtWarn() {
+    // The condition is otherwise invisible: two users each connect their
+    // credentials and nothing tells an administrator both sets of copies now
+    // go into one account. Refusing was rejected — shared team accounts and
+    // sudo-mode providers are legitimate — so it is said. Once per account
+    // per process: the question walks the href column, which cannot be
+    // indexed on MySQL, and on every sweep it would cost more than it says.
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+    when(caldavSyncStorage.getOtherUsersUnderCalendarHome(USER, SERVER, HOME)).thenReturn(List.of(1L, 6L));
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getLevel() == Level.WARN
+                    && recorded.getFormattedMessage().contains("is also connected by eXo users"))
+                .toList();
+    }
+
+    assertEquals(1, said.size(), "once per account per process, not once per pass");
+    assertTrue(said.get(0).getFormattedMessage().contains("[1, 6]"), said.get(0).getFormattedMessage());
+    verify(caldavSyncStorage, times(1)).getOtherUsersUnderCalendarHome(USER, SERVER, HOME);
+  }
+
+  /**
+   * An account nobody else connected is not said, and not asked about twice.
+   */
+  @Test
+  public void anAccountNobodyElseConnectedIsNotSaid() {
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+    when(caldavSyncStorage.getOtherUsersUnderCalendarHome(USER, SERVER, HOME)).thenReturn(List.of());
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getFormattedMessage().contains("is also connected by eXo users"))
+                .toList();
+    }
+
+    assertTrue(said.isEmpty());
+    verify(caldavSyncStorage, times(1)).getOtherUsersUnderCalendarHome(USER, SERVER, HOME);
   }
 
   /**

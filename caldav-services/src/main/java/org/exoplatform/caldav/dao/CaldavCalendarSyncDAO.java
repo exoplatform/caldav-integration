@@ -139,4 +139,40 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
    */
   Page<CaldavCalendarSyncEntity> findByServerId(long serverId, Pageable pageable);
 
+  /**
+   * The other users whose active pairs on one server point under one path.
+   *
+   * <p>
+   * The question behind the shared-account warning (EXO-90190): every pair a
+   * connected account holds lives under that account's calendar home, so
+   * another user's pair under the same home means the same account is
+   * connected twice.
+   *
+   * <p>
+   * What it costs: no index leads with the server or the href — the status
+   * index serves the {@code status} predicate, and the rest is a walk of that
+   * server's active pairs comparing hrefs. Asked once per connected account
+   * per process, which keeps that walk off the sweep, and bounded by the page
+   * so an account shared by many says so without listing them all.
+   *
+   * <p>
+   * The pattern is the caller's, wildcards already escaped with {@code !}; the
+   * repository only says which character escapes.
+   *
+   * @param userIdentityId the user asking, whose own pairs do not count
+   * @param serverId the declared server registration
+   * @param status the state a pair has to be in to count, active in practice
+   * @param prefix a LIKE pattern for the calendar home, ending in {@code %}
+   * @param pageable how many to name at most; required
+   * @return the other users' identities, empty when the account is theirs alone
+   */
+  @Query("SELECT DISTINCT p.userIdentityId FROM CaldavCalendarSyncEntity p"
+      + " WHERE p.serverId = :serverId AND p.status = :status AND p.userIdentityId <> :userIdentityId"
+      + " AND p.remoteHref LIKE :prefix ESCAPE '!'")
+  List<Long> findOtherUsersUnderHref(@Param("userIdentityId") long userIdentityId,
+                                     @Param("serverId") long serverId,
+                                     @Param("status") CalendarSyncStatus status,
+                                     @Param("prefix") String prefix,
+                                     Pageable pageable);
+
 }
