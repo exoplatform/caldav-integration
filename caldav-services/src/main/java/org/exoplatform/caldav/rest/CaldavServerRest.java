@@ -40,6 +40,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.CaldavManagedMode;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.model.CaldavSyncTuning;
 import org.exoplatform.caldav.service.CaldavManagedModeService;
 import org.exoplatform.caldav.service.CaldavMirrorReportService;
@@ -384,6 +385,39 @@ public class CaldavServerRest {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Serves the other eXo deployments seen writing meeting copies into this
+   * server's accounts (EXO-89824) - what the drawer states under the behaviours
+   * the server itself has been seen having.
+   *
+   * <p>
+   * Its own request rather than a field on the registration, like the
+   * provider-config read above: the condition is evidence the inbound pass
+   * wrote, and nothing an administrator saves may carry it back.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param serverId technical identifier of the registration
+   * @return the deployments seen writing here, most recently seen first, empty
+   *         when none has been
+   */
+  @GetMapping("/{serverId}/foreign-writers")
+  @Secured("administrators")
+  @Operation(summary = "Retrieves the other eXo deployments seen writing into this server's accounts", method = "GET",
+      description = "Returns the other eXo deployments whose meeting copies have been read in this server's accounts")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public List<ForeignWriter> getForeignWriters(HttpServletRequest request,
+                                               @Parameter(description = "Technical identifier of the registration",
+                                                   required = true)
+                                               @PathVariable("serverId")
+                                               long serverId) {
+    try {
+      return caldavServerService.getForeignWriters(serverId, request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     }
   }
 
