@@ -19,6 +19,8 @@ package org.exoplatform.caldav.storage;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.sql.SQLException;
+import java.sql.SQLIntegrityConstraintViolationException;
 import java.util.Date;
 import java.util.Collection;
 import java.util.HashSet;
@@ -62,6 +64,13 @@ public class CaldavSyncStorage {
   private static final java.util.regex.Pattern RELAY_PREFIX =
                                                             java.util.regex.Pattern.compile("^/caldav/rest/dav/\\d+");
 
+
+  /**
+   * How many other users the shared-account question names at most: enough
+   * to list every member of a shared team account, and a bound on a scan of
+   * the href column that would otherwise list a deployment.
+   */
+  static final int              OTHER_USERS_NAMED = 20;
 
   @Autowired
   private CaldavCalendarSyncDAO calendarSyncDAO;
@@ -240,28 +249,222 @@ public class CaldavSyncStorage {
    * interruption between the two — the PUT went through and the row was never
    * saved — which leaves an unowned copy the next push reconciles.
    *
-   * @param userIdentityId identity of the user whose copies are asked about
+   * <p>
+   * Asked for the account and not for one user (EXO-90190): a CalDAV account
+   * can be connected by several eXo users, and a copy one of them wrote into
+   * it is still eXo's. And for the account rather than the whole server
+   * registration, because a copy is a fact about the account it sits in — the
+   * same UID mirrored on another account of the server says nothing about
+   * this one, and calling it "ours" there drops a third user's genuine
+   * meeting. The account is named by the calendar home the collection sits
+   * under, derived from the collection's own href by
+   * {@link #calendarHomeOf(String)}.
+   *
    * @param serverId the declared server registration
+   * @param collectionHref the href of the collection being read, in any
+   *          spelling; the account is the calendar home it sits under
    * @param icsUid the iCalendar UID being imported
-   * @return true when one of this user's mirror pairs already maps that UID
+   * @return true when a mirror pair of any user on that account already maps
+   *         that UID; false when the href names no home to ask about
    */
-  public boolean isMirrorOwned(long userIdentityId, long serverId, String icsUid) {
-    if (StringUtils.isBlank(icsUid)) {
+  public boolean isMirrorOwned(long serverId, String collectionHref, String icsUid) {
+    String homePrefix = homePrefixOf(collectionHref);
+    if (StringUtils.isBlank(icsUid) || homePrefix == null) {
       return false;
     }
-    return objectSyncDAO.countByOwnerAndOriginAndIcsUid(userIdentityId, serverId, SyncOrigin.MIRROR, icsUid) > 0;
+    return objectSyncDAO.countByHomeAndOriginAndIcsUid(serverId, SyncOrigin.MIRROR, icsUid, homePrefix) > 0;
+  }
+
+  /**
+   * Whether this iCalendar object is a copy eXo wrote into the mirror of a
+   * <em>different</em> user on this account.
+   *
+   * <p>
+   * What the outbound half asks before writing a personal-calendar object
+   * (EXO-90190): two users' pairs on one collection compute the same href for
+   * one UID, so the write would land on the other user's copy and replace it.
+   * The user's own mirror is excluded because a UID it maps is that user's
+   * own copy, which a write of theirs may legitimately move or rewrite. Scoped
+   * to the account the collection sits in, like
+   * {@link #isMirrorOwned(long, String, String)}: a mirror on another account
+   * of the server holds no copy this write could reach, and refusing for it
+   * kept a user from writing their own event into their own collection.
+   *
+   * @param userIdentityId identity of the user about to write
+   * @param serverId the declared server registration
+   * @param collectionHref the href of the collection about to be written
+   *          into, in any spelling
+   * @param icsUid the iCalendar UID about to be written
+   * @return true when another user's mirror pair on that account maps that
+   *         UID; false when the href names no home to ask about
+   */
+  public boolean isMirrorOwnedByAnotherUser(long userIdentityId, long serverId, String collectionHref, String icsUid) {
+    String homePrefix = homePrefixOf(collectionHref);
+    if (StringUtils.isBlank(icsUid) || homePrefix == null) {
+      return false;
+    }
+    return objectSyncDAO.countByOtherOwnerAndHomeAndOriginAndIcsUid(userIdentityId,
+                                                                    serverId,
+                                                                    SyncOrigin.MIRROR,
+                                                                    icsUid,
+                                                                    homePrefix) > 0;
+  }
+
+  /**
+   * The other users whose active pairs on this server live under one calendar
+   * home — the users who connected the same account.
+   *
+   * <p>
+   * The home is made canonical the way every stored href is, so the prefix
+   * compares against what the rows hold, and the LIKE pattern's own wildcards
+   * are escaped: an account path may carry an underscore, and unescaped it
+   * would match any character. Capped at {@link #OTHER_USERS_NAMED}: the
+   * warning this feeds names who else is on the account, and a bound keeps a
+   * scan of the href column from listing a whole deployment.
+   *
+   * @param userIdentityId identity of the user asking, who does not count
+   * @param serverId the declared server registration
+   * @param calendarHome the account's calendar home, in any spelling
+   * @return the other users' identities, at most {@link #OTHER_USERS_NAMED},
+   *         empty when nobody else is under it
+   */
+  public List<Long> getOtherUsersUnderCalendarHome(long userIdentityId, long serverId, String calendarHome) {
+    String canonical = canonicalHref(calendarHome);
+    if (StringUtils.isBlank(canonical)) {
+      return List.of();
+    }
+    return calendarSyncDAO.findOtherUsersUnderHref(userIdentityId,
+                                                   serverId,
+                                                   CalendarSyncStatus.ACTIVE,
+                                                   homePrefix(canonical),
+                                                   PageRequest.of(0, OTHER_USERS_NAMED));
+  }
+
+  /**
+   * The calendar home a collection sits under: its canonical href without the
+   * last segment.
+   *
+   * <p>
+   * The account's identity, as far as the mapping table can tell it
+   * (EXO-90190). Nothing stores the home a pair was listed from, and nothing
+   * needs to: the listing that produces every remote pair is a depth-one
+   * PROPFIND of the home, and the collections eXo mints — the mirror, the
+   * outbound copies of the user's own calendars — are created directly under
+   * it. So the parent of a pair's href is its home on every server this
+   * connector has met, and two pairs share an account exactly when they share
+   * a parent. A server that nested calendars below the home would break that
+   * reading, in the safe direction: the question would find no mirror and
+   * answer "not ours".
+   *
+   * @param href a collection href, in any spelling
+   * @return the canonical home, or null when the href has no parent to name
+   *         one — blank, a bare segment, or a child of the root
+   */
+  public static String calendarHomeOf(String href) {
+    String canonical = canonicalHref(href);
+    if (StringUtils.isBlank(canonical) || !canonical.contains("/")) {
+      return null;
+    }
+    String home = StringUtils.substringBeforeLast(canonical, "/");
+    return StringUtils.isBlank(home) ? null : home;
+  }
+
+  /**
+   * The LIKE pattern matching every collection of the account a collection
+   * belongs to, or null when the href names no account.
+   *
+   * @param collectionHref a collection href, in any spelling
+   * @return the escaped pattern for {@code home/%}, or null
+   */
+  public static String homePrefixOf(String collectionHref) {
+    String home = calendarHomeOf(collectionHref);
+    return home == null ? null : homePrefix(home);
+  }
+
+  /**
+   * The LIKE pattern matching every path under one canonical calendar home.
+   *
+   * @param canonicalHome the home, canonical
+   * @return the escaped pattern for {@code home/%}
+   */
+  static String homePrefix(String canonicalHome) {
+    return likePrefix(canonicalHome + "/");
+  }
+
+  /**
+   * A LIKE pattern matching every path under one prefix, with the pattern's
+   * own wildcards escaped by {@code !} — the escape character the DAO queries
+   * declare.
+   *
+   * @param prefix the literal path prefix
+   * @return the pattern
+   */
+  static String likePrefix(String prefix) {
+    return prefix.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%";
+  }
+
+  /**
+   * Whether a persistence failure is the database refusing a row for an
+   * integrity constraint — a duplicate key above all.
+   *
+   * <p>
+   * Judged on the JDBC cause and not on the Spring type, because the type is
+   * not stable on this platform (EXO-90190). The Kernel hands Spring its own
+   * {@code EntityManagerFactory} as a plain bean — not an
+   * {@code EntityManagerFactoryInfo} — so the {@code JpaTransactionManager}
+   * runs {@code DefaultJpaDialect}, which turns every unrecognised
+   * {@code PersistenceException} into a {@code JpaSystemException} at commit;
+   * and no {@code PersistenceExceptionTranslator} bean exists for the
+   * repository proxy to consult, so a failure raised inside the repository
+   * call — an insert executed at persist time, as identity columns do on
+   * MySQL — arrives as Hibernate's own {@code ConstraintViolationException},
+   * a {@code PersistenceException} and no {@code DataAccessException} at all.
+   * Only a Boot-managed factory, the test slice's, yields the
+   * {@code DataIntegrityViolationException} a reader would expect. What every
+   * shape shares is the {@code SQLException} in its cause chain: the JDBC
+   * standard class {@code 23} of its SQLState is an integrity violation on
+   * every driver, and MySQL's and HSQLDB's drivers also type it as
+   * {@code SQLIntegrityConstraintViolationException}; PostgreSQL's does not,
+   * which is why the SQLState is asked too. The deepest {@code SQLException}
+   * is the one read: HSQLDB hangs its own internal exception below it.
+   *
+   * @param failure the exception a save surfaced
+   * @return true when an integrity-constraint violation is in its cause chain
+   */
+  public static boolean isDuplicateKey(RuntimeException failure) {
+    SQLException sql = null;
+    Throwable cause = failure;
+    for (int depth = 0; cause != null && depth < 32; depth++, cause = cause.getCause()) {
+      if (cause instanceof SQLException candidate) {
+        sql = candidate;
+      }
+    }
+    if (sql == null) {
+      return false;
+    }
+    return sql instanceof SQLIntegrityConstraintViolationException || StringUtils.startsWith(sql.getSQLState(), "23");
   }
 
   /**
    * The eXo event a copy eXo wrote into this user's mirror stands for.
    *
    * <p>
-   * The companion of {@link #isMirrorOwned(long, long, String)} and asked in
-   * the same breath (EXO-89807): the inbound half recognises one of eXo's own
+   * The companion of {@link #isMirrorOwned(long, String, String)} and asked
+   * in the same breath (EXO-89807): the inbound half recognises one of eXo's own
    * copies and drops it, but the owner's answer is written on that copy and has
    * to be recorded against something. The mapping that knows which event lives
    * on the MIRROR pair, and the pair reading the collection is a different one,
    * so nothing pair-scoped can answer this.
+   *
+   * <p>
+   * <b>Scoped to the user while its companion is not, and the difference is
+   * load-bearing (EXO-90190).</b> An answer read off a copy is recorded as the
+   * reading user's. On an account two users share, the companion says "eXo's"
+   * of the other user's copy too — rightly, so it is not imported — but the
+   * event it names is the other user's to answer for. Asked here for the
+   * deployment, user six would record user one's phone answer as their own.
+   * On a foreign copy this answers null, nothing is recorded, and that is the
+   * behaviour: the copy's owner reads their own answer on their own pass.
    *
    * <p>
    * Two mirror pairs holding the same UID is not a state this connector

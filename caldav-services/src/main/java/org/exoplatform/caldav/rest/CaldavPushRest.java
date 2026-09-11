@@ -390,7 +390,7 @@ public class CaldavPushRest {
     // A state of this account rather than a failure of the server behind it —
     // the reading that already puts NOT_CONNECTED here, and the reason it does
     // not answer the 502 a browser renders as "the calendar server is down".
-    case CaldavPushService.CONFLICT, CaldavPushService.NOT_CONNECTED -> HttpStatus.CONFLICT;
+    case CaldavPushService.CONFLICT, CaldavPushService.NOT_CONNECTED, CaldavPushService.FOREIGN_COPY -> HttpStatus.CONFLICT;
     default -> HttpStatus.BAD_GATEWAY;
     };
     return ResponseEntity.status(status).body(failure.getCode());

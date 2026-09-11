@@ -126,4 +126,25 @@ public interface CaldavPendingPushDAO extends JpaRepository<CaldavPendingPushEnt
   @Query("UPDATE CaldavPendingPushEntity q SET q.attempts = q.attempts + 1 WHERE q.id = :id")
   int recordAttempt(@Param("id") long id);
 
+  /**
+   * Spends an obligation's whole attempt budget at once, so it is never read
+   * again.
+   *
+   * <p>
+   * For a refusal no amount of waiting can change. The budget exists to bound
+   * how hard eXo argues with a calendar server having a bad day; a copy eXo
+   * declines to write because it belongs to another user is not that, and four
+   * further identical refusals over twenty minutes tell nobody anything. Set
+   * rather than incremented, so the row leaves the attemptable set on the
+   * first refusal whatever it had counted before.
+   *
+   * @param id the obligation
+   * @param attempts the bound to write, which is the configured maximum
+   * @return how many rows were updated; zero when it has since been settled
+   */
+  @Modifying(flushAutomatically = true)
+  @Transactional
+  @Query("UPDATE CaldavPendingPushEntity q SET q.attempts = :attempts WHERE q.id = :id")
+  int spendBudget(@Param("id") long id, @Param("attempts") int attempts);
+
 }

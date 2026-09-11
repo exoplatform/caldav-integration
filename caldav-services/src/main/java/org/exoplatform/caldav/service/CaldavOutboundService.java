@@ -457,6 +457,32 @@ public class CaldavOutboundService {
   }
 
   /**
+   * Whether eXo is the one that created this collection, judged from its path
+   * alone.
+   *
+   * <p>
+   * The path is the reliable signal because eXo mints it: a collection whose
+   * slug carries {@link #COLLECTION_PREFIX} was created by this connector for
+   * one of some user's own calendars, whichever user asks about it now. That
+   * matters on a CalDAV account several eXo users share (EXO-89530,
+   * EXO-90190): a pair check is scoped to one user, while the collections in
+   * the account were made by any of them — so one user's outbound copy looks,
+   * to another user's pair, like an ordinary remote calendar to materialise,
+   * read, and write back into. Observed live: one user's
+   * <code>exo-cal-946eec40…</code> came back as another user's calendar 23.
+   * The inbound sweep and the outbound push ask this before touching such a
+   * binding.
+   *
+   * @param href the collection path, canonical or not; only its last segment
+   *          is read
+   * @return true when the path is one eXo derives for a user's own calendar
+   */
+  public static boolean isExoCreated(String href) {
+    String slug = StringUtils.substringAfterLast(StringUtils.stripEnd(href, "/"), "/");
+    return StringUtils.startsWith(slug, COLLECTION_PREFIX);
+  }
+
+  /**
    * The name the collection presents itself under in the user's own client.
    *
    * @param calendar the eXo calendar being bound
