@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -66,6 +67,8 @@ import java.util.List;
 import java.util.Map;
 
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.ServerQuirk;
+import org.exoplatform.caldav.model.ServerQuirkEffect;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
@@ -621,6 +624,134 @@ public class CaldavServerServiceTest {
     assertEquals(false, provider.getAllValues().get(0).isEnabled());
     assertEquals("agenda.caldavCalendar.2", provider.getAllValues().get(1).getName());
     assertEquals(false, provider.getAllValues().get(1).isEnabled());
+  }
+
+  /**
+   * The seeded Bluemind row arrives excused for what BlueMind is known to do to
+   * a copy — the same three catalogue entries the browser's BlueMind preset
+   * ticks on a declaration — because the preset is offered on a declaration
+   * only, which made the one BlueMind registration eXo ships the one that
+   * could never carry it. On a live account every stored object paid for that:
+   * the {@code X-ALT-DESC} BlueMind adds read as an edit, three repairs, then
+   * abandonment.
+   *
+   * <p>
+   * Read back the way the comparison reads a row, with
+   * {@link ServerQuirk#listMatches(String, String)}, against members of the
+   * families rather than the patterns themselves — so what is pinned is that
+   * a copy carrying these properties would be excused, not that a string was
+   * copied. Each entry is asserted in the column its own direction files it
+   * under, and nothing else is ticked: the description is still compared, eXo
+   * still writes everything it writes, and the Stalwart row keeps the nulls
+   * that let the deployment-wide properties decide for it.
+   */
+  @Test
+  public void shouldSeedBluemindExcusedForItsCatalogueBehaviours() {
+    System.setProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY, "false");
+    when(caldavServerStorage.countServers()).thenReturn(0L);
+    CaldavServer createdBluemind = server(2, "agenda.caldavCalendar.2", "Bluemind", null,
+                                          CaldavServerService.DEFAULT_BLUEMIND_URL, false);
+    when(caldavServerStorage.createServer(any(), eq(CaldavServerService.CALDAV_PROVIDER_NAME))).thenReturn(createdBluemind);
+
+    caldavServerService.seedDefaultServers();
+
+    ArgumentCaptor<CaldavServer> bluemind = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).createServer(bluemind.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
+    String ignored = bluemind.getValue().getIgnoredProperties();
+    String dropped = bluemind.getValue().getDroppedProperties();
+    // ADDS_FORMATTED_DESCRIPTION and ADDS_COMPATIBILITY_MARKERS point ADDED,
+    // so they land in the ignored list — members of each family, not the
+    // pattern literal, so a wildcard that stopped matching would be caught.
+    assertTrue(ServerQuirk.listMatches(ignored, "X-ALT-DESC"), ignored);
+    assertTrue(ServerQuirk.listMatches(ignored, "X-MOZ-LASTACK"), ignored);
+    assertTrue(ServerQuirk.listMatches(ignored, "X-MICROSOFT-CDO-BUSYSTATUS"), ignored);
+    // STAMPS_DEFAULT_PRIORITY points ADDED too, so the priority BlueMind
+    // stamps on every copy is excused on the seeded row with no administrator
+    // action — which is the whole of EXO-89828 once the tolerance moved off
+    // the comparison and onto the server that does it. Asserted through
+    // listMatches for the same reason as its neighbours: what is pinned is
+    // that a copy carrying PRIORITY would be excused here, not that a literal
+    // was copied into a column.
+    assertTrue(ServerQuirk.listMatches(ignored, "PRIORITY"), ignored);
+    // And in the ignored column specifically, since that is the one
+    // ServerExcusals.excuse consults for a property the server ADDS.
+    assertFalse(ServerQuirk.listMatches(dropped, "PRIORITY"), dropped);
+    // DROPS_CONFERENCE points DROPPED, so it lands in the dropped list.
+    assertTrue(ServerQuirk.listMatches(dropped, "CONFERENCE"), dropped);
+    // And the columns are not confused with each other.
+    assertFalse(ServerQuirk.listMatches(dropped, "X-ALT-DESC"), dropped);
+    assertFalse(ServerQuirk.listMatches(ignored, "CONFERENCE"), ignored);
+    // Nothing the preset does not tick: the blunt entry stays off, and eXo
+    // leaves nothing out of what it writes.
+    assertFalse(ServerQuirk.listMatches(dropped, "DESCRIPTION"), dropped);
+    assertNull(bluemind.getValue().getOmittedProperties());
+    // The whole string, not only its members, and deliberately: the browser
+    // preset writes the same two lists from its own copy of the catalogue
+    // (serverPresets.js), and a row declared through the drawer that differed
+    // from the seeded one would be the drawer and the seed giving two answers
+    // to one question. The literals are asserted on both sides so a change to
+    // either fails a test rather than drifting quietly.
+    assertEquals("X-MICROSOFT-*,X-MOZ-*,X-ALT-DESC,PRIORITY", ignored);
+    assertEquals("CONFERENCE", dropped);
+    // The seed lists are the catalogue's, not a second spelling of it.
+    for (ServerQuirk quirk : CaldavServerService.BLUEMIND_SEED_QUIRKS) {
+      for (String pattern : quirk.getPatterns()) {
+        assertTrue(ServerQuirk.listMatches(ignored + "," + dropped, pattern), pattern);
+      }
+    }
+
+    // The destination the preset chooses, chosen by the seed too: BlueMind's
+    // dedicated calendar is excluded from the account's free/busy and carries
+    // no answer buttons, so a row seeded onto it disagrees with the preset an
+    // administrator is about to apply to that very row.
+    assertEquals(MirrorTargetKind.MAIN_CALENDAR, bluemind.getValue().getMirrorTarget());
+
+    ArgumentCaptor<CaldavServer> stalwart = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).createSeedServer(stalwart.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
+    assertNull(stalwart.getValue().getIgnoredProperties());
+    assertNull(stalwart.getValue().getDroppedProperties());
+    // The scoping, said as an assertion rather than only as a null: the
+    // priority excusal reaches the server observed to stamp one and no other.
+    // A server that stamps nothing goes on reporting a priority somebody set,
+    // which is what the per-server route buys over a rule about the value.
+    assertFalse(ServerQuirk.listMatches(stalwart.getValue().getIgnoredProperties(), "PRIORITY"));
+    // And only BlueMind moves: Stalwart's dedicated calendar has no such cost,
+    // and the caution on the option stands everywhere it is not answered.
+    assertEquals(MirrorTargetKind.DEDICATED_CALENDAR, stalwart.getValue().getMirrorTarget());
+  }
+
+  /**
+   * The one entry shape the seed cannot write, held shut here because nothing
+   * else would notice it.
+   *
+   * <p>
+   * {@code seedExcusals} filters to {@link ServerQuirkEffect#TOLERATE} and is
+   * only ever asked for the two tolerance columns; the seed passes
+   * {@code null} for {@code omittedProperties}. So an {@link
+   * ServerQuirkEffect#OMIT} entry added to {@link
+   * CaldavServerService#BLUEMIND_SEED_QUIRKS} would be dropped by that filter
+   * with nothing routing it anywhere else: the constant would name a behaviour
+   * the seed does not write, <b>with no compile error and no test failure</b>
+   * — the row would simply arrive missing it, on every fresh install, and the
+   * first symptom would be a copy eXo wrote carrying a property the preset of
+   * the same name leaves out.
+   *
+   * <p>
+   * The browser path does not share the hole: {@code serverPresets.js} walks
+   * {@code QUIRKS[quirkId].list} and {@code omitsSoloOrganizer} maps to the
+   * omitted list, so a preset naming it writes it. Asserting the absence is
+   * the smaller of the two closures — the constant carries no such entry today
+   * and the seed has no third column to fill — and it fails the moment someone
+   * adds one, which is the moment the decision has to be taken.
+   */
+  @Test
+  public void shouldSeedNoEntryThatWouldBeWrittenNowhere() {
+    for (ServerQuirk quirk : CaldavServerService.BLUEMIND_SEED_QUIRKS) {
+      assertNotEquals(ServerQuirkEffect.OMIT,
+                      quirk.getEffect(),
+                      quirk.name() + " is an OMIT entry: the seed writes it nowhere. Route OMIT entries to"
+                          + " omittedProperties in seedExcusals before naming one here.");
+    }
   }
 
   /**
