@@ -17,6 +17,8 @@
 package org.exoplatform.caldav.storage;
 
 import java.io.ByteArrayInputStream;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
@@ -33,10 +35,12 @@ import org.springframework.transaction.annotation.Transactional;
 import org.exoplatform.caldav.dao.CaldavServerDAO;
 import org.exoplatform.caldav.entity.CaldavServerEntity;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.ObservedQuirk;
 import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkEffect;
+import org.exoplatform.caldav.utils.ForeignWriterSummary;
 import org.exoplatform.caldav.utils.ServerQuirkSummary;
 import org.exoplatform.caldav.utils.ServerQuirkSummary.Observation;
 import org.exoplatform.caldav.utils.ServerQuirkSummary.Retention;
@@ -310,6 +314,95 @@ public class CaldavServerStorage {
                             // providerConfig is inbound only: it lives in the settings,
                             // and the secret in it must not travel back out.
                             null);
+  }
+
+  /**
+   * Which other eXo deployments have been seen writing meeting copies into this
+   * server's accounts (EXO-89824), most recently seen first.
+   *
+   * <p>
+   * Its own read rather than a field on the registration, and deliberately: the
+   * registration is built positionally through an all-args constructor that a
+   * score of call sites already pass, and a field there would also be a field an
+   * administrator's save could carry back — this is evidence written by the
+   * inbound pass, and nothing a drawer sends must be able to overwrite it. The
+   * provider-config endpoint reads the same way, for the same reason.
+   *
+   * @param serverId technical identifier of the registration
+   * @return the deployments seen writing here, empty when none has been or the
+   *         row is gone, never null
+   */
+  public List<ForeignWriter> getForeignWriters(long serverId) {
+    return caldavServerDAO.findById(serverId)
+                          .map(entity -> foreignWriters(entity.getForeignWriters()))
+                          .orElseGet(List::of);
+  }
+
+  /**
+   * The stored summary as the entries the drawer shows.
+   *
+   * <p>
+   * Mapping, not judgement: nothing here decides whether an entry is worth
+   * showing — the list is short, bounded, and already forgotten of anything
+   * stale by the time it reaches this method.
+   *
+   * <p>
+   * The day becomes the START of that day in UTC. The value is day-grained by
+   * construction, so any moment inside the day would be a different kind of
+   * lie; the start of it is the one an administrator reading a date cannot be
+   * misled by.
+   *
+   * @param summary the stored value, may be null
+   * @return the deployments, most recently seen first, never null
+   */
+  private List<ForeignWriter> foreignWriters(String summary) {
+    return ForeignWriterSummary.parse(summary)
+                               .entrySet()
+                               .stream()
+                               .map(entry -> new ForeignWriter(entry.getKey(),
+                                                               LocalDate.ofEpochDay(entry.getValue())
+                                                                        .atStartOfDay(ZoneOffset.UTC)
+                                                                        .toInstant()
+                                                                        .toEpochMilli()))
+                               .toList();
+  }
+
+  /**
+   * Records that another eXo deployment was seen writing into an account on
+   * this server, and ages out what has not been seen for long enough.
+   *
+   * <p>
+   * <b>Read, modify, write on one short column</b>, the way
+   * {@link #mergeObservedQuirks} does, and with the same accepted race: two
+   * passes landing together can lose one of two observations, and nothing is
+   * decided from the exact contents — the list answers "is another deployment
+   * writing here", and a deployment that wrote once writes again.
+   *
+   * <p>
+   * <b>Writes only when the result differs.</b> A deployment seen twice on the
+   * same day produces the same string, and this column must not become a write
+   * on every pass of every account: the condition it records lasts weeks, and
+   * the row is read by a drawer somebody opens twice.
+   *
+   * @param serverId technical identifier of the registration
+   * @param authority the deployment just seen, or null to age the list without
+   *          adding to it
+   * @param today the current epoch day
+   * @param retentionDays how long an unseen deployment stays on the list
+   */
+  @Transactional
+  public void mergeForeignWriter(long serverId, String authority, long today, long retentionDays) {
+    caldavServerDAO.findById(serverId).ifPresent(entity -> {
+      String summary = ForeignWriterSummary.format(ForeignWriterSummary.record(ForeignWriterSummary.parse(entity.getForeignWriters()),
+                                                                               authority,
+                                                                               today,
+                                                                               retentionDays));
+      if (StringUtils.equals(summary, entity.getForeignWriters())) {
+        return;
+      }
+      entity.setForeignWriters(summary);
+      caldavServerDAO.save(entity);
+    });
   }
 
   /**
