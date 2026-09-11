@@ -18,6 +18,7 @@ package org.exoplatform.caldav.model;
 
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -245,4 +246,18 @@ public class CaldavServer {
    * the positional-constructor reason they explain above.
    */
   private String  authProviderName;
+
+  /**
+   * The values this server's credentials provider asked for through its
+   * configuration descriptor - a technical login, a secret, a target login
+   * field. The registration relays this map without inspecting it: the keys are
+   * the provider's vocabulary, not CalDAV's, and the generic storage in
+   * commons-exo is what validates and encrypts them.
+   * <p>
+   * Inbound only. It carries what an administrator just typed and is never
+   * filled on the way out, because the secret must not leave the server - the
+   * drawer reads back what it may see through the dedicated provider-config
+   * endpoint.
+   */
+  private Map<String, String> providerConfig;
 }
