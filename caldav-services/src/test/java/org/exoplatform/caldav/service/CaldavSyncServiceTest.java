@@ -209,6 +209,12 @@ public class CaldavSyncServiceTest {
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     lenient().when(calDavClient.discoverHome(any())).thenReturn(new CalendarHome(PRINCIPAL, HOME));
+    // The classification is run for real on the mocked outbound service: it
+    // reads only its arguments and the one question it asks of the deployment
+    // (isMintedByThisDeployment), which the tests below stub per case as they
+    // did before the classification existed. A mock answering null for an
+    // enum would otherwise fail every pass that reaches a listed collection.
+    lenient().when(caldavOutboundService.ownershipOf(anyLong(), any(), any(), any())).thenCallRealMethod();
   }
 
   @Test
@@ -249,7 +255,9 @@ public class CaldavSyncServiceTest {
     // Observed live before this guard existed. The other user's calendar
     // already exists inside eXo, which is what the account-wide ownership
     // question answers — and what makes this a duplicate rather than a
-    // calendar to adopt (EXO-90226).
+    // calendar to adopt (EXO-90226). Since EXO-90234 the skip is no longer
+    // silent: a colleague's eXo calendar in the user's home is a share, said
+    // so once, and left for the read-through to list read-only.
     String href = "/dav/calendars/john/exo-cal-946eec40-e9bd-4cd1-89f2-bddfed786d75";
     givenServerCalendars(collection(href + "/", "Someone else's"));
     givenNoKnownPairs();
@@ -258,6 +266,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
   }
 
   /**
@@ -1475,6 +1484,184 @@ public class CaldavSyncServiceTest {
    */
   private CalendarCollection owned(String href, String name, String owner, boolean privilegesAnswered, boolean writable) {
     return new CalendarCollection(href, name, "ctag-1", "token-1", null, writable, Set.of("VEVENT"), owner, privilegesAnswered);
+  }
+
+  // ------------------------------------ a colleague's eXo calendar in the home, EXO-90234
+
+  /**
+   * The anchor of the colleague's eXo calendar — CAL2 on the rig, pushed by
+   * eXo user root as this slug (task 90234, comment 336361).
+   */
+  private static final String        CAL2_ANCHOR = "959b5529-ea4c-4ae4-a793-a2c201c3af9f";
+
+  /**
+   * CAL2 as BlueMind lists it to the sharee after subscribing: under the
+   * sharee's own home, same slug as the original.
+   */
+  private static final String        CAL2_UNDER_OWN_HOME = HOME + "exo-cal-" + CAL2_ANCHOR + "/";
+
+  /**
+   * The same colleague's eXo calendar as Stalwart would list it: at the
+   * colleague's own path.
+   */
+  private static final String        CAL2_AT_ALICES_PATH = "/dav/calendars/alice/exo-cal-" + CAL2_ANCHOR + "/";
+
+  /**
+   * The defect itself, on the shape BlueMind was observed answering
+   * (2026-09-13): a colleague's eXo calendar the user subscribed to, listed
+   * under the user's own home, with the user named as owner and the full
+   * privilege set — the server's two signals both silent. It used to be
+   * skipped without a word by the prefix rule; it is now a share, skipped
+   * through the same path as one the server names, and said so — naming the
+   * one witness that spoke.
+   */
+  @Test
+  public void aColleaguesExoCalendarSubscribedOnBlueMindIsNeverMaterialisedAndIsSaidToBeAShare() throws Exception {
+    givenServerCalendars(owned(CAL2_UNDER_OWN_HOME, "CAL2", PRINCIPAL, true, true));
+    givenNoKnownPairs();
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME))).thenReturn(true);
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getLevel() == Level.INFO
+                    && recorded.getFormattedMessage().contains("shared with user " + USER))
+                .toList();
+    }
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
+    assertEquals(1, said.size(), "the skip is said, once");
+    String line = said.get(0).getFormattedMessage();
+    assertTrue(line.contains(CAL2_UNDER_OWN_HOME), line);
+    assertTrue(line.contains("minted by this deployment for another user"), line);
+    assertTrue(line.contains("owned by " + PRINCIPAL), "the server's word is still reported, silent as it is: " + line);
+    assertTrue(line.contains("writable"), line);
+  }
+
+  /**
+   * The same colleague's eXo calendar as Stalwart lists a share: at her
+   * path, with her as owner and read-only. Both witnesses speak; the line
+   * carries both, and the calendar is still never materialised.
+   */
+  @Test
+  public void aColleaguesExoCalendarSharedOnStalwartIsNeverMaterialisedAndTheLineNamesBothWitnesses() throws Exception {
+    givenServerCalendars(owned(CAL2_AT_ALICES_PATH, "CAL2", ALICE, true, false));
+    givenNoKnownPairs();
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(CAL2_AT_ALICES_PATH))).thenReturn(true);
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getLevel() == Level.INFO
+                    && recorded.getFormattedMessage().contains("shared with user " + USER))
+                .toList();
+    }
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    assertEquals(1, said.size());
+    String line = said.get(0).getFormattedMessage();
+    assertTrue(line.contains("minted by this deployment for another user"), line);
+    assertTrue(line.contains("owned by " + ALICE), line);
+    assertTrue(line.contains("read-only"), line);
+  }
+
+  /**
+   * The user's own exported calendar, listed under a path none of their
+   * pairs record — BlueMind republishes eXo's collections under another
+   * parent. Recognised from their own EXO pair by its anchor: skipped as
+   * before, without the account-wide question and without a share line,
+   * because it is exactly what the sweep put there.
+   */
+  @Test
+  public void theUsersOwnExportedCalendarUnderAnotherPathIsSkippedSilentlyAsBefore() throws Exception {
+    CalendarSync mine = exoPair("/dav/calendars/john/exo-cal-" + CAL2_ANCHOR + "/");
+    mine.setLocalCalendarSyncUid(CAL2_ANCHOR);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mine));
+    givenAgendaHasCalendar(CAL2_ANCHOR);
+    givenServerCalendars(owned("/dav/calendars/publish/exo-cal-" + CAL2_ANCHOR + "/", "CAL2", PRINCIPAL, true, true));
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getFormattedMessage().contains("shared with user " + USER))
+                .toList();
+    }
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavOutboundService, never()).isMintedByThisDeployment(anyLong(), anyString());
+    assertTrue(said.isEmpty(), "the user's own calendar is not a share: " + said);
+  }
+
+  /**
+   * Another eXo deployment's calendar, in the BlueMind shape — under the
+   * user's home, the user as owner, write granted — and with an anchor known
+   * to no pair here: still adopted as a remote calendar (EXO-90226). The
+   * server's facts are the same ones a colleague's subscribed share carries
+   * on that server; only the pair table tells the two apart, and it says
+   * "nobody's here".
+   */
+  @Test
+  public void anotherDeploymentsExoCalendarInTheBlueMindShapeIsStillAdopted() throws Exception {
+    String href = "/dav/calendars/john/exo-cal-fd3fe75f-58f9-49e5-93d0-85f63b24a807/";
+    givenServerCalendars(owned(href, "Perso", PRINCIPAL, true, true));
+    givenNoKnownPairs();
+    givenAgendaCreates("adopted-anchor");
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(href))).thenReturn(false);
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(saved.capture());
+    assertEquals(SyncOrigin.REMOTE, saved.getValue().getOrigin());
+    assertEquals(href, saved.getValue().getRemoteHref());
+  }
+
+  /**
+   * The dedicated mirror is skipped by its path before anything is
+   * classified: a colleague's {@code exo-meetings} shared into the home is
+   * neither materialised nor said to be a share — its contents are copies of
+   * events eXo already shows, whoever's account they sit in.
+   */
+  @Test
+  public void aColleaguesDedicatedMirrorIsSkippedByItsPathAndNeverClassified() throws Exception {
+    givenServerCalendars(owned("/dav/calendars/alice/exo-meetings/", "eXo Meetings", ALICE, true, false));
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavOutboundService, never()).ownershipOf(anyLong(), any(), any(), any());
+  }
+
+  /**
+   * A BlueMind resource the user subscribed to — a pool vehicle, listed as
+   * {@code calendar:<uid>} with a uid that is not the principal's, the user
+   * as owner and the full set — is materialised as before. Deliberately
+   * unchanged by EXO-90234: whether such a resource should become the user's
+   * calendar is an open product question, and this pins that the
+   * classification did not answer it on the side.
+   */
+  @Test
+  public void aBlueMindResourceSubscriptionIsStillMaterialised() throws Exception {
+    givenServerCalendars(owned("/dav/calendars/john/calendar:7E3AE6F3-0000-0000-0000-000000000000/",
+                               "Véhicule de pool 1",
+                               PRINCIPAL,
+                               true,
+                               true));
+    givenNoKnownPairs();
+    givenAgendaCreates("anchor-vehicle");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService).createCalendar(any(), eq(LOGIN));
+    verify(caldavOutboundService, never()).isMintedByThisDeployment(anyLong(), anyString());
   }
 
   /**

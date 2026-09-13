@@ -563,12 +563,14 @@ public class CaldavOutboundService {
    * on.
    *
    * <p>
-   * The sweep asks this before materialising a listed collection and before
-   * reading through a binding; the push asks it before writing through one.
-   * One definition, so the three answers cannot drift. A path outside the
-   * outbound prefix asks nothing: no eXo minted it, and keeping the database
-   * out of that case is what keeps the question cheap on a listing that is
-   * mostly the user's own calendars.
+   * The sweep asks this before reading through a binding, the push before
+   * writing through one, and {@link #ownershipOf} — which the sweep and the
+   * read-through both classify a listed collection with — asks it for a
+   * collection none of the user's own pairs recognise. One definition, so
+   * the answers cannot drift. A path outside the outbound prefix asks
+   * nothing: no eXo minted it, and keeping the database out of that case is
+   * what keeps the question cheap on a listing that is mostly the user's own
+   * calendars.
    *
    * @param serverId the declared server registration
    * @param href the collection path, canonical or not
@@ -581,6 +583,86 @@ public class CaldavOutboundService {
     }
     return caldavSyncStorage.isExoCalendarOnServer(serverId, anchor)
         || caldavSyncStorage.isExoCollectionOnServer(serverId, href);
+  }
+
+  /**
+   * Whose a listed collection is, to the user whose account listed it.
+   *
+   * <p>
+   * The one classification the sweep, the calendar list and the event
+   * read-through act on (EXO-90234), combining the two witnesses
+   * {@link CollectionOwnership} names. <b>This deployment</b> is heard first,
+   * and only about a collection under the outbound prefix: the slug carries
+   * the anchor eXo minted it with, and the question is whose calendar that
+   * anchor names here. The user's own pairs, already in hand, answer first
+   * and for free — an EXO pair of theirs carrying that anchor, or recorded
+   * at that path, makes it {@link CollectionOwnership#OWN_EXO_CALENDAR},
+   * their own calendar met again under a path BlueMind republished it at.
+   * Failing that, the account-wide question
+   * ({@link #isMintedByThisDeployment}) says whether <em>another</em> user
+   * of this deployment exported it, and a yes is
+   * {@link CollectionOwnership#COLLEAGUES_EXO_CALENDAR}: the colleague shared
+   * their eXo calendar, eXo already holds the original, and the user must
+   * never be given a writable copy of it. <b>The server</b> is heard second,
+   * for every collection, through
+   * {@link CalendarCollection#isSharedWith(String)}; a collection neither
+   * witness speaks against is {@link CollectionOwnership#OWN}.
+   *
+   * <p>
+   * The deployment before the server, on purpose, although the server's word
+   * costs no query. On BlueMind the server is silent: a subscribed share is
+   * listed under the user's own home, names the user as owner and grants the
+   * full privilege set (observed live, 2026-09-13), so the deployment's word
+   * is the only one there is. On Stalwart both speak — the colleague's
+   * collection is listed at her path with her as owner and read-only — and
+   * hearing the deployment first names the more useful fact in the line the
+   * sweep writes: not merely "somebody else's", but "a calendar of this
+   * deployment, another user's". The cost is bounded as before: one
+   * account-wide question per pass per prefixed collection the user holds no
+   * pair for, which after this change is exactly the set of colleagues'
+   * shares and other deployments' collections.
+   *
+   * <p>
+   * What this deliberately does <b>not</b> read is the shape of any other
+   * server-minted slug. BlueMind lists a subscribed resource — a pool
+   * vehicle, a room — as {@code calendar:<uid>} with a uid that is not the
+   * principal's, and that is a signal a later rule could read; it is left
+   * out here, because whether such a resource should be the user's calendar
+   * at all is a product question nobody has answered, and today it is
+   * materialised like any other collection.
+   *
+   * @param serverId the declared server registration, which scopes the
+   *          account-wide question
+   * @param principal the account's own {@code current-user-principal}, as
+   *          the discovery walk answered it; null when the server named none,
+   *          which leaves the owner comparison off
+   * @param usersPairs every pair this user holds on this server, whatever
+   *          its origin or state
+   * @param collection the listed collection
+   * @return whose it is
+   */
+  public CollectionOwnership ownershipOf(long serverId,
+                                         String principal,
+                                         List<CalendarSync> usersPairs,
+                                         CalendarCollection collection) {
+    String href = CaldavSyncStorage.canonicalHref(collection.href());
+    String anchor = anchorOf(href);
+    if (anchor != null) {
+      boolean exportedByThisUser = usersPairs.stream()
+                                             .filter(pair -> pair.getOrigin() == SyncOrigin.EXO)
+                                             .anyMatch(pair -> anchor.equals(pair.getLocalCalendarSyncUid())
+                                                 || href.equals(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())));
+      if (exportedByThisUser) {
+        return CollectionOwnership.OWN_EXO_CALENDAR;
+      }
+      if (isMintedByThisDeployment(serverId, href)) {
+        return CollectionOwnership.COLLEAGUES_EXO_CALENDAR;
+      }
+    }
+    if (collection.isSharedWith(principal)) {
+      return CollectionOwnership.SHARED;
+    }
+    return CollectionOwnership.OWN;
   }
 
   /**

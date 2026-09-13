@@ -35,6 +35,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -761,5 +762,198 @@ public class CaldavOutboundServiceTest {
     setting.setPassword("secret");
     setting.setServerId(SERVER);
     return setting;
+  }
+
+  // ------------------------------------ whose a listed collection is, EXO-90234
+
+  /** The account's own principal, as the server names it. */
+  private static final String        PRINCIPAL = "/dav/principals/john/";
+
+  /** A colleague's principal, as the server names it. */
+  private static final String        ALICE     = "/dav/principals/alice/";
+
+  /**
+   * The BlueMind shape of EXO-90234: a colleague's eXo calendar the user
+   * subscribed to, listed under the user's own home with the user named as
+   * owner and the full privilege set — nothing the server says tells it from
+   * the user's own calendar. The slug does: its anchor is a calendar this
+   * deployment exported for another user, and none of this user's own.
+   */
+  @Test
+  public void aColleaguesExoCalendarUnderTheUsersOwnHomeIsTheColleaguesByThisDeploymentsWord() {
+    when(caldavSyncStorage.isExoCalendarOnServer(SERVER, ANCHOR)).thenReturn(true);
+
+    CollectionOwnership ownership = service.ownershipOf(SERVER, PRINCIPAL, List.of(), owned(WANTED, PRINCIPAL, true, true));
+
+    assertEquals(CollectionOwnership.COLLEAGUES_EXO_CALENDAR, ownership);
+    assertTrue(ownership.isShared());
+  }
+
+  /**
+   * The Stalwart shape: the same colleague's eXo calendar, listed at her
+   * path with her as owner and read-only. Both witnesses speak; the
+   * deployment is heard first, so the answer names the more useful fact — a
+   * calendar of this deployment, another user's — rather than merely
+   * "somebody else's".
+   */
+  @Test
+  public void aColleaguesExoCalendarAtHerPathIsStillTheColleaguesByThisDeploymentsWord() {
+    when(caldavSyncStorage.isExoCalendarOnServer(SERVER, ANCHOR)).thenReturn(true);
+
+    CollectionOwnership ownership = service.ownershipOf(SERVER,
+                                                        PRINCIPAL,
+                                                        List.of(),
+                                                        owned("/dav/calendars/alice/exo-cal-c0ffee-uid/", ALICE, true, false));
+
+    assertEquals(CollectionOwnership.COLLEAGUES_EXO_CALENDAR, ownership);
+  }
+
+  /**
+   * The user's own exported calendar, met again under a path none of their
+   * pairs record — BlueMind republishes eXo's collections under another
+   * parent. The anchor in the slug is one of their own EXO pairs', which is
+   * answered from the pairs in hand: the database is never asked, and the
+   * answer is "yours, already in eXo", not a share.
+   */
+  @Test
+  public void theUsersOwnExportedCalendarUnderAnotherPathIsTheirOwnWithoutAskingTheDatabase() {
+    CalendarSync exported = exportedPair(ANCHOR, WANTED);
+
+    CollectionOwnership ownership = service.ownershipOf(SERVER,
+                                                        PRINCIPAL,
+                                                        List.of(exported),
+                                                        owned("/dav/calendars/publish/exo-cal-c0ffee-uid/", PRINCIPAL, true, true));
+
+    assertEquals(CollectionOwnership.OWN_EXO_CALENDAR, ownership);
+    assertFalse(ownership.isShared());
+    verify(caldavSyncStorage, never()).isExoCalendarOnServer(anyLong(), anyString());
+    verify(caldavSyncStorage, never()).isExoCollectionOnServer(anyLong(), anyString());
+  }
+
+  /**
+   * The other arm of "the user's own": the server republished their
+   * collection under a slug that is not its anchor (EXO-89590), and the path
+   * one of their EXO pairs records is what still says whose it is — the
+   * shape {@link #aCollectionRepublishedUnderAnotherSlugIsThisDeploymentsByItsRecordedPath}
+   * pins account-wide, answered here from the user's own pairs first.
+   */
+  @Test
+  public void theUsersOwnCollectionRepublishedUnderAnotherSlugIsTheirOwnByItsRecordedPath() {
+    CalendarSync exported = exportedPair("anchor-mine", CaldavSyncServiceTest.RENAMED_BY_THE_SERVER);
+
+    CollectionOwnership ownership = service.ownershipOf(SERVER,
+                                                        PRINCIPAL,
+                                                        List.of(exported),
+                                                        owned(CaldavSyncServiceTest.RENAMED_BY_THE_SERVER, PRINCIPAL, true, true));
+
+    assertEquals(CollectionOwnership.OWN_EXO_CALENDAR, ownership);
+    verify(caldavSyncStorage, never()).isExoCollectionOnServer(anyLong(), anyString());
+  }
+
+  /**
+   * Provenance, not the path, says the user exported a collection. A REMOTE
+   * pair of theirs at the very path — the binding an adopted collection gets
+   * — is not an export, and does not make the collection their own eXo
+   * calendar; the account-wide question is asked as for any other prefixed
+   * collection. (The sweep and the read-through filter a bound collection
+   * out before classifying, so this is the classifier's own contract, pinned
+   * on its own.)
+   */
+  @Test
+  public void aRemotePairAtThePathIsNotAnExport() {
+    CalendarSync adopted = exportedPair(ANCHOR, WANTED);
+    adopted.setOrigin(SyncOrigin.REMOTE);
+    when(caldavSyncStorage.isExoCalendarOnServer(SERVER, ANCHOR)).thenReturn(false);
+    when(caldavSyncStorage.isExoCollectionOnServer(SERVER, CaldavSyncStorage.canonicalHref(WANTED))).thenReturn(false);
+
+    assertEquals(CollectionOwnership.OWN, service.ownershipOf(SERVER, PRINCIPAL, List.of(adopted), owned(WANTED, PRINCIPAL, true, true)));
+  }
+
+  /**
+   * A collection another eXo deployment minted into the account — its anchor
+   * known to no pair here — is the user's own to this deployment, and stays
+   * adopted as a remote calendar (EXO-90226), whatever the server says about
+   * owner and privileges when it says nothing against it. The BlueMind facts
+   * are on it on purpose: the user as owner, write granted, exactly what a
+   * colleague's subscribed share also carries there, so the two are told
+   * apart by the pair table alone.
+   */
+  @Test
+  public void anotherDeploymentsExoCalendarIsTheUsersOwnToAdopt() {
+    when(caldavSyncStorage.isExoCalendarOnServer(SERVER, ANCHOR)).thenReturn(false);
+    when(caldavSyncStorage.isExoCollectionOnServer(SERVER, CaldavSyncStorage.canonicalHref(WANTED))).thenReturn(false);
+
+    assertEquals(CollectionOwnership.OWN, service.ownershipOf(SERVER, PRINCIPAL, List.of(), owned(WANTED, PRINCIPAL, true, true)));
+  }
+
+  /**
+   * The server's word is still heard for a prefixed collection this
+   * deployment does not know: another deployment's calendar a colleague
+   * shared read-only is a share by the server's word (EXO-90235), and is
+   * classified so rather than dropped on its prefix.
+   */
+  @Test
+  public void anotherDeploymentsExoCalendarTheServerSaysIsAnothersIsAShare() {
+    when(caldavSyncStorage.isExoCalendarOnServer(SERVER, ANCHOR)).thenReturn(false);
+    when(caldavSyncStorage.isExoCollectionOnServer(SERVER, CaldavSyncStorage.canonicalHref(WANTED))).thenReturn(false);
+
+    assertEquals(CollectionOwnership.SHARED, service.ownershipOf(SERVER, PRINCIPAL, List.of(), owned(WANTED, ALICE, true, false)));
+  }
+
+  /**
+   * A collection outside eXo's prefix never costs the account-wide question:
+   * the server's two signals are the whole of what decides it — a share when
+   * the server says so, the user's own otherwise, and a silent server leaves
+   * it the user's own.
+   */
+  @Test
+  public void aCollectionOutsideExosPrefixIsDecidedByTheServerAlone() {
+    assertEquals(CollectionOwnership.SHARED,
+                 service.ownershipOf(SERVER, PRINCIPAL, List.of(), owned("/dav/calendars/alice/default/", ALICE, true, false)));
+    assertEquals(CollectionOwnership.OWN,
+                 service.ownershipOf(SERVER, PRINCIPAL, List.of(), owned("/dav/calendars/john/private/", PRINCIPAL, true, true)));
+    assertEquals(CollectionOwnership.OWN,
+                 service.ownershipOf(SERVER, PRINCIPAL, List.of(), collection("/dav/calendars/john/google/")),
+                 "silence is not a signal: no owner, no privilege set, the user's own");
+    // BlueMind's resource subscriptions — a pool vehicle, a room — are listed
+    // as calendar:<uid> with a uid that is not the principal's, the user as
+    // owner and the full set. Not read here, on purpose: whether such a
+    // resource should be the user's calendar is an open product question,
+    // and today it is materialised like any other collection.
+    assertEquals(CollectionOwnership.OWN,
+                 service.ownershipOf(SERVER,
+                                     PRINCIPAL,
+                                     List.of(),
+                                     owned("/dav/calendars/john/calendar:7E3AE6F3-0000-0000-0000-000000000000/", PRINCIPAL, true, true)));
+    verify(caldavSyncStorage, never()).isExoCalendarOnServer(anyLong(), anyString());
+    verify(caldavSyncStorage, never()).isExoCollectionOnServer(anyLong(), anyString());
+  }
+
+  /**
+   * @param href the collection path
+   * @param owner the owner the server named, or null
+   * @param privilegesAnswered whether the server answered a privilege set
+   * @param writable whether that set grants write
+   * @return a listed calendar with those ownership facts
+   */
+  private CalendarCollection owned(String href, String owner, boolean privilegesAnswered, boolean writable) {
+    return new CalendarCollection(href, "listed", null, null, null, writable, Set.of("VEVENT"), owner, privilegesAnswered);
+  }
+
+  /**
+   * @param anchor the calendar anchor the pair exports
+   * @param href the collection path it records
+   * @return an EXO pair of the user's on the server
+   */
+  private CalendarSync exportedPair(String anchor, String href) {
+    CalendarSync pair = new CalendarSync();
+    pair.setId(11L);
+    pair.setUserIdentityId(USER);
+    pair.setServerId(SERVER);
+    pair.setLocalCalendarSyncUid(anchor);
+    pair.setRemoteHref(href);
+    pair.setOrigin(SyncOrigin.EXO);
+    pair.setStatus(CalendarSyncStatus.ACTIVE);
+    return pair;
   }
 }
