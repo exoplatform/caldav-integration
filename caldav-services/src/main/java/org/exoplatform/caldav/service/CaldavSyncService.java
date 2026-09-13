@@ -1258,18 +1258,22 @@ public class CaldavSyncService {
         // filling it back up is precisely what they asked not to happen.
         continue;
       }
-      if (pair.getOrigin() != SyncOrigin.EXO && isExoCreated(CaldavSyncStorage.canonicalHref(pair.getRemoteHref()))) {
-        // A calendar binding pointed at a collection eXo minted for another
-        // eXo calendar: one user's outbound copy of their own calendar,
-        // materialised by a second user on the same account before the
-        // materialisation learned to skip such paths (EXO-89530). Reading it
-        // imports the first user's events into the second user's calendar,
-        // which is the loop of EXO-90190 by another route. The path is the
-        // signal here exactly as it is for materialisation — whichever user
-        // asked for it, a collection under the outbound prefix is eXo's own.
-        // Skipped rather than removed: what the calendar already holds is the
-        // user's, and removing bindings is a cleanup with its own review. Said
-        // at warn, once per pair per pass, so that cleanup has a list.
+      if (pair.getOrigin() != SyncOrigin.EXO
+          && caldavOutboundService.isMintedByThisDeployment(serverId, CaldavSyncStorage.canonicalHref(pair.getRemoteHref()))) {
+        // A calendar binding pointed at a collection this deployment minted
+        // for another of its own calendars: one user's outbound copy of their
+        // own calendar, materialised by a second user on the same account
+        // before the materialisation learned to skip such paths (EXO-89530).
+        // Reading it imports the first user's events into the second user's
+        // calendar, which is the loop of EXO-90190 by another route. The
+        // question is the one materialisation asks — a calendar of THIS
+        // deployment stands behind the collection — and not the path alone:
+        // a collection another eXo deployment minted into the same account is
+        // an ordinary remote calendar here, adopted and read like any other
+        // (EXO-90226). Skipped rather than removed: what the calendar already
+        // holds is the user's, and removing bindings is a cleanup with its own
+        // review. Said at warn, once per pair per pass, so that cleanup has a
+        // list.
         LOG.warn("Binding {} of user {} reads {}, a collection eXo created for another eXo calendar; it is skipped and should be removed",
                  pair.getId(),
                  userIdentityId,
@@ -1581,7 +1585,7 @@ public class CaldavSyncService {
     warnOnceIfAccountIsShared(userIdentityId, serverId, home);
     List<CalendarSync> known = caldavSyncStorage.getPairs(userIdentityId, serverId);
     for (CalendarCollection collection : collections) {
-      if (isAlreadyOurs(collection, known)) {
+      if (isAlreadyOurs(serverId, collection, known)) {
         reviveIfMarkedGone(known, collection);
         continue;
       }
@@ -1653,14 +1657,35 @@ public class CaldavSyncService {
   }
 
   /**
-   * Whether a listed collection is one eXo already accounts for.
+   * Whether a listed collection is one this deployment already accounts for.
    *
    * <p>
    * Three reasons to skip, and the first is the one that keeps the two halves
-   * from feeding each other. A collection eXo created carries an ORIGIN=EXO
-   * pair; materialising it would produce a second eXo calendar, which the
+   * from feeding each other. A collection this deployment created carries an
+   * ORIGIN=EXO pair — some user's, not necessarily this one's, since a CalDAV
+   * account can be shared by several eXo users; materialising it would
+   * produce a second eXo calendar for a calendar eXo already has, which the
    * outward pass would then push as a third collection, and so on. Two
    * features each behaving correctly, multiplying calendars on both sides.
+   * Observed live before the account-wide check existed: one user's
+   * <code>exo-cal-946eec40…</code> came back as another user's calendar 23.
+   *
+   * <p>
+   * <b>This deployment's, not any eXo's.</b> The skip used to read the path
+   * alone, and a path under the outbound prefix is minted by every eXo alike.
+   * A collection <em>another</em> deployment pushed into the same account
+   * therefore went unmaterialised here while the grid's read-through still
+   * showed its events as external — a calendar the user could neither see,
+   * switch off nor trace (EXO-90226). Nothing here exists to duplicate: that
+   * collection is an ordinary remote calendar to this deployment, as it is to
+   * any other CalDAV client on the account, and it is adopted as one — bound
+   * ORIGIN=REMOTE, which is precisely what keeps the outward pass from
+   * pushing it back out as a collection of its own
+   * ({@code CaldavOutboundService#bind} returns early on a REMOTE pair). The
+   * multiplication the prefix skip was written against is stopped there, one
+   * layer down, and the account-wide ownership question
+   * ({@link CaldavOutboundService#isMintedByThisDeployment(long, String)})
+   * keeps the same-deployment case skipped as before.
    *
    * <p>
    * The <em>dedicated</em> mirror is skipped because its contents are copies
@@ -1681,11 +1706,22 @@ public class CaldavSyncService {
    * path — so the user's primary calendar read as already accounted for and
    * was never materialised, nor its events ever read.
    *
+   * <p>
+   * <b>The user's own pairs before the database.</b> The account-wide
+   * ownership question walks the pair table — no index serves it, see the
+   * DAO — so it is asked last, after the pairs already in hand have had
+   * their say: a collection this user is bound to, whatever its origin or
+   * state, costs no query. What that ordering cannot save is a collection
+   * the server republishes under a path the user's pairs do not record;
+   * there {@code known} matches nothing and the question is asked as before.
+   *
+   * @param serverId the declared server registration, which scopes the
+   *          account-wide ownership question
    * @param collection the listed collection
    * @param known every pair this user holds on this server
    * @return true when nothing should be created for it
    */
-  private boolean isAlreadyOurs(CalendarCollection collection, List<CalendarSync> known) {
+  private boolean isAlreadyOurs(long serverId, CalendarCollection collection, List<CalendarSync> known) {
     String href = CaldavSyncStorage.canonicalHref(collection.href());
     if (StringUtils.isBlank(href)) {
       // A collection with no path is nothing we can bind to, name, or find
@@ -1697,12 +1733,10 @@ public class CaldavSyncService {
     if (isDedicatedMirror(href)) {
       return true;
     }
-    if (isExoCreated(href)) {
-      return true;
-    }
-    return known.stream()
-                .filter(CaldavSyncService::bindsACalendar)
-                .anyMatch(pair -> href.equals(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())));
+    boolean bound = known.stream()
+                         .filter(CaldavSyncService::bindsACalendar)
+                         .anyMatch(pair -> href.equals(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())));
+    return bound || caldavOutboundService.isMintedByThisDeployment(serverId, href);
   }
 
   /**
@@ -1762,44 +1796,19 @@ public class CaldavSyncService {
    * table, where ownership actually lives.
    *
    * <p>
-   * The path rather than this user's recorded href, for the same reason
-   * {@link #isExoCreated(String)} reads the path: a CalDAV account can be
-   * shared, and another eXo user's dedicated mirror must not be materialised
-   * as this user's calendar either.
+   * The path rather than this user's recorded href, because a CalDAV account
+   * can be shared, and another eXo user's dedicated mirror must not be
+   * materialised as this user's calendar either. The mirror's slug is one
+   * and the same on every deployment, and its contents are copies wherever
+   * they came from — so unlike the outbound prefix
+   * ({@link CaldavOutboundService#isMintedByThisDeployment(long, String)}),
+   * the path alone is the right test here.
    *
    * @param href the collection path, canonical
    * @return true when the path is the dedicated mirror's
    */
   private boolean isDedicatedMirror(String href) {
     return href.endsWith("/" + CaldavPushService.MIRROR_COLLECTION_SLUG);
-  }
-
-  /**
-   * Whether eXo is the one that created this collection, judged from its path
-   * alone.
-   *
-   * <p>
-   * The pair check below cannot answer this on its own: pairs are read for
-   * <em>one</em> user, while a CalDAV account can be shared by several. Two
-   * eXo users connected to the same account see each other's pushed
-   * collections as ordinary remote ones, each materialises the other's, each
-   * then pushes the result as a new collection — and the pair of them
-   * multiply calendars without either behaving incorrectly. Observed live:
-   * one user's <code>exo-cal-946eec40…</code> came back as another user's
-   * calendar 23.
-   *
-   * <p>
-   * The path is the reliable signal because eXo mints it: a collection under
-   * the outbound prefix was created by eXo, whichever user asked for it, and
-   * is never something to import. One definition, the outbound service's,
-   * since EXO-90190: the push asks the same question before writing through a
-   * binding, and the two answers must not drift.
-   *
-   * @param href the collection path, canonical
-   * @return true when the path is one eXo derives
-   */
-  private boolean isExoCreated(String href) {
-    return CaldavOutboundService.isExoCreated(href);
   }
 
   /**
