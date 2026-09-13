@@ -657,7 +657,10 @@ public class CaldavReadServiceTest {
     assertNull(alices.getOwnerIdentityId());
     assertNull(alices.getOwnerUsername());
     assertEquals("Alice", alices.getOwnerDisplayName());
-    verify(identityManager, never()).getIdentity(anyString());
+    // The overload production calls: on a mock the interface's default-method
+    // chain is not walked, so verifying the String overload would pass whatever
+    // the service did.
+    verify(identityManager, never()).getIdentity(anyLong());
   }
 
   /**
