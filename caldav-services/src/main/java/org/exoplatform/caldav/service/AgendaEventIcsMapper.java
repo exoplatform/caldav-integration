@@ -253,6 +253,32 @@ public class AgendaEventIcsMapper {
    * DESCRIPTION it read off the wire — plain text by RFC 5545 &sect;3.8.1.5 —
    * into this same field.
    *
+   * <p>
+   * <b>One block, the pusher's own, whatever the description carries.</b> This
+   * render composes the block for a copy written into a <em>personal</em>
+   * collection exactly as for the mirror, and a personal copy is read back: no
+   * mirror row owns it, so {@code CaldavInboundService.isMirrorOwned} answers
+   * false for it, the inbound sweep imports it like any other object of that
+   * collection, and the block became the event's stored description — which
+   * this render then wrapped in a second one, one more per edit (EXO-90227).
+   * Two guards now, in two places: the builder itself takes any block already
+   * present off the description before writing its own, and the import
+   * ({@link org.exoplatform.caldav.ics.IcsEventMapper}) no longer stores one in
+   * the first place — there, gated on the object carrying this very
+   * {@code URL}, because the block is recognised by the shape of the text and
+   * that shape is one a person can type. Both read the block through agenda's
+   * {@link org.exoplatform.agenda.util.InvitationText}, so there is one
+   * spelling of what the block looks like.
+   *
+   * <p>
+   * <b>The builder's own strip is not gated, and this is the call that reaches
+   * it.</b> {@code EventIcsBuilder.description} takes a leading block off
+   * whatever description it is handed, so a description the recogniser misreads
+   * is already shortened in the copy written here — and that copy carries eXo's
+   * {@code URL}, so the import stores the shortened text back over the event's
+   * description. Narrowing that is agenda's side of the defect, tracked as
+   * <b>EXO-90228</b>; nothing in this add-on closes it.
+   *
    * @param event the event being copied
    * @param roster the event's attendees as agenda holds them, which decide
    *          whether there is an invitation to offer an answer to at all
