@@ -282,6 +282,70 @@ public class HttpCalDavClientTest {
     assertEquals(2, sent.size(), "the principal comes out of the walk, not out of a third PROPFIND");
   }
 
+  // ---- what a principal calls itself, EXO-90237 --------------------------
+
+  /**
+   * An owner principal's display name is one PROPFIND of depth 0 for the
+   * one property, at the principal's path on the endpoint's own authority —
+   * the Stalwart transcript of 2026-09-13, where Alice's principal answers
+   * "Alice".
+   */
+  @Test
+  void aPrincipalsDisplayNameIsOnePropfindOfDepthZero() throws Exception {
+    givenAnswers("""
+        <?xml version="1.0" encoding="UTF-8"?>
+        <D:multistatus xmlns:D="DAV:">
+          <D:response><D:href>/dav/pal/alice%40stalwart.local/</D:href><D:propstat><D:prop>
+            <D:displayname>Alice</D:displayname>
+          </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+        </D:multistatus>""");
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    String name = client.readDisplayName(endpoint, "/dav/pal/alice%40stalwart.local/");
+
+    assertEquals("Alice", name);
+    assertEquals(1, sent.size(), "one request, and no discovery walk before it");
+    assertEquals("PROPFIND", sent.get(0).method());
+    assertEquals("http://cal.example.com/dav/pal/alice%40stalwart.local/", sent.get(0).uri().toString());
+    assertEquals("0", sent.get(0).headers().firstValue("Depth").orElse(null));
+    assertTrue(bodyOf(sent.get(0)).contains("<d:displayname/>"), "asks for the name and nothing else");
+    assertFalse(bodyOf(sent.get(0)).contains("resourcetype"), "asks for the name and nothing else");
+  }
+
+  /**
+   * A name the server answers outside a granted propstat is no name: the
+   * propstat discipline every other property follows.
+   */
+  @Test
+  void aDisplayNameInA404PropstatIsNoName() throws Exception {
+    givenAnswers("""
+        <?xml version="1.0" encoding="UTF-8"?>
+        <D:multistatus xmlns:D="DAV:">
+          <D:response><D:href>/dav/pal/alice%40stalwart.local/</D:href><D:propstat><D:prop>
+            <D:displayname>Nobody</D:displayname>
+          </D:prop><D:status>HTTP/1.1 404 Not Found</D:status></D:propstat></D:response>
+        </D:multistatus>""");
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    // A value inside the failing propstat, on purpose: a reader that took the
+    // first displayname it saw would answer "Nobody" here, and that is the
+    // reader this pins against.
+    assertNull(client.readDisplayName(endpoint, "/dav/pal/alice%40stalwart.local/"));
+  }
+
+  /**
+   * A principal on another host is refused before a socket is opened, like
+   * every other href: the owner's name is never worth aiming credentials at
+   * a host nobody declared.
+   */
+  @Test
+  void aPrincipalOnAnotherHostIsRefusedBeforeAnySocketIsOpened() {
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    assertThrows(CalDavException.class, () -> client.readDisplayName(endpoint, "http://evil.example.com/dav/pal/alice/"));
+    assertTrue(sent.isEmpty(), "no request was built");
+  }
+
   /**
    * The account's default calendar is asked of its scheduling inbox, in the two
    * hops RFC 6638 defines.
