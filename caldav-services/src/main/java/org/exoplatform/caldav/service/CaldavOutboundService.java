@@ -457,29 +457,130 @@ public class CaldavOutboundService {
   }
 
   /**
-   * Whether eXo is the one that created this collection, judged from its path
-   * alone.
+   * Whether <em>an</em> eXo created this collection, judged from its path
+   * alone — this deployment or any other.
    *
    * <p>
-   * The path is the reliable signal because eXo mints it: a collection whose
-   * slug carries {@link #COLLECTION_PREFIX} was created by this connector for
-   * one of some user's own calendars, whichever user asks about it now. That
-   * matters on a CalDAV account several eXo users share (EXO-89530,
-   * EXO-90190): a pair check is scoped to one user, while the collections in
-   * the account were made by any of them — so one user's outbound copy looks,
-   * to another user's pair, like an ordinary remote calendar to materialise,
-   * read, and write back into. Observed live: one user's
-   * <code>exo-cal-946eec40…</code> came back as another user's calendar 23.
-   * The inbound sweep and the outbound push ask this before touching such a
-   * binding.
+   * The path says which connector minted a collection, not which deployment:
+   * every eXo derives the same {@link #COLLECTION_PREFIX} slug, so a
+   * collection under it was made by this connector for one of some user's
+   * calendars, on this instance or on another one writing into the same
+   * account. That is as far as the path can see, and it used to be the whole
+   * test (EXO-89530, EXO-90190): a pair check is scoped to one user, while
+   * the collections in a shared account were made by any of them, so one
+   * user's outbound copy looked, to another user's pair, like an ordinary
+   * remote calendar to materialise, read and write back into — observed live
+   * as one user's <code>exo-cal-946eec40…</code> coming back as another
+   * user's calendar 23.
+   *
+   * <p>
+   * The sweep and the push no longer stop at this answer. What they need to
+   * know is whether the calendar behind the collection exists <em>here</em>,
+   * which is {@link #isMintedByThisDeployment(long, String)}; a collection
+   * another deployment minted is an ordinary remote calendar to them
+   * (EXO-90226). This remains the cheap, stateless form for the places that
+   * only need to tell eXo-shaped paths from the rest.
    *
    * @param href the collection path, canonical or not; only its last segment
    *          is read
-   * @return true when the path is one eXo derives for a user's own calendar
+   * @return true when the path is one an eXo derives for a user's own calendar
    */
   public static boolean isExoCreated(String href) {
+    return anchorOf(href) != null;
+  }
+
+  /**
+   * The calendar anchor a collection's slug carries, when eXo minted it.
+   *
+   * <p>
+   * The inverse of {@link #collectionHref(String, String)}: the slug is the
+   * prefix followed by agenda's calendar sync uid, and nothing else. Read
+   * from the last segment alone, so a server that republishes the collection
+   * under another parent — BlueMind lists eXo's collections under a path
+   * other than the one they were created at — still yields the anchor.
+   *
+   * @param href the collection path, canonical or not
+   * @return the anchor, or null when the slug is not one eXo mints, or
+   *         carries nothing after the prefix
+   */
+  public static String anchorOf(String href) {
     String slug = StringUtils.substringAfterLast(StringUtils.stripEnd(href, "/"), "/");
-    return StringUtils.startsWith(slug, COLLECTION_PREFIX);
+    if (!StringUtils.startsWith(slug, COLLECTION_PREFIX)) {
+      return null;
+    }
+    return StringUtils.defaultIfBlank(StringUtils.removeStart(slug, COLLECTION_PREFIX), null);
+  }
+
+  /**
+   * Whether this deployment is the one that created this collection: its
+   * slug is eXo's and a user here holds the calendar it stands for.
+   *
+   * <p>
+   * The distinction a path prefix cannot make (EXO-90226). Two users on
+   * <em>one</em> deployment sharing an account: the other user's calendar
+   * already exists inside eXo, so importing its collection would duplicate
+   * what eXo knows natively — skip it. Two <em>separate</em> deployments
+   * sharing an account: the other instance's calendar exists nowhere here,
+   * there is nothing to duplicate, and importing it is exactly what any
+   * second CalDAV client connected to the account does. Both cases wear the
+   * same prefix; only the pair table tells them apart, and since EXO-90190 it
+   * can be asked account-wide rather than for one user.
+   *
+   * <p>
+   * Ownership is asked two ways, and either answers. <b>By the anchor the
+   * slug carries</b> first: the server may list the collection under a
+   * parent other than the one eXo created it at — BlueMind republishes them
+   * under {@code …/publish/…} — and the slug survives that. <b>By the
+   * recorded path</b> second: the same server has also reported a collection
+   * under a slug other than the one it was created with (EXO-89590 — prefix
+   * kept, suffix replaced), and then the slug carries no anchor anyone here
+   * holds, while an EXO pair recorded at that path still says the collection
+   * is this deployment's. The path arm only ever adds skips, so it cannot
+   * reintroduce what made the path wrong as the <em>sole</em> key: a
+   * colleague's collection republished under another parent still answers
+   * by its anchor. What neither arm answers is a collection republished
+   * under another slug whose pair still records the created path; only a
+   * captured BlueMind listing can say whether that shape occurs.
+   *
+   * <p>
+   * The failure direction depends on which side kept its state. A deployment
+   * <em>cloned</em> from another's database answers "ours" for the other's
+   * collections, which is the skip that held before this question existed.
+   * A deployment whose pair rows are <em>gone</em> while the collections are
+   * not — wiped and re-seeded, restored to a point before the pairs were
+   * written, re-pointed at an account it used to serve — answers "not ours"
+   * for its own former collections and adopts them. Where the restore kept
+   * agenda's calendars and their sync uids, that heals within one pass:
+   * {@link #bindPersonalCalendars} runs before materialisation and re-records
+   * the binding by the derived path, so materialisation finds the anchor
+   * again. Only a full wipe adopts, and what it adopts is bounded — one extra
+   * REMOTE-bound calendar per pre-wipe calendar, named from the collection,
+   * holding the old events; no anchor collision, since materialisation
+   * records the new anchor; no name-collision failure, since agenda accepts
+   * two calendars of one name; and nothing pushed back out, since a REMOTE
+   * pair stops {@code bind} before it creates anything. Visible and
+   * reversible by the user, which is the property the adoption default rests
+   * on.
+   *
+   * <p>
+   * The sweep asks this before materialising a listed collection and before
+   * reading through a binding; the push asks it before writing through one.
+   * One definition, so the three answers cannot drift. A path outside the
+   * outbound prefix asks nothing: no eXo minted it, and keeping the database
+   * out of that case is what keeps the question cheap on a listing that is
+   * mostly the user's own calendars.
+   *
+   * @param serverId the declared server registration
+   * @param href the collection path, canonical or not
+   * @return true when a calendar of this deployment stands behind it
+   */
+  public boolean isMintedByThisDeployment(long serverId, String href) {
+    String anchor = anchorOf(href);
+    if (anchor == null) {
+      return false;
+    }
+    return caldavSyncStorage.isExoCalendarOnServer(serverId, anchor)
+        || caldavSyncStorage.isExoCollectionOnServer(serverId, href);
   }
 
   /**
