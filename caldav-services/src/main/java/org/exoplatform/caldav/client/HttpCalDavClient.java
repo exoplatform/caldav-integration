@@ -227,6 +227,16 @@ public class HttpCalDavClient implements CalDavClient {
         <d:prop><d:supported-report-set/><cs:getctag/><d:sync-token/></d:prop>
       </d:propfind>""";
 
+  /**
+   * The one property {@link #readDisplayName} asks for: what a resource — an
+   * owner principal, in practice — calls itself (EXO-90237).
+   */
+  private static final String         PROPFIND_DISPLAYNAME      = """
+      <?xml version="1.0" encoding="utf-8"?>
+      <d:propfind xmlns:d="DAV:">
+        <d:prop><d:displayname/></d:prop>
+      </d:propfind>""";
+
   private final HttpClient                 httpClient;
 
   private final CaldavServerService        caldavServerService;
@@ -446,6 +456,24 @@ public class HttpCalDavClient implements CalDavClient {
   public CalendarCollection readCalendar(CalDavEndpoint endpoint, String href) {
     Element response = firstResponse(propfind(endpoint, href, PROPFIND_COLLECTION, "0"));
     return response == null ? null : toCalendar(endpoint, response);
+  }
+
+  /**
+   * One PROPFIND of depth 0 for the one property, through {@link #propfind}
+   * and so through {@link #target}: a principal path naming another
+   * authority is refused before a socket is opened, exactly as any other
+   * href would be. Read from a granted propstat only, like every property
+   * this client answers — a server that does not know the resource answers
+   * the name in a 404 propstat, and that is no name.
+   *
+   * @param endpoint the account's endpoint
+   * @param href the resource's server-absolute path
+   * @return the display name, or null when the server states none
+   */
+  @Override
+  public String readDisplayName(CalDavEndpoint endpoint, String href) {
+    Element response = firstResponse(propfind(endpoint, href, PROPFIND_DISPLAYNAME, "0"));
+    return response == null ? null : grantedText(response, DAV_NS, "displayname");
   }
 
   @Override
