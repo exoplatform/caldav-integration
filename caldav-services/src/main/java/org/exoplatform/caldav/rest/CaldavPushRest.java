@@ -391,6 +391,9 @@ public class CaldavPushRest {
     // the reading that already puts NOT_CONNECTED here, and the reason it does
     // not answer the 502 a browser renders as "the calendar server is down".
     case CaldavPushService.CONFLICT, CaldavPushService.NOT_CONNECTED, CaldavPushService.FOREIGN_COPY -> HttpStatus.CONFLICT;
+    // The calendar server itself answered 403 to the write: the one status
+    // that says what happened without translation (EXO-90235).
+    case CaldavPushService.FORBIDDEN -> HttpStatus.FORBIDDEN;
     default -> HttpStatus.BAD_GATEWAY;
     };
     return ResponseEntity.status(status).body(failure.getCode());

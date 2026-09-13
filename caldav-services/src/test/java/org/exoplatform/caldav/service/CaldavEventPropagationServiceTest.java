@@ -1748,6 +1748,84 @@ public class CaldavEventPropagationServiceTest {
     verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
   }
 
+  // ------------------------------------ a write the server forbids, EXO-90235
+
+  /**
+   * A write the calendar server forbids is given up on the first time the
+   * sweep meets it, not after five identical refusals, and the one line an
+   * operator gets names the object the server refused.
+   *
+   * <p>
+   * Observed live: an edit pushed into a colleague's read-only calendar got
+   * 403, the log said "it stays owed and is retried", and it was — five times
+   * over twenty-five minutes, for a privilege the server was never going to
+   * grant. That wording must not appear for this refusal at all: it is a
+   * known state, recorded without a trace, and abandoned at once.
+   */
+  @Test
+  public void aWriteTheServerForbidsIsAbandonedOnTheFirstRefusalAndNamesTheObject() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    String target = "/dav/cal/alice%40stalwart.local/default/uid-8801.ics";
+    when(caldavPushService.pushAgendaEvent(ALICE, login(ALICE), EVENT))
+                                                        .thenThrow(new CaldavPushException(CaldavPushService.FORBIDDEN,
+                                                                                           "The calendar object could not be written: the calendar server refused the write to "
+                                                                                               + target + " (403)"));
+
+    List<ILoggingEvent> warned;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      service.propagateUpdate(EVENT, A_REAL_EDIT);
+      service.retryOwedPushes(ALICE);
+
+      assertEquals(0,
+                   caldavPendingPushStorage.owedAndStillTrying(ALICE, MAX_ATTEMPTS),
+                   "given up on after one refusal, not after " + MAX_ATTEMPTS);
+
+      for (int sweep = 0; sweep < MAX_ATTEMPTS + 2; sweep++) {
+        service.retryOwedPushes(ALICE);
+      }
+      warned = log.events().stream().filter(recorded -> recorded.getLevel() == Level.WARN).toList();
+    }
+
+    // Two, and no more: the attempt propagateUpdate makes at once, and the one
+    // retry that gives up. The sweeps after it read nothing.
+    verify(caldavPushService, times(2)).pushAgendaEvent(ALICE, login(ALICE), EVENT);
+    List<ILoggingEvent> abandoned = warned.stream()
+                                          .filter(recorded -> recorded.getFormattedMessage()
+                                                                      .contains("will not let this account write"))
+                                          .toList();
+    assertEquals(1, abandoned.size(), "said once, on the refusal that gives up");
+    String line = abandoned.get(0).getFormattedMessage();
+    assertTrue(line.contains(target), "the line names the object the server refused: " + line);
+    assertTrue(line.contains("stops now"), line);
+    assertTrue(warned.stream().noneMatch(recorded -> recorded.getFormattedMessage().contains("stays owed and is retried")),
+               "a forbidden write is not the transient failure the old wording described");
+    assertEquals(1, caldavPendingPushStorage.owed(ALICE), "the record stays as the trace that this copy is wrong");
+  }
+
+  /**
+   * The same on a removal: a DELETE the server forbids is abandoned at once
+   * and never retried as a rewrite.
+   */
+  @Test
+  public void aRemovalTheServerForbidsIsAbandonedOnTheFirstRefusal() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    org.mockito.Mockito.doThrow(new CaldavPushException(CaldavPushService.FORBIDDEN,
+                                                        "The calendar object could not be removed: the calendar server refused the write to /dav/x/uid-8801.ics (403)"))
+                       .when(caldavPushService)
+                       .deleteEvent(ALICE, login(ALICE), "uid-8801");
+
+    service.propagateDeletion(EVENT);
+    for (int sweep = 0; sweep < MAX_ATTEMPTS + 2; sweep++) {
+      service.retryOwedPushes(ALICE);
+    }
+
+    verify(caldavPushService, times(2)).deleteEvent(ALICE, login(ALICE), "uid-8801");
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
+    assertEquals(0, caldavPendingPushStorage.owedAndStillTrying(ALICE, MAX_ATTEMPTS));
+  }
+
   // ------------------------------------ the abandonment line, EXO-90190
 
   /**

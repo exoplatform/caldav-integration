@@ -83,6 +83,9 @@ public class CaldavPushCodeClassificationTest {
     // Another user's copy stays theirs for as long as the meeting does; no
     // retry changes whose it is (EXO-90190).
     assertTrue(CaldavPushService.isKnownState(CaldavPushService.FOREIGN_COPY));
+    // The server took the credentials and refused the write: the privilege is
+    // the server's to grant, and no retry changes it (EXO-90235).
+    assertTrue(CaldavPushService.isKnownState(CaldavPushService.FORBIDDEN));
   }
 
   /**
