@@ -18,6 +18,7 @@ package org.exoplatform.caldav.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Set;
@@ -129,5 +130,115 @@ public class CalendarCollectionTest {
    */
   private CalendarCollection collectionOf(Set<String> components) {
     return new CalendarCollection(HREF, "Private", "ctag-1", "token-1", null, true, components);
+  }
+
+  // ------------------------------------ whose calendar it is, EXO-90235
+
+  private static final String BOB   = "/dav/pal/bob%40stalwart.local/";
+
+  private static final String ALICE = "/dav/pal/alice%40stalwart.local/";
+
+  /**
+   * The Stalwart shape that caused the defect: the colleague named as owner
+   * and a read-only privilege set. Either signal alone is enough; this is
+   * both.
+   */
+  @Test
+  public void aCollectionOwnedByAnotherAndReadOnlyIsAShare() {
+    assertTrue(collectionOf(ALICE, true, false).isSharedWith(BOB));
+  }
+
+  /**
+   * Owner alone: a colleague's calendar the user may write into is still not
+   * the user's own, and is not materialised as such — read-write sharing is a
+   * later step, taken on purpose, not a side effect of a privilege set.
+   */
+  @Test
+  public void aCollectionOwnedByAnotherIsAShareEvenWhenWritable() {
+    assertTrue(collectionOf(ALICE, true, true).isSharedWith(BOB));
+  }
+
+  /**
+   * Privileges alone: a server that names no owner but grants no write has
+   * still said the user may not write there.
+   */
+  @Test
+  public void aReadOnlyCollectionIsAShareEvenWhenTheServerNamesNoOwner() {
+    assertTrue(collectionOf(null, true, false).isSharedWith(BOB));
+  }
+
+  /**
+   * The user's own calendar, as the server names it: owner equals principal,
+   * write granted. Not a share, whatever else is true of it.
+   */
+  @Test
+  public void theUsersOwnCollectionIsNotAShare() {
+    assertFalse(collectionOf(BOB, true, true).isSharedWith(BOB));
+  }
+
+  /**
+   * Silence is not a signal. Google answers no privilege set at all, and
+   * reading that as read-only would turn every Google calendar into a share
+   * — the reverse of the defect. No owner, no privilege set: the user's own.
+   */
+  @Test
+  public void aCollectionTheServerSaidNothingAboutIsNotAShare() {
+    assertFalse(collectionOf(null, false, false).isSharedWith(BOB));
+  }
+
+  /**
+   * A principal the server did not name cannot be compared against, so the
+   * owner signal stays off — an owner that is merely <em>unknown to be</em>
+   * the user's must not count against the collection.
+   */
+  @Test
+  public void anOwnerCannotBeComparedAgainstAnUnknownPrincipal() {
+    assertFalse(collectionOf(ALICE, true, true).isSharedWith(null));
+    assertFalse(collectionOf(ALICE, true, true).isSharedWith(" "));
+  }
+
+  /**
+   * Compared as paths. Stalwart spells the principal segment percent-encoded;
+   * a server answering the owner decoded, or one of the two without its
+   * trailing slash, still names the same principal, and treating the
+   * spellings as two people would hide the user's own calendars.
+   */
+  @Test
+  public void anOwnerIsComparedAsAPathNotAsAString() {
+    assertFalse(collectionOf("/dav/pal/bob@stalwart.local/", true, true).isSharedWith(BOB), "decoded against encoded");
+    assertFalse(collectionOf("/dav/pal/bob%40stalwart.local", true, true).isSharedWith(BOB), "no trailing slash");
+    assertFalse(collectionOf(BOB, true, true).isSharedWith("/dav/pal/bob@stalwart.local"), "both differences at once");
+    assertTrue(collectionOf(ALICE, true, true).isSharedWith("/dav/pal/bob@stalwart.local"),
+               "a genuinely different principal still differs once both are decoded");
+  }
+
+  /**
+   * The six- and seven-argument forms describe a collection nothing beyond
+   * its own properties was said about — no owner, no privilege set — so a
+   * record built by hand never classifies as a share by accident, whatever
+   * its {@code writable} flag says. That is what keeps every test that built
+   * a read-only collection before ownership was read meaning what it meant.
+   */
+  @Test
+  public void theLegacyFormsNameNoOwnerAndAnswerNoPrivilegeSet() {
+    CalendarCollection six = new CalendarCollection(HREF, "Private", null, null, null, false);
+    CalendarCollection seven = new CalendarCollection(HREF, "Private", null, null, null, false, Set.of("VEVENT"));
+
+    assertNull(six.owner());
+    assertFalse(six.privilegesAnswered());
+    assertFalse(six.isSharedWith(BOB), "writable=false without an answered set is silence, not read-only");
+    assertNull(seven.owner());
+    assertFalse(seven.privilegesAnswered());
+    assertFalse(seven.isSharedWith(BOB));
+  }
+
+  /**
+   * @param owner the owner the server named, or null
+   * @param privilegesAnswered whether it answered a privilege set
+   * @param writable whether that set grants write
+   * @return a calendar collection with those ownership facts
+   */
+  private CalendarCollection collectionOf(String owner, boolean privilegesAnswered, boolean writable) {
+    return new CalendarCollection(HREF, "Private", "ctag-1", "token-1", null, writable, Set.of("VEVENT"), owner, privilegesAnswered);
   }
 }

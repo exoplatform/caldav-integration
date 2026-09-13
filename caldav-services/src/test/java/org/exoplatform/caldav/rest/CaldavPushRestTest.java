@@ -202,6 +202,17 @@ public class CaldavPushRestTest {
   }
 
   /**
+   * A write the calendar server itself refused with 403 answers 403: the one
+   * status that says what happened without translation, and not the 502 that
+   * would send the browser retrying against a server that answered exactly as
+   * it meant to (EXO-90235).
+   */
+  @Test
+  public void shouldReportAWriteTheServerForbadeAsForbidden() {
+    assertEquals(HttpStatus.FORBIDDEN, statusOf(CaldavPushService.FORBIDDEN));
+  }
+
+  /**
    * Anything else is the calendar server refusing or unreachable, and answers
    * 502 rather than a 500: the fault is upstream, and a 500 would send anyone
    * reading only the status looking through eXo's logs for it.

@@ -190,6 +190,13 @@ public class HttpCalDavClient implements CalDavClient {
    * The full property set the sync engine binds a pair on — asked in one
    * PROPFIND whether listing a home or re-reading one collection, so both
    * paths answer the same {@link CalendarCollection}.
+   *
+   * <p>
+   * {@code DAV:owner} is in the set since EXO-90235: a collection a colleague
+   * shared is listed inside the user's own home, and the owner is what tells
+   * it from the user's own calendars. RFC 3744 §5.1 makes it a protected
+   * property every access-control server carries; a server without the
+   * extension answers it in a 404 propstat, which reads as "not said".
    */
   private static final String         PROPFIND_COLLECTION       = """
       <?xml version="1.0" encoding="utf-8"?>
@@ -202,6 +209,7 @@ public class HttpCalDavClient implements CalDavClient {
           <d:supported-report-set/>
           <c:supported-calendar-component-set/>
           <d:current-user-privilege-set/>
+          <d:owner/>
           <a:calendar-color/>
         </d:prop>
       </d:propfind>""";
@@ -339,12 +347,31 @@ public class HttpCalDavClient implements CalDavClient {
 
   @Override
   public String discoverCalendarHome(CalDavEndpoint endpoint) {
-    Element response = firstResponse(propfind(endpoint, discoverPrincipal(endpoint), PROPFIND_HOME, "0"));
+    return discoverHome(endpoint).href();
+  }
+
+  /**
+   * The same two hops as {@link #discoverCalendarHome}, keeping the principal
+   * the first one answered instead of throwing it away — the walk the sync
+   * and the read-through run, so that the owner of each listed collection
+   * can be compared against the account's own principal without a third
+   * PROPFIND (EXO-90235).
+   *
+   * @param endpoint the declared server to discover on
+   * @return the principal and the home, both as server-absolute raw paths
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached or answers no
+   *           principal or no home
+   */
+  @Override
+  public CalendarHome discoverHome(CalDavEndpoint endpoint) {
+    String principal = discoverPrincipal(endpoint);
+    Element response = firstResponse(propfind(endpoint, principal, PROPFIND_HOME, "0"));
     String home = response == null ? null : hrefWithin(response, CALDAV_NS, "calendar-home-set");
     if (StringUtils.isBlank(home)) {
       throw new CalDavException("The server did not say where the calendars are");
     }
-    return asPath(endpoint, home);
+    return new CalendarHome(principal, asPath(endpoint, home));
   }
 
   /**
@@ -760,6 +787,15 @@ public class HttpCalDavClient implements CalDavClient {
    * null when its granted resourcetype does not say calendar — the type is
    * read, never guessed from the path.
    *
+   * <p>
+   * Ownership is read here and decided nowhere near here. The owner href is
+   * folded onto a path exactly as every other href is, and whether the
+   * privilege set was answered at all travels beside what it grants, so the
+   * engine can tell "the server said no write" from "the server said
+   * nothing" — Google says nothing. Which of those makes a collection a
+   * share is {@link CalendarCollection#isSharedWith(String)}'s question, asked
+   * with a principal this method does not have.
+   *
    * @param endpoint the declared server, for href resolution
    * @param response one response element
    * @return the collection, or null when this member is not a calendar
@@ -767,6 +803,8 @@ public class HttpCalDavClient implements CalDavClient {
   private CalendarCollection toCalendar(CalDavEndpoint endpoint, Element response) {
     boolean isCalendar = false;
     boolean writable = false;
+    boolean privilegesAnswered = false;
+    String owner = null;
     for (Element prop : grantedProps(response)) {
       List<Element> types = descendants(prop, DAV_NS, "resourcetype");
       if (!types.isEmpty() && !descendants(types.get(0), CALDAV_NS, "calendar").isEmpty()) {
@@ -775,8 +813,16 @@ public class HttpCalDavClient implements CalDavClient {
       List<Element> privileges = descendants(prop, DAV_NS, "current-user-privilege-set");
       if (!privileges.isEmpty()) {
         Element set = privileges.get(0);
+        privilegesAnswered = true;
         writable = !descendants(set, DAV_NS, "write").isEmpty() || !descendants(set, DAV_NS, "all").isEmpty()
             || !descendants(set, DAV_NS, "bind").isEmpty();
+      }
+      // Only from a granted propstat: a server without access control answers
+      // the property in a 404 propstat, and grantedProps has already left that
+      // one out, so an owner read here is one the server actually stated.
+      String ownerHref = hrefWithin(prop, DAV_NS, "owner");
+      if (StringUtils.isNotBlank(ownerHref)) {
+        owner = ownerPathOf(endpoint, ownerHref);
       }
     }
     if (!isCalendar) {
@@ -788,7 +834,41 @@ public class HttpCalDavClient implements CalDavClient {
                                   grantedText(response, DAV_NS, SYNC_TOKEN_ELEMENT),
                                   grantedText(response, APPLE_NS, "calendar-color"),
                                   writable,
-                                  supportedComponents(response));
+                                  supportedComponents(response),
+                                  owner,
+                                  privilegesAnswered);
+  }
+
+  /**
+   * The owner href of a collection as a path on this endpoint, or null when
+   * it cannot be one.
+   *
+   * <p>
+   * The same folding every other href gets, with one difference in what a
+   * refusal means. {@link #asPath} throws for an absolute href naming a host
+   * other than the declared server, because every other href is later
+   * addressed and credentials must never follow it there. An owner is never
+   * addressed, only compared — and a listing must not fail over a property
+   * that is compared, nor may that property be kept raw, since a raw foreign
+   * URL compares unequal to every principal and would turn the user's own
+   * calendars into shares. So a server naming its owner on another authority
+   * — a proxy that rewrites the host it advertises, say — is a server whose
+   * owner cannot be compared: null, said at debug, and the collection stays
+   * the user's own unless its privilege set says otherwise.
+   *
+   * @param endpoint the declared server, for href resolution
+   * @param ownerHref the owner href the server answered, not blank
+   * @return the owner as a server-absolute raw path, or null when it names
+   *         another host
+   */
+  private String ownerPathOf(CalDavEndpoint endpoint, String ownerHref) {
+    try {
+      return asPath(endpoint, ownerHref);
+    } catch (CalDavException e) {
+      LOG.debug("The owner {} answered by the calendar server names another host and cannot be compared; it is left unknown",
+                ownerHref);
+      return null;
+    }
   }
 
   /**
@@ -1011,6 +1091,13 @@ public class HttpCalDavClient implements CalDavClient {
    * set — BlueMind answers it for an absent object, and treating that as an
    * absent server would abandon passes against a server that is there.
    *
+   * <p>
+   * A 403 becomes the narrower {@link CalDavForbiddenException}: the server
+   * took the credentials and refused the resource, which on a write is
+   * "not yours to change" and is known after one attempt (EXO-90235). Only a
+   * write verb can reach this branch with a 403 — the read verbs classify
+   * that status as a credential refusal first, in {@link #checkAuthStatus}.
+   *
    * @param status the answered status
    * @param request the request it answers
    * @return the exception to throw
@@ -1019,6 +1106,9 @@ public class HttpCalDavClient implements CalDavClient {
     String message = String.format("The calendar server answered %s for %s %s", status, request.method(), request.uri());
     if (status == 502 || status == 503 || status == 504) {
       return new CalDavUnreachableException(message);
+    }
+    if (status == 403) {
+      return new CalDavForbiddenException(message);
     }
     return new CalDavException(message);
   }
