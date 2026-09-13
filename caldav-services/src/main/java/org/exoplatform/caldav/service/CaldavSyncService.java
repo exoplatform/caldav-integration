@@ -56,6 +56,7 @@ import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
@@ -271,6 +272,15 @@ public class CaldavSyncService {
    * by user and server — see {@link #warnOnceIfAccountIsShared}.
    */
   private final Set<String>               sharedAccountsSaid  = ConcurrentHashMap.newKeySet();
+
+  /**
+   * The shared collections already said, at info, to be left unmaterialised,
+   * keyed by user, server and collection — see {@link #skipShare}. Once per
+   * process rather than once per pass: the same colleague's calendar comes
+   * back in every listing, and a line per pass would say the same thing every
+   * five minutes for as long as the share lasts.
+   */
+  private final Set<String>               sharesSaid          = ConcurrentHashMap.newKeySet();
 
   /**
    * The pass running for a user, so two page loads a second apart do not run
@@ -1548,7 +1558,13 @@ public class CaldavSyncService {
 
   /**
    * Gives every remote calendar an eXo personal calendar, except the ones eXo
-   * put there itself.
+   * put there itself and the ones the server says are somebody else's.
+   *
+   * <p>
+   * The principal is asked once here, for the whole listing, and handed to
+   * {@link CalendarCollection#isSharedWith(String)} per collection: it is one
+   * fact about the account, not one per calendar, and asking it per
+   * collection would cost a PROPFIND per calendar per pass.
    *
    * @param userIdentityId identity of the user
    * @param username the user's login
@@ -1562,8 +1578,11 @@ public class CaldavSyncService {
     CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
     List<CalendarCollection> collections;
     String home;
+    String principal;
     try {
-      home = calDavClient.discoverCalendarHome(endpoint);
+      CalendarHome account = calDavClient.discoverHome(endpoint);
+      home = account.href();
+      principal = account.principal();
       collections = calDavClient.listCalendars(endpoint, home);
     } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
       // Not swallowed with the rest, and for the same reason in both cases:
@@ -1597,12 +1616,79 @@ public class CaldavSyncService {
         LOG.debug("Collection {} declares no VEVENT support and is not a calendar to materialise", collection.href());
         continue;
       }
+      if (collection.isSharedWith(principal)) {
+        skipShare(userIdentityId, serverId, principal, collection);
+        continue;
+      }
       materialise(userIdentityId, username, serverId, collection);
     }
     // Handed on rather than listed a second time: the import needs each
     // collection's ctag to decide whether it has anything to read, and one
     // PROPFIND already carries them all.
     return collections;
+  }
+
+  /**
+   * Leaves a collection somebody else owns, or the user may only read, where
+   * it is — and says so once.
+   *
+   * <p>
+   * The defect this closes (EXO-90235): after a colleague granted the user
+   * read access on her calendar, Stalwart listed it inside the user's own
+   * home, the pass materialised it as the user's own calendar with full edit
+   * rights, imported her fourteen events as theirs, and every edit they then
+   * made was pushed back into her collection and refused with 403. Nothing
+   * about that collection was the user's: the server had named her as owner
+   * and answered a read-only privilege set, and the pass had read neither.
+   *
+   * <p>
+   * <b>Skipped, not adopted read-only.</b> A materialised calendar is one
+   * agenda lets its owner edit — a personal calendar has no read-only shape
+   * on that side, and giving it one is an agenda schema and ACL change this
+   * fix does not make. What the user keeps instead is the path that already
+   * exists for a collection eXo does not bind: the read-through lists it as a
+   * read-only remote calendar and serves its events live
+   * ({@code CaldavReadService}), which is exactly what it did before this
+   * pass ran and materialised it away. The three paths now agree on one
+   * predicate: a share is never bound here, is listed read-only there, and
+   * — being unbound — is served there.
+   *
+   * <p>
+   * <b>A share already materialised stays as it is.</b> This runs after
+   * {@link #isAlreadyOurs}, so a collection an earlier pass bound before
+   * ownership was read keeps its calendar and its binding; deleting or
+   * converting a user's calendar is not a decision a sweep takes on its own.
+   * What changes for such a calendar is the push: a write the server refuses
+   * with 403 is now given up on at once rather than retried
+   * ({@code CaldavEventPropagationService}). Cleaning those calendars up is a
+   * migration question left to a human.
+   *
+   * <p>
+   * Said once per collection per process at info, and at debug after that:
+   * the share comes back in every listing, and the line exists to explain
+   * why a calendar the user can see under Remote never becomes one of their
+   * own, not to repeat it every five minutes.
+   *
+   * @param userIdentityId identity of the user whose home listed it
+   * @param serverId the declared server registration
+   * @param principal the user's own principal, as the server named it; may be
+   *          null when the server named none
+   * @param collection the collection the server says is not the user's own
+   */
+  private void skipShare(long userIdentityId, long serverId, String principal, CalendarCollection collection) {
+    String key = userIdentityId + ":" + serverId + ":" + CaldavSyncStorage.canonicalHref(collection.href());
+    String why = StringUtils.isNotBlank(collection.owner()) ? "owned by " + collection.owner() : "owner not stated";
+    why += collection.privilegesAnswered() ? (collection.writable() ? ", writable" : ", read-only") : ", privileges not stated";
+    if (sharesSaid.add(key)) {
+      LOG.info("Collection {} is shared with user {} ({}; the account's principal is {}) and is not materialised as their"
+          + " own calendar; it stays a read-only remote calendar and its events are served from the server",
+               collection.href(),
+               userIdentityId,
+               why,
+               StringUtils.defaultIfBlank(principal, "not stated"));
+    } else {
+      LOG.debug("Collection {} is still shared with user {} ({}) and is still not materialised", collection.href(), userIdentityId, why);
+    }
   }
 
   /**
