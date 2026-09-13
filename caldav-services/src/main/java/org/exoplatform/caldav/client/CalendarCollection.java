@@ -183,6 +183,31 @@ public record CalendarCollection(String href,
   }
 
   /**
+   * The owner the server named, when it is somebody other than the user
+   * listing the collection — the principal worth naming as "who shared
+   * this" (EXO-90237).
+   *
+   * <p>
+   * The same comparison as the owner signal of {@link #isSharedWith(String)},
+   * answered as a path rather than a boolean. Needed because a collection can
+   * be a share by the <em>privilege</em> signal alone while still naming the
+   * user themself as owner — a calendar under their own home the server will
+   * not let them write — and naming that owner would tell the user the
+   * calendar was shared by themself. Null when the server named no owner,
+   * when the account's own principal is unknown (nothing to compare against,
+   * so nobody is named rather than possibly the user), and when the owner is
+   * the user.
+   *
+   * @param currentUserPrincipal the listing account's principal path, may be
+   *          null or blank
+   * @return the owner's server-absolute raw path when it names another
+   *         principal, else null
+   */
+  public String ownerIfAnother(String currentUserPrincipal) {
+    return isOwnedByAnother(currentUserPrincipal) ? owner : null;
+  }
+
+  /**
    * Whether the server names an owner other than the user listing it.
    *
    * @param currentUserPrincipal the listing account's principal path, may be
