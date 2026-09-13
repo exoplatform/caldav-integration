@@ -607,8 +607,8 @@ public class CaldavReadServiceTest {
   public void aColleaguesExoCalendarOnBlueMindIsSharedAndNamesTheColleague() {
     givenCalendars(owned(CAL2_UNDER_OWN_HOME, "CAL2", PRINCIPAL, true, true));
     when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME))).thenReturn(true);
-    when(caldavOutboundService.exportingUserOf(SERVER, CAL2_UNDER_OWN_HOME)).thenReturn(1L);
-    when(identityManager.getIdentity("1")).thenReturn(user("1", "root", "Root Root"));
+    when(caldavOutboundService.exportingUserOf(SERVER, CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME))).thenReturn(1L);
+    when(identityManager.getIdentity(1L)).thenReturn(user("1", "root", "Root Root"));
 
     RemoteCalendar cal2 = service.listCalendars(USER, LOGIN).calendars().get(0);
 
@@ -629,8 +629,8 @@ public class CaldavReadServiceTest {
   public void aColleaguesExoCalendarOnStalwartIsNamedFromThePairNotThePrincipal() {
     givenCalendars(owned(CAL2_AT_ALICES_PATH, "CAL2", ALICE, true, false));
     when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(CAL2_AT_ALICES_PATH))).thenReturn(true);
-    when(caldavOutboundService.exportingUserOf(SERVER, CAL2_AT_ALICES_PATH)).thenReturn(1L);
-    when(identityManager.getIdentity("1")).thenReturn(user("1", "root", "Root Root"));
+    when(caldavOutboundService.exportingUserOf(SERVER, CaldavSyncStorage.canonicalHref(CAL2_AT_ALICES_PATH))).thenReturn(1L);
+    when(identityManager.getIdentity(1L)).thenReturn(user("1", "root", "Root Root"));
 
     RemoteCalendar cal2 = service.listCalendars(USER, LOGIN).calendars().get(0);
 
@@ -685,6 +685,26 @@ public class CaldavReadServiceTest {
   }
 
   /**
+   * A calendar under the user's own home that the server will not let them
+   * write, naming them as owner: a share by the privilege signal alone, and
+   * nobody is named for it — "shared by yourself" would be the one wrong
+   * answer, and the user's own principal is never asked its name.
+   */
+  @Test
+  public void aShareByPrivilegeAloneWhoseOwnerIsTheUserNamesNobody() {
+    givenCalendars(owned("/dav/calendars/john/locked/", "Locked", PRINCIPAL, true, false));
+
+    RemoteCalendar locked = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertTrue(locked.isReadOnly());
+    assertTrue(locked.isShared(), "the server withheld write: somebody else's by its word (EXO-90235)");
+    assertNull(locked.getOwnerIdentityId());
+    assertNull(locked.getOwnerUsername());
+    assertNull(locked.getOwnerDisplayName());
+    verify(calDavClient, never()).readDisplayName(any(), anyString());
+  }
+
+  /**
    * A colleague the registry no longer knows leaves the share a share, with
    * nobody named — never an error, never the viewer.
    */
@@ -692,8 +712,8 @@ public class CaldavReadServiceTest {
   public void aColleagueTheRegistryNoLongerKnowsLeavesTheShareUnnamed() {
     givenCalendars(owned(CAL2_UNDER_OWN_HOME, "CAL2", PRINCIPAL, true, true));
     when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME))).thenReturn(true);
-    when(caldavOutboundService.exportingUserOf(SERVER, CAL2_UNDER_OWN_HOME)).thenReturn(1L);
-    when(identityManager.getIdentity("1")).thenReturn(null);
+    when(caldavOutboundService.exportingUserOf(SERVER, CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME))).thenReturn(1L);
+    when(identityManager.getIdentity(1L)).thenReturn(null);
 
     RemoteCalendarsRead read = service.listCalendars(USER, LOGIN);
     RemoteCalendar cal2 = read.calendars().get(0);

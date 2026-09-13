@@ -163,6 +163,7 @@ public class CaldavReadService {
       // principal the server returned — and is nobody when neither can say.
       CalendarOwner owner = caldavCalendarOwnerService.ownerOf(serverId(settings),
                                                                endpoint,
+                                                               listing.principal(),
                                                                ownership,
                                                                collection,
                                                                principalNames);

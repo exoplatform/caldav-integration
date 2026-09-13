@@ -24,8 +24,8 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import org.exoplatform.caldav.model.RemoteCalendar;
 import org.exoplatform.caldav.model.RemoteCalendarsRead;
@@ -37,15 +37,18 @@ import org.exoplatform.caldav.model.RemoteCalendarsRead;
  * caught here rather than in a browser.
  *
  * <p>
- * Serialised with a plain Jackson mapper on default settings, which is what
- * the platform's Spring MVC does with a Lombok bean: every property present,
- * an unknown owner spelled {@code null} and never omitted — the connector
- * copies the entry through unchanged, and agenda tests the four fields for
- * null or absence alike.
+ * Serialised with Jackson 3 ({@code tools.jackson}), the engine the
+ * platform's Spring MVC serves this endpoint with (Spring Boot 4 —
+ * {@code spring-boot-starter-jackson} is on this module's classpath), on a
+ * default mapper: every property present, an unknown owner spelled
+ * {@code null} and never omitted — the connector copies the entry through
+ * unchanged, and agenda tests the four fields for null or absence alike.
+ * The three {@code spring.jackson.*} keys the platform sets concern
+ * primitives-from-null and enum spelling, neither of which this bean has.
  */
 public class RemoteCalendarWireShapeTest {
 
-  private final ObjectMapper mapper = new ObjectMapper();
+  private final JsonMapper mapper = JsonMapper.builder().build();
 
   /**
    * CAL2 as eric receives it: shared, owned by root, named in full.

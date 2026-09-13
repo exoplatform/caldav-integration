@@ -26,6 +26,7 @@ import org.springframework.stereotype.Component;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -105,6 +106,11 @@ public class CaldavCalendarOwnerService {
    * @param serverId the declared server registration the account is on
    * @param endpoint the account's endpoint, which a principal is asked
    *          through — never another authority
+   * @param principal the account's own {@code current-user-principal}, as
+   *          the discovery walk answered it; null when the server named none.
+   *          What a server-named owner is compared against, so that a share
+   *          by privilege alone whose owner is the user themself names nobody
+   *          rather than the user
    * @param ownership whose the collection is, as
    *          {@link CaldavOutboundService#ownershipOf} answered
    * @param collection the listed collection
@@ -117,14 +123,21 @@ public class CaldavCalendarOwnerService {
    */
   public CalendarOwner ownerOf(long serverId,
                                CalDavEndpoint endpoint,
+                               String principal,
                                CollectionOwnership ownership,
                                CalendarCollection collection,
                                Map<String, String> principalNames) {
     if (ownership == CollectionOwnership.COLLEAGUES_EXO_CALENDAR) {
-      return colleagueBehind(serverId, collection.href());
+      // The canonical path, as the classification asked its question: the
+      // pair named is then the very one that made the collection a
+      // colleague's, by construction and not only in practice.
+      return colleagueBehind(serverId, CaldavSyncStorage.canonicalHref(collection.href()));
     }
     if (ownership == CollectionOwnership.SHARED) {
-      return principalNamed(endpoint, collection.owner(), principalNames);
+      // Only an owner that is somebody else. A collection is a share by the
+      // privilege signal alone when the server withholds write while naming
+      // the user as owner; naming that owner would say "shared by yourself".
+      return principalNamed(endpoint, collection.ownerIfAnother(principal), principalNames);
     }
     return CalendarOwner.NONE;
   }
@@ -142,7 +155,7 @@ public class CaldavCalendarOwnerService {
    * viewer, which is the one wrong answer.
    *
    * @param serverId the declared server registration
-   * @param href the collection path
+   * @param href the collection path, canonical
    * @return the colleague, or {@link CalendarOwner#NONE}
    */
   private CalendarOwner colleagueBehind(long serverId, String href) {
@@ -150,7 +163,7 @@ public class CaldavCalendarOwnerService {
     if (userIdentityId == null) {
       return CalendarOwner.NONE;
     }
-    Identity identity = identityManager.getIdentity(String.valueOf(userIdentityId));
+    Identity identity = identityManager.getIdentity(userIdentityId.longValue());
     if (identity == null || identity.isDeleted() || StringUtils.isBlank(identity.getRemoteId())) {
       LOG.debug("The user {} whose calendar {} is shared is no longer known; the share is listed with no owner named",
                 userIdentityId,
@@ -179,10 +192,10 @@ public class CaldavCalendarOwnerService {
    *
    * @param endpoint the account's endpoint
    * @param ownerPath the owner principal as a server-absolute path, or null
-   *          when the server named none
+   *          when the server named none, or named the user themself
    * @param principalNames the listing's memo, keyed by principal path
-   * @return the owner by name, or {@link CalendarOwner#NONE} when the server
-   *         named no principal
+   * @return the owner by name, or {@link CalendarOwner#NONE} when there is
+   *         no other principal to name
    */
   private CalendarOwner principalNamed(CalDavEndpoint endpoint, String ownerPath, Map<String, String> principalNames) {
     if (StringUtils.isBlank(ownerPath)) {

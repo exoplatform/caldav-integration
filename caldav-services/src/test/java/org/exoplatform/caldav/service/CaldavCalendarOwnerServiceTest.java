@@ -22,7 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -44,6 +43,7 @@ import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.model.Profile;
 import org.exoplatform.social.core.manager.IdentityManager;
@@ -75,8 +75,14 @@ public class CaldavCalendarOwnerServiceTest {
   /** CAL2 as BlueMind lists it to eric, under his own home. */
   private static final String        CAL2        = "/dav/calendars/eric/exo-cal-" + CAL2_ANCHOR + "/";
 
+  /** CAL2's path as the classification asked about it: canonical. */
+  private static final String        CAL2_CANONICAL = CaldavSyncStorage.canonicalHref(CAL2);
+
   /** Eric's own principal, which BlueMind names as CAL2's owner. */
   private static final String        ERIC        = "/dav/principals/eric/";
+
+  /** Bob's own principal on Stalwart, the viewer of Alice's share. */
+  private static final String        BOB         = "/dav/pal/bob%40stalwart.local/";
 
   /** Alice's principal as Stalwart spells it, login percent-encoded. */
   private static final String        ALICE       = "/dav/pal/alice%40stalwart.local/";
@@ -109,15 +115,16 @@ public class CaldavCalendarOwnerServiceTest {
 
   /**
    * CAL2: the owner is root, named by identity, login and full name, from
-   * the pair this deployment holds — and the server, which names eric as
-   * owner, is not asked.
+   * the pair this deployment holds — asked for by the canonical path the
+   * classification used — and the server, which names eric as owner, is
+   * not asked.
    */
   @Test
   public void aColleaguesExoCalendarNamesTheColleagueFromThePairNotFromTheServer() {
-    when(caldavOutboundService.exportingUserOf(SERVER, CAL2)).thenReturn(ROOT);
-    when(identityManager.getIdentity("1")).thenReturn(user("1", "root", "Root Root"));
+    when(caldavOutboundService.exportingUserOf(SERVER, CAL2_CANONICAL)).thenReturn(ROOT);
+    when(identityManager.getIdentity(1L)).thenReturn(user("1", "root", "Root Root"));
 
-    CalendarOwner owner = service.ownerOf(SERVER, endpoint, CollectionOwnership.COLLEAGUES_EXO_CALENDAR, listed(CAL2, ERIC), principalNames);
+    CalendarOwner owner = ownerOf(ERIC, CollectionOwnership.COLLEAGUES_EXO_CALENDAR, listed(CAL2, ERIC));
 
     assertEquals(ROOT, owner.identityId());
     assertEquals("root", owner.username());
@@ -132,11 +139,10 @@ public class CaldavCalendarOwnerServiceTest {
    */
   @Test
   public void aColleagueTheRegistryNoLongerKnowsNamesNobody() {
-    when(caldavOutboundService.exportingUserOf(SERVER, CAL2)).thenReturn(ROOT);
-    when(identityManager.getIdentity("1")).thenReturn(null);
+    when(caldavOutboundService.exportingUserOf(SERVER, CAL2_CANONICAL)).thenReturn(ROOT);
+    when(identityManager.getIdentity(1L)).thenReturn(null);
 
-    assertSame(CalendarOwner.NONE,
-               service.ownerOf(SERVER, endpoint, CollectionOwnership.COLLEAGUES_EXO_CALENDAR, listed(CAL2, ERIC), principalNames));
+    assertSame(CalendarOwner.NONE, ownerOf(ERIC, CollectionOwnership.COLLEAGUES_EXO_CALENDAR, listed(CAL2, ERIC)));
     verify(calDavClient, never()).readDisplayName(any(), anyString());
   }
 
@@ -145,13 +151,12 @@ public class CaldavCalendarOwnerServiceTest {
    */
   @Test
   public void aDeletedColleagueNamesNobody() {
-    when(caldavOutboundService.exportingUserOf(SERVER, CAL2)).thenReturn(ROOT);
+    when(caldavOutboundService.exportingUserOf(SERVER, CAL2_CANONICAL)).thenReturn(ROOT);
     Identity gone = user("1", "root", "Root Root");
     gone.setDeleted(true);
-    when(identityManager.getIdentity("1")).thenReturn(gone);
+    when(identityManager.getIdentity(1L)).thenReturn(gone);
 
-    assertSame(CalendarOwner.NONE,
-               service.ownerOf(SERVER, endpoint, CollectionOwnership.COLLEAGUES_EXO_CALENDAR, listed(CAL2, ERIC), principalNames));
+    assertSame(CalendarOwner.NONE, ownerOf(ERIC, CollectionOwnership.COLLEAGUES_EXO_CALENDAR, listed(CAL2, ERIC)));
   }
 
   /**
@@ -160,11 +165,10 @@ public class CaldavCalendarOwnerServiceTest {
    */
   @Test
   public void aPairThatVanishedNamesNobody() {
-    when(caldavOutboundService.exportingUserOf(SERVER, CAL2)).thenReturn(null);
+    when(caldavOutboundService.exportingUserOf(SERVER, CAL2_CANONICAL)).thenReturn(null);
 
-    assertSame(CalendarOwner.NONE,
-               service.ownerOf(SERVER, endpoint, CollectionOwnership.COLLEAGUES_EXO_CALENDAR, listed(CAL2, ERIC), principalNames));
-    verify(identityManager, never()).getIdentity(anyString());
+    assertSame(CalendarOwner.NONE, ownerOf(ERIC, CollectionOwnership.COLLEAGUES_EXO_CALENDAR, listed(CAL2, ERIC)));
+    verify(identityManager, never()).getIdentity(anyLong());
   }
 
   /**
@@ -173,10 +177,10 @@ public class CaldavCalendarOwnerServiceTest {
    */
   @Test
   public void aColleagueWithNoFullNameIsNamedByTheirLogin() {
-    when(caldavOutboundService.exportingUserOf(SERVER, CAL2)).thenReturn(ROOT);
-    when(identityManager.getIdentity("1")).thenReturn(user("1", "root", " "));
+    when(caldavOutboundService.exportingUserOf(SERVER, CAL2_CANONICAL)).thenReturn(ROOT);
+    when(identityManager.getIdentity(1L)).thenReturn(user("1", "root", " "));
 
-    CalendarOwner owner = service.ownerOf(SERVER, endpoint, CollectionOwnership.COLLEAGUES_EXO_CALENDAR, listed(CAL2, ERIC), principalNames);
+    CalendarOwner owner = ownerOf(ERIC, CollectionOwnership.COLLEAGUES_EXO_CALENDAR, listed(CAL2, ERIC));
 
     assertEquals("root", owner.username());
     assertEquals("root", owner.displayName());
@@ -192,13 +196,13 @@ public class CaldavCalendarOwnerServiceTest {
   public void aServerReportedShareNamesTheOwnerByThePrincipalsDisplayName() {
     when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
 
-    CalendarOwner owner = service.ownerOf(SERVER, endpoint, CollectionOwnership.SHARED, listed(ALICES, ALICE), principalNames);
+    CalendarOwner owner = ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
 
     assertNull(owner.identityId());
     assertNull(owner.username());
     assertEquals("Alice", owner.displayName());
     verify(caldavOutboundService, never()).exportingUserOf(anyLong(), anyString());
-    verify(identityManager, never()).getIdentity(anyString());
+    verify(identityManager, never()).getIdentity(anyLong());
   }
 
   /**
@@ -210,8 +214,7 @@ public class CaldavCalendarOwnerServiceTest {
   public void aPrincipalWithNoDisplayNameIsNamedByItsDecodedLastSegment() {
     when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn(null);
 
-    assertEquals("alice@stalwart.local",
-                 service.ownerOf(SERVER, endpoint, CollectionOwnership.SHARED, listed(ALICES, ALICE), principalNames).displayName());
+    assertEquals("alice@stalwart.local", ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)).displayName());
   }
 
   /**
@@ -221,8 +224,7 @@ public class CaldavCalendarOwnerServiceTest {
   public void aBlankDisplayNameFallsBackToThePathToo() {
     when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("  ");
 
-    assertEquals("alice@stalwart.local",
-                 service.ownerOf(SERVER, endpoint, CollectionOwnership.SHARED, listed(ALICES, ALICE), principalNames).displayName());
+    assertEquals("alice@stalwart.local", ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)).displayName());
   }
 
   /**
@@ -232,44 +234,38 @@ public class CaldavCalendarOwnerServiceTest {
   @Test
   public void aPrincipalThatCannotBeAskedIsNamedByItsPathAndTheListingGoesOn() {
     when(calDavClient.readDisplayName(endpoint, ALICE)).thenThrow(new CalDavUnreachableException("down", null));
-    assertEquals("alice@stalwart.local",
-                 service.ownerOf(SERVER, endpoint, CollectionOwnership.SHARED, listed(ALICES, ALICE), principalNames).displayName());
+    assertEquals("alice@stalwart.local", ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)).displayName());
 
     // Re-stubbed with doThrow: a when(...) on a mock already stubbed to throw
     // would throw from inside the when.
-    Map<String, String> fresh = new HashMap<>();
+    principalNames = new HashMap<>();
     doThrow(new CalDavException("403")).when(calDavClient).readDisplayName(endpoint, ALICE);
-    assertEquals("alice@stalwart.local",
-                 service.ownerOf(SERVER, endpoint, CollectionOwnership.SHARED, listed(ALICES, ALICE), fresh).displayName());
+    assertEquals("alice@stalwart.local", ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)).displayName());
 
-    Map<String, String> another = new HashMap<>();
+    principalNames = new HashMap<>();
     doThrow(new IllegalStateException("unexpected")).when(calDavClient).readDisplayName(endpoint, ALICE);
-    assertEquals("alice@stalwart.local",
-                 service.ownerOf(SERVER, endpoint, CollectionOwnership.SHARED, listed(ALICES, ALICE), another).displayName());
+    assertEquals("alice@stalwart.local", ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)).displayName());
   }
 
   /**
    * One PROPFIND per distinct owner within a listing: Alice's three shares
-   * ask her name once, and Bob's ask his once — the memo is per principal,
-   * not per listing.
+   * ask her name once, and Carol's ask hers once — the memo is per
+   * principal, not per listing.
    */
   @Test
   public void onePrincipalIsAskedOncePerListingHoweverManyCalendarsItOwns() {
+    String carol = "/dav/pal/carol%40stalwart.local/";
     when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
-    when(calDavClient.readDisplayName(endpoint, "/dav/pal/bob%40stalwart.local/")).thenReturn("Bob");
+    when(calDavClient.readDisplayName(endpoint, carol)).thenReturn("Carol");
 
-    service.ownerOf(SERVER, endpoint, CollectionOwnership.SHARED, listed(ALICES, ALICE), principalNames);
-    service.ownerOf(SERVER, endpoint, CollectionOwnership.SHARED, listed("/dav/cal/alice%40stalwart.local/work/", ALICE), principalNames);
-    service.ownerOf(SERVER, endpoint, CollectionOwnership.SHARED, listed("/dav/cal/alice%40stalwart.local/home/", ALICE), principalNames);
-    CalendarOwner bob = service.ownerOf(SERVER,
-                                        endpoint,
-                                        CollectionOwnership.SHARED,
-                                        listed("/dav/cal/bob%40stalwart.local/default/", "/dav/pal/bob%40stalwart.local/"),
-                                        principalNames);
+    ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+    ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/alice%40stalwart.local/work/", ALICE));
+    ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/alice%40stalwart.local/home/", ALICE));
+    CalendarOwner carols = ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/carol%40stalwart.local/default/", carol));
 
     verify(calDavClient, times(1)).readDisplayName(endpoint, ALICE);
-    verify(calDavClient, times(1)).readDisplayName(endpoint, "/dav/pal/bob%40stalwart.local/");
-    assertEquals("Bob", bob.displayName());
+    verify(calDavClient, times(1)).readDisplayName(endpoint, carol);
+    assertEquals("Carol", carols.displayName());
   }
 
   /**
@@ -280,8 +276,8 @@ public class CaldavCalendarOwnerServiceTest {
   public void aPrincipalThatFailedOnceIsNotAskedAgainInTheSameListing() {
     when(calDavClient.readDisplayName(endpoint, ALICE)).thenThrow(new CalDavException("refused"));
 
-    service.ownerOf(SERVER, endpoint, CollectionOwnership.SHARED, listed(ALICES, ALICE), principalNames);
-    service.ownerOf(SERVER, endpoint, CollectionOwnership.SHARED, listed("/dav/cal/alice%40stalwart.local/work/", ALICE), principalNames);
+    ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+    ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/alice%40stalwart.local/work/", ALICE));
 
     verify(calDavClient, times(1)).readDisplayName(endpoint, ALICE);
   }
@@ -292,8 +288,36 @@ public class CaldavCalendarOwnerServiceTest {
    */
   @Test
   public void aShareWithNoOwnerPrincipalNamesNobody() {
+    assertSame(CalendarOwner.NONE, ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, null)));
+    verify(calDavClient, never()).readDisplayName(any(), anyString());
+  }
+
+  /**
+   * A share by privilege alone whose owner is the user themself — a
+   * calendar under their own home the server will not let them write —
+   * names nobody: "shared by yourself" is the one wrong answer, and the
+   * user's own principal is never asked its name. Compared as paths, so a
+   * server spelling the two differently does not make the user a stranger.
+   */
+  @Test
+  public void aShareWhoseOwnerIsTheUserThemselfNamesNobody() {
+    assertSame(CalendarOwner.NONE, ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/bob%40stalwart.local/locked/", BOB)));
     assertSame(CalendarOwner.NONE,
-               service.ownerOf(SERVER, endpoint, CollectionOwnership.SHARED, listed(ALICES, null), principalNames));
+               ownerOf("/dav/pal/bob@stalwart.local",
+                       CollectionOwnership.SHARED,
+                       listed("/dav/cal/bob%40stalwart.local/locked/", BOB)),
+               "the same principal, decoded and without its slash");
+    verify(calDavClient, never()).readDisplayName(any(), anyString());
+  }
+
+  /**
+   * When the server named no principal for the account, a named owner
+   * cannot be told from the user themself, and nobody is named rather than
+   * possibly the user.
+   */
+  @Test
+  public void anOwnerCannotBeNamedWhenTheAccountsOwnPrincipalIsUnknown() {
+    assertSame(CalendarOwner.NONE, ownerOf(null, CollectionOwnership.SHARED, listed(ALICES, ALICE)));
     verify(calDavClient, never()).readDisplayName(any(), anyString());
   }
 
@@ -305,13 +329,23 @@ public class CaldavCalendarOwnerServiceTest {
    */
   @Test
   public void theUsersOwnCalendarsNameNobodyAndAskNobody() {
-    assertSame(CalendarOwner.NONE, service.ownerOf(SERVER, endpoint, CollectionOwnership.OWN, listed(ALICES, ALICE), principalNames));
-    assertSame(CalendarOwner.NONE,
-               service.ownerOf(SERVER, endpoint, CollectionOwnership.OWN_EXO_CALENDAR, listed(CAL2, ERIC), principalNames));
+    assertSame(CalendarOwner.NONE, ownerOf(BOB, CollectionOwnership.OWN, listed(ALICES, ALICE)));
+    assertSame(CalendarOwner.NONE, ownerOf(ERIC, CollectionOwnership.OWN_EXO_CALENDAR, listed(CAL2, ERIC)));
 
     verify(calDavClient, never()).readDisplayName(any(), anyString());
     verify(caldavOutboundService, never()).exportingUserOf(anyLong(), anyString());
-    verify(identityManager, never()).getIdentity(anyString());
+    verify(identityManager, never()).getIdentity(anyLong());
+  }
+
+  /**
+   * @param principal the account's own principal, as the discovery walk
+   *          answered it
+   * @param ownership whose the collection is
+   * @param collection the listed collection
+   * @return the owner, resolved with this test's memo
+   */
+  private CalendarOwner ownerOf(String principal, CollectionOwnership ownership, CalendarCollection collection) {
+    return service.ownerOf(SERVER, endpoint, principal, ownership, collection, principalNames);
   }
 
   /**
