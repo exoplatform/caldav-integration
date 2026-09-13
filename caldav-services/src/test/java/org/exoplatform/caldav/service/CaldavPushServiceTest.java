@@ -131,6 +131,40 @@ public class CaldavPushServiceTest {
   /** A second collection extending the same answer, so ambiguity can be pinned. */
   private static final String        SECOND_DEFAULT = "/dav/calendars/john/calendar:Shared:john/";
 
+  /**
+   * A colleague's default calendar shared into john's home: BlueMind's own
+   * marker, somebody else's uid. Extends the same answer, is not john's.
+   */
+  private static final String        COLLEAGUES_DEFAULT = "/dav/calendars/john/calendar:Default:jane/";
+
+  /** What the server reports as john's principal, on the same fixture. */
+  private static final String        PRINCIPAL      = "/dav/principals/john/";
+
+  /**
+   * The shape the field shows (EXO-90225): BlueMind identifies an account by
+   * a container uid, reports it as the last segment of the principal it
+   * names, and carries the same uid in the name of the account's own default
+   * calendar. The uid is the one from the warning that opened the task.
+   */
+  private static final String        BLUEMIND_UID       = "4C60FEDD-0562-4903-A524-E95E1CCBCDE0";
+
+  private static final String        BLUEMIND_PRINCIPAL = "/dav/principals/__uids__/" + BLUEMIND_UID + "/";
+
+  private static final String        BLUEMIND_HOME      = "/dav/calendars/__uids__/" + BLUEMIND_UID + "/";
+
+  /** What BlueMind's scheduling inbox answers for that account: no container uid at all. */
+  private static final String        BLUEMIND_NAMED     = BLUEMIND_HOME + "calendar";
+
+  /** The account's own calendar, as its home lists it. */
+  private static final String        BLUEMIND_OWN       = BLUEMIND_HOME + "calendar:Default:" + BLUEMIND_UID + "/";
+
+  /**
+   * A bookable resource BlueMind lists in the same home under the resource's
+   * own uid — the field's "Vehicule de pool 1", whose uid prefix is the one
+   * observed and whose remainder is not.
+   */
+  private static final String        BLUEMIND_RESOURCE  = BLUEMIND_HOME + "calendar:7E3AE6F3-2C41-4B8D-9E07-6A1F3D5C8B29/";
+
   @Mock
   private CalDavClient               calDavClient;
 
@@ -508,6 +542,11 @@ public class CaldavPushServiceTest {
                                                                                                    calendar(LISTED_DEFAULT,
                                                                                                             "Personal")));
     when(calDavClient.discoverDefaultCalendar(any())).thenReturn(NAMED_DEFAULT);
+    // Stubbed, and stubbed to an answer the one candidate is named after, so
+    // that a service asking the principal on one candidate too still resolves
+    // the same calendar and is caught by the never() below — not ten lines
+    // earlier by the refusal an unstubbed null principal would cause.
+    lenient().when(calDavClient.discoverPrincipal(any())).thenReturn(PRINCIPAL);
 
     MirrorTarget target = service.ensureMirror(USER, "john");
 
@@ -518,29 +557,164 @@ public class CaldavPushServiceTest {
     assertEquals("Personal", target.name());
     verify(caldavConnectorStorage).saveMirrorCalendarHref(LISTED_DEFAULT, USER);
     verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
+    // One candidate leaves no tie to break: the principal is not asked for.
+    verify(calDavClient, never()).discoverPrincipal(any());
   }
 
   /**
-   * Two collections extending the path the account named is an account this
-   * rule cannot read, and it refuses rather than picking one.
+   * An account listing a second calendar beside its own is the ordinary
+   * BlueMind account, and its own default calendar is still resolved — to the
+   * one named after the uid the server itself reports for the account.
    */
   @Test
-  public void twoCandidatesForTheAccountsDefaultCalendarResolveToNeither() {
+  public void anAccountWithASecondCalendarStillResolvesItsOwnDefault() {
+    // The field, 2026-09-12 (EXO-90225): the home lists the user's own
+    // calendar:Default:<uid> AND a bookable resource, calendar:<other uid>,
+    // both extending the <home>/calendar the inbox names. Two extensions, so
+    // the one-candidate rule refused, and a user with two calendars received
+    // no copy at all. The tie is broken by the one name this class knows —
+    // :Default: followed by the uid the server reports as the principal — and
+    // only among collections the listing already holds. The resource is
+    // listed first, so order is proven not to be what decides.
+    givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
+    when(calDavClient.discoverCalendarHome(any())).thenReturn(BLUEMIND_HOME);
+    when(calDavClient.listCalendars(any(), eq(BLUEMIND_HOME))).thenReturn(List.of(calendar(BLUEMIND_RESOURCE,
+                                                                                                  "Vehicule de pool 1"),
+                                                                                         calendar(BLUEMIND_OWN,
+                                                                                                  "MEYER")));
+    when(calDavClient.discoverDefaultCalendar(any())).thenReturn(BLUEMIND_NAMED);
+    when(calDavClient.discoverPrincipal(any())).thenReturn(BLUEMIND_PRINCIPAL);
+
+    MirrorTarget target = service.ensureMirror(USER, "john");
+
+    assertEquals(BLUEMIND_OWN, target.href());
+    assertEquals("MEYER", target.name());
+    verify(caldavConnectorStorage).saveMirrorCalendarHref(BLUEMIND_OWN, USER);
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
+    // Resolved, so nothing to announce: the warning is the unresolved edge.
+    verify(caldavServerService, never()).resolveServerUrl(anyLong());
+  }
+
+  /**
+   * Two collections extending the path the account named, neither of them
+   * named after the account, is an account this rule cannot read: it refuses
+   * rather than picking one, and it still says so.
+   */
+  @Test
+  public void twoCandidatesNeitherTheAccountsOwnResolveToNeitherAndStillWarn() {
     // A wrong answer here files somebody's meetings into a calendar nobody
-    // chose. Ambiguity is therefore not a near-miss to arbitrate: it ends the
-    // same way naming nothing does.
+    // chose. The principal is asked, and it settles nothing: one candidate
+    // carries the marker with a colleague's uid, the other john's uid without
+    // the marker. Ambiguity that survives the question is not a near-miss to
+    // arbitrate: it ends the same way naming nothing does — and out loud,
+    // since EXO-89799 paid for that silence once. Resolving the declared
+    // address is what the one warning needs and nothing else does, so that
+    // call is the warning's witness.
     givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
     when(calDavClient.listCalendars(any(), eq(HOME)))
-                                                                              .thenReturn(List.of(calendar(LISTED_DEFAULT,
+                                                                              .thenReturn(List.of(calendar(COLLEAGUES_DEFAULT,
+                                                                                                           "Jane"),
+                                                                                                  calendar(SECOND_DEFAULT,
+                                                                                                           "Shared")));
+    when(calDavClient.discoverDefaultCalendar(any())).thenReturn(NAMED_DEFAULT);
+    when(calDavClient.discoverPrincipal(any())).thenReturn(PRINCIPAL);
+
+    CaldavPushException failure;
+    String warned;
+    try (LogRecorder log = new LogRecorder(CaldavPushService.class)) {
+      failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
+      warned = theOneWarning(log);
+    }
+
+    assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
+    verify(caldavConnectorStorage, never()).saveMirrorCalendarHref(anyString(), anyLong());
+    verify(caldavServerService, times(1)).resolveServerUrl(SERVER);
+    // The one signal an operator gets must name this refusal, not the other
+    // one: the home DOES list the named calendar, twice over. Read from the
+    // log because nothing else carries the reason — the exception code is the
+    // same for every way of not resolving, by design.
+    assertTrue(warned.contains("extends by 2 collections, of which 0 carry the account's own marker :Default:john"),
+               warned);
+    assertFalse(warned.contains("does not list"), warned);
+  }
+
+  /**
+   * Two collections extending the path the account named, and a server that
+   * names no principal to tell them apart by, is an account this rule cannot
+   * read either: it refuses rather than guessing, and it says which question
+   * went unanswered.
+   */
+  @Test
+  public void twoCandidatesAndNoPrincipalResolveToNeitherAndStillWarn() {
+    // The branch every mocked test in this suite silently leans on: an
+    // unstubbed discoverPrincipal answers null, and the contract allows an
+    // implementer to. Taking the first candidate here — the arbitrary guess
+    // the design forbids — left the whole suite green until this test, since
+    // nothing reached the branch on purpose. The warning names it, because an
+    // operator reading "no principal" looks at the server's authentication,
+    // and one reading "does not list" looks at a listing that is fine.
+    givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(LISTED_DEFAULT,
                                                                                                            "Personal"),
                                                                                                   calendar(SECOND_DEFAULT,
                                                                                                            "Shared")));
     when(calDavClient.discoverDefaultCalendar(any())).thenReturn(NAMED_DEFAULT);
+    when(calDavClient.discoverPrincipal(any())).thenReturn(null);
+
+    CaldavPushException failure;
+    String warned;
+    try (LogRecorder log = new LogRecorder(CaldavPushService.class)) {
+      failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
+      warned = theOneWarning(log);
+    }
+
+    assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
+    verify(caldavConnectorStorage, never()).saveMirrorCalendarHref(anyString(), anyLong());
+    verify(caldavServerService, times(1)).resolveServerUrl(SERVER);
+    assertTrue(warned.contains("extends by 2 collections, and the server names no principal"), warned);
+  }
+
+  /**
+   * A blank principal is no principal: the same refusal as null, so that an
+   * implementer answering an empty string cannot turn the marker into
+   * {@code :Default:} alone.
+   */
+  @Test
+  public void twoCandidatesAndABlankPrincipalResolveToNeither() {
+    // A blank answer, unguarded, would build the marker ":Default:" and match
+    // nothing — or, on a server naming a collection exactly that, match it:
+    // either way a resolution nobody asked for. Refused on the same branch
+    // as null, and pinned separately because isBlank and == null are not the
+    // same guard.
+    givenAServerWriting(MirrorTargetKind.MAIN_CALENDAR);
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(LISTED_DEFAULT,
+                                                                                                           "Personal"),
+                                                                                                  calendar(SECOND_DEFAULT,
+                                                                                                           "Shared")));
+    when(calDavClient.discoverDefaultCalendar(any())).thenReturn(NAMED_DEFAULT);
+    when(calDavClient.discoverPrincipal(any())).thenReturn("");
 
     CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.ensureMirror(USER, "john"));
 
     assertEquals(CaldavPushService.MAIN_CALENDAR_UNKNOWN, failure.getCode());
     verify(caldavConnectorStorage, never()).saveMirrorCalendarHref(anyString(), anyLong());
+    verify(caldavServerService, times(1)).resolveServerUrl(SERVER);
+  }
+
+  /**
+   * The one warning the push service wrote while a recorder was attached.
+   *
+   * @param log the recorder attached to the push service's logger
+   * @return the formatted text of the only WARN line recorded
+   * @throws AssertionError when none or several WARN lines were written
+   */
+  private static String theOneWarning(LogRecorder log) {
+    List<ILoggingEvent> warnings = log.events()
+                                      .stream()
+                                      .filter(recorded -> recorded.getLevel() == Level.WARN)
+                                      .toList();
+    assertEquals(1, warnings.size(), "one warning, found: " + warnings);
+    return warnings.get(0).getFormattedMessage();
   }
 
   /**
