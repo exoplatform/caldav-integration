@@ -35,7 +35,9 @@ import lombok.NoArgsConstructor;
  * is distinct from {@code readOnly}: a calendar of the user's own can be
  * read-only because the server grants no write, and a share is read-only
  * because it is somebody else's — agenda groups on the first and locks on
- * the second. The owner travels in three fields, all null when unknown. For
+ * the second. The owner travels in three fields, all null when unknown and
+ * <b>always null when {@code shared} is false</b> — the user's own calendar
+ * names nobody, read-only or not. For
  * a colleague's eXo calendar the deployment knows the owner as one of its
  * users, and names them by identity, login and full name; for a share the
  * server alone reported, only a display name is known — the owner
@@ -73,13 +75,15 @@ public class RemoteCalendar {
   /**
    * The social identity of the eXo user the calendar belongs to, when the
    * owner is a user of this deployment — a colleague whose eXo calendar
-   * reached the server through this connector; null otherwise.
+   * reached the server through this connector; null otherwise, and always
+   * null when {@code shared} is false.
    */
   private Long    ownerIdentityId;
 
   /**
    * That user's eXo login, under the same condition as
-   * {@code ownerIdentityId}; null otherwise.
+   * {@code ownerIdentityId}; null otherwise, and always null when
+   * {@code shared} is false.
    */
   private String  ownerUsername;
 
@@ -87,7 +91,8 @@ public class RemoteCalendar {
    * How to name the owner to the viewer: the eXo user's full name when the
    * owner is a user of this deployment; for a share the server alone
    * reported, the owner principal's display name, else the decoded last
-   * segment of the principal path; null when nobody can be named.
+   * segment of the principal path; null when nobody can be named, and
+   * always null when {@code shared} is false.
    */
   private String  ownerDisplayName;
 

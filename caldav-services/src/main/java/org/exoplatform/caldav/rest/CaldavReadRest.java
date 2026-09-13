@@ -175,7 +175,7 @@ public class CaldavReadRest {
           + "`ownerIdentityId` and `ownerUsername` only when the owner is a user of this deployment (a colleague's "
           + "eXo calendar), `ownerDisplayName` then that user's full name, or for a share the server alone reported "
           + "the owner principal's display name, else the decoded last segment of the principal path; all three "
-          + "null when nobody can be named.")
+          + "null when nobody can be named, and always null when `shared` is false.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The account's calendars, and whether the "
       + "listing failed") })
   public RemoteCalendarsRead calendars() {
