@@ -152,6 +152,16 @@ public class CaldavPushService {
   private static final Set<String> KNOWN_STATE_CODES = Set.of(NOT_CONNECTED, MAIN_CALENDAR_UNKNOWN, FOREIGN_COPY);
 
   /**
+   * The one name pattern this class knows, and only as a tie-break: BlueMind
+   * lists an account's own default calendar as
+   * <code>calendar:Default:&lt;uid&gt;</code>, the uid being the account's, and
+   * every other calendar it lists under the same home — a second one, a
+   * resource the user may book, a colleague's shared one — under another
+   * container uid. See {@link #principalsOwnAmong}.
+   */
+  private static final String      OWN_DEFAULT_MARKER = ":Default:";
+
+  /**
    * The codes that describe an attempt that failed — a refused save, a
    * conflict, rejected credentials, a collection the server would not make.
    *
@@ -1852,14 +1862,28 @@ public class CaldavPushService {
    * on being written where the administrator had stopped asking for them.
    *
    * <p>
-   * <b>What the second way keys on, and what it refuses.</b> Not a name
-   * pattern: nothing here knows the string {@code calendar:Default:}, and it
-   * would be worthless on the next server anyway. It keys on the server's own
-   * answer, and accepts a listed collection only when that collection's path
-   * <i>extends the answered one inside the same parent collection</i> — same
-   * home, same last path segment up to a suffix, no extra slash — and only when
-   * <b>exactly one</b> listed collection does. Two candidates is not a
-   * near-miss to arbitrate, it is an account this rule cannot read, and it
+   * <b>What the second way keys on, and what it refuses.</b> It keys on the
+   * server's own answer, and accepts a listed collection only when that
+   * collection's path <i>extends the answered one inside the same parent
+   * collection</i> — same home, same last path segment up to a suffix, no
+   * extra slash. One such collection is taken as it stands.
+   *
+   * <p>
+   * <b>Several is the ordinary account, not a corner.</b> A BlueMind home
+   * lists everything the account can write into — a second calendar of the
+   * user's own, a resource they may book — as <code>calendar:&lt;uid&gt;</code>
+   * beside <code>calendar:Default:&lt;uid&gt;</code>, and every one of them
+   * extends the same answered <code>calendar</code>. Refusing on two
+   * candidates, as this did until EXO-90225, silently switched the feature off
+   * for every user with more than one calendar. Among several, the one
+   * carrying the account's own <code>:Default:&lt;uid&gt;</code> marker is now
+   * taken — <i>own</i> meaning the uid the server itself reports as the
+   * current principal, asked of the server, never read off a calendar's name.
+   * That is one name pattern this class does know, and what makes it safe to
+   * know is what it is confined to: a tie-break among collections the listing
+   * already holds, never a way to admit one it does not, and never consulted
+   * when the listing leaves no tie. Nothing matching that shape, or two
+   * collections matching it, is still an account this rule cannot read, and it
    * refuses. So does an answer nothing extends, and so does no answer at all.
    *
    * <p>
@@ -1882,14 +1906,72 @@ public class CaldavPushService {
                                                       CalDavEndpoint endpoint,
                                                       List<CalendarCollection> calendars) {
     String named = calDavClient.discoverDefaultCalendar(endpoint);
-    Optional<CalendarCollection> resolved = findMirror(calendars, named, null).or(() -> extensionOf(calendars, named));
-    if (resolved.isPresent()) {
+    MainCalendarLookup lookup = findMirror(calendars, named, null).map(MainCalendarLookup::of)
+                                                                   .orElseGet(() -> extensionOf(calendars,
+                                                                                                named,
+                                                                                                endpoint));
+    if (lookup.resolved()) {
       // Out of the state: a later spell of it is worth saying again.
       unresolvedMainCalendars.remove(unresolvedKey(userIdentityId, settings));
-    } else {
-      announceUnresolvedMainCalendar(userIdentityId, settings, named);
+      return Optional.of(lookup.calendar());
     }
-    return resolved;
+    LOG.debug("The main calendar of user {} on CalDAV server {} is unresolved: the account {}",
+              userIdentityId,
+              settings.getServerId(),
+              lookup.refusal());
+    announceUnresolvedMainCalendar(userIdentityId, settings, lookup.refusal());
+    return Optional.empty();
+  }
+
+  /**
+   * What looking for the account's main calendar came to: the collection, or
+   * the one clause saying why none was taken.
+   *
+   * <p>
+   * The reason travels as a value rather than being logged where it is
+   * decided, because the place that decides it and the place that announces
+   * it speak at different levels: the resolvers say why at debug on every
+   * pass, and {@link #announceUnresolvedMainCalendar} says it once per
+   * transition at warn. Explained only at debug, the refusal this class
+   * creates when a home lists several candidates and none or several carry
+   * the account's marker reached production as "the home does not list it" —
+   * a warning that fires correctly and misdirects, which after EXO-89799 is
+   * the next failure along from silence.
+   *
+   * @param calendar the collection resolved, or null when none was
+   * @param refusal why none was, worded as the clause that follows "the
+   *          account of user N" in the one warning; null when one was
+   */
+  private record MainCalendarLookup(CalendarCollection calendar, String refusal) {
+
+    /**
+     * A lookup that resolved.
+     *
+     * @param calendar the collection taken
+     * @return the resolved lookup
+     */
+    static MainCalendarLookup of(CalendarCollection calendar) {
+      return new MainCalendarLookup(calendar, null);
+    }
+
+    /**
+     * A lookup that refused.
+     *
+     * @param refusal the clause saying why
+     * @return the refused lookup
+     */
+    static MainCalendarLookup refused(String refusal) {
+      return new MainCalendarLookup(null, refusal);
+    }
+
+    /**
+     * Whether a collection was taken.
+     *
+     * @return true when {@link #calendar()} is set
+     */
+    boolean resolved() {
+      return calendar != null;
+    }
   }
 
   /**
@@ -1904,31 +1986,121 @@ public class CaldavPushService {
    * one shape: a server that truncates its own collection's last path segment.
    *
    * <p>
-   * Ambiguity refuses. A wrong answer here files a user's meetings into a
-   * calendar nobody chose, which is worse than filing them nowhere and saying
-   * so; two candidates therefore end this the same way none does.
+   * Ambiguity refuses, after one question. A wrong answer here files a user's
+   * meetings into a calendar nobody chose, which is worse than filing them
+   * nowhere and saying so. Several candidates are therefore not arbitrated by
+   * order or by name alone: they are put to {@link #principalsOwnAmong}, which
+   * asks the server who the account is and takes the one candidate named
+   * after it, and anything short of that ends this the same way none does.
    *
    * @param calendars what the account's home holds, already listed
    * @param namedHref the href the account answered, may be null
-   * @return the single collection extending it, or empty
+   * @param endpoint the resolved server endpoint, asked for the principal
+   *          only when the listing leaves more than one candidate
+   * @return the single collection extending it, or the refusal saying why
+   *         none was taken — the href as the account answered it is kept in
+   *         that clause, since on a server whose answer does not match its own
+   *         listing it is the whole diagnosis
    */
-  private Optional<CalendarCollection> extensionOf(List<CalendarCollection> calendars, String namedHref) {
+  private MainCalendarLookup extensionOf(List<CalendarCollection> calendars,
+                                         String namedHref,
+                                         CalDavEndpoint endpoint) {
     String named = CaldavSyncStorage.canonicalHref(namedHref);
-    if (StringUtils.isBlank(named) || calendars == null) {
-      return Optional.empty();
+    if (StringUtils.isBlank(named)) {
+      return MainCalendarLookup.refused("names no default calendar at all");
     }
-    List<CalendarCollection> extensions = calendars.stream()
-                                                   .filter(CalendarCollection::holdsEvents)
-                                                   .filter(calendar -> extendsWithinSegment(CaldavSyncStorage.canonicalHref(calendar.href()),
-                                                                                            named))
-                                                   .toList();
-    if (extensions.size() != 1) {
-      LOG.debug("The default calendar {} the account names is extended by {} listed collections; none is taken",
-                named,
-                extensions.size());
-      return Optional.empty();
+    List<CalendarCollection> extensions = calendars == null ? List.of()
+                                                            : calendars.stream()
+                                                                       .filter(CalendarCollection::holdsEvents)
+                                                                       .filter(calendar -> extendsWithinSegment(CaldavSyncStorage.canonicalHref(calendar.href()),
+                                                                                                                named))
+                                                                       .toList();
+    if (extensions.size() == 1) {
+      return MainCalendarLookup.of(extensions.get(0));
     }
-    return Optional.of(extensions.get(0));
+    if (extensions.isEmpty()) {
+      return MainCalendarLookup.refused("names " + namedHref
+          + " as its default calendar, which its own calendar home neither lists nor extends");
+    }
+    return principalsOwnAmong(extensions, named, endpoint);
+  }
+
+  /**
+   * Among several listed collections extending the answered path, the one
+   * that is the account's own — by the server's word on who the account is.
+   *
+   * <p>
+   * <b>Two answers from the server, compared; nothing inferred from one.</b>
+   * The principal the server reports ({@code current-user-principal}) ends in
+   * the account's uid, and BlueMind names the account's own default calendar
+   * <code>calendar:Default:&lt;that uid&gt;</code> while every other calendar
+   * it lists under the same home carries another container's uid. So the
+   * candidate whose tail — the part beyond the answered path — is exactly
+   * {@link #OWN_DEFAULT_MARKER} followed by the reported uid is the account's
+   * own, and it is taken. The uid is asked of the server here rather than
+   * parsed out of the answered href or the home, so that a server whose paths
+   * happen to look alike cannot make one answer vouch for itself.
+   *
+   * <p>
+   * <b>What stays refused.</b> No candidate named after the principal, and
+   * more than one, both end in the refusal this fallback is built on — and
+   * so does a server that names no principal at all, a null or blank answer
+   * the {@link CalDavClient} contract allows an implementer instead of
+   * throwing. Each refusal carries its own reason out — how many candidates
+   * extended the path, how many carried the marker, what the marker was — so
+   * that {@link #mainCalendarOf} can say it at warn rather than "the home does
+   * not list it", which of this state is false. A colleague's default
+   * calendar shared into this home carries the colleague's uid and is never
+   * taken; a second calendar of the user's own, or a resource, carries its own
+   * container uid and is never taken either. Every candidate here was already
+   * in the account's listing — EXO-89760's rule that a destination is
+   * confirmed by that listing is not touched — and the marker only chooses
+   * between confirmed collections.
+   *
+   * @param extensions the listed collections extending the answered path, at
+   *          least two
+   * @param named the canonical path the account answered
+   * @param endpoint the resolved server endpoint
+   * @return the one candidate named after the principal, or the refusal
+   *         saying why none was taken
+   */
+  private MainCalendarLookup principalsOwnAmong(List<CalendarCollection> extensions,
+                                                String named,
+                                                CalDavEndpoint endpoint) {
+    String extended = "names " + named + " as its default calendar, which its own calendar home extends by "
+        + extensions.size() + " collections";
+    String principalId = lastSegmentOf(calDavClient.discoverPrincipal(endpoint));
+    if (StringUtils.isBlank(principalId)) {
+      return MainCalendarLookup.refused(extended + ", and the server names no principal to tell the account's own"
+          + " apart by");
+    }
+    String ownMarker = OWN_DEFAULT_MARKER + principalId;
+    List<CalendarCollection> own = extensions.stream()
+                                             .filter(calendar -> ownMarker.equalsIgnoreCase(CaldavSyncStorage.canonicalHref(calendar.href())
+                                                                                                             .substring(named.length())))
+                                             .toList();
+    if (own.size() != 1) {
+      return MainCalendarLookup.refused(extended + ", of which " + own.size() + " carry the account's own marker "
+          + ownMarker);
+    }
+    return MainCalendarLookup.of(own.get(0));
+  }
+
+  /**
+   * The last segment of a path — a principal's own identifier, as the
+   * server names it.
+   *
+   * @param path a server-absolute path, may be null or slash-terminated
+   * @return the segment after the last slash once a trailing slash is
+   *         dropped; null for a blank path, blank for a path with no slash —
+   *         either of which the caller treats as no principal
+   */
+  private String lastSegmentOf(String path) {
+    String canonical = CaldavSyncStorage.canonicalHref(path);
+    if (StringUtils.isBlank(canonical)) {
+      return null;
+    }
+    return StringUtils.substringAfterLast(canonical, "/");
   }
 
   /**
@@ -1967,26 +2139,31 @@ public class CaldavPushService {
    * calendar does resolve.
    *
    * <p>
-   * Names the user, the server and what was asked for, plus the href the
-   * account itself answered — that last one is the whole diagnosis on a server
-   * whose answer does not match its own listing, and there is no credential
-   * anywhere near it.
+   * Names the user, the server and what was asked for, plus the reason the
+   * resolvers carried out: the href the account itself answered — the whole
+   * diagnosis on a server whose answer does not match its own listing — and,
+   * when the home does list candidates, how many extended that href, how many
+   * carried the account's own marker and what the marker was. Those last
+   * facts are the diagnosis of the refusal EXO-90225 created, and at debug
+   * alone they left this line saying the home "does not list" a calendar it
+   * listed twice. No credential is anywhere near any of it.
    *
    * @param userIdentityId identity of the user
    * @param settings the connected account
-   * @param named the href the account answered, or null when it named none
+   * @param refusal why no calendar was taken, as the clause following "the
+   *          account of user N" — see {@link MainCalendarLookup#refusal()}
    */
-  private void announceUnresolvedMainCalendar(long userIdentityId, CaldavUserSetting settings, String named) {
+  private void announceUnresolvedMainCalendar(long userIdentityId, CaldavUserSetting settings, String refusal) {
     if (!unresolvedMainCalendars.add(unresolvedKey(userIdentityId, settings))) {
       return;
     }
     LOG.warn("CalDAV server {} ({}) is set to write meeting copies into each account's main calendar, and the account"
-        + " of user {} names {} as its default calendar, which its own calendar home does not list. No copy is written"
-        + " for them and the copies already written are not moved until this resolves.",
+        + " of user {} {}. No copy is written for them and the copies already written are not moved until this"
+        + " resolves.",
              settings.getServerId(),
              StringUtils.defaultIfBlank(declaredAddress(settings), "address unknown"),
              userIdentityId,
-             StringUtils.defaultIfBlank(named, "no calendar at all"));
+             refusal);
   }
 
   /**
