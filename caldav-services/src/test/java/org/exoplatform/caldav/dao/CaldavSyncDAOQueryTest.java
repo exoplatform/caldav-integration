@@ -493,6 +493,95 @@ public class CaldavSyncDAOQueryTest {
   }
 
   /**
+   * The user behind an exported calendar is named by its anchor, and named
+   * the same way on every listing: the active pair first, then the oldest.
+   */
+  @Test
+  public void theUserBehindAnExportedCalendarIsNamedByItsAnchorActiveFirstThenOldest() {
+    // The who-form of the anchor arm (EXO-90237), against the engine, with
+    // the ORDER BY it rests on. Two users holding one anchor on one server is
+    // a shape the schema allows and nothing produces on purpose; when it
+    // happens the owner named must not depend on row order, so the paused
+    // pair is inserted first — lowest id — and the active one must still win.
+    persistExoPair(USER_SIX, SHARED_SERVER, "c0ffee-twice", CalendarSyncStatus.PAUSED);
+    persistExoPair(USER_ONE, SHARED_SERVER, "c0ffee-twice", CalendarSyncStatus.ACTIVE);
+    // Nobody active: the oldest row is the one that has been true longest.
+    long oldest = persistExoPair(USER_EIGHT, SHARED_SERVER, "c0ffee-nobody-active", CalendarSyncStatus.LOCALLY_DELETED);
+    persistExoPair(USER_SIX, SHARED_SERVER, "c0ffee-nobody-active", CalendarSyncStatus.PAUSED);
+    // The same anchor on another server, and materialised here rather than
+    // exported: neither answers.
+    persistExoPair(9L, 99L, "c0ffee-twice", CalendarSyncStatus.ACTIVE);
+    persistPair(10L, SHARED_SERVER, SyncOrigin.REMOTE, "/dav/calendars/751E/private");
+
+    List<CaldavCalendarSyncEntity> named = calendarSyncDAO.findPairsByAnchorPreferring(SHARED_SERVER,
+                                                                                       SyncOrigin.EXO,
+                                                                                       "c0ffee-twice",
+                                                                                       CalendarSyncStatus.ACTIVE,
+                                                                                       PageRequest.of(0, 1));
+    assertEquals(1, named.size(), "a page of one names one");
+    assertEquals(USER_ONE, named.get(0).getUserIdentityId(), "the active pair, though it was inserted second");
+
+    List<CaldavCalendarSyncEntity> both = calendarSyncDAO.findPairsByAnchorPreferring(SHARED_SERVER,
+                                                                                      SyncOrigin.EXO,
+                                                                                      "c0ffee-twice",
+                                                                                      CalendarSyncStatus.ACTIVE,
+                                                                                      PageRequest.of(0, 10));
+    assertEquals(List.of(USER_ONE, USER_SIX), both.stream().map(CaldavCalendarSyncEntity::getUserIdentityId).toList(),
+                 "active first, the rest after");
+
+    List<CaldavCalendarSyncEntity> byAge = calendarSyncDAO.findPairsByAnchorPreferring(SHARED_SERVER,
+                                                                                       SyncOrigin.EXO,
+                                                                                       "c0ffee-nobody-active",
+                                                                                       CalendarSyncStatus.ACTIVE,
+                                                                                       PageRequest.of(0, 1));
+    assertEquals(oldest, byAge.get(0).getId(), "no active pair: the oldest row is named");
+
+    assertTrue(calendarSyncDAO.findPairsByAnchorPreferring(99L, SyncOrigin.EXO, "c0ffee-nobody-active", CalendarSyncStatus.ACTIVE,
+                                                           PageRequest.of(0, 1))
+                              .isEmpty(),
+               "the server predicate");
+    String materialisedAnchor = "anchor-10-" + "/dav/calendars/751E/private".hashCode();
+    assertTrue(calendarSyncDAO.findPairsByAnchorPreferring(SHARED_SERVER, SyncOrigin.EXO, materialisedAnchor, CalendarSyncStatus.ACTIVE,
+                                                           PageRequest.of(0, 1))
+                              .isEmpty(),
+               "the origin predicate: a REMOTE pair's anchor is not an export");
+  }
+
+  /**
+   * The user behind an exported calendar is named by the path its pair
+   * records when the slug is not its anchor, with the same pick.
+   */
+  @Test
+  public void theUserBehindAnExportedCalendarIsNamedByItsRecordedPathWithTheSamePick() {
+    // The who-form of the path arm (EXO-90237). Two users recorded at one
+    // published path is likelier than two at one anchor — the path is unique
+    // to nobody in the schema — so the pick is pinned here as well: the
+    // active pair, inserted second, is the one named.
+    String published = CaldavSyncStorage.canonicalHref(CaldavSyncServiceTest.RENAMED_BY_THE_SERVER);
+    persistExoPairAt(USER_SIX, SHARED_SERVER, "anchor-six", published, CalendarSyncStatus.PAUSED);
+    persistExoPairAt(USER_ONE, SHARED_SERVER, "anchor-one", published, CalendarSyncStatus.ACTIVE);
+    persistPair(USER_EIGHT, 99L, SyncOrigin.REMOTE, published);
+
+    List<CaldavCalendarSyncEntity> named = calendarSyncDAO.findPairsByRemoteHrefPreferring(SHARED_SERVER,
+                                                                                           SyncOrigin.EXO,
+                                                                                           published,
+                                                                                           CalendarSyncStatus.ACTIVE,
+                                                                                           PageRequest.of(0, 1));
+    assertEquals(1, named.size());
+    assertEquals(USER_ONE, named.get(0).getUserIdentityId(), "the active pair, though it was inserted second");
+    assertTrue(calendarSyncDAO.findPairsByRemoteHrefPreferring(SHARED_SERVER,
+                                                               SyncOrigin.EXO,
+                                                               CaldavSyncServiceTest.RENAMED_BY_THE_SERVER,
+                                                               CalendarSyncStatus.ACTIVE,
+                                                               PageRequest.of(0, 1))
+                              .isEmpty(),
+               "compared as stored: the caller strips the trailing slash");
+    assertTrue(calendarSyncDAO.findPairsByRemoteHrefPreferring(99L, SyncOrigin.EXO, published, CalendarSyncStatus.ACTIVE, PageRequest.of(0, 1))
+                              .isEmpty(),
+               "the REMOTE pair on the other server is neither an export nor on this server");
+  }
+
+  /**
    * @param userIdentityId the user whose calendar was exported
    * @param serverId the declared server
    * @param anchor the calendar's anchor, which the collection's slug carries

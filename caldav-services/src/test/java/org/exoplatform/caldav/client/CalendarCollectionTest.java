@@ -241,4 +241,23 @@ public class CalendarCollectionTest {
   private CalendarCollection collectionOf(String owner, boolean privilegesAnswered, boolean writable) {
     return new CalendarCollection(HREF, "Private", "ctag-1", "token-1", null, writable, Set.of("VEVENT"), owner, privilegesAnswered);
   }
+
+  // ------------------------------------ the owner worth naming, EXO-90237
+
+  /**
+   * The owner is answered as a path only when it is somebody else: the
+   * user's own principal, however the server spells it, is not an owner to
+   * name — a collection can be a share by the privilege signal while naming
+   * the user as owner, and that owner must not be shown as "who shared it".
+   * Unknown on either side names nobody.
+   */
+  @Test
+  public void theOwnerIsNamedOnlyWhenItIsSomebodyElse() {
+    assertEquals(ALICE, collectionOf(ALICE, true, false).ownerIfAnother(BOB), "another principal");
+    assertNull(collectionOf(BOB, true, false).ownerIfAnother(BOB), "the user, read-only: a share by privilege, no owner to name");
+    assertNull(collectionOf("/dav/pal/bob@stalwart.local", true, false).ownerIfAnother(BOB), "the user, spelled decoded and unslashed");
+    assertNull(collectionOf(null, true, false).ownerIfAnother(BOB), "no owner named");
+    assertNull(collectionOf(ALICE, true, false).ownerIfAnother(null), "no principal to compare against");
+    assertNull(collectionOf(ALICE, true, false).ownerIfAnother(" "), "a blank principal is none");
+  }
 }
