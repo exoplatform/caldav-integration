@@ -102,11 +102,16 @@ public class CaldavReadService {
     List<RemoteCalendar> calendars = new ArrayList<>();
     for (CalendarCollection collection : collections) {
       if (isExoCreated(collection.href())) {
-        // A collection eXo made, that eXo no longer has a binding for. It
-        // cannot be materialised — the sync refuses its own creations — so
-        // offering it here is offering something that can never become a
-        // calendar. They appear after a database is restored or reset while
-        // the account keeps what was pushed to it.
+        // A collection an eXo made, that this user has no binding for. Either
+        // this deployment's own, left behind when a database was restored or
+        // reset while the account kept what was pushed to it — the sync
+        // refuses to materialise those, so offering one here is offering
+        // something that can never become a calendar; or another eXo
+        // deployment's, which the sync adopts as an ordinary remote calendar
+        // on its next pass (EXO-90226) and which is then bound, and so
+        // excluded from this list by the binding rather than by the path.
+        // Neither belongs under Remote, so the path alone is still the right
+        // test here.
         continue;
       }
       if (!collection.holdsEvents()) {
@@ -339,14 +344,18 @@ public class CaldavReadService {
    * @return the canonical paths eXo already holds, empty when none
    */
   /**
-   * Whether a collection is one eXo created on the account.
+   * Whether a collection is one <em>an</em> eXo created on the account — this
+   * deployment or any other.
    *
    * <p>
    * Read from the path, which eXo derives, rather than from a binding: the
    * point is precisely to recognise the ones no binding accounts for any more.
+   * Which deployment minted it is not asked here, and need not be: neither
+   * kind belongs under Remote, as the caller explains, so the path alone is
+   * the right test in this one place.
    *
    * @param href the collection path
-   * @return true when eXo made it
+   * @return true when an eXo made it, whichever one
    */
   private boolean isExoCreated(String href) {
     String slug = StringUtils.substringAfterLast(StringUtils.stripEnd(href, "/"), "/");
