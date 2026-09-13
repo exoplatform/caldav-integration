@@ -155,16 +155,22 @@ public class IcsEventMapper {
    * and an eXo event link and nothing else, then one line that itself has the
    * shape of a label, which is where the block ends and the organiser's text
    * begins. That shape is one a person can type, and the joint that decides it
-   * is the last: a line short enough to be a label and ending in a colon, or
-   * spelled as one of our own bundle keys. So {@code Hi all,} / {@code see <an
-   * eXo event link>} / {@code Notes:} / {@code Bring the deck.} reduces to
-   * {@code Bring the deck.} (run through the installed {@code agenda-services}
-   * snapshot of agenda {@code 9d6e1f0d}), while the same text with
-   * {@code Thanks,} in the third line — a shape that <em>did</em> reduce before
-   * that narrowing — now comes back untouched. On the render side such a
-   * misreading costs a
-   * paragraph of one document and the next push composes the text again; here
-   * it would be a write.
+   * is whether the lines around the link have a label's shape. So
+   * {@code Weekly sync.} / {@code Agenda: <an eXo event link>} /
+   * {@code Notes:} / {@code bring the deck.} reduces to
+   * {@code bring the deck.}, while {@code Hi all,} / {@code see <the same
+   * link>} / {@code Thanks,} / {@code Bob} comes back untouched.
+   *
+   * <p>
+   * <b>Which shapes reduce is agenda's to decide, and it has already moved
+   * twice</b> — EXO-90227 bounded the label and required the closing line to
+   * look like one, EXO-90228 required the same of the line carrying the link.
+   * So no example here is a contract, and the pins in
+   * {@code IcsEventMapperTest} deliberately do not rest on one: they use the
+   * block {@code EventIcsBuilder} itself composes, which is the one input the
+   * recogniser must go on recognising however narrow it becomes. On the render
+   * side a misreading costs a paragraph of one document and the next push
+   * composes the text again; here it would be a write.
    *
    * <p>
    * <b>Why the {@code URL} property is the signal.</b> Not because no client
