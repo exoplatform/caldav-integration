@@ -617,6 +617,26 @@ public class CaldavReadServiceTest {
   }
 
   /**
+   * The prefix with nothing after it names no calendar — eXo never mints
+   * such a slug — and the list reads it exactly as the sweep does: an
+   * ordinary collection, listed here and materialised there. Pinned because
+   * the list used to carry its own spelling of "eXo-made" that dropped this
+   * shape while the sweep kept it; one predicate
+   * ({@code CaldavOutboundService.isExoCreated}) now serves both, and this
+   * is the one input on which the two spellings disagreed.
+   */
+  @Test
+  public void aBareExoPrefixNamesNoCalendarAndIsListedLikeAnyOther() {
+    givenCalendars(calendar("/dav/calendars/john/exo-cal-/", "Nameless"));
+
+    List<RemoteCalendar> calendars = service.listCalendars(USER, LOGIN).calendars();
+
+    assertEquals(1, calendars.size());
+    assertEquals("/dav/calendars/john/exo-cal-/", calendars.get(0).getId());
+    verify(caldavOutboundService, never()).isMintedByThisDeployment(anyLong(), anyString());
+  }
+
+  /**
    * The dedicated mirror is excluded by its path before anything is
    * classified, a colleague's as much as the user's own.
    */

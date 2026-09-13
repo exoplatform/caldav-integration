@@ -49,6 +49,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
+import org.exoplatform.caldav.service.CaldavOutboundService;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
 import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
@@ -536,14 +537,14 @@ public class HttpCalDavClientServerQuirksTest {
     assertFalse(cal2.isSharedWith(BLUEMIND_PRINCIPAL), "so the server's word alone calls it the user's own");
     assertTrue(cal2.holdsEvents());
     assertEquals("959b5529-ea4c-4ae4-a793-a2c201c3af9f",
-                 org.exoplatform.caldav.service.CaldavOutboundService.anchorOf(cal2.href()),
+                 CaldavOutboundService.anchorOf(cal2.href()),
                  "the anchor eXo minted it under is what names the colleague's calendar");
 
     CalendarCollection vehicle = only(calendars, BLUEMIND_HOME + "calendar:7E3AE6F3-5B2C-4D1E-9A8F-6C0B3D2E1F4A/");
     assertEquals(BLUEMIND_PRINCIPAL, vehicle.owner());
     assertTrue(vehicle.writable());
     assertFalse(vehicle.isSharedWith(BLUEMIND_PRINCIPAL));
-    assertNull(org.exoplatform.caldav.service.CaldavOutboundService.anchorOf(vehicle.href()),
+    assertNull(CaldavOutboundService.anchorOf(vehicle.href()),
                "a resource subscription carries no anchor: nothing eXo knows names it, and it is left as it was");
   }
 

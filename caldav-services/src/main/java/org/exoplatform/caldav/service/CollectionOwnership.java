@@ -43,6 +43,14 @@ package org.exoplatform.caldav.service;
  * of but never the calendar itself (EXO-90234). The three now ask the one
  * question below and act on the one answer: a share is never materialised,
  * is listed read-only, and — being unbound — has its events served.
+ *
+ * <p>
+ * Deliberately services-local, unlike its siblings {@code SyncOrigin} and
+ * {@code CalendarSyncStatus} in the API module's {@code model} package: it is
+ * an answer computed from a listing and the pair table for the three services
+ * that consume it, persisted nowhere and exposed to no other addon, so it is
+ * kept out of the add-on's API surface until something outside this module
+ * needs it.
  */
 public enum CollectionOwnership {
 
@@ -51,9 +59,12 @@ public enum CollectionOwnership {
    * owner and withheld no write, and the slug names no calendar this
    * deployment exported for anyone. Materialised by the sweep as a personal
    * calendar, and until then offered under Remote as writable when the
-   * server grants write. A collection <em>another</em> eXo deployment minted
-   * into the account answers this too — its anchor is known to nobody here,
-   * and it is an ordinary remote calendar to this deployment (EXO-90226).
+   * server grants write and the slug is not eXo's. A collection
+   * <em>another</em> eXo deployment minted into the account answers this too
+   * — its anchor is known to nobody here, and it is an ordinary remote
+   * calendar to this deployment (EXO-90226) — but, wearing eXo's slug, it is
+   * neither listed nor left unmaterialised: the sweep adopts it on its next
+   * pass and the binding then keeps it out of the list.
    */
   OWN,
 

@@ -122,7 +122,7 @@ public class CaldavReadService {
                                                                         listing.principal(),
                                                                         listing.pairs(),
                                                                         collection);
-      if (isExoCreated(collection.href()) && !ownership.isShared()) {
+      if (CaldavOutboundService.isExoCreated(collection.href()) && !ownership.isShared()) {
         // A collection an eXo made, that this user has no binding for and
         // that is nobody else's. Either the user's own eXo calendar, met again
         // under a path BlueMind republished it at — the sync skips it, so
@@ -351,26 +351,6 @@ public class CaldavReadService {
                                  false,
                                  listing.principal(),
                                  pairs);
-  }
-
-  /**
-   * Whether a collection is one <em>an</em> eXo created on the account — this
-   * deployment or any other.
-   *
-   * <p>
-   * Read from the path, which eXo derives, rather than from a binding: the
-   * point is precisely to recognise the ones no binding accounts for any more.
-   * Which deployment minted it, and for whom, is not asked here: that is
-   * {@link CaldavOutboundService#ownershipOf}'s question, and the caller
-   * combines the two — an eXo-made collection is dropped from the list unless
-   * the classification says it is somebody else's (EXO-90234).
-   *
-   * @param href the collection path
-   * @return true when an eXo made it, whichever one
-   */
-  private boolean isExoCreated(String href) {
-    String slug = StringUtils.substringAfterLast(StringUtils.stripEnd(href, "/"), "/");
-    return StringUtils.startsWith(slug, CaldavOutboundService.COLLECTION_PREFIX);
   }
 
   /**
