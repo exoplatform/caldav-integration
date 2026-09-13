@@ -175,4 +175,81 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
                                      @Param("prefix") String prefix,
                                      Pageable pageable);
 
+  /**
+   * Whether any user of this deployment holds a pair of one origin on one
+   * server for one calendar anchor.
+   *
+   * <p>
+   * Asked with {@link SyncOrigin#EXO} to decide whether a collection under
+   * the outbound prefix was minted by <em>this</em> deployment (EXO-90226):
+   * the slug eXo mints carries the calendar's anchor, and an EXO pair on the
+   * server for that anchor means the calendar behind the collection exists
+   * here. Deliberately spanning every user — the pair that answers may be
+   * another user's on a shared account — and every status: a paused or
+   * tombstoned pair still names a calendar this deployment made.
+   *
+   * <p>
+   * Keyed on the anchor rather than on the href, because the server may
+   * report an eXo-made collection under a path other than the one it was
+   * created at (BlueMind republishes them under another parent), and the
+   * anchor is the part of the path that survives that. Its sibling
+   * {@link #existsByServerIdAndOriginAndRemoteHref} answers by the recorded
+   * path instead, for the shape where the slug is the part that changed.
+   *
+   * <p>
+   * What it costs: <b>no index serves this query</b>. The table's two indexes
+   * are {@code UQ_CALDAV_CALENDAR_SYNC_LOCAL (USER_IDENTITY_ID, SERVER_ID,
+   * LOCAL_CALENDAR_SYNC_UID)} and {@code IDX_CALDAV_CALENDAR_SYNC_STATUS
+   * (STATUS, LAST_SYNC_END)}; neither leads with the server, and {@code
+   * ORIGIN} is in no index at all. With the leading column unconstrained the
+   * unique index cannot be entered as a range, so the engine walks every row
+   * of the table, or scans the whole index and looks each candidate up for
+   * its origin — O(table) either way. Kept off the common path by its
+   * callers: the sweep tries the user's own pairs in memory before asking,
+   * and the question is never asked for a collection outside the outbound
+   * prefix, so only a prefixed collection this user does not hold costs a
+   * walk. An index on {@code (SERVER_ID, ORIGIN, LOCAL_CALENDAR_SYNC_UID)}
+   * would serve it as a point lookup; adding one is a changeset, and so a
+   * separate decision.
+   *
+   * @param serverId the declared server registration
+   * @param origin which side created the collection
+   * @param localCalendarSyncUid agenda's immutable calendar anchor
+   * @return true when such a pair exists, whoever holds it
+   */
+  boolean existsByServerIdAndOriginAndLocalCalendarSyncUid(long serverId,
+                                                           SyncOrigin origin,
+                                                           String localCalendarSyncUid);
+
+  /**
+   * Whether any user of this deployment holds a pair of one origin on one
+   * server recorded at one collection path.
+   *
+   * <p>
+   * The second arm of the ownership question (EXO-90226), asked with
+   * {@link SyncOrigin#EXO} when the anchor arm above found nothing. A server
+   * may republish an eXo-made collection under a slug that is not the anchor
+   * eXo minted — prefix kept, suffix replaced, the shape EXO-89590 recorded
+   * against BlueMind — and then the slug names no calendar here while the
+   * collection is still one this deployment made. The path a pair records is
+   * what answers that shape, whenever the record holds the published path.
+   * Like its sibling, deliberately every user and every status.
+   *
+   * <p>
+   * The href is compared as stored, which is canonical (the storage
+   * canonicalises on save); the caller canonicalises what it asks with. No
+   * index can serve this one either, and none could be added: the href
+   * column is too long to index on MySQL under utf8mb4, which is why the
+   * unique constraint is carried by the anchor (changeset 1.0.0-5). So this
+   * is a walk of the table, asked only after the anchor arm has missed —
+   * once per pass for a prefixed collection this deployment holds no anchor
+   * for.
+   *
+   * @param serverId the declared server registration
+   * @param origin which side created the collection
+   * @param remoteHref the collection path, canonical
+   * @return true when such a pair exists, whoever holds it
+   */
+  boolean existsByServerIdAndOriginAndRemoteHref(long serverId, SyncOrigin origin, String remoteHref);
+
 }

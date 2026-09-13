@@ -219,6 +219,14 @@ public class CaldavPushService {
   private CaldavCopyPolicy       caldavCopyPolicy;
 
   /**
+   * Where the account-wide ownership question lives. One definition for the
+   * sweep and the push, so the two answers cannot drift (EXO-90226); the
+   * outbound service depends on nothing that depends on this one.
+   */
+  @Autowired
+  private CaldavOutboundService  caldavOutboundService;
+
+  /**
    * The registry the destination setting is read from. Injected here and
    * nowhere else on this path: the mapper, the sweep and the listeners all
    * reach a destination through this service, so one reader is one answer.
@@ -403,19 +411,22 @@ public class CaldavPushService {
       return null;
     }
     if (pair.getOrigin() != SyncOrigin.EXO
-        && CaldavOutboundService.isExoCreated(CaldavSyncStorage.canonicalHref(pair.getRemoteHref()))) {
+        && caldavOutboundService.isMintedByThisDeployment(serverId, CaldavSyncStorage.canonicalHref(pair.getRemoteHref()))) {
       // The outbound half of the guard the sweep applies before reading
-      // (EXO-90190): a calendar binding pointed at a collection eXo minted for
-      // ANOTHER eXo calendar — one user's outbound copy of their own calendar,
-      // materialised by a second user on the same account before
-      // materialisation learned to skip such paths (EXO-89530). The sweep
-      // refuses to read through it; left open, this side would still PUT this
-      // user's events into the first user's collection, where that user's EXO
-      // pair reads them, imports them and pushes them back onto the same href
-      // — a ping-pong overwrite the inbound skip alone does not close. The
-      // path is the signal, as it is there. Skipped rather than removed, for
-      // the reason given there, and said at warn once per pair per process so
-      // the cleanup has a list.
+      // (EXO-90190): a calendar binding pointed at a collection THIS
+      // deployment minted for another of its own calendars — one user's
+      // outbound copy of their own calendar, materialised by a second user on
+      // the same account before materialisation learned to skip such paths
+      // (EXO-89530). The sweep refuses to read through it; left open, this
+      // side would still PUT this user's events into the first user's
+      // collection, where that user's EXO pair reads them, imports them and
+      // pushes them back onto the same href — a ping-pong overwrite the
+      // inbound skip alone does not close. The question is the one the sweep
+      // asks, not the path alone: a collection another eXo deployment minted
+      // is an ordinary remote calendar here, adopted by materialisation and
+      // written through like any other (EXO-90226). Skipped rather than
+      // removed, for the reason given there, and said at warn once per pair
+      // per process so the cleanup has a list.
       if (leftoverBindingsSaid.add(pair.getId())) {
         LOG.warn("Binding {} of user {} writes into {}, a collection eXo created for another eXo calendar; it is skipped and should be removed",
                  pair.getId(),
