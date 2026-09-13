@@ -208,9 +208,13 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
    * callers: the sweep tries the user's own pairs in memory before asking,
    * and the question is never asked for a collection outside the outbound
    * prefix, so only a prefixed collection this user does not hold costs a
-   * walk. An index on {@code (SERVER_ID, ORIGIN, LOCAL_CALENDAR_SYNC_UID)}
-   * would serve it as a point lookup; adding one is a changeset, and so a
-   * separate decision.
+   * walk. Since EXO-90234 the calendar list asks the same way on each
+   * listing, through the same classification — per colleague's share, not
+   * per collection, since the user's own pairs still answer first — so a
+   * deployment with many shares per user is where the index below stops
+   * being optional. An index on {@code (SERVER_ID, ORIGIN,
+   * LOCAL_CALENDAR_SYNC_UID)} would serve it as a point lookup; adding one
+   * is a changeset, and so a separate decision.
    *
    * @param serverId the declared server registration
    * @param origin which side created the collection
@@ -243,7 +247,8 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
    * unique constraint is carried by the anchor (changeset 1.0.0-5). So this
    * is a walk of the table, asked only after the anchor arm has missed —
    * once per pass for a prefixed collection this deployment holds no anchor
-   * for.
+   * for, and, since EXO-90234, once per calendar listing for the same
+   * collection, the list classifying it the way the sweep does.
    *
    * @param serverId the declared server registration
    * @param origin which side created the collection
