@@ -46,6 +46,7 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.ics.IcsReader;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -77,6 +78,9 @@ public class CaldavReadServiceTest {
 
   private static final String        HOME   = "/dav/calendars/john/";
 
+  /** The account's own principal, as the server names it in the discovery walk. */
+  private static final String        PRINCIPAL = "/dav/principals/john/";
+
   /** The eXo login the credentials provider resolves the DAV account from. */
   private static final String        LOGIN  = "john";
 
@@ -106,7 +110,7 @@ public class CaldavReadServiceTest {
   public void connectAnAccount() {
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, "john")).thenReturn(endpoint);
-    lenient().when(calDavClient.discoverCalendarHome(any())).thenReturn(HOME);
+    lenient().when(calDavClient.discoverHome(any())).thenReturn(new CalendarHome(PRINCIPAL, HOME));
     // Nothing bound by default: these tests are about what the shim serves,
     // not about what eXo has taken over.
     lenient().when(caldavSyncStorage.getPairs(anyLong(), anyLong())).thenReturn(List.of());
@@ -295,7 +299,7 @@ public class CaldavReadServiceTest {
    */
   @Test
   public void aServerThatCannotBeListedAnswersEmptyAndSaysItFailed() {
-    when(calDavClient.discoverCalendarHome(any())).thenThrow(new CalDavException("unreachable"));
+    when(calDavClient.discoverHome(any())).thenThrow(new CalDavException("unreachable"));
 
     RemoteEventsRead read = service.readEvents(USER, LOGIN, FROM, TO);
 
@@ -309,7 +313,7 @@ public class CaldavReadServiceTest {
    */
   @Test
   public void aServerThatCannotBeListedSaysSoOnTheCalendarsToo() {
-    when(calDavClient.discoverCalendarHome(any())).thenThrow(new CalDavException("unreachable"));
+    when(calDavClient.discoverHome(any())).thenThrow(new CalDavException("unreachable"));
 
     RemoteCalendarsRead read = service.listCalendars(USER, LOGIN);
 
@@ -428,6 +432,73 @@ public class CaldavReadServiceTest {
     givenCalendars(calendar("/dav/calendars/john/private/", "Private"));
 
     assertEquals(1, service.listCalendars(USER, LOGIN).calendars().size());
+  }
+
+  // ------------------------------------ a colleague's calendar in the home, EXO-90235
+
+  /** A colleague's principal, as the server names it. */
+  private static final String        ALICE  = "/dav/principals/alice/";
+
+  /** The colleague's calendar, listed at her path inside the user's own home. */
+  private static final String        ALICES = "/dav/calendars/alice/default/";
+
+  /**
+   * A calendar the server says belongs to somebody else is offered read-only,
+   * even when the privilege set would allow a write: the same predicate the
+   * sweep refuses to materialise on, so the list never offers as writable a
+   * calendar the sweep will never make the user's own.
+   */
+  @Test
+  public void aCalendarAColleagueSharedIsListedReadOnlyEvenWhenWritable() {
+    givenCalendars(owned(ALICES, "Alice", ALICE, true, true));
+
+    List<RemoteCalendar> calendars = service.listCalendars(USER, LOGIN).calendars();
+
+    assertEquals(1, calendars.size());
+    assertEquals(ALICES, calendars.get(0).getId());
+    assertTrue(calendars.get(0).isReadOnly());
+  }
+
+  /**
+   * The events of a shared calendar are served: the sweep never binds it, so
+   * it is unbound, and an unbound collection is what this path serves. This
+   * is the only way its events reach the agenda once the sweep stops
+   * materialising it.
+   */
+  @Test
+  public void theEventsOfACalendarAColleagueSharedAreServed() {
+    givenCalendars(owned(ALICES, "Alice", ALICE, true, false));
+    when(calDavClient.calendarQuery(any(), eq(ALICES), any(), any())).thenReturn(List.of(object("BEGIN:VCALENDAR")));
+    when(icsReader.read(anyString(), any(), any())).thenReturn(List.of(occurrence("alices-event")));
+
+    RemoteEventsRead read = service.readEvents(USER, LOGIN, FROM, TO);
+
+    assertEquals(1, read.events().size());
+    assertEquals(ALICES, read.events().get(0).getCalendarId());
+    assertFalse(read.failed());
+  }
+
+  /**
+   * The user's own calendar, named with them as owner and write granted, is
+   * not read-only — the negative half, on the list.
+   */
+  @Test
+  public void theUsersOwnCalendarIsNotReadOnlyWhenTheServerNamesThemAsOwner() {
+    givenCalendars(owned("/dav/calendars/john/a/", "A", PRINCIPAL, true, true));
+
+    assertFalse(service.listCalendars(USER, LOGIN).calendars().get(0).isReadOnly());
+  }
+
+  /**
+   * @param href the collection path
+   * @param name its display name
+   * @param owner the owner the server named, or null
+   * @param privilegesAnswered whether the server answered a privilege set
+   * @param writable whether that set grants write
+   * @return a listed calendar with those ownership facts
+   */
+  private CalendarCollection owned(String href, String name, String owner, boolean privilegesAnswered, boolean writable) {
+    return new CalendarCollection(href, name, null, null, null, writable, java.util.Set.of("VEVENT"), owner, privilegesAnswered);
   }
 
   @Test
