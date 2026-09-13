@@ -257,4 +257,75 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
    */
   boolean existsByServerIdAndOriginAndRemoteHref(long serverId, SyncOrigin origin, String remoteHref);
 
+  /**
+   * The pairs of one origin on one server for one calendar anchor, the one
+   * to name first first.
+   *
+   * <p>
+   * The <em>who</em> form of
+   * {@link #existsByServerIdAndOriginAndLocalCalendarSyncUid}, asked with
+   * {@link SyncOrigin#EXO} once a listed collection is known to be a
+   * colleague's eXo calendar and the calendar list wants to say whose
+   * (EXO-90237): the pair's user is the owner. Same predicate, same span —
+   * every user, every status — and the same cost, a walk no index serves
+   * (see the sibling's note); asked once per colleague's share per listing,
+   * after the existence question has already said there is one to find.
+   *
+   * <p>
+   * Ordered so that the first row is the one to believe, should there ever
+   * be more than one: the unique index {@code (USER_IDENTITY_ID, SERVER_ID,
+   * LOCAL_CALENDAR_SYNC_UID)} leaves two <em>users</em> free to record the
+   * same anchor on the same server — a database restored and re-pointed, a
+   * calendar whose rows were copied between accounts — and a listing that
+   * named a different owner on each refresh would be worse than one that is
+   * wrong the same way twice. A pair in the {@code preferred} state (active,
+   * from the caller) is a calendar still exported, so its user is the
+   * likelier owner; among equals the oldest row, by identifier, is the one
+   * that has been true longest. The caller passes a page of one.
+   *
+   * @param serverId the declared server registration
+   * @param origin which side created the collection
+   * @param localCalendarSyncUid agenda's immutable calendar anchor
+   * @param preferred the state a pair should be in to be named first
+   * @param pageable how many to name; a page of one in practice
+   * @return the matching pairs, preferred state first, then oldest first
+   */
+  @Query("SELECT p FROM CaldavCalendarSyncEntity p"
+      + " WHERE p.serverId = :serverId AND p.origin = :origin AND p.localCalendarSyncUid = :localCalendarSyncUid"
+      + " ORDER BY CASE WHEN p.status = :preferred THEN 0 ELSE 1 END, p.id ASC")
+  List<CaldavCalendarSyncEntity> findPairsByAnchorPreferring(@Param("serverId") long serverId,
+                                                                          @Param("origin") SyncOrigin origin,
+                                                                          @Param("localCalendarSyncUid") String localCalendarSyncUid,
+                                                                          @Param("preferred") CalendarSyncStatus preferred,
+                                                                          Pageable pageable);
+
+  /**
+   * The pairs of one origin on one server recorded at one collection path,
+   * the one to name first first.
+   *
+   * <p>
+   * The <em>who</em> form of {@link #existsByServerIdAndOriginAndRemoteHref},
+   * for the shape where the slug is not the anchor and the recorded path is
+   * what recognised the collection (EXO-90237). Same span, same cost — a
+   * walk, since the href column cannot be indexed — and the same ordering
+   * rule as {@link #findPairsByAnchorPreferring}, for the same
+   * reason: the path is unique to nobody in the schema, and the owner named
+   * must not depend on row order.
+   *
+   * @param serverId the declared server registration
+   * @param origin which side created the collection
+   * @param remoteHref the collection path, canonical
+   * @param preferred the state a pair should be in to be named first
+   * @param pageable how many to name; a page of one in practice
+   * @return the matching pairs, preferred state first, then oldest first
+   */
+  @Query("SELECT p FROM CaldavCalendarSyncEntity p"
+      + " WHERE p.serverId = :serverId AND p.origin = :origin AND p.remoteHref = :remoteHref"
+      + " ORDER BY CASE WHEN p.status = :preferred THEN 0 ELSE 1 END, p.id ASC")
+  List<CaldavCalendarSyncEntity> findPairsByRemoteHrefPreferring(@Param("serverId") long serverId,
+                                                                              @Param("origin") SyncOrigin origin,
+                                                                              @Param("remoteHref") String remoteHref,
+                                                                              @Param("preferred") CalendarSyncStatus preferred,
+                                                                              Pageable pageable);
+
 }

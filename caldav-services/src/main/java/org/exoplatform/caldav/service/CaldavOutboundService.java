@@ -586,6 +586,44 @@ public class CaldavOutboundService {
   }
 
   /**
+   * Which user of this deployment exported the calendar a collection stands
+   * for — the <em>who</em> form of {@link #isMintedByThisDeployment}.
+   *
+   * <p>
+   * Asked by the calendar list once {@link #ownershipOf} has classified a
+   * collection as a colleague's eXo calendar and the list wants to name the
+   * colleague (EXO-90237). The same two arms in the same order — the anchor
+   * the slug carries first, the recorded path second — so it names the user
+   * behind the very pair that made the boolean form say yes, and cannot
+   * name somebody else's. The boolean form stays the sweep's and the push's
+   * question, deliberately: they need only the yes, an existence query is
+   * cheaper than a row, and rewriting them over this one would add a fetch
+   * to every pass for an answer they discard.
+   *
+   * <p>
+   * Null is a plain answer, not a failure: a path outside the outbound
+   * prefix, a collection another deployment minted, or a pair that vanished
+   * between the classification and this question all name nobody, and the
+   * caller says nothing about the owner rather than guessing.
+   *
+   * @param serverId the declared server registration
+   * @param href the collection path, canonical or not
+   * @return the identity of the user whose EXO pair stands behind the
+   *         collection, or null when no user of this deployment does
+   */
+  public Long exportingUserOf(long serverId, String href) {
+    String anchor = anchorOf(href);
+    if (anchor == null) {
+      return null;
+    }
+    CalendarSync pair = caldavSyncStorage.getExoCalendarPairOnServer(serverId, anchor);
+    if (pair == null) {
+      pair = caldavSyncStorage.getExoCollectionPairOnServer(serverId, href);
+    }
+    return pair == null ? null : pair.getUserIdentityId();
+  }
+
+  /**
    * Whose a listed collection is, to the user whose account listed it.
    *
    * <p>
