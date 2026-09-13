@@ -91,6 +91,7 @@ import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
@@ -118,6 +119,9 @@ public class CaldavSyncServiceTest {
   private static final String        LOGIN  = "john";
 
   private static final String        HOME   = "/dav/calendars/john/";
+
+  /** The account's own principal, as the server names it in the discovery walk. */
+  private static final String        PRINCIPAL = "/dav/principals/john/";
 
   private static final String        MAIN   = "/dav/calendars/john/calendar:Default:47/";
 
@@ -204,7 +208,7 @@ public class CaldavSyncServiceTest {
     lenient().when(caldavTuningService.getFutureDays()).thenReturn(365L);
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    lenient().when(calDavClient.discoverCalendarHome(any())).thenReturn(HOME);
+    lenient().when(calDavClient.discoverHome(any())).thenReturn(new CalendarHome(PRINCIPAL, HOME));
   }
 
   @Test
@@ -1277,6 +1281,202 @@ public class CaldavSyncServiceTest {
     return new CalendarCollection(href, name, "ctag-1", "token-1", null, true, components);
   }
 
+  // ------------------------------------ a colleague's calendar in the home, EXO-90235
+
+  /** A colleague's principal, as the server names it. */
+  private static final String        ALICE  = "/dav/principals/alice/";
+
+  /** The colleague's calendar, listed at her path inside the user's own home. */
+  private static final String        ALICES = "/dav/calendars/alice/default/";
+
+  /**
+   * The defect itself, on the shape Stalwart 0.16 was observed answering: a
+   * colleague's calendar listed in the user's home with her as owner and a
+   * read-only privilege set. It used to become the user's own editable
+   * calendar (calendar 14 on the rig); it becomes nothing here.
+   */
+  @Test
+  public void aCalendarAColleagueSharedReadOnlyIsNeverMaterialised() throws Exception {
+    givenServerCalendars(owned(ALICES, "Stalwart Calendar (alice)", ALICE, true, false));
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  /**
+   * Owner alone is enough: a colleague's calendar the user may write into is
+   * still not theirs, and materialising it would push the user's events into
+   * her calendar. Read-write sharing is a later, deliberate step.
+   */
+  @Test
+  public void aCalendarOwnedByAnotherIsNotMaterialisedEvenWhenWritable() throws Exception {
+    givenServerCalendars(owned(ALICES, "Alice", ALICE, true, true));
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  /**
+   * Privileges alone are enough: a server that names no owner but grants no
+   * write has said the user may not write there, and a materialised calendar
+   * is one agenda lets them write into.
+   */
+  @Test
+  public void aReadOnlyCalendarIsNotMaterialisedEvenWhenTheServerNamesNoOwner() throws Exception {
+    givenServerCalendars(owned("/dav/calendars/john/readonly/", "Read only", null, true, false));
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  /**
+   * The negative half: the user's own calendar, named with them as owner and
+   * write granted, is materialised exactly as before. The owner is spelled
+   * without the trailing slash the principal carries, so this also pins that
+   * the two are compared as paths — a string comparison would turn every own
+   * calendar into a share over a slash.
+   */
+  @Test
+  public void theUsersOwnCalendarIsStillMaterialisedWhenTheServerNamesThemAsOwner() throws Exception {
+    givenServerCalendars(owned("/dav/calendars/john/private/", "Private", "/dav/principals/john", true, true));
+    givenNoKnownPairs();
+    givenAgendaCreates("anchor-own");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService).createCalendar(any(), eq(LOGIN));
+  }
+
+  /**
+   * Silence is not read-only. Google answers no privilege set and names no
+   * owner; its calendars are the user's own and keep being materialised, as
+   * they were before ownership was read.
+   */
+  @Test
+  public void aCalendarTheServerSaidNothingAboutIsMaterialised() throws Exception {
+    givenServerCalendars(owned("/dav/calendars/john/google/", "Google", null, false, false));
+    givenNoKnownPairs();
+    givenAgendaCreates("anchor-google");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService).createCalendar(any(), eq(LOGIN));
+  }
+
+  /**
+   * A server that names no principal leaves the owner comparison off rather
+   * than pointing it at anybody: an owner that merely cannot be checked is
+   * not evidence of a share.
+   */
+  @Test
+  public void anOwnerIsNotHeldAgainstACalendarWhenTheServerNamesNoPrincipal() throws Exception {
+    when(calDavClient.discoverHome(any())).thenReturn(new CalendarHome(null, HOME));
+    givenServerCalendars(owned("/dav/calendars/john/private/", "Private", ALICE, true, true));
+    givenNoKnownPairs();
+    givenAgendaCreates("anchor-no-principal");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService).createCalendar(any(), eq(LOGIN));
+  }
+
+  /**
+   * The skip is said once per collection per process at info, and at debug
+   * on every pass after that: the share comes back in every listing, and the
+   * line explains a calendar that never becomes the user's own without
+   * repeating itself every five minutes.
+   */
+  @Test
+  public void aSkippedShareIsSaidOnceAtInfoAndThenAtDebug() throws Exception {
+    givenServerCalendars(owned(ALICES, "Alice", ALICE, true, false));
+    givenNoKnownPairs();
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getFormattedMessage().contains("shared with user " + USER))
+                .toList();
+    }
+
+    assertEquals(2, said.size(), "one line per pass");
+    assertEquals(Level.INFO, said.get(0).getLevel());
+    assertTrue(said.get(0).getFormattedMessage().contains(ALICES), said.get(0).getFormattedMessage());
+    assertTrue(said.get(0).getFormattedMessage().contains("owned by " + ALICE), said.get(0).getFormattedMessage());
+    assertTrue(said.get(0).getFormattedMessage().contains("read-only"), said.get(0).getFormattedMessage());
+    assertEquals(Level.DEBUG, said.get(1).getLevel());
+  }
+
+  /**
+   * A share skipped on the privilege signal alone, on a server that names no
+   * principal, is said with the principal "not stated" rather than a bare
+   * {@code null} — the line is written for an operator, and the same absence
+   * is already spelled out for the owner beside it.
+   */
+  @Test
+  public void aSkippedShareNamesAnAbsentPrincipalAsNotStated() throws Exception {
+    when(calDavClient.discoverHome(any())).thenReturn(new CalendarHome(null, HOME));
+    givenServerCalendars(owned("/dav/calendars/john/readonly/", "Read only", null, true, false));
+    givenNoKnownPairs();
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getLevel() == Level.INFO
+                    && recorded.getFormattedMessage().contains("shared with user " + USER))
+                .toList();
+    }
+
+    assertEquals(1, said.size());
+    String line = said.get(0).getFormattedMessage();
+    assertTrue(line.contains("the account's principal is not stated"), line);
+    assertFalse(line.contains("null"), line);
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  /**
+   * A share an earlier pass materialised — before ownership was read — keeps
+   * its calendar and its binding: the sweep neither makes a second calendar
+   * for it nor deletes the one it made. What to do with such calendars is a
+   * migration decision, not a sweep's.
+   */
+  @Test
+  public void aShareAlreadyMaterialisedKeepsItsCalendarAndBinding() throws Exception {
+    CalendarSync bound = activeRemotePair(ALICES, "anchor-14");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    givenServerCalendars(owned(ALICES, "Alice", ALICE, true, false));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+    assertEquals(CalendarSyncStatus.ACTIVE, bound.getStatus());
+  }
+
+  /**
+   * @param href the collection path
+   * @param name its display name
+   * @param owner the owner the server named, or null
+   * @param privilegesAnswered whether the server answered a privilege set
+   * @param writable whether that set grants write
+   * @return a listed calendar with those ownership facts
+   */
+  private CalendarCollection owned(String href, String name, String owner, boolean privilegesAnswered, boolean writable) {
+    return new CalendarCollection(href, name, "ctag-1", "token-1", null, writable, Set.of("VEVENT"), owner, privilegesAnswered);
+  }
+
   /**
    * @param href the collection path
    * @param name its display name
@@ -1726,7 +1926,7 @@ public class CaldavSyncServiceTest {
     // a worse outcome than not synchronising.
     CalendarSync bound = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
-    when(calDavClient.discoverCalendarHome(any()))
+    when(calDavClient.discoverHome(any()))
                                                                            .thenThrow(new CalDavAuthenticationException("401"));
 
     service.syncNow(USER, LOGIN);
