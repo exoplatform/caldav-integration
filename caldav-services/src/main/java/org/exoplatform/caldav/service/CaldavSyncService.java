@@ -1685,7 +1685,7 @@ public class CaldavSyncService {
                collection.href(),
                userIdentityId,
                why,
-               principal);
+               StringUtils.defaultIfBlank(principal, "not stated"));
     } else {
       LOG.debug("Collection {} is still shared with user {} ({}) and is still not materialised", collection.href(), userIdentityId, why);
     }

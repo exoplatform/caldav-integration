@@ -194,9 +194,12 @@ public class HttpCalDavClient implements CalDavClient {
    * <p>
    * {@code DAV:owner} is in the set since EXO-90235: a collection a colleague
    * shared is listed inside the user's own home, and the owner is what tells
-   * it from the user's own calendars. RFC 3744 §5.1 makes it a protected
-   * property every access-control server carries; a server without the
-   * extension answers it in a 404 propstat, which reads as "not said".
+   * it from the user's own calendars. RFC 3744 §5 has a resource that supports
+   * access control carry the property, and §5.1 lets a server implement it as
+   * protected or not and answer it <em>empty</em> when it has no owner
+   * information; a server without the extension answers it in a 404
+   * propstat. An empty owner and a 404 both read as "not said" — see
+   * {@link #toCalendar}.
    */
   private static final String         PROPFIND_COLLECTION       = """
       <?xml version="1.0" encoding="utf-8"?>

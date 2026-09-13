@@ -72,6 +72,14 @@ import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
  * the whole privilege set. The raw sharee capture was not saved; the shape
  * of the two own collections and of the owner element is the 2026-08-20
  * capture's, with {@code DAV:owner} added as RFC 3744 §5.1 defines it.</li>
+ * <li>{@code bluemind-propfind-home-depth1-with-owner.xml} — DERIVED from
+ * the live BlueMind home listing below, with the {@code DAV:owner} the
+ * listing predates added to every response as BlueMind's DAV server builds
+ * it: {@code Proxy.path + "/principals/__uids__/" + uid + "/"}, the same
+ * shape and identifier its {@code current-user-principal} is built from
+ * ({@code net.bluemind.dav.server} {@code Owner.java} /
+ * {@code CurrentUserPrincipal.java}, master, read 2026-09-13), which is
+ * what the negative pin of EXO-90235 on that server rests on.</li>
  * <li>{@code bluemind-403-refused-auth.http} — captured live from the
  * BlueMind demo (2026-08-20), unauthenticated and with wrong credentials
  * alike: <b>403</b>, text/html, no WWW-Authenticate.</li>
@@ -449,31 +457,58 @@ public class HttpCalDavClientServerQuirksTest {
     }
   }
 
+  /** The BlueMind account's principal, as its DAV server builds it from the uid. */
+  private static final String BLUEMIND_PRINCIPAL = "/dav/principals/__uids__/9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/";
+
   /**
-   * The BlueMind home listing, likewise: no owner answered, write granted.
-   * BlueMind names the <em>subscriber</em> as owner of a share and grants
-   * them the full set (EXO-90234), so on that server neither signal fires —
-   * which is exactly what this pins: nothing BlueMind lists here becomes a
-   * share by this rule, and its own calendars keep being materialised.
+   * The BlueMind home listing as captured before the owner was ever
+   * requested: no owner answered, write granted. Nothing in it can be a
+   * share, and it pins that silence keeps meaning "the user's own".
    */
   @Test
-  void theBlueMindListingHoldsNoShareByTheOwnerOrPrivilegeRule() throws Exception {
+  void theBlueMindListingCapturedBeforeTheOwnerWasRequestedHoldsNoShare() throws Exception {
     givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-propfind-home-depth1.xml"));
 
     List<CalendarCollection> calendars = client.listCalendars(endpoint, BLUEMIND_HOME);
 
     assertFalse(calendars.isEmpty());
     for (CalendarCollection calendar : calendars) {
-      assertFalse(calendar.isSharedWith("/dav/principals/__uids__/9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/"),
-                  calendar.href() + " is the account's own on BlueMind");
+      assertNull(calendar.owner(), calendar.href() + " was listed before the owner was requested");
+      assertFalse(calendar.isSharedWith(BLUEMIND_PRINCIPAL), calendar.href() + " is the account's own on BlueMind");
+    }
+  }
+
+  /**
+   * The same listing with the owner BlueMind answers — the reverse defect's
+   * pin on the server where it matters most. BlueMind builds {@code DAV:owner}
+   * and {@code current-user-principal} from the same prefix and the same uid,
+   * so the user's own calendars compare equal and stay their own; a spelling
+   * drift between the two would turn every one of them into a share and stop
+   * materialising them, which is what this goes red on. BlueMind also names
+   * the <em>subscriber</em> as owner of a share and grants them the full set
+   * (EXO-90234), so on that server neither signal of this rule ever fires.
+   */
+  @Test
+  void theBlueMindListingWithTheOwnerAnsweredIsStillTheUsersOwn() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-propfind-home-depth1-with-owner.xml"));
+
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, BLUEMIND_HOME);
+
+    assertFalse(calendars.isEmpty());
+    for (CalendarCollection calendar : calendars) {
+      assertEquals(BLUEMIND_PRINCIPAL, calendar.owner(), calendar.href());
+      assertTrue(calendar.privilegesAnswered(), calendar.href());
+      assertTrue(calendar.writable(), calendar.href());
+      assertFalse(calendar.isSharedWith(BLUEMIND_PRINCIPAL), calendar.href() + " is the account's own on BlueMind");
     }
   }
 
   /**
    * An owner the server names on another host is compared against nothing:
    * the listing does not fail over it, and the collection does not become a
-   * share over it. An absolute owner on the declared host is folded to a
-   * path and compared like any other.
+   * share over it. An empty owner — the shape RFC 3744 §5.1 allows when the
+   * server has no owner information — is the same silence. An absolute owner
+   * on the declared host is folded to a path and compared like any other.
    */
   @Test
   void anOwnerOnAnotherHostIsLeftUnknownRatherThanFailingTheListingOrMakingAShare() throws Exception {
@@ -483,6 +518,11 @@ public class HttpCalDavClientServerQuirksTest {
           <D:response><D:href>/dav/cal/bob/own/</D:href><D:propstat><D:prop>
             <D:resourcetype><D:collection/><A:calendar/></D:resourcetype>
             <D:owner><D:href>https://internal-host.invalid/dav/pal/bob/</D:href></D:owner>
+            <D:current-user-privilege-set><D:privilege><D:write/></D:privilege></D:current-user-privilege-set>
+          </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+          <D:response><D:href>/dav/cal/bob/empty/</D:href><D:propstat><D:prop>
+            <D:resourcetype><D:collection/><A:calendar/></D:resourcetype>
+            <D:owner/>
             <D:current-user-privilege-set><D:privilege><D:write/></D:privilege></D:current-user-privilege-set>
           </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
           <D:response><D:href>/dav/cal/bob/folded/</D:href><D:propstat><D:prop>
@@ -497,6 +537,9 @@ public class HttpCalDavClientServerQuirksTest {
     CalendarCollection foreign = only(calendars, "/dav/cal/bob/own/");
     assertNull(foreign.owner(), "an owner on another host cannot be compared, so it is not kept");
     assertFalse(foreign.isSharedWith("/dav/pal/bob/"), "and an unknown owner is not a share");
+    CalendarCollection empty = only(calendars, "/dav/cal/bob/empty/");
+    assertNull(empty.owner(), "RFC 3744 §5.1 lets a server answer an empty owner when it has no owner information");
+    assertFalse(empty.isSharedWith("/dav/pal/alice/"), "an empty owner compares against nobody, not against everybody");
     CalendarCollection folded = only(calendars, "/dav/cal/bob/folded/");
     assertEquals("/dav/pal/alice/", folded.owner(), "an absolute owner on the declared host is folded to its path");
     assertTrue(folded.isSharedWith("/dav/pal/bob/"));
