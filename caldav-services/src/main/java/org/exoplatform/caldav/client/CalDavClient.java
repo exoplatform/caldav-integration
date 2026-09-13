@@ -215,6 +215,29 @@ public interface CalDavClient {
   CalendarCollection readCalendar(CalDavEndpoint endpoint, String href);
 
   /**
+   * What one resource calls itself: its {@code DAV:displayname}, read with a
+   * single PROPFIND of depth 0.
+   *
+   * <p>
+   * Asked of an owner principal, so that a calendar a colleague shared can be
+   * listed under the colleague's name rather than under their login
+   * (EXO-90237): Stalwart answers "Alice" for
+   * {@code /dav/pal/alice%40stalwart.local/}. The href is addressed like every
+   * other — through the endpoint's own authority and no other, the same
+   * refusal that keeps credentials off a host nobody declared — and a
+   * property the server withholds, or answers outside a granted propstat, is
+   * simply not there.
+   *
+   * @param endpoint the account's endpoint
+   * @param href the resource's server-absolute path
+   * @return the display name, or null when the server states none
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached, refuses the
+   *           read, or the href names another host
+   */
+  String readDisplayName(CalDavEndpoint endpoint, String href);
+
+  /**
    * Reads the collection's current ctag, the cheap tier-2 question asked
    * first on every run.
    *
