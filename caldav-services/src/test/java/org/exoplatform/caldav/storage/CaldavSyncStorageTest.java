@@ -468,6 +468,66 @@ public class CaldavSyncStorageTest {
   }
 
   /**
+   * A calendar of this deployment is found by its anchor, whoever holds it
+   * and whatever state its pair is in.
+   */
+  @Test
+  public void aCalendarOfThisDeploymentIsFoundByItsAnchorAccountWide() {
+    // The question behind adopting a foreign exo-cal collection (EXO-90226):
+    // ORIGIN=EXO, across every user of the server and every status — the
+    // storage asks it that way and the engine answers over the real rows in
+    // the DAO query test. Not the per-user lookup, which would call a
+    // colleague's calendar foreign.
+    when(calendarSyncDAO.existsByServerIdAndOriginAndLocalCalendarSyncUid(SERVER, SyncOrigin.EXO, "c0ffee-uid")).thenReturn(true);
+
+    assertTrue(storage.isExoCalendarOnServer(SERVER, "c0ffee-uid"));
+    assertFalse(storage.isExoCalendarOnServer(SERVER, "fd3fe75f-58f9-49e5-93d0-85f63b24a807"));
+  }
+
+  /**
+   * A blank anchor names no calendar to ask about.
+   */
+  @Test
+  public void aBlankAnchorAsksNobody() {
+    assertFalse(storage.isExoCalendarOnServer(SERVER, " "));
+    assertFalse(storage.isExoCalendarOnServer(SERVER, null));
+
+    verify(calendarSyncDAO, never()).existsByServerIdAndOriginAndLocalCalendarSyncUid(anyLong(), any(), any());
+  }
+
+  /**
+   * A collection of this deployment is found by its recorded path, asked in
+   * the canonical spelling whatever the listing's.
+   */
+  @Test
+  public void aCollectionOfThisDeploymentIsFoundByItsCanonicalPathAccountWide() {
+    // The path arm of the ownership question (EXO-90226), for the collection
+    // a server republishes under a slug that is not its anchor. The pair
+    // stores the canonical path; the listing spells it with a host, a
+    // percent-encoded character and a trailing slash, none of which makes it
+    // another collection — so the DAO is asked with what is stored, not with
+    // what was listed.
+    when(calendarSyncDAO.existsByServerIdAndOriginAndRemoteHref(SERVER,
+                                                                SyncOrigin.EXO,
+                                                                "/dav/calendars/john@dav/exo-cal-renamed-by-the-server"))
+                                                                                                                       .thenReturn(true);
+
+    assertTrue(storage.isExoCollectionOnServer(SERVER, "https://dav.example/dav/calendars/john%40dav/exo-cal-renamed-by-the-server/"));
+    assertFalse(storage.isExoCollectionOnServer(SERVER, "/dav/calendars/john@dav/exo-cal-fd3fe75f-58f9-49e5-93d0-85f63b24a807/"));
+  }
+
+  /**
+   * A blank path names no collection to ask about.
+   */
+  @Test
+  public void aBlankPathAsksNobody() {
+    assertFalse(storage.isExoCollectionOnServer(SERVER, " "));
+    assertFalse(storage.isExoCollectionOnServer(SERVER, null));
+
+    verify(calendarSyncDAO, never()).existsByServerIdAndOriginAndRemoteHref(anyLong(), any(), any());
+  }
+
+  /**
    * A refused insert is told by its JDBC cause, in every shape the platform
    * surfaces it.
    */
