@@ -349,13 +349,16 @@ public class HttpCalDavClient implements CalDavClient {
 
   /**
    * Who the server says is speaking, as a path on this endpoint - the first hop
-   * of every discovery, and its own method because two of them start there.
+   * of every discovery, its own method because two of them start there, and
+   * on the interface because the push service compares its last segment with
+   * the name of a listed calendar (EXO-90225).
    *
    * @param endpoint the account's endpoint
    * @return the principal's path
    * @throws CalDavException when the server names no current user
    */
-  private String discoverPrincipal(CalDavEndpoint endpoint) {
+  @Override
+  public String discoverPrincipal(CalDavEndpoint endpoint) {
     Element response = firstResponse(propfind(endpoint, endpoint.getBasePath(), PROPFIND_PRINCIPAL, "0"));
     String principal = response == null ? null : hrefWithin(response, DAV_NS, "current-user-principal");
     if (StringUtils.isBlank(principal)) {
