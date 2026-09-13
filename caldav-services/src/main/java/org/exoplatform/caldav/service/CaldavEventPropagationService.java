@@ -1378,7 +1378,7 @@ public class CaldavEventPropagationService {
                  e.getCode(),
                  e);
       }
-      return Settlement.refused(e.getCode());
+      return Settlement.refused(e.getCode(), e.getMessage());
     } catch (Exception | LinkageError e) {
       LOG.warn("The edit of event {} could not be carried to the copy held by user {}; it stays owed and is retried",
                eventId,
@@ -1434,7 +1434,7 @@ public class CaldavEventPropagationService {
                   remoteHref,
                   refusal.getMessage(),
                   refusal.getCode());
-        return Settlement.refused(refusal.getCode());
+        return Settlement.refused(refusal.getCode(), refusal.getMessage());
       }
       LOG.warn("The copy of the deleted event held by user {} at {} could not be removed; it stays owed and is retried",
                userIdentityId,
@@ -1643,7 +1643,7 @@ public class CaldavEventPropagationService {
       settlement = rewriteOne(userIdentityId, username, pending.getLocalEventId(), pending.getObjectSyncId());
     }
     if (!settlement.landed()) {
-      refuse(userIdentityId, pending, settlement.code());
+      refuse(userIdentityId, pending, settlement.code(), settlement.reason());
     }
     return settlement.landed();
   }
@@ -1664,19 +1664,36 @@ public class CaldavEventPropagationService {
    *          a date poll, a calendar with no collection, an unclassified
    *          failure
    */
-  private record Settlement(boolean landed, String code) {
+  private record Settlement(boolean landed, String code, String reason) {
 
     /** The write landed. */
-    private static final Settlement WRITE_LANDED = new Settlement(true, null);
+    private static final Settlement WRITE_LANDED = new Settlement(true, null, null);
 
     /**
-     * A write that did not land.
+     * A write that did not land, with nothing said about why beyond the code.
      *
      * @param code the refusal's code, null when there was no refusal to name
      * @return the settlement
      */
     private static Settlement refused(String code) {
-      return new Settlement(false, code);
+      return new Settlement(false, code, null);
+    }
+
+    /**
+     * A write that did not land, with what the refusal said.
+     *
+     * <p>
+     * Carried for the one abandonment that has to name its target: a write
+     * the server forbade is given up on at once, and the line an operator
+     * gets has to say which object was refused — which only the push's own
+     * message knows (EXO-90235).
+     *
+     * @param code the refusal's code
+     * @param reason the refusal's message, may be null
+     * @return the settlement
+     */
+    private static Settlement refused(String code, String reason) {
+      return new Settlement(false, code, reason);
     }
   }
 
@@ -1699,14 +1716,27 @@ public class CaldavEventPropagationService {
    * copy — sends them to the user's account in eXo, and a message about a
    * server refusing what was never sent would send them the wrong way.
    *
+   * <p>
+   * Two refusals are not counted at all but given up on at once, because for
+   * them a second attempt can only repeat the first: another user's copy
+   * ({@link #abandonOnForeignCopy}), which eXo declines to send, and a write
+   * the calendar server itself forbade ({@link #abandonOnForbiddenWrite}),
+   * which it will forbid again.
+   *
    * @param userIdentityId whose calendar the copy sits in, for the log
    * @param pending what is owed to it, carrying the count as it stood
    * @param code the code the attempt was refused with, null when nothing
    *          named a reason
+   * @param reason what the refusal said, null when it said nothing beyond
+   *          its code
    */
-  private void refuse(long userIdentityId, PendingPush pending, String code) {
+  private void refuse(long userIdentityId, PendingPush pending, String code, String reason) {
     if (CaldavPushService.FOREIGN_COPY.equals(code)) {
       abandonOnForeignCopy(userIdentityId, pending);
+      return;
+    }
+    if (CaldavPushService.FORBIDDEN.equals(code)) {
+      abandonOnForbiddenWrite(userIdentityId, pending, reason);
       return;
     }
     try {
@@ -1786,5 +1816,54 @@ public class CaldavEventPropagationService {
         + " account, or a binding was left behind; repair that, and an edit of the meeting settles the copy",
              userIdentityId,
              pending.getObjectSyncId());
+  }
+
+  /**
+   * Gives up on an obligation the first time the calendar server forbids the
+   * write, rather than counting it toward the bound.
+   *
+   * <p>
+   * The bound exists for a server having a bad day. A 403 is not a bad day:
+   * the server took the credentials and said the account may not write that
+   * object, which is a privilege somebody on the server's side granted or
+   * withheld, and no amount of waiting changes it (EXO-90235). Observed live:
+   * a calendar a colleague shared read-only had been materialised as the
+   * user's own, and the push of each edit into it was refused with 403 and
+   * retried five times over twenty-five minutes, the log calling each one
+   * transient. Four further identical refusals bought nothing.
+   *
+   * <p>
+   * The record is left in place, like any abandoned obligation, and the line
+   * names the object the server refused — the one thing an operator needs to
+   * find the collection concerned. The sweep no longer materialises a share
+   * ({@code CaldavSyncService}); a calendar materialised before it read
+   * ownership keeps refusing this way on every edit, each edit renewing and
+   * then abandoning its obligation, until the calendar is dealt with by
+   * hand.
+   *
+   * @param userIdentityId whose calendar the copy sits in, for the log
+   * @param pending the obligation given up on
+   * @param reason what the push said when it was refused, naming the object;
+   *          null when it named nothing
+   */
+  private void abandonOnForbiddenWrite(long userIdentityId, PendingPush pending, String reason) {
+    try {
+      caldavPendingPushStorage.abandoned(pending.getId(), maxPushAttempts);
+    } catch (Exception | LinkageError e) {
+      LOG.warn("What eXo owes the copy of user {} could not be given up on; it will be attempted again",
+               pending.getObjectSyncId(),
+               e);
+      return;
+    }
+    // Once, at WARN, naming the target: this is the one notice anybody gets
+    // that a calendar the user can edit in eXo is one the server will not let
+    // them write to.
+    LOG.warn("The copy of user {} at mapping {} sits in a collection the calendar server will not let this account write"
+        + " ({}); eXo stops now rather than repeating the refusal. The calendar is shared with the user read-only, or the"
+        + " account lost its write access; the eXo calendar bound to it stays editable in eXo and its edits no longer"
+        + " reach the server — only an edit of the meeting renews the obligation",
+             userIdentityId,
+             pending.getObjectSyncId(),
+             StringUtils.defaultIfBlank(reason, "no reason given"));
   }
 }

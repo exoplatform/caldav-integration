@@ -70,6 +70,7 @@ import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.client.MkCalendarResult;
@@ -1410,6 +1411,46 @@ public class CaldavPushServiceTest {
     CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.deleteEvent(USER, "john", "evt-1"));
 
     assertEquals(CaldavPushService.CREDENTIALS, failure.getCode());
+  }
+
+  /**
+   * A 403 on the PUT is the server saying the account may not write that
+   * collection — a state of the collection, not a failure of the attempt
+   * (EXO-90235). Classified as one so the sweep gives up on it at once, and
+   * naming the object so the one line the sweep says can name it too.
+   */
+  @Test
+  public void aWriteTheServerForbidsIsAKnownStateNamingTheObject() {
+    givenAMirror();
+    when(calDavClient.putObject(any(), anyString(), anyString()))
+                                                                  .thenThrow(new CalDavForbiddenException("The calendar server answered 403 for PUT http://cal/"
+                                                                      + MIRROR + "evt-1.ics"));
+
+    CaldavPushException refusal = assertThrows(CaldavPushException.class,
+                                               () -> service.pushEvent(USER, "john", event("evt-1"), null, false));
+
+    assertEquals(CaldavPushService.FORBIDDEN, refusal.getCode());
+    assertTrue(CaldavPushService.isKnownState(refusal.getCode()));
+    assertTrue(refusal.getMessage().contains(MIRROR + "evt-1.ics"), refusal.getMessage());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  /**
+   * The same on a removal: a DELETE the server forbids is the same state, and
+   * the mapping keeps pointing at the object it could not remove.
+   */
+  @Test
+  public void aRemovalTheServerForbidsIsAKnownStateAndLeavesTheMapping() {
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    when(caldavSyncStorage.getObjectByUid(1L, "evt-1")).thenReturn(mapped("\"etag-1\""));
+    when(calDavClient.deleteObject(any(), anyString(), any()))
+                                                              .thenThrow(new CalDavForbiddenException("The calendar server answered 403 for DELETE"));
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.deleteEvent(USER, "john", "evt-1"));
+
+    assertEquals(CaldavPushService.FORBIDDEN, failure.getCode());
+    assertTrue(CaldavPushService.isKnownState(failure.getCode()));
+    verify(caldavSyncStorage, never()).saveObject(any());
   }
 
   /**

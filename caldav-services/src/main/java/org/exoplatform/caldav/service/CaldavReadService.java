@@ -31,6 +31,7 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.ics.IcsReader;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -123,13 +124,21 @@ public class CaldavReadService {
         // section exists to show.
         continue;
       }
+      // Read-only when the server granted no write, as before — and also when
+      // it named somebody else as owner, whatever it granted. The second is the
+      // same predicate the sweep refuses to materialise on (EXO-90235), asked
+      // here of the same listing with the same principal, so a calendar the
+      // sweep will never make the user's own is never offered here as one they
+      // could write into. The three paths — skip, list, serve — agree because
+      // they share the one question rather than three spellings of it.
+      boolean readOnly = !collection.writable() || collection.isSharedWith(listing.principal());
       calendars.add(new RemoteCalendar(collection.href(),
                                        collection.displayName(),
                                        CalendarPalette.colourOf(collection.color(),
                                                                 collection.href(),
                                                                 order.indexOf(collection.href()),
                                                                 order.size()),
-                                       !collection.writable()));
+                                       readOnly));
     }
     return new RemoteCalendarsRead(calendars, listing.failed());
   }
@@ -311,12 +320,17 @@ public class CaldavReadService {
     }
     String mirror = CaldavSyncStorage.canonicalHref(settings.getMirrorCalendarHref());
     Set<String> bound = boundCollections(userIdentityId, settings);
+    // A collection a colleague shared is not filtered here, on purpose: the
+    // sweep never binds it (EXO-90235), so it stays unbound, and an unbound
+    // collection is precisely what this path exists to serve. Its events reach
+    // the agenda read-only through here, which is the only way they reach it.
     return new CollectionListing(listing.collections()
                                         .stream()
                                         .filter(collection -> !isMirror(collection, mirror))
                                         .filter(collection -> !bound.contains(CaldavSyncStorage.canonicalHref(collection.href())))
                                         .toList(),
-                                 false);
+                                 false,
+                                 listing.principal());
   }
 
   /**
@@ -404,13 +418,17 @@ public class CaldavReadService {
    */
   private CollectionListing collectionsOf(CalDavEndpoint endpoint, CaldavUserSetting settings) {
     try {
-      String home = calDavClient.discoverCalendarHome(endpoint);
+      // The principal comes out of the same walk that finds the home, so
+      // telling a colleague's calendar from the user's own costs this listing
+      // no request it was not already making (EXO-90235).
+      CalendarHome account = calDavClient.discoverHome(endpoint);
       return new CollectionListing(calDavClient.listCalendars(endpoint,
-                                                              home),
-                                   false);
+                                                              account.href()),
+                                   false,
+                                   account.principal());
     } catch (CalDavException e) {
       LOG.warn("The calendars of the connected account could not be listed", e);
-      return new CollectionListing(List.of(), true);
+      return new CollectionListing(List.of(), true, null);
     }
   }
 
@@ -448,8 +466,12 @@ public class CaldavReadService {
    *
    * @param collections the collections that were listed, empty on failure
    * @param failed true when the account could not be asked
+   * @param principal the account's own {@code current-user-principal}, as the
+   *          server named it during the walk that found the home; null on
+   *          failure, and null when the server named none — which leaves the
+   *          owner comparison off rather than pointing it at anybody
    */
-  private record CollectionListing(List<CalendarCollection> collections, boolean failed) {
+  private record CollectionListing(List<CalendarCollection> collections, boolean failed, String principal) {
   }
 
   /**
