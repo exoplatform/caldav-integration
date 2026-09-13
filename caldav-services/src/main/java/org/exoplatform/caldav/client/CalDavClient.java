@@ -74,6 +74,41 @@ public interface CalDavClient {
   CalDavEndpoint endpoint(Long serverId, String exoLogin);
 
   /**
+   * Asks the server who the authenticated user is
+   * ({@code current-user-principal}), as a path on this endpoint — the first
+   * hop of every discovery here, exposed on its own because one caller needs
+   * the principal itself and not what hangs off it.
+   *
+   * <p>
+   * The last path segment is the server's own identifier for the account. On
+   * BlueMind it is the container uid the account's default calendar carries in
+   * its name — <code>/dav/principals/__uids__/&lt;uid&gt;/</code> against
+   * <code>calendar:Default:&lt;uid&gt;</code> — which is how
+   * {@code CaldavPushService} tells the account's own calendar from a resource
+   * listed beside it (EXO-90225). Asked of the server rather than parsed out
+   * of any calendar's href, so the two names being compared come from two
+   * independent answers.
+   *
+   * <p>
+   * <b>A principal the server does not name may come back as null or blank
+   * rather than as an exception.</b> The HTTP client throws, because an
+   * account whose server will not say who it is has nothing to discover from;
+   * an implementer that has no principal to give — a fake, a server spoken to
+   * by href alone — may answer null or blank instead, and the one caller that
+   * compares the answer treats either as a principal it cannot read and
+   * refuses, never guesses. The caller's guard is therefore reachable by
+   * contract, not a leftover.
+   *
+   * @param endpoint the declared server
+   * @return the principal's server-absolute raw path, or null or blank when
+   *         the implementer names none
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached, or — in the
+   *           HTTP client — names no current user
+   */
+  String discoverPrincipal(CalDavEndpoint endpoint);
+
+  /**
    * Walks discovery from the endpoint base: asks who the authenticated user
    * is ({@code current-user-principal}), then where that principal's
    * calendars live ({@code calendar-home-set}). Started at the registered
