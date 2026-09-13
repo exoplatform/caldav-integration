@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -197,6 +198,9 @@ public class CaldavPushServiceTest {
 
   @Mock
   private CaldavServerService        caldavServerService;
+
+  @Mock
+  private CaldavOutboundService      caldavOutboundService;
 
   /**
    * The real rule rather than a mock, and deliberately so: what a copy may
@@ -1921,8 +1925,9 @@ public class CaldavPushServiceTest {
     // events in that calendar would still PUT them into user one's
     // collection, where user one's EXO pair reads them, imports them and
     // pushes them back onto the same href — a ping-pong between two users on
-    // exactly the bindings the skip was written for. Same path test, same
-    // answer: skipped, and listed so the cleanup has it.
+    // exactly the bindings the skip was written for. Same question as the
+    // sweep's — a calendar of this deployment stands behind the collection —
+    // same answer: skipped, and listed so the cleanup has it.
     String href = "/dav/calendars/john/exo-cal-6bade8c7-7598-48f2-aa24-a40b0ed0ac6c";
     givenAnAgendaEvent(110L, 0L);
     givenPersonalCalendar(7L, "cal-anchor");
@@ -1930,6 +1935,7 @@ public class CaldavPushServiceTest {
     leftover.setOrigin(SyncOrigin.REMOTE);
     leftover.setRemoteHref(href);
     when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(leftover);
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, href)).thenReturn(true);
     when(agendaRemoteEventService.findRemoteEvent(110L, USER)).thenReturn(null);
     when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-110"));
     // Stubbed leniently so that removing the guard fails this test on the
@@ -1957,6 +1963,38 @@ public class CaldavPushServiceTest {
     assertEquals(1, listed.size(), "once per pair per process, not once per event");
     assertTrue(listed.get(0).getFormattedMessage().startsWith("Binding 9 of user 42 writes into " + href),
                listed.get(0).getFormattedMessage());
+  }
+
+  /**
+   * A calendar adopted from another eXo deployment's collection is written
+   * through like any remote calendar.
+   */
+  @Test
+  public void aCalendarAdoptedFromAnotherDeploymentsCollectionIsWrittenThrough() throws Exception {
+    // The push side of adoption (EXO-90226). The collection carries eXo's
+    // prefix, but no calendar of this deployment stands behind it: it was
+    // minted by another instance sharing the account, materialised here as an
+    // ordinary remote calendar. An event the user creates in that calendar
+    // goes to its collection exactly as it would for one the user made on
+    // their server — the prefix alone used to refuse it, and warn.
+    String href = "/dav/calendars/john/exo-cal-fd3fe75f-58f9-49e5-93d0-85f63b24a807";
+    givenAnAgendaEvent(110L, 0L);
+    givenPersonalCalendar(7L, "cal-anchor");
+    CalendarSync adopted = boundPersonalPair();
+    adopted.setOrigin(SyncOrigin.REMOTE);
+    adopted.setRemoteHref(href);
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(adopted);
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, href)).thenReturn(false);
+    when(agendaRemoteEventService.findRemoteEvent(110L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-110"));
+    when(calDavClient.putObject(any(), anyString(), anyString())).thenReturn(new PutResult(201, "\"e\"", null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    ObjectSync mapping = service.pushAgendaEvent(USER, "john", 110L);
+
+    assertEquals(9L, mapping.getCalendarSyncId());
+    verify(calDavClient).putObject(any(), startsWith(href + "/"), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any());
   }
 
   /**
