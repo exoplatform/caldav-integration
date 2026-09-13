@@ -1558,13 +1558,16 @@ public class CaldavSyncService {
 
   /**
    * Gives every remote calendar an eXo personal calendar, except the ones eXo
-   * put there itself and the ones the server says are somebody else's.
+   * put there itself and the ones that are somebody else's — by the server's
+   * word or by this deployment's.
    *
    * <p>
    * The principal is asked once here, for the whole listing, and handed to
-   * {@link CalendarCollection#isSharedWith(String)} per collection: it is one
-   * fact about the account, not one per calendar, and asking it per
-   * collection would cost a PROPFIND per calendar per pass.
+   * {@link CaldavOutboundService#ownershipOf} per collection: it is one fact
+   * about the account, not one per calendar, and asking it per collection
+   * would cost a PROPFIND per calendar per pass. The classification is the
+   * one the read-through runs on the same listing, so what is skipped here
+   * is what is listed read-only there (EXO-90234).
    *
    * @param userIdentityId identity of the user
    * @param username the user's login
@@ -1604,7 +1607,7 @@ public class CaldavSyncService {
     warnOnceIfAccountIsShared(userIdentityId, serverId, home);
     List<CalendarSync> known = caldavSyncStorage.getPairs(userIdentityId, serverId);
     for (CalendarCollection collection : collections) {
-      if (isAlreadyOurs(serverId, collection, known)) {
+      if (isAlreadyOurs(collection, known)) {
         reviveIfMarkedGone(known, collection);
         continue;
       }
@@ -1616,8 +1619,19 @@ public class CaldavSyncService {
         LOG.debug("Collection {} declares no VEVENT support and is not a calendar to materialise", collection.href());
         continue;
       }
-      if (collection.isSharedWith(principal)) {
-        skipShare(userIdentityId, serverId, principal, collection);
+      CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId, principal, known, collection);
+      if (ownership == CollectionOwnership.OWN_EXO_CALENDAR) {
+        // The user's own eXo calendar, listed under a path none of their
+        // pairs record — BlueMind republishes eXo's collections under another
+        // parent. Already in eXo, and the skip the prefix rule always made
+        // for it; said at debug, since there is nothing to explain.
+        LOG.debug("Collection {} is user {}'s own eXo calendar under another path and is not materialised again",
+                  collection.href(),
+                  userIdentityId);
+        continue;
+      }
+      if (ownership.isShared()) {
+        skipShare(userIdentityId, serverId, principal, collection, ownership);
         continue;
       }
       materialise(userIdentityId, username, serverId, collection);
@@ -1629,8 +1643,9 @@ public class CaldavSyncService {
   }
 
   /**
-   * Leaves a collection somebody else owns, or the user may only read, where
-   * it is — and says so once.
+   * Leaves a collection somebody else owns, or the user may only read, or
+   * this deployment exported for another of its users, where it is — and
+   * says so once.
    *
    * <p>
    * The defect this closes (EXO-90235): after a colleague granted the user
@@ -1640,6 +1655,19 @@ public class CaldavSyncService {
    * made was pushed back into her collection and refused with 403. Nothing
    * about that collection was the user's: the server had named her as owner
    * and answered a read-only privilege set, and the pass had read neither.
+   *
+   * <p>
+   * The second defect it closes (EXO-90234) is the same skip with no line at
+   * all. A colleague's <em>eXo</em> calendar — pushed out under eXo's own
+   * slug — was skipped by the prefix rule before ownership was ever asked,
+   * silently, whichever user of this deployment it belonged to; the list
+   * dropped it on the same prefix; and the read-through served its events.
+   * On BlueMind the server says nothing that would help: the subscribed
+   * share sits under the user's own home, names them as owner and grants the
+   * full privilege set. It is now classified beside the server's signals
+   * ({@link CaldavOutboundService#ownershipOf}), skipped through here, and
+   * the line says which witness spoke — "minted by this deployment for
+   * another user" — because on that server it is the only one that did.
    *
    * <p>
    * <b>Skipped, not adopted read-only.</b> A materialised calendar is one
@@ -1673,11 +1701,17 @@ public class CaldavSyncService {
    * @param serverId the declared server registration
    * @param principal the user's own principal, as the server named it; may be
    *          null when the server named none
-   * @param collection the collection the server says is not the user's own
+   * @param collection the collection that is not the user's own
+   * @param ownership which witness said so — the server, or this deployment
    */
-  private void skipShare(long userIdentityId, long serverId, String principal, CalendarCollection collection) {
+  private void skipShare(long userIdentityId,
+                         long serverId,
+                         String principal,
+                         CalendarCollection collection,
+                         CollectionOwnership ownership) {
     String key = userIdentityId + ":" + serverId + ":" + CaldavSyncStorage.canonicalHref(collection.href());
-    String why = StringUtils.isNotBlank(collection.owner()) ? "owned by " + collection.owner() : "owner not stated";
+    String why = ownership == CollectionOwnership.COLLEAGUES_EXO_CALENDAR ? "minted by this deployment for another user; " : "";
+    why += StringUtils.isNotBlank(collection.owner()) ? "owned by " + collection.owner() : "owner not stated";
     why += collection.privilegesAnswered() ? (collection.writable() ? ", writable" : ", read-only") : ", privileges not stated";
     if (sharesSaid.add(key)) {
       LOG.info("Collection {} is shared with user {} ({}; the account's principal is {}) and is not materialised as their"
@@ -1757,21 +1791,26 @@ public class CaldavSyncService {
    * <code>exo-cal-946eec40…</code> came back as another user's calendar 23.
    *
    * <p>
-   * <b>This deployment's, not any eXo's.</b> The skip used to read the path
-   * alone, and a path under the outbound prefix is minted by every eXo alike.
-   * A collection <em>another</em> deployment pushed into the same account
-   * therefore went unmaterialised here while the grid's read-through still
-   * showed its events as external — a calendar the user could neither see,
-   * switch off nor trace (EXO-90226). Nothing here exists to duplicate: that
-   * collection is an ordinary remote calendar to this deployment, as it is to
-   * any other CalDAV client on the account, and it is adopted as one — bound
-   * ORIGIN=REMOTE, which is precisely what keeps the outward pass from
+   * <b>Not the eXo-minted question any more.</b> The skip used to read the
+   * path alone, and a path under the outbound prefix is minted by every eXo
+   * alike. A collection <em>another</em> deployment pushed into the same
+   * account therefore went unmaterialised here while the grid's read-through
+   * still showed its events as external — a calendar the user could neither
+   * see, switch off nor trace (EXO-90226). Nothing here exists to duplicate:
+   * that collection is an ordinary remote calendar to this deployment, as it
+   * is to any other CalDAV client on the account, and it is adopted as one —
+   * bound ORIGIN=REMOTE, which is precisely what keeps the outward pass from
    * pushing it back out as a collection of its own
    * ({@code CaldavOutboundService#bind} returns early on a REMOTE pair). The
    * multiplication the prefix skip was written against is stopped there, one
-   * layer down, and the account-wide ownership question
-   * ({@link CaldavOutboundService#isMintedByThisDeployment(long, String)})
-   * keeps the same-deployment case skipped as before.
+   * layer down. The account-wide ownership question that kept the
+   * same-deployment case skipped then moved out of this gate altogether
+   * (EXO-90234): asked here it could only skip, silently, whichever user of
+   * this deployment the calendar belonged to — and a colleague's eXo
+   * calendar shared with the user was thereby hidden. It is asked now by
+   * {@link CaldavOutboundService#ownershipOf}, after this gate, where the
+   * answer can tell the user's own calendar (skipped as before) from a
+   * colleague's (a share: skipped with a line, listed read-only).
    *
    * <p>
    * The <em>dedicated</em> mirror is skipped because its contents are copies
@@ -1793,21 +1832,18 @@ public class CaldavSyncService {
    * was never materialised, nor its events ever read.
    *
    * <p>
-   * <b>The user's own pairs before the database.</b> The account-wide
-   * ownership question walks the pair table — no index serves it, see the
-   * DAO — so it is asked last, after the pairs already in hand have had
-   * their say: a collection this user is bound to, whatever its origin or
-   * state, costs no query. What that ordering cannot save is a collection
-   * the server republishes under a path the user's pairs do not record;
-   * there {@code known} matches nothing and the question is asked as before.
+   * <b>Nothing here costs a query.</b> Blank, the mirror's slug, and the
+   * pairs already in hand: a collection this user is bound to, whatever its
+   * origin or state, is settled from memory. The account-wide ownership
+   * question walks the pair table — no index serves it, see the DAO — and
+   * is asked only after this gate, by the classification, and only for a
+   * prefixed collection none of the user's pairs recognise.
    *
-   * @param serverId the declared server registration, which scopes the
-   *          account-wide ownership question
    * @param collection the listed collection
    * @param known every pair this user holds on this server
    * @return true when nothing should be created for it
    */
-  private boolean isAlreadyOurs(long serverId, CalendarCollection collection, List<CalendarSync> known) {
+  private boolean isAlreadyOurs(CalendarCollection collection, List<CalendarSync> known) {
     String href = CaldavSyncStorage.canonicalHref(collection.href());
     if (StringUtils.isBlank(href)) {
       // A collection with no path is nothing we can bind to, name, or find
@@ -1819,10 +1855,9 @@ public class CaldavSyncService {
     if (isDedicatedMirror(href)) {
       return true;
     }
-    boolean bound = known.stream()
-                         .filter(CaldavSyncService::bindsACalendar)
-                         .anyMatch(pair -> href.equals(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())));
-    return bound || caldavOutboundService.isMintedByThisDeployment(serverId, href);
+    return known.stream()
+                .filter(CaldavSyncService::bindsACalendar)
+                .anyMatch(pair -> href.equals(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())));
   }
 
   /**
@@ -1886,9 +1921,10 @@ public class CaldavSyncService {
    * can be shared, and another eXo user's dedicated mirror must not be
    * materialised as this user's calendar either. The mirror's slug is one
    * and the same on every deployment, and its contents are copies wherever
-   * they came from — so unlike the outbound prefix
-   * ({@link CaldavOutboundService#isMintedByThisDeployment(long, String)}),
-   * the path alone is the right test here.
+   * they came from — so unlike the outbound prefix, whose collections are
+   * classified by whose calendar stands behind them
+   * ({@link CaldavOutboundService#ownershipOf}), the path alone is the right
+   * test here.
    *
    * @param href the collection path, canonical
    * @return true when the path is the dedicated mirror's
