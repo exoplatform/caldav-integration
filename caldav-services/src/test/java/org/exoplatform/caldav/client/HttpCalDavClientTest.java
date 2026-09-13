@@ -302,6 +302,37 @@ public class HttpCalDavClientTest {
   }
 
   /**
+   * The walk the sync and the read-through run keeps the principal the first
+   * hop answered beside the home: the listing compares each collection's
+   * owner against it (EXO-90235), and asking for it separately would be the
+   * same PROPFIND a third time on every pass.
+   */
+  @Test
+  void discoverHomeAnswersThePrincipalBesideTheHomeInTheSameTwoHops() throws Exception {
+    givenAnswers("""
+        <?xml version="1.0" encoding="UTF-8"?>
+        <D:multistatus xmlns:D="DAV:">
+          <D:response><D:href>%s</D:href><D:propstat><D:prop>
+            <D:current-user-principal><D:href>/dav/pal/alice%%40stalwart.local/</D:href></D:current-user-principal>
+          </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+        </D:multistatus>""".formatted(BASE_PATH),
+                 """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <D:multistatus xmlns:D="DAV:" xmlns:A="urn:ietf:params:xml:ns:caldav">
+          <D:response><D:href>/dav/pal/alice%40stalwart.local/</D:href><D:propstat><D:prop>
+            <A:calendar-home-set><D:href>/dav/cal/alice%40stalwart.local/</D:href></A:calendar-home-set>
+          </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+        </D:multistatus>""");
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    CalendarHome home = client.discoverHome(endpoint);
+
+    assertEquals("/dav/pal/alice%40stalwart.local/", home.principal());
+    assertEquals("/dav/cal/alice%40stalwart.local/", home.href());
+    assertEquals(2, sent.size(), "the principal comes out of the walk, not out of a third PROPFIND");
+  }
+
+  /**
    * The account's default calendar is asked of its scheduling inbox, in the two
    * hops RFC 6638 defines.
    */
