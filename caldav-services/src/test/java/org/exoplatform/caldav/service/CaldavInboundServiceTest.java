@@ -38,7 +38,9 @@ import static org.mockito.Mockito.when;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Locale;
 
 import org.junit.jupiter.api.BeforeEach;
 import java.util.Map;
@@ -73,6 +75,8 @@ import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
+import org.exoplatform.agenda.util.EventIcsBuilder;
+import org.exoplatform.agenda.util.InvitationText;
 import org.exoplatform.container.ExoContainer;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.container.component.ComponentRequestLifecycle;
@@ -122,6 +126,21 @@ public class CaldavInboundServiceTest {
 
   /** The name this add-on registers itself under as an agenda remote provider. */
   private static final String    CONNECTOR = "agenda.caldavCalendar";
+
+  /**
+   * The address of an event in eXo, which is both what a composed block names
+   * and what the object's {@code URL} carries — one value in production
+   * ({@code AgendaEventIcsMapper.toIcsEvent} passes the same link to both), so
+   * one constant here.
+   */
+  private static final String    EXO_EVENT_URL = "http://localhost:8080/portal/dw/agenda?eventId=87";
+
+  /** Where the tokenised answer links a real copy offers point. */
+  private static final String    ANSWER_URL =
+                                            "http://localhost:8080/portal/rest/v1/agenda/events/87/response/send?response=";
+
+  /** The organiser's own words: the one thing a composed block must leave. */
+  private static final String    ORGANISERS_TEXT = "Bring the deck.";
 
   /**
    * A weekly series with one occurrence moved and one cancelled — the same
@@ -589,6 +608,239 @@ public class CaldavInboundServiceTest {
     assertEquals("Moved", saved.getValue().getSummary());
     // The same event, not a new one beside it.
     assertEquals(501L, saved.getValue().getId());
+  }
+
+  /**
+   * <b>The route (EXO-90227).</b> A personal-calendar binding, which is what
+   * {@link #pair()} is — {@code REMOTE}: the collection existed on the server
+   * and eXo materialised a <em>calendar</em> for it. The origin is incidental
+   * to this route, and deliberately so: the inbound sweep reads every binding
+   * that is not the mirror ledger ({@code CaldavSyncService.importRemoteEvents}
+   * filters {@code origin != MIRROR}), so an {@code EXO}-origin pair — a
+   * collection eXo created from a personal calendar — reads back by exactly the
+   * same path and carries exactly the same block. The object in it is a copy
+   * <em>eXo itself pushed</em> there:
+   * {@code CaldavPushService.pushAgendaEvent} composes the copy through
+   * {@code AgendaEventIcsMapper.toIcsEvent} for a personal collection exactly
+   * as for the mirror, so its description carries the invitation blurb and its
+   * {@code URL} names the event. The mapping row that push wrote is
+   * {@code REMOTE}, not {@code MIRROR}, so
+   * {@code CaldavSyncStorage.isMirrorOwned} — which counts {@code MIRROR} rows
+   * — legitimately answers <b>false</b> and the object is read back like any
+   * other; the server only has to move its ETag, which BlueMind does by
+   * linkifying the very links in that blurb. Held whole, the blurb became the
+   * event's description, the next push composed a second one on top of it, and
+   * the object grew by one block per edit.
+   *
+   * <p>
+   * The rig's own shape was the two-user form of the same route — two users'
+   * personal bindings on <em>one shared</em> collection, which compute the same
+   * href for one UID, so each user's push landed on the other's object and each
+   * import read the other's blurb, which is why the stacked blocks named the
+   * two users' event ids alternately. The outbound guard of EXO-90190
+   * ({@code CaldavSyncStorage.isMirrorOwnedByAnotherUser}) does not cover it
+   * either: like {@code isMirrorOwned} it counts {@code MIRROR} pairs, and
+   * neither of these is one. That the two writes clobber each other at all is a
+   * separate matter, and not this pin's.
+   *
+   * <p>
+   * The guard is stubbed false rather than left to Mockito's default so the
+   * configuration is stated: this is the answer the caller gets in production
+   * for a personal-calendar copy, not an accident of an unstubbed mock.
+   */
+  @Test
+  public void theBlurbOnACopyExoPushedIntoAPersonalCollectionIsNotStoredAsTheDescription() throws Exception {
+    givenServerObjects(object("o1.ics",
+                              "etag-2",
+                              icsDescribed("uid-1@example.test",
+                                           "alice2Event123",
+                                           "20261005T120000Z",
+                                           "Invitation envoyée par alice2.\\n\\nEvent link: http://localhost:8080/portal/dw/agenda?eventId=87"
+                                               + "\\n\\nDétails de l'événement :\\nBring cake.",
+                                           "http://localhost:8080/portal/dw/agenda?eventId=87")));
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(false);
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
+
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    ArgumentCaptor<Event> saved = ArgumentCaptor.forClass(Event.class);
+    verify(agendaEventService).updateEvent(saved.capture(), any(), any(), any(), any(), any(), eq(false), eq(USER));
+    assertEquals("Bring cake.", saved.getValue().getDescription());
+    assertEquals("alice2Event123", saved.getValue().getSummary());
+  }
+
+  /**
+   * <b>Half one of the gate's pin, end to end.</b> The block is not typed out
+   * here but composed by agenda's own {@link EventIcsBuilder} — the very call
+   * the push path makes — written into a real ICS document, and read back
+   * through the real parser: a copy eXo wrote arrives with the organiser's words
+   * alone.
+   *
+   * <p>
+   * Its point is to keep the verbatim pin below honest. A narrowing of the
+   * recogniser that stopped recognising eXo's own render would leave that pin
+   * green and asserting nothing at all — which is exactly what happened to its
+   * first spelling (see there).
+   */
+  @Test
+  public void theBlockAgendasOwnBuilderComposesIsNotStoredAsTheDescription() throws Exception {
+    givenServerObjects(object("o1.ics",
+                              "etag-2",
+                              icsDescribed("uid-1@example.test",
+                                           "Retro",
+                                           "20261005T120000Z",
+                                           icsEscaped(blockExoComposed()),
+                                           EXO_EVENT_URL)));
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(false);
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
+
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    ArgumentCaptor<Event> saved = ArgumentCaptor.forClass(Event.class);
+    verify(agendaEventService).updateEvent(saved.capture(), any(), any(), any(), any(), any(), eq(false), eq(USER));
+    assertEquals(ORGANISERS_TEXT, saved.getValue().getDescription());
+  }
+
+  /**
+   * <b>Half two, and the regression guard the gate exists for.</b> The same
+   * block — the one input the recogniser is certain to strip — on an object
+   * carrying <em>no</em> eXo event address is stored byte for byte through the
+   * whole import, parser included. Nothing in agenda or here keeps a copy of
+   * those words, so this is the pin that stands between a shape heuristic and a
+   * user's text.
+   *
+   * <p>
+   * <b>It stands there only because its input is a real render.</b> The first
+   * spelling typed a shape a person might write — {@code Hi all,} / a labelled
+   * eXo link / {@code Thanks,} / {@code Bob} — and agenda's own narrowing of
+   * {@link InvitationText} (a label is now short and ends in a colon, or is a
+   * bundle key of ours) made the recogniser return that text untouched by
+   * itself. The pin then asserted what the recogniser already guaranteed, and
+   * the gate could be deleted outright with the whole suite still green.
+   */
+  @Test
+  public void theBlockAgendasOwnBuilderComposesIsStoredVerbatimWithNoExoEventUrl() throws Exception {
+    String composed = blockExoComposed();
+    givenServerObjects(object("o1.ics",
+                              "etag-2",
+                              icsDescribed("uid-1@example.test",
+                                           "Retro",
+                                           "20261005T120000Z",
+                                           icsEscaped(composed),
+                                           null)));
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(false);
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
+
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    ArgumentCaptor<Event> saved = ArgumentCaptor.forClass(Event.class);
+    verify(agendaEventService).updateEvent(saved.capture(), any(), any(), any(), any(), any(), eq(false), eq(USER));
+    assertEquals(composed, saved.getValue().getDescription());
+  }
+
+  /**
+   * An invitation block as eXo composes it, built by agenda's own builder rather
+   * than typed out here.
+   *
+   * <p>
+   * Every argument is what the push path passes for a real copy
+   * ({@code AgendaEventIcsMapper.description}): the pusher's name, the space,
+   * the link back to the event, and the three tokenised answer links a calendar
+   * copy offers (EXO-89753). No Agenda bundle is readable from this suite, so
+   * every label comes out as its resource-bundle key — a shape
+   * {@link InvitationText} recognises on purpose, since it is what the builder
+   * itself writes when no bundle can be read. The assertions do not depend on
+   * that either way: they name the organiser's text, or this whole string.
+   *
+   * @return the description a copy eXo composed carries, block and organiser's
+   *         text together
+   */
+  private String blockExoComposed() {
+    Map<EventAttendeeResponse, String> rsvpLinks = new EnumMap<>(EventAttendeeResponse.class);
+    rsvpLinks.put(EventAttendeeResponse.ACCEPTED, ANSWER_URL + "ACCEPTED&token=tok-a");
+    rsvpLinks.put(EventAttendeeResponse.TENTATIVE, ANSWER_URL + "TENTATIVE&token=tok-t");
+    rsvpLinks.put(EventAttendeeResponse.DECLINED, ANSWER_URL + "DECLINED&token=tok-d");
+    return EventIcsBuilder.description(Locale.ENGLISH,
+                                       "Alice Doe",
+                                       "Chemistry",
+                                       null,
+                                       EXO_EVENT_URL,
+                                       rsvpLinks,
+                                       "<p>" + ORGANISERS_TEXT + "</p>");
+  }
+
+  /**
+   * One value as RFC 5545 &sect;3.3.11 spells it, so text composed at runtime
+   * can be written into a document rather than pre-escaped by hand.
+   *
+   * <p>
+   * The backslash goes first, or the escapes this adds would be escaped in turn.
+   *
+   * @param value the text to write into a property
+   * @return the same text with the four characters the grammar reserves escaped
+   */
+  private String icsEscaped(String value) {
+    return value.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n");
+  }
+
+  /**
+   * And a copy naming another eXo deployment is stripped all the same
+   * (EXO-89824): no mapping row here owns it, nothing in this database knows it
+   * exists, and its blurb is as unwanted in a stored description as a local
+   * one.
+   */
+  @Test
+  public void theBlurbOnAnotherDeploymentsCopyIsNotStoredAsTheDescription() throws Exception {
+    givenServerObjects(object("o1.ics",
+                              "etag-2",
+                              icsDescribed("uid-1@example.test",
+                                           "Retro",
+                                           "20261005T120000Z",
+                                           "Invitation sent by Ada in space Chem.\\n\\nEvent link: https://acceptance.example.test/portal/dw/agenda?eventId=4242"
+                                               + "\\n\\nEvent detail:\\nBring cake.",
+                                           "https://acceptance.example.test/portal/dw/agenda?eventId=4242")));
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(false);
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
+
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    ArgumentCaptor<Event> saved = ArgumentCaptor.forClass(Event.class);
+    verify(agendaEventService).updateEvent(saved.capture(), any(), any(), any(), any(), any(), eq(false), eq(USER));
+    assertEquals("Bring cake.", saved.getValue().getDescription());
+  }
+
+  /**
+   * @param uid the object's uid
+   * @param summary its summary
+   * @param lastModified its LAST-MODIFIED stamp
+   * @param description its DESCRIPTION, already escaped as RFC 5545 spells a
+   *          line break ({@code \\n})
+   * @param url the {@code URL} property, or null for an object that carries
+   *          none — the gate of {@code IcsEventMapper.descriptionOf}, so which
+   *          of the two an object is decides whether its description is read
+   *          for a block at all
+   * @return a single-event calendar object carrying that description
+   */
+  private String icsDescribed(String uid, String summary, String lastModified, String description, String url) {
+    return """
+        BEGIN:VCALENDAR
+        VERSION:2.0
+        PRODID:-//Exo Platform//NONSGML v1.0//EN
+        BEGIN:VEVENT
+        DTSTAMP:20261001T080000Z
+        LAST-MODIFIED:%s
+        UID:%s
+        DTSTART:20261012T090000Z
+        DTEND:20261012T100000Z
+        SUMMARY:%s
+        DESCRIPTION:%s
+        %sEND:VEVENT
+        END:VCALENDAR
+        """.formatted(lastModified, uid, summary, description, url == null ? "" : "URL:" + url + "\n");
   }
 
   /**
