@@ -40,9 +40,10 @@ package org.exoplatform.caldav.client;
  * generic refusal never carries a 403.
  *
  * <p>
- * Nothing in the body is parsed. RFC 3744 §7.1.1 lets a server name the
- * missing privilege in a {@code DAV:need-privileges} element, and neither of
- * the two servers this add-on is verified against was captured doing so; the
+ * Nothing in the body is parsed. RFC 3744 §7.1.1 requires a 403 answered for
+ * insufficient privileges to carry a {@code DAV:error} element with a
+ * {@code DAV:need-privileges} naming what was missing; neither of the two
+ * servers this add-on is verified against was captured doing so, and the
  * status alone is what the engine acts on.
  */
 public class CalDavForbiddenException extends CalDavException {

@@ -1418,6 +1418,35 @@ public class CaldavSyncServiceTest {
   }
 
   /**
+   * A share skipped on the privilege signal alone, on a server that names no
+   * principal, is said with the principal "not stated" rather than a bare
+   * {@code null} — the line is written for an operator, and the same absence
+   * is already spelled out for the owner beside it.
+   */
+  @Test
+  public void aSkippedShareNamesAnAbsentPrincipalAsNotStated() throws Exception {
+    when(calDavClient.discoverHome(any())).thenReturn(new CalendarHome(null, HOME));
+    givenServerCalendars(owned("/dav/calendars/john/readonly/", "Read only", null, true, false));
+    givenNoKnownPairs();
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getLevel() == Level.INFO
+                    && recorded.getFormattedMessage().contains("shared with user " + USER))
+                .toList();
+    }
+
+    assertEquals(1, said.size());
+    String line = said.get(0).getFormattedMessage();
+    assertTrue(line.contains("the account's principal is not stated"), line);
+    assertFalse(line.contains("null"), line);
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  /**
    * A share an earlier pass materialised — before ownership was read — keeps
    * its calendar and its binding: the sweep neither makes a second calendar
    * for it nor deletes the one it made. What to do with such calendars is a

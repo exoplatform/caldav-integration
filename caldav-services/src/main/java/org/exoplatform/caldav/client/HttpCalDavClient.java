@@ -348,6 +348,17 @@ public class HttpCalDavClient implements CalDavClient {
     return new CalDavEndpoint(serverId, base, authProviderName, exoLogin);
   }
 
+  /**
+   * The home half of {@link #discoverHome}, kept for the callers that need
+   * where the calendars are and never compare owners — the outbound binding,
+   * the mirror lookup, the deletion path. One walk, two views of its answer.
+   *
+   * @param endpoint the declared server to discover on
+   * @return the calendar home's server-absolute raw path
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached or answers no
+   *           principal or no home
+   */
   @Override
   public String discoverCalendarHome(CalDavEndpoint endpoint) {
     return discoverHome(endpoint).href();
