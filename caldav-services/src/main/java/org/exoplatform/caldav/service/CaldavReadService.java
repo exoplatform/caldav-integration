@@ -35,6 +35,7 @@ import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.ics.IcsReader;
 import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.RemoteCalendar;
 import org.exoplatform.caldav.model.RemoteCalendarsRead;
 import org.exoplatform.caldav.model.RemoteEventsRead;
@@ -71,6 +72,9 @@ public class CaldavReadService {
   @Autowired
   private CaldavSyncStorage      caldavSyncStorage;
 
+  @Autowired
+  private CaldavOutboundService  caldavOutboundService;
+
   /**
    * The calendars of the connected account, and whether the account could be
    * asked at all.
@@ -102,19 +106,6 @@ public class CaldavReadService {
     List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
     List<RemoteCalendar> calendars = new ArrayList<>();
     for (CalendarCollection collection : collections) {
-      if (isExoCreated(collection.href())) {
-        // A collection an eXo made, that this user has no binding for. Either
-        // this deployment's own, left behind when a database was restored or
-        // reset while the account kept what was pushed to it — the sync
-        // refuses to materialise those, so offering one here is offering
-        // something that can never become a calendar; or another eXo
-        // deployment's, which the sync adopts as an ordinary remote calendar
-        // on its next pass (EXO-90226) and which is then bound, and so
-        // excluded from this list by the binding rather than by the path.
-        // Neither belongs under Remote, so the path alone is still the right
-        // test here.
-        continue;
-      }
       if (!collection.holdsEvents()) {
         // The same refusal materialisation makes, for the same reason: a
         // CalDAV home publishes the account's task list beside its calendars,
@@ -124,14 +115,36 @@ public class CaldavReadService {
         // section exists to show.
         continue;
       }
+      // The one classification the sweep runs on the same listing, with the
+      // same principal and the same pairs (EXO-90234). Asked after the
+      // component test, so a task list never costs the account-wide question.
+      CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId(settings),
+                                                                        listing.principal(),
+                                                                        listing.pairs(),
+                                                                        collection);
+      if (isExoCreated(collection.href()) && !ownership.isShared()) {
+        // A collection an eXo made, that this user has no binding for and
+        // that is nobody else's. Either the user's own eXo calendar, met again
+        // under a path BlueMind republished it at — the sync skips it, so
+        // offering it here is offering something that can never become a
+        // calendar; or another eXo deployment's, which the sync adopts as an
+        // ordinary remote calendar on its next pass (EXO-90226) and which is
+        // then bound, and so excluded from this list by the binding rather
+        // than by the path. Neither belongs under Remote. A colleague's eXo
+        // calendar shared with the user does (EXO-90234): the sync never
+        // binds it, so this list is the only place it can appear, and it is
+        // classified a share above rather than dropped on its prefix here.
+        continue;
+      }
       // Read-only when the server granted no write, as before — and also when
-      // it named somebody else as owner, whatever it granted. The second is the
-      // same predicate the sweep refuses to materialise on (EXO-90235), asked
-      // here of the same listing with the same principal, so a calendar the
-      // sweep will never make the user's own is never offered here as one they
-      // could write into. The three paths — skip, list, serve — agree because
-      // they share the one question rather than three spellings of it.
-      boolean readOnly = !collection.writable() || collection.isSharedWith(listing.principal());
+      // the collection is somebody else's, whichever witness said so: the
+      // server naming another owner (EXO-90235), or this deployment
+      // recognising a colleague's exported calendar (EXO-90234). It is the
+      // same classification the sweep refuses to materialise on, so a calendar
+      // the sweep will never make the user's own is never offered here as one
+      // they could write into. The three paths — skip, list, serve — agree
+      // because they share the one question rather than three spellings of it.
+      boolean readOnly = !collection.writable() || ownership.isShared();
       calendars.add(new RemoteCalendar(collection.href(),
                                        collection.displayName(),
                                        CalendarPalette.colourOf(collection.color(),
@@ -319,18 +332,45 @@ public class CaldavReadService {
       return listing;
     }
     String mirror = CaldavSyncStorage.canonicalHref(settings.getMirrorCalendarHref());
-    Set<String> bound = boundCollections(userIdentityId, settings);
+    // Loaded once and carried with the listing: the bound filter below reads
+    // them, and the classification the calendar list runs reads them again
+    // (EXO-90234) — the user's own EXO pairs are what tell their own exported
+    // calendar from a colleague's before the database is asked.
+    List<CalendarSync> pairs = caldavSyncStorage.getPairs(userIdentityId, serverId(settings));
+    Set<String> bound = boundCollections(pairs);
     // A collection a colleague shared is not filtered here, on purpose: the
-    // sweep never binds it (EXO-90235), so it stays unbound, and an unbound
-    // collection is precisely what this path exists to serve. Its events reach
-    // the agenda read-only through here, which is the only way they reach it.
+    // sweep never binds it (EXO-90235, EXO-90234), so it stays unbound, and an
+    // unbound collection is precisely what this path exists to serve. Its
+    // events reach the agenda read-only through here, which is the only way
+    // they reach it.
     return new CollectionListing(listing.collections()
                                         .stream()
                                         .filter(collection -> !isMirror(collection, mirror))
                                         .filter(collection -> !bound.contains(CaldavSyncStorage.canonicalHref(collection.href())))
                                         .toList(),
                                  false,
-                                 listing.principal());
+                                 listing.principal(),
+                                 pairs);
+  }
+
+  /**
+   * Whether a collection is one <em>an</em> eXo created on the account — this
+   * deployment or any other.
+   *
+   * <p>
+   * Read from the path, which eXo derives, rather than from a binding: the
+   * point is precisely to recognise the ones no binding accounts for any more.
+   * Which deployment minted it, and for whom, is not asked here: that is
+   * {@link CaldavOutboundService#ownershipOf}'s question, and the caller
+   * combines the two — an eXo-made collection is dropped from the list unless
+   * the classification says it is somebody else's (EXO-90234).
+   *
+   * @param href the collection path
+   * @return true when an eXo made it, whichever one
+   */
+  private boolean isExoCreated(String href) {
+    String slug = StringUtils.substringAfterLast(StringUtils.stripEnd(href, "/"), "/");
+    return StringUtils.startsWith(slug, CaldavOutboundService.COLLECTION_PREFIX);
   }
 
   /**
@@ -353,36 +393,25 @@ public class CaldavReadService {
    * that has not happened yet, or one that failed, must leave the user seeing
    * their events rather than silently losing them.
    *
-   * @param userIdentityId identity of the user
-   * @param settings the connected account
+   * @param pairs every pair this user holds on this server
    * @return the canonical paths eXo already holds, empty when none
    */
-  /**
-   * Whether a collection is one <em>an</em> eXo created on the account — this
-   * deployment or any other.
-   *
-   * <p>
-   * Read from the path, which eXo derives, rather than from a binding: the
-   * point is precisely to recognise the ones no binding accounts for any more.
-   * Which deployment minted it is not asked here, and need not be: neither
-   * kind belongs under Remote, as the caller explains, so the path alone is
-   * the right test in this one place.
-   *
-   * @param href the collection path
-   * @return true when an eXo made it, whichever one
-   */
-  private boolean isExoCreated(String href) {
-    String slug = StringUtils.substringAfterLast(StringUtils.stripEnd(href, "/"), "/");
-    return StringUtils.startsWith(slug, CaldavOutboundService.COLLECTION_PREFIX);
+  private Set<String> boundCollections(List<CalendarSync> pairs) {
+    return pairs.stream()
+                .map(pair -> CaldavSyncStorage.canonicalHref(pair.getRemoteHref()))
+                .filter(StringUtils::isNotBlank)
+                .collect(Collectors.toSet());
   }
 
-  private Set<String> boundCollections(long userIdentityId, CaldavUserSetting settings) {
-    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
-    return caldavSyncStorage.getPairs(userIdentityId, serverId)
-                            .stream()
-                            .map(pair -> CaldavSyncStorage.canonicalHref(pair.getRemoteHref()))
-                            .filter(StringUtils::isNotBlank)
-                            .collect(Collectors.toSet());
+  /**
+   * The declared server an account is connected to, as the pair table keys
+   * it.
+   *
+   * @param settings the connected account
+   * @return the server registration, zero when the account names none
+   */
+  private long serverId(CaldavUserSetting settings) {
+    return settings.getServerId() == null ? 0L : settings.getServerId();
   }
 
   /**
@@ -425,10 +454,11 @@ public class CaldavReadService {
       return new CollectionListing(calDavClient.listCalendars(endpoint,
                                                               account.href()),
                                    false,
-                                   account.principal());
+                                   account.principal(),
+                                   List.of());
     } catch (CalDavException e) {
       LOG.warn("The calendars of the connected account could not be listed", e);
-      return new CollectionListing(List.of(), true, null);
+      return new CollectionListing(List.of(), true, null, List.of());
     }
   }
 
@@ -470,8 +500,15 @@ public class CaldavReadService {
    *          server named it during the walk that found the home; null on
    *          failure, and null when the server named none — which leaves the
    *          owner comparison off rather than pointing it at anybody
+   * @param pairs every pair the user holds on this server, loaded once for
+   *          the bound filter and read again by the classification the
+   *          calendar list runs (EXO-90234); empty before the filter ran, and
+   *          on failure
    */
-  private record CollectionListing(List<CalendarCollection> collections, boolean failed, String principal) {
+  private record CollectionListing(List<CalendarCollection> collections,
+                                   boolean failed,
+                                   String principal,
+                                   List<CalendarSync> pairs) {
   }
 
   /**

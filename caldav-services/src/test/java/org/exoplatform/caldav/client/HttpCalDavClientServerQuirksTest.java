@@ -80,6 +80,15 @@ import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
  * ({@code net.bluemind.dav.server} {@code Owner.java} /
  * {@code CurrentUserPrincipal.java}, master, read 2026-09-13), which is
  * what the negative pin of EXO-90235 on that server rests on.</li>
+ * <li>{@code bluemind-propfind-home-depth1-sharee-subscribed.xml} — DERIVED
+ * from the with-owner fixture and from the observation record of EXO-90234
+ * (rig, BlueMind test server, 2026-09-13): after a colleague shared their
+ * eXo-pushed calendar {@code exo-cal-959b5529-…} read-only and the user
+ * subscribed, the Depth:1 listing of the <b>user's own</b> home returned it
+ * under that home with the same slug, {@code DAV:owner} naming the
+ * <b>user</b> and the full privilege set — and a subscribed resource
+ * ({@code calendar:7E3AE6F3-…}, "Véhicule de pool 1") the same way. The raw
+ * capture of the sharee's home is still owed.</li>
  * <li>{@code bluemind-403-refused-auth.http} — captured live from the
  * BlueMind demo (2026-08-20), unauthenticated and with wrong credentials
  * alike: <b>403</b>, text/html, no WWW-Authenticate.</li>
@@ -501,6 +510,41 @@ public class HttpCalDavClientServerQuirksTest {
       assertTrue(calendar.writable(), calendar.href());
       assertFalse(calendar.isSharedWith(BLUEMIND_PRINCIPAL), calendar.href() + " is the account's own on BlueMind");
     }
+  }
+
+  /**
+   * The BlueMind shape of EXO-90234, parsed: a colleague's eXo calendar the
+   * user subscribed to sits under the user's own home with the user named
+   * as owner and write granted, and so does a subscribed resource — neither
+   * of the server's two signals fires on either. What does tell CAL2 apart
+   * is the anchor in its slug, which the engine reads from the path; the
+   * resource carries none. This is the fact the deployment-level
+   * classification ({@code CaldavOutboundService#ownershipOf}) exists for,
+   * pinned on the wire shape rather than on hand-built records.
+   */
+  @Test
+  void aColleaguesExoCalendarSubscribedOnBlueMindLooksLikeTheUsersOwnToTheServer() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-propfind-home-depth1-sharee-subscribed.xml"));
+
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, BLUEMIND_HOME);
+
+    CalendarCollection cal2 = only(calendars, BLUEMIND_HOME + "exo-cal-959b5529-ea4c-4ae4-a793-a2c201c3af9f/");
+    assertEquals("CAL2", cal2.displayName());
+    assertEquals(BLUEMIND_PRINCIPAL, cal2.owner(), "BlueMind names the subscriber as owner of the share");
+    assertTrue(cal2.privilegesAnswered());
+    assertTrue(cal2.writable(), "and grants them the full set");
+    assertFalse(cal2.isSharedWith(BLUEMIND_PRINCIPAL), "so the server's word alone calls it the user's own");
+    assertTrue(cal2.holdsEvents());
+    assertEquals("959b5529-ea4c-4ae4-a793-a2c201c3af9f",
+                 org.exoplatform.caldav.service.CaldavOutboundService.anchorOf(cal2.href()),
+                 "the anchor eXo minted it under is what names the colleague's calendar");
+
+    CalendarCollection vehicle = only(calendars, BLUEMIND_HOME + "calendar:7E3AE6F3-5B2C-4D1E-9A8F-6C0B3D2E1F4A/");
+    assertEquals(BLUEMIND_PRINCIPAL, vehicle.owner());
+    assertTrue(vehicle.writable());
+    assertFalse(vehicle.isSharedWith(BLUEMIND_PRINCIPAL));
+    assertNull(org.exoplatform.caldav.service.CaldavOutboundService.anchorOf(vehicle.href()),
+               "a resource subscription carries no anchor: nothing eXo knows names it, and it is left as it was");
   }
 
   /**

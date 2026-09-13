@@ -163,10 +163,13 @@ public record CalendarCollection(String href,
    * What this does <b>not</b> tell apart is a share from a subscribed copy on
    * a server that misreports one: BlueMind lists a calendar the user
    * subscribed to under their own home, names <em>them</em> as its owner and
-   * grants them the full privilege set, so neither signal fires there. That
-   * server needs signals of its own (EXO-90234); this method deliberately
-   * leaves the two rules above as the whole of what it reads, so those can be
-   * added beside them rather than folded into them.
+   * grants them the full privilege set, so neither signal fires there. The
+   * signal that does hold there is not the server's but this deployment's —
+   * the slug of a colleague's <em>eXo</em> calendar carries the anchor eXo
+   * exported it under — and it is read beside this method, not inside it, by
+   * {@code CaldavOutboundService#ownershipOf} (EXO-90234), which the sweep
+   * and the read-through both classify with. This method deliberately keeps
+   * the two server rules above as the whole of what it reads.
    *
    * @param currentUserPrincipal the {@code current-user-principal} of the
    *          account listing this collection, as a server-absolute path;
