@@ -254,14 +254,19 @@ public class AgendaEventIcsMapper {
    * into this same field.
    *
    * <p>
-   * <b>One block, the pusher's own, whatever the description carries.</b> An
-   * event imported from a copy another eXo user wrote used to hold that
-   * copy's whole description, block included, and this render wrapped it in
-   * a second one on every round trip (EXO-90227). Two guards now, in two
-   * places: the builder itself takes any block already present off the
-   * description before writing its own, and the import
-   * ({@link org.exoplatform.caldav.ics.IcsEventMapper}) no longer stores one
-   * in the first place. Both read the block through agenda's
+   * <b>One block, the pusher's own, whatever the description carries.</b> This
+   * render composes the block for a copy written into a <em>personal</em>
+   * collection exactly as for the mirror, and a personal copy is read back: no
+   * mirror row owns it, so {@code CaldavInboundService.isMirrorOwned} answers
+   * false for it, the inbound sweep imports it like any other object of that
+   * collection, and the block became the event's stored description — which
+   * this render then wrapped in a second one, one more per edit (EXO-90227).
+   * Two guards now, in two places: the builder itself takes any block already
+   * present off the description before writing its own, and the import
+   * ({@link org.exoplatform.caldav.ics.IcsEventMapper}) no longer stores one in
+   * the first place — there, gated on the object carrying this very
+   * {@code URL}, because the block is recognised by the shape of the text and
+   * that shape is one a person can type. Both read the block through agenda's
    * {@link org.exoplatform.agenda.util.InvitationText}, so there is one
    * spelling of what the block looks like.
    *

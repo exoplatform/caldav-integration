@@ -21,6 +21,7 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
@@ -49,7 +50,44 @@ import org.exoplatform.services.log.Log;
 @Component
 public class IcsEventMapper {
 
-  private static final Log LOG = ExoLogger.getLogger(IcsEventMapper.class);
+  private static final Log     LOG           = ExoLogger.getLogger(IcsEventMapper.class);
+
+  /**
+   * The whole of a {@code URL} property that is an eXo event address — the one
+   * thing on a calendar object that says eXo composed it.
+   *
+   * <p>
+   * The gate of {@link #descriptionOf(IcsEvent)}, and it reads a single URI
+   * value rather than free text: {@code URL} carries exactly one address, so
+   * the value is matched end to end and a value with anything else in it is
+   * not an eXo event address. Both carriers of this address — the property and
+   * the labelled line inside the description — are written from one value
+   * derived in one place ({@code AgendaEventIcsMapper.eventUrl}, EXO-89751),
+   * so a description that carries the line carries this property too, and a
+   * render with no address to write writes neither: verified against the
+   * installed builder, {@code EventIcsBuilder.description} with a null link
+   * emits no event-link line at all, which is a block
+   * {@link InvitationText#stripFrom(String)} does not recognise in the first
+   * place. That is what makes the gate free of false negatives on eXo's own
+   * copies rather than merely cheap.
+   *
+   * <p>
+   * <b>Deliberately not {@code CaldavInboundService.EXO_EVENT_LINK}</b>, which
+   * scans free text and reads the authority out of the address, and therefore
+   * has to refuse a link served under a path lest it name the wrong
+   * deployment. This one reads nothing off the address and must accept that
+   * shape: a deployment whose base URL carries a path composes copies like any
+   * other, and refusing them here would leave its users with the block in
+   * their stored descriptions for ever. It accepts a scheme-less address for
+   * the same reason — costing nothing, since nothing is read out of it.
+   *
+   * <p>
+   * <b>A different deployment's address passes on purpose.</b> A copy naming
+   * an eXo other than this one is still a copy eXo composed (EXO-89824), and
+   * its block is exactly as unwanted in a stored description as a local one.
+   */
+  private static final Pattern EXO_EVENT_URL = Pattern.compile("(?:https?://)?[^\\s<>\"']+/portal/[^/\\s<>?]+/agenda\\?eventId=\\d+",
+                                                               Pattern.CASE_INSENSITIVE);
 
   /**
    * The agenda event standing for one parsed object.
@@ -60,18 +98,9 @@ public class IcsEventMapper {
    * an event carrying an id it invented would overwrite whatever holds it.
    *
    * <p>
-   * The description is what the organiser typed, not what the object says:
-   * a copy another eXo user — or another eXo — wrote carries agenda's own
-   * invitation text in front of it, and holding that text as the event's
-   * description is what made two users on one account stack one block per
-   * edit into the object (EXO-90227). Agenda's builder no longer stacks a
-   * second block on a description that carries one, which stops the growth
-   * on every channel it renders; this is the other half, for everything that
-   * reads the <em>stored</em> description directly — the event drawer, the
-   * body of the notification mail, search — and would otherwise show the
-   * other user's name, event id and answer links for ever. The recognition is
-   * agenda's ({@link InvitationText}), spelled once, beside the builder whose
-   * layout it reads; a description that carries none is kept exactly as read.
+   * The description is what the organiser typed, not what the object says —
+   * see {@link #descriptionOf(IcsEvent)} for what is taken off it, on which
+   * objects, and what that can cost.
    *
    * @param source the parsed object
    * @param calendarId the eXo calendar the event belongs in
@@ -84,7 +113,7 @@ public class IcsEventMapper {
     // field for it, and the binding lives in the CALDAV_OBJECT_SYNC ledger
     // where it can outlive an event agenda renumbers.
     event.setSummary(StringUtils.defaultIfBlank(source.getSummary(), ""));
-    event.setDescription(InvitationText.stripFrom(source.getDescription()));
+    event.setDescription(descriptionOf(source));
     event.setLocation(source.getLocation());
     event.setAllDay(source.isAllDay());
     ZoneId zone = zoneOf(source.getTimeZoneId());
@@ -98,6 +127,82 @@ public class IcsEventMapper {
     event.setStatus(EventStatus.CONFIRMED);
     event.setRecurrence(recurrenceOf(source, zone));
     return event;
+  }
+
+  /**
+   * The description agenda stores: the organiser's own text, with an
+   * invitation block eXo composed taken off the front of it.
+   *
+   * <p>
+   * A copy eXo wrote carries agenda's invitation text before the organiser's
+   * words — the pusher's name, the space, the event's own link and, since
+   * EXO-89753, that user's tokenised answer links. Storing that text as the
+   * imported event's description is what made the block stack one per edit on
+   * the object (EXO-90227), and what showed another user's name, event id and
+   * answer links in the event drawer, in the body of the notification mail and
+   * in search for ever. Agenda's builder now writes one block whatever the
+   * description already carries, which stops the growth on every channel it
+   * renders; this is the other half, for everything that reads the
+   * <em>stored</em> description directly. The recognition is agenda's
+   * ({@link InvitationText}), spelled once, beside the builder whose layout it
+   * reads.
+   *
+   * <p>
+   * <b>Gated on the object carrying an eXo event address as its {@code URL}
+   * property</b> ({@link #EXO_EVENT_URL}), and the gate is the whole reason
+   * this is safe to write at all. {@code InvitationText} recognises a block by
+   * the <em>shape</em> of the text — a line, then a line that is some text and
+   * an eXo event link and nothing else, then one line taken as the label over
+   * the organiser's text — and that shape is one a person can type: {@code Hi
+   * all,} / {@code see <an eXo event link>} / {@code Thanks,} / {@code Bob}
+   * reduces to {@code Bob}. On the render side that misreading costs a
+   * paragraph of one document and the next push composes the text again; here
+   * it would be a write. The property is the signal a person does not produce
+   * — no calendar client offers a field for it, and the two servers this
+   * add-on is validated against return it intact, captured in
+   * {@code golden/read/objects/r06-macos-answer-internal-domain.ics} and
+   * {@code r07-exo-reminder-repaired-onto-stalwart.ics}, both carrying an
+   * invitation block <em>and</em> the address that says who composed it.
+   *
+   * <p>
+   * <b>What this can still destroy, and nothing restores it.</b> An object
+   * that carries an eXo event address as its {@code URL} and a description
+   * this recogniser misreads loses every line down to what it takes for the
+   * organiser's text, and the loss is final on both sides: agenda keeps no
+   * history of an event's description, this add-on keeps no copy of the
+   * object's body — the one digest column was dropped from the schema on
+   * purpose — and the next eXo-side edit of the event replaces the master
+   * {@code VEVENT} wholesale ({@code IcsMerger}), so the server's copy of
+   * those words goes with it. The gate is what makes that path reachable only
+   * for an object whose {@code URL} a person deliberately set to an eXo event
+   * address, which is the narrowest statement this class can make; narrowing
+   * the recogniser's own shape is agenda's side of EXO-90227 and does not
+   * belong here.
+   *
+   * <p>
+   * <b>The read-through preview is deliberately untouched.</b> Browsing the
+   * account through {@code CaldavReadService} shows every object as the server
+   * holds it, block included: it is a preview of the object, not of an eXo
+   * event, and whether it should hide the block is a product decision nobody
+   * has taken. Only what agenda <em>stores</em> is decided here.
+   *
+   * @param source the parsed object
+   * @return the description to store, null when the object carries none and
+   *         null when a block was all it carried
+   */
+  private String descriptionOf(IcsEvent source) {
+    String description = source.getDescription();
+    String url = StringUtils.trimToNull(source.getEventUrl());
+    if (url == null || !EXO_EVENT_URL.matcher(url).matches()) {
+      // Not a copy eXo composed, as far as anything on the object says. Stored
+      // byte for byte, whatever shape its text happens to have.
+      return description;
+    }
+    // Blank rather than empty when the block was the whole description: agenda
+    // already holds null for an object carrying no DESCRIPTION at all, and an
+    // event whose description is now nothing is the same thing. Storing "" put
+    // a value every reader has to treat as absent without being told to.
+    return StringUtils.trimToNull(InvitationText.stripFrom(description));
   }
 
   /**

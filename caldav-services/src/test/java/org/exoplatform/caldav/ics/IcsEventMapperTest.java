@@ -344,15 +344,16 @@ public class IcsEventMapperTest {
 
   /**
    * The description agenda holds is the organiser's text, not the invitation
-   * blurb another eXo user's push composed in front of it (EXO-90227). Pinned
-   * here as well as on the recogniser, because this is the one line that
-   * decides what agenda stores: the recogniser can be right and this mapper
-   * still not call it.
+   * blurb eXo's own push composed in front of it (EXO-90227). Pinned here as
+   * well as on the recogniser, because this is the one line that decides what
+   * agenda stores: the recogniser can be right and this mapper still not call
+   * it.
    */
   @Test
-  public void anotherUsersInvitationTextIsNotHeldAsTheEventsDescription() {
+  public void anInvitationBlockOnACopyExoComposedIsNotHeldAsTheEventsDescription() {
     IcsEvent source = new IcsEvent();
     source.setUid("uid-1");
+    source.setEventUrl("http://localhost:8080/portal/dw/agenda?eventId=87");
     source.setDescription("Invitation envoy\u00e9e par alice2.\n\nEvent link: http://localhost:8080/portal/dw/agenda?eventId=87"
         + "\n\nD\u00e9tails de l'\u00e9v\u00e9nement :\nBring cake.");
 
@@ -360,13 +361,80 @@ public class IcsEventMapperTest {
   }
 
   /**
-   * And a description nobody composed is held exactly as read.
+   * <b>The gate, and the reason it exists.</b> The very block shape stripped
+   * above, on an object carrying no eXo event address, is stored byte for byte:
+   * a person can type that shape \u2014 a line, a line that is some text and an eXo
+   * event link, then more \u2014 and this is the one place that decides whether
+   * their words survive the import. Nothing gives them back.
+   */
+  @Test
+  public void theSameBlockShapeWithNoExoEventUrlIsStoredVerbatim() {
+    IcsEvent source = new IcsEvent();
+    source.setUid("uid-1");
+    source.setDescription("Hi all,\nsee https://exo.acme.com/portal/dw/agenda?eventId=101\nThanks,\nBob");
+
+    assertEquals("Hi all,\nsee https://exo.acme.com/portal/dw/agenda?eventId=101\nThanks,\nBob",
+                 mapper.toEvent(source, CALENDAR).getDescription());
+  }
+
+  /**
+   * A copy naming a <em>different</em> eXo deployment is still a copy eXo
+   * composed (EXO-89824), and its block is as unwanted in a stored description
+   * as a local one. The gate reads nothing off the address for exactly this
+   * reason, and a deployment serving from a path passes it too.
+   */
+  @Test
+  public void aCopyAnotherDeploymentComposedIsStrippedAllTheSame() {
+    IcsEvent source = new IcsEvent();
+    source.setUid("uid-1");
+    source.setEventUrl("https://acceptance.example.test/intranet/portal/dw/agenda?eventId=4242");
+    source.setDescription("Invitation sent by Ada in space Chem.\n\nEvent link: https://acceptance.example.test/intranet/portal/dw/agenda?eventId=4242"
+        + "\n\nEvent detail:\nBring cake.");
+
+    assertEquals("Bring cake.", mapper.toEvent(source, CALENDAR).getDescription());
+  }
+
+  /**
+   * A copy whose description was nothing but the block leaves no description at
+   * all, and agenda is told so the way it already is for an object carrying no
+   * {@code DESCRIPTION}: null, not an empty string no reader was told to treat
+   * as absent.
+   */
+  @Test
+  public void aDescriptionThatWasNothingButTheBlockLeavesNone() {
+    IcsEvent source = new IcsEvent();
+    source.setUid("uid-1");
+    source.setEventUrl("http://localhost:8080/portal/dw/agenda?eventId=87");
+    source.setDescription("Invitation envoy\u00e9e par alice2.\n\nEvent link: http://localhost:8080/portal/dw/agenda?eventId=87");
+
+    assertNull(mapper.toEvent(source, CALENDAR).getDescription());
+  }
+
+  /**
+   * And a description nobody composed is held exactly as read, even on an
+   * object that does carry an eXo event address: the recogniser declines a link
+   * with words after it, and the gate does not make it stricter.
    */
   @Test
   public void aDescriptionAPersonTypedIsHeldAsRead() {
     IcsEvent source = new IcsEvent();
     source.setUid("uid-1");
+    source.setEventUrl("http://localhost:8080/portal/dw/agenda?eventId=87");
     source.setDescription("See http://localhost:8080/portal/dw/agenda?eventId=87 for the agenda.\n\nBring cake.");
+
+    assertEquals(source.getDescription(), mapper.toEvent(source, CALENDAR).getDescription());
+  }
+
+  /**
+   * A {@code URL} that is not an eXo event address \u2014 the one a client or a
+   * server may well carry \u2014 does not open the gate.
+   */
+  @Test
+  public void aUrlThatIsNotAnExoEventAddressDoesNotOpenTheGate() {
+    IcsEvent source = new IcsEvent();
+    source.setUid("uid-1");
+    source.setEventUrl("https://wiki.acme.com/meetings/weekly");
+    source.setDescription("Hi all,\nsee https://exo.acme.com/portal/dw/agenda?eventId=101\nThanks,\nBob");
 
     assertEquals(source.getDescription(), mapper.toEvent(source, CALENDAR).getDescription());
   }

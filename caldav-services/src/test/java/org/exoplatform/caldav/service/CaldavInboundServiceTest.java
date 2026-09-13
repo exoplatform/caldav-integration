@@ -592,23 +592,48 @@ public class CaldavInboundServiceTest {
   }
 
   /**
-   * <b>The field shape (EXO-90227).</b> Two eXo users on one CalDAV account,
-   * both mapped to the same object: the other user's push rewrote it, and its
-   * description now carries <em>their</em> invitation blurb — naming their
-   * event, 87, not this user's 501. What agenda is asked to store for this
-   * user's event is the organiser's text alone; the blurb is eXo's and the
-   * next push of this event composes its own. Held whole, it was wrapped in a
-   * second blurb on that push, and the object grew by one block per edit.
+   * <b>The route (EXO-90227).</b> A personal-calendar binding, which is what
+   * {@link #pair()} is — {@code REMOTE}, a collection eXo materialised — and
+   * the object in it is a copy <em>eXo itself pushed</em> there:
+   * {@code CaldavPushService.pushAgendaEvent} composes the copy through
+   * {@code AgendaEventIcsMapper.toIcsEvent} for a personal collection exactly
+   * as for the mirror, so its description carries the invitation blurb and its
+   * {@code URL} names the event. The mapping row that push wrote is
+   * {@code REMOTE}, not {@code MIRROR}, so
+   * {@code CaldavSyncStorage.isMirrorOwned} — which counts {@code MIRROR} rows
+   * — legitimately answers <b>false</b> and the object is read back like any
+   * other; the server only has to move its ETag, which BlueMind does by
+   * linkifying the very links in that blurb. Held whole, the blurb became the
+   * event's description, the next push composed a second one on top of it, and
+   * the object grew by one block per edit.
+   *
+   * <p>
+   * The rig's own shape was the two-user form of the same route — two users'
+   * personal bindings on <em>one shared</em> collection, which compute the same
+   * href for one UID, so each user's push landed on the other's object and each
+   * import read the other's blurb, which is why the stacked blocks named the
+   * two users' event ids alternately. The outbound guard of EXO-90190
+   * ({@code CaldavSyncStorage.isMirrorOwnedByAnotherUser}) does not cover it
+   * either: like {@code isMirrorOwned} it counts {@code MIRROR} pairs, and
+   * neither of these is one. That the two writes clobber each other at all is a
+   * separate matter, and not this pin's.
+   *
+   * <p>
+   * The guard is stubbed false rather than left to Mockito's default so the
+   * configuration is stated: this is the answer the caller gets in production
+   * for a personal-calendar copy, not an accident of an unstubbed mock.
    */
   @Test
-  public void anotherUsersInvitationBlurbOnTheSharedObjectIsNotStoredAsTheDescription() throws Exception {
+  public void theBlurbOnACopyExoPushedIntoAPersonalCollectionIsNotStoredAsTheDescription() throws Exception {
     givenServerObjects(object("o1.ics",
                               "etag-2",
                               icsDescribed("uid-1@example.test",
                                            "alice2Event123",
                                            "20261005T120000Z",
                                            "Invitation envoyée par alice2.\\n\\nEvent link: http://localhost:8080/portal/dw/agenda?eventId=87"
-                                               + "\\n\\nDétails de l'événement :\\nBring cake.")));
+                                               + "\\n\\nDétails de l'événement :\\nBring cake.",
+                                           "http://localhost:8080/portal/dw/agenda?eventId=87")));
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(false);
     when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
     when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
 
@@ -621,18 +646,23 @@ public class CaldavInboundServiceTest {
   }
 
   /**
-   * <b>The regression guard.</b> A description nobody composed — what a
-   * person typed into their calendar client, with an eXo event link in it —
-   * is stored byte for byte as the object carries it.
+   * <b>The regression guard, and the gate that makes it one.</b> The same block
+   * shape, on an object carrying <em>no</em> eXo event address — a person typed
+   * it, link and all, into their calendar client — is stored byte for byte
+   * through the whole import, parser included. Nothing in agenda or here keeps
+   * a copy of those words, so this is the pin that stands between a shape
+   * heuristic and a user's text.
    */
   @Test
-  public void aDescriptionAPersonTypedOnTheServerIsStoredAsRead() throws Exception {
+  public void theSameBlockShapeWithNoExoEventUrlIsStoredVerbatim() throws Exception {
     givenServerObjects(object("o1.ics",
                               "etag-2",
                               icsDescribed("uid-1@example.test",
                                            "Retro",
                                            "20261005T120000Z",
-                                           "See http://localhost:8080/portal/dw/agenda?eventId=87 for the agenda.\\n\\nBring cake.")));
+                                           "Hi all,\\nsee https://exo.acme.com/portal/dw/agenda?eventId=101\\nThanks,\\nBob",
+                                           null)));
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(false);
     when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
     when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
 
@@ -640,8 +670,35 @@ public class CaldavInboundServiceTest {
 
     ArgumentCaptor<Event> saved = ArgumentCaptor.forClass(Event.class);
     verify(agendaEventService).updateEvent(saved.capture(), any(), any(), any(), any(), any(), eq(false), eq(USER));
-    assertEquals("See http://localhost:8080/portal/dw/agenda?eventId=87 for the agenda.\n\nBring cake.",
+    assertEquals("Hi all,\nsee https://exo.acme.com/portal/dw/agenda?eventId=101\nThanks,\nBob",
                  saved.getValue().getDescription());
+  }
+
+  /**
+   * And a copy naming another eXo deployment is stripped all the same
+   * (EXO-89824): no mapping row here owns it, nothing in this database knows it
+   * exists, and its blurb is as unwanted in a stored description as a local
+   * one.
+   */
+  @Test
+  public void theBlurbOnAnotherDeploymentsCopyIsNotStoredAsTheDescription() throws Exception {
+    givenServerObjects(object("o1.ics",
+                              "etag-2",
+                              icsDescribed("uid-1@example.test",
+                                           "Retro",
+                                           "20261005T120000Z",
+                                           "Invitation sent by Ada in space Chem.\\n\\nEvent link: https://acceptance.example.test/portal/dw/agenda?eventId=4242"
+                                               + "\\n\\nEvent detail:\\nBring cake.",
+                                           "https://acceptance.example.test/portal/dw/agenda?eventId=4242")));
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(false);
+    when(caldavSyncStorage.getObjectByUid(PAIR, "uid-1@example.test")).thenReturn(mapping("etag-1"));
+    when(agendaEventService.getEventById(501L)).thenReturn(eventUpdatedAt("2026-10-05T09:00:00Z"));
+
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    ArgumentCaptor<Event> saved = ArgumentCaptor.forClass(Event.class);
+    verify(agendaEventService).updateEvent(saved.capture(), any(), any(), any(), any(), any(), eq(false), eq(USER));
+    assertEquals("Bring cake.", saved.getValue().getDescription());
   }
 
   /**
@@ -650,9 +707,13 @@ public class CaldavInboundServiceTest {
    * @param lastModified its LAST-MODIFIED stamp
    * @param description its DESCRIPTION, already escaped as RFC 5545 spells a
    *          line break ({@code \\n})
+   * @param url the {@code URL} property, or null for an object that carries
+   *          none — the gate of {@code IcsEventMapper.descriptionOf}, so which
+   *          of the two an object is decides whether its description is read
+   *          for a block at all
    * @return a single-event calendar object carrying that description
    */
-  private String icsDescribed(String uid, String summary, String lastModified, String description) {
+  private String icsDescribed(String uid, String summary, String lastModified, String description, String url) {
     return """
         BEGIN:VCALENDAR
         VERSION:2.0
@@ -665,10 +726,9 @@ public class CaldavInboundServiceTest {
         DTEND:20261012T100000Z
         SUMMARY:%s
         DESCRIPTION:%s
-        URL:http://localhost:8080/portal/dw/agenda?eventId=87
-        END:VEVENT
+        %sEND:VEVENT
         END:VCALENDAR
-        """.formatted(lastModified, uid, summary, description);
+        """.formatted(lastModified, uid, summary, description, url == null ? "" : "URL:" + url + "\n");
   }
 
   /**
