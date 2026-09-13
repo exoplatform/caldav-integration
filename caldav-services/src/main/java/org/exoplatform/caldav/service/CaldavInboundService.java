@@ -153,6 +153,14 @@ public class CaldavInboundService {
    * spot — a <em>foreign</em> deployment serving from a path is not seen at
    * all — which is the same kind of blindness as the EXO-89751 floor below,
    * and the right one to prefer.
+   *
+   * <p>
+   * Not the pattern that strips agenda's invitation text off an imported
+   * description ({@link org.exoplatform.agenda.util.InvitationText},
+   * EXO-90227). That one asks a different question — is this whole line a
+   * label and an event link — and reads nothing off the address, so it can
+   * afford to recognise a link under a path where this one, which reads the
+   * authority, must not. The two are kept apart on purpose.
    */
   private static final Pattern EXO_EVENT_LINK =
                                               Pattern.compile("(?<![^\\s<>\"'()\\[\\],;])(?:https?://)?([^/\\s<>\"']+)"
