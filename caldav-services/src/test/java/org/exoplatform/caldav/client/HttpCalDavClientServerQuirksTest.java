@@ -62,6 +62,24 @@ import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
  * containerised Stalwart rig (2026-08-20), and it happens to prove the
  * propstat discipline on its own: the home's absent calendar-color comes
  * back in a 404 propstat interleaved with the 200 one.</li>
+ * <li>{@code stalwart-home-depth1-sharee-listing.xml} — DERIVED from that
+ * live capture and from the observation record of EXO-90235 (rig, Stalwart
+ * v0.16, 2026-09-13): after alice granted bob {@code DAV:read} on her
+ * {@code default} calendar, the Depth:1 listing of <b>bob's</b> home also
+ * returned her collection at <b>her</b> path,
+ * {@code /dav/cal/alice%40stalwart.local/default/}, with {@code DAV:owner}
+ * naming her principal and {@code read, read-current-user-privilege-set} as
+ * the whole privilege set. The raw sharee capture was not saved; the shape
+ * of the two own collections and of the owner element is the 2026-08-20
+ * capture's, with {@code DAV:owner} added as RFC 3744 §5.1 defines it.</li>
+ * <li>{@code bluemind-propfind-home-depth1-with-owner.xml} — DERIVED from
+ * the live BlueMind home listing below, with the {@code DAV:owner} the
+ * listing predates added to every response as BlueMind's DAV server builds
+ * it: {@code Proxy.path + "/principals/__uids__/" + uid + "/"}, the same
+ * shape and identifier its {@code current-user-principal} is built from
+ * ({@code net.bluemind.dav.server} {@code Owner.java} /
+ * {@code CurrentUserPrincipal.java}, master, read 2026-09-13), which is
+ * what the negative pin of EXO-90235 on that server rests on.</li>
  * <li>{@code bluemind-403-refused-auth.http} — captured live from the
  * BlueMind demo (2026-08-20), unauthenticated and with wrong credentials
  * alike: <b>403</b>, text/html, no WWW-Authenticate.</li>
@@ -360,6 +378,230 @@ public class HttpCalDavClientServerQuirksTest {
     assertEquals(ServerCapabilities.SyncTier.SYNC_COLLECTION, capabilities.tier());
     assertTrue(capabilities.calendarMultiget());
     assertTrue(capabilities.calendarQuery());
+  }
+
+  // ------------------------------------ a colleague's calendar in the home, EXO-90235
+
+  /** Bob's principal, as Stalwart names it: the login, percent-encoded. */
+  private static final String BOB   = "/dav/pal/bob%40stalwart.local/";
+
+  /** Alice's principal, the owner of the one collection she shared with Bob. */
+  private static final String ALICE = "/dav/pal/alice%40stalwart.local/";
+
+  /**
+   * The listing that caused EXO-90235, read as it should have been: the
+   * colleague's collection carries her owner and a read-only privilege set,
+   * and the user's own carry his owner and a set with write.
+   *
+   * <p>
+   * Both signals are asserted on their own before the predicate that combines
+   * them, so that a parser regression on either one is named for what it is
+   * rather than as "the share was not recognised".
+   */
+  @Test
+  void aColleaguesCalendarInTheHomeCarriesHerOwnerAndAReadOnlyPrivilegeSet() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("stalwart-home-depth1-sharee-listing.xml"));
+
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, "/dav/cal/bob%40stalwart.local/");
+
+    assertTrue(bodyOf(sent.get(0)).contains("<d:owner/>"),
+               "the owner has to be asked for, or no server ever answers it: " + bodyOf(sent.get(0)));
+    CalendarCollection alices = only(calendars, "/dav/cal/alice%40stalwart.local/default/");
+    assertEquals(ALICE, alices.owner(), "the owner is read from the granted propstat and folded to a path");
+    assertTrue(alices.privilegesAnswered(), "Stalwart answered a privilege set — a read-only one");
+    assertFalse(alices.writable());
+    assertEquals("Stalwart Calendar (alice)", alices.displayName());
+
+    CalendarCollection bobs = only(calendars, "/dav/cal/bob%40stalwart.local/default/");
+    assertEquals(BOB, bobs.owner());
+    assertTrue(bobs.privilegesAnswered());
+    assertTrue(bobs.writable());
+  }
+
+  /**
+   * The classification the engine runs on that listing, with Bob's own
+   * principal: her calendar is a share, his are not. This is the one line
+   * the sync skips on and the read-through marks read-only on.
+   */
+  @Test
+  void aColleaguesCalendarIsAShareAndTheUsersOwnAreNot() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("stalwart-home-depth1-sharee-listing.xml"));
+
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, "/dav/cal/bob%40stalwart.local/");
+
+    assertTrue(only(calendars, "/dav/cal/alice%40stalwart.local/default/").isSharedWith(BOB),
+               "owned by alice and read-only: either signal alone would do, and both are present");
+    assertFalse(only(calendars, "/dav/cal/bob%40stalwart.local/default/").isSharedWith(BOB),
+                "the user's own default calendar is not a share of anybody's");
+    assertFalse(only(calendars, "/dav/cal/bob%40stalwart.local/exo-meetings/").isSharedWith(BOB));
+  }
+
+  /**
+   * The owner's own listing, captured before ownership was ever requested:
+   * no {@code DAV:owner} in the answer, the full privilege set on every
+   * collection. Nothing in it is a share, and the sweep keeps materialising
+   * it — the negative half of EXO-90235, on the same server.
+   */
+  @Test
+  void theOwnersOwnStalwartListingHoldsNoShare() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("stalwart-home-depth1-full-props.xml"));
+
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, "/dav/cal/alice%40stalwart.local/");
+
+    assertFalse(calendars.isEmpty());
+    for (CalendarCollection calendar : calendars) {
+      assertNull(calendar.owner(), calendar.href() + " was listed before the owner was requested");
+      assertTrue(calendar.privilegesAnswered(), calendar.href());
+      assertTrue(calendar.writable(), calendar.href());
+      assertFalse(calendar.isSharedWith(ALICE), calendar.href() + " is alice's own");
+    }
+  }
+
+  /** The BlueMind account's principal, as its DAV server builds it from the uid. */
+  private static final String BLUEMIND_PRINCIPAL = "/dav/principals/__uids__/9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/";
+
+  /**
+   * The BlueMind home listing as captured before the owner was ever
+   * requested: no owner answered, write granted. Nothing in it can be a
+   * share, and it pins that silence keeps meaning "the user's own".
+   */
+  @Test
+  void theBlueMindListingCapturedBeforeTheOwnerWasRequestedHoldsNoShare() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-propfind-home-depth1.xml"));
+
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, BLUEMIND_HOME);
+
+    assertFalse(calendars.isEmpty());
+    for (CalendarCollection calendar : calendars) {
+      assertNull(calendar.owner(), calendar.href() + " was listed before the owner was requested");
+      assertFalse(calendar.isSharedWith(BLUEMIND_PRINCIPAL), calendar.href() + " is the account's own on BlueMind");
+    }
+  }
+
+  /**
+   * The same listing with the owner BlueMind answers — the reverse defect's
+   * pin on the server where it matters most. BlueMind builds {@code DAV:owner}
+   * and {@code current-user-principal} from the same prefix and the same uid,
+   * so the user's own calendars compare equal and stay their own; a spelling
+   * drift between the two would turn every one of them into a share and stop
+   * materialising them, which is what this goes red on. BlueMind also names
+   * the <em>subscriber</em> as owner of a share and grants them the full set
+   * (EXO-90234), so on that server neither signal of this rule ever fires.
+   */
+  @Test
+  void theBlueMindListingWithTheOwnerAnsweredIsStillTheUsersOwn() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-propfind-home-depth1-with-owner.xml"));
+
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, BLUEMIND_HOME);
+
+    assertFalse(calendars.isEmpty());
+    for (CalendarCollection calendar : calendars) {
+      assertEquals(BLUEMIND_PRINCIPAL, calendar.owner(), calendar.href());
+      assertTrue(calendar.privilegesAnswered(), calendar.href());
+      assertTrue(calendar.writable(), calendar.href());
+      assertFalse(calendar.isSharedWith(BLUEMIND_PRINCIPAL), calendar.href() + " is the account's own on BlueMind");
+    }
+  }
+
+  /**
+   * An owner the server names on another host is compared against nothing:
+   * the listing does not fail over it, and the collection does not become a
+   * share over it. An empty owner — the shape RFC 3744 §5.1 allows when the
+   * server has no owner information — is the same silence. An absolute owner
+   * on the declared host is folded to a path and compared like any other.
+   */
+  @Test
+  void anOwnerOnAnotherHostIsLeftUnknownRatherThanFailingTheListingOrMakingAShare() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <D:multistatus xmlns:D="DAV:" xmlns:A="urn:ietf:params:xml:ns:caldav">
+          <D:response><D:href>/dav/cal/bob/own/</D:href><D:propstat><D:prop>
+            <D:resourcetype><D:collection/><A:calendar/></D:resourcetype>
+            <D:owner><D:href>https://internal-host.invalid/dav/pal/bob/</D:href></D:owner>
+            <D:current-user-privilege-set><D:privilege><D:write/></D:privilege></D:current-user-privilege-set>
+          </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+          <D:response><D:href>/dav/cal/bob/empty/</D:href><D:propstat><D:prop>
+            <D:resourcetype><D:collection/><A:calendar/></D:resourcetype>
+            <D:owner/>
+            <D:current-user-privilege-set><D:privilege><D:write/></D:privilege></D:current-user-privilege-set>
+          </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+          <D:response><D:href>/dav/cal/bob/folded/</D:href><D:propstat><D:prop>
+            <D:resourcetype><D:collection/><A:calendar/></D:resourcetype>
+            <D:owner><D:href>%s/dav/pal/alice/</D:href></D:owner>
+            <D:current-user-privilege-set><D:privilege><D:write/></D:privilege></D:current-user-privilege-set>
+          </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+        </D:multistatus>""".formatted(SERVER_URL.replaceAll("/dav/$", "")));
+
+    List<CalendarCollection> calendars = client.listCalendars(endpoint, "/dav/cal/bob/");
+
+    CalendarCollection foreign = only(calendars, "/dav/cal/bob/own/");
+    assertNull(foreign.owner(), "an owner on another host cannot be compared, so it is not kept");
+    assertFalse(foreign.isSharedWith("/dav/pal/bob/"), "and an unknown owner is not a share");
+    CalendarCollection empty = only(calendars, "/dav/cal/bob/empty/");
+    assertNull(empty.owner(), "RFC 3744 §5.1 lets a server answer an empty owner when it has no owner information");
+    assertFalse(empty.isSharedWith("/dav/pal/alice/"), "an empty owner compares against nobody, not against everybody");
+    CalendarCollection folded = only(calendars, "/dav/cal/bob/folded/");
+    assertEquals("/dav/pal/alice/", folded.owner(), "an absolute owner on the declared host is folded to its path");
+    assertTrue(folded.isSharedWith("/dav/pal/bob/"));
+  }
+
+  /**
+   * A 403 on a PUT is the server refusing the write, told apart from every
+   * other refusal so the engine can give up on it at once (EXO-90235). It
+   * is still not a credential failure: that reading would pause accounts
+   * whose password is fine, as the test above this family already pins.
+   */
+  @Test
+  void a403OnAPutIsAForbiddenWrite() throws Exception {
+    givenAnswer(403, Map.of(), "");
+
+    CalDavException refusal = assertThrows(CalDavException.class,
+                                           () -> client.putObject(endpoint, "/dav/cal/alice%40stalwart.local/default/a.ics",
+                                                                  "BEGIN:VCALENDAR"));
+
+    assertTrue(refusal instanceof CalDavForbiddenException, refusal.getClass().getName());
+    assertFalse(refusal instanceof CalDavAuthenticationException);
+    assertTrue(refusal.getMessage().contains("403"), refusal.getMessage());
+    assertTrue(refusal.getMessage().contains("/dav/cal/alice%40stalwart.local/default/a.ics"),
+               "the message names the object, which is what the abandonment line needs: " + refusal.getMessage());
+  }
+
+  /**
+   * The same on a DELETE — the other write a read-only share refuses.
+   */
+  @Test
+  void a403OnADeleteIsAForbiddenWrite() throws Exception {
+    givenAnswer(403, Map.of(), "");
+
+    assertThrows(CalDavForbiddenException.class,
+                 () -> client.deleteObject(endpoint, "/dav/cal/alice%40stalwart.local/default/a.ics", "\"e\""));
+  }
+
+  /**
+   * Any other refused status on a write stays the plain refusal it was: the
+   * forbidden reading is for 403 alone, never widened by accident.
+   */
+  @Test
+  void a405OnAPutStaysAPlainRefusal() throws Exception {
+    givenAnswer(405, Map.of(), "");
+
+    CalDavException refusal = assertThrows(CalDavException.class,
+                                           () -> client.putObject(endpoint, "/dav/cal/x/a.ics", "BEGIN:VCALENDAR"));
+
+    assertFalse(refusal instanceof CalDavForbiddenException);
+  }
+
+  /**
+   * The one collection of a listing at a given path.
+   *
+   * @param calendars the listing
+   * @param href the path wanted
+   * @return the collection
+   */
+  private CalendarCollection only(List<CalendarCollection> calendars, String href) {
+    List<CalendarCollection> found = calendars.stream().filter(calendar -> href.equals(calendar.href())).toList();
+    assertEquals(1, found.size(), href + " should be listed exactly once among " + calendars.stream().map(CalendarCollection::href).toList());
+    return found.get(0);
   }
 
   /**

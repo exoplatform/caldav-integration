@@ -124,6 +124,30 @@ public interface CalDavClient {
   String discoverCalendarHome(CalDavEndpoint endpoint);
 
   /**
+   * The same walk as {@link #discoverCalendarHome}, answering the principal
+   * it passed through beside the home it arrived at.
+   *
+   * <p>
+   * The listing that follows compares each collection's {@code DAV:owner}
+   * against the account's own principal to tell the user's calendars from
+   * one a colleague shared with them (EXO-90235). Asking for the two in one
+   * walk is what keeps that comparison from costing a third PROPFIND on
+   * every pass, and keeps both answers from one conversation with the
+   * server. The principal obeys {@link #discoverPrincipal}'s contract: the
+   * HTTP client throws when the server names none, an implementer with none
+   * to give may answer null, and the caller treats a null as "cannot compare"
+   * rather than as anybody in particular.
+   *
+   * @param endpoint the declared server to discover on
+   * @return the principal and the calendar home, both as server-absolute
+   *         raw paths
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached or answers no
+   *           principal or no home
+   */
+  CalendarHome discoverHome(CalDavEndpoint endpoint);
+
+  /**
    * Asks the account which of its calendars it treats as the default one —
    * the collection a scheduling client files an invitation into when nobody
    * says otherwise.
@@ -164,7 +188,8 @@ public interface CalDavClient {
   /**
    * Lists the calendar collections of a home with every property the sync
    * engine binds on: display name, resource type, ctag, sync token,
-   * supported reports, the user's privileges, and the calendar colour.
+   * supported reports, the user's privileges, the collection's owner, and
+   * the calendar colour.
    *
    * @param endpoint the declared server
    * @param homeHref the calendar home's server-absolute path
