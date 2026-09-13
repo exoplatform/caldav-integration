@@ -55,6 +55,7 @@ import org.exoplatform.caldav.model.RemoteCalendarsRead;
 import org.exoplatform.caldav.model.RemoteEventsRead;
 import org.exoplatform.caldav.model.RemoteIcsEvent;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 
@@ -101,6 +102,9 @@ public class CaldavReadServiceTest {
   private CaldavSyncStorage          caldavSyncStorage;
 
   @Mock
+  private CaldavOutboundService      caldavOutboundService;
+
+  @Mock
   private CalDavEndpoint             endpoint;
 
   @InjectMocks
@@ -114,6 +118,11 @@ public class CaldavReadServiceTest {
     // Nothing bound by default: these tests are about what the shim serves,
     // not about what eXo has taken over.
     lenient().when(caldavSyncStorage.getPairs(anyLong(), anyLong())).thenReturn(List.of());
+    // The classification is run for real on the mocked outbound service: it
+    // reads only its arguments and the one question it asks of the deployment
+    // (isMintedByThisDeployment), which the tests below stub per case. A mock
+    // answering null for an enum would otherwise fail every listing.
+    lenient().when(caldavOutboundService.ownershipOf(anyLong(), any(), any(), any())).thenCallRealMethod();
   }
 
   @Test
@@ -499,6 +508,144 @@ public class CaldavReadServiceTest {
    */
   private CalendarCollection owned(String href, String name, String owner, boolean privilegesAnswered, boolean writable) {
     return new CalendarCollection(href, name, null, null, null, writable, java.util.Set.of("VEVENT"), owner, privilegesAnswered);
+  }
+
+  // ------------------------------------ a colleague's eXo calendar in the home, EXO-90234
+
+  /** The anchor of the colleague's eXo calendar, CAL2 on the rig (task 90234). */
+  private static final String        CAL2_ANCHOR         = "959b5529-ea4c-4ae4-a793-a2c201c3af9f";
+
+  /** CAL2 as BlueMind lists it to the sharee after subscribing: under their own home. */
+  private static final String        CAL2_UNDER_OWN_HOME = HOME + "exo-cal-" + CAL2_ANCHOR + "/";
+
+  /** The same colleague's eXo calendar as Stalwart lists a share: at her path. */
+  private static final String        CAL2_AT_ALICES_PATH = "/dav/calendars/alice/exo-cal-" + CAL2_ANCHOR + "/";
+
+  /**
+   * The defect on the list side (EXO-90234): a colleague's eXo calendar the
+   * user subscribed to on BlueMind was dropped on its prefix, while its
+   * events were served — a calendar the user could see the events of but
+   * never the calendar. It is now listed, read-only, on this deployment's
+   * word alone: the server names the user as owner and grants the full set.
+   */
+  @Test
+  public void aColleaguesExoCalendarSubscribedOnBlueMindIsListedReadOnly() {
+    givenCalendars(owned(CAL2_UNDER_OWN_HOME, "CAL2", PRINCIPAL, true, true));
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME))).thenReturn(true);
+
+    List<RemoteCalendar> calendars = service.listCalendars(USER, LOGIN).calendars();
+
+    assertEquals(1, calendars.size());
+    assertEquals(CAL2_UNDER_OWN_HOME, calendars.get(0).getId());
+    assertEquals("CAL2", calendars.get(0).getName());
+    assertTrue(calendars.get(0).isReadOnly(), "writable by the server's word, read-only by this deployment's");
+  }
+
+  /**
+   * The same calendar as Stalwart lists it — at her path, her as owner,
+   * read-only: listed read-only there too, so the two servers show the same
+   * thing for the same share.
+   */
+  @Test
+  public void aColleaguesExoCalendarSharedOnStalwartIsListedReadOnly() {
+    givenCalendars(owned(CAL2_AT_ALICES_PATH, "CAL2", ALICE, true, false));
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(CAL2_AT_ALICES_PATH))).thenReturn(true);
+
+    List<RemoteCalendar> calendars = service.listCalendars(USER, LOGIN).calendars();
+
+    assertEquals(1, calendars.size());
+    assertEquals(CAL2_AT_ALICES_PATH, calendars.get(0).getId());
+    assertTrue(calendars.get(0).isReadOnly());
+  }
+
+  /**
+   * The events of the colleague's eXo calendar are served, as they were
+   * before — this is the one path of the three that already agreed with the
+   * fix, and it must keep agreeing: the calendar is now listed, and a listed
+   * calendar with no events would be the defect the other way round.
+   */
+  @Test
+  public void theEventsOfAColleaguesExoCalendarAreServed() {
+    givenCalendars(owned(CAL2_UNDER_OWN_HOME, "CAL2", PRINCIPAL, true, true));
+    when(calDavClient.calendarQuery(any(), eq(CAL2_UNDER_OWN_HOME), any(), any())).thenReturn(List.of(object("BEGIN:VCALENDAR")));
+    when(icsReader.read(anyString(), any(), any())).thenReturn(List.of(occurrence("CAL2BM")));
+
+    RemoteEventsRead read = service.readEvents(USER, LOGIN, FROM, TO);
+
+    assertEquals(1, read.events().size());
+    assertEquals(CAL2_UNDER_OWN_HOME, read.events().get(0).getCalendarId());
+    assertFalse(read.failed());
+    // The read-through serves every unbound collection and asks nobody whose
+    // it is: the classification is the list's and the sweep's, not this path's.
+    verify(caldavOutboundService, never()).ownershipOf(anyLong(), any(), any(), any());
+  }
+
+  /**
+   * The user's own exported calendar, met under a path none of their pairs
+   * record: not listed, as before, and recognised from their own EXO pair
+   * without the account-wide question.
+   */
+  @Test
+  public void theUsersOwnExportedCalendarUnderAnotherPathIsStillNotListed() {
+    CalendarSync mine = new CalendarSync();
+    mine.setUserIdentityId(USER);
+    mine.setServerId(SERVER);
+    mine.setLocalCalendarSyncUid(CAL2_ANCHOR);
+    mine.setRemoteHref(CAL2_UNDER_OWN_HOME);
+    mine.setOrigin(SyncOrigin.EXO);
+    when(caldavSyncStorage.getPairs(anyLong(), anyLong())).thenReturn(List.of(mine));
+    givenCalendars(owned("/dav/calendars/publish/exo-cal-" + CAL2_ANCHOR + "/", "CAL2", PRINCIPAL, true, true));
+
+    assertTrue(service.listCalendars(USER, LOGIN).calendars().isEmpty());
+    verify(caldavOutboundService, never()).isMintedByThisDeployment(anyLong(), anyString());
+  }
+
+  /**
+   * Another eXo deployment's calendar — its anchor known to no pair here —
+   * is still not listed: the sweep adopts it on its next pass (EXO-90226),
+   * and it is then excluded by its binding. The BlueMind facts are on it,
+   * the same ones a colleague's share carries there, so what separates the
+   * two on this list is the pair table's answer alone.
+   */
+  @Test
+  public void anotherDeploymentsExoCalendarIsStillNotListed() {
+    String href = "/dav/calendars/john/exo-cal-fd3fe75f-58f9-49e5-93d0-85f63b24a807/";
+    givenCalendars(owned(href, "Perso", PRINCIPAL, true, true));
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(href))).thenReturn(false);
+
+    assertTrue(service.listCalendars(USER, LOGIN).calendars().isEmpty());
+  }
+
+  /**
+   * The prefix with nothing after it names no calendar — eXo never mints
+   * such a slug — and the list reads it exactly as the sweep does: an
+   * ordinary collection, listed here and materialised there. Pinned because
+   * the list used to carry its own spelling of "eXo-made" that dropped this
+   * shape while the sweep kept it; one predicate
+   * ({@code CaldavOutboundService.isExoCreated}) now serves both, and this
+   * is the one input on which the two spellings disagreed.
+   */
+  @Test
+  public void aBareExoPrefixNamesNoCalendarAndIsListedLikeAnyOther() {
+    givenCalendars(calendar("/dav/calendars/john/exo-cal-/", "Nameless"));
+
+    List<RemoteCalendar> calendars = service.listCalendars(USER, LOGIN).calendars();
+
+    assertEquals(1, calendars.size());
+    assertEquals("/dav/calendars/john/exo-cal-/", calendars.get(0).getId());
+    verify(caldavOutboundService, never()).isMintedByThisDeployment(anyLong(), anyString());
+  }
+
+  /**
+   * The dedicated mirror is excluded by its path before anything is
+   * classified, a colleague's as much as the user's own.
+   */
+  @Test
+  public void aColleaguesDedicatedMirrorIsExcludedByItsPathAndNeverClassified() {
+    givenCalendars(owned("/dav/calendars/alice/exo-meetings/", "eXo Meetings", ALICE, true, false));
+
+    assertTrue(service.listCalendars(USER, LOGIN).calendars().isEmpty());
+    verify(caldavOutboundService, never()).ownershipOf(anyLong(), any(), any(), any());
   }
 
   @Test
