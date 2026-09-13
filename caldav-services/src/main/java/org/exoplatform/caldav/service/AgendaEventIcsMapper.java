@@ -270,6 +270,15 @@ public class AgendaEventIcsMapper {
    * {@link org.exoplatform.agenda.util.InvitationText}, so there is one
    * spelling of what the block looks like.
    *
+   * <p>
+   * <b>The builder's own strip is not gated, and this is the call that reaches
+   * it.</b> {@code EventIcsBuilder.description} takes a leading block off
+   * whatever description it is handed, so a description the recogniser misreads
+   * is already shortened in the copy written here — and that copy carries eXo's
+   * {@code URL}, so the import stores the shortened text back over the event's
+   * description. Narrowing that is agenda's side of the defect, tracked as
+   * <b>EXO-90228</b>; nothing in this add-on closes it.
+   *
    * @param event the event being copied
    * @param roster the event's attendees as agenda holds them, which decide
    *          whether there is an invitation to offer an answer to at all

@@ -22,7 +22,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.time.ZonedDateTime;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -32,8 +35,11 @@ import org.junit.jupiter.api.Test;
 
 import net.fortuna.ical4j.model.Recur;
 
+import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.util.EventIcsBuilder;
+import org.exoplatform.agenda.util.InvitationText;
 import org.exoplatform.agenda.util.Utils;
 import org.exoplatform.caldav.model.IcsEvent;
 
@@ -49,9 +55,24 @@ import org.exoplatform.caldav.model.IcsEvent;
  */
 public class IcsEventMapperTest {
 
-  private static final long   CALENDAR = 42L;
+  private static final long    CALENDAR        = 42L;
 
-  private final IcsEventMapper mapper   = new IcsEventMapper();
+  /**
+   * The address of an event in eXo, which is both what the composed block names
+   * and what the object's {@code URL} carries — one value in production
+   * ({@code AgendaEventIcsMapper.toIcsEvent} passes the same {@code link} to
+   * both), so one constant here.
+   */
+  private static final String  EXO_EVENT_URL   = "http://localhost:8080/portal/dw/agenda?eventId=87";
+
+  /** Where the tokenised answer links a real copy offers point. */
+  private static final String  ANSWER_URL      =
+                                          "http://localhost:8080/portal/rest/v1/agenda/events/87/response/send?response=";
+
+  /** The organiser's own words: the one thing a composed block must leave. */
+  private static final String  ORGANISERS_TEXT = "Bring the deck.";
+
+  private final IcsEventMapper mapper          = new IcsEventMapper();
 
   /**
    * A weekly rule survives agenda's rebuild.
@@ -361,20 +382,54 @@ public class IcsEventMapperTest {
   }
 
   /**
-   * <b>The gate, and the reason it exists.</b> The very block shape stripped
-   * above, on an object carrying no eXo event address, is stored byte for byte:
-   * a person can type that shape \u2014 a line, a line that is some text and an eXo
-   * event link, then more \u2014 and this is the one place that decides whether
-   * their words survive the import. Nothing gives them back.
+   * <b>Half one of the gate's pin: the block eXo really composes is
+   * recognised.</b> The input is not a shape typed out here but the render
+   * {@link EventIcsBuilder#description} produces \u2014 the very call the push path
+   * makes ({@code AgendaEventIcsMapper.description}) \u2014 so what is asserted is
+   * that a copy eXo wrote leaves the organiser's words alone in the store.
+   *
+   * <p>
+   * It is the half that keeps the other half honest: without it, a narrowing of
+   * the recogniser that stopped recognising eXo's own block would leave the
+   * verbatim pin below passing and asserting nothing.
    */
   @Test
-  public void theSameBlockShapeWithNoExoEventUrlIsStoredVerbatim() {
+  public void theBlockAgendasOwnBuilderComposesIsStrippedFromWhatIsStored() {
     IcsEvent source = new IcsEvent();
     source.setUid("uid-1");
-    source.setDescription("Hi all,\nsee https://exo.acme.com/portal/dw/agenda?eventId=101\nThanks,\nBob");
+    source.setEventUrl(EXO_EVENT_URL);
+    source.setDescription(blockExoComposed());
 
-    assertEquals("Hi all,\nsee https://exo.acme.com/portal/dw/agenda?eventId=101\nThanks,\nBob",
-                 mapper.toEvent(source, CALENDAR).getDescription());
+    assertEquals(ORGANISERS_TEXT, mapper.toEvent(source, CALENDAR).getDescription());
+  }
+
+  /**
+   * <b>Half two: the same block, on an object carrying no eXo event address, is
+   * stored byte for byte.</b> This is the gate, and the pair above and here is
+   * the whole of it \u2014 one input, two answers, decided by the {@code URL}
+   * property alone. Nothing gives a user's words back, so this is the one place
+   * that decides whether they survive the import.
+   *
+   * <p>
+   * <b>Why the input is a real render and not a hand-written shape.</b> The
+   * first spelling of this pin typed a shape a person might write \u2014 {@code Hi
+   * all,} / a labelled eXo link / {@code Thanks,} / {@code Bob} \u2014 and agenda's
+   * own narrowing of {@link InvitationText} (a label is now short and ends in a
+   * colon, or is a bundle key of ours) made the recogniser return that text
+   * untouched by itself. The pin then asserted what the recogniser already
+   * guaranteed: the gate could be deleted outright and the whole suite stayed
+   * green. A render the builder actually produces cannot rot that way \u2014 it is
+   * the one input {@code InvitationText.stripFrom} must go on recognising
+   * however narrow it becomes, since agenda pins the two against each other.
+   */
+  @Test
+  public void theBlockAgendasOwnBuilderComposesIsStoredVerbatimWithNoExoEventUrl() {
+    String composed = blockExoComposed();
+    IcsEvent source = new IcsEvent();
+    source.setUid("uid-1");
+    source.setDescription(composed);
+
+    assertEquals(composed, mapper.toEvent(source, CALENDAR).getDescription());
   }
 
   /**
@@ -427,15 +482,48 @@ public class IcsEventMapperTest {
 
   /**
    * A {@code URL} that is not an eXo event address \u2014 the one a client or a
-   * server may well carry \u2014 does not open the gate.
+   * server may well carry \u2014 does not open the gate either, on the same input
+   * the pair above uses: an address that says nothing about eXo is the same
+   * answer as no address at all.
    */
   @Test
   public void aUrlThatIsNotAnExoEventAddressDoesNotOpenTheGate() {
     IcsEvent source = new IcsEvent();
     source.setUid("uid-1");
     source.setEventUrl("https://wiki.acme.com/meetings/weekly");
-    source.setDescription("Hi all,\nsee https://exo.acme.com/portal/dw/agenda?eventId=101\nThanks,\nBob");
+    source.setDescription(blockExoComposed());
 
     assertEquals(source.getDescription(), mapper.toEvent(source, CALENDAR).getDescription());
+  }
+
+  /**
+   * An invitation block as eXo composes it, built by agenda's own builder rather
+   * than typed out here.
+   *
+   * <p>
+   * Every argument is what the push path passes for a real copy
+   * ({@code AgendaEventIcsMapper.description}): the pusher's name, the space,
+   * the link back to the event, and the three tokenised answer links a calendar
+   * copy offers (EXO-89753). No Agenda bundle is readable from this suite, so
+   * every label comes out as its resource-bundle key \u2014 a shape
+   * {@link InvitationText} recognises on purpose, since it is what the builder
+   * itself writes when no bundle can be read. The assertions do not depend on
+   * that either way: they name the organiser's text, or this whole string.
+   *
+   * @return the description a copy eXo composed carries, block and organiser's
+   *         text together
+   */
+  private String blockExoComposed() {
+    Map<EventAttendeeResponse, String> rsvpLinks = new EnumMap<>(EventAttendeeResponse.class);
+    rsvpLinks.put(EventAttendeeResponse.ACCEPTED, ANSWER_URL + "ACCEPTED&token=tok-a");
+    rsvpLinks.put(EventAttendeeResponse.TENTATIVE, ANSWER_URL + "TENTATIVE&token=tok-t");
+    rsvpLinks.put(EventAttendeeResponse.DECLINED, ANSWER_URL + "DECLINED&token=tok-d");
+    return EventIcsBuilder.description(Locale.ENGLISH,
+                                       "Alice Doe",
+                                       "Chemistry",
+                                       null,
+                                       EXO_EVENT_URL,
+                                       rsvpLinks,
+                                       "<p>" + ORGANISERS_TEXT + "</p>");
   }
 }

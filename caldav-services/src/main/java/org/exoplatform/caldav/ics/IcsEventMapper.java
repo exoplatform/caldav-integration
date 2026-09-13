@@ -151,18 +151,42 @@ public class IcsEventMapper {
    * <b>Gated on the object carrying an eXo event address as its {@code URL}
    * property</b> ({@link #EXO_EVENT_URL}), and the gate is the whole reason
    * this is safe to write at all. {@code InvitationText} recognises a block by
-   * the <em>shape</em> of the text — a line, then a line that is some text and
-   * an eXo event link and nothing else, then one line taken as the label over
-   * the organiser's text — and that shape is one a person can type: {@code Hi
-   * all,} / {@code see <an eXo event link>} / {@code Thanks,} / {@code Bob}
-   * reduces to {@code Bob}. On the render side that misreading costs a
+   * the <em>shape</em> of the text — a line, then a line that is a short label
+   * and an eXo event link and nothing else, then one line that itself has the
+   * shape of a label, which is where the block ends and the organiser's text
+   * begins. That shape is one a person can type, and the joint that decides it
+   * is the last: a line short enough to be a label and ending in a colon, or
+   * spelled as one of our own bundle keys. So {@code Hi all,} / {@code see <an
+   * eXo event link>} / {@code Notes:} / {@code Bring the deck.} reduces to
+   * {@code Bring the deck.} (run through the installed {@code agenda-services}
+   * snapshot of agenda {@code 9d6e1f0d}), while the same text with
+   * {@code Thanks,} in the third line — a shape that <em>did</em> reduce before
+   * that narrowing — now comes back untouched. On the render side such a
+   * misreading costs a
    * paragraph of one document and the next push composes the text again; here
-   * it would be a write. The property is the signal a person does not produce
-   * — no calendar client offers a field for it, and the two servers this
-   * add-on is validated against return it intact, captured in
-   * {@code golden/read/objects/r06-macos-answer-internal-domain.ics} and
-   * {@code r07-exo-reminder-repaired-onto-stalwart.ics}, both carrying an
-   * invitation block <em>and</em> the address that says who composed it.
+   * it would be a write.
+   *
+   * <p>
+   * <b>Why the {@code URL} property is the signal.</b> Not because no client
+   * could ever write one — that is not known, and the very client
+   * {@code r06} was captured from (macOS Calendar 26.5.1) re-saved an object
+   * without dropping it — but because it is not part of the text a person types
+   * into a description, and because the servers this add-on is validated
+   * against keep what eXo wrote there. Both fixtures carrying an invitation
+   * block <em>and</em> the address that says who composed it are <b>Stalwart</b>
+   * bodies — {@code golden/read/objects/r06-macos-answer-internal-domain.ics},
+   * where the address survived that macOS re-save, and
+   * {@code r07-exo-reminder-repaired-onto-stalwart.ics} — and on BlueMind the
+   * property is kept so faithfully that it comes back <em>twice</em>, which
+   * {@code IcsEquivalence.isServerSideRepetition} exists to tolerate.
+   *
+   * <p>
+   * <b>The residual, stated rather than implied:</b> a client or a server that
+   * dropped {@code URL} while keeping the description would close this gate on a
+   * copy eXo really did compose, and its block would stay in the stored
+   * description. It <em>stays</em> and no longer <em>grows</em> — agenda's
+   * builder takes any block off before composing its own — so the cost of that
+   * false negative is one stale paragraph, not one per edit.
    *
    * <p>
    * <b>What this can still destroy, and nothing restores it.</b> An object
@@ -173,11 +197,28 @@ public class IcsEventMapper {
    * object's body — the one digest column was dropped from the schema on
    * purpose — and the next eXo-side edit of the event replaces the master
    * {@code VEVENT} wholesale ({@code IcsMerger}), so the server's copy of
-   * those words goes with it. The gate is what makes that path reachable only
-   * for an object whose {@code URL} a person deliberately set to an eXo event
-   * address, which is the narrowest statement this class can make; narrowing
-   * the recogniser's own shape is agenda's side of EXO-90227 and does not
-   * belong here.
+   * those words goes with it.
+   *
+   * <p>
+   * <b>Two routes reach it, and neither needs anybody to set a {@code URL}.</b>
+   * This class is not closed, and the Javadoc above must not be read as though
+   * it were:
+   * <ol>
+   * <li><b>eXo's own push, then import.</b> {@code EventIcsBuilder.description}
+   * strips a leading block <em>ungated</em> while composing, so a description a
+   * person wrote in a shape the recogniser misreads is already shortened in the
+   * copy eXo pushes. That copy legitimately carries eXo's {@code URL}; the
+   * server stamps a new {@code LAST-MODIFIED}; the import opens this gate and
+   * stores the shortened text over the event's own description.</li>
+   * <li><b>A person editing a copy eXo composed.</b> Rewriting the description
+   * in a calendar client keeps the {@code URL} the copy carries, so their text
+   * meets the recogniser on the way back in.</li>
+   * </ol>
+   * The cause of both is the builder's ungated strip, and narrowing it is
+   * agenda's side of this defect, tracked as <b>EXO-90228</b> — not fixed here,
+   * and this import amplifies rather than creates it. What the gate does buy is
+   * that neither route is reachable for an object that has nothing to do with
+   * eXo, which is the narrowest statement this class can make on its own.
    *
    * <p>
    * <b>The read-through preview is deliberately untouched.</b> Browsing the
@@ -186,9 +227,22 @@ public class IcsEventMapper {
    * event, and whether it should hide the block is a product decision nobody
    * has taken. Only what agenda <em>stores</em> is decided here.
    *
+   * <p>
+   * <b>On a gated object the organiser's own margins go too.</b> The
+   * {@code trimToNull} that turns a block-only description into no description
+   * at all also takes the blank lines and spaces off either end of what the
+   * recogniser left — and off a gated description the recogniser did
+   * <em>not</em> recognise, which is returned whole but trimmed. Harmless
+   * (leading and trailing whitespace carries nothing a reader sees, and the
+   * recogniser already strips the block's own margins) but not nothing, so it
+   * is written down rather than left for the next reader to discover: an object
+   * with no eXo {@code URL} keeps its margins, one with an eXo {@code URL} does
+   * not.
+   *
    * @param source the parsed object
    * @return the description to store, null when the object carries none and
-   *         null when a block was all it carried
+   *         null when a block was all it carried; on a gated object, trimmed of
+   *         leading and trailing whitespace
    */
   private String descriptionOf(IcsEvent source) {
     String description = source.getDescription();
