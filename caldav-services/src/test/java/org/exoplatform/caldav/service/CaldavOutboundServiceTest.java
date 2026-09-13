@@ -900,6 +900,54 @@ public class CaldavOutboundServiceTest {
     assertEquals(CollectionOwnership.SHARED, service.ownershipOf(SERVER, PRINCIPAL, List.of(), owned(WANTED, ALICE, true, false)));
   }
 
+  // ------------------------------------ who exported it, EXO-90237
+
+  /**
+   * The user behind a colleague's eXo calendar is named by the anchor arm
+   * first — the same arm, in the same order, that made the boolean form say
+   * yes — and the path arm is not asked when the anchor answered.
+   */
+  @Test
+  public void theExportingUserIsNamedByTheAnchorFirst() {
+    CalendarSync theirs = exportedPair(ANCHOR, WANTED);
+    theirs.setUserIdentityId(6L);
+    when(caldavSyncStorage.getExoCalendarPairOnServer(SERVER, ANCHOR)).thenReturn(theirs);
+
+    assertEquals(6L, service.exportingUserOf(SERVER, "/dav/calendars/publish/exo-cal-c0ffee-uid/"),
+                 "named by the anchor, under whatever parent the server lists it");
+    verify(caldavSyncStorage, never()).getExoCollectionPairOnServer(anyLong(), anyString());
+  }
+
+  /**
+   * When the slug is not the anchor, the user is named by the path the pair
+   * records — the second arm, asked only after the first found nobody.
+   */
+  @Test
+  public void theExportingUserIsNamedByTheRecordedPathWhenTheAnchorNamesNobody() {
+    CalendarSync theirs = exportedPair("anchor-theirs", CaldavSyncServiceTest.RENAMED_BY_THE_SERVER);
+    theirs.setUserIdentityId(6L);
+    when(caldavSyncStorage.getExoCalendarPairOnServer(SERVER, "renamed-by-the-server")).thenReturn(null);
+    when(caldavSyncStorage.getExoCollectionPairOnServer(SERVER, CaldavSyncServiceTest.RENAMED_BY_THE_SERVER)).thenReturn(theirs);
+
+    assertEquals(6L, service.exportingUserOf(SERVER, CaldavSyncServiceTest.RENAMED_BY_THE_SERVER));
+  }
+
+  /**
+   * Nobody is named for a path outside the prefix — the database is not
+   * asked — nor for a prefixed collection no pair here stands behind.
+   */
+  @Test
+  public void nobodyIsNamedForACollectionThisDeploymentDidNotMint() {
+    assertNull(service.exportingUserOf(SERVER, "/dav/calendars/john/private/"), "not eXo's slug");
+    verify(caldavSyncStorage, never()).getExoCalendarPairOnServer(anyLong(), anyString());
+    verify(caldavSyncStorage, never()).getExoCollectionPairOnServer(anyLong(), anyString());
+
+    // The path is handed to the storage as it came; the storage canonicalises.
+    when(caldavSyncStorage.getExoCalendarPairOnServer(SERVER, ANCHOR)).thenReturn(null);
+    when(caldavSyncStorage.getExoCollectionPairOnServer(SERVER, WANTED)).thenReturn(null);
+    assertNull(service.exportingUserOf(SERVER, WANTED), "another deployment's: both arms found nobody");
+  }
+
   /**
    * A collection outside eXo's prefix never costs the account-wide question:
    * the server's two signals are the whole of what decides it — a share when

@@ -393,6 +393,72 @@ public class CaldavSyncStorage {
   }
 
   /**
+   * The pair through which a calendar of this deployment, anyone's, is
+   * exported to one server under one anchor — the <em>who</em> form of
+   * {@link #isExoCalendarOnServer}.
+   *
+   * <p>
+   * Asked once a listed collection is known to be a colleague's eXo calendar
+   * and the list wants to name the colleague (EXO-90237): the pair's user is
+   * the owner. Every user and every status, as for the boolean form. Should
+   * two users ever hold an EXO pair for one anchor on one server — the
+   * schema does not forbid it — the one named is the active pair, else the
+   * oldest; the query orders and the page of one picks, so the answer is the
+   * same on every listing.
+   *
+   * @param serverId the declared server registration
+   * @param anchor the calendar anchor the collection's slug carries
+   * @return the pair to believe, or null when no user of this deployment
+   *         holds an EXO pair for the anchor, or the anchor is blank
+   */
+  public CalendarSync getExoCalendarPairOnServer(long serverId, String anchor) {
+    if (StringUtils.isBlank(anchor)) {
+      return null;
+    }
+    return calendarSyncDAO.findPairsByAnchorPreferring(serverId,
+                                                       SyncOrigin.EXO,
+                                                       anchor,
+                                                       CalendarSyncStatus.ACTIVE,
+                                                       PageRequest.of(0, 1))
+                          .stream()
+                          .findFirst()
+                          .map(this::fromEntity)
+                          .orElse(null);
+  }
+
+  /**
+   * The pair through which a calendar of this deployment, anyone's, is
+   * exported to one server at one collection path — the <em>who</em> form of
+   * {@link #isExoCollectionOnServer}, for the shape where the slug is not
+   * the anchor and the recorded path is what recognised the collection.
+   *
+   * <p>
+   * Matched on the canonical path, as the href is stored; the same
+   * active-first, oldest-first pick as
+   * {@link #getExoCalendarPairOnServer(long, String)}, for the same reason.
+   *
+   * @param serverId the declared server registration
+   * @param href the collection path, in any spelling
+   * @return the pair to believe, or null when no user of this deployment
+   *         holds an EXO pair recorded there, or the href is blank
+   */
+  public CalendarSync getExoCollectionPairOnServer(long serverId, String href) {
+    String canonical = canonicalHref(href);
+    if (StringUtils.isBlank(canonical)) {
+      return null;
+    }
+    return calendarSyncDAO.findPairsByRemoteHrefPreferring(serverId,
+                                                           SyncOrigin.EXO,
+                                                           canonical,
+                                                           CalendarSyncStatus.ACTIVE,
+                                                           PageRequest.of(0, 1))
+                          .stream()
+                          .findFirst()
+                          .map(this::fromEntity)
+                          .orElse(null);
+  }
+
+  /**
    * The calendar home a collection sits under: its canonical href without the
    * last segment.
    *

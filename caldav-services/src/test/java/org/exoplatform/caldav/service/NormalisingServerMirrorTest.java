@@ -1349,6 +1349,21 @@ public class NormalisingServerMirrorTest {
       return null;
     }
 
+    /**
+     * This fake names nothing: it lists no share, so no owner principal is
+     * ever asked what it calls itself (EXO-90237). The null answer is the
+     * one the {@link CalDavClient} contract gives a server that states no
+     * display name.
+     *
+     * @param endpoint ignored, this fake is addressed by href alone
+     * @param href ignored
+     * @return null, a server stating no name
+     */
+    @Override
+    public String readDisplayName(CalDavEndpoint endpoint, String href) {
+      return null;
+    }
+
     @Override
     public String discoverCalendarHome(CalDavEndpoint endpoint) {
       return HOME;
