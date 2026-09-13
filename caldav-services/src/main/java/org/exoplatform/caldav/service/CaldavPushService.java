@@ -40,6 +40,7 @@ import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.client.MkCalendarResult;
@@ -120,14 +121,38 @@ public class CaldavPushService {
    * push would carry it back onto the very object it came from.
    *
    * <p>
-   * Classified a known state so that it is logged without a trace, and that
-   * is all the classification does: the obligation behind a refused push is
-   * retried by the sweep and abandoned after
-   * {@code exo.agenda.caldav.push.maxAttempts} refusals like any other, and
-   * this code burns that budget although no user action clears the
-   * condition. Whether it should is a product question, not settled here.
+   * Classified a known state so that it is logged without a trace, and given
+   * up on by the sweep the first time it is refused rather than after
+   * {@code exo.agenda.caldav.push.maxAttempts} refusals — nothing was sent,
+   * and no waiting changes whose the copy is
+   * ({@code CaldavEventPropagationService#refuse}).
    */
   public static final String     FOREIGN_COPY           = "caldav.error.foreignCopy";
+
+  /**
+   * The calendar server took the credentials and refused the write: a 403 on
+   * the PUT or DELETE, which is a server saying the account has no write
+   * privilege on that collection (EXO-90235).
+   *
+   * <p>
+   * A state, not a failure. Observed live on Stalwart: a calendar a colleague
+   * shared read-only had been materialised as the user's own, and the push of
+   * every edit they made into it was refused with 403 — then retried, five
+   * times over twenty-five minutes, for a refusal the server was never going
+   * to withdraw, while the log called it transient. The privilege is the
+   * server's to grant and only a person on that side changes it; retrying
+   * spends requests and says nothing new. So it is classified a known state,
+   * and the sweep gives up on the obligation the first time it is refused
+   * this way, naming the object the server refused
+   * ({@code CaldavEventPropagationService#refuse}).
+   *
+   * <p>
+   * The materialised calendar itself is left as it is: the sweep no longer
+   * makes one out of a share ({@code CaldavSyncService}), and what to do with
+   * the ones made before it read ownership is a migration question, not a
+   * push's.
+   */
+  public static final String     FORBIDDEN              = "caldav.error.forbidden";
 
   /**
    * The name this add-on registers itself under as an agenda remote provider,
@@ -149,7 +174,7 @@ public class CaldavPushService {
    * failure, which is the safe default: a state nobody classified is exactly
    * the thing worth hearing about.
    */
-  private static final Set<String> KNOWN_STATE_CODES = Set.of(NOT_CONNECTED, MAIN_CALENDAR_UNKNOWN, FOREIGN_COPY);
+  private static final Set<String> KNOWN_STATE_CODES = Set.of(NOT_CONNECTED, MAIN_CALENDAR_UNKNOWN, FOREIGN_COPY, FORBIDDEN);
 
   /**
    * The one name pattern this class knows, and only as a tie-break: BlueMind
@@ -247,13 +272,18 @@ public class CaldavPushService {
    * never going to be made.
    *
    * <p>
-   * It changes nothing about retries. A refused write stays owed either way,
-   * the sweep attempts it again either way, and after
+   * By itself it changes nothing about retries. A refused write stays owed
+   * either way, the sweep attempts it again either way, and after
    * {@code exo.agenda.caldav.push.maxAttempts} refusals — five, about
    * twenty-five minutes at the sweep's cadence — it is abandoned either way
    * and not read again until an edit of the meeting renews it. A known state
    * is not "retried until the person acts": it is retried five times and then
-   * given up on, and the abandonment line says which kind it was.
+   * given up on, and the abandonment line says which kind it was. Two of the
+   * states are given up on at the first refusal instead — {@link #FOREIGN_COPY}
+   * and {@link #FORBIDDEN} — because for those a second attempt can only
+   * repeat the first; that is the sweep's decision, taken per code in
+   * {@code CaldavEventPropagationService#refuse}, not a property of being a
+   * known state.
    *
    * <p>
    * <b>Anything unrecognised is a failure.</b> Not silence: a code nobody
@@ -1010,7 +1040,7 @@ public class CaldavPushService {
     } catch (CalDavAuthenticationException e) {
       throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
     } catch (CalDavException e) {
-      throw new CaldavPushException(SAVE, "The calendar object could not be removed", e);
+      throw notWritten(e, "The calendar object could not be removed", known.getRemoteHref());
     }
     caldavSyncStorage.saveObject(cleared(known));
   }
@@ -1075,7 +1105,7 @@ public class CaldavPushService {
     } catch (CalDavAuthenticationException e) {
       throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
     } catch (CalDavException e) {
-      throw new CaldavPushException(SAVE, "The occurrence could not be excluded", e);
+      throw notWritten(e, "The occurrence could not be excluded", known.getRemoteHref());
     }
   }
 
@@ -1262,7 +1292,7 @@ public class CaldavPushService {
     } catch (CalDavAuthenticationException e) {
       throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
     } catch (CalDavException e) {
-      throw new CaldavPushException(SAVE, "The answer could not be written to " + known.getRemoteHref(), e);
+      throw notWritten(e, "The answer could not be written", known.getRemoteHref());
     }
   }
 
@@ -1618,7 +1648,7 @@ public class CaldavPushService {
     } catch (CalDavAuthenticationException e) {
       throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
     } catch (CalDavException e) {
-      throw new CaldavPushException(SAVE, "The answer could not be written to " + copy.getRemoteHref(), e);
+      throw notWritten(e, "The answer could not be written", copy.getRemoteHref());
     }
   }
 
@@ -2502,8 +2532,37 @@ public class CaldavPushService {
     } catch (CalDavAuthenticationException e) {
       throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
     } catch (CalDavException e) {
-      throw new CaldavPushException(SAVE, "The calendar object could not be written to " + href, e);
+      throw notWritten(e, "The calendar object could not be written", href);
     }
+  }
+
+  /**
+   * The refusal a write the client could not carry out becomes, told apart by
+   * what the server said.
+   *
+   * <p>
+   * A 403 is {@link #FORBIDDEN}: the server took the credentials and refused
+   * the resource, a state of the collection no retry changes (EXO-90235).
+   * Everything else the client raises for a write — an unexpected status, a
+   * transport failure, a body that is not DAV — stays {@link #SAVE}, the
+   * failure it always was. The object's path is in the message either way,
+   * because the one line the sweep says when it gives up on a forbidden write
+   * has to name what the server refused, and the path is the only name it
+   * has.
+   *
+   * @param e what the client raised
+   * @param what the write that did not happen, for the message
+   * @param href the object's server-absolute path
+   * @return the exception to throw
+   */
+  private CaldavPushException notWritten(CalDavException e, String what, String href) {
+    if (e instanceof CalDavForbiddenException) {
+      return new CaldavPushException(FORBIDDEN,
+                                     what + ": the calendar server refused the write to " + href
+                                         + " (403); this account has no write privilege on that collection",
+                                     e);
+    }
+    return new CaldavPushException(SAVE, what + " to " + href, e);
   }
 
   /**

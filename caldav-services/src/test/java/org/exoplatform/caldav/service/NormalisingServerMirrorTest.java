@@ -52,6 +52,7 @@ import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.client.MkCalendarResult;
 import org.exoplatform.caldav.client.PropPatchResult;
@@ -1351,6 +1352,20 @@ public class NormalisingServerMirrorTest {
     @Override
     public String discoverCalendarHome(CalDavEndpoint endpoint) {
       return HOME;
+    }
+
+    /**
+     * The same two answers the two methods above give, together: no
+     * principal, and the one home. A null principal leaves the owner
+     * comparison of the listing off, which is right for a fake that names
+     * nobody.
+     *
+     * @param endpoint ignored, this fake is addressed by href alone
+     * @return the home, with no principal beside it
+     */
+    @Override
+    public CalendarHome discoverHome(CalDavEndpoint endpoint) {
+      return new CalendarHome(discoverPrincipal(endpoint), HOME);
     }
 
     /**
