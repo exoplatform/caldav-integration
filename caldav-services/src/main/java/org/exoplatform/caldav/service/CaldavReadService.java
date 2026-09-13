@@ -18,7 +18,9 @@ package org.exoplatform.caldav.service;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -75,6 +77,9 @@ public class CaldavReadService {
   @Autowired
   private CaldavOutboundService  caldavOutboundService;
 
+  @Autowired
+  private CaldavCalendarOwnerService caldavCalendarOwnerService;
+
   /**
    * The calendars of the connected account, and whether the account could be
    * asked at all.
@@ -105,6 +110,11 @@ public class CaldavReadService {
     List<CalendarCollection> collections = listing.collections();
     List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
     List<RemoteCalendar> calendars = new ArrayList<>();
+    // The names read for owner principals during this one listing, so that a
+    // colleague who shared three calendars is asked what she calls herself
+    // once (EXO-90237). Per listing on purpose: a name is not worth a cache
+    // that outlives the request that read it.
+    Map<String, String> principalNames = new HashMap<>();
     for (CalendarCollection collection : collections) {
       if (!collection.holdsEvents()) {
         // The same refusal materialisation makes, for the same reason: a
@@ -145,13 +155,28 @@ public class CaldavReadService {
       // they could write into. The three paths — skip, list, serve — agree
       // because they share the one question rather than three spellings of it.
       boolean readOnly = !collection.writable() || ownership.isShared();
+      // Shared is said beside read-only, not folded into it (EXO-90237):
+      // agenda groups the shares under "Shared with me" and locks the
+      // read-only, and a calendar of the user's own the server will not let
+      // them write is the second without being the first. The owner is named
+      // from the witness that made it a share — the colleague's pair, or the
+      // principal the server returned — and is nobody when neither can say.
+      CalendarOwner owner = caldavCalendarOwnerService.ownerOf(serverId(settings),
+                                                               endpoint,
+                                                               ownership,
+                                                               collection,
+                                                               principalNames);
       calendars.add(new RemoteCalendar(collection.href(),
                                        collection.displayName(),
                                        CalendarPalette.colourOf(collection.color(),
                                                                 collection.href(),
                                                                 order.indexOf(collection.href()),
                                                                 order.size()),
-                                       readOnly));
+                                       readOnly,
+                                       ownership.isShared(),
+                                       owner.identityId(),
+                                       owner.username(),
+                                       owner.displayName()));
     }
     return new RemoteCalendarsRead(calendars, listing.failed());
   }

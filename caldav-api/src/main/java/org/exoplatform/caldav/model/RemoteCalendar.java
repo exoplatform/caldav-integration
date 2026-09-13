@@ -28,6 +28,23 @@ import lombok.NoArgsConstructor;
  * The identity is the collection href and never the display name: a user
  * renaming a calendar in their own client must not detach whatever eXo has
  * associated with it, and nothing stops two collections sharing a name.
+ *
+ * <p>
+ * Since EXO-90237 a calendar also says whether it is <b>shared</b> with the
+ * user rather than theirs, and by whom when that can be told. {@code shared}
+ * is distinct from {@code readOnly}: a calendar of the user's own can be
+ * read-only because the server grants no write, and a share is read-only
+ * because it is somebody else's — agenda groups on the first and locks on
+ * the second. The owner travels in three fields, all null when unknown. For
+ * a colleague's eXo calendar the deployment knows the owner as one of its
+ * users, and names them by identity, login and full name; for a share the
+ * server alone reported, only a display name is known — the owner
+ * principal's {@code DAV:displayname}, or the last segment of its path —
+ * and the identity fields stay null. Naming the owner to the viewer is
+ * acceptable because the viewer already holds read access the owner
+ * granted; what is never exposed is more than the server itself told the
+ * viewer, which is why a DAV login is shown only as the server spelled it
+ * in the principal path.
  */
 @Data
 @NoArgsConstructor
@@ -45,5 +62,48 @@ public class RemoteCalendar {
 
   /** Whether events may be written into it. */
   private boolean readOnly;
+
+  /**
+   * Whether the calendar is somebody else's, granted to the user rather
+   * than owned by them — by the server's word or by this deployment's
+   * (EXO-90237). False for the user's own, read-only or not.
+   */
+  private boolean shared;
+
+  /**
+   * The social identity of the eXo user the calendar belongs to, when the
+   * owner is a user of this deployment — a colleague whose eXo calendar
+   * reached the server through this connector; null otherwise.
+   */
+  private Long    ownerIdentityId;
+
+  /**
+   * That user's eXo login, under the same condition as
+   * {@code ownerIdentityId}; null otherwise.
+   */
+  private String  ownerUsername;
+
+  /**
+   * How to name the owner to the viewer: the eXo user's full name when the
+   * owner is a user of this deployment; for a share the server alone
+   * reported, the owner principal's display name, else the decoded last
+   * segment of the principal path; null when nobody can be named.
+   */
+  private String  ownerDisplayName;
+
+  /**
+   * A calendar nothing is said about beyond its own properties: not shared,
+   * no owner named — the shape every caller built before ownership was
+   * carried (EXO-90237), kept so that a calendar built by hand never
+   * classifies as a share by accident.
+   *
+   * @param id the collection href
+   * @param name its display name
+   * @param color a usable colour
+   * @param readOnly whether events may be written into it
+   */
+  public RemoteCalendar(String id, String name, String color, boolean readOnly) {
+    this(id, name, color, readOnly, false, null, null, null);
+  }
 
 }

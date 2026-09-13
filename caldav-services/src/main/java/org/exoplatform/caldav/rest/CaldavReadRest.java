@@ -170,7 +170,12 @@ public class CaldavReadRest {
       description = "The identity of a calendar is its collection href, never its display name: a user renaming "
           + "a calendar in their own client must not detach what eXo associated with it. `failed` marks a listing "
           + "the account could not answer, which an empty array alone cannot be told apart from an account that "
-          + "holds no calendar.")
+          + "holds no calendar. `shared` says the calendar is somebody else's, granted to the user — distinct from "
+          + "`readOnly`, which a calendar of the user's own can be too. The owner, when one can be named: "
+          + "`ownerIdentityId` and `ownerUsername` only when the owner is a user of this deployment (a colleague's "
+          + "eXo calendar), `ownerDisplayName` then that user's full name, or for a share the server alone reported "
+          + "the owner principal's display name, else the decoded last segment of the principal path; all three "
+          + "null when nobody can be named.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The account's calendars, and whether the "
       + "listing failed") })
   public RemoteCalendarsRead calendars() {

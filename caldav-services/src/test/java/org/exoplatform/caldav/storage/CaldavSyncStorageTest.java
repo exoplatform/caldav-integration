@@ -528,6 +528,79 @@ public class CaldavSyncStorageTest {
   }
 
   /**
+   * The pair behind an exported calendar is asked for as the first of a page
+   * of one, active first, and comes back mapped — or null when there is none.
+   */
+  @Test
+  public void thePairBehindAnExportedCalendarIsTheFirstOfAPageOfOneActiveFirst() {
+    // The who-form of the anchor arm (EXO-90237). What the storage owes the
+    // caller is the pick: the DAO orders, the storage asks for one and
+    // prefers ACTIVE, so that the owner named does not depend on row order.
+    CaldavCalendarSyncEntity theirs = new CaldavCalendarSyncEntity();
+    theirs.setId(31L);
+    theirs.setUserIdentityId(6L);
+    theirs.setServerId(SERVER);
+    theirs.setLocalCalendarSyncUid("c0ffee-uid");
+    theirs.setRemoteHref("/dav/calendars/john@dav/exo-cal-c0ffee-uid");
+    theirs.setOrigin(SyncOrigin.EXO);
+    theirs.setStatus(CalendarSyncStatus.ACTIVE);
+    when(calendarSyncDAO.findPairsByAnchorPreferring(eq(SERVER),
+                                                     eq(SyncOrigin.EXO),
+                                                     eq("c0ffee-uid"),
+                                                     eq(CalendarSyncStatus.ACTIVE),
+                                                     any(Pageable.class))).thenReturn(List.of(theirs));
+
+    CalendarSync pair = storage.getExoCalendarPairOnServer(SERVER, "c0ffee-uid");
+
+    assertEquals(6L, pair.getUserIdentityId());
+    assertEquals(31L, pair.getId());
+    ArgumentCaptor<Pageable> page = ArgumentCaptor.forClass(Pageable.class);
+    verify(calendarSyncDAO).findPairsByAnchorPreferring(eq(SERVER), eq(SyncOrigin.EXO), eq("c0ffee-uid"), eq(CalendarSyncStatus.ACTIVE), page.capture());
+    assertEquals(1, page.getValue().getPageSize(), "one is asked for: the DAO's order is the whole pick");
+    assertNull(storage.getExoCalendarPairOnServer(SERVER, "fd3fe75f-58f9-49e5-93d0-85f63b24a807"), "nobody holds this anchor");
+  }
+
+  /**
+   * A blank anchor names no calendar whose pair to ask for.
+   */
+  @Test
+  public void aBlankAnchorNamesNoPair() {
+    assertNull(storage.getExoCalendarPairOnServer(SERVER, " "));
+    assertNull(storage.getExoCalendarPairOnServer(SERVER, null));
+
+    verify(calendarSyncDAO, never()).findPairsByAnchorPreferring(anyLong(), any(), any(), any(), any());
+  }
+
+  /**
+   * The pair recorded at a collection path is asked for in the canonical
+   * spelling whatever the listing's, with the same pick.
+   */
+  @Test
+  public void thePairRecordedAtAPathIsAskedForCanonicallyWithTheSamePick() {
+    CaldavCalendarSyncEntity theirs = new CaldavCalendarSyncEntity();
+    theirs.setId(32L);
+    theirs.setUserIdentityId(6L);
+    theirs.setServerId(SERVER);
+    theirs.setLocalCalendarSyncUid("anchor-six");
+    theirs.setRemoteHref("/dav/calendars/john@dav/exo-cal-renamed-by-the-server");
+    theirs.setOrigin(SyncOrigin.EXO);
+    theirs.setStatus(CalendarSyncStatus.PAUSED);
+    when(calendarSyncDAO.findPairsByRemoteHrefPreferring(eq(SERVER),
+                                                         eq(SyncOrigin.EXO),
+                                                         eq("/dav/calendars/john@dav/exo-cal-renamed-by-the-server"),
+                                                         eq(CalendarSyncStatus.ACTIVE),
+                                                         any(Pageable.class))).thenReturn(List.of(theirs));
+
+    CalendarSync pair = storage.getExoCollectionPairOnServer(SERVER,
+                                                             "https://dav.example/dav/calendars/john%40dav/exo-cal-renamed-by-the-server/");
+
+    assertEquals(6L, pair.getUserIdentityId());
+    assertNull(storage.getExoCollectionPairOnServer(SERVER, "/dav/calendars/john@dav/exo-cal-fd3fe75f/"), "nobody recorded there");
+    assertNull(storage.getExoCollectionPairOnServer(SERVER, " "), "a blank path names no collection");
+    verify(calendarSyncDAO, never()).findPairsByRemoteHrefPreferring(anyLong(), any(), eq(""), any(), any());
+  }
+
+  /**
    * A refused insert is told by its JDBC cause, in every shape the platform
    * surfaces it.
    */

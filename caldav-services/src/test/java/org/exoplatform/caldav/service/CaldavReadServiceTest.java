@@ -20,6 +20,7 @@ package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -40,6 +41,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
@@ -58,6 +60,9 @@ import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.identity.model.Profile;
+import org.exoplatform.social.core.manager.IdentityManager;
 
 /**
  * The read half, and above all what it does when part of it fails.
@@ -107,11 +112,21 @@ public class CaldavReadServiceTest {
   @Mock
   private CalDavEndpoint             endpoint;
 
+  @Mock
+  private IdentityManager            identityManager;
+
   @InjectMocks
   private CaldavReadService          service;
 
   @BeforeEach
   public void connectAnAccount() {
+    // The owner is named by the real service over this test's mocks, so that
+    // a listing is pinned end to end — classification, owner, wire shape —
+    // rather than against a mock that answers whatever the test wrote
+    // (EXO-90237). Set by hand: @InjectMocks wires mocks, and this one is not.
+    ReflectionTestUtils.setField(service,
+                                 "caldavCalendarOwnerService",
+                                 new CaldavCalendarOwnerService(caldavOutboundService, identityManager, calDavClient));
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, "john")).thenReturn(endpoint);
     lenient().when(calDavClient.discoverHome(any())).thenReturn(new CalendarHome(PRINCIPAL, HOME));
@@ -578,6 +593,171 @@ public class CaldavReadServiceTest {
     // The read-through serves every unbound collection and asks nobody whose
     // it is: the classification is the list's and the sweep's, not this path's.
     verify(caldavOutboundService, never()).ownershipOf(anyLong(), any(), any(), any());
+  }
+
+  // ------------------------------------ who shared it, EXO-90237
+
+  /**
+   * CAL2 as eric sees it on BlueMind: shared — distinct from read-only — and
+   * owned by root, named by identity, login and full name from the pair this
+   * deployment holds. The server, which names eric as owner, is not asked
+   * for a name.
+   */
+  @Test
+  public void aColleaguesExoCalendarOnBlueMindIsSharedAndNamesTheColleague() {
+    givenCalendars(owned(CAL2_UNDER_OWN_HOME, "CAL2", PRINCIPAL, true, true));
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME))).thenReturn(true);
+    when(caldavOutboundService.exportingUserOf(SERVER, CAL2_UNDER_OWN_HOME)).thenReturn(1L);
+    when(identityManager.getIdentity("1")).thenReturn(user("1", "root", "Root Root"));
+
+    RemoteCalendar cal2 = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertTrue(cal2.isReadOnly());
+    assertTrue(cal2.isShared());
+    assertEquals(1L, cal2.getOwnerIdentityId());
+    assertEquals("root", cal2.getOwnerUsername());
+    assertEquals("Root Root", cal2.getOwnerDisplayName());
+    verify(calDavClient, never()).readDisplayName(any(), anyString());
+  }
+
+  /**
+   * The same calendar as Stalwart lists it — at her path, her as owner — is
+   * still named from the pair, not from the principal: the deployment's word
+   * is the more useful one, and it costs no PROPFIND.
+   */
+  @Test
+  public void aColleaguesExoCalendarOnStalwartIsNamedFromThePairNotThePrincipal() {
+    givenCalendars(owned(CAL2_AT_ALICES_PATH, "CAL2", ALICE, true, false));
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(CAL2_AT_ALICES_PATH))).thenReturn(true);
+    when(caldavOutboundService.exportingUserOf(SERVER, CAL2_AT_ALICES_PATH)).thenReturn(1L);
+    when(identityManager.getIdentity("1")).thenReturn(user("1", "root", "Root Root"));
+
+    RemoteCalendar cal2 = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertTrue(cal2.isShared());
+    assertEquals(1L, cal2.getOwnerIdentityId());
+    assertEquals("Root Root", cal2.getOwnerDisplayName());
+    verify(calDavClient, never()).readDisplayName(any(), anyString());
+  }
+
+  /**
+   * Alice's default as bob sees it on Stalwart: shared, named "Alice" from
+   * her principal's display name, and no identity — nothing maps a DAV
+   * principal to an eXo user.
+   */
+  @Test
+  public void aCalendarAColleagueSharedOnStalwartIsSharedAndNamedByHerPrincipal() {
+    givenCalendars(owned(ALICES, "Alice", ALICE, true, false));
+    when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
+
+    RemoteCalendar alices = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertTrue(alices.isReadOnly());
+    assertTrue(alices.isShared());
+    assertNull(alices.getOwnerIdentityId());
+    assertNull(alices.getOwnerUsername());
+    assertEquals("Alice", alices.getOwnerDisplayName());
+    verify(identityManager, never()).getIdentity(anyString());
+  }
+
+  /**
+   * A read-only calendar of the user's own is not a share, and nobody is
+   * named. The shape is the one where the two flags part: a server that
+   * answers no privilege set — Google's — leaves the collection unwritable
+   * without having said it is anybody else's (EXO-90235's silence rule), so
+   * it is read-only and not shared. (A privilege set that withholds write
+   * <em>is</em> the server saying the collection is somebody else's, and
+   * that shape is a share by design — see
+   * {@link #aCalendarAColleagueSharedIsListedReadOnlyEvenWhenWritable}.)
+   */
+  @Test
+  public void aReadOnlyCalendarOfTheUsersOwnIsNotShared() {
+    givenCalendars(new CalendarCollection("/dav/calendars/john/holidays/", "Holidays", null, null, null, false));
+
+    RemoteCalendar own = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertTrue(own.isReadOnly());
+    assertFalse(own.isShared());
+    assertNull(own.getOwnerIdentityId());
+    assertNull(own.getOwnerUsername());
+    assertNull(own.getOwnerDisplayName());
+    verify(calDavClient, never()).readDisplayName(any(), anyString());
+  }
+
+  /**
+   * A colleague the registry no longer knows leaves the share a share, with
+   * nobody named — never an error, never the viewer.
+   */
+  @Test
+  public void aColleagueTheRegistryNoLongerKnowsLeavesTheShareUnnamed() {
+    givenCalendars(owned(CAL2_UNDER_OWN_HOME, "CAL2", PRINCIPAL, true, true));
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME))).thenReturn(true);
+    when(caldavOutboundService.exportingUserOf(SERVER, CAL2_UNDER_OWN_HOME)).thenReturn(1L);
+    when(identityManager.getIdentity("1")).thenReturn(null);
+
+    RemoteCalendarsRead read = service.listCalendars(USER, LOGIN);
+    RemoteCalendar cal2 = read.calendars().get(0);
+
+    assertFalse(read.failed());
+    assertTrue(cal2.isShared());
+    assertNull(cal2.getOwnerIdentityId());
+    assertNull(cal2.getOwnerUsername());
+    assertNull(cal2.getOwnerDisplayName());
+  }
+
+  /**
+   * One colleague sharing three calendars is asked her name once per
+   * listing, and a second listing asks again: the memo lives and dies with
+   * the request.
+   */
+  @Test
+  public void oneColleagueSharingThreeCalendarsIsAskedHerNameOncePerListing() {
+    givenCalendars(owned(ALICES, "Default", ALICE, true, false),
+                   owned("/dav/calendars/alice/work/", "Work", ALICE, true, false),
+                   owned("/dav/calendars/alice/home/", "Home", ALICE, true, false));
+    when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
+
+    List<RemoteCalendar> calendars = service.listCalendars(USER, LOGIN).calendars();
+
+    assertEquals(3, calendars.size());
+    assertTrue(calendars.stream().allMatch(calendar -> "Alice".equals(calendar.getOwnerDisplayName())));
+    verify(calDavClient, times(1)).readDisplayName(endpoint, ALICE);
+
+    service.listCalendars(USER, LOGIN);
+    verify(calDavClient, times(2)).readDisplayName(endpoint, ALICE);
+  }
+
+  /**
+   * A principal that cannot be asked names the share by its path, and the
+   * listing answers as if nothing had failed — an owner's name is never
+   * worth the user's calendars.
+   */
+  @Test
+  public void aPrincipalThatCannotBeAskedIsNamedByItsPathAndTheListingStillAnswers() {
+    givenCalendars(owned(ALICES, "Alice", ALICE, true, false));
+    when(calDavClient.readDisplayName(endpoint, ALICE)).thenThrow(new CalDavException("refused"));
+
+    RemoteCalendarsRead read = service.listCalendars(USER, LOGIN);
+
+    assertFalse(read.failed());
+    assertEquals(1, read.calendars().size());
+    assertTrue(read.calendars().get(0).isShared());
+    assertEquals("alice", read.calendars().get(0).getOwnerDisplayName());
+  }
+
+  /**
+   * @param id the identity id
+   * @param login the eXo login
+   * @param fullName the profile's full name
+   * @return a user identity
+   */
+  private Identity user(String id, String login, String fullName) {
+    Identity identity = new Identity(id);
+    identity.setRemoteId(login);
+    Profile profile = new Profile(identity);
+    profile.setProperty(Profile.FULL_NAME, fullName);
+    identity.setProfile(profile);
+    return identity;
   }
 
   /**
