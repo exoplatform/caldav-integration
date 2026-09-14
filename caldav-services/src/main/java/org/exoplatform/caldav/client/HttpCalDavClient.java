@@ -1588,15 +1588,26 @@ public class HttpCalDavClient implements CalDavClient {
   private static final Pattern               XML_NAME_PATTERN  = Pattern.compile("[A-Za-z_][A-Za-z0-9._\\-]*");
 
   /**
-   * One OPTIONS, read through the read-verb status policy: it changes
-   * nothing, and on BlueMind a 403 to a read is a credential refusal.
+   * The smallest PROPFIND there is, sent only for its answer's {@code DAV}
+   * header when the {@code OPTIONS} answer carried none.
+   */
+  private static final String                PROPFIND_RESOURCETYPE = """
+      <?xml version="1.0" encoding="utf-8"?>
+      <d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>""";
+
+  /**
+   * One OPTIONS, and one depth-0 PROPFIND of the same resource when that
+   * OPTIONS carries no {@code DAV} header. Both go through the read-verb
+   * status policy: they change nothing, and on BlueMind a 403 to a read is a
+   * credential refusal. The {@code Allow} methods are taken from the OPTIONS
+   * alone.
    *
    * @param endpoint the account's endpoint
    * @param href the resource's server-absolute path
-   * @return the normalised DAV and Allow headers
+   * @return the normalised DAV classes and Allow methods
    */
   @Override
-  public DavOptions options(CalDavEndpoint endpoint, String href) {
+  public DavOptions capabilities(CalDavEndpoint endpoint, String href) {
     HttpRequest request = HttpRequest.newBuilder(target(endpoint, href))
                                      .timeout(requestTimeout())
                                      .header(AUTHORIZATION_HEADER, authorization(endpoint))
@@ -1608,8 +1619,15 @@ public class HttpCalDavClient implements CalDavClient {
     if (status != 200 && status != 204) {
       throw refusal(status, request);
     }
-    return DavOptions.of(response.response().headers().allValues("dav"),
-                         response.response().headers().allValues("allow"));
+    List<String> davHeaders = response.response().headers().allValues("dav");
+    List<String> allowHeaders = response.response().headers().allValues("allow");
+    if (DavOptions.of(davHeaders, List.of()).davTokens().isEmpty()) {
+      HttpRequest propfind = request(endpoint, href, "PROPFIND", PROPFIND_RESOURCETYPE).header(DEPTH_HEADER, "0").build();
+      DavResponse answer = exchange(propfind);
+      checkReadStatus(answer, propfind);
+      davHeaders = answer.response().headers().allValues("dav");
+    }
+    return DavOptions.of(davHeaders, allowHeaders);
   }
 
   /**

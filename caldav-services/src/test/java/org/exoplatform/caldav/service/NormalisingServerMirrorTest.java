@@ -1531,7 +1531,7 @@ public class NormalisingServerMirrorTest {
      * @return never
      */
     @Override
-    public org.exoplatform.caldav.client.DavOptions options(CalDavEndpoint endpoint, String href) {
+    public org.exoplatform.caldav.client.DavOptions capabilities(CalDavEndpoint endpoint, String href) {
       throw new UnsupportedOperationException("sharing is not exercised by the mirror tests");
     }
 

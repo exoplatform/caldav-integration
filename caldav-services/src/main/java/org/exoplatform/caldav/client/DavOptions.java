@@ -25,7 +25,8 @@ import java.util.stream.Collectors;
 import org.apache.commons.lang3.StringUtils;
 
 /**
- * What a resource says it supports in answer to {@code OPTIONS}: the
+ * What a resource says it supports, as {@link CalDavClient#capabilities}
+ * gathers it: the
  * compliance classes of its {@code DAV} header (RFC 4918 §10.1) and the
  * methods of its {@code Allow} header (RFC 9110 §10.2.1) — the two pieces of
  * evidence the sharing capability is selected from (EXO-90253).

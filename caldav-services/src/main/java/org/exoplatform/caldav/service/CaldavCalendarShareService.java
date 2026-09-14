@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
@@ -48,6 +49,7 @@ import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CollectionAcl;
+import org.exoplatform.caldav.client.DavOptions;
 import org.exoplatform.caldav.client.SharingMechanism;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarShares;
@@ -278,6 +280,13 @@ public class CaldavCalendarShareService {
   private final BlueMindAclClient               blueMindAclClient;
 
   /**
+   * The servers this node has already reported, at INFO, as offering no
+   * sharing. Reported once per server per process, so the reason is visible
+   * without flooding the log on every refresh of the agenda's panel.
+   */
+  private final Set<Long>                       serversNotOffering = ConcurrentHashMap.newKeySet();
+
+  /**
    * @param agendaCalendarService where the calendar and its owner are read
    * @param caldavConnectorStorage the caller's connected account
    * @param caldavSyncStorage the pair binding the calendar to its collection
@@ -314,8 +323,9 @@ public class CaldavCalendarShareService {
    * What decides whether agenda shows "Share" on a calendar, so it never
    * fails: anything that goes wrong — no account, a server that cannot be
    * reached, agenda failing — answers no calendar, and the entry is simply
-   * not offered. The server is asked one {@code OPTIONS}, on the first such
-   * collection, since what a server supports does not vary between two
+   * not offered. The server is asked what the first such collection
+   * advertises — one {@code OPTIONS}, plus a depth-0 {@code PROPFIND} where
+   * that answer carries no {@code DAV} header, as on BlueMind — since what a server supports does not vary between two
    * collections of one account in any server characterised; every share
    * operation asks its own collection again.
    *
@@ -352,9 +362,16 @@ public class CaldavCalendarShareService {
       }
       CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
       CalendarSync probe = pairs.get(calendars.get(0).getSyncUid());
-      SharingMechanism mechanism = SharingMechanism.of(calDavClient.options(endpoint, collectionOf(probe)), collectionOf(probe));
-      if (!mechanism.isOffered()
-          || (mechanism == SharingMechanism.BLUEMIND_SHARE && !blueMindAclClient.acceptsCredentials(endpoint))) {
+      DavOptions capabilities = calDavClient.capabilities(endpoint, collectionOf(probe));
+      SharingMechanism mechanism = SharingMechanism.of(capabilities, collectionOf(probe));
+      if (!mechanism.isOffered()) {
+        noteNotOffered(serverId, collectionOf(probe), capabilities, mechanism);
+        return List.of();
+      }
+      if (mechanism == SharingMechanism.BLUEMIND_SHARE && !blueMindAclClient.acceptsCredentials(endpoint)) {
+        LOG.debug("The credentials of user {} on server {} are not a login BlueMind's REST API accepts; sharing is not offered",
+                  userIdentityId,
+                  serverId);
         return List.of();
       }
       return calendars.stream().map(Calendar::getId).toList();
@@ -546,7 +563,7 @@ public class CaldavCalendarShareService {
    * is not the caller's own.
    *
    * <p>
-   * The server is asked one {@code OPTIONS}, the capability check the listing,
+   * The server is asked what the collection advertises, the capability check the listing,
    * the grant and the revoke make, so that nobody is listed on a server where
    * eXo offers no sharing. The colleagues themselves are read from eXo's own
    * record of each connection; the server is asked who the caller is only when
@@ -669,12 +686,34 @@ public class CaldavCalendarShareService {
    * @return the mechanism selected, always an offered one
    */
   private SharingMechanism requireOffered(ShareTarget target) {
-    SharingMechanism mechanism = SharingMechanism.of(calDavClient.options(target.endpoint(), target.href()), target.href());
+    DavOptions capabilities = calDavClient.capabilities(target.endpoint(), target.href());
+    SharingMechanism mechanism = SharingMechanism.of(capabilities, target.href());
     if (!mechanism.isOffered()) {
-      LOG.debug("Server {} selects sharing mechanism {} for {}, which eXo does not offer", target.serverId(), mechanism, target.href());
+      noteNotOffered(target.serverId(), target.href(), capabilities, mechanism);
       throw new CaldavShareException(NOT_SUPPORTED);
     }
     return mechanism;
+  }
+
+  /**
+   * Says why sharing is not offered on a server: at INFO the first time this
+   * node meets it, at debug afterwards. Silent refusals are how a server that
+   * advertises its classes somewhere unexpected goes unnoticed. The classes
+   * and methods named are public protocol facts, never credentials.
+   *
+   * @param serverId the server registration
+   * @param href the collection asked
+   * @param capabilities what it advertised
+   * @param mechanism what that selected
+   */
+  private void noteNotOffered(long serverId, String href, DavOptions capabilities, SharingMechanism mechanism) {
+    if (serversNotOffering.add(serverId)) {
+      LOG.info("Sharing calendars is not offered on calendar server {}: collection {} advertised DAV classes {} and methods {},"
+          + " which select {}. Reported once per server until restart", serverId, href, capabilities.davTokens(),
+               capabilities.allowedMethods(), mechanism);
+    } else {
+      LOG.debug("Server {} selects sharing mechanism {} for {}, which eXo does not offer", serverId, mechanism, href);
+    }
   }
 
   /**

@@ -38,6 +38,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -116,7 +118,10 @@ public class HttpCalDavClientShareTest {
 
   /**
    * BlueMind's DAV header, CAPTURED on 2026-08-20
-   * ({@code caldav-webapp/src/test/js/fixtures/bluemind-principal.captured.xml:10}).
+   * ({@code caldav-webapp/src/test/js/fixtures/bluemind-principal.captured.xml:10}),
+   * as its PROPFIND answers carry it: BlueMind's {@code OPTIONS}, answered by
+   * its nginx front, is a bare 204 with no {@code DAV} header
+   * ({@code bluemind-options-bare-204.http}).
    */
   private static final String   BLUEMIND_DAV    =
                                              "1, access-control, calendar-access, calendar-schedule, calendar-auto-schedule, calendar-availability, inbox-availability, calendar-proxy, calendarserver-private-events, calendarserver-sharing, calendarserver-sharing-no-scheduling, calendar-query-extended, calendar-default-alarms, calendarserver-partstat-changes, extended-mkcol, calendarserver-principal-property-search, calendarserver-principal-search, calendarserver-home-sync, addressbook";
@@ -174,14 +179,18 @@ public class HttpCalDavClientShareTest {
 
   /**
    * Stalwart: the request is an OPTIONS on the collection with the account's
-   * credentials, and its answer selects the RFC 3744 method, offered.
+   * credentials, whose answer (the rig's live headers,
+   * {@code stalwart-options-collection.http}) carries the DAV classes and the
+   * methods, so nothing more is asked; it selects the RFC 3744 method, offered.
    */
   @Test
   void stalwartsOptionsSelectTheAclMethodWhichIsOffered() {
-    answer(200, Map.of("DAV", STALWART_DAV, "Allow", STALWART_ALLOW), "");
+    answerFromTranscript("stalwart-options-collection.http");
 
-    DavOptions options = client.options(endpoint, COLLECTION);
+    DavOptions options = client.capabilities(endpoint, COLLECTION);
 
+    assertEquals(1, sent.size(), "an OPTIONS carrying a DAV header is enough: no PROPFIND");
+    assertTrue(options.advertises("calendar-no-timezone"), "the live header is read whole");
     HttpRequest request = sent.get(0);
     assertEquals("OPTIONS", request.method());
     assertEquals("http://cal.example.com" + COLLECTION, request.uri().toString());
@@ -217,7 +226,7 @@ public class HttpCalDavClientShareTest {
    */
   @Test
   void blueMindIsRecognisedByItsHeaderAndItsCollectionPathTogether() {
-    DavOptions bluemind = DavOptions.of(List.of(BLUEMIND_DAV), List.of("OPTIONS, GET, PROPFIND, REPORT, POST, ACL"));
+    DavOptions bluemind = DavOptions.of(List.of(BLUEMIND_DAV), List.of());
     DavOptions stalwart = DavOptions.of(List.of(STALWART_DAV), List.of(STALWART_ALLOW));
 
     assertEquals(SharingMechanism.BLUEMIND_SHARE, SharingMechanism.of(bluemind, BLUEMIND_COLLECTION));
@@ -251,7 +260,7 @@ public class HttpCalDavClientShareTest {
     answers.clear();
     answers.add(response(204, Map.of("DAV", List.of("1, 2", "access-control"), "Allow", List.of("PROPFIND", "ACL")), ""));
 
-    DavOptions options = client.options(endpoint, COLLECTION);
+    DavOptions options = client.capabilities(endpoint, COLLECTION);
 
     assertEquals(SharingMechanism.WEBDAV_ACL, SharingMechanism.of(options));
     assertEquals(SharingMechanism.NONE, SharingMechanism.of(DavOptions.of(null, null)));
@@ -275,14 +284,74 @@ public class HttpCalDavClientShareTest {
   }
 
   /**
+   * BlueMind behind nginx: the OPTIONS answer is a bare 204, no {@code DAV}
+   * and no {@code Allow} header (the rig, 2026-09-14,
+   * {@code bluemind-options-bare-204.http}), which alone selects nothing. The
+   * classes are then read from the {@code DAV} header of a depth-0 PROPFIND of
+   * the same collection, with the same credentials — the header BlueMind's DAV
+   * server sets on every PROPFIND answer, here as CAPTURED on its calendar home
+   * — and select BlueMind's sharing, offered, with no method taken from the
+   * PROPFIND.
+   *
+   * @throws Exception when a fixture cannot be read
+   */
+  @Test
+  void blueMindsBare204OptionsIsCompletedFromItsPropfindDavHeader() throws Exception {
+    answerFromTranscript("bluemind-options-bare-204.http");
+    answers.add(response(207,
+                         Map.of("dav", List.of(capturedBlueMindPropfindDavHeader()), "server", List.of("nginx")),
+                         "<d:multistatus xmlns:d=\"DAV:\"/>"));
+
+    DavOptions capabilities = client.capabilities(endpoint, BLUEMIND_COLLECTION);
+
+    assertEquals(SharingMechanism.NONE, SharingMechanism.of(DavOptions.of(List.of(), List.of()), BLUEMIND_COLLECTION),
+                 "the bare 204 alone offers nothing: this is the bug the PROPFIND fixes");
+    assertEquals(2, sent.size());
+    assertEquals("OPTIONS", sent.get(0).method());
+    HttpRequest propfind = sent.get(1);
+    assertEquals("PROPFIND", propfind.method());
+    assertEquals("0", propfind.headers().firstValue("Depth").orElse(null));
+    assertEquals("http://cal.example.com" + BLUEMIND_COLLECTION, propfind.uri().toString());
+    assertEquals(AUTHORIZATION, propfind.headers().firstValue("Authorization").orElse(null));
+    assertTrue(capabilities.advertises("calendarserver-sharing"));
+    assertTrue(capabilities.allowedMethods().isEmpty(), "methods come from OPTIONS only");
+    assertEquals(SharingMechanism.BLUEMIND_SHARE, SharingMechanism.of(capabilities, BLUEMIND_COLLECTION));
+    assertTrue(SharingMechanism.of(capabilities, BLUEMIND_COLLECTION).isOffered());
+  }
+
+  /**
+   * A PROPFIND answer never supplies methods, even one carrying an
+   * {@code Allow} header: the RFC 3744 method is selected only where OPTIONS
+   * lists {@code ACL}. A PROPFIND answer without a {@code DAV} header leaves
+   * nothing advertised; a refused one is classified like any read.
+   */
+  @Test
+  void methodsAreNeverTakenFromAPropfindAnswer() {
+    answerFromTranscript("bluemind-options-bare-204.http");
+    answers.add(response(207, Map.of("dav", List.of("1, access-control, calendar-access"), "allow", List.of("PROPFIND, ACL")), ""));
+    DavOptions fromPropfind = client.capabilities(endpoint, COLLECTION);
+    assertTrue(fromPropfind.advertises("access-control"));
+    assertFalse(fromPropfind.allows("ACL"));
+    assertEquals(SharingMechanism.NONE, SharingMechanism.of(fromPropfind, COLLECTION));
+
+    answerFromTranscript("bluemind-options-bare-204.http");
+    answers.add(response(207, Map.of(), ""));
+    assertTrue(client.capabilities(endpoint, COLLECTION).davTokens().isEmpty());
+
+    answerFromTranscript("bluemind-options-bare-204.http");
+    answers.add(response(401, Map.of(), ""));
+    assertThrows(CalDavAuthenticationException.class, () -> client.capabilities(endpoint, COLLECTION));
+  }
+
+  /**
    * OPTIONS is a read: a 401 is a credential refusal, a 404 a plain failure.
    */
   @Test
   void optionsRefusalsAreClassified() {
     answer(401, Map.of(), "");
-    assertThrows(CalDavAuthenticationException.class, () -> client.options(endpoint, COLLECTION));
+    assertThrows(CalDavAuthenticationException.class, () -> client.capabilities(endpoint, COLLECTION));
     answer(404, Map.of(), "");
-    assertThrows(CalDavException.class, () -> client.options(endpoint, COLLECTION));
+    assertThrows(CalDavException.class, () -> client.capabilities(endpoint, COLLECTION));
   }
 
   // ---- BlueMind: the sharee's address and CS:share ------------------------
@@ -751,6 +820,42 @@ public class HttpCalDavClientShareTest {
     lenient().when(response.body()).thenReturn(new ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8)));
     lenient().when(response.headers()).thenReturn(HttpHeaders.of(headers, (a, b) -> true));
     return response;
+  }
+
+  /**
+   * Queues the answer an {@code .http} transcript records: its status line,
+   * its headers and its body, the {@code #} note lines removed.
+   *
+   * @param name the transcript file name
+   */
+  private void answerFromTranscript(String name) {
+    List<String> lines = transcript(name).lines().filter(line -> !line.startsWith("#")).toList();
+    int status = Integer.parseInt(lines.get(0).trim().split("\\s+")[1]);
+    Map<String, List<String>> headers = new HashMap<>();
+    int index = 1;
+    for (; index < lines.size() && !lines.get(index).isBlank(); index++) {
+      String line = lines.get(index);
+      int colon = line.indexOf(':');
+      headers.computeIfAbsent(line.substring(0, colon).trim(), key -> new ArrayList<>()).add(line.substring(colon + 1).trim());
+    }
+    String body = index + 1 < lines.size() ? String.join("\n", lines.subList(index + 1, lines.size())) : "";
+    answers.add(response(status, headers, body));
+  }
+
+  /**
+   * The {@code dav} header BlueMind's DAV server sent on a PROPFIND of a
+   * calendar home, from the CAPTURED transcript the webapp's tests read.
+   *
+   * @return the header value, whole
+   * @throws IOException when the capture cannot be read
+   */
+  private static String capturedBlueMindPropfindDavHeader() throws IOException {
+    return Files.readAllLines(Path.of("../caldav-webapp/src/test/js/fixtures/bluemind-calendar-home.captured.xml"), StandardCharsets.UTF_8)
+                .stream()
+                .filter(line -> line.regionMatches(true, 0, "dav:", 0, 4))
+                .map(line -> line.substring(4).trim())
+                .findFirst()
+                .orElseThrow(() -> new IOException("no dav header in the BlueMind capture"));
   }
 
   /**

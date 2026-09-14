@@ -518,23 +518,39 @@ public interface CalDavClient {
   int deleteCollection(CalDavEndpoint endpoint, CalendarSync pair);
 
   /**
-   * Asks a resource what it supports: the compliance classes of its
-   * {@code DAV} header and the methods of its {@code Allow} header, in one
-   * {@code OPTIONS} (EXO-90253).
+   * What a resource supports: the compliance classes of its {@code DAV} header
+   * and the methods of its {@code Allow} header (EXO-90253).
    *
    * <p>
-   * The evidence {@link SharingMechanism#of(DavOptions)} selects a granting
-   * mechanism from. Asked of the collection itself, not of the server root:
-   * RFC 4918 §10.1 lets the {@code DAV} header vary per resource.
+   * The evidence {@link SharingMechanism#of(DavOptions, String)} selects a
+   * granting mechanism from. It is asked of the collection itself, not of the
+   * server root, because RFC 4918 §10.1 lets the {@code DAV} header vary per
+   * resource.
+   *
+   * <p>
+   * One {@code OPTIONS} comes first; Stalwart answers both headers there. When
+   * that answer carries no {@code DAV} header, the compliance classes come from
+   * the {@code DAV} header of a depth-0 {@code PROPFIND} of the same resource.
+   * This is the BlueMind case: its nginx front answers {@code OPTIONS} with a
+   * bare 204 (observed live on 2026-09-14), although its own DAV server sets
+   * both headers ({@code OptionsProtocol.write}), and that server sets
+   * {@code DAV} on every PROPFIND answer ({@code PropFindProtocol.java:125};
+   * captured on its principal and calendar homes). The methods come from
+   * {@code OPTIONS} only, since a PROPFIND answer does not list them. A
+   * mechanism that needs a method — {@link SharingMechanism#WEBDAV_ACL} and its
+   * {@code ACL} — is therefore selected only on a server that lists it where
+   * methods are listed.
    *
    * @param endpoint the account's endpoint
    * @param href the resource's server-absolute path
-   * @return the normalised headers, empty sets when the server sent none
+   * @return the normalised classes and methods, empty sets where neither answer
+   *         carried them
    * @throws CalDavAuthenticationException when the credentials are refused
-   * @throws CalDavException when the server cannot be reached or answers
-   *           neither 200 nor 204
+   * @throws CalDavException when the server cannot be reached, answers the
+   *           {@code OPTIONS} with neither 200 nor 204, or refuses the
+   *           {@code PROPFIND}
    */
-  DavOptions options(CalDavEndpoint endpoint, String href);
+  DavOptions capabilities(CalDavEndpoint endpoint, String href);
 
   /**
    * Reads a collection's access control list and the caller's own privileges

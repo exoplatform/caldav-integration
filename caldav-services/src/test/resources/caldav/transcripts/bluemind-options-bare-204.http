@@ -1,0 +1,11 @@
+# DERIVED from a live observation, not a raw capture: BlueMind on the rig (server 2), OPTIONS on
+# /dav/calendars/__uids__/<owner uid>/exo-cal-<anchor>/ and on /dav/, reported by the EXO-90253 coordinator
+# on 2026-09-14 around 18:55. Observed unauthenticated: HTTP/2 204, server: nginx, vary: Origin, and no dav
+# or allow header; a CORS-style OPTIONS got the same bare 204. The authenticated answer was not observed.
+# BlueMind's own DAV server would answer 200 with both headers (plugins/net.bluemind.dav.server/src/net/
+# bluemind/dav/server/proto/options/OptionsProtocol.java, write()), so the 204 is answered in front of it.
+# Lines starting with "#" are removed by the test before parsing.
+HTTP/2 204
+server: nginx
+vary: Origin
+

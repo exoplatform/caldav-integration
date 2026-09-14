@@ -25,8 +25,9 @@ import java.util.regex.Pattern;
  * <p>
  * The catalogue of granting mechanisms, in code: an entry is a protocol and a
  * verdict on it, and which entry a server gets is <b>selected from what the
- * server says about itself</b> ({@link #of(DavOptions, String)}: its own
- * answer to {@code OPTIONS} and, for BlueMind, where the collection lives),
+ * server says about itself</b> ({@link #of(DavOptions, String)}: what the
+ * collection advertises, {@link CalDavClient#capabilities}, and, for
+ * BlueMind, where the collection lives),
  * not ticked by an
  * administrator nor frozen on a registration row. Granting is not a CalDAV
  * feature — no RFC defines calendar sharing — so the two servers this add-on
@@ -127,7 +128,8 @@ public enum SharingMechanism {
   }
 
   /**
-   * The mechanism a server's own answer to {@code OPTIONS} selects.
+   * The mechanism a collection's advertised DAV classes and allowed methods
+   * select, read from those alone.
    *
    * <p>
    * Read in this order, and the order is the point:
@@ -171,14 +173,18 @@ public enum SharingMechanism {
   }
 
   /**
-   * The mechanism a collection's own answer to {@code OPTIONS} selects, given
-   * where the collection lives.
+   * The mechanism what a collection advertises
+   * ({@link CalDavClient#capabilities}) selects, given where the collection
+   * lives.
    *
    * <p>
    * Apple sharing is offered on one server only, and BlueMind is recognised
    * by two independent facts that must both hold: it advertises
-   * {@code calendarserver-sharing} (the captured {@code DAV} header,
-   * {@code bluemind-principal.captured.xml}), and the collection has the path
+   * {@code calendarserver-sharing} in the {@code DAV} header of its PROPFIND
+   * answers ({@code PropFindProtocol.java:125}, captured in
+   * {@code bluemind-principal.captured.xml}; its nginx front answers
+   * {@code OPTIONS} with a bare 204, so {@link CalDavClient#capabilities}
+   * reads the PROPFIND), and the collection has the path
    * BlueMind's DAV server gives every calendar,
    * {@code /dav/calendars/__uids__/<owner uid>/<container uid>/}
    * ({@code ResType.VSTUFF_CONTAINER}). Apple's CalendarServer uses the same
