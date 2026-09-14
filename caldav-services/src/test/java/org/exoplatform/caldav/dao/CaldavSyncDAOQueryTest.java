@@ -39,6 +39,13 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.test.context.TestPropertySource;
 
 import org.exoplatform.caldav.entity.CaldavCalendarSyncEntity;
+import org.exoplatform.caldav.entity.CaldavConnectionEntity;
+import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.service.CaldavConnectionIdentityService;
+import org.exoplatform.caldav.storage.CaldavConnectionStorage;
+import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.mockito.Mockito;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.exoplatform.caldav.entity.CaldavObjectSyncEntity;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
@@ -78,6 +85,9 @@ public class CaldavSyncDAOQueryTest {
 
   @Autowired
   private EntityManager         entityManager;
+
+  @Autowired
+  private CaldavConnectionDAO   connectionDAO;
 
   /** The server two users share in the EXO-90190 scenarios below. */
   private static final long     SHARED_SERVER = 5L;
@@ -314,42 +324,13 @@ public class CaldavSyncDAOQueryTest {
   }
 
   /**
-   * The other users under one calendar home are the ones sharing the account.
-   */
-  @Test
-  public void otherUsersUnderOneCalendarHomeAreListedByPrefix() {
-    persistPair(USER_ONE, SHARED_SERVER, SyncOrigin.EXO, "/dav/calendars/751E/exo-cal-0b1318fd");
-    persistPair(USER_SIX, SHARED_SERVER, SyncOrigin.EXO, "/dav/calendars/751E/exo-cal-6bade8c7");
-    // Same server, another account: not under the home.
-    persistPair(8L, SHARED_SERVER, SyncOrigin.EXO, "/dav/calendars/OTHER/exo-cal-c");
-    // Same home spelling, another server: another account altogether.
-    persistPair(9L, 99L, SyncOrigin.EXO, "/dav/calendars/751E/exo-cal-d");
-    // Under the home but no longer active: not connected any more.
-    persistPair(10L, SHARED_SERVER, SyncOrigin.EXO, "/dav/calendars/751E/exo-cal-e", CalendarSyncStatus.PAUSED);
-
-    assertEquals(List.of(USER_ONE),
-                 calendarSyncDAO.findOtherUsersUnderHref(USER_SIX,
-                                                         SHARED_SERVER,
-                                                         CalendarSyncStatus.ACTIVE,
-                                                         SHARED_HOME,
-                                                         PageRequest.of(0, 10)));
-    assertTrue(calendarSyncDAO.findOtherUsersUnderHref(8L,
-                                                       SHARED_SERVER,
-                                                       CalendarSyncStatus.ACTIVE,
-                                                       "/dav/calendars/OTHER/%",
-                                                       PageRequest.of(0, 10))
-                              .isEmpty());
-  }
-
-  /**
    * A hidden share (EXO-90239) against the schema the changelog builds: the
    * new status fits the STATUS column and reads back as itself, the anchor
    * derived from its path fits the anchor column, and the row stands beside
    * the user's other pairs — a second hidden share, their mirror pair (the
-   * one null anchor), an active pair of their own. It counts for nothing the
-   * sweep or the shared-account question select — both read ACTIVE pairs
-   * alone, and a pair with no sync time would otherwise be the most due of
-   * all.
+   * one null anchor), an active pair of their own. It is due for nothing the
+   * sweep selects — the sweep reads ACTIVE pairs alone, and a pair with no
+   * sync time would otherwise be the most due of all.
    */
   @Test
   public void aHiddenShareIsStoredBesideTheUsersOtherPairsAndIsDueForNothing() {
@@ -373,30 +354,6 @@ public class CaldavSyncDAOQueryTest {
                               .stream()
                               .noneMatch(pair -> pair.getId() == id),
                "a hidden share is never due");
-    assertTrue(calendarSyncDAO.findOtherUsersUnderHref(USER_ONE,
-                                                       SHARED_SERVER,
-                                                       CalendarSyncStatus.ACTIVE,
-                                                       SHARED_HOME,
-                                                       PageRequest.of(0, 10))
-                              .contains(USER_SIX),
-               "user six's active pair names them on the account");
-    // The hidden share itself, asked under a prefix only it matches: it
-    // names nobody, because it is not an ACTIVE pair — the row stands in the
-    // table and the shared-account signal reads straight past it.
-    assertTrue(calendarSyncDAO.findOtherUsersUnderHref(USER_ONE,
-                                                       SHARED_SERVER,
-                                                       CalendarSyncStatus.ACTIVE,
-                                                       "/dav/calendars/751E/alice-%",
-                                                       PageRequest.of(0, 10))
-                              .isEmpty(),
-               "a hidden share is not a shared-account signal");
-    assertEquals(List.of(USER_SIX),
-                 calendarSyncDAO.findOtherUsersUnderHref(USER_ONE,
-                                                         SHARED_SERVER,
-                                                         CalendarSyncStatus.HIDDEN_SHARE,
-                                                         "/dav/calendars/751E/alice-%",
-                                                         PageRequest.of(0, 10)),
-                 "the same row, asked under its own status: the status predicate is what keeps it out");
   }
 
   /**
@@ -437,57 +394,13 @@ public class CaldavSyncDAOQueryTest {
   }
 
   /**
-   * The listing is bounded by its page, and the engine honours the bound.
-   */
-  @Test
-  public void theOtherUsersListedAreBoundedByThePage() {
-    for (long user = 20L; user < 25L; user++) {
-      persistPair(user, SHARED_SERVER, SyncOrigin.EXO, "/dav/calendars/751E/exo-cal-" + user);
-    }
-
-    assertEquals(2,
-                 calendarSyncDAO.findOtherUsersUnderHref(USER_SIX,
-                                                         SHARED_SERVER,
-                                                         CalendarSyncStatus.ACTIVE,
-                                                         SHARED_HOME,
-                                                         PageRequest.of(0, 2))
-                                .size(),
-                 "a shared account names who else is on it, not everybody who ever was");
-  }
-
-  /**
-   * The escape character the query declares is honoured.
-   */
-  @Test
-  public void aWildcardInTheCalendarHomeIsTakenLiterally() {
-    persistPair(USER_ONE, SHARED_SERVER, SyncOrigin.EXO, "/dav/calendars/a_b/exo-cal-x");
-    persistPair(USER_SIX, SHARED_SERVER, SyncOrigin.EXO, "/dav/calendars/aXb/exo-cal-y");
-
-    // Escaped, the underscore matches an underscore and nothing else.
-    assertEquals(List.of(USER_ONE),
-                 calendarSyncDAO.findOtherUsersUnderHref(7L,
-                                                         SHARED_SERVER,
-                                                         CalendarSyncStatus.ACTIVE,
-                                                         "/dav/calendars/a!_b/%",
-                                                         PageRequest.of(0, 10)));
-    // Unescaped, it would have matched both — which is the reason the storage escapes it.
-    assertEquals(2,
-                 calendarSyncDAO.findOtherUsersUnderHref(7L,
-                                                         SHARED_SERVER,
-                                                         CalendarSyncStatus.ACTIVE,
-                                                         "/dav/calendars/a_b/%",
-                                                         PageRequest.of(0, 10))
-                                .size());
-  }
-
-  /**
    * The prefix the storage builds — escape character included — is what the
    * engine takes literally.
    */
   @Test
   public void thePrefixTheStorageBuildsIsTakenLiterallyByTheEngine() {
     // The storage escapes the pattern's wildcards and its own escape
-    // character, and here its output is driven through the real queries
+    // character, and here its output is driven through the real query
     // rather than a pattern written by hand: a home carrying a literal "!"
     // and "_" matches itself and nothing that differs by one character.
     long mirrorUnderOddHome = persistPair(USER_ONE, SHARED_SERVER, SyncOrigin.MIRROR, "/dav/calendars/a!b_c/exo-meetings");
@@ -503,12 +416,6 @@ public class CaldavSyncDAOQueryTest {
     assertEquals(1,
                  objectSyncDAO.countByHomeAndOriginAndIcsUid(SHARED_SERVER, SyncOrigin.MIRROR, SHARED_UID, prefix),
                  "the odd home's own mirror, and neither lookalike");
-    assertEquals(List.of(USER_ONE),
-                 calendarSyncDAO.findOtherUsersUnderHref(USER_SIX,
-                                                         SHARED_SERVER,
-                                                         CalendarSyncStatus.ACTIVE,
-                                                         prefix,
-                                                         PageRequest.of(0, 10)));
     assertFalse(CaldavSyncStorage.homePrefixOf("/dav/calendars/ab_c/calendar/").equals(prefix));
   }
 
@@ -765,6 +672,169 @@ public class CaldavSyncDAOQueryTest {
     entity.setStatus(status);
     entity.setLastSyncEnd(lastSyncEnd);
     return calendarSyncDAO.save(entity).getId();
+  }
+
+  // ---------------------------------------------------------------------
+  // EXO-90243 — who each connected user is on their server. The rig's shape:
+  // alice (5) and alice2 (6) connected to ONE Stalwart login, bob (9) to his
+  // own, and bob holding a pair under Alice's home — the pair the old
+  // shared-account question read as "bob is on Alice's account".
+  // ---------------------------------------------------------------------
+
+  /** Alice's principal, canonical, as the discovery records it. */
+  private static final String   ALICE_PRINCIPAL = "/dav/pal/alice@stalwart.local";
+
+  /** Bob's own principal, canonical. */
+  private static final String   BOB_PRINCIPAL   = "/dav/pal/bob@stalwart.local";
+
+  private static final long     ALICE           = 5L;
+
+  private static final long     ALICE2          = 6L;
+
+  private static final long     BOB             = 9L;
+
+  /** The rig's Stalwart registration. */
+  private static final long     STALWART        = 1L;
+
+  /**
+   * The lookup the table exists for runs on the engine: by server and
+   * principal, lowest user first, bounded by its page — and by user.
+   */
+  @Test
+  public void aConnectionIsFoundByItsPrincipalOnItsServerAndByItsUser() {
+    persistConnection(BOB, STALWART, BOB_PRINCIPAL);
+    persistConnection(ALICE2, STALWART, ALICE_PRINCIPAL);
+    persistConnection(ALICE, STALWART, ALICE_PRINCIPAL);
+    // Same principal spelling on another registration: another account.
+    persistConnection(10L, 2L, ALICE_PRINCIPAL);
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(List.of(ALICE, ALICE2),
+                 connectionDAO.findByServerAndPrincipal(STALWART, ALICE_PRINCIPAL, PageRequest.of(0, 10))
+                              .stream()
+                              .map(CaldavConnectionEntity::getUserIdentityId)
+                              .toList());
+    assertEquals(List.of(ALICE),
+                 connectionDAO.findByServerAndPrincipal(STALWART, ALICE_PRINCIPAL, PageRequest.of(0, 1))
+                              .stream()
+                              .map(CaldavConnectionEntity::getUserIdentityId)
+                              .toList(),
+                 "the page bounds the answer, and the order makes the bound name the same user every time");
+    assertEquals(List.of(10L),
+                 connectionDAO.findByServerAndPrincipal(2L, ALICE_PRINCIPAL, PageRequest.of(0, 10))
+                              .stream()
+                              .map(CaldavConnectionEntity::getUserIdentityId)
+                              .toList());
+    assertEquals(BOB_PRINCIPAL, connectionDAO.findByUserIdentityId(BOB).orElseThrow().getPrincipal());
+    assertTrue(connectionDAO.findByUserIdentityId(42L).isEmpty());
+  }
+
+  /**
+   * One identity per user, enforced by the real unique index and told by its
+   * JDBC cause — the refusal two nodes recording one user converge on.
+   */
+  @Test
+  public void theUniqueIndexKeepsOneConnectionIdentityPerUser() {
+    persistConnection(ALICE, STALWART, ALICE_PRINCIPAL);
+    connectionDAO.flush();
+
+    DataIntegrityViolationException refused = assertThrows(DataIntegrityViolationException.class, () -> {
+      persistConnection(ALICE, STALWART, ALICE_PRINCIPAL);
+      connectionDAO.flush();
+    });
+
+    assertTrue(CaldavSyncStorage.isDuplicateKey(refused), "told by the JDBC cause, as the identity service tells it");
+  }
+
+  /**
+   * Forgetting a user removes their row and nobody else's, and forgetting a
+   * user nobody recorded removes nothing.
+   */
+  @Test
+  public void forgettingAUserRemovesTheirIdentityOnly() {
+    persistConnection(ALICE, STALWART, ALICE_PRINCIPAL);
+    persistConnection(ALICE2, STALWART, ALICE_PRINCIPAL);
+    entityManager.flush();
+
+    assertEquals(1, connectionDAO.deleteByUserIdentityId(ALICE));
+    assertEquals(0, connectionDAO.deleteByUserIdentityId(ALICE));
+    entityManager.clear();
+    assertTrue(connectionDAO.findByUserIdentityId(ALICE).isEmpty());
+    assertTrue(connectionDAO.findByUserIdentityId(ALICE2).isPresent());
+  }
+
+  /**
+   * <b>The rig's warning, before and after, on the engine.</b>
+   *
+   * <p>
+   * Alice's account is connected by alice and alice2; bob, on his own login,
+   * holds an active pair under Alice's home — the pair a share of Alice's
+   * calendar left him. The question the warning asked until EXO-90243 —
+   * other users with active pairs under the account's calendar home, kept
+   * here as text so the regression stays reproducible — names bob beside
+   * alice2, which is the "also connected by eXo users [6, 9]" line seen on
+   * the rig. Asked by identity, through the real storage over this engine,
+   * it names alice2 alone.
+   */
+  @Test
+  public void theSharedAccountIsToldByPrincipalNotByTheHomeASharedCalendarSitsUnder() {
+    persistPair(ALICE, STALWART, SyncOrigin.MIRROR, "/dav/cal/alice@stalwart.local/exo-meetings");
+    persistPair(ALICE2, STALWART, SyncOrigin.REMOTE, "/dav/cal/alice@stalwart.local/default");
+    persistPair(BOB, STALWART, SyncOrigin.REMOTE, "/dav/cal/alice@stalwart.local/default");
+    persistConnection(ALICE, STALWART, ALICE_PRINCIPAL);
+    persistConnection(ALICE2, STALWART, ALICE_PRINCIPAL);
+    persistConnection(BOB, STALWART, BOB_PRINCIPAL);
+    entityManager.flush();
+
+    @SuppressWarnings("unchecked")
+    List<Long> byHome = entityManager.createQuery("SELECT DISTINCT p.userIdentityId FROM CaldavCalendarSyncEntity p"
+        + " WHERE p.serverId = :serverId AND p.status = :status AND p.userIdentityId <> :userIdentityId"
+        + " AND p.remoteHref LIKE :prefix ESCAPE '!' ORDER BY p.userIdentityId")
+                                     .setParameter("serverId", STALWART)
+                                     .setParameter("status", CalendarSyncStatus.ACTIVE)
+                                     .setParameter("userIdentityId", ALICE)
+                                     .setParameter("prefix", CaldavSyncStorage.homePrefixOf("/dav/cal/alice@stalwart.local/default"))
+                                     .getResultList();
+    assertEquals(List.of(ALICE2, BOB), byHome, "the home question named bob, who only holds a share under Alice's home");
+
+    CaldavConnectionStorage storage = new CaldavConnectionStorage();
+    ReflectionTestUtils.setField(storage, "connectionDAO", connectionDAO);
+    CaldavConnectorStorage settings = Mockito.mock(CaldavConnectorStorage.class);
+    Mockito.when(settings.getCaldavSetting(Mockito.anyLong())).thenReturn(connectedTo(STALWART));
+    CaldavConnectionIdentityService identities = new CaldavConnectionIdentityService();
+    ReflectionTestUtils.setField(identities, "caldavConnectionStorage", storage);
+    ReflectionTestUtils.setField(identities, "caldavConnectorStorage", settings);
+
+    assertEquals(List.of(ALICE2), identities.otherUsersConnectedAs(ALICE, STALWART, "/dav/pal/alice%40stalwart.local/"));
+    assertEquals(List.of(ALICE), identities.otherUsersConnectedAs(ALICE2, STALWART, "/dav/pal/alice%40stalwart.local/"));
+    assertTrue(identities.otherUsersConnectedAs(BOB, STALWART, "/dav/pal/bob%40stalwart.local/").isEmpty(),
+               "and bob, alone on his login, is told nothing");
+  }
+
+  /**
+   * @param serverId the registration the account names
+   * @return a connected account on it
+   */
+  private static CaldavUserSetting connectedTo(long serverId) {
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("someone@stalwart.local");
+    setting.setPassword("secret");
+    setting.setServerId(serverId);
+    return setting;
+  }
+
+  /**
+   * @param userIdentityId the eXo user
+   * @param serverId the server key
+   * @param principal the canonical principal
+   */
+  private void persistConnection(long userIdentityId, long serverId, String principal) {
+    CaldavConnectionEntity connection = new CaldavConnectionEntity();
+    connection.setUserIdentityId(userIdentityId);
+    connection.setServerId(serverId);
+    connection.setPrincipal(principal);
+    connectionDAO.save(connection);
   }
 
   /**

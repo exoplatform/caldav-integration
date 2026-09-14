@@ -46,9 +46,9 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.orm.jpa.JpaSystemException;
 import org.exoplatform.caldav.dao.CaldavCalendarSyncDAO;
@@ -428,43 +428,6 @@ public class CaldavSyncStorageTest {
     assertFalse(storage.isMirrorOwnedByAnotherUser(USER, 2L, "/dav/calendars/john/exo-cal-anchor/", ""));
 
     verify(objectSyncDAO, never()).countByOtherOwnerAndHomeAndOriginAndIcsUid(anyLong(), anyLong(), any(), anyString(), anyString());
-  }
-
-  /**
-   * The shared-account question is asked with a canonical, escaped, bounded
-   * prefix.
-   */
-  @Test
-  public void theCalendarHomeIsAskedAsACanonicalEscapedPrefix() {
-    // The home arrives as the server spelled it — a full URL, a trailing slash
-    // — while the rows hold canonical paths; and it may carry the pattern's
-    // own wildcards, an underscore above all, which unescaped matches any
-    // character and would call an unrelated account this one. The escape
-    // character itself is escaped too, or a "!" in a path would swallow the
-    // character after it. And the answer is bounded: the question walks the
-    // href column, and a shared account names who is on it, not a deployment.
-    when(calendarSyncDAO.findOtherUsersUnderHref(eq(USER), eq(SERVER), eq(CalendarSyncStatus.ACTIVE), anyString(), any(Pageable.class)))
-                                                                                                                                       .thenReturn(List.of(6L));
-
-    assertEquals(List.of(6L),
-                 storage.getOtherUsersUnderCalendarHome(USER, SERVER, "https://dav.example/dav/cal/a_b!d/"));
-
-    ArgumentCaptor<String> prefix = ArgumentCaptor.forClass(String.class);
-    ArgumentCaptor<Pageable> page = ArgumentCaptor.forClass(Pageable.class);
-    verify(calendarSyncDAO).findOtherUsersUnderHref(eq(USER), eq(SERVER), eq(CalendarSyncStatus.ACTIVE), prefix.capture(), page.capture());
-    assertEquals("/dav/cal/a!_b!!d/%", prefix.getValue());
-    assertEquals(CaldavSyncStorage.OTHER_USERS_NAMED, page.getValue().getPageSize());
-    assertEquals(0, page.getValue().getPageNumber());
-  }
-
-  /**
-   * A blank home names no account to ask about.
-   */
-  @Test
-  public void aBlankCalendarHomeAsksNobody() {
-    assertTrue(storage.getOtherUsersUnderCalendarHome(USER, SERVER, " ").isEmpty());
-
-    verify(calendarSyncDAO, never()).findOtherUsersUnderHref(anyLong(), anyLong(), any(), anyString(), any());
   }
 
   /**

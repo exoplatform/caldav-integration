@@ -692,4 +692,99 @@
     </addColumn>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-44" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The connection-identity sequence, created in the same breath as its table
+      for the reason 1.0.0-0 records (EXO-90243).
+    </comment>
+    <createSequence sequenceName="SEQ_CALDAV_CONNECTION_ID" startValue="1"/>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-45">
+    <comment>
+      Who each connected eXo user is on their CalDAV server: the
+      current-user-principal the server named when the account was last
+      discovered (EXO-90243). One row per eXo user with a connected account.
+
+      The problem it answers. The engine knew "the account" only as the parent
+      path of a calendar's href, and that path cannot tell a shared ACCOUNT (two
+      eXo users on one login, EXO-90190) from a shared CALENDAR (a colleague's
+      collection listed in the user's own home, EXO-90235): both are pairs under
+      one home. The principal is the discriminator - the same principal is the
+      same account, a different principal on the same collection is a share -
+      and nothing stored it, so the shared-account warning named a user who only
+      had a share under another home, and the owner of a server share could never
+      be shown as an eXo user.
+
+      A table rather than a setting: the connection itself lives in the per-user
+      SettingService, which cannot be asked "which users are connected as
+      principal P on server S". A table rather than a column on
+      CALDAV_CALENDAR_SYNC: an account is connected before it holds any pair, and
+      one fact about the account would be copied onto every pair of it.
+
+      SERVER_ID is the key the pairs use - the registration the account names,
+      zero for an account attached before registrations existed - so the two
+      tables are asked about one account with the same number.
+
+      PRINCIPAL is stored canonical: percent-decoding undone, trailing slash
+      dropped, the form a DAV:owner is compared in. NVARCHAR(250) so that the
+      (SERVER_ID, PRINCIPAL) index below stays at 1008 bytes under utf8mb4, the
+      bound 1.0.0-10 already lives within; a principal longer than that is not
+      recorded at all, never truncated, since a truncated principal could equal
+      somebody else's.
+
+      No backfill: every connected account's row is written by its first
+      synchronisation pass after the upgrade, and until then that user is simply
+      not known by identity - which the engine reads as "nobody", never as
+      "somebody else".
+    </comment>
+    <createTable tableName="CALDAV_CONNECTION">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_CALDAV_CONNECTION"/>
+      </column>
+      <column name="USER_IDENTITY_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SERVER_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="PRINCIPAL" type="NVARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+    <modifySql dbms="mysql">
+      <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
+    </modifySql>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-46">
+    <comment>
+      One identity per eXo user. A user has one connected account, so a user who
+      reconnects to another account or another server replaces their row rather
+      than accumulating a second one - and two nodes recording the same user at
+      once meet this index instead of writing two rows. Own changeset with no
+      modifySql, per 1.0.0-2. No rollback written: createIndex has an automatic
+      one.
+    </comment>
+    <createIndex tableName="CALDAV_CONNECTION" indexName="UQ_CALDAV_CONNECTION_USER" unique="true">
+      <column name="USER_IDENTITY_ID"/>
+    </createIndex>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-47">
+    <comment>
+      The question the table exists for: which eXo users are connected as one
+      principal on one server. Both columns are compared for equality only, so
+      the column order serves the lookup and no direction needs declaring - no
+      query sorts on this index. Not unique: two eXo users on one login is a
+      legitimate shape, and the one the shared-account warning reports. 8 bytes
+      plus NVARCHAR(250) is 1008 bytes under utf8mb4, inside MySQL's 3072-byte
+      key limit, as for 1.0.0-10. Own changeset, no modifySql, automatic rollback.
+    </comment>
+    <createIndex tableName="CALDAV_CONNECTION" indexName="IDX_CALDAV_CONNECTION_PRINCIPAL">
+      <column name="SERVER_ID"/>
+      <column name="PRINCIPAL"/>
+    </createIndex>
+  </changeSet>
+
 </databaseChangeLog>

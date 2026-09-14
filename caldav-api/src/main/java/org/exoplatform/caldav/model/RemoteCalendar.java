@@ -40,7 +40,9 @@ import lombok.NoArgsConstructor;
  * names nobody, read-only or not. For
  * a colleague's eXo calendar the deployment knows the owner as one of its
  * users, and names them by identity, login and full name; for a share the
- * server alone reported, only a display name is known — the owner
+ * server alone reported, the owner is named the same way when exactly one
+ * user of this deployment is connected to that server as the owner principal
+ * (EXO-90243), and otherwise only a display name is known — the owner
  * principal's {@code DAV:displayname}, or the last segment of its path —
  * and the identity fields stay null. Naming the owner to the viewer is
  * acceptable because the viewer already holds read access the owner
@@ -75,8 +77,9 @@ public class RemoteCalendar {
   /**
    * The social identity of the eXo user the calendar belongs to, when the
    * owner is a user of this deployment — a colleague whose eXo calendar
-   * reached the server through this connector; null otherwise, and always
-   * null when {@code shared} is false.
+   * reached the server through this connector, or the one user connected as
+   * the owner principal of a share the server reported (EXO-90243); null
+   * otherwise, and always null when {@code shared} is false.
    */
   private Long    ownerIdentityId;
 
@@ -90,7 +93,8 @@ public class RemoteCalendar {
   /**
    * How to name the owner to the viewer: the eXo user's full name when the
    * owner is a user of this deployment; for a share the server alone
-   * reported, the owner principal's display name, else the decoded last
+   * reported and no single user of this deployment is connected as, the
+   * owner principal's display name, else the decoded last
    * segment of the principal path; null when nobody can be named, and
    * always null when {@code shared} is false.
    */
