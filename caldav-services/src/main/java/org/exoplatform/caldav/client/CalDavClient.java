@@ -589,11 +589,14 @@ public interface CalDavClient {
    * sending what the server would refuse as a conflict.
    *
    * <p>
-   * Takes the <b>pair</b>, like {@link #deleteCollection}, and for the same
-   * reason: the collection must belong to an {@link SyncOrigin#EXO} pair and
-   * carry the slug eXo derives from that pair's calendar anchor, so this
-   * method cannot address a collection eXo did not create — a colleague's
-   * share, the mirror, anything a browser named.
+   * Takes the <b>pair</b>, not a path, so that it cannot address anything a
+   * browser named. The collection must belong to an {@link SyncOrigin#EXO} pair
+   * and carry the slug eXo derives from that pair's calendar anchor, or to an
+   * active, anchored {@link SyncOrigin#REMOTE} pair that is not the meetings
+   * mirror — an imported calendar, whose ownership on the server the share
+   * service confirms before calling. It never addresses the mirror, a hidden
+   * share, or a collection bound to no pair. {@link #deleteCollection} keeps
+   * the stricter eXo-created rule.
    *
    * <p>
    * The answer is a claim: {@link AclWriteResult#accepted()} says the server
@@ -636,8 +639,9 @@ public interface CalDavClient {
    * Apple's {@code POST CS:share} (EXO-90253).
    *
    * <p>
-   * Takes the <b>pair</b>, like {@link #writeAcl}: only a collection eXo created
-   * for the pair's calendar can be addressed. The sharee is named by a mail
+   * Takes the <b>pair</b>, like {@link #writeAcl}, under the same rule: a
+   * collection eXo created for the pair's calendar, or an active imported one
+   * that is not the meetings mirror. The sharee is named by a mail
    * address, sent as {@code mailto:}; only reading is ever granted.
    *
    * <p>

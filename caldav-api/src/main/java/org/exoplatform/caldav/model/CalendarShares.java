@@ -31,8 +31,11 @@ import java.util.List;
  *          the order the server lists them
  * @param subscriptionRequired whether a colleague sees the calendar only after
  *          subscribing to it on the server itself, as on BlueMind
+ * @param meetingCopies whether the calendar is also where eXo writes the copies
+ *          of the user's eXo meetings, so that a colleague it is shared with
+ *          sees those meetings too
  */
-public record CalendarShares(long calendarId, List<CalendarSharee> sharees, boolean subscriptionRequired) {
+public record CalendarShares(long calendarId, List<CalendarSharee> sharees, boolean subscriptionRequired, boolean meetingCopies) {
 
   /**
    * Shares on a server where a grant is visible to the colleague at once.
@@ -41,7 +44,29 @@ public record CalendarShares(long calendarId, List<CalendarSharee> sharees, bool
    * @param sharees the sharees
    */
   public CalendarShares(long calendarId, List<CalendarSharee> sharees) {
-    this(calendarId, sharees, false);
+    this(calendarId, sharees, false, false);
+  }
+
+  /**
+   * Shares of a calendar holding no copies of the user's eXo meetings.
+   *
+   * @param calendarId the agenda calendar
+   * @param sharees the sharees
+   * @param subscriptionRequired whether a colleague must subscribe on the server
+   */
+  public CalendarShares(long calendarId, List<CalendarSharee> sharees, boolean subscriptionRequired) {
+    this(calendarId, sharees, subscriptionRequired, false);
+  }
+
+  /**
+   * The same shares, saying whether the calendar also holds the copies of the
+   * user's eXo meetings.
+   *
+   * @param holdsMeetingCopies whether eXo writes the meeting copies into it
+   * @return the shares with that flag
+   */
+  public CalendarShares withMeetingCopies(boolean holdsMeetingCopies) {
+    return new CalendarShares(calendarId, sharees, subscriptionRequired, holdsMeetingCopies);
   }
 
   /**

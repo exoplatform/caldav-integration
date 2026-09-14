@@ -45,6 +45,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ $t('caldav.share.drawer.subscriptionRequired') }}
         </v-alert>
         <!--
+          The calendar is also where eXo writes the copies of the user's eXo
+          meetings (their main calendar on a server set to copy there): anyone
+          it is shared with sees those meetings too. Said before sharing and
+          after, and asked again on the share itself.
+        -->
+        <v-alert
+          v-if="meetingCopies"
+          type="warning"
+          class="mb-4 caldav-share-meeting-copies"
+          dense
+          outlined>
+          {{ $t('caldav.share.drawer.meetingCopies') }}
+        </v-alert>
+        <exo-confirm-dialog
+          ref="meetingCopiesConfirm"
+          :title="$t('caldav.share.confirm.meetingCopies.title')"
+          :message="$t('caldav.share.drawer.meetingCopies')"
+          :ok-label="$t('caldav.share.confirm.meetingCopies.ok')"
+          :cancel-label="$t('caldav.share.confirm.cancel')"
+          @ok="doShare" />
+        <!--
           The platform's identity suggester, restricted to the colleagues the
           platform computed: only an eXo user connected to the same calendar
           server can be named there, so a free search over every user would
@@ -174,6 +195,7 @@ export default {
     removing: null,
     errorMessage: '',
     subscriptionRequired: false,
+    meetingCopies: false,
   }),
   computed: {
     /**
@@ -255,6 +277,7 @@ export default {
       this.selected = null;
       this.errorMessage = '';
       this.subscriptionRequired = false;
+      this.meetingCopies = false;
       this.opened = true;
       this.$refs.caldavShareCalendarDrawer.open();
       return this.load();
@@ -290,12 +313,30 @@ export default {
       });
     },
     /**
+     * Shares the calendar with the colleague picked. When the calendar also
+     * holds the copies of the user's eXo meetings, the share waits for the
+     * user to confirm they want those meetings seen too.
+     *
+     * @returns {Promise} resolves once the server answered, or at once when a
+     *          confirmation is asked
+     */
+    share() {
+      if (!this.selectedUsername || this.busy) {
+        return Promise.resolve();
+      }
+      if (this.meetingCopies) {
+        this.$refs.meetingCopiesConfirm.open();
+        return Promise.resolve();
+      }
+      return this.doShare();
+    },
+    /**
      * Shares the calendar with the colleague picked, then shows the list as
      * the server holds it afterwards.
      *
      * @returns {Promise} resolves once the server answered
      */
-    share() {
+    doShare() {
       const username = this.selectedUsername;
       if (!username || this.busy) {
         return Promise.resolve();
@@ -345,12 +386,13 @@ export default {
     /**
      * Shows what the platform answered about the calendar's sharees.
      *
-     * @param {Object} shares {sharees, subscriptionRequired}
+     * @param {Object} shares {sharees, subscriptionRequired, meetingCopies}
      * @returns {void}
      */
     applyShares(shares) {
       this.sharees = shares && shares.sharees || [];
       this.subscriptionRequired = !!(shares && shares.subscriptionRequired);
+      this.meetingCopies = !!(shares && shares.meetingCopies);
     },
     /**
      * Whether the drawer still shows a calendar.

@@ -56,8 +56,10 @@ import org.xml.sax.SAXException;
 
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
+import org.exoplatform.caldav.service.CaldavPushService;
 import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -1700,7 +1702,7 @@ public class HttpCalDavClient implements CalDavClient {
    */
   @Override
   public AclWriteResult writeAcl(CalDavEndpoint endpoint, CalendarSync pair, List<AccessControlEntry> entries) {
-    String href = authorisedTarget(pair);
+    String href = shareTarget(pair);
     HttpRequest request = request(endpoint, href, "ACL", aclBody(entries)).build();
     DavResponse response = exchange(request);
     int status = response.status();
@@ -2102,7 +2104,8 @@ public class HttpCalDavClient implements CalDavClient {
   }
 
   /**
-   * One {@code POST CS:share} to the pair's authorised collection. Credentials
+   * One {@code POST CS:share} to the pair's collection, as {@link #shareTarget}
+   * admits it. Credentials
    * are classified on 401 and 407 only; any other status outside 2xx is the
    * server's refusal.
    *
@@ -2114,7 +2117,7 @@ public class HttpCalDavClient implements CalDavClient {
    */
   @Override
   public int postCalendarServerShare(CalDavEndpoint endpoint, CalendarSync pair, String address, boolean remove) {
-    String href = authorisedTarget(pair);
+    String href = shareTarget(pair);
     if (address == null || !MAIL_ADDRESS_PATTERN.matcher(address).matches()) {
       throw new IllegalArgumentException("Not a mail address a share can name");
     }
@@ -2152,6 +2155,35 @@ public class HttpCalDavClient implements CalDavClient {
       throw refusal(status, request);
     }
     return status;
+  }
+
+  /**
+   * The collection a pair authorises sharing, or a refusal (EXO-90253).
+   *
+   * <p>
+   * An eXo-created pair is admitted under {@link #authorisedTarget}'s rule. An
+   * imported pair is admitted when it is {@link SyncOrigin#REMOTE}, active and
+   * anchored, and its collection is not the dedicated meetings mirror: a
+   * hidden share, a paused or gone binding, the mirror and a pair of any other
+   * origin are refused before a request is built. Whether the user really owns
+   * an imported collection is not something this client can know, since it
+   * needs the recorded principal; the share service confirms it on the server
+   * before calling.
+   *
+   * @param pair the binding offered as authorisation
+   * @return the collection href to address
+   */
+  private String shareTarget(CalendarSync pair) {
+    if (pair != null && pair.getOrigin() == SyncOrigin.REMOTE) {
+      String href = StringUtils.stripEnd(StringUtils.trimToEmpty(pair.getRemoteHref()), "/");
+      if (pair.getStatus() != CalendarSyncStatus.ACTIVE || StringUtils.isBlank(pair.getLocalCalendarSyncUid()) || href.isEmpty()
+          || href.endsWith("/" + CaldavPushService.MIRROR_COLLECTION_SLUG)) {
+        throw new IllegalArgumentException("Only an active imported calendar, never the meetings mirror, may be shared; this pair is "
+            + pair.getStatus());
+      }
+      return href + "/";
+    }
+    return authorisedTarget(pair);
   }
 
   /**

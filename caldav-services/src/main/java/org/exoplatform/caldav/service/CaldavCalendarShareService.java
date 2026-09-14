@@ -48,6 +48,7 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.CollectionAcl;
 import org.exoplatform.caldav.client.DavOptions;
 import org.exoplatform.caldav.client.SharingMechanism;
@@ -82,13 +83,20 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * <ul>
  * <li>the calendar exists and <b>the caller owns it</b> — a space calendar,
  * owned by its space, is refused, and so is a colleague's;</li>
- * <li>the caller's account is connected, and the calendar is bound to a
- * collection <b>eXo created for it</b>: an {@link SyncOrigin#EXO} pair, active,
- * whose collection carries the slug eXo derives from the calendar's own
- * anchor. The collection is resolved from that pair and never named by the
- * request, so a calendar materialised from the server, the mirror, or any
- * other collection cannot be addressed; the client's
- * {@link CalDavClient#writeAcl} applies the same rule again;</li>
+ * <li>the caller's account is connected, and the calendar is bound either to
+ * a collection <b>eXo created for it</b> — an {@link SyncOrigin#EXO} pair,
+ * active, whose collection carries the slug eXo derives from the calendar's
+ * own anchor — or to an <b>imported collection the caller really owns</b>: an
+ * active, anchored {@link SyncOrigin#REMOTE} pair that is not the meetings
+ * mirror, whose ownership is confirmed on the server before anything else
+ * (on RFC 3744 servers its {@code DAV:owner} is the caller's recorded
+ * principal, it is writable for them and it sits under their calendar home;
+ * on BlueMind its path is under the caller's own uid, it is no subscription
+ * to someone else's calendar, and BlueMind's REST access list gives the
+ * caller {@code All} or {@code Manage}). The collection is resolved from the
+ * pair and never named by the request, so a share, a hidden share, the
+ * mirror or any other collection cannot be addressed; the client's
+ * {@link CalDavClient#writeAcl} applies the pair rule again;</li>
  * <li>the server offers a granting mechanism whose every change eXo confirms
  * ({@link SharingMechanism}) — Stalwart's RFC 3744 {@code ACL} method, or
  * BlueMind's {@code CS:share} confirmed through its REST API;</li>
@@ -161,6 +169,14 @@ public class CaldavCalendarShareService {
 
   /** The calendar has no collection eXo created for it on the server. */
   public static final String      CALENDAR_NOT_ON_SERVER = "caldav.share.calendarNotOnServer";
+
+  /**
+   * The imported collection is not the caller's own on the server: another
+   * principal owns it, it is read-only for them, it lies outside their
+   * calendar home, it is a subscription to someone else's calendar, or the
+   * server gives them no right to manage who sees it.
+   */
+  public static final String      NOT_OWNED_ON_SERVER    = "caldav.share.notOwnedOnServer";
 
   /** The server offers no way to grant access whose changes eXo can confirm. */
   public static final String      NOT_SUPPORTED          = "caldav.share.notSupported";
@@ -257,6 +273,17 @@ public class CaldavCalendarShareService {
   private static final Pattern     BLUEMIND_COLLECTION    = Pattern.compile("/dav/calendars/__uids__/([^/]+)/[^/]+");
 
   /**
+   * A BlueMind calendar collection, with its owner uid and its container
+   * segment: the user's own default is {@code calendar:Default:<uid>}, another
+   * {@code calendar:<uid>} segment is a subscription to someone else's
+   * calendar or resource, and other containers are bare uids or eXo slugs.
+   */
+  private static final Pattern     BLUEMIND_CONTAINER     = Pattern.compile("/dav/calendars/__uids__/([^/]+)/([^/]+)");
+
+  /** The BlueMind verbs that let a user decide who sees a container. */
+  private static final Set<String> BLUEMIND_MANAGING      = Set.of("All", "Manage");
+
+  /**
    * A mail address a {@code CS:share} can carry, as
    * {@link CalDavClient#postCalendarServerShare} accepts it: no markup, one
    * {@code @}.
@@ -279,6 +306,8 @@ public class CaldavCalendarShareService {
 
   private final BlueMindAclClient               blueMindAclClient;
 
+  private final CaldavPushService               caldavPushService;
+
   /**
    * The servers this node has already reported, at INFO, as offering no
    * sharing. Reported once per server per process, so the reason is visible
@@ -294,6 +323,7 @@ public class CaldavCalendarShareService {
    * @param caldavConnectionIdentityService who each eXo user is on the server
    * @param identityManager the social identities of caller and sharees
    * @param blueMindAclClient reads a BlueMind calendar's access list back
+   * @param caldavPushService says where the copies of eXo meetings are written
    */
   @Autowired
   public CaldavCalendarShareService(AgendaCalendarService agendaCalendarService,
@@ -302,7 +332,8 @@ public class CaldavCalendarShareService {
                                     CalDavClient calDavClient,
                                     CaldavConnectionIdentityService caldavConnectionIdentityService,
                                     IdentityManager identityManager,
-                                    BlueMindAclClient blueMindAclClient) {
+                                    BlueMindAclClient blueMindAclClient,
+                                    CaldavPushService caldavPushService) {
     this.agendaCalendarService = agendaCalendarService;
     this.caldavConnectorStorage = caldavConnectorStorage;
     this.caldavSyncStorage = caldavSyncStorage;
@@ -310,6 +341,7 @@ public class CaldavCalendarShareService {
     this.caldavConnectionIdentityService = caldavConnectionIdentityService;
     this.identityManager = identityManager;
     this.blueMindAclClient = blueMindAclClient;
+    this.caldavPushService = caldavPushService;
     for (int i = 0; i < LOCK_STRIPES; i++) {
       locks[i] = new ReentrantLock();
     }
@@ -317,7 +349,8 @@ public class CaldavCalendarShareService {
 
   /**
    * The caller's calendars that can be shared from eXo: owned, bound to a
-   * collection eXo created, on a server offering a mechanism whose changes eXo can confirm.
+   * collection eXo created or to an imported collection they own on the
+   * server, on a server offering a mechanism whose changes eXo can confirm.
    *
    * <p>
    * What decides whether agenda shows "Share" on a calendar, so it never
@@ -344,6 +377,10 @@ public class CaldavCalendarShareService {
       caldavSyncStorage.getPairsByOrigin(userIdentityId, serverId, SyncOrigin.EXO)
                        .stream()
                        .filter(CaldavCalendarShareService::isShareablePair)
+                       .forEach(pair -> pairs.putIfAbsent(pair.getLocalCalendarSyncUid(), pair));
+      caldavSyncStorage.getPairsByOrigin(userIdentityId, serverId, SyncOrigin.REMOTE)
+                       .stream()
+                       .filter(CaldavCalendarShareService::isShareableImportedPair)
                        .forEach(pair -> pairs.putIfAbsent(pair.getLocalCalendarSyncUid(), pair));
       if (pairs.isEmpty()) {
         return List.of();
@@ -374,7 +411,22 @@ public class CaldavCalendarShareService {
                   serverId);
         return List.of();
       }
-      return calendars.stream().map(Calendar::getId).toList();
+      Set<String> ownedImported = ownedImportedHrefs(userIdentityId,
+                                                     serverId,
+                                                     endpoint,
+                                                     mechanism,
+                                                     calendars.stream()
+                                                              .map(calendar -> pairs.get(calendar.getSyncUid()))
+                                                              .filter(pair -> pair.getOrigin() == SyncOrigin.REMOTE)
+                                                              .toList());
+      return calendars.stream()
+                      .filter(calendar -> {
+                        CalendarSync pair = pairs.get(calendar.getSyncUid());
+                        return pair.getOrigin() == SyncOrigin.EXO
+                            || ownedImported.contains(CaldavSyncStorage.canonicalHref(pair.getRemoteHref()));
+                      })
+                      .map(Calendar::getId)
+                      .toList();
     } catch (Exception e) { // NOSONAR this answer must never fail, whatever agenda or the server throws
       LOG.debug("Which calendars user {} can share could not be established; none is offered", userIdentityId, e);
       return List.of();
@@ -397,12 +449,16 @@ public class CaldavCalendarShareService {
   public CalendarShares listShares(long userIdentityId, String username, long calendarId) throws ObjectNotFoundException,
                                                                                             IllegalAccessException {
     ShareTarget target = targetOf(userIdentityId, username, calendarId);
-    return onServer(() -> {
-      if (requireOffered(target) == SharingMechanism.BLUEMIND_SHARE) {
-        return blueMindSharesOf(target, blueMindAclOf(target), ownerPrincipal(target));
+    return withMeetingCopies(target, username, onServer(() -> {
+      SharingMechanism mechanism = requireOffered(target);
+      requireImportedOwned(target, mechanism);
+      if (mechanism == SharingMechanism.BLUEMIND_SHARE) {
+        List<BlueMindAce> aces = blueMindAclOf(target);
+        requireBlueMindManager(target, aces);
+        return blueMindSharesOf(target, aces, ownerPrincipal(target));
       }
       return sharesOf(target, usableAcl(target), ownerPrincipal(target));
-    });
+    }));
   }
 
   /**
@@ -434,8 +490,9 @@ public class CaldavCalendarShareService {
                               String shareeUsername) throws ObjectNotFoundException, IllegalAccessException {
     ShareTarget target = targetOf(userIdentityId, username, calendarId);
     Sharee sharee = shareeOf(target, shareeUsername);
-    return onServer(() -> {
+    return withMeetingCopies(target, username, onServer(() -> {
       SharingMechanism mechanism = requireOffered(target);
+      requireImportedOwned(target, mechanism);
       String ownerPrincipal = requiredOwnerPrincipal(target);
       if (sharee.principal().equals(ownerPrincipal)) {
         throw new IllegalArgumentException(SAME_PRINCIPAL);
@@ -481,7 +538,7 @@ public class CaldavCalendarShareService {
       } finally {
         lock.unlock();
       }
-    });
+    }));
   }
 
   /**
@@ -511,8 +568,9 @@ public class CaldavCalendarShareService {
                                String shareeUsername) throws ObjectNotFoundException, IllegalAccessException {
     ShareTarget target = targetOf(userIdentityId, username, calendarId);
     Sharee sharee = shareeOf(target, shareeUsername);
-    return onServer(() -> {
+    return withMeetingCopies(target, username, onServer(() -> {
       SharingMechanism mechanism = requireOffered(target);
+      requireImportedOwned(target, mechanism);
       String ownerPrincipal = ownerPrincipal(target);
       if (mechanism == SharingMechanism.BLUEMIND_SHARE) {
         return blueMindRevoke(target, sharee, username, ownerPrincipal);
@@ -554,7 +612,7 @@ public class CaldavCalendarShareService {
       } finally {
         lock.unlock();
       }
-    });
+    }));
   }
 
   /**
@@ -591,7 +649,11 @@ public class CaldavCalendarShareService {
     // The same capability check its siblings make: on a server where eXo
     // offers no sharing, who is connected to that server is not listed either.
     onServer(() -> {
-      requireOffered(target);
+      SharingMechanism mechanism = requireOffered(target);
+      requireImportedOwned(target, mechanism);
+      if (mechanism == SharingMechanism.BLUEMIND_SHARE && target.imported()) {
+        requireBlueMindManager(target, blueMindAclOf(target));
+      }
       return null;
     });
     String recorded = caldavConnectionIdentityService.principalOf(userIdentityId, target.serverId());
@@ -645,7 +707,7 @@ public class CaldavCalendarShareService {
                                                                    : caldavSyncStorage.getPairByLocalCalendar(userIdentityId,
                                                                                                               serverId,
                                                                                                               calendar.getSyncUid());
-    if (pair == null || !isShareablePair(pair)) {
+    if (pair == null || !(isShareablePair(pair) || isShareableImportedPair(pair))) {
       throw new IllegalArgumentException(CALENDAR_NOT_ON_SERVER);
     }
     CalDavEndpoint endpoint = onServer(() -> calDavClient.endpoint(settings.getServerId(), username));
@@ -1072,6 +1134,7 @@ public class CaldavCalendarShareService {
     lock.lock();
     try {
       List<BlueMindAce> before = blueMindAclOf(target);
+      requireBlueMindManager(target, before);
       Set<String> theirs = blueMindVerbsOf(before, shareeUid);
       if (!BLUEMIND_READ_CLOSURE.containsAll(theirs)) {
         throw new IllegalArgumentException(NOT_READ_ONLY);
@@ -1131,6 +1194,7 @@ public class CaldavCalendarShareService {
     lock.lock();
     try {
       List<BlueMindAce> before = blueMindAclOf(target);
+      requireBlueMindManager(target, before);
       Set<String> theirs = blueMindVerbsOf(before, shareeUid);
       if (theirs.isEmpty()) {
         LOG.debug("Calendar {} gives {} nothing; nothing is sent", target.calendarId(), sharee.principal());
@@ -1392,6 +1456,212 @@ public class CaldavCalendarShareService {
   }
 
   /**
+   * Whether a pair binds an imported calendar that may be shared, before its
+   * ownership on the server is confirmed: {@link SyncOrigin#REMOTE}, active —
+   * so neither a hidden share nor a paused, gone or deleted binding — with an
+   * anchor, and not the dedicated meetings mirror, which holds copies only.
+   *
+   * @param pair the pair
+   * @return true when the server may be asked whether the caller owns it
+   */
+  private static boolean isShareableImportedPair(CalendarSync pair) {
+    return pair != null && pair.getOrigin() == SyncOrigin.REMOTE && pair.getStatus() == CalendarSyncStatus.ACTIVE
+        && StringUtils.isNotBlank(pair.getLocalCalendarSyncUid()) && StringUtils.isNotBlank(pair.getRemoteHref())
+        && !isMirrorCollection(pair.getRemoteHref());
+  }
+
+  /**
+   * Whether a collection is the dedicated one eXo copies meetings into.
+   *
+   * @param href the collection href, any spelling
+   * @return true for the {@code exo-meetings} slug
+   */
+  private static boolean isMirrorCollection(String href) {
+    return StringUtils.stripEnd(CaldavSyncStorage.canonicalHref(href), "/").endsWith("/" + CaldavPushService.MIRROR_COLLECTION_SLUG);
+  }
+
+  /**
+   * The imported collections the menu may offer "Share" on, with the checks a
+   * listing can afford. On BlueMind the path rule alone: a REST session per
+   * calendar per menu refresh would be too much, and the access list is
+   * checked when the drawer reads the sharees and before any change. On an
+   * RFC 3744 server one listing of the caller's calendar home, whose
+   * {@code DAV:owner} and privileges decide. Anything that fails offers no
+   * imported calendar; eXo-created ones are unaffected.
+   *
+   * @param userIdentityId the caller
+   * @param serverId the server registration
+   * @param endpoint the caller's endpoint
+   * @param mechanism the mechanism the server offers
+   * @param imported the imported pairs of the caller's owned calendars
+   * @return the canonical hrefs of those the caller owns
+   */
+  private Set<String> ownedImportedHrefs(long userIdentityId,
+                                         long serverId,
+                                         CalDavEndpoint endpoint,
+                                         SharingMechanism mechanism,
+                                         List<CalendarSync> imported) {
+    if (imported.isEmpty()) {
+      return Set.of();
+    }
+    String principal = caldavConnectionIdentityService.principalOf(userIdentityId, serverId);
+    if (principal == null) {
+      return Set.of();
+    }
+    if (mechanism == SharingMechanism.BLUEMIND_SHARE) {
+      return imported.stream()
+                     .map(pair -> CaldavSyncStorage.canonicalHref(pair.getRemoteHref()))
+                     .filter(href -> isOwnBlueMindCollection(href, principal))
+                     .collect(java.util.stream.Collectors.toSet());
+    }
+    try {
+      CalendarHome home = calDavClient.discoverHome(endpoint);
+      Set<String> owned = new java.util.HashSet<>();
+      for (CalendarCollection collection : calDavClient.listCalendars(endpoint, home.href())) {
+        String href = CaldavSyncStorage.canonicalHref(collection.href());
+        if (isOwnedRfc3744Collection(collection, href, home.href(), principal)) {
+          owned.add(href);
+        }
+      }
+      return owned;
+    } catch (CalDavException e) {
+      LOG.debug("The calendar home of user {} on server {} could not be listed; no imported calendar is offered", userIdentityId,
+                serverId, e);
+      return Set.of();
+    }
+  }
+
+  /**
+   * Refuses an imported calendar the caller does not own on the server, before
+   * anything is read or changed; an eXo-created calendar passes untouched. On
+   * BlueMind this is the path rule, and {@link #requireBlueMindManager} checks
+   * the access list read next. On an RFC 3744 server the collection's own
+   * {@code DAV:owner} and privileges, read at depth 0, and the caller's
+   * calendar home decide.
+   *
+   * @param target the calendar
+   * @param mechanism the mechanism the server offers
+   */
+  private void requireImportedOwned(ShareTarget target, SharingMechanism mechanism) {
+    if (!target.imported()) {
+      return;
+    }
+    String principal = caldavConnectionIdentityService.principalOf(target.userIdentityId(), target.serverId());
+    String href = CaldavSyncStorage.canonicalHref(target.href());
+    boolean owned;
+    if (principal == null) {
+      owned = false;
+    } else if (mechanism == SharingMechanism.BLUEMIND_SHARE) {
+      owned = isOwnBlueMindCollection(href, principal);
+    } else {
+      CalendarHome home = calDavClient.discoverHome(target.endpoint());
+      owned = isOwnedRfc3744Collection(calDavClient.readCalendar(target.endpoint(), target.href()), href, home.href(), principal);
+    }
+    if (!owned) {
+      LOG.debug("Imported calendar {} ({}) is not user {}'s own on server {}; it is not shared", target.calendarId(), target.href(),
+                target.userIdentityId(), target.serverId());
+      throw new CaldavShareException(NOT_OWNED_ON_SERVER);
+    }
+  }
+
+  /**
+   * Refuses an imported BlueMind calendar on which BlueMind's own access list
+   * does not give the caller {@code All} or {@code Manage}: its DAV owner and
+   * privileges name a subscriber as owner, so only the container's access list
+   * says who may decide who sees it (the owner is listed with every verb).
+   * An eXo-created calendar passes untouched.
+   *
+   * @param target the calendar
+   * @param aces the container's expanded access list
+   */
+  private void requireBlueMindManager(ShareTarget target, List<BlueMindAce> aces) {
+    if (!target.imported()) {
+      return;
+    }
+    String uid = blueMindUidOf(caldavConnectionIdentityService.principalOf(target.userIdentityId(), target.serverId()));
+    if (uid == null || blueMindVerbsOf(aces, uid).stream().noneMatch(BLUEMIND_MANAGING::contains)) {
+      LOG.debug("BlueMind gives user {} no right to manage calendar {} ({}); it is not shared", target.userIdentityId(),
+                target.calendarId(), target.href());
+      throw new CaldavShareException(NOT_OWNED_ON_SERVER);
+    }
+  }
+
+  /**
+   * Whether an RFC 3744 server says a collection is the caller's own: its
+   * {@code DAV:owner} is the caller's recorded principal, its privilege set was
+   * answered and lets them write, and it sits under their calendar home — a
+   * colleague's calendar listed in that home fails the owner or the home check.
+   *
+   * @param collection the collection as read, may be null
+   * @param canonicalHref its canonical href
+   * @param homeHref the caller's calendar home
+   * @param principal the caller's recorded principal
+   * @return true when all hold
+   */
+  private static boolean isOwnedRfc3744Collection(CalendarCollection collection, String canonicalHref, String homeHref, String principal) {
+    if (collection == null || StringUtils.isBlank(collection.owner()) || !collection.privilegesAnswered() || !collection.writable()) {
+      return false;
+    }
+    if (!CalendarCollection.principalPathOf(collection.owner()).equals(CalendarCollection.principalPathOf(principal))) {
+      return false;
+    }
+    String home = CaldavSyncStorage.canonicalHref(homeHref);
+    return StringUtils.isNotBlank(home) && canonicalHref.startsWith(home + "/") && !isMirrorCollection(canonicalHref);
+  }
+
+  /**
+   * Whether a BlueMind collection path is the caller's own calendar: under
+   * their own uid, and either their default ({@code calendar:Default:<uid>})
+   * or a container that is not a {@code calendar:} subscription to someone
+   * else's calendar or resource. BlueMind's DAV owner and privileges are not
+   * consulted: on a subscription they name the subscriber as owner.
+   *
+   * @param canonicalHref the canonical collection href
+   * @param principal the caller's recorded principal
+   * @return true when the path is the caller's own calendar
+   */
+  private static boolean isOwnBlueMindCollection(String canonicalHref, String principal) {
+    String uid = blueMindUidOf(principal);
+    Matcher matcher = BLUEMIND_CONTAINER.matcher(StringUtils.trimToEmpty(canonicalHref));
+    if (uid == null || !matcher.matches() || !matcher.group(1).equalsIgnoreCase(uid)) {
+      return false;
+    }
+    String container = matcher.group(2);
+    if (container.equals(CaldavPushService.MIRROR_COLLECTION_SLUG)) {
+      return false;
+    }
+    return !container.regionMatches(true, 0, "calendar:", 0, 9) || container.equalsIgnoreCase("calendar:Default:" + uid);
+  }
+
+  /**
+   * Says whether the shared calendar is also where eXo writes the copies of the
+   * user's eXo meetings, asked through the push's own resolution
+   * ({@link CaldavPushService#currentMirror}), so that the drawer's warning
+   * never disagrees with where the copies go. Only an imported calendar can be
+   * that destination; a failed lookup is said at debug and gives no warning.
+   *
+   * @param target the calendar
+   * @param username the caller's login
+   * @param shares the shares as read
+   * @return the shares with the flag
+   */
+  private CalendarShares withMeetingCopies(ShareTarget target, String username, CalendarShares shares) {
+    if (shares == null || !target.imported()) {
+      return shares;
+    }
+    boolean copies = false;
+    try {
+      MirrorTarget mirror = caldavPushService.currentMirror(target.userIdentityId(), username);
+      copies = mirror != null && StringUtils.isNotBlank(mirror.href())
+          && CaldavSyncStorage.canonicalHref(mirror.href()).equals(CaldavSyncStorage.canonicalHref(target.href()));
+    } catch (RuntimeException e) {
+      LOG.debug("Where the meeting copies of user {} go could not be read; no warning is given for calendar {}",
+                target.userIdentityId(), target.calendarId(), e);
+    }
+    return shares.withMeetingCopies(copies);
+  }
+
+  /**
    * The collection a pair binds, as a collection href.
    *
    * @param pair the pair
@@ -1438,6 +1708,16 @@ public class CaldavCalendarShareService {
                              CalendarSync pair,
                              String href,
                              CalDavEndpoint endpoint) {
+
+    /**
+     * Whether the calendar is an imported one, whose ownership on the server
+     * must be confirmed before anything is read or changed.
+     *
+     * @return true for a {@link SyncOrigin#REMOTE} pair
+     */
+    boolean imported() {
+      return pair.getOrigin() == SyncOrigin.REMOTE;
+    }
   }
 
   /**

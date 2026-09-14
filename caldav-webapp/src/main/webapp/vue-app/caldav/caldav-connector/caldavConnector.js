@@ -220,7 +220,8 @@ const caldavConnector = {
   /**
    * What this connector adds to the menu of the user's own calendars in
    * agenda's left panel (EXO-90253): "Share", on each calendar the platform
-   * says can be shared from eXo — owned, exported to the connected account, on
+   * says can be shared from eXo — owned, exported to the connected account or
+   * imported from it and owned there, on
    * a server where every grant is confirmed. Agenda asks connectors declaring this
    * and `runCalendarAction`, and draws the labels as given.
    *

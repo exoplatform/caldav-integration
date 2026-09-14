@@ -68,6 +68,8 @@ describe('CaldavShareCalendarDrawer', () => {
 
   let opened;
 
+  let confirms;
+
   /**
    * Mounts the drawer with a `$t` echoing key and arguments.
    *
@@ -75,6 +77,7 @@ describe('CaldavShareCalendarDrawer', () => {
    */
   function mountDrawer() {
     opened = 0;
+    confirms = 0;
     return shallowMount(CaldavShareCalendarDrawer, {
       mocks: {
         $t: (key, params) => (params ? `${key}(${Object.values(params).join(',')})` : key),
@@ -85,6 +88,14 @@ describe('CaldavShareCalendarDrawer', () => {
       stubs: {
         'identity-suggester': true,
         'user-avatar': true,
+        'exo-confirm-dialog': {
+          template: '<div></div>',
+          methods: {
+            open() {
+              confirms++;
+            },
+          },
+        },
         'exo-drawer': {
           template: '<div><slot name="title"></slot><slot name="content"></slot></div>',
           methods: {
@@ -197,6 +208,42 @@ describe('CaldavShareCalendarDrawer', () => {
     expect(wrapper.vm.sharees.length).toBe(2);
     expect(wrapper.vm.selected).toBeNull();
     expect(alerts).toEqual([['caldav.share.added(Carol Test)', 'success']]);
+  });
+
+  it('warns that a calendar holding meeting copies shows them, and shares only once the user confirms', async () => {
+    caldavConnectorService.getCalendarShares.mockResolvedValue({calendarId: 12, sharees: [], meetingCopies: true});
+    caldavConnectorService.shareCalendar.mockResolvedValue({calendarId: 12, sharees: [BOB], meetingCopies: true});
+    const wrapper = mountDrawer();
+    await wrapper.vm.open(WORK);
+    await settle();
+
+    expect(wrapper.text()).toContain('caldav.share.drawer.meetingCopies');
+    wrapper.vm.selected = wrapper.vm.candidateItems[0];
+    await wrapper.vm.share();
+
+    expect(confirms).toBe(1);
+    expect(caldavConnectorService.shareCalendar).not.toHaveBeenCalled();
+
+    await wrapper.vm.doShare();
+
+    expect(caldavConnectorService.shareCalendar).toHaveBeenCalledWith(12, 'bob');
+    expect(wrapper.vm.meetingCopies).toBe(true);
+    expect(wrapper.text()).toContain('caldav.share.drawer.meetingCopies');
+  });
+
+  it('shares without asking, and warns of nothing, on a calendar holding no meeting copies', async () => {
+    caldavConnectorService.shareCalendar.mockResolvedValue({calendarId: 12, sharees: [BOB]});
+    const wrapper = mountDrawer();
+    await wrapper.vm.open(WORK);
+    await settle();
+
+    expect(wrapper.text()).not.toContain('caldav.share.drawer.meetingCopies');
+    wrapper.vm.selected = wrapper.vm.candidateItems[0];
+    await wrapper.vm.share();
+
+    expect(confirms).toBe(0);
+    // bob is already a sharee in the default answer, so the first colleague offered is carol.
+    expect(caldavConnectorService.shareCalendar).toHaveBeenCalledWith(12, 'carol');
   });
 
   it('removes a sharee by their login', async () => {

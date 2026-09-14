@@ -88,7 +88,7 @@ public class CaldavShareRest {
   @GetMapping("/calendars/shareable")
   @Secured("users")
   @Operation(summary = "Lists the connected user's calendars that can be shared from eXo",
-      description = "A calendar is listed when the user owns it, eXo created a collection for it on the user's CalDAV "
+      description = "A calendar is listed when the user owns it, it is bound to a collection eXo created or to an imported collection the user owns on the CalDAV "
           + "server, and that server offers a way to grant access whose every change eXo confirms by reading it back (Stalwart's RFC 3744 ACL "
           + "method; BlueMind's CS:share, confirmed through BlueMind's REST access list, when the account's credentials are a "
           + "login and password). Never fails: no account, an unreachable server or any other obstacle answers an empty list.")
@@ -113,7 +113,7 @@ public class CaldavShareRest {
           + "eXo may take it away. `subscriptionRequired` is true where a colleague sees a shared calendar only after "
           + "subscribing to it on the server itself, as on BlueMind.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The sharees"),
-      @ApiResponse(responseCode = "400", description = "The calendar has no collection eXo created; body message is the code"),
+      @ApiResponse(responseCode = "400", description = "The calendar is bound to no collection eXo can share; body message is the code"),
       @ApiResponse(responseCode = "403", description = "Not the user's calendar"),
       @ApiResponse(responseCode = "404", description = "No such calendar"),
       @ApiResponse(responseCode = "409", description = "No account, sharing not offered on this server, or the access "
@@ -146,11 +146,11 @@ public class CaldavShareRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Shared; the sharees as read back"),
       @ApiResponse(responseCode = "400", description = "No colleague named, unknown, the user themself, not connected to "
           + "this server, on the user's own login, already holding more than view access given outside eXo "
-          + "(caldav.share.notReadOnly), a colleague holding other access given outside eXo (caldav.share.shareeHasOtherAccess), or a calendar with no collection eXo created"),
+          + "(caldav.share.notReadOnly), a colleague holding other access given outside eXo (caldav.share.shareeHasOtherAccess), or a calendar bound to no collection eXo can share (created by eXo, or imported and active; never the meetings mirror)"),
       @ApiResponse(responseCode = "403", description = "Not the user's calendar"),
       @ApiResponse(responseCode = "404", description = "No such calendar"),
       @ApiResponse(responseCode = "409", description = "No account, not offered on this server, the access list "
-          + "unusable, the user's server principal unknown (caldav.share.ownerUnknown), another person holding access "
+          + "unusable, the user's server principal unknown (caldav.share.ownerUnknown), an imported calendar the user does not own on the server (caldav.share.notOwnedOnServer), another person holding access "
           + "that writing the list back could change (caldav.share.foreignAccessNotPreserved), the colleague's mail address not "
           + "published by the server (caldav.share.shareeAddressUnknown), or the server refused "
           + "(with its preconditions and missing privileges)"),
@@ -182,7 +182,7 @@ public class CaldavShareRest {
           + "than partly removed. A colleague with no grant changes nothing and succeeds.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Removed; the sharees as read back"),
       @ApiResponse(responseCode = "400", description = "Unknown colleague, not connected, the user themself, holding more "
-          + "than view access, or a calendar with no collection eXo created"),
+          + "than view access, or a calendar bound to no collection eXo can share (created by eXo, or imported and active; never the meetings mirror)"),
       @ApiResponse(responseCode = "403", description = "Not the user's calendar"),
       @ApiResponse(responseCode = "404", description = "No such calendar"),
       @ApiResponse(responseCode = "409", description = "No account, not offered, access list unusable, another person "

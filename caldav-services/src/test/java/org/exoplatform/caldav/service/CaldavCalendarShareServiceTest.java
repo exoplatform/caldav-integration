@@ -66,6 +66,8 @@ import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
+import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.CollectionAcl;
 import org.exoplatform.caldav.client.DavOptions;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -129,6 +131,15 @@ public class CaldavCalendarShareServiceTest {
 
   private static final String STALWART_DAV     = "1, 2, 3, access-control, calendar-access, addressbook";
 
+  /** Alice's own default calendar on Stalwart, imported into agenda (canonical, as a pair stores it). */
+  private static final String STALWART_IMPORTED = "/dav/cal/alice@stalwart.local/default";
+
+  /** Alice's calendar home on Stalwart. */
+  private static final String ALICE_HOME       = "/dav/cal/alice%40stalwart.local/";
+
+  /** A colleague's uid on BlueMind, whose default alice subscribed to. */
+  private static final String CAMILLE_UID      = "2D4F6A80-1B3C-4E5D-8F70-9A1B2C3D4E5F";
+
   /** FRANCOIS — alice on the BlueMind rig — as a BlueMind directory entry. */
   private static final String FRANCOIS_UID     = "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13";
 
@@ -186,6 +197,9 @@ public class CaldavCalendarShareServiceTest {
   @Mock
   private BlueMindAclClient               blueMindAclClient;
 
+  @Mock
+  private CaldavPushService               caldavPushService;
+
   private CaldavCalendarShareService      service;
 
   /**
@@ -200,7 +214,8 @@ public class CaldavCalendarShareServiceTest {
                                              calDavClient,
                                              caldavConnectionIdentityService,
                                              identityManager,
-                                             blueMindAclClient);
+                                             blueMindAclClient,
+                                             caldavPushService);
     lenient().when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(calendar(CALENDAR, ALICE, ANCHOR));
     lenient().when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(connectedTo(STALWART));
     lenient().when(caldavSyncStorage.getPairByLocalCalendar(ALICE, STALWART, ANCHOR)).thenReturn(exoPair());
@@ -271,20 +286,29 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
-   * Only a collection eXo created for this calendar is shareable: a calendar
-   * materialised from the server, a pair not active, a pair whose collection
-   * is not the derived slug (the user's own default, say), and a calendar
-   * never bound are each refused, and no request is made.
+   * Only a collection eXo created for this calendar, or an active imported one
+   * that is not the meetings mirror, can be shared; everything else is refused
+   * before any request: a hidden share, a paused import, the meetings mirror
+   * bound as an import, a mirror pair, an unanchored import, a paused eXo
+   * pair, an eXo pair whose collection is not the derived slug, and a calendar
+   * never bound.
    */
   @Test
-  public void onlyTheCollectionEXoCreatedForTheCalendarIsShareable() {
-    CalendarSync materialised = exoPair();
-    materialised.setOrigin(SyncOrigin.REMOTE);
+  public void onlyAnExportedOrActiveImportedCollectionIsShareable() {
+    CalendarSync hidden = importedPair(STALWART_IMPORTED);
+    hidden.setStatus(CalendarSyncStatus.HIDDEN_SHARE);
+    CalendarSync pausedImport = importedPair(STALWART_IMPORTED);
+    pausedImport.setStatus(CalendarSyncStatus.PAUSED);
+    CalendarSync mirrorImport = importedPair("/dav/cal/alice@stalwart.local/exo-meetings");
+    CalendarSync mirror = importedPair(STALWART_IMPORTED);
+    mirror.setOrigin(SyncOrigin.MIRROR);
+    CalendarSync unanchored = importedPair(STALWART_IMPORTED);
+    unanchored.setLocalCalendarSyncUid(" ");
     CalendarSync paused = exoPair();
     paused.setStatus(CalendarSyncStatus.PAUSED);
     CalendarSync elsewhere = exoPair();
     elsewhere.setRemoteHref("/dav/cal/alice%40stalwart.local/default/");
-    for (CalendarSync pair : java.util.Arrays.asList(materialised, paused, elsewhere, null)) {
+    for (CalendarSync pair : java.util.Arrays.asList(hidden, pausedImport, mirrorImport, mirror, unanchored, paused, elsewhere, null)) {
       when(caldavSyncStorage.getPairByLocalCalendar(ALICE, STALWART, ANCHOR)).thenReturn(pair);
 
       IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
@@ -1096,6 +1120,181 @@ public class CaldavCalendarShareServiceTest {
     }
   }
 
+  // ---------------------------------------------------------------- imported calendars
+
+  /**
+   * An imported calendar alice owns on Stalwart — its {@code DAV:owner} is her
+   * recorded principal, she may write it, and it sits under her calendar home
+   * — is offered in the menu and can be shared: its sharees and candidates are
+   * read after that check, and nothing refuses it.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anImportedCalendarAliceOwnsOnStalwartIsShared() throws Exception {
+    CalendarSync pair = onStalwartImported(STALWART_IMPORTED);
+    when(calDavClient.readCalendar(endpoint, STALWART_IMPORTED + "/")).thenReturn(collection(ALICE_HOME + "default/", "/dav/pal/alice%40stalwart.local/", true));
+    // Lenient: the listing reads eXo-created pairs before imported ones, and a strict stub on the second query alone
+    // would make that first, unstubbed query a stubbing problem the listing swallows into an empty answer.
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR)));
+    when(calDavClient.listCalendars(endpoint, ALICE_HOME)).thenReturn(List.of(collection(ALICE_HOME + "default/", "/dav/pal/alice%40stalwart.local/", true)));
+
+    assertEquals(List.of(CALENDAR), service.shareableCalendarIds(ALICE, "alice"));
+    service.candidates(ALICE, "alice", CALENDAR, null);
+
+    verify(calDavClient).readCalendar(endpoint, STALWART_IMPORTED + "/");
+  }
+
+  /**
+   * On Stalwart an imported calendar is never shared unless all three hold,
+   * whichever fails: a colleague's calendar listed in alice's home (another
+   * {@code DAV:owner}), one read-only for her, one outside her calendar home,
+   * one the server does not describe, and any calendar when her principal was
+   * never recorded. Each is left out of the menu and refused before anything
+   * is read or written.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anImportedCalendarAliceDoesNotOwnOnStalwartIsNeverShared() throws Exception {
+    String bobs = "/dav/pal/bob%40stalwart.local/";
+    String alices = "/dav/pal/alice%40stalwart.local/";
+    Object[][] cases = {
+        { STALWART_IMPORTED, collection(ALICE_HOME + "default/", bobs, true), "a colleague's calendar in her home" },
+        { STALWART_IMPORTED, collection(ALICE_HOME + "default/", alices, false), "read-only for her" },
+        { "/dav/cal/bob@stalwart.local/default", collection("/dav/cal/bob%40stalwart.local/default/", alices, true), "outside her home" },
+        { STALWART_IMPORTED, null, "not described" }, };
+    for (Object[] kase : cases) {
+      String href = (String) kase[0];
+      CalendarCollection listed = (CalendarCollection) kase[1];
+      CalendarSync pair = onStalwartImported(href);
+      lenient().when(calDavClient.readCalendar(endpoint, href + "/")).thenReturn(listed);
+      lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+      lenient().when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR)));
+      lenient().when(calDavClient.listCalendars(endpoint, ALICE_HOME)).thenReturn(listed == null ? List.of() : List.of(listed));
+
+      assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"), (String) kase[2]);
+      assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+                   assertThrows(CaldavShareException.class, () -> service.candidates(ALICE, "alice", CALENDAR, null)).getCode(),
+                   (String) kase[2]);
+      assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+                   assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob")).getCode(),
+                   (String) kase[2]);
+    }
+    onStalwartImported(STALWART_IMPORTED);
+    lenient().when(calDavClient.readCalendar(endpoint, STALWART_IMPORTED + "/"))
+             .thenReturn(collection(ALICE_HOME + "default/", "/dav/pal/alice%40stalwart.local/", true));
+    when(caldavConnectionIdentityService.principalOf(ALICE, STALWART)).thenReturn(null);
+    assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+                 assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode(),
+                 "no recorded principal");
+    verify(calDavClient, never()).readAcl(any(), anyString());
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+  }
+
+  /**
+   * On BlueMind an imported calendar under alice's own uid — her default,
+   * {@code calendar:Default:<her uid>}, or another container of hers — is
+   * offered without any REST call, and shared once BlueMind's access list
+   * gives her every verb, as it lists a container's owner.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anImportedBlueMindCalendarAliceOwnsIsShared() throws Exception {
+    for (String container : List.of("calendar:Default:" + FRANCOIS_UID, "3B8E5C71-2A4D-4F6B-9C1E-7D5A3B2C1F09")) {
+      String href = "/dav/calendars/__uids__/" + FRANCOIS_UID + "/" + container;
+      CalendarSync pair = onBlueMindImported(href);
+      lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+      lenient().when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR)));
+      lenient().when(blueMindAclClient.acceptsCredentials(endpoint)).thenReturn(true);
+      lenient().when(blueMindAclClient.readAcl(endpoint, container)).thenReturn(owner());
+
+      assertEquals(List.of(CALENDAR), service.shareableCalendarIds(ALICE, "alice"), container);
+      verify(blueMindAclClient, never()).readAcl(any(), anyString());
+
+      CalendarShares shares = service.listShares(ALICE, "alice", CALENDAR);
+
+      assertTrue(shares.sharees().isEmpty(), container);
+      verify(blueMindAclClient).readAcl(endpoint, container);
+      org.mockito.Mockito.clearInvocations(blueMindAclClient);
+    }
+  }
+
+  /**
+   * A subscription to someone else's BlueMind calendar is never shared, although
+   * BlueMind lists it under alice's own uid and names her its owner: a
+   * {@code calendar:<other uid>} resource and a colleague's
+   * {@code calendar:Default:<their uid>} are left out of the menu and refused
+   * before any REST call.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aBlueMindSubscriptionIsNeverShared() throws Exception {
+    for (String container : List.of("calendar:7E3AE6F3-5B2C-4D1E-9A8F-6C0B3D2E1F4A", "calendar:Default:" + CAMILLE_UID)) {
+      String href = "/dav/calendars/__uids__/" + FRANCOIS_UID + "/" + container;
+      CalendarSync pair = onBlueMindImported(href);
+      lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+      lenient().when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR)));
+      lenient().when(blueMindAclClient.acceptsCredentials(endpoint)).thenReturn(true);
+
+      assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"), container);
+      assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+                   assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode(),
+                   container);
+    }
+    verify(blueMindAclClient, never()).readAcl(any(), anyString());
+  }
+
+  /**
+   * An imported BlueMind calendar whose access list gives alice neither
+   * {@code All} nor {@code Manage} — someone else's calendar she only reads,
+   * under a bare container uid — is refused on reading its sharees and on a
+   * grant, and no {@code CS:share} is ever posted.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aBlueMindCalendarAliceCannotManageIsNeverShared() throws Exception {
+    String container = "5C7E9A12-3B4D-4E6F-8A1B-2C3D4E5F6A7B";
+    onBlueMindImported("/dav/calendars/__uids__/" + FRANCOIS_UID + "/" + container);
+    when(blueMindAclClient.readAcl(endpoint, container)).thenReturn(acl(expanded(CAMILLE_UID, "All"), expanded(FRANCOIS_UID, "Read")));
+
+    assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+                 assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode());
+    assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+                 assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob")).getCode());
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean());
+  }
+
+  /**
+   * The calendar eXo writes meeting copies into is flagged, through the push's
+   * own resolution: an imported calendar named by {@code currentMirror} (any
+   * spelling) carries the flag, another does not, and an eXo-created calendar
+   * never asks.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void theCalendarReceivingMeetingCopiesIsFlagged() throws Exception {
+    String container = "calendar:Default:" + FRANCOIS_UID;
+    String href = "/dav/calendars/__uids__/" + FRANCOIS_UID + "/" + container;
+    onBlueMindImported(href);
+    when(blueMindAclClient.readAcl(endpoint, container)).thenReturn(owner());
+    when(caldavPushService.currentMirror(ALICE, "alice")).thenReturn(new MirrorTarget(href + "/", false, null),
+                                                                     new MirrorTarget("/dav/calendars/__uids__/" + FRANCOIS_UID + "/exo-meetings", false, null));
+
+    assertTrue(service.listShares(ALICE, "alice", CALENDAR).meetingCopies());
+    assertFalse(service.listShares(ALICE, "alice", CALENDAR).meetingCopies());
+
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner());
+    assertFalse(service.listShares(ALICE, "alice", CALENDAR).meetingCopies());
+    verify(caldavPushService, org.mockito.Mockito.times(2)).currentMirror(ALICE, "alice");
+  }
+
   // ---------------------------------------------------------------- helpers
 
   /**
@@ -1147,6 +1346,61 @@ public class CaldavCalendarShareServiceTest {
     Identity bob = user(BOB, "bob", "Bob Test");
     bob.getProfile().setProperty(Profile.EMAIL, "bob@exo.example.com");
     lenient().when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, "bob")).thenReturn(bob);
+  }
+
+  /**
+   * Alice's calendar bound to an imported Stalwart collection: its pair, the
+   * server's answer for any collection, and her calendar home.
+   *
+   * @param href the canonical collection href
+   * @return the pair
+   */
+  private CalendarSync onStalwartImported(String href) {
+    CalendarSync pair = importedPair(href);
+    lenient().when(caldavSyncStorage.getPairByLocalCalendar(ALICE, STALWART, ANCHOR)).thenReturn(pair);
+    lenient().when(calDavClient.capabilities(eq(endpoint), anyString())).thenReturn(stalwartOptions());
+    lenient().when(calDavClient.discoverHome(endpoint)).thenReturn(new CalendarHome("/dav/pal/alice%40stalwart.local/", ALICE_HOME));
+    return pair;
+  }
+
+  /**
+   * Alice (FRANCOIS) on BlueMind with her calendar bound to an imported
+   * collection.
+   *
+   * @param href the canonical collection href
+   * @return the pair
+   */
+  private CalendarSync onBlueMindImported(String href) {
+    onBlueMind();
+    CalendarSync pair = importedPair(href);
+    lenient().when(caldavSyncStorage.getPairByLocalCalendar(ALICE, STALWART, ANCHOR)).thenReturn(pair);
+    lenient().when(calDavClient.capabilities(eq(endpoint), anyString())).thenReturn(DavOptions.of(List.of(BLUEMIND_DAV), List.of()));
+    return pair;
+  }
+
+  /**
+   * An active imported pair of alice's calendar.
+   *
+   * @param href the collection it binds
+   * @return a fresh pair
+   */
+  private static CalendarSync importedPair(String href) {
+    CalendarSync pair = exoPair();
+    pair.setOrigin(SyncOrigin.REMOTE);
+    pair.setRemoteHref(href);
+    return pair;
+  }
+
+  /**
+   * A calendar collection as a PROPFIND describes it.
+   *
+   * @param href its href
+   * @param owner its DAV:owner
+   * @param writable whether the privileges let the user write
+   * @return the collection
+   */
+  private static CalendarCollection collection(String href, String owner, boolean writable) {
+    return new CalendarCollection(href, "Default", null, null, null, writable, Set.of("VEVENT"), owner, true);
   }
 
   /**

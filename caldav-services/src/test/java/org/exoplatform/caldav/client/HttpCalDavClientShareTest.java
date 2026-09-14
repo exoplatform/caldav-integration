@@ -424,22 +424,25 @@ public class HttpCalDavClientShareTest {
   }
 
   /**
-   * Nothing but a mail address is ever named, and nothing but a collection
-   * eXo created is ever addressed: markup smuggled in an address, a value
-   * without {@code @}, and a pair eXo did not export are refused before any
-   * request.
+   * Nothing but a mail address is ever named, and nothing but a shareable
+   * collection is ever addressed: markup smuggled in an address, a value
+   * without {@code @}, a hidden share and the meetings mirror are refused
+   * before any request.
    */
   @Test
-  void aShareNamesOnlyAMailAddressOnACollectionEXoCreated() {
-    CalendarSync materialised = exoPair();
-    materialised.setOrigin(SyncOrigin.REMOTE);
+  void aShareNamesOnlyAMailAddressOnAShareableCollection() {
+    CalendarSync hidden = importedPair(BLUEMIND_COLLECTION);
+    hidden.setStatus(CalendarSyncStatus.HIDDEN_SHARE);
+    CalendarSync mirror = importedPair("/dav/calendars/__uids__/" + BLUEMIND_OWNER + "/exo-meetings/");
 
     assertThrows(IllegalArgumentException.class,
                  () -> client.postCalendarServerShare(endpoint, exoPair(), "eric@bm.example.com</D:href><CS:read-write/>", false));
     assertThrows(IllegalArgumentException.class, () -> client.postCalendarServerShare(endpoint, exoPair(), "eric", false));
     assertThrows(IllegalArgumentException.class, () -> client.postCalendarServerShare(endpoint, exoPair(), null, false));
     assertThrows(IllegalArgumentException.class,
-                 () -> client.postCalendarServerShare(endpoint, materialised, "eric.meyer@bm.example.com", false));
+                 () -> client.postCalendarServerShare(endpoint, hidden, "eric.meyer@bm.example.com", false));
+    assertThrows(IllegalArgumentException.class,
+                 () -> client.postCalendarServerShare(endpoint, mirror, "eric.meyer@bm.example.com", false));
     assertTrue(sent.isEmpty());
   }
 
@@ -666,28 +669,44 @@ public class HttpCalDavClientShareTest {
   }
 
   /**
-   * The write can address a collection eXo created for the pair's calendar
-   * and nothing else: a materialised calendar, a pair whose href is not the
-   * derived slug, and a pair with no anchor are refused before a request is
-   * built.
+   * The write addresses a collection eXo created for the pair's calendar, or an
+   * active imported one that is not the meetings mirror — whose ownership the
+   * share service confirms — and nothing else. Refused before a request is
+   * built: an eXo pair whose href is not the derived slug or has no anchor, a
+   * hidden share, a paused import, the meetings mirror as an import, a mirror
+   * pair, an unanchored import, and no pair. Deleting keeps the eXo-created
+   * rule: an imported collection is never deleted.
    *
    * @throws Exception never
    */
   @Test
-  void onlyACollectionEXoCreatedCanBeWritten() throws Exception {
-    CalendarSync remote = exoPair();
-    remote.setOrigin(SyncOrigin.REMOTE);
+  void onlyACollectionEXoCreatedOrAnActiveImportedOneCanBeWritten() throws Exception {
     CalendarSync elsewhere = exoPair();
     elsewhere.setRemoteHref("/dav/cal/alice%40stalwart.local/default/");
     CalendarSync unanchored = exoPair();
     unanchored.setLocalCalendarSyncUid(null);
+    CalendarSync hidden = importedPair("/dav/cal/bob%40stalwart.local/default/");
+    hidden.setStatus(CalendarSyncStatus.HIDDEN_SHARE);
+    CalendarSync paused = importedPair("/dav/cal/alice%40stalwart.local/default/");
+    paused.setStatus(CalendarSyncStatus.PAUSED);
+    CalendarSync mirrorImport = importedPair("/dav/cal/alice%40stalwart.local/exo-meetings/");
+    CalendarSync mirror = importedPair("/dav/cal/alice%40stalwart.local/default/");
+    mirror.setOrigin(SyncOrigin.MIRROR);
+    CalendarSync unanchoredImport = importedPair("/dav/cal/alice%40stalwart.local/default/");
+    unanchoredImport.setLocalCalendarSyncUid(null);
     List<AccessControlEntry> grant = List.of(AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/"));
 
-    assertThrows(IllegalArgumentException.class, () -> client.writeAcl(endpoint, remote, grant));
-    assertThrows(IllegalArgumentException.class, () -> client.writeAcl(endpoint, elsewhere, grant));
-    assertThrows(IllegalArgumentException.class, () -> client.writeAcl(endpoint, unanchored, grant));
-    assertThrows(IllegalArgumentException.class, () -> client.writeAcl(endpoint, null, grant));
+    for (CalendarSync refused : java.util.Arrays.asList(elsewhere, unanchored, hidden, paused, mirrorImport, mirror, unanchoredImport, null)) {
+      assertThrows(IllegalArgumentException.class, () -> client.writeAcl(endpoint, refused, grant), String.valueOf(refused));
+    }
     verify(transport, never()).send(any(HttpRequest.class), any());
+
+    CalendarSync imported = importedPair("/dav/cal/alice%40stalwart.local/default/");
+    answer(200, Map.of(), "");
+    assertTrue(client.writeAcl(endpoint, imported, grant).accepted());
+    assertEquals("http://cal.example.com/dav/cal/alice%40stalwart.local/default/", sent.get(0).uri().toString());
+    assertThrows(IllegalArgumentException.class, () -> client.deleteCollection(endpoint, imported));
+    assertEquals(1, sent.size(), "an imported collection is never deleted");
   }
 
   /**
@@ -768,6 +787,19 @@ public class HttpCalDavClientShareTest {
   /** The privilege set of an owner, for answers that need one. */
   private static final String PRIVILEGES_OWNER = "<D:current-user-privilege-set><D:privilege><D:all/></D:privilege>"
       + "<D:privilege><D:read-acl/></D:privilege><D:privilege><D:write-acl/></D:privilege></D:current-user-privilege-set>";
+
+  /**
+   * An active imported pair of alice's.
+   *
+   * @param href the collection it binds
+   * @return a fresh pair
+   */
+  private static CalendarSync importedPair(String href) {
+    CalendarSync pair = exoPair();
+    pair.setOrigin(SyncOrigin.REMOTE);
+    pair.setRemoteHref(href);
+    return pair;
+  }
 
   /**
    * The pair of alice's exported calendar.
