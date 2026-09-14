@@ -166,8 +166,9 @@ public class CaldavSubscriptionRetirementServiceTest {
   /**
    * Only an ACTIVE REMOTE binding of the user, for a subscription, is
    * retired: a share the server's owner signal revealed, a colleague's eXo
-   * calendar, a paused or already retired binding — which is what makes a
-   * second pass a no-op — an eXo-made one and another user's are left alone,
+   * calendar, an already retired binding — which is what makes a second pass
+   * a no-op — a tombstone, a hidden share, an eXo-made one and another user's
+   * are left alone,
    * and nobody is asked anything about them.
    */
   @Test
@@ -175,7 +176,9 @@ public class CaldavSubscriptionRetirementServiceTest {
     assertEquals(Retirement.KEPT, service.retire(ROOT, endpoint, ROOT_PRINCIPAL, binding17(), vehicle(), CollectionOwnership.SHARED));
     assertEquals(Retirement.KEPT,
                  service.retire(ROOT, endpoint, ROOT_PRINCIPAL, binding17(), vehicle(), CollectionOwnership.COLLEAGUES_EXO_CALENDAR));
-    for (CalendarSyncStatus state : Set.of(CalendarSyncStatus.PAUSED, CalendarSyncStatus.RETIRED_SUBSCRIPTION)) {
+    for (CalendarSyncStatus state : Set.of(CalendarSyncStatus.RETIRED_SUBSCRIPTION,
+                                           CalendarSyncStatus.LOCALLY_DELETED,
+                                           CalendarSyncStatus.HIDDEN_SHARE)) {
       CalendarSync binding = binding17();
       binding.setStatus(state);
       assertEquals(Retirement.KEPT,
@@ -191,6 +194,22 @@ public class CaldavSubscriptionRetirementServiceTest {
                  service.retire(ROOT, endpoint, ROOT_PRINCIPAL, anothers, vehicle(), CollectionOwnership.SUBSCRIBED_RESOURCE));
 
     verifyNoInteractions(caldavSyncStorage, calDavClient);
+  }
+
+  /**
+   * A binding the import paused after repeated failures is retired too:
+   * removals still resolve through a paused binding, and a reconnection
+   * would wake it, where a retired one is woken by nothing.
+   */
+  @Test
+  public void aPausedSubscriptionsBindingIsRetiredToo() {
+    when(calDavClient.readDisplayName(endpoint, VEHICLE_PRINCIPAL)).thenReturn("Véhicule de pool 1");
+    CalendarSync paused = binding17();
+    paused.setStatus(CalendarSyncStatus.PAUSED);
+
+    assertEquals(Retirement.RETIRED,
+                 service.retire(ROOT, endpoint, ROOT_PRINCIPAL, paused, vehicle(), CollectionOwnership.SUBSCRIBED_RESOURCE));
+    assertEquals(CalendarSyncStatus.RETIRED_SUBSCRIPTION, paused.getStatus());
   }
 
   /**

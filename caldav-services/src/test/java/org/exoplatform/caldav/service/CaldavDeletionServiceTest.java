@@ -1419,34 +1419,36 @@ public class CaldavDeletionServiceTest {
   // ------------------------------------ a retired subscription's calendar, EXO-90275
 
   /**
-   * Deleting the copy of a retired subscription drops its binding rather than
-   * tombstoning it: the collection is somebody else's, and the user deleted
-   * the copy precisely so that it could be listed under "Shared with me". The
-   * server is not asked anything.
+   * The deletion hook leaves a retired subscription's binding exactly as it
+   * is — no tombstone, no drop, no request to the server. The binding goes
+   * only once agenda has really deleted the calendar, through the orphan
+   * pruning: dropped here, an agenda deletion failing afterwards would leave a
+   * calendar with no binding for the outbound half to export.
    */
   @Test
-  public void deletingARetiredSubscriptionsCalendarDropsItsBindingRatherThanTombstoningIt() {
+  public void deletingARetiredSubscriptionsCalendarLeavesItsBindingToThePruning() {
     givenBoundCalendar(SyncOrigin.REMOTE, CalendarSyncStatus.RETIRED_SUBSCRIPTION);
 
     service.deleteRemoteCounterpart(USER, LOGIN, CALENDAR);
 
-    verify(caldavSyncStorage).deleteObjects(3L);
-    verify(caldavSyncStorage).deletePair(3L);
+    verify(caldavSyncStorage, never()).deleteObjects(anyLong());
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
     verify(caldavSyncStorage, never()).savePair(any());
     verify(calDavClient, never()).deleteCollection(any(), any());
   }
 
   /**
-   * The keep path, which the dialog takes for a plan that propagates
-   * nothing, drops it the same way.
+   * The keep hook — reached by a plan cached while the binding was still
+   * active — leaves it the same way.
    */
   @Test
-  public void keepingTheRemoteOfARetiredSubscriptionAlsoDropsItsBinding() {
+  public void keepingTheRemoteOfARetiredSubscriptionAlsoLeavesItsBindingToThePruning() {
     givenBoundCalendar(SyncOrigin.REMOTE, CalendarSyncStatus.RETIRED_SUBSCRIPTION);
 
     service.keepRemoteCounterpart(USER, CALENDAR);
 
-    verify(caldavSyncStorage).deletePair(3L);
+    verify(caldavSyncStorage, never()).deleteObjects(anyLong());
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
     verify(caldavSyncStorage, never()).savePair(any());
   }
 

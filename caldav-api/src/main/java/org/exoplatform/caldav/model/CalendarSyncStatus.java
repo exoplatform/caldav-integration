@@ -117,9 +117,10 @@ public enum CalendarSyncStatus {
    * — eXo cannot tell the copies in it from events the user made there, since
    * agenda lists a calendar's events only by date window and confirmed
    * status — and the state is told to the user, who deletes that calendar.
-   * Its binding is then dropped, by the deletion dialog or, after a plain
-   * agenda deletion, by the orphan pruning, and the collection is listed
-   * read-only under "Shared with me".
+   * Its binding is then dropped by the orphan pruning, once agenda has
+   * really deleted the calendar — the deletion dialog claims nothing about it
+   * and leaves it alone — and the collection is listed read-only under
+   * "Shared with me".
    */
   RETIRED_SUBSCRIPTION
 

@@ -1218,10 +1218,10 @@ public class CaldavSyncService {
         caldavSyncStorage.deletePair(pair.getId());
       } else if (pair.getStatus() == CalendarSyncStatus.RETIRED_SUBSCRIPTION) {
         // The user deleted the copy of a subscription, as the calendar states
-        // asked them to, through a path that did not go by the deletion
-        // dialog (EXO-90275). The binding has nothing left to keep out: the
-        // collection is classified a share on this very pass and listed
-        // read-only under "Shared with me".
+        // asked them to (EXO-90275) — whichever way: the deletion dialog
+        // claims nothing about a retired binding and leaves it to this. The
+        // binding has nothing left to keep out: the collection is classified a
+        // share on this very pass and listed read-only under "Shared with me".
         LOG.info("The calendar of retired subscription binding {} was deleted; the binding is dropped and {} is listed"
             + " read-only under Shared with me",
                  pair.getId(),
@@ -1766,9 +1766,11 @@ public class CaldavSyncService {
    * <p>
    * Asked for a collection already bound, which is exactly where such a
    * calendar sits: {@link #isAlreadyOurs} keeps it from being materialised
-   * twice, and kept it from ever being classified at all. Only an ACTIVE
-   * {@link SyncOrigin#REMOTE} binding is considered — one the sweep made and
-   * reads and writes through — and only when the collection classifies as a
+   * twice, and kept it from ever being classified at all. Only an ACTIVE or
+   * PAUSED {@link SyncOrigin#REMOTE} binding is considered — one the sweep
+   * made, reads and writes through, or stopped reading after repeated
+   * failures while removals still resolve through it — and only when the
+   * collection classifies as a
    * subscription the server's naming revealed; the classification is the
    * one the list and the skip use. Shares the server's owner or privilege
    * signals revealed, or a colleague's eXo calendar, are left as
@@ -1794,7 +1796,8 @@ public class CaldavSyncService {
                                     CalendarCollection collection) {
     String href = CaldavSyncStorage.canonicalHref(collection.href());
     CalendarSync binding = known.stream()
-                                .filter(pair -> pair.getOrigin() == SyncOrigin.REMOTE && pair.getStatus() == CalendarSyncStatus.ACTIVE)
+                                .filter(pair -> pair.getOrigin() == SyncOrigin.REMOTE
+                                    && (pair.getStatus() == CalendarSyncStatus.ACTIVE || pair.getStatus() == CalendarSyncStatus.PAUSED))
                                 .filter(pair -> StringUtils.equals(href, CaldavSyncStorage.canonicalHref(pair.getRemoteHref())))
                                 .findFirst()
                                 .orElse(null);

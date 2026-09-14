@@ -1744,23 +1744,33 @@ public class CaldavSyncServiceTest {
   }
 
   /**
-   * Only an ACTIVE binding is handed over: a paused one — what a retirement
-   * that found local events leaves — is not asked about again, which is what
-   * makes the warning once per binding. The user's own main calendar, bound,
-   * is never handed over either.
+   * A binding the import paused is handed over like an active one — removals
+   * still resolve through it — while the user's own main calendar, bound, and
+   * a binding already retired never are.
    */
   @Test
-  public void aPausedSubscriptionAndTheUsersOwnBoundMainAreNotHandedToTheRetirement() throws Exception {
+  public void aPausedSubscriptionIsHandedToTheRetirementButTheUsersOwnMainAndARetiredOneAreNot() throws Exception {
     CalendarSync paused = activeRemotePair(POOL_VEHICLE, "anchor-16");
     paused.setStatus(CalendarSyncStatus.PAUSED);
     CalendarSync ownMain = activeRemotePair(JOHNS_MAIN, "anchor-main");
-    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(paused, ownMain));
+    String room = BM_HOME + "calendar:room-2/";
+    CalendarSync retired = activeRemotePair(room, "anchor-room");
+    retired.setStatus(CalendarSyncStatus.RETIRED_SUBSCRIPTION);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(paused, ownMain, retired));
     givenBlueMindAccountListing(owned(POOL_VEHICLE, "Véhicule de pool 1", BM_PRINCIPAL, true, true),
-                                owned(JOHNS_MAIN, "John", BM_PRINCIPAL, true, true));
+                                owned(JOHNS_MAIN, "John", BM_PRINCIPAL, true, true),
+                                owned(room, "Room 2", BM_PRINCIPAL, true, true));
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavSubscriptionRetirementService, never()).retire(anyLong(), any(), any(), any(), any(), any());
+    verify(caldavSubscriptionRetirementService).retire(eq(USER),
+                                                       eq(endpoint),
+                                                       eq(BM_PRINCIPAL),
+                                                       eq(paused),
+                                                       any(),
+                                                       eq(CollectionOwnership.SUBSCRIBED_RESOURCE));
+    verify(caldavSubscriptionRetirementService, never()).retire(anyLong(), any(), any(), eq(ownMain), any(), any());
+    verify(caldavSubscriptionRetirementService, never()).retire(anyLong(), any(), any(), eq(retired), any(), any());
   }
 
   /**

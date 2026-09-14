@@ -123,7 +123,8 @@ public class CaldavSubscriptionRetirementService {
    * @param userIdentityId identity of the user the binding belongs to
    * @param endpoint the account's endpoint, through which the owner is asked
    * @param principal the account's own principal, as the listing named it
-   * @param pair the binding, which must be an ACTIVE REMOTE pair of this user
+   * @param pair the binding, which must be an ACTIVE or PAUSED REMOTE pair of
+   *          this user
    * @param collection the listed collection the binding is bound to
    * @param ownership whose the collection is, as the classification answered
    * @return what was done
@@ -136,7 +137,7 @@ public class CaldavSubscriptionRetirementService {
                            CollectionOwnership ownership) {
     if (ownership == null || !ownership.isSubscription() || pair == null || pair.getId() == null
         || pair.getUserIdentityId() != userIdentityId || pair.getOrigin() != SyncOrigin.REMOTE
-        || pair.getStatus() != CalendarSyncStatus.ACTIVE || collection == null || unconfirmed.contains(pair.getId())) {
+        || !isLive(pair.getStatus()) || collection == null || unconfirmed.contains(pair.getId())) {
       return Retirement.KEPT;
     }
     BlueMindContainerNaming.Subscription subscription = BlueMindContainerNaming.subscriptionOf(collection.href(), principal);
@@ -167,6 +168,24 @@ public class CaldavSubscriptionRetirementService {
              userIdentityId,
              subscription.resource() ? "resource calendar" : "calendar of another person");
     return Retirement.RETIRED;
+  }
+
+  /**
+   * Whether a binding is one a retirement applies to: ACTIVE, or PAUSED after
+   * repeated import failures.
+   *
+   * <p>
+   * A paused binding is included on purpose: the import stopped reading
+   * through it, but removals still resolve through its mappings, and a
+   * reconnection would wake it. {@link CalendarSyncStatus#RETIRED_SUBSCRIPTION}
+   * is stricter than both and is woken by nothing. Every other state — a
+   * tombstone, a hidden share, one already retired — is left alone.
+   *
+   * @param status the binding's state
+   * @return true for ACTIVE and PAUSED
+   */
+  private static boolean isLive(CalendarSyncStatus status) {
+    return status == CalendarSyncStatus.ACTIVE || status == CalendarSyncStatus.PAUSED;
   }
 
   /**

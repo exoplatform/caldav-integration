@@ -149,7 +149,12 @@ public class CaldavDeletionService {
       return;
     }
     if (pair.getStatus() == CalendarSyncStatus.RETIRED_SUBSCRIPTION) {
-      forgetRetiredSubscription(pair, calendarId);
+      // A retired subscription is left exactly as it is (EXO-90275): its
+      // collection is somebody else's, nothing is claimed about it, and the
+      // binding is dropped by the orphan pruning once agenda has really
+      // deleted the calendar. Dropping it here would open a window — agenda's
+      // own deletion failing after this returns — in which the calendar has no
+      // binding, and the outbound half would export it as a new collection.
       return;
     }
     if (pair.getOrigin() != SyncOrigin.EXO) {
@@ -211,7 +216,12 @@ public class CaldavDeletionService {
       return;
     }
     if (pair.getStatus() == CalendarSyncStatus.RETIRED_SUBSCRIPTION) {
-      forgetRetiredSubscription(pair, calendarId);
+      // A retired subscription is left exactly as it is (EXO-90275): its
+      // collection is somebody else's, nothing is claimed about it, and the
+      // binding is dropped by the orphan pruning once agenda has really
+      // deleted the calendar. Dropping it here would open a window — agenda's
+      // own deletion failing after this returns — in which the calendar has no
+      // binding, and the outbound half would export it as a new collection.
       return;
     }
     CalendarSyncStatus state = pair.getOrigin() == SyncOrigin.EXO ? CalendarSyncStatus.EXO_ORPHANED
@@ -219,31 +229,6 @@ public class CaldavDeletionService {
     tombstone(pair, state, calendarId);
   }
 
-  /**
-   * Drops the binding of a retired subscription whose calendar the user is
-   * deleting (EXO-90275).
-   *
-   * <p>
-   * Not a tombstone, deliberately. A tombstone keeps a collection out of the
-   * calendar list for good, because the collection is the user's own and they
-   * asked to be rid of it; this collection is somebody else's, the calendar
-   * being deleted is only the copy an earlier pass made of it, and deleting
-   * that copy is exactly what the user was asked to do so that the collection
-   * can be listed where it belongs — read-only, under "Shared with me". Nothing
-   * is asked of the server: the binding was inert, and its collection is not
-   * eXo's.
-   *
-   * @param pair the retired binding
-   * @param calendarId the eXo calendar being deleted, for the line
-   */
-  private void forgetRetiredSubscription(CalendarSync pair, long calendarId) {
-    caldavSyncStorage.deleteObjects(pair.getId());
-    caldavSyncStorage.deletePair(pair.getId());
-    LOG.info("Calendar {}, materialised from the subscription {} and retired, is being deleted; its binding is dropped and"
-        + " the subscription is listed read-only under Shared with me",
-             calendarId,
-             pair.getRemoteHref());
-  }
 
   /**
    * What deleting this calendar would also do, so the page can say it before
