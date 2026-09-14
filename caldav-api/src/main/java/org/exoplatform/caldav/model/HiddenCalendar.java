@@ -25,8 +25,33 @@ package org.exoplatform.caldav.model;
  * what it would then name is another collection on the same account. An id is
  * looked up and checked against whose it is before anything happens.
  *
+ * <p>
+ * Two kinds since EXO-90239, told apart by {@code shared}. A calendar the
+ * user <b>deleted</b> here while keeping it on their account comes back at
+ * the next synchronisation, materialised afresh. A calendar <b>shared</b>
+ * with them that they chose not to see comes back under the remote calendars
+ * the moment its record is dropped, and is named with whoever shared it when
+ * that can be told — the same owner the calendar list shows, resolved the
+ * same way; null when nobody can be named, and always null for a deleted
+ * calendar of the user's own.
+ *
  * @param id the binding to lift
  * @param name what the server calls the collection today
+ * @param shared true for a calendar somebody shared with the user, false
+ *          for one of their own they deleted here
+ * @param ownerDisplayName how to name whoever shared it, or null
  */
-public record HiddenCalendar(long id, String name) {
+public record HiddenCalendar(long id, String name, boolean shared, String ownerDisplayName) {
+
+  /**
+   * A calendar of the user's own, deleted here and kept on their account —
+   * the only kind there was before shares could be hidden, kept so that a
+   * caller building one by hand never describes a share by accident.
+   *
+   * @param id the binding to lift
+   * @param name what the server calls the collection today
+   */
+  public HiddenCalendar(long id, String name) {
+    this(id, name, false, null);
+  }
 }

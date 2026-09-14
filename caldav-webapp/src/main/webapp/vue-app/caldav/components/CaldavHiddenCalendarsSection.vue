@@ -26,9 +26,16 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         summary straight under their header, and a row that breathes more than
         its neighbours reads as belonging to another list.
       -->
+      <!--
+        The neutral count, not the older subtitle about calendars "you deleted
+        here": since EXO-90239 the number also counts calendars shared with
+        the user that they hid, and a sentence about deletion is false for
+        those. The older key stays in the bundle — existing keys are Crowdin's
+        to change, not this source's.
+      -->
       <v-list-item-subtitle>
         <span>
-          {{ $t('caldav.hiddenCalendars.subtitle', {0: hidden.length}) }}
+          {{ $t('caldav.hiddenCalendars.count', {0: hidden.length}) }}
         </span>
       </v-list-item-subtitle>
     </v-list-item-content>

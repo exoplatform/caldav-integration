@@ -186,6 +186,38 @@ const caldavConnector = {
   },
 
   /**
+   * Hides a calendar somebody shared with the user, so that it leaves
+   * "Shared with me" and stays gone until they show it again from the hidden
+   * calendars of their agenda settings (EXO-90239).
+   *
+   * Declaring this is what lets agenda offer a "Hide" action on a shared
+   * calendar's row; a connector without it offers none. `calendarId` is the
+   * `id` of an entry `listCalendars()` answered — the collection href — and
+   * the platform accepts it only when its own current listing holds it as a
+   * share of this user, so nothing a page could send names another
+   * collection.
+   *
+   * Resolves on success, including a calendar already hidden. Rejects with
+   * the platform's error as `agendaCaldavService.hideCalendar` shapes it: an
+   * Error whose `code` is the machine-readable reason and whose `status` is
+   * the HTTP status.
+   *
+   * On success the personal-calendars refresh is dispatched on the document,
+   * the same signal the settings drawer sends when a calendar is shown
+   * again. The Remote section re-reads on the root events
+   * `agenda-refresh-personal-calendars` and `agenda-refresh`, which a plain
+   * module cannot reach — the row that offered "Hide" emits one of those
+   * once this resolves, so the calendar disappears without a reload.
+   *
+   * @param {String} calendarId the calendar's identity, as listCalendars gave it
+   * @returns {Promise} resolves once the calendar is hidden
+   */
+  hideCalendar(calendarId) {
+    return caldavConnectorService.hideCalendar(calendarId)
+      .then(() => document.dispatchEvent(new CustomEvent('agenda-refresh-personal-calendars')));
+  },
+
+  /**
    * What unlinking this account costs, in the user's language.
    *
    * <p>
