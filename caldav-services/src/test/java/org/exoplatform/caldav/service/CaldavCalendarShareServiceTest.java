@@ -1394,9 +1394,11 @@ public class CaldavCalendarShareServiceTest {
 
   /**
    * The menu probes a collection eXo created before an imported one, whatever
-   * order agenda lists the calendars in, and a probe that fails tries the next
-   * calendar: an imported collection that went away, or one that cannot be
-   * reached, does not hide Share on the user's other calendars.
+   * order agenda lists the calendars in, and a collection failing on its own —
+   * gone, or answering an error status other than 401, 403, 407 and a gateway
+   * status — tries the next calendar, so it does not hide Share on the user's
+   * other calendars. Refused credentials and an unreachable server stop the
+   * listing instead (pinned by the next test).
    *
    * @throws Exception never
    */
