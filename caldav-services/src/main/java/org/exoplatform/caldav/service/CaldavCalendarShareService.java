@@ -273,10 +273,18 @@ public class CaldavCalendarShareService {
   private static final Pattern     BLUEMIND_COLLECTION    = Pattern.compile("/dav/calendars/__uids__/([^/]+)/[^/]+");
 
   /**
-   * A BlueMind calendar collection, with its owner uid and its container
-   * segment: the user's own default is {@code calendar:Default:<uid>}, another
-   * {@code calendar:<uid>} segment is a subscription to someone else's
-   * calendar or resource, and other containers are bare uids or eXo slugs.
+   * A BlueMind calendar collection under a user's {@code __uids__} home, with
+   * that uid and the container segment, which is the container uid itself
+   * ({@code DavStore} lists {@code path + containerUid}; {@code LoggedCore}
+   * decodes group 2 and looks the container up by it). BlueMind names a user's
+   * default {@code calendar:Default:<uid>} and a calendar created through its
+   * calendar service {@code calendar:UserCreated:<uid>:<uuid>}
+   * ({@code ICalendarUids}, {@code UserCalendarService}); a DAV MKCALENDAR keeps
+   * the client's segment, bare. The home also lists every subscription under
+   * the subscriber's uid, with the subscribed container's own uid:
+   * {@code calendar:Default:<other>}, {@code calendar:UserCreated:<other>:…},
+   * {@code calendar:<resource>}, or a bare uid for a domain calendar or a
+   * colleague's DAV-created one.
    */
   private static final Pattern     BLUEMIND_CONTAINER     = Pattern.compile("/dav/calendars/__uids__/([^/]+)/([^/]+)");
 
@@ -1239,6 +1247,12 @@ public class CaldavCalendarShareService {
                 target.userIdentityId());
       throw new CaldavShareException(NOT_SUPPORTED);
     } catch (CalDavForbiddenException e) {
+      // BlueMind lets only a manager read the list (ContainerManagement checks Manage). For a calendar eXo
+      // created that is the caller's own, so a refusal is an unreadable list; for an imported calendar it is
+      // what a subscriber to someone else's calendar gets, so it means not theirs.
+      if (target.imported()) {
+        throw new CaldavShareException(NOT_OWNED_ON_SERVER, List.of(), List.of("Manage"), e);
+      }
       throw new CaldavShareException(ACL_UNREADABLE, List.of(), List.of("Manage"), e);
     }
   }
@@ -1610,15 +1624,21 @@ public class CaldavCalendarShareService {
   }
 
   /**
-   * Whether a BlueMind collection path is the caller's own calendar: under
-   * their own uid, and either their default ({@code calendar:Default:<uid>})
-   * or a container that is not a {@code calendar:} subscription to someone
-   * else's calendar or resource. BlueMind's DAV owner and privileges are not
-   * consulted: on a subscription they name the subscriber as owner.
+   * Whether a BlueMind collection path may be the caller's own calendar, by
+   * its name: under their own uid, and a container either named for them —
+   * their default {@code calendar:Default:<uid>} or one they created
+   * {@code calendar:UserCreated:<uid>:…} — or not named with the
+   * {@code calendar:} prefix at all. A {@code calendar:} name for anyone else
+   * (a colleague's default or created calendar, a resource) is a subscription
+   * and refused here. A bare uid can still be a subscription (a domain
+   * calendar, a colleague's DAV-created one), so BlueMind's access list read
+   * next ({@link #requireBlueMindManager}) stays the authority. BlueMind's DAV
+   * owner and privileges are not consulted: on a subscription they name the
+   * subscriber as owner.
    *
    * @param canonicalHref the canonical collection href
    * @param principal the caller's recorded principal
-   * @return true when the path is the caller's own calendar
+   * @return true when the name does not rule out the caller owning it
    */
   private static boolean isOwnBlueMindCollection(String canonicalHref, String principal) {
     String uid = blueMindUidOf(principal);
@@ -1630,7 +1650,12 @@ public class CaldavCalendarShareService {
     if (container.equals(CaldavPushService.MIRROR_COLLECTION_SLUG)) {
       return false;
     }
-    return !container.regionMatches(true, 0, "calendar:", 0, 9) || container.equalsIgnoreCase("calendar:Default:" + uid);
+    if (!container.regionMatches(true, 0, "calendar:", 0, 9)) {
+      return true;
+    }
+    String userCreated = "calendar:UserCreated:" + uid + ":";
+    return container.equalsIgnoreCase("calendar:Default:" + uid)
+        || container.regionMatches(true, 0, userCreated, 0, userCreated.length()) && container.length() > userCreated.length();
   }
 
   /**

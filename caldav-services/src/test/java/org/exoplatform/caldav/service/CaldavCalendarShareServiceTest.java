@@ -1195,7 +1195,8 @@ public class CaldavCalendarShareServiceTest {
 
   /**
    * On BlueMind an imported calendar under alice's own uid — her default,
-   * {@code calendar:Default:<her uid>}, or another container of hers — is
+   * {@code calendar:Default:<her uid>}, one she created through BlueMind,
+   * {@code calendar:UserCreated:<her uid>:<uuid>}, or a bare container — is
    * offered without any REST call, and shared once BlueMind's access list
    * gives her every verb, as it lists a container's owner.
    *
@@ -1203,7 +1204,9 @@ public class CaldavCalendarShareServiceTest {
    */
   @Test
   public void anImportedBlueMindCalendarAliceOwnsIsShared() throws Exception {
-    for (String container : List.of("calendar:Default:" + FRANCOIS_UID, "3B8E5C71-2A4D-4F6B-9C1E-7D5A3B2C1F09")) {
+    for (String container : List.of("calendar:Default:" + FRANCOIS_UID,
+                                     "calendar:UserCreated:" + FRANCOIS_UID + ":6F1A2B3C-4D5E-4F60-8A7B-9C0D1E2F3A4B",
+                                     "3B8E5C71-2A4D-4F6B-9C1E-7D5A3B2C1F09")) {
       String href = "/dav/calendars/__uids__/" + FRANCOIS_UID + "/" + container;
       CalendarSync pair = onBlueMindImported(href);
       lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
@@ -1225,15 +1228,20 @@ public class CaldavCalendarShareServiceTest {
   /**
    * A subscription to someone else's BlueMind calendar is never shared, although
    * BlueMind lists it under alice's own uid and names her its owner: a
-   * {@code calendar:<other uid>} resource and a colleague's
-   * {@code calendar:Default:<their uid>} are left out of the menu and refused
-   * before any REST call.
+   * {@code calendar:<resource uid>} resource, a colleague's
+   * {@code calendar:Default:<their uid>}, one a colleague created
+   * ({@code calendar:UserCreated:<their uid>:<uuid>}), and a malformed
+   * {@code calendar:UserCreated:<her uid>:} with no calendar id are left out of
+   * the menu and refused before any REST call.
    *
    * @throws Exception never
    */
   @Test
   public void aBlueMindSubscriptionIsNeverShared() throws Exception {
-    for (String container : List.of("calendar:7E3AE6F3-5B2C-4D1E-9A8F-6C0B3D2E1F4A", "calendar:Default:" + CAMILLE_UID)) {
+    for (String container : List.of("calendar:7E3AE6F3-5B2C-4D1E-9A8F-6C0B3D2E1F4A",
+                                     "calendar:Default:" + CAMILLE_UID,
+                                     "calendar:UserCreated:" + CAMILLE_UID + ":6F1A2B3C-4D5E-4F60-8A7B-9C0D1E2F3A4B",
+                                     "calendar:UserCreated:" + FRANCOIS_UID + ":")) {
       String href = "/dav/calendars/__uids__/" + FRANCOIS_UID + "/" + container;
       CalendarSync pair = onBlueMindImported(href);
       lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
@@ -1252,7 +1260,9 @@ public class CaldavCalendarShareServiceTest {
    * An imported BlueMind calendar whose access list gives alice neither
    * {@code All} nor {@code Manage} — someone else's calendar she only reads,
    * under a bare container uid — is refused on reading its sharees and on a
-   * grant, and no {@code CS:share} is ever posted.
+   * grant, and so is one whose access list BlueMind refuses to read at all,
+   * which is what a mere subscriber gets (only a manager may read it); no
+   * {@code CS:share} is ever posted.
    *
    * @throws Exception never
    */
@@ -1260,12 +1270,17 @@ public class CaldavCalendarShareServiceTest {
   public void aBlueMindCalendarAliceCannotManageIsNeverShared() throws Exception {
     String container = "5C7E9A12-3B4D-4E6F-8A1B-2C3D4E5F6A7B";
     onBlueMindImported("/dav/calendars/__uids__/" + FRANCOIS_UID + "/" + container);
-    when(blueMindAclClient.readAcl(endpoint, container)).thenReturn(acl(expanded(CAMILLE_UID, "All"), expanded(FRANCOIS_UID, "Read")));
+    when(blueMindAclClient.readAcl(endpoint, container)).thenReturn(acl(expanded(CAMILLE_UID, "All"), expanded(FRANCOIS_UID, "Read")))
+                                                        .thenReturn(acl(expanded(CAMILLE_UID, "All"), expanded(FRANCOIS_UID, "Read")))
+                                                        .thenThrow(new CalDavForbiddenException("403"));
 
     assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
                  assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode());
     assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
                  assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob")).getCode());
+    assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+                 assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode(),
+                 "a subscriber's refused access-list read");
     verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean());
   }
 
