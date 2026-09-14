@@ -107,7 +107,11 @@ public class CaldavConnectionIdentityService {
     if (StringUtils.isBlank(principal)) {
       return null;
     }
-    return StringUtils.trimToNull(CalendarCollection.principalPathOf(principal));
+    // Taken as it is, not trimmed again: a value trimmed after decoding would
+    // no longer be the form an owner is compared in, and a principal ending in
+    // an encoded space would then equal another one.
+    String path = CalendarCollection.principalPathOf(principal);
+    return StringUtils.isBlank(path) ? null : path;
   }
 
   /**

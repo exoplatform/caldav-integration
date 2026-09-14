@@ -89,6 +89,13 @@ public class CaldavConnectionIdentityServiceTest {
     assertNull(CaldavConnectionIdentityService.canonicalPrincipal(null));
     assertNull(CaldavConnectionIdentityService.canonicalPrincipal("  "));
     assertNull(CaldavConnectionIdentityService.canonicalPrincipal("/"));
+    assertEquals("/dav/pal/alice ",
+                 CaldavConnectionIdentityService.canonicalPrincipal("/dav/pal/alice%20/"),
+                 "an encoded trailing space is kept, as the owner comparison keeps it — trimmed, it would be alice's");
+    assertEquals(new org.exoplatform.caldav.client.CalendarCollection("/c/", null, null, null, null, false, java.util.Set.of(),
+                                                                      "/dav/pal/alice%20/", false).ownerIfAnother("/dav/pal/alice/"),
+                 "/dav/pal/alice%20/",
+                 "the comparison does tell them apart, which is why the recorded form must too");
   }
 
   // ------------------------------------ recording

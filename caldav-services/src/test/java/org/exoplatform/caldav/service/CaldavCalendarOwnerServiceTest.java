@@ -116,12 +116,12 @@ public class CaldavCalendarOwnerServiceTest {
 
   private CaldavCalendarOwnerService service;
 
-  private Map<String, CalendarOwner> owners;
+  private CalendarOwnerMemo owners;
 
   @BeforeEach
   public void build() {
     service = new CaldavCalendarOwnerService(caldavOutboundService, identityManager, calDavClient, caldavConnectionIdentityService);
-    owners = new HashMap<>();
+    owners = new CalendarOwnerMemo();
   }
 
   // ------------------------------------ a colleague's eXo calendar
@@ -252,11 +252,11 @@ public class CaldavCalendarOwnerServiceTest {
 
     // Re-stubbed with doThrow: a when(...) on a mock already stubbed to throw
     // would throw from inside the when.
-    owners = new HashMap<>();
+    owners = new CalendarOwnerMemo();
     doThrow(new CalDavException("403")).when(calDavClient).readDisplayName(endpoint, ALICE);
     assertEquals("alice@stalwart.local", ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)).displayName());
 
-    owners = new HashMap<>();
+    owners = new CalendarOwnerMemo();
     doThrow(new IllegalStateException("unexpected")).when(calDavClient).readDisplayName(endpoint, ALICE);
     assertEquals("alice@stalwart.local", ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)).displayName());
   }
@@ -415,7 +415,7 @@ public class CaldavCalendarOwnerServiceTest {
     java.util.List<ch.qos.logback.classic.spi.ILoggingEvent> said;
     try (org.exoplatform.caldav.LogRecorder log = new org.exoplatform.caldav.LogRecorder(CaldavCalendarOwnerService.class)) {
       ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
-      owners = new HashMap<>();
+      owners = new CalendarOwnerMemo();
       ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
       ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/carol%40stalwart.local/default/", carol));
       said = log.events()
@@ -428,6 +428,51 @@ public class CaldavCalendarOwnerServiceTest {
     org.junit.jupiter.api.Assertions.assertTrue(said.get(0).getFormattedMessage().startsWith("2 eXo users synchronising with CalDAV server " + SERVER),
                                                 said.get(0).getFormattedMessage());
     verify(identityManager, never()).getIdentity(anyLong());
+  }
+
+  /**
+   * <b>The server's count is asked once per listing, not once per colleague.</b>
+   * It is a count over every active pair of the deployment, and it depends on
+   * the server alone: two colleagues' shares in one listing ask it once, and
+   * the next listing asks it again, since users are recorded in between.
+   */
+  @Test
+  public void theUnrecordedCountIsAskedOncePerListingWhateverTheNumberOfColleagues() {
+    String carol = "/dav/pal/carol%40stalwart.local/";
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, carol)).thenReturn(List.of(10L));
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(0L);
+    when(identityManager.getIdentity(ALICE_USER)).thenReturn(user("5", "alice", "Alice Liddell"));
+    when(identityManager.getIdentity(10L)).thenReturn(user("10", "carol", "Carol Carter"));
+
+    ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+    CalendarOwner carols = ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/carol%40stalwart.local/default/", carol));
+    verify(caldavConnectionIdentityService, times(1)).activeUsersWithoutIdentityOn(SERVER);
+
+    owners = new CalendarOwnerMemo();
+    ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+
+    assertEquals("carol", carols.username());
+    verify(caldavConnectionIdentityService, times(2)).activeUsersWithoutIdentityOn(SERVER);
+  }
+
+  /**
+   * A count that fails is not remembered: the share it was asked for is named
+   * by its principal, and the next share of the listing asks again.
+   */
+  @Test
+  public void aFailedCountIsNotRememberedWithinTheListing() {
+    String carol = "/dav/pal/carol%40stalwart.local/";
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, carol)).thenReturn(List.of(10L));
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenThrow(new IllegalStateException("database down"))
+                                                                           .thenReturn(0L);
+    when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
+    when(identityManager.getIdentity(10L)).thenReturn(user("10", "carol", "Carol Carter"));
+
+    assertEquals(CalendarOwner.named("Alice"), ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)));
+    assertEquals("carol",
+                 ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/carol%40stalwart.local/default/", carol)).username());
   }
 
   /**
@@ -460,7 +505,7 @@ public class CaldavCalendarOwnerServiceTest {
 
     assertEquals(CalendarOwner.named("Alice"), ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)));
 
-    owners = new HashMap<>();
+    owners = new CalendarOwnerMemo();
     Identity gone = user("5", "alice", "Alice Liddell");
     gone.setDeleted(true);
     when(identityManager.getIdentity(ALICE_USER)).thenReturn(gone);

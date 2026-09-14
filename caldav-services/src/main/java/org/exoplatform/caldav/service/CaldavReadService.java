@@ -18,7 +18,6 @@ package org.exoplatform.caldav.service;
 
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -110,11 +109,11 @@ public class CaldavReadService {
     List<CalendarCollection> collections = listing.collections();
     List<String> order = CalendarPalette.inStableOrder(collections.stream().map(CalendarCollection::href).toList());
     List<RemoteCalendar> calendars = new ArrayList<>();
-    // The owners found for owner principals during this one listing, so that
-    // a colleague who shared three calendars is looked up, or asked what she
-    // calls herself, once (EXO-90237, EXO-90243). Per listing on purpose: an
-    // owner is not worth a cache that outlives the request that found it.
-    Map<String, CalendarOwner> owners = new HashMap<>();
+    // What this one listing finds out about owners, so that a colleague who
+    // shared three calendars is looked up, or asked what she calls herself,
+    // once, and a server's count of unrecorded users is asked once however
+    // many colleagues share (EXO-90237, EXO-90243). Per listing on purpose.
+    CalendarOwnerMemo owners = new CalendarOwnerMemo();
     for (CalendarCollection collection : collections) {
       if (!collection.holdsEvents()) {
         // The same refusal materialisation makes, for the same reason: a
@@ -213,7 +212,7 @@ public class CaldavReadService {
                                                       account.principal(),
                                                       caldavSyncStorage.getPairs(userIdentityId, serverId(settings)));
     List<String> order = CalendarPalette.inStableOrder(listing.collections().stream().map(CalendarCollection::href).toList());
-    Map<String, CalendarOwner> owners = new HashMap<>();
+    CalendarOwnerMemo owners = new CalendarOwnerMemo();
     List<RemoteCalendar> calendars = new ArrayList<>();
     for (CalendarCollection collection : listing.collections()) {
       CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId(settings),
@@ -255,7 +254,7 @@ public class CaldavReadService {
    * @param collection the listed collection
    * @param ownership whose it is, as the classification answered
    * @param order every listed href in the palette's stable order
-   * @param owners the owners already found during this listing, by principal
+   * @param owners what this listing already found out about owners
    * @return the calendar as agenda receives it
    */
   private RemoteCalendar remoteCalendarOf(long userIdentityId,
@@ -265,7 +264,7 @@ public class CaldavReadService {
                                           CalendarCollection collection,
                                           CollectionOwnership ownership,
                                           List<String> order,
-                                          Map<String, CalendarOwner> owners) {
+                                          CalendarOwnerMemo owners) {
     boolean readOnly = !collection.writable() || ownership.isShared();
     CalendarOwner owner = caldavCalendarOwnerService.ownerOf(userIdentityId,
                                                              serverId(settings),

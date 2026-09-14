@@ -18,7 +18,6 @@ package org.exoplatform.caldav.service;
 
 import java.net.URI;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -139,11 +138,11 @@ public class CaldavCalendarOwnerService {
    * @param ownership whose the collection is, as
    *          {@link CaldavOutboundService#ownershipOf} answered
    * @param collection the listed collection
-   * @param owners the owners already found for owner principals during this
-   *          listing, keyed by principal path; read and written here, so that
-   *          two shares of one colleague cost one lookup and at most one
-   *          PROPFIND, not two, and a principal that could not be asked is
-   *          not asked again
+   * @param memo what this listing already found out about owners: read and
+   *          written here, so that two shares of one colleague cost one lookup
+   *          and at most one PROPFIND, not two, a principal that could not be
+   *          asked is not asked again, and a server's count of unrecorded users
+   *          is asked once, whatever the number of colleagues' shares
    * @return the owner, {@link CalendarOwner#NONE} for the user's own and for
    *         a share whose owner cannot be named
    */
@@ -153,7 +152,7 @@ public class CaldavCalendarOwnerService {
                                String principal,
                                CollectionOwnership ownership,
                                CalendarCollection collection,
-                               Map<String, CalendarOwner> owners) {
+                               CalendarOwnerMemo memo) {
     if (ownership == CollectionOwnership.COLLEAGUES_EXO_CALENDAR) {
       // The canonical path, as the classification asked its question: the
       // pair named is then the very one that made the collection a
@@ -164,7 +163,7 @@ public class CaldavCalendarOwnerService {
       // Only an owner that is somebody else. A collection is a share by the
       // privilege signal alone when the server withholds write while naming
       // the user as owner; naming that owner would say "shared by yourself".
-      return shareOwnedBy(viewerIdentityId, serverId, endpoint, collection.ownerIfAnother(principal), owners);
+      return shareOwnedBy(viewerIdentityId, serverId, endpoint, collection.ownerIfAnother(principal), memo);
     }
     return CalendarOwner.NONE;
   }
@@ -215,7 +214,7 @@ public class CaldavCalendarOwnerService {
    * @param endpoint the account's endpoint
    * @param ownerPath the owner principal as a server-absolute path, or null
    *          when the server named none, or named the user themself
-   * @param owners the listing's memo, keyed by principal path
+   * @param memo the listing's memo
    * @return the owner, or {@link CalendarOwner#NONE} when there is no other
    *         principal to name
    */
@@ -223,18 +222,18 @@ public class CaldavCalendarOwnerService {
                                      long serverId,
                                      CalDavEndpoint endpoint,
                                      String ownerPath,
-                                     Map<String, CalendarOwner> owners) {
+                                     CalendarOwnerMemo memo) {
     if (StringUtils.isBlank(ownerPath)) {
       return CalendarOwner.NONE;
     }
-    CalendarOwner owner = owners.get(ownerPath);
+    CalendarOwner owner = memo.ownerOf(ownerPath);
     if (owner == null) {
-      owner = connectedUserAs(viewerIdentityId, serverId, ownerPath);
+      owner = connectedUserAs(viewerIdentityId, serverId, ownerPath, memo);
       if (owner == CalendarOwner.NONE) {
         String name = StringUtils.defaultIfBlank(displayNameOf(endpoint, ownerPath), lastSegmentOf(ownerPath));
         owner = CalendarOwner.named(StringUtils.trimToNull(name));
       }
-      owners.put(ownerPath, owner);
+      memo.remember(ownerPath, owner);
     }
     return owner;
   }
@@ -262,9 +261,11 @@ public class CaldavCalendarOwnerService {
    * @param viewerIdentityId the eXo user the list is for
    * @param serverId the declared server registration
    * @param ownerPath the owner principal, not blank
+   * @param memo the listing's memo, which asks the server's count of
+   *          unrecorded users once per listing
    * @return the owner as an eXo user, or {@link CalendarOwner#NONE}
    */
-  private CalendarOwner connectedUserAs(long viewerIdentityId, long serverId, String ownerPath) {
+  private CalendarOwner connectedUserAs(long viewerIdentityId, long serverId, String ownerPath, CalendarOwnerMemo memo) {
     try {
       List<Long> users = caldavConnectionIdentityService.usersConnectedAs(serverId, ownerPath);
       if (users.size() != 1) {
@@ -280,7 +281,7 @@ public class CaldavCalendarOwnerService {
                   viewerIdentityId);
         return CalendarOwner.NONE;
       }
-      long unrecorded = caldavConnectionIdentityService.activeUsersWithoutIdentityOn(serverId);
+      long unrecorded = memo.unrecordedOn(serverId, () -> caldavConnectionIdentityService.activeUsersWithoutIdentityOn(serverId));
       if (unrecorded > 0) {
         if (incompleteServersSaid.add(serverId)) {
           LOG.info("{} eXo users synchronising with CalDAV server {} have no recorded server identity; until each of them"
