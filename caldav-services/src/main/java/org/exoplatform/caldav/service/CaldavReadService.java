@@ -146,40 +146,141 @@ public class CaldavReadService {
         // classified a share above rather than dropped on its prefix here.
         continue;
       }
-      // Read-only when the server granted no write, as before — and also when
-      // the collection is somebody else's, whichever witness said so: the
-      // server naming another owner (EXO-90235), or this deployment
-      // recognising a colleague's exported calendar (EXO-90234). It is the
-      // same classification the sweep refuses to materialise on, so a calendar
-      // the sweep will never make the user's own is never offered here as one
-      // they could write into. The three paths — skip, list, serve — agree
-      // because they share the one question rather than three spellings of it.
-      boolean readOnly = !collection.writable() || ownership.isShared();
-      // Shared is said beside read-only, not folded into it (EXO-90237):
-      // agenda groups the shares under "Shared with me" and locks the
-      // read-only, and a calendar of the user's own the server will not let
-      // them write is the second without being the first. The owner is named
-      // from the witness that made it a share — the colleague's pair, or the
-      // principal the server returned — and is nobody when neither can say.
-      CalendarOwner owner = caldavCalendarOwnerService.ownerOf(serverId(settings),
-                                                               endpoint,
-                                                               listing.principal(),
-                                                               ownership,
-                                                               collection,
-                                                               principalNames);
-      calendars.add(new RemoteCalendar(collection.href(),
-                                       collection.displayName(),
-                                       CalendarPalette.colourOf(collection.color(),
-                                                                collection.href(),
-                                                                order.indexOf(collection.href()),
-                                                                order.size()),
-                                       readOnly,
-                                       ownership.isShared(),
-                                       owner.identityId(),
-                                       owner.username(),
-                                       owner.displayName()));
+      calendars.add(remoteCalendarOf(settings, endpoint, listing, collection, ownership, order, principalNames));
     }
     return new RemoteCalendarsRead(calendars, listing.failed());
+  }
+
+  /**
+   * The named collections of the connected account, bound or not, each
+   * classified and named as {@link #listCalendars} would have listed it
+   * (EXO-90239).
+   *
+   * <p>
+   * What the hidden-calendars listing asks. A hidden calendar is bound by
+   * construction — the binding is what hides it — so {@link #listCalendars},
+   * which serves the unbound, can never describe one; and the drawer that
+   * offers it back needs what the list would have said about it: the name
+   * the server gives it today, whether it is a share, and whose. Answered
+   * from the same listing, the same classification and the same owner lookup
+   * the list uses, so a calendar reads the same on its way out of the agenda
+   * as on its way back in. Neither the bound filter nor the mirror exclusion
+   * applies: the caller names what it wants to hear about, and hears about
+   * those the server still lists. A collection absent from the answer is one
+   * the account no longer holds — or, when {@code failed} says so, one
+   * nothing could be asked about.
+   *
+   * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
+   * @param hrefs the collection paths to describe, canonical
+   * @return the collections the server still lists among those named, in
+   *         the shape of the calendar list, beside the flag saying whether
+   *         the listing failed; empty and unfailed when nothing was asked or
+   *         no account is connected
+   */
+  public RemoteCalendarsRead describeCollections(long userIdentityId, String username, Set<String> hrefs) {
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (!connected(settings) || hrefs == null || hrefs.isEmpty()) {
+      return RemoteCalendarsRead.empty();
+    }
+    CalDavEndpoint endpoint;
+    CollectionListing account;
+    try {
+      endpoint = endpointOf(settings, username);
+      account = collectionsOf(endpoint, settings);
+    } catch (RuntimeException e) {
+      // Resolving the endpoint happens before the listing's own catch, and
+      // fails on its own: no server declared any more, a login no URL can
+      // carry, a declared URL that is not one. The hidden-calendars row is a
+      // settings screen that must render whatever the account is doing, so
+      // this is a listing that failed — the rule the name lookup it replaced
+      // always applied — never an exception the endpoint answers as a 500.
+      LOG.debug("The collections of user {} could not be described", userIdentityId, e);
+      return new RemoteCalendarsRead(List.of(), true);
+    }
+    if (account.failed()) {
+      return new RemoteCalendarsRead(List.of(), true);
+    }
+    // The user's pairs travel with the listing for the same reason they do
+    // in readableCollections: the classification reads them to tell the
+    // user's own exported calendar from a colleague's.
+    CollectionListing listing = new CollectionListing(account.collections()
+                                                             .stream()
+                                                             .filter(collection -> hrefs.contains(CaldavSyncStorage.canonicalHref(collection.href())))
+                                                             .toList(),
+                                                      false,
+                                                      account.principal(),
+                                                      caldavSyncStorage.getPairs(userIdentityId, serverId(settings)));
+    List<String> order = CalendarPalette.inStableOrder(listing.collections().stream().map(CalendarCollection::href).toList());
+    Map<String, String> principalNames = new HashMap<>();
+    List<RemoteCalendar> calendars = new ArrayList<>();
+    for (CalendarCollection collection : listing.collections()) {
+      CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId(settings),
+                                                                        listing.principal(),
+                                                                        listing.pairs(),
+                                                                        collection);
+      calendars.add(remoteCalendarOf(settings, endpoint, listing, collection, ownership, order, principalNames));
+    }
+    return new RemoteCalendarsRead(calendars, false);
+  }
+
+  /**
+   * One listed collection in the shape agenda expects, whose it is already
+   * settled.
+   *
+   * <p>
+   * Read-only when the server granted no write, as before — and also when
+   * the collection is somebody else's, whichever witness said so: the server
+   * naming another owner (EXO-90235), or this deployment recognising a
+   * colleague's exported calendar (EXO-90234). It is the same classification
+   * the sweep refuses to materialise on, so a calendar the sweep will never
+   * make the user's own is never offered here as one they could write into.
+   * The three paths — skip, list, serve — agree because they share the one
+   * question rather than three spellings of it.
+   *
+   * <p>
+   * Shared is said beside read-only, not folded into it (EXO-90237): agenda
+   * groups the shares under "Shared with me" and locks the read-only, and a
+   * calendar of the user's own the server will not let them write is the
+   * second without being the first. The owner is named from the witness that
+   * made it a share — the colleague's pair, or the principal the server
+   * returned — and is nobody when neither can say.
+   *
+   * @param settings the connected account
+   * @param endpoint the declared server
+   * @param listing the listing the collection came from, for its principal
+   * @param collection the listed collection
+   * @param ownership whose it is, as the classification answered
+   * @param order every listed href in the palette's stable order
+   * @param principalNames the owner names already read during this listing
+   * @return the calendar as agenda receives it
+   */
+  private RemoteCalendar remoteCalendarOf(CaldavUserSetting settings,
+                                          CalDavEndpoint endpoint,
+                                          CollectionListing listing,
+                                          CalendarCollection collection,
+                                          CollectionOwnership ownership,
+                                          List<String> order,
+                                          Map<String, String> principalNames) {
+    boolean readOnly = !collection.writable() || ownership.isShared();
+    CalendarOwner owner = caldavCalendarOwnerService.ownerOf(serverId(settings),
+                                                             endpoint,
+                                                             listing.principal(),
+                                                             ownership,
+                                                             collection,
+                                                             principalNames);
+    return new RemoteCalendar(collection.href(),
+                              collection.displayName(),
+                              CalendarPalette.colourOf(collection.color(),
+                                                       collection.href(),
+                                                       order.indexOf(collection.href()),
+                                                       order.size()),
+                              readOnly,
+                              ownership.isShared(),
+                              owner.identityId(),
+                              owner.username(),
+                              owner.displayName());
   }
 
   /**
@@ -392,7 +493,10 @@ public class CaldavReadService {
    * A binding of <em>any</em> state counts, tombstones included. A tombstone
    * means the user deleted the eXo calendar, and the dialog that asked them
    * promised eXo would "simply stop showing it" — putting the collection back
-   * under Remote would break that promise in the plainest way.
+   * under Remote would break that promise in the plainest way. A hidden
+   * share ({@code CalendarSyncStatus#HIDDEN_SHARE}, EXO-90239) counts by the
+   * same rule and for the same reason: it is a pair that exists precisely so
+   * that this filter drops the collection and its events stop being served.
    *
    * <p>
    * A collection with no binding at all keeps being served: a materialisation

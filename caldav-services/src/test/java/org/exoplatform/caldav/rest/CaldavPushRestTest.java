@@ -52,6 +52,7 @@ import org.exoplatform.caldav.service.CaldavPushService;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.caldav.service.CaldavDeletionService;
 import org.exoplatform.caldav.model.HiddenCalendar;
+import org.exoplatform.caldav.rest.model.HideCalendarRequest;
 import org.exoplatform.caldav.service.MirrorTarget;
 import org.exoplatform.services.security.ConversationState;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -459,13 +460,89 @@ public class CaldavPushRestTest {
     assertEquals(HttpStatus.NOT_FOUND, refused.getStatusCode());
   }
 
+  // ------------------------------------ hiding a share, EXO-90239
+
+  /**
+   * Hiding names the caller, their login and the calendar as the body sent
+   * it — whose account it is hidden on is never read from the request — and
+   * answers 204.
+   */
+  @Test
+  public void hidingNamesTheCallerAndTheCalendarAsSent() throws Exception {
+    withCurrentUser();
+
+    ResponseEntity<Void> response = caldavPushRest.hideCalendar(new HideCalendarRequest(ALICES));
+
+    assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
+    verify(caldavDeletionService).hideShare(42L, USER_NAME, ALICES);
+  }
+
+  /**
+   * A calendar of the user's own is a 400 whose reason is the code the
+   * browser renders — the REST contract for a parameter the service refused.
+   */
+  @Test
+  public void hidingACalendarOfOnesOwnIsABadRequestCarryingTheCode() throws Exception {
+    withCurrentUser();
+    doThrow(new IllegalArgumentException(CaldavDeletionService.NOT_A_SHARE)).when(caldavDeletionService)
+                                                                             .hideShare(anyLong(), anyString(), anyString());
+
+    ResponseStatusException refused = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavPushRest.hideCalendar(new HideCalendarRequest("/dav/calendars/root/work/")));
+
+    assertEquals(HttpStatus.BAD_REQUEST, refused.getStatusCode());
+    assertEquals(CaldavDeletionService.NOT_A_SHARE, refused.getReason());
+  }
+
+  /**
+   * A calendar the user's listing no longer holds is a 404 and not an
+   * incident: a share revoked between the listing and the click.
+   */
+  @Test
+  public void hidingACalendarTheListingNoLongerHoldsIsNotFound() throws Exception {
+    withCurrentUser();
+    doThrow(new ObjectNotFoundException("gone")).when(caldavDeletionService).hideShare(anyLong(), anyString(), anyString());
+
+    ResponseStatusException refused = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavPushRest.hideCalendar(new HideCalendarRequest(ALICES)));
+
+    assertEquals(HttpStatus.NOT_FOUND, refused.getStatusCode());
+  }
+
+  /**
+   * No body at all reaches the service as nothing named, which the service
+   * refuses in its own words; the endpoint does not invent a calendar.
+   */
+  @Test
+  public void hidingWithNoBodyHandsTheServiceNothingNamed() throws Exception {
+    withCurrentUser();
+
+    caldavPushRest.hideCalendar(null);
+
+    verify(caldavDeletionService).hideShare(42L, USER_NAME, null);
+  }
+
+  /**
+   * The two failures the service raises as push failures keep the statuses
+   * their codes already map to: no connected account is a state of this
+   * account, an account that could not be listed is the server behind it.
+   */
+  @Test
+  public void hidingOnAnUnusableAccountMapsLikeEveryOtherPushFailure() {
+    assertEquals(HttpStatus.CONFLICT, statusOf(CaldavPushService.NOT_CONNECTED));
+    assertEquals(HttpStatus.BAD_GATEWAY, statusOf(CaldavDeletionService.ACCOUNT_UNAVAILABLE));
+  }
+
+  /** Alice's calendar as the list spells it: percent-encoded login, trailing slash. */
+  private static final String ALICES = "/dav/cal/alice%40stalwart.local/default/";
+
   /**
    * The hidden calendars are handed through as the service listed them.
    */
   @Test
   public void theHiddenCalendarsAreHandedThrough() {
     withCurrentUser();
-    List<HiddenCalendar> hidden = List.of(new HiddenCalendar(9L, "Family"));
+    List<HiddenCalendar> hidden = List.of(new HiddenCalendar(9L, "Family"), new HiddenCalendar(12L, "Alice", true, "Alice Martin"));
     when(caldavDeletionService.listHidden(42L, USER_NAME)).thenReturn(hidden);
 
     assertEquals(hidden, caldavPushRest.hiddenCalendars());
