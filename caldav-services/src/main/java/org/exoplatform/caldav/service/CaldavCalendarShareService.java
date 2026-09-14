@@ -490,6 +490,12 @@ public class CaldavCalendarShareService {
                                     long calendarId,
                                     String query) throws ObjectNotFoundException, IllegalAccessException {
     ShareTarget target = targetOf(userIdentityId, username, calendarId);
+    // The same capability check its siblings make: on a server where eXo
+    // offers no sharing, who is connected to that server is not listed either.
+    onServer(() -> {
+      requireOffered(target);
+      return null;
+    });
     String recorded = caldavConnectionIdentityService.principalOf(userIdentityId, target.serverId());
     String ownerPrincipal = recorded != null ? recorded : onServer(() -> requiredOwnerPrincipal(target));
     String needle = StringUtils.lowerCase(StringUtils.trimToNull(query), Locale.ROOT);
@@ -879,9 +885,13 @@ public class CaldavCalendarShareService {
     String name = null;
     try {
       name = calDavClient.readDisplayName(target.endpoint(), href);
-    } catch (CalDavAuthenticationException e) {
-      throw e;
     } catch (CalDavException e) {
+      // A refusal included, credentials or not: the name is cosmetic, it is
+      // asked after the list was read with the same credentials, and in a
+      // grant or a revoke after the write was read back. A server answering
+      // 403 to a PROPFIND on somebody else's principal — read as a credential
+      // refusal on read verbs — must not turn a change it applied into a
+      // failure.
       LOG.debug("The principal {} did not say what it is called", href, e);
     }
     return StringUtils.defaultIfBlank(StringUtils.trimToNull(name),

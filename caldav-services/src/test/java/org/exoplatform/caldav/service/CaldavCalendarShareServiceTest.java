@@ -649,6 +649,73 @@ public class CaldavCalendarShareServiceTest {
     assertNull(zoe.users().isEmpty() ? null : zoe.users());
   }
 
+  /**
+   * The shape Stalwart actually reads back for a read grant — {@code DAV:read}
+   * with {@code read-current-user-privilege-set} ({@code acl.rs} 558-561), for
+   * a grant eXo made and for one made elsewhere alike. Bob (eXo's) and carol
+   * are listed as viewers eXo may remove, and sharing with a third colleague
+   * writes both back beside the new grant instead of refusing: if that pair
+   * stopped counting as read-only, every second share and every removal on
+   * Stalwart would be refused.
+   */
+  @Test
+  public void stalwartsReadGrantShapeIsReadOnlyForTheListingAndTheWriteBack() throws Exception {
+    Set<String> stalwartRead = Set.of("{DAV:}read", "{DAV:}read-current-user-privilege-set");
+    AccessControlEntry bobs = new AccessControlEntry(AcePrincipal.href("/dav/pal/bob%40stalwart.local/"), false, false, stalwartRead, false,
+                                                     null);
+    AccessControlEntry carols = new AccessControlEntry(AcePrincipal.href("/dav/pal/carol%40stalwart.local/"), false, false, stalwartRead,
+                                                       false, null);
+    AccessControlEntry daves = AccessControlEntry.readGrantTo("/dav/pal/dave%40stalwart.local/");
+    when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, "dave")).thenReturn(user(DAVE, "dave", "Dave Test"));
+    when(caldavConnectionIdentityService.principalOf(DAVE, STALWART)).thenReturn("/dav/pal/dave@stalwart.local");
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(bobs, carols), Set.of()),
+                                                                CollectionAcl.of(List.of(bobs, carols), Set.of()),
+                                                                CollectionAcl.of(List.of(bobs, carols, daves), Set.of()));
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<AccessControlEntry>> written = ArgumentCaptor.forClass(List.class);
+    when(calDavClient.writeAcl(eq(endpoint), any(), written.capture())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    List<CalendarSharee> listed = service.listShares(ALICE, "alice", CALENDAR).sharees();
+    service.grant(ALICE, "alice", CALENDAR, "dave");
+
+    assertEquals(List.of(ShareAccess.READ, ShareAccess.READ), listed.stream().map(CalendarSharee::access).toList());
+    assertTrue(listed.stream().allMatch(CalendarSharee::removable));
+    assertEquals(List.of(bobs, carols, AccessControlEntry.readGrantTo("/dav/pal/dave%40stalwart.local/")), written.getValue());
+  }
+
+  /**
+   * A server refusing, as a credential failure, to say what somebody else's
+   * principal is called does not fail the listing — nor a change it already
+   * applied: the name falls back to the principal's path.
+   */
+  @Test
+  public void aPrincipalsNameRefusedAsCredentialsFallsBackToItsPath() throws Exception {
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(AccessControlEntry.readGrantTo("/dav/pal/zoe%40partner.example/")),
+                                                                                 Set.of()));
+    when(caldavConnectionIdentityService.usersConnectedAs(STALWART, "/dav/pal/zoe@partner.example")).thenReturn(List.of());
+    when(calDavClient.readDisplayName(any(), anyString())).thenThrow(new CalDavAuthenticationException("403 on a read"));
+
+    CalendarSharee zoe = service.listShares(ALICE, "alice", CALENDAR).sharees().get(0);
+
+    assertEquals("zoe@partner.example", zoe.displayName());
+  }
+
+  /**
+   * On a server where eXo offers no sharing, the colleagues connected to it are
+   * not listed either — the same check the listing, the grant and the revoke
+   * make.
+   */
+  @Test
+  public void candidatesAreNotListedWhereSharingIsNotOffered() {
+    when(calDavClient.options(endpoint, COLLECTION)).thenReturn(DavOptions.of(List.of("1, access-control, calendarserver-sharing"),
+                                                                              List.of("ACL")));
+
+    CaldavShareException refused = assertThrows(CaldavShareException.class, () -> service.candidates(ALICE, "alice", CALENDAR, null));
+
+    assertEquals(CaldavCalendarShareService.NOT_SUPPORTED, refused.getCode());
+    verify(caldavConnectionIdentityService, never()).principalsOn(anyLong());
+  }
+
   // ---------------------------------------------------------------- candidates
 
   /**

@@ -257,7 +257,9 @@ public class HttpCalDavClientShareTest {
     assertEquals(AcePrincipal.href("/dav/pal/carol%40stalwart.local/"), carol.principal());
     assertFalse(carol.deny());
     assertFalse(carol.inverted());
-    assertEquals(Set.of(AccessControlEntry.READ), carol.privileges());
+    assertEquals(Set.of(AccessControlEntry.READ, "{DAV:}read-current-user-privilege-set"), carol.privileges(),
+                 "Stalwart reads a read grant back with read-current-user-privilege-set beside it");
+    assertTrue(carol.grantsReadOnly());
     assertTrue(carol.isModifiable());
     assertTrue(carol.appliesTo("/dav/pal/carol@stalwart.local"), "compared in the canonical form a principal is recorded in");
     assertTrue(acl.currentUserPrivileges().contains("{DAV:}write-acl"));
