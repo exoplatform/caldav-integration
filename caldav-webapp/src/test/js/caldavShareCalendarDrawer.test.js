@@ -124,7 +124,9 @@ describe('CaldavShareCalendarDrawer', () => {
     expect(opened).toBe(1);
     expect(caldavConnectorService.getCalendarShares).toHaveBeenCalledWith(12);
     expect(caldavConnectorService.getShareCandidates).toHaveBeenCalledWith(12);
-    expect(wrapper.text()).toContain('caldav.share.drawer.title(Work)');
+    expect(wrapper.text()).toContain('caldav.share.drawer.title');
+    expect(wrapper.text()).not.toContain('caldav.share.drawer.title(');
+    expect(wrapper.find('.caldav-share-calendar-name').text()).toBe('Work');
     expect(wrapper.text()).toContain('caldav.share.drawer.sameServerOnly');
     expect(wrapper.vm.nameOf(BOB)).toBe('Bob Test');
     expect(wrapper.vm.accessOf(BOB)).toBe('caldav.share.access.read');

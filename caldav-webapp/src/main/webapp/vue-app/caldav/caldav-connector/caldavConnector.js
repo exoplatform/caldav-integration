@@ -219,7 +219,7 @@ const caldavConnector = {
 
   /**
    * What this connector adds to the menu of the user's own calendars in
-   * agenda's left panel (EXO-90253): "Share…", on each calendar the platform
+   * agenda's left panel (EXO-90253): "Share", on each calendar the platform
    * says can be shared from eXo — owned, exported to the connected account, on
    * a server where granting is verified. Agenda asks connectors declaring this
    * and `runCalendarAction`, and draws the labels as given.
@@ -245,7 +245,7 @@ const caldavConnector = {
   },
 
   /**
-   * Runs an action `calendarActions` offered. "Share…" opens the share drawer
+   * Runs an action `calendarActions` offered. "Share" opens the share drawer
    * of this add-on, which lives in a Vue app of its own: the request crosses
    * as a document event, the one signal that reaches it from agenda's app.
    *

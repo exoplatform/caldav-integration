@@ -17,7 +17,7 @@
 import caldavConnector, {createCaldavConnector} from '../../main/webapp/vue-app/caldav/caldav-connector/caldavConnector.js';
 
 /*
- * EXO-90253. The contract agenda's calendar menu builds "Share…" against:
+ * EXO-90253. The contract agenda's calendar menu builds "Share" against:
  * `calendarActions()` answers {calendarId: [{id, label}]} for the calendars
  * the platform says are shareable, with the label from the CalDAV bundle, and
  * never rejects; `runCalendarAction(id, calendar)` opens the share drawer by
@@ -52,14 +52,14 @@ describe('sharing a calendar through the CalDAV connector', () => {
   it('offers Share on each shareable calendar, labelled from the bundle', async () => {
     const fetch = route({
       '/caldav/rest/calendars/shareable': {ok: true, json: () => Promise.resolve({calendarIds: [12, 14]})},
-      'locale.portlet.Caldav': {ok: true, json: () => Promise.resolve({'caldav.share.menu': 'Partager…'})},
+      'locale.portlet.Caldav': {ok: true, json: () => Promise.resolve({'caldav.share.menu': 'Partager'})},
     });
 
     const actions = await caldavConnector.calendarActions();
 
     expect(actions).toEqual({
-      12: [{id: 'caldavShareCalendar', label: 'Partager…', icon: 'fa-share-alt'}],
-      14: [{id: 'caldavShareCalendar', label: 'Partager…', icon: 'fa-share-alt'}],
+      12: [{id: 'caldavShareCalendar', label: 'Partager', icon: 'fa-share-alt'}],
+      14: [{id: 'caldavShareCalendar', label: 'Partager', icon: 'fa-share-alt'}],
     });
     expect(fetch.mock.calls.find(([url]) => url.includes('/shareable'))[1].credentials).toBe('include');
   });
@@ -123,7 +123,7 @@ describe('sharing a calendar through the CalDAV connector', () => {
   it('makes one request when agenda asks every per-server descriptor at once', async () => {
     const fetch = route({
       '/caldav/rest/calendars/shareable': {ok: true, json: () => Promise.resolve({calendarIds: [12]})},
-      'locale.portlet.Caldav': {ok: true, json: () => Promise.resolve({'caldav.share.menu': 'Share…'})},
+      'locale.portlet.Caldav': {ok: true, json: () => Promise.resolve({'caldav.share.menu': 'Share'})},
     });
     const stalwart = createCaldavConnector({id: 1, providerName: 'agenda.caldavCalendar.1', serverUrl: 'https://s/'}, 0, null);
     const bluemind = createCaldavConnector({id: 2, providerName: 'agenda.caldavCalendar.2', serverUrl: 'https://b/'}, 1, null);

@@ -492,7 +492,7 @@ function codedRefusal(resp) {
 }
 
 /**
- * The ids of the user's own calendars agenda may offer "Share…" on
+ * The ids of the user's own calendars agenda may offer "Share" on
  * (EXO-90253): owned, exported by eXo to the connected CalDAV account, on a
  * server where granting is verified.
  *

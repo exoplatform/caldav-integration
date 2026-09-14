@@ -22,10 +22,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     disable-pull-to-refresh
     @closed="opened = false">
     <template slot="title">
-      {{ $t('caldav.share.drawer.title', {0: calendarName}) }}
+      {{ $t('caldav.share.drawer.title') }}
     </template>
     <template slot="content">
       <div class="pa-4">
+        <!-- The title is the bare verb, so the calendar being shared is named here, as in agenda's Publish drawer. -->
+        <p class="font-weight-bold mb-2 caldav-share-calendar-name">{{ calendarName }}</p>
         <div class="text-subtitle mb-4">
           {{ $t('caldav.share.drawer.about') }}
         </div>
