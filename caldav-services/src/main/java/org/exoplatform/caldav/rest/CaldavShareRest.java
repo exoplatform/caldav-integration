@@ -209,7 +209,7 @@ public class CaldavShareRest {
   @Secured("users")
   @Operation(summary = "Lists the colleagues a calendar of the user's can be shared with",
       description = "eXo users connected to the same CalDAV server under another login, by full name. The server is asked "
-          + "one OPTIONS to confirm it offers sharing; the colleagues are read from eXo's own record of each connection, and "
+          + "what the collection advertises (an OPTIONS, and a PROPFIND where the OPTIONS names no DAV classes) to confirm it offers sharing; the colleagues are read from eXo's own record of each connection, and "
           + "the server is asked who the user is only when that is not recorded yet.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The candidates, possibly none"),
       @ApiResponse(responseCode = "400", description = "A calendar with no collection eXo created"),

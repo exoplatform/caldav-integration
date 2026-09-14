@@ -119,8 +119,8 @@ public class HttpCalDavClientShareTest {
   /**
    * BlueMind's DAV header, CAPTURED on 2026-08-20
    * ({@code caldav-webapp/src/test/js/fixtures/bluemind-principal.captured.xml:10}),
-   * as its PROPFIND answers carry it: BlueMind's {@code OPTIONS}, answered by
-   * its nginx front, is a bare 204 with no {@code DAV} header
+   * as its PROPFIND answers carry it: BlueMind's {@code OPTIONS} comes back as
+   * a bare 204 with no {@code DAV} header, answered in front of its DAV server
    * ({@code bluemind-options-bare-204.http}).
    */
   private static final String   BLUEMIND_DAV    =
@@ -232,6 +232,11 @@ public class HttpCalDavClientShareTest {
     assertEquals(SharingMechanism.BLUEMIND_SHARE, SharingMechanism.of(bluemind, BLUEMIND_COLLECTION));
     assertTrue(SharingMechanism.of(bluemind, BLUEMIND_COLLECTION).isOffered());
     assertEquals(SharingMechanism.BLUEMIND_SHARE,
+                 SharingMechanism.of(DavOptions.of(List.of(BLUEMIND_DAV),
+                                                   List.of("ACL, COPY, DELETE, GET, HEAD, LOCK, MKCOL, OPTIONS, PROPFIND, PROPPATCH, PUT, REPORT, UNLOCK")),
+                                     BLUEMIND_COLLECTION),
+                 "an OPTIONS reaching BlueMind's own OptionsProtocol lists ACL too: the vendor sharing rule still wins");
+    assertEquals(SharingMechanism.BLUEMIND_SHARE,
                  SharingMechanism.of(bluemind, "https://bm.example.com" + StringUtils.stripEnd(BLUEMIND_COLLECTION, "/")),
                  "an absolute href and a missing trailing slash are the same collection");
 
@@ -284,7 +289,7 @@ public class HttpCalDavClientShareTest {
   }
 
   /**
-   * BlueMind behind nginx: the OPTIONS answer is a bare 204, no {@code DAV}
+   * BlueMind: the OPTIONS answer is a bare 204, no {@code DAV}
    * and no {@code Allow} header (the rig, 2026-09-14,
    * {@code bluemind-options-bare-204.http}), which alone selects nothing. The
    * classes are then read from the {@code DAV} header of a depth-0 PROPFIND of
@@ -304,8 +309,6 @@ public class HttpCalDavClientShareTest {
 
     DavOptions capabilities = client.capabilities(endpoint, BLUEMIND_COLLECTION);
 
-    assertEquals(SharingMechanism.NONE, SharingMechanism.of(DavOptions.of(List.of(), List.of()), BLUEMIND_COLLECTION),
-                 "the bare 204 alone offers nothing: this is the bug the PROPFIND fixes");
     assertEquals(2, sent.size());
     assertEquals("OPTIONS", sent.get(0).method());
     HttpRequest propfind = sent.get(1);
@@ -336,7 +339,10 @@ public class HttpCalDavClientShareTest {
 
     answerFromTranscript("bluemind-options-bare-204.http");
     answers.add(response(207, Map.of(), ""));
-    assertTrue(client.capabilities(endpoint, COLLECTION).davTokens().isEmpty());
+    DavOptions nothing = client.capabilities(endpoint, BLUEMIND_COLLECTION);
+    assertTrue(nothing.davTokens().isEmpty());
+    assertEquals(SharingMechanism.NONE, SharingMechanism.of(nothing, BLUEMIND_COLLECTION),
+                 "BlueMind's bare 204 with no DAV header anywhere offers nothing: the classes are what selects it");
 
     answerFromTranscript("bluemind-options-bare-204.http");
     answers.add(response(401, Map.of(), ""));
