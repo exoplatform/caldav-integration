@@ -30,6 +30,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -44,6 +45,7 @@ import org.exoplatform.caldav.model.CalendarSyncState;
 import org.exoplatform.caldav.model.HiddenCalendar;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.caldav.model.ObjectSync;
+import org.exoplatform.caldav.rest.model.HideCalendarRequest;
 import org.exoplatform.caldav.service.CaldavPushException;
 import org.exoplatform.caldav.service.CaldavDeletionService;
 import org.exoplatform.caldav.service.CaldavEventPropagationService;
@@ -333,11 +335,58 @@ public class CaldavPushRest {
   @GetMapping("/hidden-calendars")
   @Secured("users")
   @Operation(summary = "Lists the calendars the user hid",
-      description = "A hidden calendar is one deleted in eXo while its remote counterpart was kept. Nothing on "
-          + "screen shows it any more, so this is the only way back to it.")
+      description = "Two kinds, told apart by `shared`: a calendar deleted in eXo while its remote counterpart "
+          + "was kept, and a calendar somebody shared with the user that they chose not to see — named with "
+          + "whoever shared it, when that can be told. Nothing on screen shows either any more, so this is the "
+          + "only way back to them.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The hidden calendars, possibly none") })
   public List<HiddenCalendar> hiddenCalendars() {
     return caldavDeletionService.listHidden(currentUser(), currentLogin());
+  }
+
+  /**
+   * Hides a calendar shared with the caller.
+   *
+   * <p>
+   * The body names the calendar as the calendar list answered it and nothing
+   * else; whose account it is hidden on comes from the conversation state.
+   * The service matches the id against the caller's own current listing and
+   * refuses anything that is not a share of theirs, so a caller can hide
+   * exactly what they can see — and nothing they cannot.
+   *
+   * @param request the calendar to hide
+   * @return an empty 204, also when the calendar was hidden already
+   */
+  @PostMapping("/hidden-calendars")
+  @Secured("users")
+  @Operation(summary = "Hides a calendar shared with the user",
+      description = "Records that the user does not want to see a calendar somebody shared with them. It "
+          + "leaves the remote calendars and its events stop being served until it is shown again; nothing is "
+          + "created in eXo and nothing is written to the server. The id must be one the calendar list answered "
+          + "this user as shared. Hiding a calendar already hidden succeeds: the end state asked for holds.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Hidden, or hidden already"),
+      @ApiResponse(responseCode = "400", description = "No calendar named, or the calendar is the user's own; the "
+          + "body's message is the code"),
+      @ApiResponse(responseCode = "404", description = "The user's listing holds no such calendar"),
+      @ApiResponse(responseCode = "409", description = "No connected account"),
+      @ApiResponse(responseCode = "502", description = "The account's calendars could not be listed") })
+  public ResponseEntity<Void> hideCalendar(@RequestBody(required = false)
+                                           HideCalendarRequest request) {
+    String calendarId = request == null ? null : request.calendarId();
+    try {
+      caldavDeletionService.hideShare(currentUser(), currentLogin(), calendarId);
+      return ResponseEntity.noContent().build();
+    } catch (ObjectNotFoundException e) {
+      // Not an incident: a list that moved under the user — a share revoked
+      // between the listing and the click.
+      LOG.debug("User {} asked to hide {}, which their listing no longer holds", currentUser(), calendarId, e);
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      // The message is the code the browser renders — the calendar is the
+      // user's own, or none was named.
+      LOG.debug("User {} asked to hide {}, refused as {}", currentUser(), calendarId, e.getMessage());
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
   }
 
   /**
@@ -349,9 +398,11 @@ public class CaldavPushRest {
   @DeleteMapping("/hidden-calendars/{pairId}")
   @Secured("users")
   @Operation(summary = "Shows a hidden calendar again",
-      description = "Lifts the tombstone and synchronises, so the collection is materialised again straight "
-          + "away rather than surfacing as an unbound remote calendar until the next run. It comes back as a "
-          + "new calendar, not as the deleted one restored.")
+      description = "For a calendar deleted in eXo: lifts the tombstone and synchronises, so the collection is "
+          + "materialised again straight away rather than surfacing as an unbound remote calendar until the "
+          + "next run. It comes back as a new calendar, not as the deleted one restored. For a hidden share: "
+          + "drops the record, and the calendar is back under the remote calendars on the next listing — "
+          + "nothing is synchronised, since a share is never materialised.")
   @ApiResponses(value = { @ApiResponse(responseCode = "204", description = "Lifted"),
       @ApiResponse(responseCode = "403", description = "Not this user's calendar"),
       @ApiResponse(responseCode = "404", description = "No such hidden calendar") })

@@ -15,42 +15,51 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-list-item v-if="connected">
-    <v-list-item-content>
-      <!-- text-color, matching the E-mail and calendar rows of this page -->
-      <v-list-item-title class="text-color">
-        {{ $t('caldav.deviceSetup.title') }}
-      </v-list-item-title>
-      <!--
-        No vertical margin, like its sibling rows: in the healthy case this is
-        the ONLY nested row under My Calendars — its siblings only appear when
-        something needs attention — so it has to sit like a native row of the
-        page, not like the survivor of a list.
-      -->
-      <v-list-item-subtitle>
-        <span>
-          {{ $t('caldav.deviceSetup.subtitle') }}
-        </span>
-      </v-list-item-subtitle>
-    </v-list-item-content>
-    <v-list-item-action>
-      <!--
-        The pencil its sibling rows use, not a worded button: every row this
-        section contributes opens a drawer the same way, and one of them
-        shouting its verb made it read as the important one.
-      -->
-      <v-btn
-        :aria-label="$t('caldav.deviceSetup.action')"
-        :title="$t('caldav.deviceSetup.action')"
-        icon
-        @click="$root.$emit('open-caldav-device-setup-drawer')">
-        <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
-      </v-btn>
-    </v-list-item-action>
+  <div>
+    <v-list-item v-if="connected">
+      <v-list-item-content>
+        <!-- text-color, matching the E-mail and calendar rows of this page -->
+        <v-list-item-title class="text-color">
+          {{ $t('caldav.deviceSetup.title') }}
+        </v-list-item-title>
+        <!--
+          No vertical margin, like its sibling rows: in the healthy case this is
+          the ONLY nested row under My Calendars — its siblings only appear when
+          something needs attention — so it has to sit like a native row of the
+          page, not like the survivor of a list.
+        -->
+        <v-list-item-subtitle>
+          <span>
+            {{ $t('caldav.deviceSetup.subtitle') }}
+          </span>
+        </v-list-item-subtitle>
+      </v-list-item-content>
+      <v-list-item-action>
+        <!--
+          The pencil its sibling rows use, not a worded button: every row this
+          section contributes opens a drawer the same way, and one of them
+          shouting its verb made it read as the important one.
+        -->
+        <v-btn
+          :aria-label="$t('caldav.deviceSetup.action')"
+          :title="$t('caldav.deviceSetup.action')"
+          icon
+          @click="$root.$emit('open-caldav-device-setup-drawer')">
+          <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
+        </v-btn>
+      </v-list-item-action>
+    </v-list-item>
+    <!--
+      The drawer lives beside the row, not inside it, for the reason the
+      hidden-calendars row gives: a drawer destroyed while open leaves
+      exo-drawer's page overlay behind with nothing able to dismiss it, and
+      this row goes away the moment the account stops being connected. The
+      props tolerate a missing setting, since the drawer now outlives the row.
+    -->
     <caldav-device-setup-drawer
       :server-url="deviceUrl"
-      :username="setting.username" />
-  </v-list-item>
+      :username="setting && setting.username || ''" />
+  </div>
 </template>
 
 <script>

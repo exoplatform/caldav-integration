@@ -71,6 +71,32 @@ public enum CalendarSyncStatus {
    * an interrupted deletion is visible as unfinished rather than indistinguishable
    * from one that never started.
    */
-  DELETING
+  DELETING,
+
+  /**
+   * The user hid a calendar somebody shared with them (EXO-90239).
+   *
+   * <p>
+   * The one pair that never had an eXo calendar behind it and never will: a
+   * share is not materialised ({@code CaldavSyncService#skipShare}), and
+   * before this state existed it therefore had no pair at all — which is
+   * exactly why it could not be hidden, since being <em>unbound</em> is what
+   * puts a collection under the remote calendars and serves its events. The
+   * pair records the user's choice under the origin the collection has to
+   * the engine, {@link SyncOrigin#REMOTE} — somebody made it on the server,
+   * eXo owns nothing of it — with an anchor derived from its path rather than
+   * a calendar's ({@code CaldavDeletionService#hiddenShareAnchor}: the pair
+   * table's unique index would refuse a second null anchor on Oracle and SQL
+   * Server), and every consumer that acts on a pair leaves it alone: the
+   * sweep reads only {@link #ACTIVE} pairs, the outbound half binds by
+   * agenda's own anchors, the orphan pruning drops only
+   * {@link #ACTIVE} pairs, and the states worth telling the user about do not
+   * include it. What it does do, by being a binding at all, is keep the
+   * collection out of the calendar list and its events unserved, and keep
+   * materialisation from ever considering it — the same mechanism that makes
+   * a {@link #LOCALLY_DELETED} tombstone stick. Lifted by deleting the pair:
+   * nothing has to be synchronised for the share to be listed again.
+   */
+  HIDDEN_SHARE
 
 }

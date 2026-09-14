@@ -15,36 +15,54 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-list-item v-if="hidden.length">
-    <v-list-item-content>
-      <!-- text-color, matching the E-mail and calendar rows of this page -->
-      <v-list-item-title class="text-color">
-        {{ $t('caldav.hiddenCalendars.title') }}
-      </v-list-item-title>
-      <!--
-        No vertical margin: the other settings rows on this page sit their
-        summary straight under their header, and a row that breathes more than
-        its neighbours reads as belonging to another list.
-      -->
-      <v-list-item-subtitle>
-        <span>
-          {{ $t('caldav.hiddenCalendars.subtitle', {0: hidden.length}) }}
-        </span>
-      </v-list-item-subtitle>
-    </v-list-item-content>
-    <v-list-item-action>
-      <v-btn
-        :aria-label="$t('caldav.hiddenCalendars.manage')"
-        :title="$t('caldav.hiddenCalendars.manage')"
-        icon
-        @click="$root.$emit('open-caldav-hidden-calendars-drawer')">
-        <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
-      </v-btn>
-    </v-list-item-action>
+  <div>
+    <v-list-item v-if="hidden.length">
+      <v-list-item-content>
+        <!-- text-color, matching the E-mail and calendar rows of this page -->
+        <v-list-item-title class="text-color">
+          {{ $t('caldav.hiddenCalendars.title') }}
+        </v-list-item-title>
+        <!--
+          No vertical margin: the other settings rows on this page sit their
+          summary straight under their header, and a row that breathes more than
+          its neighbours reads as belonging to another list.
+        -->
+        <!--
+          The neutral count, not the older subtitle about calendars "you deleted
+          here": since EXO-90239 the number also counts calendars shared with
+          the user that they hid, and a sentence about deletion is false for
+          those. The older key stays in the bundle — existing keys are Crowdin's
+          to change, not this source's.
+        -->
+        <v-list-item-subtitle>
+          <span>
+            {{ $t('caldav.hiddenCalendars.count', {0: hidden.length}) }}
+          </span>
+        </v-list-item-subtitle>
+      </v-list-item-content>
+      <v-list-item-action>
+        <v-btn
+          :aria-label="$t('caldav.hiddenCalendars.manage')"
+          :title="$t('caldav.hiddenCalendars.manage')"
+          icon
+          @click="$root.$emit('open-caldav-hidden-calendars-drawer')">
+          <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
+        </v-btn>
+      </v-list-item-action>
+    </v-list-item>
+    <!--
+      The drawer lives beside the row, not inside it. The row goes away when
+      nothing is hidden any more, and the last "Show again" is exactly that
+      moment: with the drawer inside, it was destroyed while open. exo-drawer
+      moves itself under #vuetify-apps and only takes the page overlay down in
+      close(), so destroying it open left an overlay nobody could dismiss until
+      the page was reloaded. Kept mounted, the drawer sees its list empty and
+      closes itself the normal way.
+    -->
     <caldav-hidden-calendars-drawer
       :calendars="hidden"
       @changed="retrieveHidden" />
-  </v-list-item>
+  </div>
 </template>
 
 <script>
