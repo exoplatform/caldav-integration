@@ -19,6 +19,7 @@ package org.exoplatform.caldav.service;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
 import java.util.EnumSet;
@@ -1167,7 +1168,15 @@ public class CaldavSyncService {
    * <p>
    * Only ACTIVE bindings are considered. A tombstone is a deliberate deletion
    * and its whole purpose is to keep the collection out — pruning those would
-   * bring back exactly what the user asked to be rid of.
+   * bring back exactly what the user asked to be rid of. A hidden share
+   * ({@link CalendarSyncStatus#HIDDEN_SHARE}, EXO-90239) is the same case
+   * made sharper: it is a REMOTE pair with no eXo calendar behind it <em>by
+   * design</em>, never materialised and never to be, and "dropped so the
+   * collection can be materialised again" is precisely the line that must
+   * not be written about it — dropping it would list the share again in
+   * front of the user who hid it. The status test below is what keeps it
+   * out; the revoked-share cleanup lives in {@link #forgetRevokedShares} and
+   * reads the server's listing, not agenda's calendars.
    *
    * @param userIdentityId identity of the user
    * @param username the user's login
@@ -1265,7 +1274,10 @@ public class CaldavSyncService {
       if (pair.getStatus() != CalendarSyncStatus.ACTIVE) {
         // A paused or tombstoned binding is not one to read from. A tombstone
         // in particular means the user deleted the calendar in eXo, and
-        // filling it back up is precisely what they asked not to happen.
+        // filling it back up is precisely what they asked not to happen. A
+        // hidden share (EXO-90239) has no calendar to fill at all, and the
+        // REMOTE_GONE marking further down must never reach it either: the
+        // share leaving the listing is handled by forgetRevokedShares.
         continue;
       }
       if (pair.getOrigin() != SyncOrigin.EXO
@@ -1605,7 +1617,9 @@ public class CaldavSyncService {
       return null;
     }
     warnOnceIfAccountIsShared(userIdentityId, serverId, home);
-    List<CalendarSync> known = caldavSyncStorage.getPairs(userIdentityId, serverId);
+    List<CalendarSync> known = forgetRevokedShares(userIdentityId,
+                                                   caldavSyncStorage.getPairs(userIdentityId, serverId),
+                                                   collections);
     for (CalendarCollection collection : collections) {
       if (isAlreadyOurs(collection, known)) {
         reviveIfMarkedGone(known, collection);
@@ -1640,6 +1654,60 @@ public class CaldavSyncService {
     // collection's ctag to decide whether it has anything to read, and one
     // PROPFIND already carries them all.
     return collections;
+  }
+
+  /**
+   * Drops the record of a hidden share the account no longer lists
+   * (EXO-90239).
+   *
+   * <p>
+   * A {@link CalendarSyncStatus#HIDDEN_SHARE} pair stands for nothing in eXo;
+   * what it stands for on the server is a calendar somebody shared with the
+   * user, and once that share is revoked the pair describes nothing on either
+   * side. Kept, it would do two things, both wrong: sit in the hidden
+   * calendars for ever without a name — the drawer names a calendar from the
+   * listing, and this one is in no listing — and, should the colleague share
+   * the calendar again months later, keep it hidden without a word, when the
+   * user would expect a calendar newly shared with them to appear. Dropped,
+   * a share granted again is listed again, and hiding it again is one click.
+   * Not the rule a tombstone follows, deliberately: a tombstone's collection
+   * is the user's own and comes and goes with their account, and pruning it
+   * would undo a deletion; a share's collection is the owner's, and its
+   * absence means the owner withdrew it.
+   *
+   * <p>
+   * Only against a listing that holds something — the rule the import
+   * applies before it calls a collection gone, for the reason it gives: a
+   * server briefly answering with nothing is far likelier than every share
+   * being revoked at once, and dropping every hidden share on a bad minute
+   * would put them all back on the user's screen. A listing that failed
+   * never reaches here at all.
+   *
+   * @param userIdentityId identity of the user, for the line
+   * @param known every pair this user holds on this server
+   * @param collections the account's listing as this pass read it
+   * @return the pairs still standing, which is what the pass matches
+   *         collections against
+   */
+  private List<CalendarSync> forgetRevokedShares(long userIdentityId,
+                                                 List<CalendarSync> known,
+                                                 List<CalendarCollection> collections) {
+    if (collections == null || collections.isEmpty()) {
+      return known;
+    }
+    List<CalendarSync> standing = new ArrayList<>(known.size());
+    for (CalendarSync pair : known) {
+      if (pair.getStatus() == CalendarSyncStatus.HIDDEN_SHARE && !holdsHref(collections, pair.getRemoteHref())) {
+        LOG.info("The calendar {} that user {} had hidden is no longer shared with them; its record is dropped, so a"
+            + " calendar shared with them again is listed again",
+                 pair.getRemoteHref(),
+                 userIdentityId);
+        caldavSyncStorage.deletePair(pair.getId());
+        continue;
+      }
+      standing.add(pair);
+    }
+    return standing;
   }
 
   /**
@@ -1817,7 +1885,12 @@ public class CaldavSyncService {
    * of events eXo already shows, and an existing <em>calendar binding</em>
    * means the collection is accounted for — including a tombstone, which is
    * exactly what stops a calendar the user deleted in eXo from coming straight
-   * back.
+   * back, and including a hidden share ({@link CalendarSyncStatus#HIDDEN_SHARE},
+   * EXO-90239), a REMOTE pair with no calendar behind it that is accounted
+   * for in the only way a share can be: by the user's choice not to see it.
+   * Settled here, before the ownership question, so a hidden share costs the
+   * pass neither the classification nor the once-per-collection line the
+   * skip below writes for a share that is merely not materialised.
    *
    * <p>
    * <b>A calendar binding, not any row.</b> The mirror pair is not one: it has
