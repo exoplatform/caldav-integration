@@ -406,7 +406,9 @@ export const getHiddenCalendars = () => {
  * collection on the same account.
  *
  * @param {Number} pairId the binding to lift
- * @returns {Promise} resolves once the calendar will come back on the next sync
+ * @returns {Promise} resolves once the calendar is back: at the next
+ *          synchronisation for a calendar deleted here, at once for a share
+ *          the user hid
  */
 export const showCalendarAgain = pairId => {
   return fetch(`${window.location.origin}/caldav/rest/hidden-calendars/${pairId}`, {
@@ -418,6 +420,69 @@ export const showCalendarAgain = pairId => {
     }
   });
 };
+
+/**
+ * Hides a calendar somebody shared with the user (EXO-90239).
+ *
+ * The calendar travels in a JSON body as the calendar list answered it: it is
+ * a collection href, and in a path or a query its slashes and its
+ * percent-encoded login would be refused or decoded one time too many before
+ * any handler saw them. The platform matches it against the user's own
+ * current listing and refuses anything that is not a share of theirs.
+ *
+ * A refusal rejects with an Error whose `code` is what the platform said —
+ * `caldav.hiddenCalendars.notAShare` for a calendar of the user's own,
+ * `caldav.error.noCalendar` when no account is connected — and whose `status`
+ * is the HTTP status, so a caller can tell a calendar that cannot be hidden
+ * from a platform that could not be asked.
+ *
+ * @param {String} calendarId the calendar's identity, as listCalendars gave it
+ * @returns {Promise} resolves once the calendar is hidden, or was already
+ */
+export const hideCalendar = calendarId => {
+  return fetch(`${window.location.origin}/caldav/rest/hidden-calendars`, {
+    credentials: 'include',
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({calendarId}),
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      return codedRefusal(resp);
+    }
+  });
+};
+
+/**
+ * Turns a refused response into a rejection carrying the platform's code.
+ *
+ * Two body shapes reach here and both are read: the plain code a push failure
+ * answers with (`caldav.error.noCalendar`), and the JSON object Spring builds
+ * for a ResponseStatusException, whose `message` holds the code. A body that
+ * is neither, or none at all, yields the generic error rather than a wrong
+ * code.
+ *
+ * @param {Response} resp the refused response
+ * @returns {Promise} a promise rejecting with the coded Error
+ */
+function codedRefusal(resp) {
+  const status = resp && resp.status;
+  const text = resp && typeof resp.text === 'function' ? resp.text().catch(() => '') : Promise.resolve('');
+  return text.then(body => {
+    let code = (body || '').trim();
+    if (code.startsWith('{')) {
+      try {
+        code = JSON.parse(code).message || '';
+      } catch (e) {
+        code = '';
+      }
+    }
+    const error = new Error(code || 'Response code indicates a server error');
+    error.code = code || null;
+    error.messageCode = error.code;
+    error.status = status;
+    throw error;
+  });
+}
 
 /**
  * Synchronises the connected account now, whatever the throttle says.
