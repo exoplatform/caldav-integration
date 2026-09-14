@@ -744,7 +744,7 @@ public class CaldavCalendarShareServiceTest {
   // ---------------------------------------------------------------- the menu entry
 
   /**
-   * The calendars offered "Share…" are the owned ones bound to a collection
+   * The calendars offered "Share" are the owned ones bound to a collection
    * eXo created, on a server whose mechanism is offered; anything failing
    * offers none.
    */

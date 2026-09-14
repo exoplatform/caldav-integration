@@ -19,7 +19,7 @@ package org.exoplatform.caldav.rest.model;
 import java.util.List;
 
 /**
- * The caller's calendars agenda may offer "Share…" on (EXO-90253).
+ * The caller's calendars agenda may offer "Share" on (EXO-90253).
  *
  * @param calendarIds the agenda calendar ids, possibly empty
  */

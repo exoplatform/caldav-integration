@@ -81,7 +81,7 @@ public class CaldavShareRest {
   private IdentityManager            identityManager;
 
   /**
-   * The caller's calendars agenda may offer "Share…" on.
+   * The caller's calendars agenda may offer "Share" on.
    *
    * @return the calendar ids, empty whenever anything stands in the way
    */

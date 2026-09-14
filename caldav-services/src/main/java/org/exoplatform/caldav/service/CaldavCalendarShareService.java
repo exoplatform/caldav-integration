@@ -250,7 +250,7 @@ public class CaldavCalendarShareService {
    * collection eXo created, on a server offering a verified mechanism.
    *
    * <p>
-   * What decides whether agenda shows "Share…" on a calendar, so it never
+   * What decides whether agenda shows "Share" on a calendar, so it never
    * fails: anything that goes wrong — no account, a server that cannot be
    * reached, agenda failing — answers no calendar, and the entry is simply
    * not offered. The server is asked one {@code OPTIONS}, on the first such
