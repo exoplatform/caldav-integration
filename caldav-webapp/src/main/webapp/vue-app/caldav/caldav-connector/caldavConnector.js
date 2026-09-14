@@ -775,7 +775,11 @@ function labels() {
   if (!labelsPromise) {
     const lang = (window.eXo && eXo.env && eXo.env.portal && eXo.env.portal.language) || 'en';
     const url = `${window.location.origin}/portal/rest/i18n/bundle/locale.portlet.Caldav-${lang}.json`;
-    labelsPromise = fetch(url, {credentials: 'include'})
+    // cache: 'no-cache' makes the browser revalidate the bundle with the server
+    // (a 304 when unchanged). The bundle is served public for a week, and
+    // without revalidation a browser that fetched it before an upgrade kept
+    // showing raw keys for new labels such as caldav.share.menu (EXO-90253).
+    labelsPromise = fetch(url, {credentials: 'include', cache: 'no-cache'})
       .then(resp => resp && resp.ok && resp.json() || {})
       // A missing bundle must not stop a deletion being confirmed: the dialog
       // still asks, it simply asks with less to say.

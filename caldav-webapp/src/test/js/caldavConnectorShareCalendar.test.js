@@ -62,6 +62,8 @@ describe('sharing a calendar through the CalDAV connector', () => {
       14: [{id: 'caldavShareCalendar', label: 'Partager', icon: 'fa-share-alt'}],
     });
     expect(fetch.mock.calls.find(([url]) => url.includes('/shareable'))[1].credentials).toBe('include');
+    // The label bundle is revalidated, never taken from a stale week-long browser cache.
+    expect(fetch.mock.calls.find(([url]) => url.includes('locale.portlet.Caldav'))[1].cache).toBe('no-cache');
   });
 
   it('labels the entry with its key, not an English word, when the bundle cannot be read', async () => {
