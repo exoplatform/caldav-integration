@@ -197,14 +197,17 @@ public class CaldavShareRest {
   @GetMapping("/calendars/{calendarId}/share-candidates")
   @Secured("users")
   @Operation(summary = "Lists the colleagues a calendar of the user's can be shared with",
-      description = "eXo users connected to the same CalDAV server under another login, by full name. Read from eXo's "
-          + "own record of each connection; the server is not asked.")
+      description = "eXo users connected to the same CalDAV server under another login, by full name. The server is asked "
+          + "one OPTIONS to confirm it offers sharing; the colleagues are read from eXo's own record of each connection, and "
+          + "the server is asked who the user is only when that is not recorded yet.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The candidates, possibly none"),
       @ApiResponse(responseCode = "400", description = "A calendar with no collection eXo created"),
       @ApiResponse(responseCode = "403", description = "Not the user's calendar"),
       @ApiResponse(responseCode = "404", description = "No such calendar"),
-      @ApiResponse(responseCode = "409", description = "No connected account, or the user's server principal unknown "
-          + "(caldav.share.ownerUnknown)") })
+      @ApiResponse(responseCode = "409", description = "No connected account, sharing not offered on this server "
+          + "(caldav.share.notSupported), the stored credentials refused (caldav.share.credentials), or the user's server "
+          + "principal unknown (caldav.share.ownerUnknown)"),
+      @ApiResponse(responseCode = "502", description = "The server could not be reached (caldav.share.serverUnavailable)") })
   public List<ShareUser> candidates(@Parameter(description = "Agenda calendar id", required = true)
                                     @PathVariable("calendarId")
                                     long calendarId,

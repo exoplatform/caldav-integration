@@ -471,9 +471,12 @@ public class CaldavCalendarShareService {
    * is not the caller's own.
    *
    * <p>
-   * Read locally, without asking the server anything unless the caller's own
-   * principal is not recorded yet. Bounded by the storage's read of the
-   * server's connections; a colleague beyond that bound is not offered.
+   * The server is asked one {@code OPTIONS}, the capability check the listing,
+   * the grant and the revoke make, so that nobody is listed on a server where
+   * eXo offers no sharing. The colleagues themselves are read from eXo's own
+   * record of each connection; the server is asked who the caller is only when
+   * that is not recorded yet. Bounded by the storage's read of the server's
+   * connections; a colleague beyond that bound is not offered.
    *
    * @param userIdentityId the caller
    * @param username the caller's login
@@ -484,6 +487,9 @@ public class CaldavCalendarShareService {
    * @throws ObjectNotFoundException when the calendar does not exist
    * @throws IllegalAccessException when the caller does not own it
    * @throws IllegalArgumentException when it has no collection eXo created
+   * @throws CaldavShareException when sharing is not offered on the server,
+   *           the credentials are refused, the server cannot be reached, or the
+   *           caller's principal cannot be named
    */
   public List<ShareUser> candidates(long userIdentityId,
                                     String username,
