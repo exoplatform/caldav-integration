@@ -386,6 +386,11 @@ public class CaldavPushService {
       if (mirror != null && Objects.equals(pair.getId(), mirror.getId())) {
         continue;
       }
+      if (pair.getStatus() == CalendarSyncStatus.RETIRED_SUBSCRIPTION) {
+        // Somebody else's collection, retired (EXO-90275): a removal or an
+        // answer resolved through it would write into that collection.
+        continue;
+      }
       ObjectSync known = caldavSyncStorage.getObjectByUid(pair.getId(), icsUid);
       if (known != null) {
         return known;
@@ -673,6 +678,12 @@ public class CaldavPushService {
     String into = CaldavSyncStorage.canonicalHref(destination.getRemoteHref());
     for (CalendarSync other : caldavSyncStorage.getPairs(userIdentityId, destination.getServerId())) {
       if (Objects.equals(other.getId(), destination.getId())) {
+        continue;
+      }
+      if (other.getStatus() == CalendarSyncStatus.RETIRED_SUBSCRIPTION) {
+        // An event moved out of a calendar materialised from somebody else's
+        // collection, retired since (EXO-90275): the copy it leaves there is
+        // that collection's own object, and cleaning it up would delete it.
         continue;
       }
       if (StringUtils.isNotBlank(into) && into.equals(CaldavSyncStorage.canonicalHref(other.getRemoteHref()))) {

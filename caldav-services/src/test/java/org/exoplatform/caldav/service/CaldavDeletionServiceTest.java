@@ -1416,6 +1416,80 @@ public class CaldavDeletionServiceTest {
     verify(caldavSyncStorage, never()).savePair(any());
   }
 
+  // ------------------------------------ a retired subscription's calendar, EXO-90275
+
+  /**
+   * Deleting the copy of a retired subscription drops its binding rather than
+   * tombstoning it: the collection is somebody else's, and the user deleted
+   * the copy precisely so that it could be listed under "Shared with me". The
+   * server is not asked anything.
+   */
+  @Test
+  public void deletingARetiredSubscriptionsCalendarDropsItsBindingRatherThanTombstoningIt() {
+    givenBoundCalendar(SyncOrigin.REMOTE, CalendarSyncStatus.RETIRED_SUBSCRIPTION);
+
+    service.deleteRemoteCounterpart(USER, LOGIN, CALENDAR);
+
+    verify(caldavSyncStorage).deleteObjects(3L);
+    verify(caldavSyncStorage).deletePair(3L);
+    verify(caldavSyncStorage, never()).savePair(any());
+    verify(calDavClient, never()).deleteCollection(any(), any());
+  }
+
+  /**
+   * The keep path, which the dialog takes for a plan that propagates
+   * nothing, drops it the same way.
+   */
+  @Test
+  public void keepingTheRemoteOfARetiredSubscriptionAlsoDropsItsBinding() {
+    givenBoundCalendar(SyncOrigin.REMOTE, CalendarSyncStatus.RETIRED_SUBSCRIPTION);
+
+    service.keepRemoteCounterpart(USER, CALENDAR);
+
+    verify(caldavSyncStorage).deletePair(3L);
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  /**
+   * The dialog has nothing to warn about: the collection is neither deleted
+   * nor kept by this deletion.
+   */
+  @Test
+  public void aRetiredSubscriptionClaimsNothingInTheDeletionDialog() {
+    givenBoundCalendar(SyncOrigin.REMOTE, CalendarSyncStatus.RETIRED_SUBSCRIPTION);
+
+    assertEquals(new CalendarDeletionPlan(false, false, null), service.describeDeletion(USER, CALENDAR));
+  }
+
+  /**
+   * A reconnection thaws a pause and nothing else: a retired subscription is
+   * not woken up into a binding that reads and writes again.
+   */
+  @Test
+  public void reconnectingDoesNotWakeARetiredSubscription() {
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.REMOTE, CalendarSyncStatus.RETIRED_SUBSCRIPTION)));
+
+    service.thawOnConnect(USER, SERVER);
+
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  /**
+   * The user is told, among the calendars needing attention: only they can
+   * delete the copy.
+   */
+  @Test
+  public void aRetiredSubscriptionIsAStateTheUserIsToldAbout() {
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.REMOTE, CalendarSyncStatus.RETIRED_SUBSCRIPTION)));
+    givenAgendaCalendarNamed("Véhicule de pool 1");
+
+    List<CalendarSyncState> states = service.listSyncStates(USER, LOGIN);
+
+    assertEquals(1, states.size());
+    assertEquals("Véhicule de pool 1", states.get(0).name());
+    assertEquals(CalendarSyncStatus.RETIRED_SUBSCRIPTION, states.get(0).status());
+  }
+
   private CaldavUserSetting settings() {
     CaldavUserSetting setting = new CaldavUserSetting();
     setting.setUsername(DAV_ACCOUNT);

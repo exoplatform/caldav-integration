@@ -16,114 +16,77 @@
  */
 package org.exoplatform.caldav.service;
 
-import java.time.Duration;
-import java.time.Instant;
-import java.time.ZoneOffset;
-import java.time.ZonedDateTime;
-import java.time.temporal.ChronoUnit;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Set;
-
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Component;
 
-import org.exoplatform.agenda.model.Calendar;
-import org.exoplatform.agenda.model.Event;
-import org.exoplatform.agenda.model.EventFilter;
-import org.exoplatform.agenda.service.AgendaCalendarService;
-import org.exoplatform.agenda.service.AgendaEventService;
+import org.exoplatform.caldav.client.CalDavClient;
+import org.exoplatform.caldav.client.CalDavEndpoint;
+import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
-import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
-import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
 /**
- * Undoes what the sweep did to a calendar the user only subscribed to, before
- * the server's naming was read (EXO-90275).
+ * Stops the harm a calendar the sweep materialised from a mere subscription
+ * does, before the server's naming was read (EXO-90275).
  *
  * <p>
- * Until then a BlueMind resource calendar or a colleague's main calendar the
- * user subscribed to was materialised as the user's own personal calendar:
- * an ACTIVE {@link SyncOrigin#REMOTE} binding, an agenda calendar the user
- * could edit, publish and delete, its events imported, the user's own edits
- * pushed into somebody else's calendar (rig calendar 16, acceptance calendar
- * 33). The classification now keeps new ones from being made; this retires
- * the ones that exist, so that the collection becomes what it would have been
- * had it never been materialised — a read-only calendar under "Shared with
- * me", its events served from the server.
+ * Until then a BlueMind resource calendar or a colleague's calendar the user
+ * subscribed to became the user's own personal calendar: an ACTIVE
+ * {@link SyncOrigin#REMOTE} binding, an agenda calendar the user could edit,
+ * its events imported, the user's own edits pushed into somebody else's
+ * calendar (rig calendar 16, acceptance calendar 33). The classification now
+ * keeps new ones from being made; this retires the bindings that exist.
  *
  * <p>
- * <b>Nothing is written to the server, ever.</b> What the calendar holds is
- * a copy of the server's collection, and the collection is not touched: the
- * agenda calendar is deleted through agenda, whose storage removes its events
- * in bulk and broadcasts only {@code exo.agenda.calendar.deleted}, which this
- * add-on does not listen to — so no deletion is carried out anywhere — and
- * the binding and its object mappings are then dropped.
+ * <b>Retiring is making the binding inert, and nothing else.</b> The binding
+ * becomes {@link CalendarSyncStatus#RETIRED_SUBSCRIPTION}: nothing is read
+ * from the collection or written to it through it any more, and a
+ * reconnection does not wake it up. <b>The calendar is not deleted</b>, and
+ * that is deliberate. What it holds is mostly copies of the server's objects,
+ * but eXo cannot prove it holds nothing else: agenda lists a calendar's events
+ * only over a date window and only when they are confirmed, so an event the
+ * user made there — a date poll, one pushed and refused, one dated outside the
+ * window — could not be told from a copy, and deleting the calendar would
+ * delete it with them. The state is told to the user instead, among the
+ * calendars needing attention; deleting the calendar drops the binding and
+ * the collection is then listed read-only under "Shared with me".
  *
  * <p>
- * <b>An event the server never received is not deleted with the copies.</b>
- * The user's own edits in a materialised calendar are pushed on save through
- * its binding, which records a mapping; an event of that calendar no mapping
- * of the binding names is one the server does not hold, and deleting the
- * calendar would lose it. When there is one, the calendar and its events are
- * kept and the binding is paused instead — no more reading, no more writing,
- * no export either, since a REMOTE binding of any state keeps the calendar
- * from being pushed out as a new collection — and a warning names the count,
- * for a human to move those events and delete the calendar. The events are
- * looked for over the window the import reads, which is where the sweep put
- * copies and where a user edits.
+ * <b>Nothing is written to the server.</b> The one request made is a read:
+ * the owner the collection's name points at is asked its display name, and a
+ * binding is retired only when that principal answers one. BlueMind accepts a
+ * collection created over CalDAV under any segment, {@code calendar:…}
+ * included, so the name alone could point at nobody; a principal the directory
+ * does not know makes BlueMind fail the request, and the binding is then left
+ * as it was, to be asked again on the next pass.
  *
  * <p>
- * <b>Order.</b> The calendar first, then the mappings, then the binding. A
- * calendar that cannot be deleted leaves everything as it was, and the next
- * pass tries again; a binding left without its calendar is dropped by the
- * orphan pruning, and the collection is then classified and skipped. The
- * reverse order could leave a personal calendar with no binding, which the
- * outbound half exports to the server as a new collection — a write to the
- * server this class exists never to cause.
- *
- * <p>
- * Said once per binding: at info when it is retired, since the binding is
- * then gone; at warn when it is paused, since a paused binding is no longer
- * one this is asked about. A reconnection thaws paused bindings, and the
- * next pass pauses it and says so again.
+ * Said once per binding, at warn: once retired, a binding is no longer one
+ * this is asked about.
  */
 @Component
 public class CaldavSubscriptionRetirementService {
 
-  private static final Log      LOG   = ExoLogger.getLogger(CaldavSubscriptionRetirementService.class);
-
-  /** How many object mappings one page reads. */
-  private static final int      SLICE = 200;
+  private static final Log  LOG = ExoLogger.getLogger(CaldavSubscriptionRetirementService.class);
 
   @Autowired
-  private CaldavSyncStorage     caldavSyncStorage;
+  private CaldavSyncStorage caldavSyncStorage;
 
   @Autowired
-  private AgendaCalendarService agendaCalendarService;
-
-  @Autowired
-  private AgendaEventService    agendaEventService;
-
-  @Autowired
-  private CaldavTuningService   caldavTuningService;
+  private CalDavClient      calDavClient;
 
   /**
    * What retiring one binding came to.
    */
   public enum Retirement {
-    /** The calendar, its mappings and its binding are gone. */
+    /** The binding is inert; the calendar and its events are kept. */
     RETIRED,
-    /** The calendar holds events the server never received; the binding is paused. */
-    PAUSED,
-    /** Nothing was changed: not eligible, or a step failed and is retried next pass. */
+    /** Nothing was changed: not eligible, or the owner could not be confirmed. */
     KEPT
   }
 
@@ -131,149 +94,65 @@ public class CaldavSubscriptionRetirementService {
    * Retires a binding the sweep made for a collection that is a subscription.
    *
    * @param userIdentityId identity of the user the binding belongs to
-   * @param username the user's login, which agenda's calendar listing reads
+   * @param endpoint the account's endpoint, through which the owner is asked
+   * @param principal the account's own principal, as the listing named it
    * @param pair the binding, which must be an ACTIVE REMOTE pair of this user
+   * @param collection the listed collection the binding is bound to
    * @param ownership whose the collection is, as the classification answered
    * @return what was done
    */
-  public Retirement retire(long userIdentityId, String username, CalendarSync pair, CollectionOwnership ownership) {
+  public Retirement retire(long userIdentityId,
+                           CalDavEndpoint endpoint,
+                           String principal,
+                           CalendarSync pair,
+                           CalendarCollection collection,
+                           CollectionOwnership ownership) {
     if (ownership == null || !ownership.isSubscription() || pair == null || pair.getId() == null
         || pair.getUserIdentityId() != userIdentityId || pair.getOrigin() != SyncOrigin.REMOTE
-        || pair.getStatus() != CalendarSyncStatus.ACTIVE) {
+        || pair.getStatus() != CalendarSyncStatus.ACTIVE || collection == null) {
       return Retirement.KEPT;
     }
-    Calendar calendar = calendarOf(userIdentityId, username, pair.getLocalCalendarSyncUid());
-    if (calendar == null) {
-      // No calendar behind the binding, or none that could be read. The
-      // orphan pruning handles the first; the second is retried.
-      LOG.debug("Binding {} of user {} has no readable calendar behind it; it is not retired this pass", pair.getId(), userIdentityId);
+    BlueMindContainerNaming.Subscription subscription = BlueMindContainerNaming.subscriptionOf(collection.href(), principal);
+    if (subscription == null) {
       return Retirement.KEPT;
     }
-    Set<Long> unreceived;
-    try {
-      unreceived = eventsTheServerNeverReceived(userIdentityId, calendar.getId(), mappedEventIds(pair.getId()));
-    } catch (Exception e) { // NOSONAR agenda declares a checked exception here
-      LOG.debug("The events of calendar {} could not be read; binding {} is not retired this pass", calendar.getId(), pair.getId(), e);
+    String ownerPath = BlueMindContainerNaming.principalOf(principal, subscription.ownerUid());
+    if (!answers(endpoint, ownerPath)) {
+      LOG.debug("The owner {} that collection {} is named after could not be confirmed; binding {} is not retired this pass",
+                ownerPath,
+                collection.href(),
+                pair.getId());
       return Retirement.KEPT;
     }
-    if (!unreceived.isEmpty()) {
-      pair.setStatus(CalendarSyncStatus.PAUSED);
-      caldavSyncStorage.savePair(pair);
-      LOG.warn("Calendar {} of user {} was materialised from {}, a {} the user only subscribed to, and holds {} event(s) the"
-          + " server never received ({}); it is kept and its binding {} is paused, so nothing more is read from or written"
-          + " to that calendar. Move those events to another calendar, then delete this one",
-               calendar.getId(),
-               userIdentityId,
-               pair.getRemoteHref(),
-               ownership == CollectionOwnership.SUBSCRIBED_RESOURCE ? "resource calendar" : "calendar of another person",
-               unreceived.size(),
-               unreceived,
-               pair.getId());
-      return Retirement.PAUSED;
-    }
-    try {
-      agendaCalendarService.deleteCalendarById(calendar.getId());
-    } catch (ObjectNotFoundException e) {
-      LOG.debug("Calendar {} was already gone when binding {} was retired", calendar.getId(), pair.getId());
-    } catch (RuntimeException e) {
-      LOG.warn("Calendar {} of user {}, materialised from the subscription {}, could not be deleted; its binding is kept and"
-          + " the next pass tries again",
-               calendar.getId(),
-               userIdentityId,
-               pair.getRemoteHref(),
-               e);
-      return Retirement.KEPT;
-    }
-    caldavSyncStorage.deleteObjects(pair.getId());
-    caldavSyncStorage.deletePair(pair.getId());
-    LOG.info("Calendar {} of user {} had been materialised from {}, a {} the user only subscribed to; the calendar and its"
-        + " copies are removed from eXo, nothing was written to the server, and the calendar is now listed read-only under"
+    pair.setStatus(CalendarSyncStatus.RETIRED_SUBSCRIPTION);
+    caldavSyncStorage.savePair(pair);
+    LOG.warn("The eXo calendar bound to {} (binding {}) of user {} was materialised from a {} the user only subscribed to."
+        + " Its binding is retired: nothing more is read from or written to that collection, and the calendar and its"
+        + " events stay in eXo untouched. Once the user deletes that calendar, the collection is listed read-only under"
         + " Shared with me",
-             calendar.getId(),
-             userIdentityId,
              pair.getRemoteHref(),
-             ownership == CollectionOwnership.SUBSCRIBED_RESOURCE ? "resource calendar" : "calendar of another person");
+             pair.getId(),
+             userIdentityId,
+             subscription.resource() ? "resource calendar" : "calendar of another person");
     return Retirement.RETIRED;
   }
 
   /**
-   * The user's own calendar carrying an anchor.
+   * Whether a principal exists on the server, by the one thing the account
+   * may ask of it: its display name.
    *
-   * @param userIdentityId identity of the user
-   * @param username the user's login
-   * @param anchor the anchor the binding records
-   * @return the calendar, or null when none carries the anchor or the
-   *         calendars could not be read
+   * @param endpoint the account's endpoint
+   * @param principalPath the principal to ask
+   * @return true when it answered a name; false when it answered none or the
+   *         request failed, which BlueMind does for a uid its directory does
+   *         not hold
    */
-  private Calendar calendarOf(long userIdentityId, String username, String anchor) {
+  private boolean answers(CalDavEndpoint endpoint, String principalPath) {
     try {
-      return agendaCalendarService.getCalendars(0, Integer.MAX_VALUE, username)
-                                  .stream()
-                                  .filter(calendar -> calendar.getOwnerId() == userIdentityId && !calendar.isDeleted())
-                                  .filter(calendar -> anchor != null && anchor.equals(calendar.getSyncUid()))
-                                  .findFirst()
-                                  .orElse(null);
-    } catch (Exception e) { // NOSONAR agenda declares a bare Exception here
-      LOG.debug("The calendars of user {} could not be read", userIdentityId, e);
-      return null;
+      return StringUtils.isNotBlank(calDavClient.readDisplayName(endpoint, principalPath));
+    } catch (RuntimeException e) {
+      LOG.debug("The principal {} could not be asked for its display name", principalPath, e);
+      return false;
     }
-  }
-
-  /**
-   * The agenda events a binding's object mappings name — the copies of what
-   * the server holds.
-   *
-   * @param calendarSyncId the binding
-   * @return the mapped event ids, empty when none
-   */
-  private Set<Long> mappedEventIds(long calendarSyncId) {
-    Set<Long> mapped = new HashSet<>();
-    int page = 0;
-    Page<ObjectSync> slice;
-    do {
-      slice = caldavSyncStorage.getObjects(calendarSyncId, page, SLICE);
-      for (ObjectSync mapping : slice.getContent()) {
-        if (mapping.getLocalEventId() != null && mapping.getLocalEventId() > 0) {
-          mapped.add(mapping.getLocalEventId());
-        }
-      }
-      page++;
-    } while (slice.hasNext());
-    return mapped;
-  }
-
-  /**
-   * The events of a calendar no mapping of its binding names, over the
-   * window the import reads.
-   *
-   * <p>
-   * An occurrence counts as mapped when its series is: a recurring event is
-   * mapped once, under its parent.
-   *
-   * @param userIdentityId identity of the user, owner of the calendar
-   * @param calendarId the calendar
-   * @param mapped the event ids the binding's mappings name
-   * @return the ids of the events the server never received, empty when none
-   * @throws IllegalAccessException when agenda refuses the read
-   */
-  private Set<Long> eventsTheServerNeverReceived(long userIdentityId, long calendarId, Set<Long> mapped) throws IllegalAccessException {
-    Instant today = Instant.now().truncatedTo(ChronoUnit.DAYS);
-    Instant from = today.minus(Duration.ofDays(caldavTuningService.getPastDays()));
-    Instant to = today.plus(Duration.ofDays(caldavTuningService.getFutureDays() + 1L));
-    EventFilter filter = new EventFilter(List.of(userIdentityId),
-                                         ZonedDateTime.ofInstant(from, ZoneOffset.UTC),
-                                         ZonedDateTime.ofInstant(to, ZoneOffset.UTC));
-    List<Event> events = agendaEventService.getEvents(filter, ZoneOffset.UTC, userIdentityId);
-    Set<Long> unreceived = new LinkedHashSet<>();
-    for (Event event : events) {
-      if (event.getCalendarId() != calendarId) {
-        continue;
-      }
-      boolean copy = mapped.contains(event.getId()) || (event.getParentId() > 0 && mapped.contains(event.getParentId()));
-      if (!copy) {
-        unreceived.add(event.getId() > 0 ? event.getId() : event.getParentId());
-      }
-    }
-    return unreceived;
   }
 }

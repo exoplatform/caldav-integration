@@ -766,11 +766,27 @@ public class CaldavReadServiceTest {
 
   // ------------------------------------ subscriptions the server's naming reveals, EXO-90275
 
+  /** An account of BlueMind's shape, which is where the naming is read. */
+  private static final String        BM_PRINCIPAL           = "/dav/principals/__uids__/john-uid/";
+
+  /** That account's home, where BlueMind lists its subscriptions. */
+  private static final String        BM_HOME                = "/dav/calendars/__uids__/john-uid/";
+
   /** The pool vehicle as BlueMind lists it under the user's home. */
-  private static final String        POOL_VEHICLE           = HOME + "calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/";
+  private static final String        POOL_VEHICLE           = BM_HOME + "calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/";
 
   /** The resource's own principal, in the account principal's collection. */
-  private static final String        POOL_VEHICLE_PRINCIPAL = "/dav/principals/7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/";
+  private static final String        POOL_VEHICLE_PRINCIPAL = "/dav/principals/__uids__/7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/";
+
+  /**
+   * Connects the account as one of BlueMind's shape, listing these calendars.
+   *
+   * @param collections what the home lists
+   */
+  private void givenBlueMindAccountListing(CalendarCollection... collections) {
+    when(calDavClient.discoverHome(any())).thenReturn(new CalendarHome(BM_PRINCIPAL, BM_HOME));
+    when(calDavClient.listCalendars(any(), eq(BM_HOME))).thenReturn(List.of(collections));
+  }
 
   /**
    * The pool vehicle, listed with the user as owner and write granted, is
@@ -779,7 +795,7 @@ public class CaldavReadServiceTest {
    */
   @Test
   public void aResourceSubscriptionIsListedAsASharedReadOnlyResourceNamedByItsPrincipal() {
-    givenCalendars(owned(POOL_VEHICLE, "Véhicule de pool 1", PRINCIPAL, true, true));
+    givenBlueMindAccountListing(owned(POOL_VEHICLE, "Véhicule de pool 1", BM_PRINCIPAL, true, true));
     when(calDavClient.readDisplayName(endpoint, POOL_VEHICLE_PRINCIPAL)).thenReturn("Véhicule de pool 1 (directory)");
 
     RemoteCalendar vehicle = service.listCalendars(USER, LOGIN).calendars().get(0);
@@ -801,7 +817,7 @@ public class CaldavReadServiceTest {
    */
   @Test
   public void aResourceWhosePrincipalSaysNothingIsNamedByTheCollection() {
-    givenCalendars(owned(POOL_VEHICLE, "Véhicule de pool 1", PRINCIPAL, true, true));
+    givenBlueMindAccountListing(owned(POOL_VEHICLE, "Véhicule de pool 1", BM_PRINCIPAL, true, true));
     when(calDavClient.readDisplayName(endpoint, POOL_VEHICLE_PRINCIPAL)).thenReturn(null);
 
     RemoteCalendar vehicle = service.listCalendars(USER, LOGIN).calendars().get(0);
@@ -817,8 +833,8 @@ public class CaldavReadServiceTest {
    */
   @Test
   public void aSubscribedColleaguesMainCalendarIsOwnedByTheEXoUserConnectedAsHerPrincipal() {
-    givenCalendars(owned(HOME + "calendar:Default:camille/", "Camille", PRINCIPAL, true, true));
-    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, "/dav/principals/camille/")).thenReturn(List.of(5L));
+    givenBlueMindAccountListing(owned(BM_HOME + "calendar:Default:camille/", "Camille", BM_PRINCIPAL, true, true));
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, "/dav/principals/__uids__/camille/")).thenReturn(List.of(5L));
     when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(0L);
     when(identityManager.getIdentity(5L)).thenReturn(user("5", "camille", "Camille Claudel"));
 
@@ -837,7 +853,7 @@ public class CaldavReadServiceTest {
    */
   @Test
   public void theUsersOwnMainCalendarHasNoOwnerKind() {
-    givenCalendars(owned(HOME + "calendar:Default:john/", "John", PRINCIPAL, true, true));
+    givenBlueMindAccountListing(owned(BM_HOME + "calendar:Default:john-uid/", "John", BM_PRINCIPAL, true, true));
 
     RemoteCalendar own = service.listCalendars(USER, LOGIN).calendars().get(0);
 

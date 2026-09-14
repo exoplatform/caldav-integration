@@ -656,6 +656,32 @@ public class CaldavSyncServiceTest {
     order.verify(agendaCalendarService).createCalendar(any(), eq(LOGIN));
   }
 
+  /**
+   * EXO-90275. A retired subscription's binding is dropped once its calendar
+   * is gone — deleted by the user through a path that did not go by the
+   * deletion dialog — and not before: while the calendar stands, the binding
+   * is what keeps the collection from being listed beside its own copy.
+   */
+  @Test
+  public void aRetiredSubscriptionIsPrunedOnlyOnceItsCalendarIsGone() throws Exception {
+    givenServerCalendars();
+    CalendarSync gone = remotePair("/dav/calendars/john/calendar:room-1/", "anchor-gone");
+    gone.setId(501L);
+    gone.setStatus(CalendarSyncStatus.RETIRED_SUBSCRIPTION);
+    CalendarSync standing = remotePair("/dav/calendars/john/calendar:room-2/", "anchor-standing");
+    standing.setId(502L);
+    standing.setStatus(CalendarSyncStatus.RETIRED_SUBSCRIPTION);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(standing));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(gone, standing));
+    givenUserCalendars(calendarWithAnchor(77L, "anchor-standing"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSyncStorage).deleteObjects(501L);
+    verify(caldavSyncStorage).deletePair(501L);
+    verify(caldavSyncStorage, never()).deletePair(502L);
+  }
+
   @Test
   public void aTombstoneIsNeverPruned() throws Exception {
     // Its whole purpose is to keep the collection out. Pruning it would bring
@@ -1593,16 +1619,35 @@ public class CaldavSyncServiceTest {
     verify(agendaCalendarService, never()).createCalendar(any(), anyString());
     verify(caldavSyncStorage, never()).deletePair(anyLong());
     assertEquals(CalendarSyncStatus.ACTIVE, bound.getStatus());
-    verify(caldavSubscriptionRetirementService, never()).retire(anyLong(), any(), any(), any());
+    verify(caldavSubscriptionRetirementService, never()).retire(anyLong(), any(), any(), any(), any(), any());
   }
 
   // ------------------------------------ subscriptions the server's naming reveals, EXO-90275
 
+  /** An account of BlueMind's shape, which is where the naming is read. */
+  private static final String        BM_PRINCIPAL  = "/dav/principals/__uids__/john-uid/";
+
+  /** That account's home, where BlueMind lists its subscriptions. */
+  private static final String        BM_HOME       = "/dav/calendars/__uids__/john-uid/";
+
   /** The pool vehicle as BlueMind lists it under the user's home. */
-  private static final String        POOL_VEHICLE = HOME + "calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/";
+  private static final String        POOL_VEHICLE  = BM_HOME + "calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/";
 
   /** A colleague's main calendar the user subscribed to, under the user's home. */
-  private static final String        CAMILLES_MAIN = HOME + "calendar:Default:camille/";
+  private static final String        CAMILLES_MAIN = BM_HOME + "calendar:Default:camille/";
+
+  /** The account's own main calendar, named after its own uid. */
+  private static final String        JOHNS_MAIN    = BM_HOME + "calendar:Default:john-uid/";
+
+  /**
+   * Connects the account as one of BlueMind's shape, listing these calendars.
+   *
+   * @param collections what the home lists
+   */
+  private void givenBlueMindAccountListing(CalendarCollection... collections) {
+    when(calDavClient.discoverHome(any())).thenReturn(new CalendarHome(BM_PRINCIPAL, BM_HOME));
+    lenient().when(calDavClient.listCalendars(any(), eq(BM_HOME))).thenReturn(List.of(collections));
+  }
 
   /**
    * The defect on the rig: the pool vehicle, listed with the user as owner
@@ -1611,7 +1656,7 @@ public class CaldavSyncServiceTest {
    */
   @Test
   public void aResourceTheUserSubscribedToIsNeverMaterialised() throws Exception {
-    givenServerCalendars(owned(POOL_VEHICLE, "Véhicule de pool 1", PRINCIPAL, true, true));
+    givenBlueMindAccountListing(owned(POOL_VEHICLE, "Véhicule de pool 1", BM_PRINCIPAL, true, true));
     givenNoKnownPairs();
 
     List<ILoggingEvent> said;
@@ -1636,8 +1681,8 @@ public class CaldavSyncServiceTest {
    */
   @Test
   public void aColleaguesMainCalendarIsNeverMaterialisedAndTheUsersOwnStillIs() throws Exception {
-    givenServerCalendars(owned(CAMILLES_MAIN, "Camille", PRINCIPAL, true, true),
-                         owned(HOME + "calendar:Default:john/", "John", PRINCIPAL, true, true));
+    givenBlueMindAccountListing(owned(CAMILLES_MAIN, "Camille", BM_PRINCIPAL, true, true),
+                                owned(JOHNS_MAIN, "John", BM_PRINCIPAL, true, true));
     givenNoKnownPairs();
     givenAgendaCreates("anchor-own-main");
 
@@ -1648,7 +1693,7 @@ public class CaldavSyncServiceTest {
     assertEquals("John", created.getValue().getName());
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
-    assertEquals(HOME + "calendar:Default:john/", saved.getValue().getRemoteHref());
+    assertEquals(JOHNS_MAIN, saved.getValue().getRemoteHref());
   }
 
   /**
@@ -1661,11 +1706,16 @@ public class CaldavSyncServiceTest {
   public void aSubscriptionAlreadyMaterialisedIsRetired() throws Exception {
     CalendarSync bound = activeRemotePair(POOL_VEHICLE, "anchor-16");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
-    givenServerCalendars(owned(POOL_VEHICLE, "Véhicule de pool 1", PRINCIPAL, true, true));
+    givenBlueMindAccountListing(owned(POOL_VEHICLE, "Véhicule de pool 1", BM_PRINCIPAL, true, true));
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavSubscriptionRetirementService).retire(USER, LOGIN, bound, CollectionOwnership.SUBSCRIBED_RESOURCE);
+    verify(caldavSubscriptionRetirementService).retire(eq(USER),
+                                                       eq(endpoint),
+                                                       eq(BM_PRINCIPAL),
+                                                       eq(bound),
+                                                       any(),
+                                                       eq(CollectionOwnership.SUBSCRIBED_RESOURCE));
     verify(agendaCalendarService, never()).createCalendar(any(), anyString());
   }
 
@@ -1679,14 +1729,14 @@ public class CaldavSyncServiceTest {
   public void aPausedSubscriptionAndTheUsersOwnBoundMainAreNotHandedToTheRetirement() throws Exception {
     CalendarSync paused = activeRemotePair(POOL_VEHICLE, "anchor-16");
     paused.setStatus(CalendarSyncStatus.PAUSED);
-    CalendarSync ownMain = activeRemotePair(HOME + "calendar:Default:john/", "anchor-main");
+    CalendarSync ownMain = activeRemotePair(JOHNS_MAIN, "anchor-main");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(paused, ownMain));
-    givenServerCalendars(owned(POOL_VEHICLE, "Véhicule de pool 1", PRINCIPAL, true, true),
-                         owned(HOME + "calendar:Default:john/", "John", PRINCIPAL, true, true));
+    givenBlueMindAccountListing(owned(POOL_VEHICLE, "Véhicule de pool 1", BM_PRINCIPAL, true, true),
+                                owned(JOHNS_MAIN, "John", BM_PRINCIPAL, true, true));
 
     service.syncNow(USER, LOGIN);
 
-    verify(caldavSubscriptionRetirementService, never()).retire(anyLong(), any(), any(), any());
+    verify(caldavSubscriptionRetirementService, never()).retire(anyLong(), any(), any(), any(), any(), any());
   }
 
   /**

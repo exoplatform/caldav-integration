@@ -185,6 +185,25 @@ public class BlueMindContainerNamingTest {
   }
 
   /**
+   * The rule is read on BlueMind's shape only: a {@code calendar:} segment on
+   * an account whose principal and home are not spelled {@code __uids__/<uid>},
+   * or in a home that is not the account's own, names nobody.
+   */
+  @Test
+  public void theRuleIsReadOnlyOnAnAccountOfBlueMindsShapeInItsOwnHome() {
+    assertNull(BlueMindContainerNaming.subscriptionOf("/dav/calendars/john/calendar:room-1/", "/dav/principals/john/"),
+               "an account of another shape");
+    assertNull(BlueMindContainerNaming.subscriptionOf("/dav/calendars/users/751E6D1A-7FDB-49B2-B668-B569E9A5A42D/calendar:room-1/",
+                                                      ROOT_PRINCIPAL),
+               "a home not spelled __uids__");
+    assertNull(BlueMindContainerNaming.subscriptionOf("/dav/calendars/__uids__/" + MEYER_UID + "/calendar:room-1/", ROOT_PRINCIPAL),
+               "another account's home");
+    assertNull(BlueMindContainerNaming.subscriptionOf(POOL_VEHICLE, "/dav/principals/users/751E6D1A-7FDB-49B2-B668-B569E9A5A42D/"),
+               "a principal not spelled __uids__");
+    assertNotNull(BlueMindContainerNaming.subscriptionOf(POOL_VEHICLE, ROOT_PRINCIPAL), "the control");
+  }
+
+  /**
    * A server that names no principal switches the rule off: an owner that
    * cannot be compared is not evidence of a subscription.
    */

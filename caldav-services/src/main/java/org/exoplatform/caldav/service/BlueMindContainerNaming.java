@@ -55,7 +55,12 @@ import org.exoplatform.caldav.storage.CaldavSyncStorage;
  * ({@code MkCalendarProtocol}: eXo's {@code exo-cal-*}, a bare uuid), and a
  * domain calendar an administrator creates gets a bare uuid
  * ({@code QCreateCalendarModelHandler}) — none of those shapes names an owner
- * and all of them are left to the other witnesses. Nor does it ask
+ * and all of them are left to the other witnesses. A client may still create
+ * a collection named {@code calendar:<something>} over CalDAV, which BlueMind
+ * accepts as it is; the name then points at nobody, which is why a binding is
+ * retired only once the owner it points at answers
+ * ({@code CaldavSubscriptionRetirementService}). The rule is read only on an
+ * account of BlueMind's shape (see {@link #isBlueMindAccount}). Nor does it ask
  * {@code calendar-user-type} (RFC 6638): BlueMind's principal defines no such
  * property ({@code store/path/Principal}). A server that names no principal
  * switches the rule off, as it switches the owner comparison off: an owner
@@ -75,6 +80,9 @@ final class BlueMindContainerNaming {
 
   /** The marker of a calendar a user created, after the type prefix. */
   private static final String USER_CREATED_MARKER = "UserCreated:";
+
+  /** The segment BlueMind puts before every uid in a principal or home path. */
+  private static final String UIDS_SEGMENT        = "__uids__";
 
   /**
    * A subscription the naming revealed: whose uid the container carries,
@@ -103,9 +111,12 @@ final class BlueMindContainerNaming {
    *         three shapes, names the account itself, or no principal is known
    */
   static Subscription subscriptionOf(String href, String principal) {
-    String principalUid = lastSegmentOf(principal == null ? null : CalendarCollection.principalPathOf(principal));
-    String segment = lastSegmentOf(CaldavSyncStorage.canonicalHref(href));
-    if (StringUtils.isBlank(principalUid) || !StringUtils.startsWithIgnoreCase(segment, CALENDAR_PREFIX)) {
+    String principalPath = principal == null ? null : CalendarCollection.principalPathOf(principal);
+    String principalUid = lastSegmentOf(principalPath);
+    String collectionPath = CaldavSyncStorage.canonicalHref(href);
+    String segment = lastSegmentOf(collectionPath);
+    if (StringUtils.isBlank(principalUid) || !StringUtils.startsWithIgnoreCase(segment, CALENDAR_PREFIX)
+        || !isBlueMindAccount(principalPath, collectionPath, principalUid)) {
       return null;
     }
     String container = segment.substring(CALENDAR_PREFIX.length());
@@ -146,6 +157,33 @@ final class BlueMindContainerNaming {
   static String principalOf(String principal, String uid) {
     String canonical = CalendarCollection.principalPathOf(principal);
     return StringUtils.substringBeforeLast(canonical, "/") + "/" + uid + "/";
+  }
+
+  /**
+   * Whether the account and the collection have BlueMind's shape, which is
+   * the only place the rule is known to hold.
+   *
+   * <p>
+   * BlueMind spells a principal {@code …/principals/__uids__/<uid>/}
+   * ({@code CurrentUserPrincipal#fetch}) and lists every calendar of a home,
+   * subscriptions included, as {@code …/calendars/__uids__/<uid>/<container
+   * uid>/} ({@code ResType#VSTUFF_CONTAINER}, {@code DavStore#getCalendarDavResource}).
+   * A {@code calendar:} segment on an account of another shape — a server
+   * where a client may name a collection that way for reasons of its own —
+   * says nothing about its owner, and is not read.
+   *
+   * @param principalPath the account's principal, canonical
+   * @param collectionPath the collection, canonical
+   * @param principalUid the account's own uid
+   * @return true when both carry BlueMind's {@code __uids__} spelling and the
+   *         collection sits in the account's own home
+   */
+  private static boolean isBlueMindAccount(String principalPath, String collectionPath, String principalUid) {
+    String principalParent = StringUtils.substringBeforeLast(principalPath, "/");
+    String home = StringUtils.substringBeforeLast(collectionPath, "/");
+    return UIDS_SEGMENT.equals(lastSegmentOf(principalParent))
+        && StringUtils.equalsIgnoreCase(lastSegmentOf(home), principalUid)
+        && UIDS_SEGMENT.equals(lastSegmentOf(StringUtils.substringBeforeLast(home, "/")));
   }
 
   /**

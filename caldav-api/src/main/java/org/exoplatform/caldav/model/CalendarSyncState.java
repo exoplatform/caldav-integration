@@ -48,7 +48,10 @@ public record CalendarSyncState(long id, long calendarId, String name, CalendarS
    * to worry about it; so does a hidden share
    * ({@link CalendarSyncStatus#HIDDEN_SHARE}, EXO-90239), which is a choice
    * the user made and not a state to warn them about. What is left is the
-   * states where something the user might do would change the outcome.
+   * states where something the user might do would change the outcome — a
+   * retired subscription among them ({@link CalendarSyncStatus#RETIRED_SUBSCRIPTION},
+   * EXO-90275): its calendar no longer synchronises, and only the user can
+   * delete it.
    *
    * @return true when this belongs on screen
    */
@@ -56,6 +59,7 @@ public record CalendarSyncState(long id, long calendarId, String name, CalendarS
     return status == CalendarSyncStatus.REMOTE_CREATE_REFUSED
         || status == CalendarSyncStatus.PAUSED
         || status == CalendarSyncStatus.EXO_ORPHANED
-        || status == CalendarSyncStatus.REMOTE_GONE;
+        || status == CalendarSyncStatus.REMOTE_GONE
+        || status == CalendarSyncStatus.RETIRED_SUBSCRIPTION;
   }
 }

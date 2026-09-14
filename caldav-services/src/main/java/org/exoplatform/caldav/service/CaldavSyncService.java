@@ -1202,9 +1202,24 @@ public class CaldavSyncService {
       return;
     }
     for (CalendarSync pair : pairs) {
-      if (pair.getStatus() == CalendarSyncStatus.ACTIVE && !byAnchor.containsKey(pair.getLocalCalendarSyncUid())) {
+      if (byAnchor.containsKey(pair.getLocalCalendarSyncUid())) {
+        continue;
+      }
+      if (pair.getStatus() == CalendarSyncStatus.ACTIVE) {
         LOG.info("Binding {} has no eXo calendar behind it; it is dropped so the collection can be materialised again",
                  pair.getId());
+        caldavSyncStorage.deleteObjects(pair.getId());
+        caldavSyncStorage.deletePair(pair.getId());
+      } else if (pair.getStatus() == CalendarSyncStatus.RETIRED_SUBSCRIPTION) {
+        // The user deleted the copy of a subscription, as the calendar states
+        // asked them to, through a path that did not go by the deletion
+        // dialog (EXO-90275). The binding has nothing left to keep out: the
+        // collection is classified a share on this very pass and listed
+        // read-only under "Shared with me".
+        LOG.info("The calendar of retired subscription binding {} was deleted; the binding is dropped and {} is listed"
+            + " read-only under Shared with me",
+                 pair.getId(),
+                 pair.getRemoteHref());
         caldavSyncStorage.deleteObjects(pair.getId());
         caldavSyncStorage.deletePair(pair.getId());
       }
@@ -1629,7 +1644,7 @@ public class CaldavSyncService {
     for (CalendarCollection collection : collections) {
       if (isAlreadyOurs(collection, known)) {
         reviveIfMarkedGone(known, collection);
-        retireIfSubscription(userIdentityId, username, serverId, principal, known, collection);
+        retireIfSubscription(userIdentityId, serverId, endpoint, principal, known, collection);
         continue;
       }
       if (!collection.holdsEvents()) {
@@ -1718,7 +1733,7 @@ public class CaldavSyncService {
   }
 
   /**
-   * Retires the calendar an earlier pass materialised for a collection the
+   * Retires the binding an earlier pass materialised for a collection the
    * user only subscribed to (EXO-90275).
    *
    * <p>
@@ -1728,25 +1743,25 @@ public class CaldavSyncService {
    * {@link SyncOrigin#REMOTE} binding is considered — one the sweep made and
    * reads and writes through — and only when the collection classifies as a
    * subscription the server's naming revealed; the classification is the
-   * one the list and the skip use, so what is retired here is what the list
-   * then shows under "Shared with me". Shares the server's owner or
-   * privilege signals revealed, or a colleague's eXo calendar, are left as
+   * one the list and the skip use. Shares the server's owner or privilege
+   * signals revealed, or a colleague's eXo calendar, are left as
    * {@link #skipShare} describes: that clean-up was left to a human, and
    * nobody has decided it since. Asked before the import and the outbound
-   * phases of the same pass, so a retired or paused binding is neither read
-   * nor written again. What is done, and why nothing reaches the server, is
-   * {@link CaldavSubscriptionRetirementService}'s.
+   * phases of the same pass, so a retired binding is neither read nor written
+   * again. What retiring does — and does not do, since the calendar is kept —
+   * is {@link CaldavSubscriptionRetirementService}'s.
    *
    * @param userIdentityId identity of the user
-   * @param username the user's login
    * @param serverId the declared server registration
+   * @param endpoint the account's endpoint, through which the owner the
+   *          naming points at is confirmed
    * @param principal the account's principal, as the listing named it
    * @param known every pair this user holds on this server
    * @param collection the listed collection, already bound
    */
   private void retireIfSubscription(long userIdentityId,
-                                    String username,
                                     long serverId,
+                                    CalDavEndpoint endpoint,
                                     String principal,
                                     List<CalendarSync> known,
                                     CalendarCollection collection) {
@@ -1761,7 +1776,7 @@ public class CaldavSyncService {
     }
     CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId, principal, known, collection);
     if (ownership.isSubscription()) {
-      caldavSubscriptionRetirementService.retire(userIdentityId, username, binding, ownership);
+      caldavSubscriptionRetirementService.retire(userIdentityId, endpoint, principal, binding, collection, ownership);
     }
   }
 
@@ -1813,9 +1828,9 @@ public class CaldavSyncService {
    * with 403 is now given up on at once rather than retried
    * ({@code CaldavEventPropagationService}). Cleaning those calendars up is a
    * migration question left to a human — except for a subscription the
-   * server's naming reveals, whose materialised calendar the pass retires
-   * itself ({@link #retireIfSubscription}, EXO-90275): the PO asked for that
-   * one, and it is decided nowhere else.
+   * server's naming reveals, whose binding the pass retires itself so that
+   * nothing more is read or written through it, keeping the calendar for the
+   * user to delete ({@link #retireIfSubscription}, EXO-90275).
    *
    * <p>
    * Said once per collection per process at info, and at debug after that:

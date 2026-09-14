@@ -97,6 +97,30 @@ public enum CalendarSyncStatus {
    * a {@link #LOCALLY_DELETED} tombstone stick. Lifted by deleting the pair:
    * nothing has to be synchronised for the share to be listed again.
    */
-  HIDDEN_SHARE
+  HIDDEN_SHARE,
+
+  /**
+   * A calendar materialised from a collection the user only subscribed to —
+   * a BlueMind resource, a colleague's calendar — before the server's naming
+   * was read, and retired since (EXO-90275).
+   *
+   * <p>
+   * Inert, and that is the whole of its meaning: nothing is read from the
+   * collection and nothing is written to it through this binding, not an
+   * import, not a push, not a removal, not the cleanup a move leaves behind.
+   * The sweep reads only {@link #ACTIVE} pairs and the push writes only
+   * through them; the lookups that resolve a copy by its mapping whatever the
+   * binding's state ({@code CaldavPushService#objectAnywhere},
+   * {@code #mappingElsewhere}, {@code CaldavEventPropagationService#collectHolders})
+   * skip this one by name; and a reconnection thaws {@link #PAUSED} alone, so
+   * it cannot be woken up. The eXo calendar and its events are kept untouched
+   * — eXo cannot tell the copies in it from events the user made there, since
+   * agenda lists a calendar's events only by date window and confirmed
+   * status — and the state is told to the user, who deletes that calendar.
+   * Its binding is then dropped, by the deletion dialog or, after a plain
+   * agenda deletion, by the orphan pruning, and the collection is listed
+   * read-only under "Shared with me".
+   */
+  RETIRED_SUBSCRIPTION
 
 }

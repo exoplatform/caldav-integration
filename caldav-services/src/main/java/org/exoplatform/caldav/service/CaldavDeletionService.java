@@ -148,6 +148,10 @@ public class CaldavDeletionService {
       // reason a plain local deletion fails.
       return;
     }
+    if (pair.getStatus() == CalendarSyncStatus.RETIRED_SUBSCRIPTION) {
+      forgetRetiredSubscription(pair, calendarId);
+      return;
+    }
     if (pair.getOrigin() != SyncOrigin.EXO) {
       // Nothing eXo created out there. A REMOTE pair's collection is the
       // user's own, made in their own client, and a deletion in eXo is a
@@ -206,9 +210,39 @@ public class CaldavDeletionService {
     if (pair == null) {
       return;
     }
+    if (pair.getStatus() == CalendarSyncStatus.RETIRED_SUBSCRIPTION) {
+      forgetRetiredSubscription(pair, calendarId);
+      return;
+    }
     CalendarSyncStatus state = pair.getOrigin() == SyncOrigin.EXO ? CalendarSyncStatus.EXO_ORPHANED
                                                                  : CalendarSyncStatus.LOCALLY_DELETED;
     tombstone(pair, state, calendarId);
+  }
+
+  /**
+   * Drops the binding of a retired subscription whose calendar the user is
+   * deleting (EXO-90275).
+   *
+   * <p>
+   * Not a tombstone, deliberately. A tombstone keeps a collection out of the
+   * calendar list for good, because the collection is the user's own and they
+   * asked to be rid of it; this collection is somebody else's, the calendar
+   * being deleted is only the copy an earlier pass made of it, and deleting
+   * that copy is exactly what the user was asked to do so that the collection
+   * can be listed where it belongs — read-only, under "Shared with me". Nothing
+   * is asked of the server: the binding was inert, and its collection is not
+   * eXo's.
+   *
+   * @param pair the retired binding
+   * @param calendarId the eXo calendar being deleted, for the line
+   */
+  private void forgetRetiredSubscription(CalendarSync pair, long calendarId) {
+    caldavSyncStorage.deleteObjects(pair.getId());
+    caldavSyncStorage.deletePair(pair.getId());
+    LOG.info("Calendar {}, materialised from the subscription {} and retired, is being deleted; its binding is dropped and"
+        + " the subscription is listed read-only under Shared with me",
+             calendarId,
+             pair.getRemoteHref());
   }
 
   /**
@@ -228,7 +262,11 @@ public class CaldavDeletionService {
     Calendar calendar = agendaCalendarService.getCalendarById(calendarId);
     CalendarSync pair = pairOf(userIdentityId, calendar);
     if (pair == null || pair.getStatus() == CalendarSyncStatus.LOCALLY_DELETED
-        || pair.getStatus() == CalendarSyncStatus.EXO_ORPHANED) {
+        || pair.getStatus() == CalendarSyncStatus.EXO_ORPHANED
+        || pair.getStatus() == CalendarSyncStatus.RETIRED_SUBSCRIPTION) {
+      // A retired subscription claims nothing either (EXO-90275): its
+      // collection is somebody else's, neither deleted nor kept by this
+      // deletion, and the dialog has nothing to warn about.
       return new CalendarDeletionPlan(false, false, null);
     }
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);

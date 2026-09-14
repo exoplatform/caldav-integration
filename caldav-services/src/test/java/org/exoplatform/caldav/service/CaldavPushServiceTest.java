@@ -2230,6 +2230,65 @@ public class CaldavPushServiceTest {
   }
 
 
+  /**
+   * EXO-90275. A copy found only in a calendar materialised from somebody
+   * else's collection and retired since is not removed: the object is that
+   * collection's own — a colleague's event, a resource's booking — and
+   * nothing is written there any more.
+   */
+  @Test
+  public void aCopyInARetiredSubscriptionIsNeverRemovedFromIt() {
+    CalendarSync mirror = pair();
+    mirror.setId(5001L);
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(mirror));
+    when(caldavSyncStorage.getObjectByUid(5001L, "uid-114")).thenReturn(null);
+    CalendarSync retired = boundPersonalPair();
+    retired.setId(5003L);
+    retired.setStatus(CalendarSyncStatus.RETIRED_SUBSCRIPTION);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pairOf(5001L), retired));
+    lenient().when(caldavSyncStorage.getObjectByUid(5003L, "uid-114")).thenReturn(mapped("\"etag-1\""));
+
+    service.deleteEvent(USER, "john", "uid-114");
+
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any());
+    verify(caldavSyncStorage, never()).getObjectByUid(5003L, "uid-114");
+  }
+
+  /**
+   * EXO-90275, the move side. An event moved out of a retired subscription's
+   * calendar leaves its old object where it is: cleaning it up would delete
+   * the collection's own object.
+   */
+  @Test
+  public void anEventMovedOutOfARetiredSubscriptionRemovesNothingThere() throws Exception {
+    givenAnAgendaEvent(115L, 0L);
+    givenPersonalCalendar(12L, "cal-anchor");
+    CalendarSync destination = boundPersonalPair();
+    destination.setId(6001L);
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(destination);
+    when(agendaRemoteEventService.findRemoteEvent(115L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-115"));
+    when(caldavSyncStorage.getObjectByUid(6001L, "uid-115")).thenReturn(null);
+    CalendarSync retired = boundPersonalPair();
+    retired.setId(6003L);
+    retired.setRemoteHref("/dav/calendars/__uids__/john-uid/calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8");
+    retired.setStatus(CalendarSyncStatus.RETIRED_SUBSCRIPTION);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(destination, retired));
+    ObjectSync theirs = mapped("\"etag-theirs\"");
+    theirs.setId(7778L);
+    theirs.setCalendarSyncId(6003L);
+    theirs.setRemoteHref("/dav/calendars/__uids__/john-uid/calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/uid-115.ics");
+    lenient().when(caldavSyncStorage.getObjectByUid(6003L, "uid-115")).thenReturn(theirs);
+    lenient().when(caldavSyncStorage.getObjectByEvent(6003L, 115L)).thenReturn(theirs);
+    when(calDavClient.putObject(any(), anyString(), anyString())).thenReturn(new PutResult(201, "\"etag-new\"", null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, "john", 115L);
+
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any());
+    verify(caldavSyncStorage, never()).deleteObject(7778L);
+  }
+
   @Test
   public void anEventMovedToAnotherCalendarLeavesNoCopyBehind() throws Exception {
     // Found by hand: move an event between two personal calendars and it
