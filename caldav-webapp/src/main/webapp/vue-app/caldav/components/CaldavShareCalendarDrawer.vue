@@ -94,15 +94,22 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             :key="sharee.principal"
             class="px-0">
             <!--
-              The avatar URL comes with the sharee: the platform already
-              resolved the identity to name it, and a user-avatar per row would
-              look each one up again.
+              The platform's user-avatar for a colleague, in its picture-only
+              mode with its popover, as agenda's Shared with me rows show an
+              owner: it renders a disabled or deleted account, which a bare
+              image would not. It looks the user up once per row, which a list
+              of the few people a calendar is shared with can afford. A
+              principal eXo cannot name, and everyone, keep a plain icon.
             -->
             <v-list-item-avatar size="32" class="me-3">
-              <v-img
-                v-if="avatarOf(sharee)"
-                :src="avatarOf(sharee)"
-                role="presentation" />
+              <user-avatar
+                v-if="avatarUserOf(sharee)"
+                :profile-id="avatarUserOf(sharee).username"
+                :avatar-url="avatarUserOf(sharee).avatarUrl"
+                :name="avatarUserOf(sharee).fullName"
+                :size="32"
+                avatar
+                popover />
               <v-icon
                 v-else
                 size="18"
@@ -341,9 +348,15 @@ export default {
       if (privileges.length) {
         message = `${message} ${this.$t('caldav.share.error.missingPrivileges', {0: privileges.join(', ')})}`;
       }
-      const preconditions = (error && error.preconditions || []).filter(precondition => precondition !== 'need-privileges');
-      if (preconditions.length) {
-        message = `${message} ${this.$t('caldav.share.error.preconditions', {0: preconditions.join(', ')})}`;
+      // Only the preconditions this add-on can put into words. A raw RFC name,
+      // or a vendor's own condition, means nothing to the owner; it is in the
+      // platform's log line, where the server's refusal is written in full.
+      const explained = (error && error.preconditions || [])
+        .map(precondition => `caldav.share.precondition.${precondition}`)
+        .filter(key => typeof this.$te === 'function' && this.$te(key))
+        .map(key => this.$t(key));
+      if (explained.length) {
+        message = `${message} ${this.$t('caldav.share.error.preconditions', {0: explained.join('; ')})}`;
       }
       this.errorMessage = message;
     },
@@ -375,13 +388,15 @@ export default {
       return sharee.kind === 'OUTSIDE_EXO' ? `${this.$t('caldav.share.outsideExo')} · ${access}` : access;
     },
     /**
-     * The avatar of a sharee eXo can name.
+     * The one eXo user a sharee row shows an avatar for: a principal a single
+     * colleague is connected as. Several users on one login, a principal eXo
+     * cannot name, and everyone get an icon instead.
      *
      * @param {Object} sharee the sharee row
-     * @returns {String} the URL, or null
+     * @returns {Object} the user, or null
      */
-    avatarOf(sharee) {
-      return sharee.users && sharee.users.length === 1 && sharee.users[0].avatarUrl || null;
+    avatarUserOf(sharee) {
+      return sharee.users && sharee.users.length === 1 && sharee.users[0] || null;
     },
     /**
      * A candidate's full name, for the confirmation.

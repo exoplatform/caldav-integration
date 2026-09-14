@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -298,6 +299,26 @@ public class CaldavCalendarShareServiceTest {
     when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, "bob")).thenReturn(disabled);
 
     assertEquals(CaldavCalendarShareService.SHAREE_UNKNOWN, refusal("bob"));
+  }
+
+  /**
+   * With no principal from the server and none recorded — just after the
+   * account was connected again — alice2, on alice's own login, cannot be told
+   * from a colleague: the grant and the candidates are refused rather than
+   * checked against nothing, and nothing is written.
+   */
+  @Test
+  public void anOwnerWhosePrincipalNobodyNamesIsRefusedRatherThanComparedWithNothing() throws Exception {
+    when(calDavClient.discoverPrincipal(endpoint)).thenThrow(new org.exoplatform.caldav.client.CalDavException("no principal"));
+    when(caldavConnectionIdentityService.principalOf(ALICE, STALWART)).thenReturn(null);
+
+    CaldavShareException granted = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "alice2"));
+    CaldavShareException offered = assertThrows(CaldavShareException.class, () -> service.candidates(ALICE, "alice", CALENDAR, null));
+
+    assertEquals(CaldavCalendarShareService.OWNER_UNKNOWN, granted.getCode());
+    assertEquals(CaldavCalendarShareService.OWNER_UNKNOWN, offered.getCode());
+    verify(calDavClient, never()).readAcl(any(), anyString());
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
   }
 
   // ---------------------------------------------------------------- the grant
@@ -585,11 +606,14 @@ public class CaldavCalendarShareServiceTest {
     unbound.setLocalCalendarSyncUid("other");
     unbound.setRemoteHref("/dav/cal/alice%40stalwart.local/default/");
     when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.EXO)).thenReturn(List.of(exoPair(), unbound));
-    when(agendaCalendarService.getCalendars(0, Integer.MAX_VALUE, "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR),
-                                                                                              calendar(14L, ALICE, "other"),
-                                                                                              calendar(21L, 777L, ANCHOR)));
+    when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR),
+                                                                                                  calendar(14L, ALICE, "other"),
+                                                                                                  calendar(21L, 777L, ANCHOR)));
 
     assertEquals(List.of(CALENDAR), service.shareableCalendarIds(ALICE, "alice"));
+    // Asked by owner: the space-wide listing reads every space calendar through
+    // an ACL check, on every refresh of the panel, for nothing kept.
+    verify(agendaCalendarService, never()).getCalendars(anyInt(), anyInt(), anyString());
 
     when(calDavClient.options(endpoint, COLLECTION)).thenReturn(DavOptions.of(List.of("1, access-control, calendarserver-sharing"),
                                                                               List.of("ACL")));

@@ -232,7 +232,9 @@ const caldavConnector = {
   calendarActions() {
     return Promise.all([caldavConnectorService.getShareableCalendars(), labels()])
       .then(([calendarIds, bundle]) => {
-        const label = bundle && bundle['caldav.share.menu'] || 'Share…';
+        // The key itself when the bundle could not be read, like every other
+        // label of this add-on: an English word would pass for a translation.
+        const label = bundle && bundle['caldav.share.menu'] || 'caldav.share.menu';
         const actions = {};
         (calendarIds || []).forEach(calendarId => {
           actions[calendarId] = [{id: 'caldavShareCalendar', label, icon: 'fa-share-alt'}];

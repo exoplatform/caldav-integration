@@ -78,20 +78,33 @@ document.addEventListener('open-caldav-share-calendar-drawer', event => {
     return;
   }
   if (!shareDrawerApp) {
-    shareDrawerApp = i18nPromise.then(i18n => {
-      const element = document.createElement('div');
-      element.id = 'caldavShareCalendarDrawerApp';
-      document.body.appendChild(element);
-      return Vue.createApp({
-        template: '<caldav-share-calendar-drawer ref="drawer" />',
-        vuetify,
-        i18n,
-      }, element, 'CalDAV Share Calendar Drawer');
-    });
+    // The shared i18n instance when the bundle could not be fetched: raw keys
+    // in a drawer beat a menu entry that does nothing. A mount that failed is
+    // forgotten, so the next click tries again rather than meeting the same
+    // rejected promise for the life of the page.
+    shareDrawerApp = i18nPromise
+      .catch(() => exoi18n.i18n)
+      .then(i18n => {
+        const element = document.createElement('div');
+        element.id = 'caldavShareCalendarDrawerApp';
+        document.body.appendChild(element);
+        const app = Vue.createApp({
+          template: '<caldav-share-calendar-drawer ref="drawer" />',
+          vuetify,
+          i18n,
+        }, element, 'CalDAV Share Calendar Drawer');
+        if (!app) {
+          throw new Error('the share drawer could not be mounted');
+        }
+        return app;
+      });
   }
   shareDrawerApp
-    .then(app => app && app.$refs.drawer && app.$refs.drawer.open(calendar))
-    .catch(error => console.error('cannot open the share drawer', error));
+    .then(app => app.$refs.drawer.open(calendar))
+    .catch(error => {
+      shareDrawerApp = null;
+      console.error('cannot open the share drawer', error);
+    });
 });
 
 // Whether this instance chose the user's CalDAV server, fetched ONCE and

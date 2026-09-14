@@ -190,6 +190,7 @@ public class CaldavShareRestTest {
     assertEquals(List.of("write-acl"), refused.getBody().get("missingPrivileges"));
 
     for (String code : List.of(CaldavCalendarShareService.NOT_CONNECTED,
+                               CaldavCalendarShareService.OWNER_UNKNOWN,
                                CaldavCalendarShareService.NOT_SUPPORTED,
                                CaldavCalendarShareService.ACL_UNREADABLE,
                                CaldavCalendarShareService.ACL_NOT_UNDERSTOOD,

@@ -78,10 +78,13 @@ describe('CaldavShareCalendarDrawer', () => {
     return shallowMount(CaldavShareCalendarDrawer, {
       mocks: {
         $t: (key, params) => (params ? `${key}(${Object.values(params).join(',')})` : key),
+        // The precondition sentences the bundle holds; any other key is unknown.
+        $te: key => ['caldav.share.precondition.allowed-principal'].includes(key),
         $vuetify: {rtl: false},
       },
       stubs: {
         'identity-suggester': true,
+        'user-avatar': true,
         'exo-drawer': {
           template: '<div><slot name="title"></slot><slot name="content"></slot></div>',
           methods: {
@@ -128,7 +131,9 @@ describe('CaldavShareCalendarDrawer', () => {
     expect(wrapper.vm.nameOf(ZOE)).toBe('Zoé Partner');
     expect(wrapper.vm.accessOf(ZOE)).toBe('caldav.share.outsideExo · caldav.share.access.more');
     expect(wrapper.vm.nameOf(EVERYONE)).toBe('caldav.share.everyone');
-    expect(wrapper.vm.avatarOf(BOB)).toBe('/avatar/bob');
+    expect(wrapper.vm.avatarUserOf(BOB)).toEqual(BOB.users[0]);
+    expect(wrapper.vm.avatarUserOf(ZOE)).toBeNull();
+    expect(wrapper.vm.avatarUserOf(EVERYONE)).toBeNull();
     // Only the sharee eXo can name and may remove carries the button.
     expect(wrapper.findAll('v-btn-stub, v-btn').filter(button => button.attributes('aria-label')).length).toBe(1);
     expect(wrapper.text()).not.toContain('caldav.share.sharees.none');
@@ -201,7 +206,7 @@ describe('CaldavShareCalendarDrawer', () => {
   it('words a refusal as the server stated it', async () => {
     caldavConnectorService.shareCalendar.mockRejectedValue(Object.assign(new Error('caldav.share.serverRefused'), {
       code: 'caldav.share.serverRefused',
-      preconditions: ['need-privileges', 'allowed-principal'],
+      preconditions: ['need-privileges', 'allowed-principal', '{urn:stalwart}max-shares'],
       missingPrivileges: ['write-acl'],
     }));
     const wrapper = mountDrawer();
@@ -211,8 +216,10 @@ describe('CaldavShareCalendarDrawer', () => {
     wrapper.vm.selected = wrapper.vm.candidateItems[0];
     await wrapper.vm.share();
 
+    // The missing privilege is named; of the preconditions, only the one the
+    // bundle can word is shown, never a raw RFC or vendor name.
     expect(wrapper.vm.errorMessage).toBe('caldav.share.serverRefused caldav.share.error.missingPrivileges(write-acl)'
-      + ' caldav.share.error.preconditions(allowed-principal)');
+      + ' caldav.share.error.preconditions(caldav.share.precondition.allowed-principal)');
     expect(wrapper.vm.saving).toBe(false);
   });
 

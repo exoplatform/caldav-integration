@@ -158,6 +158,13 @@ public class CaldavCalendarShareService {
   /** The server refused the change. */
   public static final String      SERVER_REFUSED         = "caldav.share.serverRefused";
 
+  /**
+   * Neither the server nor eXo's record says which principal the caller is
+   * connected as, so a colleague on the caller's own login cannot be told
+   * apart.
+   */
+  public static final String      OWNER_UNKNOWN          = "caldav.share.ownerUnknown";
+
   /** The server accepted the change, and the list read back does not hold it. */
   public static final String      NOT_APPLIED            = "caldav.share.notApplied";
 
@@ -247,7 +254,10 @@ public class CaldavCalendarShareService {
       if (pairs.isEmpty()) {
         return List.of();
       }
-      List<Calendar> calendars = agendaCalendarService.getCalendars(0, Integer.MAX_VALUE, username)
+      // By owner, not getCalendars: that one also reads every calendar of
+      // every space the user belongs to, each through an ACL check, for a list
+      // this would then discard — on every refresh of the agenda's panel.
+      List<Calendar> calendars = agendaCalendarService.getCalendarsByOwnerIds(List.of(userIdentityId), username)
                                                       .stream()
                                                       .filter(calendar -> calendar.getOwnerId() == userIdentityId)
                                                       .filter(calendar -> !calendar.isDeleted())
@@ -262,7 +272,7 @@ public class CaldavCalendarShareService {
         return List.of();
       }
       return calendars.stream().map(Calendar::getId).toList();
-    } catch (Exception e) { // NOSONAR agenda declares a bare Exception, and this answer must never fail
+    } catch (Exception e) { // NOSONAR this answer must never fail, whatever agenda or the server throws
       LOG.debug("Which calendars user {} can share could not be established; none is offered", userIdentityId, e);
       return List.of();
     }
@@ -317,7 +327,7 @@ public class CaldavCalendarShareService {
     Sharee sharee = shareeOf(target, shareeUsername);
     return onServer(() -> {
       requireOffered(target);
-      String ownerPrincipal = ownerPrincipal(target);
+      String ownerPrincipal = requiredOwnerPrincipal(target);
       if (sharee.principal().equals(ownerPrincipal)) {
         throw new IllegalArgumentException(SAME_PRINCIPAL);
       }
@@ -448,10 +458,8 @@ public class CaldavCalendarShareService {
                                     long calendarId,
                                     String query) throws ObjectNotFoundException, IllegalAccessException {
     ShareTarget target = targetOf(userIdentityId, username, calendarId);
-    String ownerPrincipal = caldavConnectionIdentityService.principalOf(userIdentityId, target.serverId());
-    if (ownerPrincipal == null) {
-      ownerPrincipal = onServer(() -> ownerPrincipal(target));
-    }
+    String recorded = caldavConnectionIdentityService.principalOf(userIdentityId, target.serverId());
+    String ownerPrincipal = recorded != null ? recorded : onServer(() -> requiredOwnerPrincipal(target));
     String needle = StringUtils.lowerCase(StringUtils.trimToNull(query), Locale.ROOT);
     List<ShareUser> candidates = new ArrayList<>();
     for (Map.Entry<Long, String> connection : caldavConnectionIdentityService.principalsOn(target.serverId()).entrySet()) {
@@ -566,6 +574,33 @@ public class CaldavCalendarShareService {
       discovered = null;
     }
     return discovered != null ? discovered : caldavConnectionIdentityService.principalOf(target.userIdentityId(), target.serverId());
+  }
+
+  /**
+   * The caller's principal where a decision rests on it, refused when nobody
+   * can name it.
+   *
+   * <p>
+   * What tells a colleague on the caller's own login (EXO-90190) from a
+   * colleague on another: with no principal to compare, that colleague would
+   * be offered and granted — "sharing" with oneself, which B.8.3 says must not
+   * be offered. It is unknown only briefly in practice: the server answered no
+   * principal, and the record is empty because the account was just connected
+   * again, which forgets it until the next discovery.
+   *
+   * @param target the calendar being shared
+   * @return the canonical principal, never null
+   * @throws CaldavShareException with {@link #OWNER_UNKNOWN} when nobody names it
+   */
+  private String requiredOwnerPrincipal(ShareTarget target) {
+    String principal = ownerPrincipal(target);
+    if (principal == null) {
+      LOG.debug("Neither the server nor the record names the principal of user {} on server {}; nothing is offered or granted",
+                target.userIdentityId(),
+                target.serverId());
+      throw new CaldavShareException(OWNER_UNKNOWN);
+    }
+    return principal;
   }
 
   /**

@@ -64,6 +64,19 @@ describe('sharing a calendar through the CalDAV connector', () => {
     expect(fetch.mock.calls.find(([url]) => url.includes('/shareable'))[1].credentials).toBe('include');
   });
 
+  it('labels the entry with its key, not an English word, when the bundle cannot be read', async () => {
+    route({
+      '/caldav/rest/calendars/shareable': {ok: true, json: () => Promise.resolve({calendarIds: [12]})},
+      'locale.portlet.Caldav': {ok: false, status: 404},
+    });
+    jest.resetModules();
+    const {default: freshConnector} = await import('../../main/webapp/vue-app/caldav/caldav-connector/caldavConnector.js');
+
+    await expect(freshConnector.calendarActions()).resolves.toEqual({
+      12: [{id: 'caldavShareCalendar', label: 'caldav.share.menu', icon: 'fa-share-alt'}],
+    });
+  });
+
   it('offers nothing, and does not reject, when the platform cannot answer', async () => {
     route({
       '/caldav/rest/calendars/shareable': () => Promise.reject(new Error('offline')),
