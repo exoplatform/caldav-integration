@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -51,6 +52,10 @@ import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.client.AccessControlEntry;
 import org.exoplatform.caldav.client.AccessControlEntry.AcePrincipal;
 import org.exoplatform.caldav.client.AclWriteResult;
+import org.exoplatform.caldav.client.BlueMindAclClient;
+import org.exoplatform.caldav.client.BlueMindAclClient.BlueMindAce;
+import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -118,6 +123,34 @@ public class CaldavCalendarShareServiceTest {
 
   private static final String STALWART_DAV     = "1, 2, 3, access-control, calendar-access, addressbook";
 
+  /** FRANCOIS — alice on the BlueMind rig — as a BlueMind directory entry. */
+  private static final String FRANCOIS_UID     = "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13";
+
+  /** eric/MEYER — bob on the BlueMind rig. */
+  private static final String ERIC_UID         = "6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17";
+
+  /** A colleague given write access from BlueMind itself — carol on the rig. */
+  private static final String WRITER_UID       = "D41A7C22-3E5B-4F60-8A19-2B7C9D0E1F35";
+
+  /** Somebody nobody in eXo is connected as. */
+  private static final String STRANGER_UID     = "0C5D7E91-2F4A-4B38-9D6E-7A1B3C5D7E9F";
+
+  private static final String BM_COLLECTION    = "/dav/calendars/__uids__/" + FRANCOIS_UID + "/exo-cal-" + ANCHOR + "/";
+
+  private static final String BM_CONTAINER     = "exo-cal-" + ANCHOR;
+
+  private static final String FRANCOIS_PRINCIPAL = "/dav/principals/__uids__/" + FRANCOIS_UID;
+
+  private static final String ERIC_PRINCIPAL   = "/dav/principals/__uids__/" + ERIC_UID;
+
+  private static final String WRITER_PRINCIPAL = "/dav/principals/__uids__/" + WRITER_UID;
+
+  /** eric's address in BlueMind — not his eXo profile e-mail. */
+  private static final String ERIC_ADDRESS     = "eric.meyer@bm.example.com";
+
+  /** BlueMind's captured DAV header (bluemind-principal.captured.xml:10), abridged to its sharing tokens. */
+  private static final String BLUEMIND_DAV     = "1, access-control, calendar-access, calendar-proxy, calendarserver-sharing, addressbook";
+
   @Mock
   private AgendaCalendarService           agendaCalendarService;
 
@@ -139,6 +172,9 @@ public class CaldavCalendarShareServiceTest {
   @Mock
   private CalDavEndpoint                  endpoint;
 
+  @Mock
+  private BlueMindAclClient               blueMindAclClient;
+
   private CaldavCalendarShareService      service;
 
   /**
@@ -152,7 +188,8 @@ public class CaldavCalendarShareServiceTest {
                                              caldavSyncStorage,
                                              calDavClient,
                                              caldavConnectionIdentityService,
-                                             identityManager);
+                                             identityManager,
+                                             blueMindAclClient);
     lenient().when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(calendar(CALENDAR, ALICE, ANCHOR));
     lenient().when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(connectedTo(STALWART));
     lenient().when(caldavSyncStorage.getPairByLocalCalendar(ALICE, STALWART, ANCHOR)).thenReturn(exoPair());
@@ -250,8 +287,9 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
-   * BlueMind's captured header selects Apple sharing, which is not offered:
-   * nothing is read, nothing is written.
+   * BlueMind's sharing token on a collection outside BlueMind's layout selects
+   * Apple sharing, which is not offered: nothing is read, nothing is written,
+   * and BlueMind's REST API is never called.
    */
   @Test
   public void aServerWhoseMechanismIsNotVerifiedIsNotOffered() {
@@ -265,6 +303,194 @@ public class CaldavCalendarShareServiceTest {
     assertEquals(CaldavCalendarShareService.NOT_SUPPORTED, listing.getCode());
     verify(calDavClient, never()).readAcl(any(), anyString());
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+    verify(blueMindAclClient, never()).readAcl(any(), anyString());
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean());
+  }
+
+  // ---------------------------------------------------------------- BlueMind
+
+  /**
+   * On BlueMind a grant is one {@code CS:share} naming eric by the mailto his
+   * own principal publishes — third in the set, and never his eXo profile
+   * e-mail — confirmed on the REST access list read back. The owner's own
+   * rights are not a sharee, the answer says a colleague must subscribe, and
+   * no RFC 3744 request is made.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAGrantIsACsShareConfirmedOnTheRestAccessList() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner(), acl(owner(), expanded(ERIC_UID, "Read")));
+
+    CalendarShares shares = service.grant(ALICE, "alice", CALENDAR, "bob");
+
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), eq("bob@exo.example.com"), anyBoolean());
+    verify(calDavClient, never()).readAcl(any(), anyString());
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+    assertTrue(shares.subscriptionRequired());
+    assertEquals(1, shares.sharees().size());
+    CalendarSharee eric = shares.sharees().get(0);
+    assertEquals(ERIC_PRINCIPAL + "/", eric.principal());
+    assertEquals(ShareeKind.EXO_USERS, eric.kind());
+    assertEquals(ShareAccess.READ, eric.access());
+    assertTrue(eric.removable());
+    assertEquals("bob", eric.users().get(0).username());
+  }
+
+  /**
+   * BlueMind answers 200 to a share it did not apply — an address its
+   * directory does not match, a failure it swallowed. A grant the access list
+   * read back does not hold is not applied.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAShareTheServerAnsweredButDoesNotHoldIsNotApplied() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner(), owner());
+    when(calDavClient.postCalendarServerShare(any(), any(), anyString(), anyBoolean())).thenReturn(200);
+
+    CaldavShareException refused = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
+
+    assertEquals(CaldavCalendarShareService.NOT_APPLIED, refused.getCode());
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
+  }
+
+  /**
+   * BlueMind's handler rewrites every entry of the sharee, so a colleague
+   * already holding more than reading is refused before anything is sent —
+   * for a grant and for a revoke — and so is a revoke of a colleague holding
+   * only free/busy. Somebody else's write access is listed as more access given
+   * outside eXo, not removable, and a grant to eric leaves it alone.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAccessBeyondReadingIsNeverRewritten() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Write")),
+                                                                        acl(owner(), expanded(ERIC_UID, "Write")),
+                                                                        acl(owner(), expanded(ERIC_UID, "Freebusy")),
+                                                                        acl(owner(), expanded(WRITER_UID, "Write")),
+                                                                        acl(owner(), expanded(WRITER_UID, "Write"), expanded(ERIC_UID, "Read")));
+
+    IllegalArgumentException grant = assertThrows(IllegalArgumentException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
+    IllegalArgumentException revoke = assertThrows(IllegalArgumentException.class, () -> service.revoke(ALICE, "alice", CALENDAR, "bob"));
+    IllegalArgumentException freeBusy = assertThrows(IllegalArgumentException.class,
+                                                     () -> service.revoke(ALICE, "alice", CALENDAR, "bob"));
+    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY, grant.getMessage());
+    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY, revoke.getMessage());
+    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY, freeBusy.getMessage());
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean());
+
+    CalendarShares shares = service.grant(ALICE, "alice", CALENDAR, "bob");
+
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
+    CalendarSharee writer = shares.sharees().stream().filter(sharee -> sharee.principal().equals(WRITER_PRINCIPAL + "/")).findFirst().orElseThrow();
+    assertEquals(ShareAccess.MORE, writer.access());
+    assertFalse(writer.removable());
+    assertEquals("carol", writer.users().get(0).username());
+  }
+
+  /**
+   * A subject nobody in eXo is connected as is listed as someone outside eXo
+   * by the name its principal gives, never removable; a subject holding only
+   * free/busy cannot view the calendar and is not listed; and the owner's
+   * rights are left out by the collection's own path even when the owner's
+   * principal is not known.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindASubjectOutsideEXoIsListedButNotRemovable() throws Exception {
+    onBlueMind();
+    when(caldavConnectionIdentityService.principalOf(ALICE, STALWART)).thenReturn(null);
+    lenient().when(calDavClient.discoverPrincipal(endpoint)).thenReturn(null);
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(),
+                                                                           expanded(STRANGER_UID, "Read"),
+                                                                           expanded("bm.example.com", "Freebusy")));
+    when(calDavClient.readDisplayName(endpoint, "/dav/principals/__uids__/" + STRANGER_UID + "/")).thenReturn("Zoé Stranger");
+
+    CalendarShares shares = service.listShares(ALICE, "alice", CALENDAR);
+
+    assertTrue(shares.subscriptionRequired());
+    assertEquals(1, shares.sharees().size(), String.valueOf(shares.sharees()));
+    CalendarSharee stranger = shares.sharees().get(0);
+    assertEquals(ShareeKind.OUTSIDE_EXO, stranger.kind());
+    assertEquals("Zoé Stranger", stranger.displayName());
+    assertEquals(ShareAccess.READ, stranger.access());
+    assertFalse(stranger.removable());
+  }
+
+  /**
+   * The sharee's address is the mailto of their own principal's address set,
+   * read through the owner's endpoint. A principal publishing none, or one that
+   * cannot be read, is refused with its own code and nothing is sent — the
+   * address is never taken from the eXo profile.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAShareeWithoutAPublishedAddressIsRefused() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner());
+    when(calDavClient.readCalendarUserAddresses(endpoint, ERIC_PRINCIPAL + "/")).thenReturn(List.of(ERIC_PRINCIPAL + "/", "urn:uuid:" + ERIC_UID),
+                                                                                              List.of("mailto:"),
+                                                                                              List.of("mailto:eric@bm.example.com</D:href>"))
+                                                                                  .thenThrow(new CalDavException("404"));
+
+    for (int attempt = 0; attempt < 4; attempt++) {
+      CaldavShareException refused = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
+      assertEquals(CaldavCalendarShareService.SHAREE_ADDRESS_UNKNOWN, refused.getCode());
+    }
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean());
+  }
+
+  /**
+   * A revoke is a {@code CS:share} remove, confirmed by the access list no
+   * longer naming eric; still named is not applied; and nothing to revoke
+   * sends nothing.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindARevokeIsARemoveConfirmedOnTheRestAccessList() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Read")),
+                                                                        owner(),
+                                                                        acl(owner(), expanded(ERIC_UID, "Read")),
+                                                                        acl(owner(), expanded(ERIC_UID, "Read")),
+                                                                        owner());
+
+    CalendarShares revoked = service.revoke(ALICE, "alice", CALENDAR, "bob");
+    CaldavShareException notApplied = assertThrows(CaldavShareException.class, () -> service.revoke(ALICE, "alice", CALENDAR, "bob"));
+    CalendarShares nothing = service.revoke(ALICE, "alice", CALENDAR, "bob");
+
+    assertTrue(revoked.sharees().isEmpty());
+    assertEquals(CaldavCalendarShareService.NOT_APPLIED, notApplied.getCode());
+    assertTrue(nothing.sharees().isEmpty());
+    verify(calDavClient, org.mockito.Mockito.times(2)).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(true));
+  }
+
+  /**
+   * Credentials BlueMind's REST API cannot take make sharing not offered; an
+   * account the API refuses the list to cannot read it.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAnAccessListThatCannotBeReadIsRefused() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenThrow(new UnsupportedOperationException("not a login"),
+                                                                       new CalDavForbiddenException("403"));
+
+    assertEquals(CaldavCalendarShareService.NOT_SUPPORTED,
+                 assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode());
+    assertEquals(CaldavCalendarShareService.ACL_UNREADABLE,
+                 assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob")).getCode());
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean());
   }
 
   // ---------------------------------------------------------------- who can be a sharee
@@ -801,6 +1027,71 @@ public class CaldavCalendarShareServiceTest {
     pair.setOrigin(SyncOrigin.EXO);
     pair.setStatus(CalendarSyncStatus.ACTIVE);
     return pair;
+  }
+
+  /**
+   * The rig on BlueMind: alice (FRANCOIS) owns a collection in BlueMind's
+   * layout answering BlueMind's header; bob is connected as eric, carol as the
+   * writer; bob's principal publishes eric's BlueMind address, and bob's eXo
+   * profile carries a different e-mail.
+   */
+  private void onBlueMind() {
+    CalendarSync pair = exoPair();
+    pair.setRemoteHref(BM_COLLECTION);
+    lenient().when(caldavSyncStorage.getPairByLocalCalendar(ALICE, STALWART, ANCHOR)).thenReturn(pair);
+    lenient().when(calDavClient.options(endpoint, BM_COLLECTION))
+             .thenReturn(DavOptions.of(List.of(BLUEMIND_DAV), List.of("OPTIONS, GET, PROPFIND, REPORT, POST, ACL")));
+    lenient().when(calDavClient.discoverPrincipal(endpoint)).thenReturn(FRANCOIS_PRINCIPAL + "/");
+    lenient().when(caldavConnectionIdentityService.principalOf(ALICE, STALWART)).thenReturn(FRANCOIS_PRINCIPAL);
+    lenient().when(caldavConnectionIdentityService.principalOf(BOB, STALWART)).thenReturn(ERIC_PRINCIPAL);
+    lenient().when(caldavConnectionIdentityService.usersConnectedAs(STALWART, ERIC_PRINCIPAL)).thenReturn(List.of(BOB));
+    lenient().when(caldavConnectionIdentityService.usersConnectedAs(STALWART, WRITER_PRINCIPAL)).thenReturn(List.of(CAROL));
+    lenient().when(calDavClient.readCalendarUserAddresses(endpoint, ERIC_PRINCIPAL + "/"))
+             .thenReturn(List.of(ERIC_PRINCIPAL + "/", "urn:uuid:" + ERIC_UID, "mailto:" + ERIC_ADDRESS));
+    Identity bob = user(BOB, "bob", "Bob Test");
+    bob.getProfile().setProperty(Profile.EMAIL, "bob@exo.example.com");
+    lenient().when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, "bob")).thenReturn(bob);
+  }
+
+  /**
+   * The owner's rights as BlueMind's expanded list carries them
+   * ({@code AclService.get}: {@code addOwnerRights}, mail delegation verbs
+   * filtered out).
+   *
+   * @return the owner's entries
+   */
+  private static List<BlueMindAce> owner() {
+    return expanded(FRANCOIS_UID, "All");
+  }
+
+  /**
+   * One subject's entries as the REST API lists a stored verb: expanded along
+   * {@code Verb.java}, mail delegation verbs left out.
+   *
+   * @param subject the directory entry uid
+   * @param verb the stored verb
+   * @return the entries
+   */
+  private static List<BlueMindAce> expanded(String subject, String verb) {
+    List<String> verbs = switch (verb) {
+    case "All" -> List.of("All", "Write", "Manage", "ReadExtended", "Read", "Freebusy", "Invitation", "Visible");
+    case "Write" -> List.of("Write", "Read", "Freebusy", "Invitation", "Visible");
+    case "Read" -> List.of("Read", "Freebusy", "Invitation", "Visible");
+    case "Freebusy" -> List.of("Freebusy", "Invitation");
+    default -> List.of(verb);
+    };
+    return verbs.stream().map(name -> new BlueMindAce(subject, name)).toList();
+  }
+
+  /**
+   * Access lists joined.
+   *
+   * @param parts the lists
+   * @return one list
+   */
+  @SafeVarargs
+  private static List<BlueMindAce> acl(List<BlueMindAce>... parts) {
+    return java.util.Arrays.stream(parts).flatMap(List::stream).toList();
   }
 
   /**

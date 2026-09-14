@@ -16,6 +16,8 @@
  */
 package org.exoplatform.caldav.client;
 
+import java.util.regex.Pattern;
+
 /**
  * How a calendar server lets an owner grant somebody else access to a
  * collection, and whether eXo offers it there (EXO-90253).
@@ -59,6 +61,20 @@ public enum SharingMechanism {
    */
   CALENDARSERVER_SHARE(false),
 
+  /**
+   * Apple sharing as BlueMind's DAV server implements it (BlueMind source,
+   * {@code plugins/net.bluemind.dav.server/.../proto/sharing/SharingProtocol.java}):
+   * a {@code POST} of {@code CS:share} on a calendar collection names the
+   * sharee by e-mail, and the server rewrites the container's access list
+   * through its own container management. Offered, with two things eXo does
+   * around it because the protocol cannot: the server answers 200 whatever
+   * happened, so every change is confirmed by reading the container's access
+   * list back through BlueMind's REST API; and the server rewrites or removes
+   * <em>every</em> entry of the sharee, so a sharee holding anything but plain
+   * reading is refused rather than downgraded.
+   */
+  BLUEMIND_SHARE(true),
+
   /** No granting mechanism eXo knows of: Google, or a server without RFC 3744. */
   NONE(false);
 
@@ -73,6 +89,14 @@ public enum SharingMechanism {
 
   /** The compliance class of Apple's calendar-proxy delegation. */
   static final String CALENDAR_PROXY        = "calendar-proxy";
+
+  /**
+   * A calendar collection as BlueMind's DAV server lays it out
+   * ({@code plugins/net.bluemind.dav.server/.../store/ResType.java},
+   * {@code VSTUFF_CONTAINER}): the owner's directory entry uid, then the
+   * container uid, under {@code /dav/calendars/__uids__/}.
+   */
+  static final Pattern BLUEMIND_COLLECTION = Pattern.compile("/dav/calendars/__uids__/[^/]+/[^/]+");
 
   /** The RFC 3744 method that writes an access control list. */
   static final String ACL_METHOD            = "ACL";
@@ -139,5 +163,45 @@ public enum SharingMechanism {
       return WEBDAV_ACL;
     }
     return NONE;
+  }
+
+  /**
+   * The mechanism a collection's own answer to {@code OPTIONS} selects, given
+   * where the collection lives.
+   *
+   * <p>
+   * Apple sharing is offered on one server only, and BlueMind is recognised
+   * by two independent facts that must both hold: it advertises
+   * {@code calendarserver-sharing} (the captured {@code DAV} header,
+   * {@code bluemind-principal.captured.xml}), and the collection has the path
+   * BlueMind's DAV server gives every calendar,
+   * {@code /dav/calendars/__uids__/<owner uid>/<container uid>/}
+   * ({@code ResType.VSTUFF_CONTAINER}). Apple's CalendarServer uses the same
+   * {@code __uids__} layout without the {@code /dav} root, and Nextcloud and
+   * iCloud use other paths; those stay not offered. The service confirms the
+   * recognition before any change: BlueMind's REST API must accept the
+   * owner's login, which no other server answers.
+   *
+   * @param options what the collection answered, null when nothing was asked
+   * @param collectionHref the collection's path, may be null
+   * @return the mechanism, never null
+   */
+  public static SharingMechanism of(DavOptions options, String collectionHref) {
+    SharingMechanism mechanism = of(options);
+    if (mechanism == CALENDARSERVER_SHARE && options.advertises(CALENDARSERVER_SHARING) && isBlueMindCollection(collectionHref)) {
+      return BLUEMIND_SHARE;
+    }
+    return mechanism;
+  }
+
+  /**
+   * Whether a path is a calendar collection as BlueMind's DAV server names one.
+   *
+   * @param collectionHref the collection's path, may be null
+   * @return true for {@code /dav/calendars/__uids__/<uid>/<container>/}
+   */
+  public static boolean isBlueMindCollection(String collectionHref) {
+    return collectionHref != null
+        && BLUEMIND_COLLECTION.matcher(CalendarCollection.principalPathOf(collectionHref)).matches();
   }
 }

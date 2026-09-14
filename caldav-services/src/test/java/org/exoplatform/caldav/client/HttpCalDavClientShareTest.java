@@ -49,6 +49,7 @@ import java.util.concurrent.Flow;
 
 import javax.xml.parsers.DocumentBuilderFactory;
 
+import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.w3c.dom.Document;
@@ -122,6 +123,18 @@ public class HttpCalDavClientShareTest {
   /** Google's DAV header, live (design A.5). */
   private static final String   GOOGLE_DAV      = "1, calendar-access, calendar-schedule, calendar-auto-schedule, calendar-proxy";
 
+  /** FRANCOIS's directory entry uid, the one captured in the BlueMind fixtures. */
+  private static final String   BLUEMIND_OWNER  = "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13";
+
+  /** A calendar collection as BlueMind lays it out. */
+  private static final String   BLUEMIND_COLLECTION = "/dav/calendars/__uids__/" + BLUEMIND_OWNER + "/exo-cal-" + ANCHOR + "/";
+
+  /** eric/MEYER's directory entry uid, as in the DERIVED address-set fixture. */
+  private static final String   ERIC_UID        = "6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17";
+
+  /** eric/MEYER's BlueMind principal. */
+  private static final String   ERIC_PRINCIPAL  = "/dav/principals/__uids__/" + ERIC_UID + "/";
+
   private HttpClient            transport;
 
   private HttpCalDavClient      client;
@@ -180,7 +193,8 @@ public class HttpCalDavClientShareTest {
 
   /**
    * BlueMind advertises access control too; the vendor sharing protocol wins,
-   * and it is not offered — even were the ACL method allowed.
+   * and read without the collection's path it is not offered — even were the
+   * ACL method allowed.
    */
   @Test
   void bluemindsCapturedHeaderSelectsCalendarServerSharingWhichIsNotOffered() {
@@ -189,6 +203,41 @@ public class HttpCalDavClientShareTest {
     assertTrue(options.advertises("access-control"), "the capture does advertise RFC 3744: the rule order is what keeps it off");
     assertEquals(SharingMechanism.CALENDARSERVER_SHARE, SharingMechanism.of(options));
     assertFalse(SharingMechanism.of(options).isOffered());
+  }
+
+  /**
+   * BlueMind is recognised by its header and its collection layout together
+   * (EXO-90253): the captured header on {@code /dav/calendars/__uids__/<owner
+   * uid>/<container>/} selects BlueMind's sharing, offered. Either alone is
+   * not enough — the header on another server's path, Apple CalendarServer's
+   * {@code __uids__} layout without BlueMind's {@code /dav} root, a resource
+   * under the collection, and the path under a server advertising RFC 3744
+   * each keep their own mechanism.
+   */
+  @Test
+  void blueMindIsRecognisedByItsHeaderAndItsCollectionPathTogether() {
+    DavOptions bluemind = DavOptions.of(List.of(BLUEMIND_DAV), List.of("OPTIONS, GET, PROPFIND, REPORT, POST, ACL"));
+    DavOptions stalwart = DavOptions.of(List.of(STALWART_DAV), List.of(STALWART_ALLOW));
+
+    assertEquals(SharingMechanism.BLUEMIND_SHARE, SharingMechanism.of(bluemind, BLUEMIND_COLLECTION));
+    assertTrue(SharingMechanism.of(bluemind, BLUEMIND_COLLECTION).isOffered());
+    assertEquals(SharingMechanism.BLUEMIND_SHARE,
+                 SharingMechanism.of(bluemind, "https://bm.example.com" + StringUtils.stripEnd(BLUEMIND_COLLECTION, "/")),
+                 "an absolute href and a missing trailing slash are the same collection");
+
+    assertEquals(SharingMechanism.CALENDARSERVER_SHARE, SharingMechanism.of(bluemind, COLLECTION));
+    assertEquals(SharingMechanism.CALENDARSERVER_SHARE, SharingMechanism.of(bluemind, "/calendars/__uids__/" + BLUEMIND_OWNER + "/work/"));
+    assertEquals(SharingMechanism.CALENDARSERVER_SHARE, SharingMechanism.of(bluemind, BLUEMIND_COLLECTION + "event.ics"));
+    assertEquals(SharingMechanism.CALENDARSERVER_SHARE, SharingMechanism.of(bluemind, null));
+    assertEquals(SharingMechanism.CALENDARSERVER_SHARE,
+                 SharingMechanism.of(DavOptions.of(List.of("1, access-control, resource-sharing"), List.of("ACL")), BLUEMIND_COLLECTION),
+                 "another vendor protocol on BlueMind's path is not BlueMind's");
+    assertEquals(SharingMechanism.WEBDAV_ACL, SharingMechanism.of(stalwart, BLUEMIND_COLLECTION));
+    assertEquals(SharingMechanism.NONE, SharingMechanism.of(null, BLUEMIND_COLLECTION));
+    for (SharingMechanism mechanism : SharingMechanism.values()) {
+      assertEquals(mechanism == SharingMechanism.WEBDAV_ACL || mechanism == SharingMechanism.BLUEMIND_SHARE, mechanism.isOffered(),
+                   mechanism.name());
+    }
   }
 
   /**
@@ -233,6 +282,105 @@ public class HttpCalDavClientShareTest {
     assertThrows(CalDavAuthenticationException.class, () -> client.options(endpoint, COLLECTION));
     answer(404, Map.of(), "");
     assertThrows(CalDavException.class, () -> client.options(endpoint, COLLECTION));
+  }
+
+  // ---- BlueMind: the sharee's address and CS:share ------------------------
+
+  /**
+   * A sharee's addresses are one PROPFIND of depth 0 on their principal, and
+   * come back every href of the set in the server's order — BlueMind's
+   * principal path and urn:uuid before the mailto the share needs.
+   */
+  @Test
+  void aPrincipalsCalendarUserAddressesAreReadInOrder() {
+    answer(207, Map.of(), transcript("bluemind-propfind-calendar-user-address-set-eric.xml"));
+
+    List<String> addresses = client.readCalendarUserAddresses(endpoint, ERIC_PRINCIPAL);
+
+    HttpRequest request = sent.get(0);
+    assertEquals("PROPFIND", request.method());
+    assertEquals("0", request.headers().firstValue("Depth").orElse(null));
+    assertEquals("http://cal.example.com" + ERIC_PRINCIPAL, request.uri().toString());
+    assertTrue(bodyOf(request).contains("calendar-user-address-set"), bodyOf(request));
+    assertEquals(List.of(ERIC_PRINCIPAL, "urn:uuid:" + ERIC_UID, "mailto:eric.meyer@bm.example.com"), addresses);
+  }
+
+  /**
+   * A principal whose set is not found states no address.
+   */
+  @Test
+  void aPrincipalWithoutAnAddressSetStatesNone() {
+    answer(207, Map.of(), """
+        <d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav"><d:response><d:href>%s</d:href>
+        <d:propstat><d:prop><cal:calendar-user-address-set/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat>
+        </d:response></d:multistatus>""".formatted(ERIC_PRINCIPAL));
+
+    assertTrue(client.readCalendarUserAddresses(endpoint, ERIC_PRINCIPAL).isEmpty());
+  }
+
+  /**
+   * A share is one {@code POST} of {@code CS:share} to the collection eXo
+   * created, with the owner's credentials, whose elements are exactly those
+   * of the DERIVED body BlueMind's handler reads as read-only; a stop is the
+   * remove body. The 200 BlueMind answers whatever happened is returned as a
+   * status and nothing more.
+   *
+   * @throws Exception when a body is not XML
+   */
+  @Test
+  void aShareIsOneCsSharePostToTheCollectionEXoCreated() throws Exception {
+    answer(200, Map.of(), "");
+    answer(200, Map.of(), "");
+
+    assertEquals(200, client.postCalendarServerShare(endpoint, exoPair(), "eric.meyer@bm.example.com", false));
+    assertEquals(200, client.postCalendarServerShare(endpoint, exoPair(), "eric.meyer@bm.example.com", true));
+
+    for (HttpRequest request : sent) {
+      assertEquals("POST", request.method());
+      assertEquals("http://cal.example.com" + COLLECTION, request.uri().toString());
+      assertEquals(AUTHORIZATION, request.headers().firstValue("Authorization").orElse(null));
+      assertFalse(bodyOf(request).toLowerCase().contains("multiput"), "BlueMind routes a body naming multiput elsewhere");
+    }
+    assertEquals(shapeOf(parseXml(transcript("bluemind-post-cs-share-set-read.xml"))), shapeOf(parseXml(bodyOf(sent.get(0)))));
+    assertEquals(shapeOf(parseXml(transcript("bluemind-post-cs-share-remove.xml"))), shapeOf(parseXml(bodyOf(sent.get(1)))));
+  }
+
+  /**
+   * Nothing but a mail address is ever named, and nothing but a collection
+   * eXo created is ever addressed: markup smuggled in an address, a value
+   * without {@code @}, and a pair eXo did not export are refused before any
+   * request.
+   */
+  @Test
+  void aShareNamesOnlyAMailAddressOnACollectionEXoCreated() {
+    CalendarSync materialised = exoPair();
+    materialised.setOrigin(SyncOrigin.REMOTE);
+
+    assertThrows(IllegalArgumentException.class,
+                 () -> client.postCalendarServerShare(endpoint, exoPair(), "eric@bm.example.com</D:href><CS:read-write/>", false));
+    assertThrows(IllegalArgumentException.class, () -> client.postCalendarServerShare(endpoint, exoPair(), "eric", false));
+    assertThrows(IllegalArgumentException.class, () -> client.postCalendarServerShare(endpoint, exoPair(), null, false));
+    assertThrows(IllegalArgumentException.class,
+                 () -> client.postCalendarServerShare(endpoint, materialised, "eric.meyer@bm.example.com", false));
+    assertTrue(sent.isEmpty());
+  }
+
+  /**
+   * A write refused is classified: 401 is the credentials, 403 the server's
+   * refusal, anything else a failure.
+   */
+  @Test
+  void aRefusedShareIsClassified() {
+    answer(401, Map.of(), "");
+    assertThrows(CalDavAuthenticationException.class,
+                 () -> client.postCalendarServerShare(endpoint, exoPair(), "eric.meyer@bm.example.com", false));
+    answer(403, Map.of(), "");
+    assertThrows(CalDavForbiddenException.class,
+                 () -> client.postCalendarServerShare(endpoint, exoPair(), "eric.meyer@bm.example.com", false));
+    answer(500, Map.of(), "");
+    CalDavException failed = assertThrows(CalDavException.class,
+                                          () -> client.postCalendarServerShare(endpoint, exoPair(), "eric.meyer@bm.example.com", false));
+    assertFalse(failed instanceof CalDavAuthenticationException);
   }
 
   // ---- reading the ACL -----------------------------------------------------
@@ -650,6 +798,30 @@ public class HttpCalDavClientShareTest {
       }
     });
     return text.toString();
+  }
+
+  /**
+   * What a SAX handler matching local names sees of a document, as BlueMind's
+   * {@code SharingQuerySaxHandler} does: each element's namespace, local name
+   * and trimmed own text, in document order; comments and whitespace left out.
+   *
+   * @param document the document
+   * @return one line per element
+   */
+  private static List<String> shapeOf(Document document) {
+    List<String> shape = new ArrayList<>();
+    NodeList all = document.getElementsByTagNameNS("*", "*");
+    for (int i = 0; i < all.getLength(); i++) {
+      org.w3c.dom.Element element = (org.w3c.dom.Element) all.item(i);
+      StringBuilder text = new StringBuilder();
+      for (org.w3c.dom.Node child = element.getFirstChild(); child != null; child = child.getNextSibling()) {
+        if (child.getNodeType() == org.w3c.dom.Node.TEXT_NODE) {
+          text.append(child.getNodeValue());
+        }
+      }
+      shape.add(element.getNamespaceURI() + "|" + element.getLocalName() + "|" + text.toString().trim());
+    }
+    return shape;
   }
 
   /**

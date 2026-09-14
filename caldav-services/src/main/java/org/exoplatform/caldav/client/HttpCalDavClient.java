@@ -2047,6 +2047,73 @@ public class HttpCalDavClient implements CalDavClient {
     return elementChildren(leaf).isEmpty() ? StringUtils.trimToNull(leaf.getTextContent()) : null;
   }
 
+  /** The one property {@link #readCalendarUserAddresses} asks for. */
+  private static final String                PROPFIND_ADDRESS_SET = """
+      <?xml version="1.0" encoding="utf-8"?>
+      <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><c:calendar-user-address-set/></d:prop></d:propfind>""";
+
+  /** A mail address a share may name: no markup, one {@code @}. */
+  private static final Pattern               MAIL_ADDRESS_PATTERN = Pattern.compile("[^\\s<>&\"'@/]+@[^\\s<>&\"'@/]+");
+
+  /**
+   * One PROPFIND of depth 0, every href of a granted
+   * {@code calendar-user-address-set}.
+   *
+   * @param endpoint the endpoint asked through
+   * @param principalHref the principal's path
+   * @return the hrefs, in order
+   */
+  @Override
+  public List<String> readCalendarUserAddresses(CalDavEndpoint endpoint, String principalHref) {
+    Element response = firstResponse(propfind(endpoint, principalHref, PROPFIND_ADDRESS_SET, "0"));
+    List<String> addresses = new ArrayList<>();
+    if (response == null) {
+      return addresses;
+    }
+    for (Element prop : grantedProps(response)) {
+      for (Element set : descendants(prop, CALDAV_NS, "calendar-user-address-set")) {
+        for (Element href : descendants(set, DAV_NS, "href")) {
+          String text = StringUtils.trimToNull(href.getTextContent());
+          if (text != null) {
+            addresses.add(text);
+          }
+        }
+      }
+    }
+    return addresses;
+  }
+
+  /**
+   * One {@code POST CS:share} to the pair's authorised collection. Credentials
+   * are classified on 401 and 407 only; any other status outside 2xx is the
+   * server's refusal.
+   *
+   * @param endpoint the owner's endpoint
+   * @param pair the binding whose collection is addressed
+   * @param address the sharee's mail address
+   * @param remove whether to stop sharing
+   * @return the 2xx status
+   */
+  @Override
+  public int postCalendarServerShare(CalDavEndpoint endpoint, CalendarSync pair, String address, boolean remove) {
+    String href = authorisedTarget(pair);
+    if (address == null || !MAIL_ADDRESS_PATTERN.matcher(address).matches()) {
+      throw new IllegalArgumentException("Not a mail address a share can name");
+    }
+    String sharee = "<D:href>mailto:" + escape(address) + "</D:href>";
+    String change = remove ? "<CS:remove>" + sharee + "</CS:remove>" : "<CS:set>" + sharee + "<CS:read/></CS:set>";
+    String body = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<CS:share xmlns:D=\"DAV:\" xmlns:CS=\"" + CALENDARSERVER_NS + "\">"
+        + change + "</CS:share>";
+    HttpRequest request = request(endpoint, href, "POST", body).build();
+    DavResponse response = exchange(request);
+    int status = response.status();
+    checkAuthStatus(status, false, request);
+    if (status < 200 || status >= 300) {
+      throw refusal(status, request);
+    }
+    return status;
+  }
+
   /** The prefix eXo derives every personal collection's path from. */
   private static final String                COLLECTION_PREFIX = "exo-cal-";
 

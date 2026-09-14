@@ -27,6 +27,8 @@ import java.util.Set;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,6 +38,10 @@ import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.client.AccessControlEntry;
 import org.exoplatform.caldav.client.AclWriteResult;
+import org.exoplatform.caldav.client.BlueMindAclClient;
+import org.exoplatform.caldav.client.BlueMindAclClient.BlueMindAce;
+import org.exoplatform.caldav.client.CalDavForbiddenException;
+import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -81,8 +87,8 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * other collection cannot be addressed; the client's
  * {@link CalDavClient#writeAcl} applies the same rule again;</li>
  * <li>the server offers a verified granting mechanism
- * ({@link SharingMechanism}) — Stalwart's RFC 3744 {@code ACL} method, and
- * not BlueMind, where granting is unverified;</li>
+ * ({@link SharingMechanism}) — Stalwart's RFC 3744 {@code ACL} method, or
+ * BlueMind's {@code CS:share} confirmed through its REST API;</li>
  * <li>the sharee is an eXo user, not the caller, <b>connected to the same
  * server registration</b>, whose principal was recorded by a discovery
  * (EXO-90243) and is not the caller's own principal — two eXo users on one
@@ -129,6 +135,14 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * from another node or another client at the same moment are last writer
  * wins, because RFC 3744 offers no conditional {@code ACL} request. Each
  * applied grant and revoke is logged at info: who, to whom, which calendar.
+ *
+ * <p>
+ * <b>On BlueMind</b> ({@link SharingMechanism#BLUEMIND_SHARE}) the change is a
+ * {@code POST CS:share} naming the colleague by the mail address their own
+ * principal publishes, and the proof is the container's access list read back
+ * through BlueMind's REST API with the owner's credentials. A colleague sees
+ * the calendar only once they subscribed to it in BlueMind, which the listing
+ * says ({@code subscriptionRequired}).
  */
 @Service
 public class CaldavCalendarShareService {
@@ -183,6 +197,12 @@ public class CaldavCalendarShareService {
   public static final String      OWNER_UNKNOWN          = "caldav.share.ownerUnknown";
 
   /**
+   * The server named no mail address for the sharee's principal, which is the
+   * only way BlueMind's share handler finds a sharee.
+   */
+  public static final String      SHAREE_ADDRESS_UNKNOWN = "caldav.share.shareeAddressUnknown";
+
+  /**
    * Another principal holds access beyond seeing the calendar, which writing
    * the list back could change on the server.
    */
@@ -205,6 +225,34 @@ public class CaldavCalendarShareService {
   /** How many locks collections are striped over. */
   private static final int        LOCK_STRIPES           = 64;
 
+  /** The BlueMind verb plain reading is ({@code Verb.Read}). */
+  private static final String      BLUEMIND_READ          = "Read";
+
+  /**
+   * What one stored {@code Read} lists as. BlueMind's REST access list is
+   * expanded ({@code AclService.get}: {@code AccessControlEntry.expand}) and
+   * {@code Verb.java} declares {@code Read(Freebusy, Visible)} and
+   * {@code Freebusy(Invitation)}; a subject holding nothing outside this set
+   * holds no more than reading.
+   */
+  private static final Set<String> BLUEMIND_READ_CLOSURE  = Set.of("Read", "Freebusy", "Invitation", "Visible");
+
+  /** A BlueMind user principal: the segment is the directory entry uid. */
+  private static final Pattern     BLUEMIND_PRINCIPAL     = Pattern.compile("/dav/principals/__uids__/([^/]+)");
+
+  /**
+   * A BlueMind calendar collection: the first segment is its owner's directory
+   * entry uid ({@code ResType.VSTUFF_CONTAINER}).
+   */
+  private static final Pattern     BLUEMIND_COLLECTION    = Pattern.compile("/dav/calendars/__uids__/([^/]+)/[^/]+");
+
+  /**
+   * A mail address a {@code CS:share} can carry, as
+   * {@link CalDavClient#postCalendarServerShare} accepts it: no markup, one
+   * {@code @}.
+   */
+  private static final Pattern     SHAREABLE_ADDRESS      = Pattern.compile("[^\\s<>&\"'@/]+@[^\\s<>&\"'@/]+");
+
   private final Lock[]            locks                  = new Lock[LOCK_STRIPES];
 
   private final AgendaCalendarService           agendaCalendarService;
@@ -219,6 +267,8 @@ public class CaldavCalendarShareService {
 
   private final IdentityManager                 identityManager;
 
+  private final BlueMindAclClient               blueMindAclClient;
+
   /**
    * @param agendaCalendarService where the calendar and its owner are read
    * @param caldavConnectorStorage the caller's connected account
@@ -226,6 +276,7 @@ public class CaldavCalendarShareService {
    * @param calDavClient the protocol
    * @param caldavConnectionIdentityService who each eXo user is on the server
    * @param identityManager the social identities of caller and sharees
+   * @param blueMindAclClient reads a BlueMind calendar's access list back
    */
   @Autowired
   public CaldavCalendarShareService(AgendaCalendarService agendaCalendarService,
@@ -233,13 +284,15 @@ public class CaldavCalendarShareService {
                                     CaldavSyncStorage caldavSyncStorage,
                                     CalDavClient calDavClient,
                                     CaldavConnectionIdentityService caldavConnectionIdentityService,
-                                    IdentityManager identityManager) {
+                                    IdentityManager identityManager,
+                                    BlueMindAclClient blueMindAclClient) {
     this.agendaCalendarService = agendaCalendarService;
     this.caldavConnectorStorage = caldavConnectorStorage;
     this.caldavSyncStorage = caldavSyncStorage;
     this.calDavClient = calDavClient;
     this.caldavConnectionIdentityService = caldavConnectionIdentityService;
     this.identityManager = identityManager;
+    this.blueMindAclClient = blueMindAclClient;
     for (int i = 0; i < LOCK_STRIPES; i++) {
       locks[i] = new ReentrantLock();
     }
@@ -291,7 +344,7 @@ public class CaldavCalendarShareService {
       }
       CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
       CalendarSync probe = pairs.get(calendars.get(0).getSyncUid());
-      if (!SharingMechanism.of(calDavClient.options(endpoint, collectionOf(probe))).isOffered()) {
+      if (!SharingMechanism.of(calDavClient.options(endpoint, collectionOf(probe)), collectionOf(probe)).isOffered()) {
         return List.of();
       }
       return calendars.stream().map(Calendar::getId).toList();
@@ -318,7 +371,9 @@ public class CaldavCalendarShareService {
                                                                                             IllegalAccessException {
     ShareTarget target = targetOf(userIdentityId, username, calendarId);
     return onServer(() -> {
-      requireOffered(target);
+      if (requireOffered(target) == SharingMechanism.BLUEMIND_SHARE) {
+        return blueMindSharesOf(target, blueMindAclOf(target), ownerPrincipal(target));
+      }
       return sharesOf(target, usableAcl(target), ownerPrincipal(target));
     });
   }
@@ -349,10 +404,13 @@ public class CaldavCalendarShareService {
     ShareTarget target = targetOf(userIdentityId, username, calendarId);
     Sharee sharee = shareeOf(target, shareeUsername);
     return onServer(() -> {
-      requireOffered(target);
+      SharingMechanism mechanism = requireOffered(target);
       String ownerPrincipal = requiredOwnerPrincipal(target);
       if (sharee.principal().equals(ownerPrincipal)) {
         throw new IllegalArgumentException(SAME_PRINCIPAL);
+      }
+      if (mechanism == SharingMechanism.BLUEMIND_SHARE) {
+        return blueMindGrant(target, sharee, username, ownerPrincipal);
       }
       Lock lock = lockOf(target);
       lock.lock();
@@ -423,8 +481,11 @@ public class CaldavCalendarShareService {
     ShareTarget target = targetOf(userIdentityId, username, calendarId);
     Sharee sharee = shareeOf(target, shareeUsername);
     return onServer(() -> {
-      requireOffered(target);
+      SharingMechanism mechanism = requireOffered(target);
       String ownerPrincipal = ownerPrincipal(target);
+      if (mechanism == SharingMechanism.BLUEMIND_SHARE) {
+        return blueMindRevoke(target, sharee, username, ownerPrincipal);
+      }
       Lock lock = lockOf(target);
       lock.lock();
       try {
@@ -592,12 +653,13 @@ public class CaldavCalendarShareService {
    *
    * @param target the calendar being shared
    */
-  private void requireOffered(ShareTarget target) {
-    SharingMechanism mechanism = SharingMechanism.of(calDavClient.options(target.endpoint(), target.href()));
+  private SharingMechanism requireOffered(ShareTarget target) {
+    SharingMechanism mechanism = SharingMechanism.of(calDavClient.options(target.endpoint(), target.href()), target.href());
     if (!mechanism.isOffered()) {
       LOG.debug("Server {} selects sharing mechanism {} for {}, which eXo does not offer", target.serverId(), mechanism, target.href());
       throw new CaldavShareException(NOT_SUPPORTED);
     }
+    return mechanism;
   }
 
   /**
@@ -922,6 +984,301 @@ public class CaldavCalendarShareService {
                          identity.getRemoteId(),
                          StringUtils.defaultIfBlank(fullName, identity.getRemoteId()),
                          profile == null ? null : profile.getAvatarUrl());
+  }
+
+  /**
+   * Shares a BlueMind calendar read-only with one colleague: {@code POST
+   * CS:share}, then the container's access list read back.
+   *
+   * <p>
+   * BlueMind's handler rewrites every entry of the sharee to {@code Read}
+   * ({@code SharingProtocol.java}), so a colleague holding anything beyond
+   * reading — {@code Write}, {@code Manage}, {@code All}… — would be
+   * downgraded by a read-only share: refused before anything is sent. A
+   * colleague already reading changes nothing. The handler answers 200
+   * whatever it did, so the grant counts only when the access list read back
+   * gives the colleague's directory entry {@code Read}.
+   *
+   * @param target the calendar
+   * @param sharee the colleague
+   * @param username the owner's login, for the audit line
+   * @param ownerPrincipal the owner's canonical principal
+   * @return the sharees as read back
+   */
+  private CalendarShares blueMindGrant(ShareTarget target, Sharee sharee, String username, String ownerPrincipal) {
+    String shareeUid = blueMindUidOf(sharee.principal());
+    if (shareeUid == null) {
+      throw new IllegalArgumentException(SHAREE_NOT_CONNECTED);
+    }
+    Lock lock = lockOf(target);
+    lock.lock();
+    try {
+      List<BlueMindAce> before = blueMindAclOf(target);
+      Set<String> theirs = blueMindVerbsOf(before, shareeUid);
+      if (!BLUEMIND_READ_CLOSURE.containsAll(theirs)) {
+        throw new IllegalArgumentException(NOT_READ_ONLY);
+      }
+      if (theirs.contains(BLUEMIND_READ)) {
+        LOG.debug("Calendar {} is already readable by {}; nothing is sent", target.calendarId(), sharee.principal());
+        return blueMindSharesOf(target, before, ownerPrincipal);
+      }
+      postBlueMindShare(target, blueMindAddressOf(target, sharee), false);
+      List<BlueMindAce> after = blueMindAclOf(target);
+      if (!blueMindVerbsOf(after, shareeUid).contains(BLUEMIND_READ)) {
+        LOG.warn("The server answered the share of calendar {} ({}) with {}, but its access list read back gives entry {} no read"
+            + " access; reported as not applied", target.calendarId(), target.href(), sharee.principal(), shareeUid);
+        throw new CaldavShareException(NOT_APPLIED);
+      }
+      warnOnChangedBlueMindEntries(target, before, after, shareeUid);
+      LOG.info("CalDAV share granted: user {} gave {} read access to calendar {} ({}) as BlueMind entry {} on server {}",
+               username,
+               sharee.username(),
+               target.calendarId(),
+               target.href(),
+               shareeUid,
+               target.serverId());
+      return blueMindSharesOf(target, after, ownerPrincipal);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * Stops sharing a BlueMind calendar with one colleague: {@code POST CS:share}
+   * with a remove, then the access list read back.
+   *
+   * <p>
+   * BlueMind's handler removes <em>every</em> entry of the sharee, so only a
+   * colleague holding plain reading — {@code Read} and the verbs it expands to,
+   * nothing else — is removed; one holding more, or only free/busy, holds
+   * something eXo did not give and is refused.
+   *
+   * @param target the calendar
+   * @param sharee the colleague
+   * @param username the owner's login, for the audit line
+   * @param ownerPrincipal the owner's canonical principal
+   * @return the sharees as read back
+   */
+  private CalendarShares blueMindRevoke(ShareTarget target, Sharee sharee, String username, String ownerPrincipal) {
+    String shareeUid = blueMindUidOf(sharee.principal());
+    if (shareeUid == null) {
+      throw new IllegalArgumentException(SHAREE_NOT_CONNECTED);
+    }
+    Lock lock = lockOf(target);
+    lock.lock();
+    try {
+      List<BlueMindAce> before = blueMindAclOf(target);
+      Set<String> theirs = blueMindVerbsOf(before, shareeUid);
+      if (theirs.isEmpty()) {
+        LOG.debug("Calendar {} gives {} nothing; nothing is sent", target.calendarId(), sharee.principal());
+        return blueMindSharesOf(target, before, ownerPrincipal);
+      }
+      if (!isPlainBlueMindRead(theirs)) {
+        throw new IllegalArgumentException(NOT_READ_ONLY);
+      }
+      postBlueMindShare(target, blueMindAddressOf(target, sharee), true);
+      List<BlueMindAce> after = blueMindAclOf(target);
+      if (!blueMindVerbsOf(after, shareeUid).isEmpty()) {
+        LOG.warn("The server answered removing {} from calendar {} ({}), but its access list read back still names entry {};"
+            + " reported as not applied", sharee.principal(), target.calendarId(), target.href(), shareeUid);
+        throw new CaldavShareException(NOT_APPLIED);
+      }
+      warnOnChangedBlueMindEntries(target, before, after, shareeUid);
+      LOG.info("CalDAV share revoked: user {} took read access to calendar {} ({}) away from {} as BlueMind entry {} on server {}",
+               username,
+               target.calendarId(),
+               target.href(),
+               sharee.username(),
+               shareeUid,
+               target.serverId());
+      return blueMindSharesOf(target, after, ownerPrincipal);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * A BlueMind calendar's access list, read through BlueMind's REST API as its
+   * owner.
+   *
+   * @param target the calendar
+   * @return the entries
+   */
+  private List<BlueMindAce> blueMindAclOf(ShareTarget target) {
+    try {
+      return blueMindAclClient.readAcl(target.endpoint(), containerUidOf(target));
+    } catch (UnsupportedOperationException e) {
+      LOG.debug("The credentials of user {} are not a login BlueMind's REST API accepts; sharing is not offered",
+                target.userIdentityId());
+      throw new CaldavShareException(NOT_SUPPORTED);
+    } catch (CalDavForbiddenException e) {
+      throw new CaldavShareException(ACL_UNREADABLE, List.of(), List.of("Manage"), e);
+    }
+  }
+
+  /**
+   * The sharee's mail address, as their BlueMind principal publishes it: the
+   * {@code mailto:} of its {@code calendar-user-address-set}, read through the
+   * owner's own endpoint — never the sharee's credentials, and never guessed
+   * from an eXo profile.
+   *
+   * @param target the calendar
+   * @param sharee the colleague
+   * @return the address, without {@code mailto:}
+   */
+  private String blueMindAddressOf(ShareTarget target, Sharee sharee) {
+    List<String> addresses;
+    try {
+      addresses = calDavClient.readCalendarUserAddresses(target.endpoint(), AccessControlEntry.principalHrefOf(sharee.principal()));
+    } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
+      throw e;
+    } catch (CalDavException e) {
+      LOG.debug("The principal {} did not say its calendar user addresses", sharee.principal(), e);
+      throw new CaldavShareException(SHAREE_ADDRESS_UNKNOWN, e);
+    }
+    return addresses.stream()
+                    .filter(address -> address.regionMatches(true, 0, "mailto:", 0, 7))
+                    .map(address -> address.substring(7).trim())
+                    .filter(address -> SHAREABLE_ADDRESS.matcher(address).matches())
+                    .findFirst()
+                    .orElseThrow(() -> new CaldavShareException(SHAREE_ADDRESS_UNKNOWN));
+  }
+
+  /**
+   * Sends the {@code CS:share}, a 403 being the server's refusal.
+   *
+   * @param target the calendar
+   * @param address the sharee's address
+   * @param remove whether to stop sharing
+   */
+  private void postBlueMindShare(ShareTarget target, String address, boolean remove) {
+    try {
+      calDavClient.postCalendarServerShare(target.endpoint(), target.pair(), address, remove);
+    } catch (CalDavForbiddenException e) {
+      throw new CaldavShareException(SERVER_REFUSED, List.of(), List.of(), e);
+    }
+  }
+
+  /**
+   * The sharees a BlueMind access list names, one per subject, the calendar's
+   * owner left out.
+   *
+   * <p>
+   * A subject is a directory entry uid, which is the segment of that user's
+   * DAV principal ({@code ResType.PRINCIPAL}; {@code CalendarUserAddressSet}
+   * resolves {@code findByEntryUid} on that segment), so it maps to the eXo
+   * users recorded under that principal; one nobody in eXo is connected as is
+   * listed as someone outside eXo, never removable. The owner is recognised by
+   * the collection's own path, where the list's expanded owner rights
+   * ({@code AclService.get}: {@code addOwnerRights}) are keyed, and by the
+   * owner's principal. A subject holding only free/busy cannot view the
+   * calendar and is not listed. Anything beyond reading lists as more access
+   * given outside eXo, never removable.
+   *
+   * @param target the calendar
+   * @param aces the expanded access list
+   * @param ownerPrincipal the owner's canonical principal, may be null
+   * @return the sharees
+   */
+  private CalendarShares blueMindSharesOf(ShareTarget target, List<BlueMindAce> aces, String ownerPrincipal) {
+    Set<String> owners = new java.util.HashSet<>();
+    Matcher collection = BLUEMIND_COLLECTION.matcher(CalendarCollection.principalPathOf(target.href()));
+    if (collection.matches()) {
+      owners.add(collection.group(1));
+    }
+    String ownerUid = blueMindUidOf(ownerPrincipal);
+    if (ownerUid != null) {
+      owners.add(ownerUid);
+    }
+    Map<String, Set<String>> verbsBySubject = new LinkedHashMap<>();
+    for (BlueMindAce ace : aces) {
+      if (!owners.contains(ace.subject())) {
+        verbsBySubject.computeIfAbsent(ace.subject(), subject -> new java.util.LinkedHashSet<>()).add(ace.verb());
+      }
+    }
+    List<CalendarSharee> sharees = new ArrayList<>();
+    verbsBySubject.forEach((subject, verbs) -> {
+      boolean more = !BLUEMIND_READ_CLOSURE.containsAll(verbs);
+      if (!more && !verbs.contains(BLUEMIND_READ)) {
+        return;
+      }
+      String canonical = "/dav/principals/__uids__/" + subject;
+      String href = AccessControlEntry.principalHrefOf(canonical);
+      ShareAccess access = more ? ShareAccess.MORE : ShareAccess.READ;
+      List<ShareUser> users = usersConnectedAs(target, canonical);
+      if (users.isEmpty()) {
+        sharees.add(new CalendarSharee(href, ShareeKind.OUTSIDE_EXO, List.of(), nameOf(target, href, canonical), access, false));
+      } else {
+        sharees.add(new CalendarSharee(href, ShareeKind.EXO_USERS, users, null, access, isPlainBlueMindRead(verbs)));
+      }
+    });
+    return new CalendarShares(target.calendarId(), sharees, true);
+  }
+
+  /**
+   * The verbs one subject holds.
+   *
+   * @param aces the expanded access list
+   * @param subject the directory entry uid
+   * @return its verbs, empty when it holds none
+   */
+  private static Set<String> blueMindVerbsOf(List<BlueMindAce> aces, String subject) {
+    return aces.stream().filter(ace -> ace.subject().equals(subject)).map(BlueMindAce::verb).collect(java.util.stream.Collectors.toSet());
+  }
+
+  /**
+   * Whether verbs are plain reading: {@code Read} and nothing it does not
+   * expand to — what eXo grants, and so what eXo may take back.
+   *
+   * @param verbs a subject's verbs
+   * @return true for plain reading
+   */
+  private static boolean isPlainBlueMindRead(Set<String> verbs) {
+    return verbs.contains(BLUEMIND_READ) && BLUEMIND_READ_CLOSURE.containsAll(verbs);
+  }
+
+  /**
+   * Warns when somebody else's entries differ after a change eXo asked about
+   * one colleague only.
+   *
+   * @param target the calendar
+   * @param before the list before
+   * @param after the list after
+   * @param changedSubject the colleague the change was about
+   */
+  private void warnOnChangedBlueMindEntries(ShareTarget target, List<BlueMindAce> before, List<BlueMindAce> after, String changedSubject) {
+    List<String> others = before.stream().filter(ace -> !ace.subject().equals(changedSubject)).map(Object::toString).sorted().toList();
+    List<String> othersAfter = after.stream().filter(ace -> !ace.subject().equals(changedSubject)).map(Object::toString).sorted().toList();
+    if (!others.equals(othersAfter)) {
+      LOG.warn("Access entries of calendar {} ({}) for others than {} differ after the change eXo asked for", target.calendarId(),
+               target.href(), changedSubject);
+    }
+  }
+
+  /**
+   * The container uid of a BlueMind calendar: the last segment of its
+   * collection path ({@code ResType.VSTUFF_CONTAINER} group 2, which
+   * {@code SharingProtocol} manages).
+   *
+   * @param target the calendar
+   * @return the container uid
+   */
+  private static String containerUidOf(ShareTarget target) {
+    return StringUtils.substringAfterLast(CalendarCollection.principalPathOf(target.href()), "/");
+  }
+
+  /**
+   * The directory entry uid a BlueMind principal names.
+   *
+   * @param principal a principal path, any spelling, may be null
+   * @return the uid, or null when the path is not a BlueMind user principal
+   */
+  private static String blueMindUidOf(String principal) {
+    if (StringUtils.isBlank(principal)) {
+      return null;
+    }
+    Matcher matcher = BLUEMIND_PRINCIPAL.matcher(CalendarCollection.principalPathOf(principal));
+    return matcher.matches() ? matcher.group(1) : null;
   }
 
   /**

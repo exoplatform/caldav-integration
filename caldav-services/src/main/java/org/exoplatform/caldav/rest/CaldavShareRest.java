@@ -144,7 +144,8 @@ public class CaldavShareRest {
       @ApiResponse(responseCode = "404", description = "No such calendar"),
       @ApiResponse(responseCode = "409", description = "No account, not offered on this server, the access list "
           + "unusable, the user's server principal unknown (caldav.share.ownerUnknown), another person holding access "
-          + "that writing the list back could change (caldav.share.foreignAccessNotPreserved), or the server refused "
+          + "that writing the list back could change (caldav.share.foreignAccessNotPreserved), the colleague's mail address not "
+          + "published by the server (caldav.share.shareeAddressUnknown), or the server refused "
           + "(with its preconditions and missing privileges)"),
       @ApiResponse(responseCode = "502", description = "The server could not be reached, or accepted the grant and "
           + "does not hold it when read back") })

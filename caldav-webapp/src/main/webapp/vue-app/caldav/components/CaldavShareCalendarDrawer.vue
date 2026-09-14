@@ -32,6 +32,19 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ $t('caldav.share.drawer.about') }}
         </div>
         <!--
+          BlueMind lists a calendar shared with a colleague only once they
+          subscribed to it in BlueMind; said here so the owner does not take a
+          colleague seeing nothing for a share that failed.
+        -->
+        <v-alert
+          v-if="subscriptionRequired"
+          type="info"
+          class="mb-4 caldav-share-subscription-required"
+          dense
+          outlined>
+          {{ $t('caldav.share.drawer.subscriptionRequired') }}
+        </v-alert>
+        <!--
           The platform's identity suggester, restricted to the colleagues the
           platform computed: only an eXo user connected to the same calendar
           server can be named there, so a free search over every user would
@@ -160,6 +173,7 @@ export default {
     saving: false,
     removing: null,
     errorMessage: '',
+    subscriptionRequired: false,
   }),
   computed: {
     /**
@@ -240,6 +254,7 @@ export default {
       this.candidates = [];
       this.selected = null;
       this.errorMessage = '';
+      this.subscriptionRequired = false;
       this.opened = true;
       this.$refs.caldavShareCalendarDrawer.open();
       return this.load();
@@ -261,7 +276,7 @@ export default {
         caldavConnectorService.getShareCandidates(calendarId),
       ]).then(([shares, candidates]) => {
         if (this.isShowing(calendarId)) {
-          this.sharees = shares && shares.sharees || [];
+          this.applyShares(shares);
           this.candidates = candidates || [];
         }
       }).catch(error => {
@@ -294,7 +309,7 @@ export default {
           if (!this.isShowing(calendarId)) {
             return;
           }
-          this.sharees = shares && shares.sharees || [];
+          this.applyShares(shares);
           this.selected = null;
           this.$root.$emit('alert-message', this.$t('caldav.share.added', {0: name}), 'success');
         })
@@ -321,11 +336,21 @@ export default {
           if (!this.isShowing(calendarId)) {
             return;
           }
-          this.sharees = shares && shares.sharees || [];
+          this.applyShares(shares);
           this.$root.$emit('alert-message', this.$t('caldav.share.removed', {0: name}), 'success');
         })
         .catch(error => this.isShowing(calendarId) && this.showError(error))
         .finally(() => this.removing = null);
+    },
+    /**
+     * Shows what the platform answered about the calendar's sharees.
+     *
+     * @param {Object} shares {sharees, subscriptionRequired}
+     * @returns {void}
+     */
+    applyShares(shares) {
+      this.sharees = shares && shares.sharees || [];
+      this.subscriptionRequired = !!(shares && shares.subscriptionRequired);
     },
     /**
      * Whether the drawer still shows a calendar.

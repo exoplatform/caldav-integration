@@ -155,6 +155,23 @@ describe('CaldavShareCalendarDrawer', () => {
     }]);
   });
 
+  it('tells the owner a colleague must subscribe on a server that requires it, and only there', async () => {
+    caldavConnectorService.getCalendarShares.mockResolvedValueOnce({calendarId: 12, sharees: [BOB], subscriptionRequired: true});
+    const wrapper = mountDrawer();
+
+    await wrapper.vm.open(WORK);
+    await settle();
+
+    expect(wrapper.vm.subscriptionRequired).toBe(true);
+    expect(wrapper.text()).toContain('caldav.share.drawer.subscriptionRequired');
+
+    await wrapper.vm.open({id: 14, name: 'Family'});
+    await settle();
+
+    expect(wrapper.vm.subscriptionRequired).toBe(false);
+    expect(wrapper.text()).not.toContain('caldav.share.drawer.subscriptionRequired');
+  });
+
   it('says so when the calendar is shared with nobody', async () => {
     caldavConnectorService.getCalendarShares.mockResolvedValue({calendarId: 12, sharees: []});
     const wrapper = mountDrawer();

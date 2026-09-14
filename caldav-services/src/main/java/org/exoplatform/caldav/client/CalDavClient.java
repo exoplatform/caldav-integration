@@ -590,4 +590,53 @@ public interface CalDavClient {
    * @throws CalDavException when the server cannot be reached
    */
   AclWriteResult writeAcl(CalDavEndpoint endpoint, CalendarSync pair, List<AccessControlEntry> entries);
+
+  /**
+   * The addresses a principal publishes as a calendar user
+   * ({@code CALDAV:calendar-user-address-set}, RFC 6638 §2.4.1), read with a
+   * PROPFIND of depth 0 through this endpoint (EXO-90253).
+   *
+   * <p>
+   * On BlueMind the set holds the principal path, a {@code urn:uuid:} and
+   * {@code mailto:} followed by the directory entry's e-mail — the one column
+   * BlueMind's share handler looks a sharee up by
+   * ({@code plugins/net.bluemind.dav.server/.../props/caldav/CalendarUserAddressSet.java},
+   * {@code DirEntryStore.java} {@code dir.email ilike}).
+   *
+   * @param endpoint the endpoint the question is asked through
+   * @param principalHref the principal's server-absolute path
+   * @return every href of the set in order, empty when the server states none
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached or errors
+   */
+  List<String> readCalendarUserAddresses(CalDavEndpoint endpoint, String principalHref);
+
+  /**
+   * Shares a collection with one sharee, read-only, or stops sharing it, with
+   * Apple's {@code POST CS:share} (EXO-90253).
+   *
+   * <p>
+   * Takes the <b>pair</b>, like {@link #writeAcl}: only a collection eXo created
+   * for the pair's calendar can be addressed. The sharee is named by a mail
+   * address, sent as {@code mailto:}; only reading is ever granted.
+   *
+   * <p>
+   * The answer is a claim and, on BlueMind, not even that: its handler
+   * swallows every failure and answers 200 ({@code SharingProtocol.java},
+   * {@code VEventStuffPostProtocol.java}). The caller confirms the change by
+   * reading the access list back.
+   *
+   * @param endpoint the owner's endpoint
+   * @param pair the binding whose collection is shared
+   * @param address the sharee's mail address, without {@code mailto:}
+   * @param remove true to stop sharing, false to share read-only
+   * @return the 2xx status the server answered
+   * @throws IllegalArgumentException when the pair does not authorise
+   *           addressing its collection, or the address is not a mail address
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavForbiddenException when the server refuses with 403
+   * @throws CalDavException when the server cannot be reached or answers
+   *           anything else
+   */
+  int postCalendarServerShare(CalDavEndpoint endpoint, CalendarSync pair, String address, boolean remove);
 }

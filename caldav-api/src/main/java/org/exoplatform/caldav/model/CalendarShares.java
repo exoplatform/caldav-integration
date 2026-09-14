@@ -29,8 +29,20 @@ import java.util.List;
  * @param calendarId the agenda calendar the collection belongs to
  * @param sharees one entry per principal the list grants something to, in
  *          the order the server lists them
+ * @param subscriptionRequired whether a colleague sees the calendar only after
+ *          subscribing to it on the server itself, as on BlueMind
  */
-public record CalendarShares(long calendarId, List<CalendarSharee> sharees) {
+public record CalendarShares(long calendarId, List<CalendarSharee> sharees, boolean subscriptionRequired) {
+
+  /**
+   * Shares on a server where a grant is visible to the colleague at once.
+   *
+   * @param calendarId the agenda calendar
+   * @param sharees the sharees
+   */
+  public CalendarShares(long calendarId, List<CalendarSharee> sharees) {
+    this(calendarId, sharees, false);
+  }
 
   /**
    * One principal a calendar is shared with.
