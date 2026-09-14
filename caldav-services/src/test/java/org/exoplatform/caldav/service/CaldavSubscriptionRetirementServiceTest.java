@@ -20,6 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -38,6 +40,7 @@ import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
@@ -125,8 +128,38 @@ public class CaldavSubscriptionRetirementServiceTest {
     assertEquals(CalendarSyncStatus.ACTIVE, binding.getStatus());
 
     doReturn(" ").when(calDavClient).readDisplayName(endpoint, VEHICLE_PRINCIPAL);
+    CalendarSync another = binding17();
+    another.setId(18L);
     assertEquals(Retirement.KEPT,
-                 service.retire(ROOT, endpoint, ROOT_PRINCIPAL, binding, vehicle(), CollectionOwnership.SUBSCRIBED_RESOURCE));
+                 service.retire(ROOT, endpoint, ROOT_PRINCIPAL, another, vehicle(), CollectionOwnership.SUBSCRIBED_RESOURCE));
+    assertEquals(CalendarSyncStatus.ACTIVE, another.getStatus());
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  /**
+   * A definite refusal is remembered for the binding: the next sweep does not
+   * put the question to the server again, which on BlueMind is a failed
+   * request in its log every five minutes. A server that could not be
+   * reached said nothing, and is asked again.
+   */
+  @Test
+  public void aRefusedOwnerIsNotAskedAgainButAnUnreachableServerIs() {
+    when(calDavClient.readDisplayName(endpoint, VEHICLE_PRINCIPAL)).thenThrow(new CalDavException("500"));
+    CalendarSync refused = binding17();
+
+    service.retire(ROOT, endpoint, ROOT_PRINCIPAL, refused, vehicle(), CollectionOwnership.SUBSCRIBED_RESOURCE);
+    service.retire(ROOT, endpoint, ROOT_PRINCIPAL, refused, vehicle(), CollectionOwnership.SUBSCRIBED_RESOURCE);
+
+    verify(calDavClient, times(1)).readDisplayName(endpoint, VEHICLE_PRINCIPAL);
+
+    doThrow(new CalDavUnreachableException("down", null)).when(calDavClient).readDisplayName(endpoint, VEHICLE_PRINCIPAL);
+    CalendarSync unreachable = binding17();
+    unreachable.setId(19L);
+
+    service.retire(ROOT, endpoint, ROOT_PRINCIPAL, unreachable, vehicle(), CollectionOwnership.SUBSCRIBED_RESOURCE);
+    service.retire(ROOT, endpoint, ROOT_PRINCIPAL, unreachable, vehicle(), CollectionOwnership.SUBSCRIBED_RESOURCE);
+
+    verify(calDavClient, times(3)).readDisplayName(endpoint, VEHICLE_PRINCIPAL);
     verify(caldavSyncStorage, never()).savePair(any());
   }
 

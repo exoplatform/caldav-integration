@@ -682,6 +682,30 @@ public class CaldavSyncServiceTest {
     verify(caldavSyncStorage, never()).deletePair(502L);
   }
 
+  /**
+   * EXO-90275. A retired subscription's calendar may have been the user's
+   * only one: an agenda that answers, and lists no calendar of theirs, still
+   * drops the binding so the collection reaches "Shared with me". An ACTIVE
+   * binding keeps its old guard against an empty answer.
+   */
+  @Test
+  public void aRetiredSubscriptionIsPrunedEvenWhenTheUserOwnsNoOtherCalendar() throws Exception {
+    givenServerCalendars();
+    CalendarSync retired = remotePair("/dav/calendars/john/calendar:room-1/", "anchor-gone");
+    retired.setId(503L);
+    retired.setStatus(CalendarSyncStatus.RETIRED_SUBSCRIPTION);
+    CalendarSync active = remotePair("/dav/calendars/john/private/", "anchor-also-gone");
+    active.setId(504L);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(active));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(retired, active));
+    givenUserCalendars();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSyncStorage).deletePair(503L);
+    verify(caldavSyncStorage, never()).deletePair(504L);
+  }
+
   @Test
   public void aTombstoneIsNeverPruned() throws Exception {
     // Its whole purpose is to keep the collection out. Pruning it would bring

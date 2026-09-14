@@ -16,12 +16,18 @@
  */
 package org.exoplatform.caldav.service;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
+import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
@@ -63,7 +69,10 @@ import org.exoplatform.services.log.Log;
  * collection created over CalDAV under any segment, {@code calendar:…}
  * included, so the name alone could point at nobody; a principal the directory
  * does not know makes BlueMind fail the request, and the binding is then left
- * as it was, to be asked again on the next pass.
+ * as it was. A definite refusal like that is remembered for the binding until
+ * the next restart, so the question is not put to the server on every sweep; a
+ * server that could not be reached, or that refused the account's credentials,
+ * said nothing about the owner, and is asked again on the next pass.
  *
  * <p>
  * Said once per binding, at warn: once retired, a binding is no longer one
@@ -72,13 +81,19 @@ import org.exoplatform.services.log.Log;
 @Component
 public class CaldavSubscriptionRetirementService {
 
-  private static final Log  LOG = ExoLogger.getLogger(CaldavSubscriptionRetirementService.class);
+  private static final Log  LOG           = ExoLogger.getLogger(CaldavSubscriptionRetirementService.class);
 
   @Autowired
   private CaldavSyncStorage caldavSyncStorage;
 
   @Autowired
   private CalDavClient      calDavClient;
+
+  /**
+   * The bindings whose owner the server definitely did not confirm, by id —
+   * not asked again in this process.
+   */
+  private final Set<Long>   unconfirmed   = ConcurrentHashMap.newKeySet();
 
   /**
    * What retiring one binding came to.
@@ -88,6 +103,18 @@ public class CaldavSubscriptionRetirementService {
     RETIRED,
     /** Nothing was changed: not eligible, or the owner could not be confirmed. */
     KEPT
+  }
+
+  /**
+   * What the server said about the owner a collection is named after.
+   */
+  private enum OwnerAnswer {
+    /** It answered a display name: the owner exists. */
+    CONFIRMED,
+    /** It answered, and not with a name: nobody the directory knows. */
+    DENIED,
+    /** It could not be asked: nothing is known either way. */
+    UNKNOWN
   }
 
   /**
@@ -109,7 +136,7 @@ public class CaldavSubscriptionRetirementService {
                            CollectionOwnership ownership) {
     if (ownership == null || !ownership.isSubscription() || pair == null || pair.getId() == null
         || pair.getUserIdentityId() != userIdentityId || pair.getOrigin() != SyncOrigin.REMOTE
-        || pair.getStatus() != CalendarSyncStatus.ACTIVE || collection == null) {
+        || pair.getStatus() != CalendarSyncStatus.ACTIVE || collection == null || unconfirmed.contains(pair.getId())) {
       return Retirement.KEPT;
     }
     BlueMindContainerNaming.Subscription subscription = BlueMindContainerNaming.subscriptionOf(collection.href(), principal);
@@ -117,10 +144,15 @@ public class CaldavSubscriptionRetirementService {
       return Retirement.KEPT;
     }
     String ownerPath = BlueMindContainerNaming.principalOf(principal, subscription.ownerUid());
-    if (!answers(endpoint, ownerPath)) {
-      LOG.debug("The owner {} that collection {} is named after could not be confirmed; binding {} is not retired this pass",
+    OwnerAnswer answer = ask(endpoint, ownerPath);
+    if (answer != OwnerAnswer.CONFIRMED) {
+      if (answer == OwnerAnswer.DENIED) {
+        unconfirmed.add(pair.getId());
+      }
+      LOG.debug("The owner {} that collection {} is named after was not confirmed ({}); binding {} is not retired",
                 ownerPath,
                 collection.href(),
+                answer,
                 pair.getId());
       return Retirement.KEPT;
     }
@@ -143,16 +175,24 @@ public class CaldavSubscriptionRetirementService {
    *
    * @param endpoint the account's endpoint
    * @param principalPath the principal to ask
-   * @return true when it answered a name; false when it answered none or the
-   *         request failed, which BlueMind does for a uid its directory does
-   *         not hold
+   * @return CONFIRMED when it answered a name; DENIED when it answered none,
+   *         or failed the request as BlueMind does for a uid its directory
+   *         does not hold; UNKNOWN when the server could not be reached, the
+   *         credentials were refused, or the failure is not the server's
    */
-  private boolean answers(CalDavEndpoint endpoint, String principalPath) {
+  private OwnerAnswer ask(CalDavEndpoint endpoint, String principalPath) {
     try {
-      return StringUtils.isNotBlank(calDavClient.readDisplayName(endpoint, principalPath));
-    } catch (RuntimeException e) {
+      return StringUtils.isNotBlank(calDavClient.readDisplayName(endpoint, principalPath)) ? OwnerAnswer.CONFIRMED
+                                                                                            : OwnerAnswer.DENIED;
+    } catch (CalDavUnreachableException | CalDavAuthenticationException e) {
       LOG.debug("The principal {} could not be asked for its display name", principalPath, e);
-      return false;
+      return OwnerAnswer.UNKNOWN;
+    } catch (CalDavException e) {
+      LOG.debug("The principal {} refused to say its display name", principalPath, e);
+      return OwnerAnswer.DENIED;
+    } catch (RuntimeException e) {
+      LOG.debug("Asking the principal {} for its display name failed", principalPath, e);
+      return OwnerAnswer.UNKNOWN;
     }
   }
 }

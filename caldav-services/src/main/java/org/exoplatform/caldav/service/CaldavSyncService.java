@@ -1194,8 +1194,8 @@ public class CaldavSyncService {
     if (pairs.isEmpty()) {
       return;
     }
-    Map<String, Calendar> byAnchor = calendarsByAnchor(userIdentityId, username);
-    if (byAnchor.isEmpty()) {
+    Map<String, Calendar> byAnchor = readCalendarsByAnchor(userIdentityId, username);
+    if (byAnchor == null) {
       // The calendars could not be read at all. Every binding would look like
       // an orphan, and pruning them would throw away bindings whose calendars
       // are perfectly well — the worst possible reading of a read failure.
@@ -1205,7 +1205,13 @@ public class CaldavSyncService {
       if (byAnchor.containsKey(pair.getLocalCalendarSyncUid())) {
         continue;
       }
-      if (pair.getStatus() == CalendarSyncStatus.ACTIVE) {
+      // An ACTIVE binding keeps the guard it always had against an answer that
+      // lists nothing at all, which is the same read failure told otherwise. A
+      // retired subscription does not need it (EXO-90275): the calendar it
+      // stood for may well have been the user's last one, and keeping its
+      // binding would keep the collection out of "Shared with me" until the
+      // user happened to own another calendar.
+      if (pair.getStatus() == CalendarSyncStatus.ACTIVE && !byAnchor.isEmpty()) {
         LOG.info("Binding {} has no eXo calendar behind it; it is dropped so the collection can be materialised again",
                  pair.getId());
         caldavSyncStorage.deleteObjects(pair.getId());
@@ -1575,6 +1581,26 @@ public class CaldavSyncService {
    * @return the calendars by anchor, empty when they cannot be read
    */
   private Map<String, Calendar> calendarsByAnchor(long userIdentityId, String username) {
+    Map<String, Calendar> byAnchor = readCalendarsByAnchor(userIdentityId, username);
+    return byAnchor == null ? new HashMap<>() : byAnchor;
+  }
+
+  /**
+   * The user's calendars, keyed by the anchor a binding records, telling a
+   * read that failed from a user who owns none.
+   *
+   * <p>
+   * The pruning needs the difference (EXO-90275): a retired subscription's
+   * binding is dropped once its calendar is gone, and that calendar may have
+   * been the user's only one, which an empty answer must not be mistaken for a
+   * failure to read.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login
+   * @return the calendars by anchor, possibly empty; null when they could not
+   *         be read
+   */
+  private Map<String, Calendar> readCalendarsByAnchor(long userIdentityId, String username) {
     Map<String, Calendar> byAnchor = new HashMap<>();
     try {
       for (Calendar calendar : agendaCalendarService.getCalendars(0, Integer.MAX_VALUE, username)) {
@@ -1585,6 +1611,7 @@ public class CaldavSyncService {
       }
     } catch (Exception e) { // NOSONAR agenda declares a bare Exception here
       LOG.warn("The calendars of user {} could not be read; nothing is imported this round", userIdentityId, e);
+      return null;
     }
     return byAnchor;
   }
