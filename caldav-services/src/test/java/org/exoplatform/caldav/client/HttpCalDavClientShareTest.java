@@ -179,8 +179,9 @@ public class HttpCalDavClientShareTest {
 
   /**
    * Stalwart: the request is an OPTIONS on the collection with the account's
-   * credentials, whose answer (the rig's live headers,
-   * {@code stalwart-options-collection.http}) carries the DAV classes and the
+   * credentials, whose answer (the rig's live {@code dav} header and a
+   * completed {@code allow}, {@code stalwart-options-collection.http}) carries
+   * the DAV classes and the
    * methods, so nothing more is asked; it selects the RFC 3744 method, offered.
    */
   @Test
@@ -235,7 +236,7 @@ public class HttpCalDavClientShareTest {
                  SharingMechanism.of(DavOptions.of(List.of(BLUEMIND_DAV),
                                                    List.of("ACL, COPY, DELETE, GET, HEAD, LOCK, MKCOL, OPTIONS, PROPFIND, PROPPATCH, PUT, REPORT, UNLOCK")),
                                      BLUEMIND_COLLECTION),
-                 "an OPTIONS reaching BlueMind's own OptionsProtocol lists ACL too: the vendor sharing rule still wins");
+                 "an OPTIONS reaching BlueMind's own OptionsProtocol lists ACL too; calendar-proxy and the vendor sharing rule both keep it BlueMind's");
     assertEquals(SharingMechanism.BLUEMIND_SHARE,
                  SharingMechanism.of(bluemind, "https://bm.example.com" + StringUtils.stripEnd(BLUEMIND_COLLECTION, "/")),
                  "an absolute href and a missing trailing slash are the same collection");
