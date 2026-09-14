@@ -138,11 +138,14 @@ public class CaldavShareRest {
           + "nothing and succeeds.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Shared; the sharees as read back"),
       @ApiResponse(responseCode = "400", description = "No colleague named, unknown, the user themself, not connected to "
-          + "this server, on the user's own login, or a calendar with no collection eXo created"),
+          + "this server, on the user's own login, already holding more than view access given outside eXo "
+          + "(caldav.share.notReadOnly), or a calendar with no collection eXo created"),
       @ApiResponse(responseCode = "403", description = "Not the user's calendar"),
       @ApiResponse(responseCode = "404", description = "No such calendar"),
       @ApiResponse(responseCode = "409", description = "No account, not offered on this server, the access list "
-          + "unusable, or the server refused (with its preconditions and missing privileges)"),
+          + "unusable, the user's server principal unknown (caldav.share.ownerUnknown), another person holding access "
+          + "that writing the list back could change (caldav.share.foreignAccessNotPreserved), or the server refused "
+          + "(with its preconditions and missing privileges)"),
       @ApiResponse(responseCode = "502", description = "The server could not be reached, or accepted the grant and "
           + "does not hold it when read back") })
   public CalendarShares share(@Parameter(description = "Agenda calendar id", required = true)
@@ -172,7 +175,8 @@ public class CaldavShareRest {
           + "than view access, or a calendar with no collection eXo created"),
       @ApiResponse(responseCode = "403", description = "Not the user's calendar"),
       @ApiResponse(responseCode = "404", description = "No such calendar"),
-      @ApiResponse(responseCode = "409", description = "No account, not offered, access list unusable, or refused"),
+      @ApiResponse(responseCode = "409", description = "No account, not offered, access list unusable, another person "
+          + "holding access that writing the list back could change (caldav.share.foreignAccessNotPreserved), or refused"),
       @ApiResponse(responseCode = "502", description = "Unreachable, or not applied when read back") })
   public CalendarShares unshare(@Parameter(description = "Agenda calendar id", required = true)
                                 @PathVariable("calendarId")
@@ -199,7 +203,8 @@ public class CaldavShareRest {
       @ApiResponse(responseCode = "400", description = "A calendar with no collection eXo created"),
       @ApiResponse(responseCode = "403", description = "Not the user's calendar"),
       @ApiResponse(responseCode = "404", description = "No such calendar"),
-      @ApiResponse(responseCode = "409", description = "No connected account") })
+      @ApiResponse(responseCode = "409", description = "No connected account, or the user's server principal unknown "
+          + "(caldav.share.ownerUnknown)") })
   public List<ShareUser> candidates(@Parameter(description = "Agenda calendar id", required = true)
                                     @PathVariable("calendarId")
                                     long calendarId,
