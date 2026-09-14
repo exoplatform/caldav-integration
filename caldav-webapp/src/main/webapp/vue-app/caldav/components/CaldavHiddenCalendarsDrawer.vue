@@ -26,8 +26,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </template>
     <template slot="content">
       <div class="pa-4">
+        <!--
+          The neutral sentence, not the older one about calendars "you
+          deleted": since EXO-90239 the list also holds calendars shared with
+          the user, and a description that names only one kind is wrong in
+          front of the other. The older key stays in the bundle untouched —
+          existing keys are Crowdin's to change.
+        -->
         <div class="text-subtitle mb-4">
-          {{ $t('caldav.hiddenCalendars.drawer.description') }}
+          {{ $t('caldav.hiddenCalendars.drawer.about') }}
         </div>
         <v-list class="pa-0">
           <v-list-item
@@ -41,10 +48,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                   here any more, and inventing one would suggest the calendar
                   is back when it is not. This add-on ships no stylesheet, so
                   the muted tone comes from a Vuetify class, not a custom one.
+                  The same glyph for both kinds: what the row is about is the
+                  calendar, and the line under it says which kind.
                 -->
                 <v-icon size="16" class="me-2 disabled--text">fa-calendar</v-icon>
                 <span class="text-truncate">{{ calendar.name }}</span>
               </v-list-item-title>
+              <v-list-item-subtitle>
+                {{ kindOf(calendar) }}
+              </v-list-item-subtitle>
             </v-list-item-content>
             <v-list-item-action>
               <v-btn
@@ -110,12 +122,35 @@ export default {
       this.$refs.caldavHiddenCalendarsDrawer.open();
     },
     /**
+     * What kind of hidden calendar a row is, in the user's words.
+     *
+     * A share names whoever shared it when the platform could tell — the
+     * colleague's name, or what the server calls the owner — and says only
+     * that it was shared when it could not: an unnamed owner is not a reason
+     * to say nothing about why the calendar is read-only and not theirs. A
+     * calendar of the user's own says it was deleted here and kept on the
+     * account, which is what the older description used to say of every row.
+     *
+     * @param {Object} calendar the hidden calendar
+     * @returns {String} the line under its name
+     */
+    kindOf(calendar) {
+      if (!calendar.shared) {
+        return this.$t('caldav.hiddenCalendars.deletedHere');
+      }
+      return calendar.ownerDisplayName
+        ? this.$t('caldav.hiddenCalendars.sharedBy', {0: calendar.ownerDisplayName})
+        : this.$t('caldav.hiddenCalendars.sharedWithYou');
+    },
+    /**
      * Lifts the tombstone hiding one calendar.
      *
      * The calendar does not come back at once — dropping the tombstone lets
      * the next synchronisation find the collection again and recreate it — so
      * the message says so rather than leaving the user watching an agenda
-     * that has not changed yet.
+     * that has not changed yet. A share is the other way round (EXO-90239):
+     * nothing is synchronised and it is back under Shared with me on the next
+     * listing, so its message says that instead.
      *
      * One at a time: the buttons disable while a restore is in flight, since
      * two overlapping restores would each trigger a synchronisation of the
@@ -129,13 +164,19 @@ export default {
       return caldavConnectorService.showCalendarAgain(calendar.id)
         .then(() => {
           this.$root.$emit('alert-message',
-            this.$t('caldav.hiddenCalendars.showAgainSuccess', {0: calendar.name}),
+            this.$t(calendar.shared
+              ? 'caldav.hiddenCalendars.showAgainSharedSuccess'
+              : 'caldav.hiddenCalendars.showAgainSuccess', {0: calendar.name}),
             'success');
           // The calendar is already back by the time this resolves — the
-          // server synchronises before answering — so everything showing
+          // server synchronises before answering, and a share is unbound
+          // again the moment its record is gone — so everything showing
           // calendars has to be told. Without this the only visible change
           // was inside this drawer, and the user had to reload the page to
-          // see the calendar they had just asked for.
+          // see the calendar they had just asked for. The Remote section,
+          // where a share comes back, re-reads on the same two root events
+          // the personal list does (agenda-refresh-personal-calendars,
+          // agenda-refresh), so one set of signals covers both kinds.
           document.dispatchEvent(new CustomEvent('agenda-refresh-personal-calendars'));
           this.$root.$emit('agenda-refresh-personal-calendars');
           this.$root.$emit('agenda-refresh');
