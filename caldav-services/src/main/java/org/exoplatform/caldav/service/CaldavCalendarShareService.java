@@ -370,11 +370,16 @@ public class CaldavCalendarShareService {
    * What decides whether agenda shows "Share" on a calendar, so it never
    * fails: anything that goes wrong — no account, a server that cannot be
    * reached, agenda failing — answers no calendar, and the entry is simply
-   * not offered. The server is asked what the first such collection
+   * not offered. The server is asked what one such collection
    * advertises — one {@code OPTIONS}, plus a depth-0 {@code PROPFIND} where
-   * that answer carries no {@code DAV} header, as on the BlueMind deployments observed — since what a server supports does not vary between two
-   * collections of one account in any server characterised; every share
-   * operation asks its own collection again.
+   * that answer carries no {@code DAV} header, as on the BlueMind deployments
+   * observed — since what a server supports does not vary between two
+   * collections of one account in any server characterised. A collection eXo
+   * created is asked first; when a collection fails on its own (gone, refused)
+   * the next calendar is asked, up to {@code MAX_CAPABILITY_PROBES}, while
+   * refused credentials and an unreachable server end the listing at once,
+   * since asking again would only add failed requests. Every share operation
+   * asks its own collection again.
    *
    * @param userIdentityId the caller
    * @param username the caller's login
@@ -413,8 +418,10 @@ public class CaldavCalendarShareService {
       }
       CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
       // Probe a collection eXo created first: it is the user's own and exists as long as its pair is active,
-      // while an imported one may be a subscription that went away. A probe that fails for any other reason than
-      // the credentials tries the next calendar, so one unreachable collection does not hide Share everywhere.
+      // while an imported one may be a subscription that went away. A collection that fails on its own (gone,
+      // refused) tries the next calendar, so one dead collection does not hide Share everywhere. Refused credentials
+      // and an unreachable server are properties of the account and the server, known after one attempt: asking
+      // again would only add failed requests, which a server may answer with a silent ban (CalDavUnreachableException).
       List<CalendarSync> probes = calendars.stream()
                                            .map(calendar -> pairs.get(calendar.getSyncUid()))
                                            .sorted(Comparator.comparingInt(pair -> pair.getOrigin() == SyncOrigin.EXO ? 0 : 1))
@@ -428,7 +435,7 @@ public class CaldavCalendarShareService {
           capabilities = calDavClient.capabilities(endpoint, collectionOf(candidate));
           probe = candidate;
           break;
-        } catch (CalDavAuthenticationException e) {
+        } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
           throw e;
         } catch (CalDavException e) {
           failure = e;

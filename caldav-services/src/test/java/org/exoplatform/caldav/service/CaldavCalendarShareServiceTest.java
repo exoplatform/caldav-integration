@@ -1422,6 +1422,30 @@ public class CaldavCalendarShareServiceTest {
     verify(calDavClient).capabilities(endpoint, STALWART_IMPORTED + "/");
   }
 
+  /**
+   * The menu's probe stops at once on refused credentials and on an unreachable
+   * server, which are known after one attempt: no other calendar is asked, and
+   * no calendar is offered. Only a collection failing on its own moves on.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void theMenuStopsAtRefusedCredentialsOrAnUnreachableServer() throws Exception {
+    CalendarSync imported = importedPair(STALWART_IMPORTED);
+    imported.setLocalCalendarSyncUid("imported");
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.EXO)).thenReturn(List.of(exoPair()));
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.REMOTE)).thenReturn(List.of(imported));
+    lenient().when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice"))
+             .thenReturn(List.of(calendar(14L, ALICE, "imported"), calendar(CALENDAR, ALICE, ANCHOR)));
+    when(calDavClient.capabilities(endpoint, COLLECTION)).thenThrow(new CalDavAuthenticationException("401"),
+                                                                    new CalDavUnreachableException("down"));
+    lenient().when(calDavClient.capabilities(endpoint, STALWART_IMPORTED + "/")).thenReturn(stalwartOptions());
+
+    assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"), "refused credentials");
+    assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"), "an unreachable server");
+    verify(calDavClient, org.mockito.Mockito.times(2)).capabilities(eq(endpoint), anyString());
+  }
+
   // ---------------------------------------------------------------- helpers
 
   /**
