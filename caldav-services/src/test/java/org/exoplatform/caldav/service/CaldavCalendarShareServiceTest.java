@@ -998,6 +998,29 @@ public class CaldavCalendarShareServiceTest {
 
     when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(null);
     assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"));
+    verify(blueMindAclClient, never()).acceptsCredentials(any());
+  }
+
+  /**
+   * On BlueMind the menu offers "Share" only when the owner's credentials are
+   * a login and password BlueMind's REST API can take, so a registration whose
+   * provider produces a token never shows an action every click of which
+   * would answer "not supported". Deciding it calls no server.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindShareIsOfferedOnlyWithCredentialsTheRestApiTakes() throws Exception {
+    onBlueMind();
+    CalendarSync pair = exoPair();
+    pair.setRemoteHref(BM_COLLECTION);
+    when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.EXO)).thenReturn(List.of(pair));
+    when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR)));
+    when(blueMindAclClient.acceptsCredentials(endpoint)).thenReturn(true, false);
+
+    assertEquals(List.of(CALENDAR), service.shareableCalendarIds(ALICE, "alice"));
+    assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"));
+    verify(blueMindAclClient, never()).readAcl(any(), anyString());
   }
 
   // ---------------------------------------------------------------- helpers

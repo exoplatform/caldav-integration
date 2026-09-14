@@ -274,7 +274,8 @@ public class BlueMindAclClientTest {
 
   /**
    * Credentials the provider does not produce as a login and password are not
-   * a login this API takes: nothing is sent.
+   * a login this API takes: nothing is sent, and they are not accepted when
+   * the menu asks whether sharing is offered.
    *
    * @throws Exception never — the mock declares it
    */
@@ -285,8 +286,11 @@ public class BlueMindAclClientTest {
       doReturn(new HttpConnectorCredentials(authorization, null)).when(credentials).produce(any());
 
       assertThrows(UnsupportedOperationException.class, () -> client.readAcl(endpoint, CONTAINER), authorization);
+      assertFalse(client.acceptsCredentials(endpoint), authorization);
     }
-    assertTrue(sent.isEmpty());
+    doReturn(new HttpConnectorCredentials(AUTHORIZATION, null)).when(credentials).produce(any());
+    assertTrue(client.acceptsCredentials(endpoint), "a Basic login and password is taken");
+    assertTrue(sent.isEmpty(), "deciding whether credentials are usable calls no server");
   }
 
   /**

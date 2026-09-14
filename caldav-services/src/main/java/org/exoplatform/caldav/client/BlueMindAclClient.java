@@ -204,11 +204,31 @@ public class BlueMindAclClient {
   }
 
   /**
+   * Whether the owner's configured credentials are a login and password this
+   * API can take, without calling the server: what decides whether sharing
+   * on BlueMind is offered at all, so that a registration whose provider
+   * produces a token never shows an action every click of which would be
+   * refused.
+   *
+   * @param endpoint the owner's endpoint, minted from the registry
+   * @return true when the provider produces a Basic login and password
+   */
+  public boolean acceptsCredentials(CalDavEndpoint endpoint) {
+    try {
+      return accountOf(endpoint) != null;
+    } catch (UnsupportedOperationException e) {
+      return false;
+    }
+  }
+
+  /**
    * The owner's login and password, as the configured provider produces them
    * for the DAV requests.
    *
    * @param endpoint the owner's endpoint
    * @return login and password
+   * @throws UnsupportedOperationException when the provider produces anything
+   *           but a Basic login and password
    */
   private String[] accountOf(CalDavEndpoint endpoint) {
     String authorization = caldavCredentialsResolver.authorization(endpoint.getServerId(),

@@ -344,7 +344,9 @@ public class CaldavCalendarShareService {
       }
       CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
       CalendarSync probe = pairs.get(calendars.get(0).getSyncUid());
-      if (!SharingMechanism.of(calDavClient.options(endpoint, collectionOf(probe)), collectionOf(probe)).isOffered()) {
+      SharingMechanism mechanism = SharingMechanism.of(calDavClient.options(endpoint, collectionOf(probe)), collectionOf(probe));
+      if (!mechanism.isOffered()
+          || (mechanism == SharingMechanism.BLUEMIND_SHARE && !blueMindAclClient.acceptsCredentials(endpoint))) {
         return List.of();
       }
       return calendars.stream().map(Calendar::getId).toList();
@@ -652,6 +654,7 @@ public class CaldavCalendarShareService {
    * collection itself answers.
    *
    * @param target the calendar being shared
+   * @return the mechanism selected, always an offered one
    */
   private SharingMechanism requireOffered(ShareTarget target) {
     SharingMechanism mechanism = SharingMechanism.of(calDavClient.options(target.endpoint(), target.href()), target.href());
