@@ -1439,10 +1439,16 @@ public class CaldavCalendarShareServiceTest {
              .thenReturn(List.of(calendar(14L, ALICE, "imported"), calendar(CALENDAR, ALICE, ANCHOR)));
     when(calDavClient.capabilities(endpoint, COLLECTION)).thenThrow(new CalDavAuthenticationException("401"),
                                                                     new CalDavUnreachableException("down"));
+    // Everything a retry would need to succeed: had the listing moved on to the imported collection, it would answer,
+    // and the exported calendar would be offered — so an empty menu below is the stop, not a later failure swallowed.
     lenient().when(calDavClient.capabilities(endpoint, STALWART_IMPORTED + "/")).thenReturn(stalwartOptions());
+    lenient().when(calDavClient.discoverHome(endpoint)).thenReturn(new CalendarHome("/dav/pal/alice%40stalwart.local/", ALICE_HOME));
+    lenient().when(calDavClient.listCalendars(endpoint, ALICE_HOME)).thenReturn(List.of());
 
     assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"), "refused credentials");
+    verify(calDavClient, never()).capabilities(endpoint, STALWART_IMPORTED + "/");
     assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"), "an unreachable server");
+    verify(calDavClient, never()).capabilities(endpoint, STALWART_IMPORTED + "/");
     verify(calDavClient, org.mockito.Mockito.times(2)).capabilities(eq(endpoint), anyString());
   }
 

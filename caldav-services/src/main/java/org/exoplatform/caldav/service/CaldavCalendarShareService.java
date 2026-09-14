@@ -375,9 +375,11 @@ public class CaldavCalendarShareService {
    * that answer carries no {@code DAV} header, as on the BlueMind deployments
    * observed — since what a server supports does not vary between two
    * collections of one account in any server characterised. A collection eXo
-   * created is asked first; when a collection fails on its own (gone, refused)
-   * the next calendar is asked, up to {@code MAX_CAPABILITY_PROBES}, while
-   * refused credentials and an unreachable server end the listing at once,
+   * created is asked first; when a collection fails on its own (gone, or any
+   * error status other than 401, 403, 407 and a gateway status) the next
+   * calendar is asked, up to {@code MAX_CAPABILITY_PROBES}, while
+   * refused credentials (a 403 among them: on a read verb it cannot be told
+   * from a credential refusal) and an unreachable server end the listing at once,
    * since asking again would only add failed requests. Every share operation
    * asks its own collection again.
    *
@@ -418,8 +420,8 @@ public class CaldavCalendarShareService {
       }
       CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
       // Probe a collection eXo created first: it is the user's own and exists as long as its pair is active,
-      // while an imported one may be a subscription that went away. A collection that fails on its own (gone,
-      // refused) tries the next calendar, so one dead collection does not hide Share everywhere. Refused credentials
+      // while an imported one may be a subscription that went away. A collection that fails on its own (gone, or an error
+      // status other than 401, 403, 407 and a gateway status) tries the next calendar, so one dead collection does not hide Share everywhere. Refused credentials
       // and an unreachable server are properties of the account and the server, known after one attempt: asking
       // again would only add failed requests, which a server may answer with a silent ban (CalDavUnreachableException).
       List<CalendarSync> probes = calendars.stream()
