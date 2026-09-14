@@ -69,7 +69,10 @@ describe('CaldavHiddenCalendarsDrawer', () => {
               this.$emit('input', true);
             },
             close() {
+              // exo-drawer emits `closed` once its panel is shut; the drawer
+              // resets its own `opened` flag on it.
               this.$emit('input', false);
+              this.$emit('closed');
             },
           },
         },
@@ -160,5 +163,30 @@ describe('CaldavHiddenCalendarsDrawer', () => {
     expect(wrapper.emitted('changed')).toBeUndefined();
     expect(wrapper.vm.restoring).toBeNull();
     console.error.mockRestore();
+  });
+
+  it('closes itself once the list it was opened on becomes empty', async () => {
+    const wrapper = mountDrawer([ALICES]);
+    const close = jest.spyOn(wrapper.vm.$refs.caldavHiddenCalendarsDrawer, 'close');
+
+    wrapper.vm.open();
+    expect(wrapper.vm.opened).toBe(true);
+
+    await wrapper.setProps({calendars: []});
+
+    // The last "Show again" empties the list: an empty drawer left open makes
+    // the user close it to find out whether anything happened.
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(wrapper.vm.opened).toBe(false);
+  });
+
+  it('does not close a drawer nobody opened when the list becomes empty', async () => {
+    const wrapper = mountDrawer([ALICES]);
+    const close = jest.spyOn(wrapper.vm.$refs.caldavHiddenCalendarsDrawer, 'close');
+
+    await wrapper.setProps({calendars: []});
+
+    expect(close).not.toHaveBeenCalled();
+    expect(wrapper.vm.opened).toBe(false);
   });
 });
