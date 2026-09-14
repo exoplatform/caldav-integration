@@ -1198,10 +1198,19 @@ public class CaldavCalendarShareServiceTest {
     assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
                  assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode(),
                  "no recorded principal");
-    // A listing that would offer the calendar had the principal been recorded: with none, the menu still offers nothing.
+    // An eXo-created calendar beside an import, and a listing that would offer the import had the principal been
+    // recorded: with none, the import is left out and the eXo-created calendar stays, so the answer cannot come from the
+    // whole menu failing.
+    CalendarSync importedElsewhere = importedPair(STALWART_IMPORTED);
+    importedElsewhere.setLocalCalendarSyncUid("imported");
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.EXO)).thenReturn(List.of(exoPair()));
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.REMOTE)).thenReturn(List.of(importedElsewhere));
+    lenient().when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice"))
+             .thenReturn(List.of(calendar(14L, ALICE, "imported"), calendar(CALENDAR, ALICE, ANCHOR)));
     lenient().when(calDavClient.listCalendars(endpoint, ALICE_HOME))
              .thenReturn(List.of(collection(ALICE_HOME + "default/", "/dav/pal/alice%40stalwart.local/", true)));
-    assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"), "no recorded principal, in the menu");
+    assertEquals(List.of(CALENDAR), service.shareableCalendarIds(ALICE, "alice"),
+                 "no recorded principal, in the menu: the import is left out, the eXo-created calendar stays");
     verify(calDavClient, never()).readAcl(any(), anyString());
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
   }

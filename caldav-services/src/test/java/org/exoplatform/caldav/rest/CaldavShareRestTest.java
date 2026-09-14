@@ -208,8 +208,10 @@ public class CaldavShareRestTest {
   /**
    * The JSON the drawer reads: sharees with kind, users, name, access and
    * whether they can be removed; whether a colleague must subscribe on the
-   * server first, which decides the drawer's BlueMind note; the shareable ids;
-   * a request body with the login alone.
+   * server first, which decides the drawer's BlueMind note; whether the
+   * calendar also holds the copies of the user's eXo meetings, which decides
+   * the drawer's warning and confirmation; the shareable ids; a request body
+   * with the login alone.
    *
    * @throws Exception never
    */
@@ -238,7 +240,7 @@ public class CaldavShareRestTest {
                  mapper.readTree(mapper.writeValueAsString(new CalendarShares(12L, List.of(), true))).get("subscriptionRequired").asBoolean(),
                  "BlueMind: the colleague must subscribe first");
     assertTrue(json.has("meetingCopies"), "the drawer reads shares.meetingCopies to warn and ask before sharing");
-    assertEquals(false, json.get("meetingCopies").asBoolean());
+    assertEquals(false, json.get("meetingCopies").asBoolean(), "a calendar holding no meeting copies");
     assertEquals(true,
                  mapper.readTree(mapper.writeValueAsString(new CalendarShares(12L, List.of()).withMeetingCopies(true))).get("meetingCopies").asBoolean(),
                  "a calendar holding the meeting copies");
