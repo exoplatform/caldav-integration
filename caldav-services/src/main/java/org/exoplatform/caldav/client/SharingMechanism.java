@@ -25,7 +25,9 @@ import java.util.regex.Pattern;
  * <p>
  * The catalogue of granting mechanisms, in code: an entry is a protocol and a
  * verdict on it, and which entry a server gets is <b>selected from what the
- * server says about itself</b> ({@link #of(DavOptions)}), not ticked by an
+ * server says about itself</b> ({@link #of(DavOptions, String)}: its own
+ * answer to {@code OPTIONS} and, for BlueMind, where the collection lives),
+ * not ticked by an
  * administrator nor frozen on a registration row. Granting is not a CalDAV
  * feature — no RFC defines calendar sharing — so the two servers this add-on
  * targets have nothing in common here: Stalwart takes RFC 3744's {@code ACL}
@@ -33,12 +35,16 @@ import java.util.regex.Pattern;
  * (design note 52695 B.8.2, review 52697).
  *
  * <p>
- * <b>Offered only where verified.</b> An entry is offered once a grant made
- * through it has been seen to reach the sharee on a real server. Enabling a
- * mechanism later is this flag plus the client method that speaks it, plus a
- * way to confirm a grant was applied — which is not the same on every server:
- * the BlueMind owner cannot read a calendar's ACL back over DAV at all (note
- * 52697, live results of 2026-09-13).
+ * <b>Offered only where every change can be confirmed.</b> An entry is
+ * offered when eXo can read back, after each grant and revoke, whether the
+ * server applied it, and reports "not applied" otherwise. How it is confirmed
+ * differs per server. On Stalwart, the ACL is read over DAV, and a grant was
+ * also seen to reach the sharee live (note 52696). On BlueMind, the owner
+ * cannot read the ACL over DAV (note 52697, live results of 2026-09-13), so
+ * the container's access list is read through BlueMind's REST API.
+ * {@link #BLUEMIND_SHARE} is offered on BlueMind's source code and on that
+ * read-back. The live capture of a BlueMind grant is still pending: the
+ * BlueMind section of the delivery's live test.
  */
 public enum SharingMechanism {
 
@@ -52,12 +58,11 @@ public enum SharingMechanism {
   WEBDAV_ACL(true),
 
   /**
-   * Apple CalendarServer sharing: {@code POST} of a {@code CS:share} body to
-   * the collection. What BlueMind advertises. Not offered: BlueMind's handler
-   * resolves the sharee by e-mail only and answers 200 with no body whether
-   * or not it wrote anything, the owner cannot read the result back over
-   * DAV, and the sharee sees nothing until they subscribe in BlueMind. No
-   * grant made this way has been captured (spike S3 of note 52697 pending).
+   * Apple sharing ({@code POST} of a {@code CS:share} body, or the
+   * {@code resource-sharing} draft) on a server that is not recognised as
+   * BlueMind. Not offered: nothing tells eXo how such a server resolves a
+   * sharee or how a change could be read back. A collection in BlueMind's
+   * layout is {@link #BLUEMIND_SHARE} instead.
    */
   CALENDARSERVER_SHARE(false),
 
