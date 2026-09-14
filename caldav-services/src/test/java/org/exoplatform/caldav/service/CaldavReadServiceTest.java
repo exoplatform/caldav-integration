@@ -764,6 +764,88 @@ public class CaldavReadServiceTest {
     assertNull(cal2.getOwnerDisplayName());
   }
 
+  // ------------------------------------ subscriptions the server's naming reveals, EXO-90275
+
+  /** The pool vehicle as BlueMind lists it under the user's home. */
+  private static final String        POOL_VEHICLE           = HOME + "calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/";
+
+  /** The resource's own principal, in the account principal's collection. */
+  private static final String        POOL_VEHICLE_PRINCIPAL = "/dav/principals/7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/";
+
+  /**
+   * The pool vehicle, listed with the user as owner and write granted, is
+   * shared, read-only, a resource, and named as the directory names it
+   * through its principal — never as an eXo user, whom nobody is asked about.
+   */
+  @Test
+  public void aResourceSubscriptionIsListedAsASharedReadOnlyResourceNamedByItsPrincipal() {
+    givenCalendars(owned(POOL_VEHICLE, "Véhicule de pool 1", PRINCIPAL, true, true));
+    when(calDavClient.readDisplayName(endpoint, POOL_VEHICLE_PRINCIPAL)).thenReturn("Véhicule de pool 1 (directory)");
+
+    RemoteCalendar vehicle = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertTrue(vehicle.isShared());
+    assertTrue(vehicle.isReadOnly());
+    assertEquals(org.exoplatform.caldav.model.CalendarOwnerKind.RESOURCE, vehicle.getOwnerKind());
+    assertEquals("Véhicule de pool 1 (directory)", vehicle.getOwnerDisplayName());
+    assertNull(vehicle.getOwnerIdentityId());
+    assertNull(vehicle.getOwnerUsername());
+    verify(caldavConnectionIdentityService, never()).usersConnectedAs(anyLong(), anyString());
+    verify(identityManager, never()).getIdentity(anyLong());
+  }
+
+  /**
+   * A resource whose principal will not say its name is named by the
+   * collection, which on BlueMind carries the resource's name — never by
+   * its uid.
+   */
+  @Test
+  public void aResourceWhosePrincipalSaysNothingIsNamedByTheCollection() {
+    givenCalendars(owned(POOL_VEHICLE, "Véhicule de pool 1", PRINCIPAL, true, true));
+    when(calDavClient.readDisplayName(endpoint, POOL_VEHICLE_PRINCIPAL)).thenReturn(null);
+
+    RemoteCalendar vehicle = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertEquals(org.exoplatform.caldav.model.CalendarOwnerKind.RESOURCE, vehicle.getOwnerKind());
+    assertEquals("Véhicule de pool 1", vehicle.getOwnerDisplayName());
+  }
+
+  /**
+   * A colleague's main calendar the user subscribed to is a person's share,
+   * owned by the eXo user connected as the principal its container uid names
+   * (EXO-90243) — not by the viewer, whom BlueMind names as owner.
+   */
+  @Test
+  public void aSubscribedColleaguesMainCalendarIsOwnedByTheEXoUserConnectedAsHerPrincipal() {
+    givenCalendars(owned(HOME + "calendar:Default:camille/", "Camille", PRINCIPAL, true, true));
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, "/dav/principals/camille/")).thenReturn(List.of(5L));
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(0L);
+    when(identityManager.getIdentity(5L)).thenReturn(user("5", "camille", "Camille Claudel"));
+
+    RemoteCalendar camilles = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertTrue(camilles.isShared());
+    assertTrue(camilles.isReadOnly());
+    assertEquals(org.exoplatform.caldav.model.CalendarOwnerKind.PERSON, camilles.getOwnerKind());
+    assertEquals(5L, camilles.getOwnerIdentityId());
+    assertEquals("camille", camilles.getOwnerUsername());
+    assertEquals("Camille Claudel", camilles.getOwnerDisplayName());
+  }
+
+  /**
+   * The user's own main calendar is not a share and has no owner kind.
+   */
+  @Test
+  public void theUsersOwnMainCalendarHasNoOwnerKind() {
+    givenCalendars(owned(HOME + "calendar:Default:john/", "John", PRINCIPAL, true, true));
+
+    RemoteCalendar own = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertFalse(own.isShared());
+    assertFalse(own.isReadOnly());
+    assertNull(own.getOwnerKind());
+  }
+
   /**
    * One colleague sharing three calendars is asked her name once per
    * listing, and a second listing asks again: the memo lives and dies with

@@ -123,7 +123,12 @@ public class CaldavSyncServiceTest {
   /** The account's own principal, as the server names it in the discovery walk. */
   private static final String        PRINCIPAL = "/dav/principals/john/";
 
-  private static final String        MAIN   = "/dav/calendars/john/calendar:Default:47/";
+  /**
+   * The account's own main calendar as BlueMind names it: after the account's
+   * own uid, the last segment of {@link #PRINCIPAL} (EXO-90275 — a main
+   * calendar named after another uid is a colleague's subscription).
+   */
+  private static final String        MAIN   = "/dav/calendars/john/calendar:Default:john/";
 
   /**
    * An eXo-made collection as BlueMind has reported it (EXO-89590): the
@@ -172,6 +177,9 @@ public class CaldavSyncServiceTest {
 
   @Mock
   private CaldavConnectionIdentityService caldavConnectionIdentityService;
+
+  @Mock
+  private CaldavSubscriptionRetirementService caldavSubscriptionRetirementService;
 
   @Mock
   private CalDavEndpoint             endpoint;
@@ -1585,6 +1593,100 @@ public class CaldavSyncServiceTest {
     verify(agendaCalendarService, never()).createCalendar(any(), anyString());
     verify(caldavSyncStorage, never()).deletePair(anyLong());
     assertEquals(CalendarSyncStatus.ACTIVE, bound.getStatus());
+    verify(caldavSubscriptionRetirementService, never()).retire(anyLong(), any(), any(), any());
+  }
+
+  // ------------------------------------ subscriptions the server's naming reveals, EXO-90275
+
+  /** The pool vehicle as BlueMind lists it under the user's home. */
+  private static final String        POOL_VEHICLE = HOME + "calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/";
+
+  /** A colleague's main calendar the user subscribed to, under the user's home. */
+  private static final String        CAMILLES_MAIN = HOME + "calendar:Default:camille/";
+
+  /**
+   * The defect on the rig: the pool vehicle, listed with the user as owner
+   * and write granted, used to become calendar 16. It becomes nothing, and
+   * the skip line says which witness spoke.
+   */
+  @Test
+  public void aResourceTheUserSubscribedToIsNeverMaterialised() throws Exception {
+    givenServerCalendars(owned(POOL_VEHICLE, "Véhicule de pool 1", PRINCIPAL, true, true));
+    givenNoKnownPairs();
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getLevel() == Level.INFO && recorded.getFormattedMessage().contains(POOL_VEHICLE))
+                .toList();
+    }
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
+    assertEquals(1, said.size());
+    assertTrue(said.get(0).getFormattedMessage().contains("a resource calendar the account subscribed to"), said.get(0).getFormattedMessage());
+  }
+
+  /**
+   * The acceptance defect: a colleague's main calendar the user subscribed
+   * to was materialised and all her events imported (calendar 33). It is not
+   * materialised; the user's own main calendar beside it still is.
+   */
+  @Test
+  public void aColleaguesMainCalendarIsNeverMaterialisedAndTheUsersOwnStillIs() throws Exception {
+    givenServerCalendars(owned(CAMILLES_MAIN, "Camille", PRINCIPAL, true, true),
+                         owned(HOME + "calendar:Default:john/", "John", PRINCIPAL, true, true));
+    givenNoKnownPairs();
+    givenAgendaCreates("anchor-own-main");
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<Calendar> created = ArgumentCaptor.forClass(Calendar.class);
+    verify(agendaCalendarService).createCalendar(created.capture(), eq(LOGIN));
+    assertEquals("John", created.getValue().getName());
+    ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(saved.capture());
+    assertEquals(HOME + "calendar:Default:john/", saved.getValue().getRemoteHref());
+  }
+
+  /**
+   * A subscription an earlier pass materialised is handed to the retirement,
+   * with its binding and the classification — and the pass neither makes a
+   * second calendar for it nor reads through its binding afterwards on its
+   * own account.
+   */
+  @Test
+  public void aSubscriptionAlreadyMaterialisedIsRetired() throws Exception {
+    CalendarSync bound = activeRemotePair(POOL_VEHICLE, "anchor-16");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    givenServerCalendars(owned(POOL_VEHICLE, "Véhicule de pool 1", PRINCIPAL, true, true));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSubscriptionRetirementService).retire(USER, LOGIN, bound, CollectionOwnership.SUBSCRIBED_RESOURCE);
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  /**
+   * Only an ACTIVE binding is handed over: a paused one — what a retirement
+   * that found local events leaves — is not asked about again, which is what
+   * makes the warning once per binding. The user's own main calendar, bound,
+   * is never handed over either.
+   */
+  @Test
+  public void aPausedSubscriptionAndTheUsersOwnBoundMainAreNotHandedToTheRetirement() throws Exception {
+    CalendarSync paused = activeRemotePair(POOL_VEHICLE, "anchor-16");
+    paused.setStatus(CalendarSyncStatus.PAUSED);
+    CalendarSync ownMain = activeRemotePair(HOME + "calendar:Default:john/", "anchor-main");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(paused, ownMain));
+    givenServerCalendars(owned(POOL_VEHICLE, "Véhicule de pool 1", PRINCIPAL, true, true),
+                         owned(HOME + "calendar:Default:john/", "John", PRINCIPAL, true, true));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSubscriptionRetirementService, never()).retire(anyLong(), any(), any(), any());
   }
 
   /**
@@ -1751,30 +1853,6 @@ public class CaldavSyncServiceTest {
 
     verify(agendaCalendarService, never()).createCalendar(any(), anyString());
     verify(caldavOutboundService, never()).ownershipOf(anyLong(), any(), any(), any());
-  }
-
-  /**
-   * A BlueMind resource the user subscribed to — a pool vehicle, listed as
-   * {@code calendar:<uid>} with a uid that is not the principal's, the user
-   * as owner and the full set — is materialised as before. Deliberately
-   * unchanged by EXO-90234: whether such a resource should become the user's
-   * calendar is an open product question, and this pins that the
-   * classification did not answer it on the side.
-   */
-  @Test
-  public void aBlueMindResourceSubscriptionIsStillMaterialised() throws Exception {
-    givenServerCalendars(owned("/dav/calendars/john/calendar:7E3AE6F3-0000-0000-0000-000000000000/",
-                               "Véhicule de pool 1",
-                               PRINCIPAL,
-                               true,
-                               true));
-    givenNoKnownPairs();
-    givenAgendaCreates("anchor-vehicle");
-
-    service.syncNow(USER, LOGIN);
-
-    verify(agendaCalendarService).createCalendar(any(), eq(LOGIN));
-    verify(caldavOutboundService, never()).isMintedByThisDeployment(anyLong(), anyString());
   }
 
   /**
