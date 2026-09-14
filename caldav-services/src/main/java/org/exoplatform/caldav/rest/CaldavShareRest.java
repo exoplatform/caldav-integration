@@ -139,7 +139,7 @@ public class CaldavShareRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Shared; the sharees as read back"),
       @ApiResponse(responseCode = "400", description = "No colleague named, unknown, the user themself, not connected to "
           + "this server, on the user's own login, already holding more than view access given outside eXo "
-          + "(caldav.share.notReadOnly), or a calendar with no collection eXo created"),
+          + "(caldav.share.notReadOnly), a colleague holding other access given outside eXo (caldav.share.shareeHasOtherAccess), or a calendar with no collection eXo created"),
       @ApiResponse(responseCode = "403", description = "Not the user's calendar"),
       @ApiResponse(responseCode = "404", description = "No such calendar"),
       @ApiResponse(responseCode = "409", description = "No account, not offered on this server, the access list "

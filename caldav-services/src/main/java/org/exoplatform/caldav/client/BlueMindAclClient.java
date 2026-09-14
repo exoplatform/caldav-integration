@@ -71,7 +71,13 @@ import org.exoplatform.services.log.Log;
  * DAV requests, taken from its Basic header; a provider producing anything
  * else is not a login this API accepts, and sharing is not offered.</li>
  * <li><b>A session for one read.</b> {@code POST /api/auth/login?login=…} with
- * the password as the body answers a {@code LoginResponse} whose
+ * the password as a JSON string, {@code Content-Type: application/json} —
+ * what BlueMind's own client proxy sends ({@code ClientProxyGenerator.java},
+ * {@code ByMimeTypeCodec.encode}); BlueMind picks the body codec by the exact
+ * {@code Content-Type} value ({@code DefaultBodyParameterCodecs.java}), so a
+ * {@code text/plain} carrying a charset parameter would be read as JSON,
+ * refused with a 500 and logged by BlueMind with the password in it —
+ * answers a {@code LoginResponse} whose
  * {@code authKey} travels in the {@code X-BM-ApiKey} header
  * ({@code parent/core/net.bluemind.core.rest/.../base/RestRootHandler.java}
  * reads it, {@code BasicClientProxy.java} sends it); the key is used for the
@@ -251,11 +257,14 @@ public class BlueMindAclClient {
   }
 
   /**
-   * Opens a REST session: {@code IAuthentication.login}.
+   * Opens a REST session: {@code IAuthentication.login}. The password is the
+   * body, encoded as a JSON string under exactly
+   * {@code Content-Type: application/json}; see the class comment for why no
+   * other shape is safe.
    *
    * @param root the REST root
    * @param login the login
-   * @param password the password, sent as the body
+   * @param password the password
    * @return the session key
    */
   private String login(String root, String login, String password) {
@@ -263,9 +272,9 @@ public class BlueMindAclClient {
     URI uri = URI.create(named + "?login=" + URLEncoder.encode(login, StandardCharsets.UTF_8) + "&origin=" + LOGIN_ORIGIN);
     HttpRequest request = HttpRequest.newBuilder(uri)
                                      .timeout(REQUEST_TIMEOUT)
-                                     .header("Content-Type", "text/plain; charset=utf-8")
+                                     .header("Content-Type", "application/json")
                                      .header("Accept", "application/json")
-                                     .POST(BodyPublishers.ofString(password, StandardCharsets.UTF_8))
+                                     .POST(BodyPublishers.ofString(mapper.writeValueAsString(password), StandardCharsets.UTF_8))
                                      .build();
     Answer answer = send(request, named);
     if (answer.status() == 401 || answer.status() == 403) {

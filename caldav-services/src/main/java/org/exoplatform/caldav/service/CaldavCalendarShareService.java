@@ -203,6 +203,13 @@ public class CaldavCalendarShareService {
   public static final String      SHAREE_ADDRESS_UNKNOWN = "caldav.share.shareeAddressUnknown";
 
   /**
+   * The colleague holds access below viewing given outside eXo — seeing when
+   * the owner is free, say — which a share from eXo would replace and a later
+   * stop would erase.
+   */
+  public static final String      SHAREE_HAS_OTHER_ACCESS = "caldav.share.shareeHasOtherAccess";
+
+  /**
    * Another principal holds access beyond seeing the calendar, which writing
    * the list back could change on the server.
    */
@@ -998,7 +1005,11 @@ public class CaldavCalendarShareService {
    * ({@code SharingProtocol.java}), so a colleague holding anything beyond
    * reading — {@code Write}, {@code Manage}, {@code All}… — would be
    * downgraded by a read-only share: refused before anything is sent. A
-   * colleague already reading changes nothing. The handler answers 200
+   * colleague already reading changes nothing. A colleague holding only
+   * access below reading given in BlueMind — free/busy, invitation, visible —
+   * is refused too: once rewritten to {@code Read} it is indistinguishable in
+   * BlueMind's store from a share eXo made ({@code AclService.store} compacts
+   * it), so a later stop from eXo would erase access eXo never gave. The handler answers 200
    * whatever it did, so the grant counts only when the access list read back
    * gives the colleague's directory entry {@code Read}.
    *
@@ -1024,6 +1035,9 @@ public class CaldavCalendarShareService {
       if (theirs.contains(BLUEMIND_READ)) {
         LOG.debug("Calendar {} is already readable by {}; nothing is sent", target.calendarId(), sharee.principal());
         return blueMindSharesOf(target, before, ownerPrincipal);
+      }
+      if (!theirs.isEmpty()) {
+        throw new IllegalArgumentException(SHAREE_HAS_OTHER_ACCESS);
       }
       postBlueMindShare(target, blueMindAddressOf(target, sharee), false);
       List<BlueMindAce> after = blueMindAclOf(target);
@@ -1054,7 +1068,9 @@ public class CaldavCalendarShareService {
    * BlueMind's handler removes <em>every</em> entry of the sharee, so only a
    * colleague holding plain reading — {@code Read} and the verbs it expands to,
    * nothing else — is removed; one holding more, or only free/busy, holds
-   * something eXo did not give and is refused.
+   * something eXo did not give and is refused. Plain reading cannot hide
+   * earlier free/busy access, because a grant is refused to a colleague
+   * holding any.
    *
    * @param target the calendar
    * @param sharee the colleague

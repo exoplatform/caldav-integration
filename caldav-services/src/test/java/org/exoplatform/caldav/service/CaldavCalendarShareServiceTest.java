@@ -395,6 +395,28 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
+   * A colleague given only access below viewing in BlueMind — free/busy, an
+   * invitation right, visibility — is not shared with from eXo: the share
+   * would turn it into a read entry BlueMind stores exactly like one eXo
+   * made, and stopping the share would then erase access eXo never gave.
+   * Nothing is sent.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAccessBelowReadingGivenOutsideEXoIsNeverReplaced() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Freebusy")),
+                                                                        acl(owner(), expanded(ERIC_UID, "Visible")));
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+      IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
+      assertEquals(CaldavCalendarShareService.SHAREE_HAS_OTHER_ACCESS, refused.getMessage());
+    }
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean());
+  }
+
+  /**
    * A subject nobody in eXo is connected as is listed as someone outside eXo
    * by the name its principal gives, never removable; a subject holding only
    * free/busy cannot view the calendar and is not listed; and the owner's

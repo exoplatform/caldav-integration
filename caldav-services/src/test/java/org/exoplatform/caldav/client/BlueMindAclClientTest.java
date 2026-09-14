@@ -81,8 +81,11 @@ public class BlueMindAclClientTest {
 
   private static final String   LOGIN          = "francois@bm.example.com";
 
-  /** A password with a colon and a space: only the first colon separates. */
-  private static final String   PASSWORD       = "Fr@n:cois Pass1!";
+  /**
+   * A password with a colon, a space, a quote and a backslash: only the first
+   * colon separates, and the JSON body must escape the rest.
+   */
+  private static final String   PASSWORD       = "Fr@n:co\"is\\ Pass1!";
 
   private static final String   AUTHORIZATION  = "Basic "
       + Base64.getEncoder().encodeToString((LOGIN + ":" + PASSWORD).getBytes(StandardCharsets.UTF_8));
@@ -157,8 +160,8 @@ public class BlueMindAclClientTest {
 
   /**
    * Three requests, in order, all to the declared server: the login with the
-   * owner's login in the query and the password as the body — no
-   * Authorization header; the read with the session key in
+   * owner's login in the query and the password as a JSON string body under
+   * exactly {@code application/json} — no Authorization header; the read with the session key in
    * {@code X-BM-ApiKey}; the logout with the same key. The list comes back
    * entry by entry, as BlueMind lists it.
    */
@@ -174,7 +177,10 @@ public class BlueMindAclClientTest {
     HttpRequest login = sent.get(0);
     assertEquals("POST", login.method());
     assertEquals("https://bm.example.com:8443/api/auth/login?login=francois%40bm.example.com&origin=exo-caldav", login.uri().toString());
-    assertEquals(PASSWORD, bodyOf(login));
+    assertEquals("application/json", login.headers().firstValue("Content-Type").orElse(null),
+                 "BlueMind selects the body codec by the exact Content-Type: any parameter makes it parse the password as JSON");
+    assertEquals(PASSWORD, tools.jackson.databind.json.JsonMapper.builder().build().readValue(bodyOf(login), String.class),
+                 "the body is the password as a JSON string, as BlueMind's own client proxy sends it");
     assertFalse(login.headers().firstValue("Authorization").isPresent());
     assertFalse(login.headers().firstValue(BlueMindAclClient.API_KEY_HEADER).isPresent());
 
