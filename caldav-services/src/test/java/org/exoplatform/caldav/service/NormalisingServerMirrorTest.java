@@ -1522,6 +1522,45 @@ public class NormalisingServerMirrorTest {
     public int deleteCollection(CalDavEndpoint endpoint, CalendarSync pair) {
       return 204;
     }
+
+    /**
+     * Not part of a mirror's life: sharing (EXO-90253) never runs here.
+     *
+     * @param endpoint unused
+     * @param href unused
+     * @return never
+     */
+    @Override
+    public org.exoplatform.caldav.client.DavOptions options(CalDavEndpoint endpoint, String href) {
+      throw new UnsupportedOperationException("sharing is not exercised by the mirror tests");
+    }
+
+    /**
+     * Not part of a mirror's life: sharing (EXO-90253) never runs here.
+     *
+     * @param endpoint unused
+     * @param href unused
+     * @return never
+     */
+    @Override
+    public org.exoplatform.caldav.client.CollectionAcl readAcl(CalDavEndpoint endpoint, String href) {
+      throw new UnsupportedOperationException("sharing is not exercised by the mirror tests");
+    }
+
+    /**
+     * Not part of a mirror's life: sharing (EXO-90253) never runs here.
+     *
+     * @param endpoint unused
+     * @param pair unused
+     * @param entries unused
+     * @return never
+     */
+    @Override
+    public org.exoplatform.caldav.client.AclWriteResult writeAcl(CalDavEndpoint endpoint,
+                                                                 CalendarSync pair,
+                                                                 List<org.exoplatform.caldav.client.AccessControlEntry> entries) {
+      throw new UnsupportedOperationException("sharing is not exercised by the mirror tests");
+    }
   }
 
   /** What a fake server does to the objects it is handed. */

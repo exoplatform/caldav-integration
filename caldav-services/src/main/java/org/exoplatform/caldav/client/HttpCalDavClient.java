@@ -1575,6 +1575,478 @@ public class HttpCalDavClient implements CalDavClient {
     }
   }
 
+  /**
+   * The two properties {@link #readAcl} asks for: the list itself, and the
+   * caller's own privileges, which say whether a list withheld was withheld
+   * for want of {@code DAV:read-acl}.
+   */
+  private static final String                PROPFIND_ACL      = """
+      <?xml version="1.0" encoding="utf-8"?>
+      <d:propfind xmlns:d="DAV:"><d:prop><d:acl/><d:current-user-privilege-set/></d:prop></d:propfind>""";
+
+  /** An XML local name, the only shape a privilege or property name is written back in. */
+  private static final Pattern               XML_NAME_PATTERN  = Pattern.compile("[A-Za-z_][A-Za-z0-9._\\-]*");
+
+  /**
+   * One OPTIONS, read through the read-verb status policy: it changes
+   * nothing, and on BlueMind a 403 to a read is a credential refusal.
+   *
+   * @param endpoint the account's endpoint
+   * @param href the resource's server-absolute path
+   * @return the normalised DAV and Allow headers
+   */
+  @Override
+  public DavOptions options(CalDavEndpoint endpoint, String href) {
+    HttpRequest request = HttpRequest.newBuilder(target(endpoint, href))
+                                     .timeout(requestTimeout())
+                                     .header(AUTHORIZATION_HEADER, authorization(endpoint))
+                                     .method("OPTIONS", BodyPublishers.noBody())
+                                     .build();
+    DavResponse response = exchange(request);
+    int status = response.status();
+    checkAuthStatus(status, true, request);
+    if (status != 200 && status != 204) {
+      throw refusal(status, request);
+    }
+    return DavOptions.of(response.response().headers().allValues("dav"),
+                         response.response().headers().allValues("allow"));
+  }
+
+  /**
+   * One PROPFIND of depth 0, every entry parsed or the whole list declared
+   * not understood. Read from a granted propstat only, like every property
+   * here: Stalwart answers an owner's list as a granted, possibly empty
+   * {@code DAV:acl}, and a server that withholds it answers it in a 403 or
+   * 404 propstat, which is no list.
+   *
+   * @param endpoint the account's endpoint
+   * @param href the collection's server-absolute path
+   * @return the list as answered
+   */
+  @Override
+  public CollectionAcl readAcl(CalDavEndpoint endpoint, String href) {
+    Element response = firstResponse(propfind(endpoint, href, PROPFIND_ACL, "0"));
+    if (response == null) {
+      return CollectionAcl.unreadable(Set.of());
+    }
+    Set<String> privileges = new HashSet<>();
+    Element acl = null;
+    for (Element prop : grantedProps(response)) {
+      for (Element set : childElements(prop, DAV_NS, "current-user-privilege-set")) {
+        for (Element privilege : childElements(set, DAV_NS, "privilege")) {
+          String named = singleNameOf(privilege);
+          if (named != null) {
+            privileges.add(named);
+          }
+        }
+      }
+      List<Element> acls = childElements(prop, DAV_NS, "acl");
+      if (!acls.isEmpty()) {
+        acl = acls.get(0);
+      }
+    }
+    if (acl == null) {
+      return CollectionAcl.unreadable(privileges);
+    }
+    if (hasText(acl)) {
+      return CollectionAcl.notUnderstood(privileges, "text outside any entry");
+    }
+    List<AccessControlEntry> entries = new ArrayList<>();
+    for (Element child : elementChildren(acl)) {
+      AccessControlEntry entry = isDav(child, "ace") ? aceOf(child) : null;
+      if (entry == null) {
+        return CollectionAcl.notUnderstood(privileges,
+                                           "an entry outside RFC 3744 grammar: "
+                                               + AccessControlEntry.clark(child.getNamespaceURI(), child.getLocalName()));
+      }
+      entries.add(entry);
+    }
+    return CollectionAcl.of(entries, privileges);
+  }
+
+  /**
+   * One {@code ACL} request carrying the complete list, addressed only
+   * through the pair's authorised collection.
+   *
+   * <p>
+   * Credentials are classified on 401 and 407 only: a 403 to this write verb
+   * is the server declining the change — {@code need-privileges},
+   * {@code allowed-principal} — with credentials that are fine, and pausing
+   * the account over it would be wrong. A gateway status means nothing was
+   * reached. Every other status is answered, with what its body names.
+   *
+   * @param endpoint the account's endpoint
+   * @param pair the binding whose collection is addressed
+   * @param entries the complete list of modifiable entries
+   * @return the raw outcome
+   */
+  @Override
+  public AclWriteResult writeAcl(CalDavEndpoint endpoint, CalendarSync pair, List<AccessControlEntry> entries) {
+    String href = authorisedTarget(pair);
+    HttpRequest request = request(endpoint, href, "ACL", aclBody(entries)).build();
+    DavResponse response = exchange(request);
+    int status = response.status();
+    checkAuthStatus(status, false, request);
+    if (status == 502 || status == 503 || status == 504) {
+      throw refusal(status, request);
+    }
+    if (status == 200 || status == 204) {
+      return new AclWriteResult(status, List.of(), List.of());
+    }
+    return refusedAclWrite(status, response.body(), request.uri());
+  }
+
+  /**
+   * The body of an {@code ACL} request: one {@code DAV:ace} per entry, each
+   * rebuilt from its parsed form rather than copied from the answer, so every
+   * namespace an element needs is declared on that element.
+   *
+   * @param entries the entries to send
+   * @return the XML body
+   */
+  private String aclBody(List<AccessControlEntry> entries) {
+    StringBuilder body = new StringBuilder("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<d:acl xmlns:d=\"DAV:\">");
+    for (AccessControlEntry entry : entries) {
+      if (!entry.isModifiable()) {
+        // RFC 3744 §8.1: protected and inherited entries stay where they are;
+        // sending one is a conflict the server refuses, and nothing eXo holds
+        // can change them anyway.
+        throw new IllegalArgumentException("A protected or inherited entry is never sent in an ACL request");
+      }
+      if (entry.privileges() == null || entry.privileges().isEmpty()) {
+        throw new IllegalArgumentException("An entry granting or denying nothing cannot be written");
+      }
+      body.append("<d:ace>");
+      String principal = principalXml(entry.principal());
+      body.append(entry.inverted() ? "<d:invert>" + principal + "</d:invert>" : principal);
+      String verb = entry.deny() ? "deny" : "grant";
+      body.append("<d:").append(verb).append('>');
+      entry.privileges().stream().sorted().forEach(privilege -> body.append("<d:privilege>").append(elementXml(privilege)).append("</d:privilege>"));
+      body.append("</d:").append(verb).append('>');
+      body.append("</d:ace>");
+    }
+    return body.append("</d:acl>").toString();
+  }
+
+  /**
+   * One {@code DAV:principal} element.
+   *
+   * @param principal the principal
+   * @return its XML
+   */
+  private String principalXml(AccessControlEntry.AcePrincipal principal) {
+    if (principal == null || principal.kind() == null) {
+      throw new IllegalArgumentException("An entry names no principal");
+    }
+    String inner = switch (principal.kind()) {
+    case HREF -> {
+      if (StringUtils.isBlank(principal.href())) {
+        throw new IllegalArgumentException("A principal href cannot be blank");
+      }
+      yield "<d:href>" + escape(principal.href().trim()) + "</d:href>";
+    }
+    case ALL -> "<d:all/>";
+    case AUTHENTICATED -> "<d:authenticated/>";
+    case UNAUTHENTICATED -> "<d:unauthenticated/>";
+    case SELF -> "<d:self/>";
+    case PROPERTY -> "<d:property>"
+        + elementXml(AccessControlEntry.clark(principal.propertyNamespace(), principal.propertyName())) + "</d:property>";
+    };
+    return "<d:principal>" + inner + "</d:principal>";
+  }
+
+  /**
+   * An empty element named by a Clark name, declaring its own namespace.
+   *
+   * @param clarkName {@code {namespace}local}
+   * @return the element's XML
+   */
+  private String elementXml(String clarkName) {
+    int close = clarkName == null ? -1 : clarkName.indexOf('}');
+    if (close < 1 || !clarkName.startsWith("{")) {
+      throw new IllegalArgumentException("Not a qualified element name: " + clarkName);
+    }
+    String namespace = clarkName.substring(1, close);
+    String localName = clarkName.substring(close + 1);
+    if (!XML_NAME_PATTERN.matcher(localName).matches() || namespace.isEmpty()) {
+      throw new IllegalArgumentException("Not a writable element name: " + clarkName);
+    }
+    if (DAV_NS.equals(namespace)) {
+      return "<d:" + localName + "/>";
+    }
+    return "<x:" + localName + " xmlns:x=\"" + escape(namespace).replace("\"", "&quot;") + "\"/>";
+  }
+
+  /**
+   * One {@code DAV:ace} parsed, or null when any part of it falls outside
+   * RFC 3744 §5.5: {@code (principal | invert), (grant | deny), protected?,
+   * inherited?}, each at most once, in any order a server writes them.
+   *
+   * @param ace the entry element
+   * @return the entry, or null when it is not understood
+   */
+  private AccessControlEntry aceOf(Element ace) {
+    if (hasText(ace)) {
+      return null;
+    }
+    AccessControlEntry.AcePrincipal principal = null;
+    boolean inverted = false;
+    Boolean deny = null;
+    Set<String> privileges = null;
+    boolean protectedEntry = false;
+    String inheritedFrom = null;
+    for (Element child : elementChildren(ace)) {
+      if (!DAV_NS.equals(child.getNamespaceURI())) {
+        return null;
+      }
+      String name = child.getLocalName();
+      if (("principal".equals(name) || "invert".equals(name)) && principal == null) {
+        principal = "principal".equals(name) ? principalOf(child) : invertedPrincipalOf(child);
+        inverted = "invert".equals(name);
+        if (principal == null) {
+          return null;
+        }
+      } else if (("grant".equals(name) || "deny".equals(name)) && deny == null) {
+        deny = "deny".equals(name);
+        privileges = privilegesOf(child);
+        if (privileges == null) {
+          return null;
+        }
+      } else if ("protected".equals(name) && !protectedEntry && isEmptyElement(child)) {
+        protectedEntry = true;
+      } else if ("inherited".equals(name) && inheritedFrom == null) {
+        inheritedFrom = singleHrefOf(child);
+        if (inheritedFrom == null) {
+          return null;
+        }
+      } else {
+        return null;
+      }
+    }
+    if (principal == null || deny == null) {
+      return null;
+    }
+    return new AccessControlEntry(principal, inverted, deny, privileges, protectedEntry, inheritedFrom);
+  }
+
+  /**
+   * The principal inside a {@code DAV:invert}, which holds exactly one
+   * {@code DAV:principal}.
+   *
+   * @param invert the invert element
+   * @return the principal, or null when not understood
+   */
+  private AccessControlEntry.AcePrincipal invertedPrincipalOf(Element invert) {
+    List<Element> inner = elementChildren(invert);
+    if (hasText(invert) || inner.size() != 1 || !isDav(inner.get(0), "principal")) {
+      return null;
+    }
+    return principalOf(inner.get(0));
+  }
+
+  /**
+   * One {@code DAV:principal} parsed: exactly one of href, all,
+   * authenticated, unauthenticated, property or self.
+   *
+   * @param principal the principal element
+   * @return the principal, or null when it is not understood
+   */
+  private AccessControlEntry.AcePrincipal principalOf(Element principal) {
+    List<Element> children = elementChildren(principal);
+    if (hasText(principal) || children.size() != 1 || !DAV_NS.equals(children.get(0).getNamespaceURI())) {
+      return null;
+    }
+    Element form = children.get(0);
+    return switch (form.getLocalName()) {
+    case "href" -> {
+      String href = leafText(form);
+      yield href == null ? null : AccessControlEntry.AcePrincipal.href(href);
+    }
+    case "all" -> isEmptyElement(form) ? AccessControlEntry.AcePrincipal.of(AccessControlEntry.AcePrincipal.Kind.ALL) : null;
+    case "authenticated" -> isEmptyElement(form) ? AccessControlEntry.AcePrincipal.of(AccessControlEntry.AcePrincipal.Kind.AUTHENTICATED)
+                                                 : null;
+    case "unauthenticated" -> isEmptyElement(form) ? AccessControlEntry.AcePrincipal.of(AccessControlEntry.AcePrincipal.Kind.UNAUTHENTICATED)
+                                                   : null;
+    case "self" -> isEmptyElement(form) ? AccessControlEntry.AcePrincipal.of(AccessControlEntry.AcePrincipal.Kind.SELF) : null;
+    case "property" -> {
+      List<Element> named = elementChildren(form);
+      yield hasText(form) || named.size() != 1 || !isEmptyElement(named.get(0))
+                                                                                ? null
+                                                                                : AccessControlEntry.AcePrincipal.property(named.get(0).getNamespaceURI(),
+                                                                                                                           named.get(0).getLocalName());
+    }
+    default -> null;
+    };
+  }
+
+  /**
+   * The privileges of a {@code DAV:grant} or {@code DAV:deny}: one or more
+   * {@code DAV:privilege}, each naming exactly one empty privilege element.
+   *
+   * @param verb the grant or deny element
+   * @return the privileges as Clark names, or null when not understood
+   */
+  private Set<String> privilegesOf(Element verb) {
+    List<Element> children = elementChildren(verb);
+    if (hasText(verb) || children.isEmpty()) {
+      return null;
+    }
+    Set<String> privileges = new HashSet<>();
+    for (Element privilege : children) {
+      String named = isDav(privilege, "privilege") ? singleNameOf(privilege) : null;
+      if (named == null) {
+        return null;
+      }
+      privileges.add(named);
+    }
+    return privileges;
+  }
+
+  /**
+   * The Clark name of the one empty element a wrapper holds — a privilege
+   * inside {@code DAV:privilege}.
+   *
+   * @param wrapper the wrapping element
+   * @return the Clark name, or null when the wrapper holds anything else
+   */
+  private String singleNameOf(Element wrapper) {
+    List<Element> named = elementChildren(wrapper);
+    if (hasText(wrapper) || named.size() != 1 || !isEmptyElement(named.get(0))) {
+      return null;
+    }
+    return AccessControlEntry.clark(named.get(0).getNamespaceURI(), named.get(0).getLocalName());
+  }
+
+  /**
+   * The href a wrapper holds as its only child — {@code DAV:inherited}.
+   *
+   * @param wrapper the wrapping element
+   * @return the href text, or null when the wrapper holds anything else
+   */
+  private String singleHrefOf(Element wrapper) {
+    List<Element> inner = elementChildren(wrapper);
+    if (hasText(wrapper) || inner.size() != 1 || !isDav(inner.get(0), "href")) {
+      return null;
+    }
+    return leafText(inner.get(0));
+  }
+
+  /**
+   * What a refused {@code ACL} request's {@code DAV:error} body names. A
+   * body that is absent, not XML or not an error element names nothing, and
+   * the status alone is the answer.
+   *
+   * @param status the status answered
+   * @param body the response body
+   * @param uri the request URI, for the debug log
+   * @return the outcome
+   */
+  private AclWriteResult refusedAclWrite(int status, String body, URI uri) {
+    List<String> preconditions = new ArrayList<>();
+    List<String> missingPrivileges = new ArrayList<>();
+    if (StringUtils.isNotBlank(body)) {
+      try {
+        Element error = parse(body, uri);
+        if (isDav(error, "error")) {
+          for (Element precondition : elementChildren(error)) {
+            preconditions.add(shortName(precondition));
+            if (isDav(precondition, "need-privileges")) {
+              for (Element privilege : descendants(precondition, DAV_NS, "privilege")) {
+                for (Element named : elementChildren(privilege)) {
+                  missingPrivileges.add(shortName(named));
+                }
+              }
+            }
+          }
+        }
+      } catch (CalDavException e) {
+        LOG.debug("The refusal of the ACL request to {} carries no readable error body", uri, e);
+      }
+    }
+    return new AclWriteResult(status, List.copyOf(preconditions), List.copyOf(missingPrivileges));
+  }
+
+  /**
+   * An element's name as a refusal reports it: the local name in the DAV
+   * namespace, the Clark name elsewhere.
+   *
+   * @param element the element
+   * @return its name
+   */
+  private String shortName(Element element) {
+    return DAV_NS.equals(element.getNamespaceURI()) ? element.getLocalName()
+                                                    : AccessControlEntry.clark(element.getNamespaceURI(), element.getLocalName());
+  }
+
+  /**
+   * Whether an element is one DAV element.
+   *
+   * @param element the element
+   * @param localName the DAV local name
+   * @return true when namespace and name match
+   */
+  private boolean isDav(Element element, String localName) {
+    return element != null && DAV_NS.equals(element.getNamespaceURI()) && localName.equals(element.getLocalName());
+  }
+
+  /**
+   * Every element child, whatever its namespace, in document order.
+   *
+   * @param parent the element
+   * @return its element children, possibly empty
+   */
+  private List<Element> elementChildren(Element parent) {
+    List<Element> found = new ArrayList<>();
+    NodeList children = parent.getChildNodes();
+    for (int i = 0; i < children.getLength(); i++) {
+      if (children.item(i).getNodeType() == Node.ELEMENT_NODE) {
+        found.add((Element) children.item(i));
+      }
+    }
+    return found;
+  }
+
+  /**
+   * Whether an element carries text of its own other than whitespace. No
+   * structural element of an ACL does, and reading past such text would lose
+   * whatever it meant.
+   *
+   * @param element the element
+   * @return true when a direct text or CDATA child is not blank
+   */
+  private boolean hasText(Element element) {
+    NodeList children = element.getChildNodes();
+    for (int i = 0; i < children.getLength(); i++) {
+      Node child = children.item(i);
+      if ((child.getNodeType() == Node.TEXT_NODE || child.getNodeType() == Node.CDATA_SECTION_NODE)
+          && StringUtils.isNotBlank(child.getNodeValue())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether an element is empty: no element child and no text.
+   *
+   * @param element the element
+   * @return true when it carries nothing
+   */
+  private boolean isEmptyElement(Element element) {
+    return elementChildren(element).isEmpty() && !hasText(element);
+  }
+
+  /**
+   * The text of a leaf — an href — or null when it is blank or holds
+   * elements.
+   *
+   * @param leaf the element
+   * @return the trimmed text, or null
+   */
+  private String leafText(Element leaf) {
+    return elementChildren(leaf).isEmpty() ? StringUtils.trimToNull(leaf.getTextContent()) : null;
+  }
+
   /** The prefix eXo derives every personal collection's path from. */
   private static final String                COLLECTION_PREFIX = "exo-cal-";
 

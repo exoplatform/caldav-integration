@@ -516,4 +516,78 @@ public interface CalDavClient {
    * @throws CalDavException when the server refuses or cannot be reached
    */
   int deleteCollection(CalDavEndpoint endpoint, CalendarSync pair);
+
+  /**
+   * Asks a resource what it supports: the compliance classes of its
+   * {@code DAV} header and the methods of its {@code Allow} header, in one
+   * {@code OPTIONS} (EXO-90253).
+   *
+   * <p>
+   * The evidence {@link SharingMechanism#of(DavOptions)} selects a granting
+   * mechanism from. Asked of the collection itself, not of the server root:
+   * RFC 4918 §10.1 lets the {@code DAV} header vary per resource.
+   *
+   * @param endpoint the account's endpoint
+   * @param href the resource's server-absolute path
+   * @return the normalised headers, empty sets when the server sent none
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached or answers
+   *           neither 200 nor 204
+   */
+  DavOptions options(CalDavEndpoint endpoint, String href);
+
+  /**
+   * Reads a collection's access control list and the caller's own privileges
+   * on it, in one PROPFIND of depth 0 (EXO-90253).
+   *
+   * <p>
+   * The whole list or nothing usable: an entry outside RFC 3744 §5.5's
+   * grammar makes the answer {@link CollectionAcl#understood() not
+   * understood}, because the list is read in order to be written back, and a
+   * skipped entry would be deleted by that write. A property the server does
+   * not grant — no {@code DAV:read-acl}, or no RFC 3744 at all — is
+   * {@link CollectionAcl#readable() not readable}, not an exception.
+   *
+   * @param endpoint the account's endpoint
+   * @param href the collection's server-absolute path
+   * @return the list as the server answered it
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached, errors, or
+   *           answers something that is not DAV XML
+   */
+  CollectionAcl readAcl(CalDavEndpoint endpoint, String href);
+
+  /**
+   * Replaces the modifiable entries of a collection's access control list
+   * with the given ones: RFC 3744 §8.1's {@code ACL} method (EXO-90253).
+   *
+   * <p>
+   * <b>Replaces, never adds.</b> Every entry that is neither protected nor
+   * inherited and is absent from the request is removed by the server. The
+   * caller therefore sends the list it read with its one change applied, and
+   * this method refuses an entry that is protected or inherited rather than
+   * sending what the server would refuse as a conflict.
+   *
+   * <p>
+   * Takes the <b>pair</b>, like {@link #deleteCollection}, and for the same
+   * reason: the collection must belong to an {@link SyncOrigin#EXO} pair and
+   * carry the slug eXo derives from that pair's calendar anchor, so this
+   * method cannot address a collection eXo did not create — a colleague's
+   * share, the mirror, anything a browser named.
+   *
+   * <p>
+   * The answer is a claim: {@link AclWriteResult#accepted()} says the server
+   * took the body, and only the list read back says what it holds.
+   *
+   * @param endpoint the account's endpoint
+   * @param pair the binding whose collection's ACL is written
+   * @param entries the complete list of modifiable entries to hold
+   * @return the status and, for a refusal, the preconditions it named
+   * @throws IllegalArgumentException when the pair does not authorise
+   *           addressing its collection, or an entry is protected, inherited
+   *           or not representable
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached
+   */
+  AclWriteResult writeAcl(CalDavEndpoint endpoint, CalendarSync pair, List<AccessControlEntry> entries);
 }

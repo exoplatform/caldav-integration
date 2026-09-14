@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DERIVED, not captured: no server this add-on targets answers every form.
+  RFC 3744 section 5.5.5's example ACL, re-addressed to a calendar
+  collection, with one entry per form the grammar of section 5.5 allows, so
+  a parser that skips any of them fails here rather than on a customer's
+  server:
+  - a protected entry granting DAV:all to the DAV:owner property principal
+    (the section 5.5.5 shape);
+  - a read grant to a principal href, eXo's own shape;
+  - an inherited deny to DAV:all, inherited from the home;
+  - an inverted grant (DAV:invert) of CALDAV:read-free-busy to a principal;
+  - grants to DAV:authenticated and DAV:unauthenticated.
+  The owner's privileges are answered without DAV:read-acl on purpose: a
+  server that returned the list anyway must still be read.
+-->
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><D:response><D:href>/dav/calendars/alice/exo-cal-9f1c2d3e-4b5a-6c7d-8e9f-0a1b2c3d4e5f/</D:href><D:propstat><D:prop>
+  <D:acl>
+    <D:ace>
+      <D:principal><D:property><D:owner/></D:property></D:principal>
+      <D:grant><D:privilege><D:all/></D:privilege></D:grant>
+      <D:protected/>
+    </D:ace>
+    <D:ace>
+      <D:principal><D:href>/dav/principals/bob/</D:href></D:principal>
+      <D:grant><D:privilege><D:read/></D:privilege></D:grant>
+    </D:ace>
+    <D:ace>
+      <D:principal><D:all/></D:principal>
+      <D:deny><D:privilege><D:write/></D:privilege></D:deny>
+      <D:inherited><D:href>/dav/calendars/alice/</D:href></D:inherited>
+    </D:ace>
+    <D:ace>
+      <D:invert><D:principal><D:href>/dav/principals/mallory/</D:href></D:principal></D:invert>
+      <D:grant><D:privilege><C:read-free-busy/></D:privilege></D:grant>
+    </D:ace>
+    <D:ace>
+      <D:principal><D:authenticated/></D:principal>
+      <D:grant><D:privilege><D:read/></D:privilege><D:privilege><D:read-current-user-privilege-set/></D:privilege></D:grant>
+    </D:ace>
+    <D:ace>
+      <D:principal><D:unauthenticated/></D:principal>
+      <D:grant><D:privilege><C:read-free-busy/></D:privilege></D:grant>
+    </D:ace>
+  </D:acl>
+  <D:current-user-privilege-set><D:privilege><D:read/></D:privilege><D:privilege><D:write-acl/></D:privilege></D:current-user-privilege-set>
+</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>

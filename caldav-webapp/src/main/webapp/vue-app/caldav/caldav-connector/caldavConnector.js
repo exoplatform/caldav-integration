@@ -218,6 +218,50 @@ const caldavConnector = {
   },
 
   /**
+   * What this connector adds to the menu of the user's own calendars in
+   * agenda's left panel (EXO-90253): "Share…", on each calendar the platform
+   * says can be shared from eXo — owned, exported to the connected account, on
+   * a server where granting is verified. Agenda asks connectors declaring this
+   * and `runCalendarAction`, and draws the labels as given.
+   *
+   * Never rejects: a connector that cannot answer adds nothing.
+   *
+   * @returns {Promise<Object>} {calendarId: [{id, label, icon}]}, empty when
+   *          no calendar can be shared
+   */
+  calendarActions() {
+    return Promise.all([caldavConnectorService.getShareableCalendars(), labels()])
+      .then(([calendarIds, bundle]) => {
+        const label = bundle && bundle['caldav.share.menu'] || 'Share…';
+        const actions = {};
+        (calendarIds || []).forEach(calendarId => {
+          actions[calendarId] = [{id: 'caldavShareCalendar', label, icon: 'fa-share-alt'}];
+        });
+        return actions;
+      })
+      .catch(() => ({}));
+  },
+
+  /**
+   * Runs an action `calendarActions` offered. "Share…" opens the share drawer
+   * of this add-on, which lives in a Vue app of its own: the request crosses
+   * as a document event, the one signal that reaches it from agenda's app.
+   *
+   * @param {String} actionId the id of the action offered
+   * @param {Object} calendar the agenda calendar, {id, name}
+   * @returns {Promise<Boolean>} true when the action was this connector's
+   */
+  runCalendarAction(actionId, calendar) {
+    if (actionId !== 'caldavShareCalendar' || !calendar || !calendar.id) {
+      return Promise.resolve(false);
+    }
+    document.dispatchEvent(new CustomEvent('open-caldav-share-calendar-drawer', {
+      detail: {id: calendar.id, name: calendar.name || calendar.title || ''},
+    }));
+    return Promise.resolve(true);
+  },
+
+  /**
    * What unlinking this account costs, in the user's language.
    *
    * <p>
