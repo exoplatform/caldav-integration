@@ -41,6 +41,17 @@ public enum SyncOrigin {
    * The collection existed on the server and eXo materialised a personal
    * calendar for it. eXo may write events into it, but never delete the
    * collection: it is the user's, created outside eXo and outliving it.
+   *
+   * <p>
+   * Also the origin of a pair in {@link CalendarSyncStatus#HIDDEN_SHARE}
+   * (EXO-90239), which records that the user hid a calendar shared with them
+   * and stands for no eXo calendar at all. The collection is somebody else's,
+   * made on the server, and eXo minted nothing for it — so of the three
+   * origins this is the only one that tells the truth about it: {@link #EXO}
+   * would make the ownership classification read the pair as the user's own
+   * export, and {@link #MIRROR} would make it the copies' ledger. What such a
+   * pair asks of the engine is what a REMOTE pair already gets — never
+   * created, never deleted on the server — with the status doing the rest.
    */
   REMOTE,
 

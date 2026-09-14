@@ -15,26 +15,36 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <http://www.gnu.org/licenses/>.
 -->
 <template>
-  <v-list-item v-if="states.length">
-    <v-list-item-content>
-      <v-list-item-title class="text-color">
-        {{ $t('caldav.calendarStates.title') }}
-      </v-list-item-title>
-      <v-list-item-subtitle>
-        <span>{{ $t('caldav.calendarStates.subtitle', {0: states.length}) }}</span>
-      </v-list-item-subtitle>
-    </v-list-item-content>
-    <v-list-item-action class="d-flex flex-row align-center">
-      <v-btn
-        :aria-label="$t('caldav.calendarStates.manage')"
-        :title="$t('caldav.calendarStates.manage')"
-        icon
-        @click="$root.$emit('open-caldav-calendar-states-drawer', states)">
-        <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
-      </v-btn>
-    </v-list-item-action>
+  <div>
+    <v-list-item v-if="states.length">
+      <v-list-item-content>
+        <v-list-item-title class="text-color">
+          {{ $t('caldav.calendarStates.title') }}
+        </v-list-item-title>
+        <v-list-item-subtitle>
+          <span>{{ $t('caldav.calendarStates.subtitle', {0: states.length}) }}</span>
+        </v-list-item-subtitle>
+      </v-list-item-content>
+      <v-list-item-action class="d-flex flex-row align-center">
+        <v-btn
+          :aria-label="$t('caldav.calendarStates.manage')"
+          :title="$t('caldav.calendarStates.manage')"
+          icon
+          @click="$root.$emit('open-caldav-calendar-states-drawer', states)">
+          <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
+        </v-btn>
+      </v-list-item-action>
+    </v-list-item>
+    <!--
+      The drawer lives beside the row, not inside it, for the reason the
+      hidden-calendars row gives: the row goes away once nothing needs
+      attention, and a drawer destroyed while open leaves exo-drawer's page
+      overlay behind with nothing able to dismiss it. Today "Sync now" closes
+      the drawer before the list can empty, so this row could not hit it; kept
+      beside the row, the next action added to the drawer cannot either.
+    -->
     <caldav-calendar-states-drawer @changed="retrieveStates" />
-  </v-list-item>
+  </div>
 </template>
 
 <script>

@@ -678,6 +678,116 @@ public class CaldavSyncServiceTest {
     verify(caldavSyncStorage, never()).deletePair(anyLong());
   }
 
+  // ------------------------------------ a share the user hid, EXO-90239
+
+  /**
+   * A hidden share is a calendar binding, and a bound collection is never
+   * materialised — whatever the classification would have said of it. Pinned
+   * with a collection the classification would call the user's own, so that
+   * the binding alone is what keeps it out: a gate that stopped counting
+   * HIDDEN_SHARE as a binding would materialise the calendar the user hid.
+   */
+  @Test
+  public void aHiddenShareIsNeverMaterialised() throws Exception {
+    givenServerCalendars(collection("/dav/cal/alice@stalwart.local/default/", "Alice"));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(hiddenShare("/dav/cal/alice@stalwart.local/default")));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  /**
+   * A hidden share has no eXo calendar behind it by design, and the orphan
+   * pruning must never read that as "dropped so the collection can be
+   * materialised again": dropping it would list the share again in front of
+   * the user who hid it. The status test is what keeps it out.
+   */
+  @Test
+  public void aHiddenShareIsNeverPrunedAsAnOrphan() throws Exception {
+    givenServerCalendars(collection("/dav/cal/alice@stalwart.local/default/", "Alice"));
+    CalendarSync hidden = hiddenShare("/dav/cal/alice@stalwart.local/default");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(hidden));
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.REMOTE)).thenReturn(List.of(hidden));
+    givenUserCalendars(calendarWithAnchor(77L, "another-anchor"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  /**
+   * A hidden share the account no longer lists is a share its owner
+   * withdrew; its record is dropped, so a calendar shared again is listed
+   * again rather than kept hidden without a word.
+   */
+  @Test
+  public void aHiddenShareTheServerNoLongerListsIsForgotten() throws Exception {
+    givenServerCalendars(collection("/dav/calendars/john/work/", "Work"));
+    CalendarSync hidden = hiddenShare("/dav/cal/alice@stalwart.local/default");
+    CalendarSync work = activeRemotePair("/dav/calendars/john/work/", "anchor-work");
+    // Its own identifier, distinct from the hidden share's: a never() on a
+    // null id would pass for any pair, and unboxes to nothing.
+    work.setId(13L);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(hidden, work));
+    givenAgendaHasCalendar("anchor-work");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSyncStorage).deletePair(12L);
+    verify(caldavSyncStorage, never()).deletePair(13L);
+  }
+
+  /**
+   * A hidden share still listed is still hidden: the record stays, and the
+   * collection is neither materialised nor said to be a share again.
+   */
+  @Test
+  public void aHiddenShareStillListedKeepsItsRecord() throws Exception {
+    givenServerCalendars(collection("/dav/cal/alice@stalwart.local/default/", "Alice"));
+    CalendarSync hidden = hiddenShare("/dav/cal/alice@stalwart.local/default");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(hidden));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+  }
+
+  /**
+   * A listing that answered nothing forgets nothing — the rule the import
+   * applies before calling a collection gone: a server briefly answering
+   * with nothing is likelier than every share being revoked at once, and
+   * dropping the records on a bad minute would put every hidden calendar
+   * back on the user's screen.
+   */
+  @Test
+  public void anEmptyListingForgetsNoHiddenShare() throws Exception {
+    givenServerCalendars();
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(hiddenShare("/dav/cal/alice@stalwart.local/default")));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+  }
+
+  /**
+   * @param href the collection the user hid, canonical
+   * @return the pair recording that choice: REMOTE, HIDDEN_SHARE, no anchor
+   */
+  private CalendarSync hiddenShare(String href) {
+    CalendarSync pair = new CalendarSync();
+    pair.setId(12L);
+    pair.setUserIdentityId(USER);
+    pair.setServerId(SERVER);
+    pair.setLocalCalendarSyncUid(CaldavDeletionService.hiddenShareAnchor(href));
+    pair.setRemoteHref(href);
+    pair.setOrigin(SyncOrigin.REMOTE);
+    pair.setStatus(CalendarSyncStatus.HIDDEN_SHARE);
+    return pair;
+  }
+
   @Test
   public void theMirrorIsNeverMaterialised() throws Exception {
     // Its contents are copies of events eXo already shows.

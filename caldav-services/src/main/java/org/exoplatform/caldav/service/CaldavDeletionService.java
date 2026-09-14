@@ -16,11 +16,16 @@
  */
 package org.exoplatform.caldav.service;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -41,6 +46,8 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.caldav.model.HiddenCalendar;
 import org.exoplatform.caldav.model.CalendarSyncState;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
+import org.exoplatform.caldav.model.RemoteCalendar;
+import org.exoplatform.caldav.model.RemoteCalendarsRead;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
@@ -62,6 +69,22 @@ public class CaldavDeletionService {
   /** Nothing was deleted, on either side. */
   public static final String     NOTHING_DELETED = "caldav.error.deleteFailed";
 
+  /**
+   * The calendar named to hide is not one shared with the user (EXO-90239):
+   * their own, in whatever state — and hiding one's own calendar is a
+   * different act, done by deleting it and keeping the remote one.
+   */
+  public static final String     NOT_A_SHARE     = "caldav.hiddenCalendars.notAShare";
+
+  /** No calendar was named to hide. */
+  public static final String     CALENDAR_REQUIRED = "caldav.hiddenCalendars.calendarRequired";
+
+  /**
+   * The account's calendars could not be listed, so whether the calendar
+   * named is a share of the user's cannot be told; nothing was hidden.
+   */
+  public static final String     ACCOUNT_UNAVAILABLE = "caldav.hiddenCalendars.accountUnavailable";
+
   private static final Log       LOG             = ExoLogger.getLogger(CaldavDeletionService.class);
 
   @Autowired
@@ -82,6 +105,9 @@ public class CaldavDeletionService {
   @Autowired
   @Lazy
   private CaldavSyncService      caldavSyncService;
+
+  @Autowired
+  private CaldavReadService      caldavReadService;
 
   /**
    * Deletes a personal calendar in eXo and, when eXo created it, on the server
@@ -355,6 +381,159 @@ public class CaldavDeletionService {
   }
 
   /**
+   * Hides a calendar somebody shared with the user (EXO-90239).
+   *
+   * <p>
+   * A share is never materialised, so until now it had no pair — and being
+   * unbound is exactly what listed it under the remote calendars and served
+   * its events. The only way to stop seeing it was the row checkbox, which
+   * lasted until the next reload. Hiding records the choice as a pair in
+   * {@link CalendarSyncStatus#HIDDEN_SHARE}: bound, the collection leaves
+   * the list and its events stop being served ({@code CaldavReadService}),
+   * and the sweep never considers it ({@code CaldavSyncService#isAlreadyOurs}).
+   * No calendar is created, nothing is written to the server, and nothing
+   * of the owner's is touched.
+   *
+   * <p>
+   * <b>The id is trusted no further than the user's own listing.</b> It is a
+   * collection href that travelled through a browser, and what a changed one
+   * would name is another collection on the same account. So it is matched,
+   * canonically, against the calendars the list would answer this user
+   * <em>now</em> — the same listing, the same classification — and refused
+   * unless that listing holds it as a share. A calendar of the user's own is
+   * refused in words: hiding one's own is done by deleting it and keeping the
+   * remote copy, which is a different act with a different warning. The
+   * user's pairs are asked first, cheaply: a collection already bound is
+   * either hidden already — nothing to do, and the answer is the same as if
+   * this call had done it — or an eXo calendar of the user's own, and the
+   * server is not asked about either.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the eXo login the credentials provider resolves the
+   *          account from
+   * @param calendarId the calendar's identity, exactly as the calendar list
+   *          answered it — the collection href
+   * @throws ObjectNotFoundException when the user's current listing holds no
+   *           such calendar
+   * @throws IllegalArgumentException with {@link #CALENDAR_REQUIRED} when no
+   *           calendar is named, and with {@link #NOT_A_SHARE} when the one
+   *           named is the user's own
+   * @throws CaldavPushException with {@code NOT_CONNECTED} when no account is
+   *           connected, and with {@link #ACCOUNT_UNAVAILABLE} when the
+   *           account could not be listed; nothing was hidden either way
+   */
+  public void hideShare(long userIdentityId, String username, String calendarId) throws ObjectNotFoundException {
+    String href = CaldavSyncStorage.canonicalHref(calendarId);
+    if (StringUtils.isBlank(href)) {
+      throw new IllegalArgumentException(CALENDAR_REQUIRED);
+    }
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (settings == null || StringUtils.isBlank(settings.getUsername())) {
+      throw new CaldavPushException(CaldavPushService.NOT_CONNECTED, "No connected CalDAV account; nothing was hidden");
+    }
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    CalendarSync bound = caldavSyncStorage.getPairByRemoteHref(userIdentityId, serverId, href);
+    if (bound != null) {
+      if (bound.getStatus() == CalendarSyncStatus.HIDDEN_SHARE) {
+        // Already hidden, by this user, on this account. The end state the
+        // caller asked for holds, and a second row for one choice would give
+        // the drawer two lines to lift for one calendar.
+        return;
+      }
+      // Any other binding is an eXo calendar of the user's own — materialised,
+      // exported, deleted here and kept there, paused. None of those is a
+      // share, and none is hidden through here.
+      throw new IllegalArgumentException(NOT_A_SHARE);
+    }
+    RemoteCalendarsRead listing;
+    try {
+      listing = caldavReadService.listCalendars(userIdentityId, username);
+    } catch (CalDavException e) {
+      // The account's endpoint could not even be resolved — no server
+      // declared any more, a login no URL can carry, a declared URL that is
+      // not one. The listing reports a server that did not answer as failed,
+      // but resolves the endpoint before it asks; either way whether this is
+      // a share cannot be told, and the answer is the same.
+      LOG.debug("The calendars of user {} could not be listed to hide {}", userIdentityId, href, e);
+      listing = new RemoteCalendarsRead(List.of(), true);
+    }
+    if (listing.failed()) {
+      throw new CaldavPushException(ACCOUNT_UNAVAILABLE,
+                                    "The account's calendars could not be listed; whether " + href
+                                        + " is shared with the user cannot be told, and nothing was hidden");
+    }
+    RemoteCalendar calendar = listing.calendars()
+                                     .stream()
+                                     .filter(listed -> href.equals(CaldavSyncStorage.canonicalHref(listed.getId())))
+                                     .findFirst()
+                                     .orElseThrow(() -> new ObjectNotFoundException("No calendar " + href
+                                         + " in the account's current listing"));
+    if (!calendar.isShared()) {
+      throw new IllegalArgumentException(NOT_A_SHARE);
+    }
+    CalendarSync pair = new CalendarSync();
+    pair.setUserIdentityId(userIdentityId);
+    pair.setServerId(serverId);
+    pair.setRemoteHref(href);
+    // REMOTE, because that is what the collection is to the engine: made on
+    // the server by somebody, owned by eXo in no way. See SyncOrigin.REMOTE.
+    // An anchor derived from the path, not a calendar's: see
+    // hiddenShareAnchor for why the column cannot stay null here. No sync
+    // times, because nothing was synchronised — the due-pairs query reads
+    // ACTIVE pairs alone, so a null lastSyncEnd makes nothing due.
+    pair.setLocalCalendarSyncUid(hiddenShareAnchor(href));
+    pair.setOrigin(SyncOrigin.REMOTE);
+    pair.setStatus(CalendarSyncStatus.HIDDEN_SHARE);
+    try {
+      caldavSyncStorage.savePair(pair);
+    } catch (RuntimeException e) {
+      if (!CaldavSyncStorage.isDuplicateKey(e)) {
+        throw e;
+      }
+      // The same hide, recorded by a concurrent request between the lookup
+      // above and this save — a double click. The unique index refused the
+      // second row for the very reason the anchor is derived from the path,
+      // and the end state the caller asked for holds.
+      LOG.debug("User {} hid the calendar {} twice at once; the first request recorded it", userIdentityId, href);
+      return;
+    }
+    LOG.info("User {} hid the calendar {} shared with them; it leaves the remote calendars until shown again",
+             userIdentityId,
+             href);
+  }
+
+  /**
+   * The anchor a hidden share's pair records (EXO-90239): a name-based UUID
+   * of the collection path, never an agenda calendar's.
+   *
+   * <p>
+   * A hidden share has no eXo calendar, so it has no anchor of its own; the
+   * column cannot simply stay null all the same. The pair table's one unique
+   * index is {@code (USER_IDENTITY_ID, SERVER_ID, LOCAL_CALENDAR_SYNC_UID)},
+   * and while MySQL, PostgreSQL and HSQLDB leave a row with a null key column
+   * outside it, Oracle enforces a composite unique key over the columns that
+   * are not null and SQL Server treats nulls as equal: there, a second hidden
+   * share of one user on one server — or a hidden share beside the mirror
+   * pair, the other null anchor — would be refused. A value derived from the
+   * path is unique per collection on every engine, and it makes that index
+   * enforce what the service means besides: one record per hidden calendar,
+   * whatever two requests race.
+   *
+   * <p>
+   * It cannot name a calendar by accident. Agenda mints its anchors with
+   * {@code UUID.randomUUID()}, version 4, and this is version 3, so the two
+   * never meet; and every consumer that reads an anchor as a calendar's either
+   * looks up agenda's own anchors, selects {@link SyncOrigin#EXO} pairs, or
+   * selects {@link CalendarSyncStatus#ACTIVE} ones.
+   *
+   * @param canonicalHref the collection path, canonical
+   * @return a 36-character anchor, the same for the same path
+   */
+  public static String hiddenShareAnchor(String canonicalHref) {
+    return UUID.nameUUIDFromBytes(("caldav-hidden-share:" + canonicalHref).getBytes(StandardCharsets.UTF_8)).toString();
+  }
+
+  /**
    * The calendars this user has hidden on this account.
    *
    * <p>
@@ -362,13 +541,22 @@ public class CaldavDeletionService {
    * being materialised again, and since the shim stopped serving bound
    * collections it keeps it off the screen entirely. That is what the user
    * asked for — and it leaves them with no way back, which is why this exists.
+   * A hidden share ({@link CalendarSyncStatus#HIDDEN_SHARE}, EXO-90239) is
+   * listed beside the tombstones for the same reason, told apart by
+   * {@code shared}, and named with whoever shared it — the owner the calendar
+   * list would name, resolved through the same service, so the drawer says
+   * "Shared by Alice" about the very calendar the list said that of.
    *
    * <p>
    * The name comes from the server, read now rather than stored: a calendar
    * renamed in the user's own client since they hid it should be offered back
    * under the name they would recognise today. A collection the server no
    * longer has is left out — offering to show something that is gone would be
-   * a promise nothing can keep.
+   * a promise nothing can keep. For a share that also means the owner
+   * withdrew it; the sweep drops its record on its next pass
+   * ({@code CaldavSyncService#forgetRevokedShares}), and this listing does
+   * not, because a listing is read on every visit to the settings and must
+   * not write.
    *
    * @param userIdentityId identity of the user
    * @param username the eXo login the credentials provider resolves the
@@ -381,24 +569,55 @@ public class CaldavDeletionService {
       return List.of();
     }
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
-    List<CalendarSync> tombstones = caldavSyncStorage.getPairs(userIdentityId, serverId)
-                                                     .stream()
-                                                     .filter(pair -> pair.getStatus() == CalendarSyncStatus.LOCALLY_DELETED)
-                                                     .toList();
-    if (tombstones.isEmpty()) {
+    List<CalendarSync> hiddenPairs = caldavSyncStorage.getPairs(userIdentityId, serverId)
+                                                      .stream()
+                                                      .filter(CaldavDeletionService::isHidden)
+                                                      .toList();
+    if (hiddenPairs.isEmpty()) {
       // The common answer, and it costs no round trip: a section that is not
       // shown must not make the drawer wait on a server to find that out.
       return List.of();
     }
-    Map<String, String> namesByHref = collectionNames(settings, username);
+    Set<String> hrefs = hiddenPairs.stream()
+                                   .map(pair -> CaldavSyncStorage.canonicalHref(pair.getRemoteHref()))
+                                   .filter(StringUtils::isNotBlank)
+                                   .collect(Collectors.toSet());
+    // One listing, classified and named as the calendar list would have it:
+    // the tombstones take their name from it, the shares their name and
+    // their owner. A listing that failed describes nothing, and nothing is
+    // offered — the rule the name lookup always applied.
+    Map<String, RemoteCalendar> described = caldavReadService.describeCollections(userIdentityId, username, hrefs)
+                                                             .calendars()
+                                                             .stream()
+                                                             .collect(Collectors.toMap(calendar -> CaldavSyncStorage.canonicalHref(calendar.getId()),
+                                                                                       Function.identity(),
+                                                                                       (first, second) -> first));
     List<HiddenCalendar> hidden = new ArrayList<>();
-    for (CalendarSync tombstone : tombstones) {
-      String name = namesByHref.get(CaldavSyncStorage.canonicalHref(tombstone.getRemoteHref()));
-      if (StringUtils.isNotBlank(name)) {
-        hidden.add(new HiddenCalendar(tombstone.getId(), name));
+    for (CalendarSync pair : hiddenPairs) {
+      RemoteCalendar calendar = described.get(CaldavSyncStorage.canonicalHref(pair.getRemoteHref()));
+      if (calendar == null) {
+        continue;
       }
+      boolean share = pair.getStatus() == CalendarSyncStatus.HIDDEN_SHARE;
+      hidden.add(new HiddenCalendar(pair.getId(),
+                                    StringUtils.defaultIfBlank(calendar.getName(), calendar.getId()),
+                                    share,
+                                    share ? calendar.getOwnerDisplayName() : null));
     }
     return hidden;
+  }
+
+  /**
+   * Whether a pair is one the hidden-calendars drawer offers back: a
+   * calendar deleted here and kept on the account, or a share the user chose
+   * not to see.
+   *
+   * @param pair a pair of the user's
+   * @return true for {@link CalendarSyncStatus#LOCALLY_DELETED} and
+   *         {@link CalendarSyncStatus#HIDDEN_SHARE}
+   */
+  private static boolean isHidden(CalendarSync pair) {
+    return pair.getStatus() == CalendarSyncStatus.LOCALLY_DELETED || pair.getStatus() == CalendarSyncStatus.HIDDEN_SHARE;
   }
 
   /**
@@ -411,23 +630,39 @@ public class CaldavDeletionService {
    * pretending otherwise would promise back events that agenda moved to their
    * default calendar at deletion time.
    *
+   * <p>
+   * For a hidden share (EXO-90239) dropping the pair is all there is: a
+   * share is never materialised, so no synchronisation would bring anything
+   * back, and the collection is back under the remote calendars on the very
+   * next listing because it is unbound again. Synchronising here would spend
+   * a full pass of the account to change nothing.
+   *
    * @param userIdentityId identity of the user
-   * @param pairId the tombstone to lift
+   * @param pairId the hidden calendar to lift — a tombstone or a hidden share
    * @param username the user's login, which the synchronisation run here needs
    *          because agenda's ACL reads it rather than the identity id
-   * @throws IllegalAccessException when the tombstone is not this user's
-   * @throws ObjectNotFoundException when there is no such tombstone
+   * @throws IllegalAccessException when the hidden calendar is not this
+   *           user's
+   * @throws ObjectNotFoundException when there is no such hidden calendar,
+   *           tombstone or hidden share
    */
   public void showAgain(long userIdentityId, long pairId, String username) throws IllegalAccessException,
                                                                            ObjectNotFoundException {
     CalendarSync pair = caldavSyncStorage.getPair(pairId);
-    if (pair == null || pair.getStatus() != CalendarSyncStatus.LOCALLY_DELETED) {
+    if (pair == null || !isHidden(pair)) {
       throw new ObjectNotFoundException("No hidden calendar with id " + pairId);
     }
     if (pair.getUserIdentityId() != userIdentityId) {
       // The binding carries whose it is, and that is the only thing standing
       // between one user and another user's calendars.
       throw new IllegalAccessException("Binding " + pairId + " does not belong to user " + userIdentityId);
+    }
+    if (pair.getStatus() == CalendarSyncStatus.HIDDEN_SHARE) {
+      caldavSyncStorage.deletePair(pairId);
+      LOG.info("User {} shows the shared calendar {} again; it is back under the remote calendars on the next listing",
+               userIdentityId,
+               pair.getRemoteHref());
+      return;
     }
     caldavSyncStorage.deleteObjects(pairId);
     caldavSyncStorage.deletePair(pairId);

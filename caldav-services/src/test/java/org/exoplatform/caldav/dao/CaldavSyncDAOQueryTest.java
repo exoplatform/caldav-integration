@@ -18,6 +18,7 @@ package org.exoplatform.caldav.dao;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -41,6 +42,7 @@ import org.exoplatform.caldav.entity.CaldavCalendarSyncEntity;
 import org.exoplatform.caldav.entity.CaldavObjectSyncEntity;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
+import org.exoplatform.caldav.service.CaldavDeletionService;
 import org.exoplatform.caldav.service.CaldavSyncServiceTest;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 
@@ -337,6 +339,101 @@ public class CaldavSyncDAOQueryTest {
                                                        "/dav/calendars/OTHER/%",
                                                        PageRequest.of(0, 10))
                               .isEmpty());
+  }
+
+  /**
+   * A hidden share (EXO-90239) against the schema the changelog builds: the
+   * new status fits the STATUS column and reads back as itself, the anchor
+   * derived from its path fits the anchor column, and the row stands beside
+   * the user's other pairs — a second hidden share, their mirror pair (the
+   * one null anchor), an active pair of their own. It counts for nothing the
+   * sweep or the shared-account question select — both read ACTIVE pairs
+   * alone, and a pair with no sync time would otherwise be the most due of
+   * all.
+   */
+  @Test
+  public void aHiddenShareIsStoredBesideTheUsersOtherPairsAndIsDueForNothing() {
+    long id = calendarSyncDAO.save(hiddenShare(USER_SIX, "/dav/calendars/751E/alice-default")).getId();
+    calendarSyncDAO.save(hiddenShare(USER_SIX, "/dav/calendars/751E/bob-default"));
+    persistPair(USER_SIX, SHARED_SERVER, SyncOrigin.MIRROR, "/dav/calendars/751E/exo-meetings");
+    persistPair(USER_SIX, SHARED_SERVER, SyncOrigin.REMOTE, "/dav/calendars/751E/calendar");
+    entityManager.flush();
+    entityManager.clear();
+
+    List<CaldavCalendarSyncEntity> pairs = calendarSyncDAO.findByUserIdentityIdAndServerId(USER_SIX, SHARED_SERVER);
+    CaldavCalendarSyncEntity readBack = pairs.stream().filter(pair -> pair.getId() == id).findFirst().orElseThrow();
+
+    assertEquals(4, pairs.size());
+    assertEquals(CalendarSyncStatus.HIDDEN_SHARE, readBack.getStatus());
+    assertEquals(SyncOrigin.REMOTE, readBack.getOrigin());
+    assertEquals(CaldavDeletionService.hiddenShareAnchor("/dav/calendars/751E/alice-default"), readBack.getLocalCalendarSyncUid());
+    assertEquals("/dav/calendars/751E/alice-default", readBack.getRemoteHref());
+    assertTrue(calendarSyncDAO.findDue(CalendarSyncStatus.ACTIVE, new Date(), PageRequest.of(0, 10))
+                              .getContent()
+                              .stream()
+                              .noneMatch(pair -> pair.getId() == id),
+               "a hidden share is never due");
+    assertTrue(calendarSyncDAO.findOtherUsersUnderHref(USER_ONE,
+                                                       SHARED_SERVER,
+                                                       CalendarSyncStatus.ACTIVE,
+                                                       SHARED_HOME,
+                                                       PageRequest.of(0, 10))
+                              .contains(USER_SIX),
+               "user six's active pair names them on the account");
+    // The hidden share itself, asked under a prefix only it matches: it
+    // names nobody, because it is not an ACTIVE pair — the row stands in the
+    // table and the shared-account signal reads straight past it.
+    assertTrue(calendarSyncDAO.findOtherUsersUnderHref(USER_ONE,
+                                                       SHARED_SERVER,
+                                                       CalendarSyncStatus.ACTIVE,
+                                                       "/dav/calendars/751E/alice-%",
+                                                       PageRequest.of(0, 10))
+                              .isEmpty(),
+               "a hidden share is not a shared-account signal");
+    assertEquals(List.of(USER_SIX),
+                 calendarSyncDAO.findOtherUsersUnderHref(USER_ONE,
+                                                         SHARED_SERVER,
+                                                         CalendarSyncStatus.HIDDEN_SHARE,
+                                                         "/dav/calendars/751E/alice-%",
+                                                         PageRequest.of(0, 10)),
+                 "the same row, asked under its own status: the status predicate is what keeps it out");
+  }
+
+  /**
+   * One record per hidden calendar, enforced by the real unique index: a
+   * second row hiding the same share for the same user is refused, as the
+   * duplicate key the hide converges on when two requests race — told by its
+   * JDBC cause, the shape this slice produces. Another user hiding the same
+   * share is their own record.
+   */
+  @Test
+  public void theUniqueIndexKeepsOneRecordPerHiddenShare() {
+    calendarSyncDAO.save(hiddenShare(USER_SIX, "/dav/calendars/751E/alice-default"));
+    calendarSyncDAO.save(hiddenShare(USER_EIGHT, "/dav/calendars/751E/alice-default"));
+    calendarSyncDAO.flush();
+
+    DataIntegrityViolationException refused = assertThrows(DataIntegrityViolationException.class, () -> {
+      calendarSyncDAO.save(hiddenShare(USER_SIX, "/dav/calendars/751E/alice-default"));
+      calendarSyncDAO.flush();
+    });
+
+    assertTrue(CaldavSyncStorage.isDuplicateKey(refused), "told by the JDBC cause, as the hide tells it");
+  }
+
+  /**
+   * @param userIdentityId the user who hid the share
+   * @param href the shared collection, canonical
+   * @return the row a hide records, as the service builds it
+   */
+  private CaldavCalendarSyncEntity hiddenShare(long userIdentityId, String href) {
+    CaldavCalendarSyncEntity hidden = new CaldavCalendarSyncEntity();
+    hidden.setUserIdentityId(userIdentityId);
+    hidden.setServerId(SHARED_SERVER);
+    hidden.setLocalCalendarSyncUid(CaldavDeletionService.hiddenShareAnchor(href));
+    hidden.setRemoteHref(href);
+    hidden.setOrigin(SyncOrigin.REMOTE);
+    hidden.setStatus(CalendarSyncStatus.HIDDEN_SHARE);
+    return hidden;
   }
 
   /**
