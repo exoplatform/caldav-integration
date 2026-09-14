@@ -237,6 +237,11 @@ public class CaldavShareRestTest {
     assertEquals(true,
                  mapper.readTree(mapper.writeValueAsString(new CalendarShares(12L, List.of(), true))).get("subscriptionRequired").asBoolean(),
                  "BlueMind: the colleague must subscribe first");
+    assertTrue(json.has("meetingCopies"), "the drawer reads shares.meetingCopies to warn and ask before sharing");
+    assertEquals(false, json.get("meetingCopies").asBoolean());
+    assertEquals(true,
+                 mapper.readTree(mapper.writeValueAsString(new CalendarShares(12L, List.of()).withMeetingCopies(true))).get("meetingCopies").asBoolean(),
+                 "a calendar holding the meeting copies");
     JsonNode bob = json.get("sharees").get(0);
     assertEquals("/dav/pal/bob%40stalwart.local/", bob.get("principal").asText());
     assertEquals("EXO_USERS", bob.get("kind").asText());

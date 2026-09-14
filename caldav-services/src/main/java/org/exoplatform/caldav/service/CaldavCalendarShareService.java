@@ -1702,7 +1702,7 @@ public class CaldavCalendarShareService {
    * Says whether the shared calendar is also where eXo writes the copies of the
    * user's eXo meetings, asked through the push's own resolution
    * ({@link CaldavPushService#mirrorDestination}, the lookup
-   * {@code currentMirror} and {@code ensureMirror} share), so that the drawer's warning
+   * resolution {@code currentMirror} and {@code ensureMirror} use), so that the drawer's warning
    * never disagrees with where the copies go. Asked for every calendar: the
    * copies usually land in an imported main calendar, but the push can also
    * adopt an existing calendar, an eXo-created one included, when it cannot

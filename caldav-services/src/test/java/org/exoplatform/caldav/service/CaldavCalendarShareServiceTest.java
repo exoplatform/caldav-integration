@@ -1198,6 +1198,10 @@ public class CaldavCalendarShareServiceTest {
     assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
                  assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode(),
                  "no recorded principal");
+    // A listing that would offer the calendar had the principal been recorded: with none, the menu still offers nothing.
+    lenient().when(calDavClient.listCalendars(endpoint, ALICE_HOME))
+             .thenReturn(List.of(collection(ALICE_HOME + "default/", "/dav/pal/alice%40stalwart.local/", true)));
+    assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"), "no recorded principal, in the menu");
     verify(calDavClient, never()).readAcl(any(), anyString());
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
   }
