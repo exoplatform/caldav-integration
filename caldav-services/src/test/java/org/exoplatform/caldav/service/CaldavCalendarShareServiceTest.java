@@ -90,7 +90,7 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * <p>
  * The pins that matter most: the collection is resolved from alice's own
  * pair and never from the request; nothing is granted on a server whose
- * mechanism is not verified; an entry somebody else made survives a grant
+ * changes eXo cannot confirm; an entry somebody else made survives a grant
  * and a revoke; and a grant the server does not hold on read-back is not
  * reported as done.
  */
@@ -292,7 +292,7 @@ public class CaldavCalendarShareServiceTest {
    * and BlueMind's REST API is never called.
    */
   @Test
-  public void aServerWhoseMechanismIsNotVerifiedIsNotOffered() {
+  public void appleSharingOutsideBlueMindsLayoutIsNotOffered() {
     when(calDavClient.options(endpoint, COLLECTION)).thenReturn(DavOptions.of(List.of("1, access-control, calendar-access, calendarserver-sharing"),
                                                                               List.of("PROPFIND, REPORT, ACL, POST")));
 

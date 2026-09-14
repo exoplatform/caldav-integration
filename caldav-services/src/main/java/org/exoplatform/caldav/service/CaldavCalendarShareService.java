@@ -70,8 +70,9 @@ import org.exoplatform.social.core.manager.IdentityManager;
 
 /**
  * Shares a user's own eXo calendar, read-only, with colleagues connected to
- * the same CalDAV server, by writing the access control list of the collection
- * eXo exported that calendar to (EXO-90253).
+ * the same CalDAV server, by changing who may read the collection eXo exported
+ * that calendar to — through the server's own granting mechanism, confirmed by
+ * reading the access list back (EXO-90253).
  *
  * <p>
  * <b>Every check lives here</b>, and none of them takes anything from the

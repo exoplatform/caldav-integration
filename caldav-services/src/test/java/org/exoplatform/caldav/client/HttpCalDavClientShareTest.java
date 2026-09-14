@@ -73,7 +73,8 @@ import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
  *
  * <p>
  * What is pinned is what a wrong answer would silently cost. A capability read
- * too loosely offers granting on BlueMind, where it is unverified. An entry
+ * too loosely offers Apple sharing on a server that only looks like BlueMind,
+ * where nothing tells eXo how a change could be read back. An entry
  * the parser skips is an entry the write deletes — somebody's share made
  * outside eXo. A body that loses a namespace, a privilege or an inverted
  * principal on its way out rewrites someone's access. A refusal whose reason

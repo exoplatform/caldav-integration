@@ -106,10 +106,12 @@ public class CaldavShareRest {
   @GetMapping("/calendars/{calendarId}/shares")
   @Secured("users")
   @Operation(summary = "Lists who a calendar of the user's is shared with",
-      description = "Read from the server's access list on every call; nothing is stored. Each sharee is a principal: "
+      description = "Read from the server's access list on every call — over DAV on a server using RFC 3744 ACLs, "
+          + "through BlueMind's REST API on BlueMind; nothing is stored. Each sharee is a principal: "
           + "`EXO_USERS` with the eXo users connected as it, `OUTSIDE_EXO` named by the server, or `EVERYONE`. "
           + "`access` is `READ` for a view-only grant and `MORE` for one made outside eXo; `removable` says whether "
-          + "eXo may take it away.")
+          + "eXo may take it away. `subscriptionRequired` is true where a colleague sees a shared calendar only after "
+          + "subscribing to it on the server itself, as on BlueMind.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The sharees"),
       @ApiResponse(responseCode = "400", description = "The calendar has no collection eXo created; body message is the code"),
       @ApiResponse(responseCode = "403", description = "Not the user's calendar"),
@@ -133,10 +135,12 @@ public class CaldavShareRest {
   @PostMapping("/calendars/{calendarId}/shares")
   @Secured("users")
   @Operation(summary = "Shares a calendar of the user's read-only with a colleague",
-      description = "The colleague must be an eXo user connected to the same CalDAV server under another login. The "
-          + "access list is read, the grant added beside every existing entry, written back, and read again: the "
-          + "answer is the list as read after the write. Sharing with a colleague who can already read it changes "
-          + "nothing and succeeds.")
+      description = "The colleague must be an eXo user connected to the same CalDAV server under another login. On a "
+          + "server using RFC 3744 ACLs, the access list is read, the grant added beside every existing entry, written "
+          + "back, and read again. On BlueMind, a CS:share naming the colleague's own BlueMind address is posted, and "
+          + "the access list is read back through BlueMind's REST API. Either way, the answer is the list as read after "
+          + "the change, and a grant it does not hold is reported as not applied. Sharing with a colleague who can "
+          + "already read it changes nothing and succeeds.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Shared; the sharees as read back"),
       @ApiResponse(responseCode = "400", description = "No colleague named, unknown, the user themself, not connected to "
           + "this server, on the user's own login, already holding more than view access given outside eXo "
