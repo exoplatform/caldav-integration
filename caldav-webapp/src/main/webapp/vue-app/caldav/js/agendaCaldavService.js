@@ -406,7 +406,9 @@ export const getHiddenCalendars = () => {
  * collection on the same account.
  *
  * @param {Number} pairId the binding to lift
- * @returns {Promise} resolves once the calendar will come back on the next sync
+ * @returns {Promise} resolves once the calendar is back: at the next
+ *          synchronisation for a calendar deleted here, at once for a share
+ *          the user hid
  */
 export const showCalendarAgain = pairId => {
   return fetch(`${window.location.origin}/caldav/rest/hidden-calendars/${pairId}`, {

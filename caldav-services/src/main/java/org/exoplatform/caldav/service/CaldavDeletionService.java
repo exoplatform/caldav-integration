@@ -638,11 +638,13 @@ public class CaldavDeletionService {
    * a full pass of the account to change nothing.
    *
    * @param userIdentityId identity of the user
-   * @param pairId the tombstone to lift
+   * @param pairId the hidden calendar to lift — a tombstone or a hidden share
    * @param username the user's login, which the synchronisation run here needs
    *          because agenda's ACL reads it rather than the identity id
-   * @throws IllegalAccessException when the tombstone is not this user's
-   * @throws ObjectNotFoundException when there is no such tombstone
+   * @throws IllegalAccessException when the hidden calendar is not this
+   *           user's
+   * @throws ObjectNotFoundException when there is no such hidden calendar,
+   *           tombstone or hidden share
    */
   public void showAgain(long userIdentityId, long pairId, String username) throws IllegalAccessException,
                                                                            ObjectNotFoundException {
