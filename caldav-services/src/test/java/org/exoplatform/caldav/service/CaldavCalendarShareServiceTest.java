@@ -376,6 +376,24 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
+   * Bob already holds a right beyond reading that DAV shows as {@code write}
+   * alone — a JMAP "may delete" grant on Stalwart. Sharing read-only with him
+   * would write that entry back beside the read grant, and Stalwart would
+   * store it as full write: the grant is refused and nothing is written.
+   */
+  @Test
+  public void aGrantNeverWidensTheShareesOwnEntry() {
+    AccessControlEntry bobMayDelete = new AccessControlEntry(AcePrincipal.href("/dav/pal/bob%40stalwart.local/"), false, false,
+                                                             Set.of("{DAV:}write"), false, null);
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(bobMayDelete), Set.of()));
+
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
+
+    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY, refused.getMessage());
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+  }
+
+  /**
    * Every other shape that could come back different stops the write too: an
    * access-control privilege, a deny, an inverted entry.
    */

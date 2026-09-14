@@ -362,6 +362,15 @@ public class CaldavCalendarShareService {
           LOG.debug("Calendar {} is already readable by {}; nothing is written", calendarId, sharee.principal());
           return sharesOf(target, before, ownerPrincipal);
         }
+        // The sharee's own entries are written back too, beside the new grant,
+        // and on Stalwart an entry holding more than read — a JMAP "may delete"
+        // right reads back as DAV:write with no read — comes back as full
+        // write. Sharing is read-only: it never widens what the colleague
+        // already holds, so such an entry is refused as revoke refuses it.
+        if (modifiableEntriesOf(before).stream()
+                                       .anyMatch(entry -> entry.appliesTo(sharee.principal()) && !entry.grantsReadOnly())) {
+          throw new IllegalArgumentException(NOT_READ_ONLY);
+        }
         List<AccessControlEntry> entries = new ArrayList<>(preservableEntriesOf(target, before, sharee.principal()));
         entries.add(AccessControlEntry.readGrantTo(AccessControlEntry.principalHrefOf(sharee.principal())));
         write(target, entries);

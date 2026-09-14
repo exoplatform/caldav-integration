@@ -84,6 +84,23 @@ describe('the share requests', () => {
     await expect(getShareableCalendars()).resolves.toEqual([]);
   });
 
+  it('asks for the shareable calendars once for callers asking at the same moment, and again afterwards', async () => {
+    let answer;
+    global.fetch = jest.fn(() => new Promise(resolve => answer = resolve));
+
+    const first = getShareableCalendars();
+    const second = getShareableCalendars();
+    answer({ok: true, json: () => Promise.resolve({calendarIds: [12]})});
+
+    await expect(first).resolves.toEqual([12]);
+    await expect(second).resolves.toEqual([12]);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
+    global.fetch = jest.fn(() => Promise.resolve({ok: true, json: () => Promise.resolve({calendarIds: [14]})}));
+    await expect(getShareableCalendars()).resolves.toEqual([14]);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects a refusal with its code and what the server said', async () => {
     respondWith({
       ok: false,

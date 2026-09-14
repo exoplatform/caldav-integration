@@ -120,6 +120,20 @@ describe('sharing a calendar through the CalDAV connector', () => {
     expect(seen).toEqual([]);
   });
 
+  it('makes one request when agenda asks every per-server descriptor at once', async () => {
+    const fetch = route({
+      '/caldav/rest/calendars/shareable': {ok: true, json: () => Promise.resolve({calendarIds: [12]})},
+      'locale.portlet.Caldav': {ok: true, json: () => Promise.resolve({'caldav.share.menu': 'Share…'})},
+    });
+    const stalwart = createCaldavConnector({id: 1, providerName: 'agenda.caldavCalendar.1', serverUrl: 'https://s/'}, 0, null);
+    const bluemind = createCaldavConnector({id: 2, providerName: 'agenda.caldavCalendar.2', serverUrl: 'https://b/'}, 1, null);
+
+    const answers = await Promise.all([stalwart.calendarActions(), bluemind.calendarActions()]);
+
+    expect(answers[0]).toEqual(answers[1]);
+    expect(fetch.mock.calls.filter(([url]) => url.includes('/caldav/rest/calendars/shareable')).length).toBe(1);
+  });
+
   it('is inherited by every per-server descriptor', () => {
     const descriptor = createCaldavConnector({id: 3, providerName: 'agenda.caldavCalendar.3', serverUrl: 'https://s/'}, 0, null);
 

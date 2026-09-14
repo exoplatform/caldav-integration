@@ -500,14 +500,27 @@ function codedRefusal(resp) {
  * platform that cannot answer offers no calendar, and the menu reads as it
  * did before this feature.
  *
+ * One request for every caller asking at the same moment. The add-on registers
+ * a connector per declared server and agenda asks each of them on every
+ * refresh, so without this one refresh made one identical request per server,
+ * each costing the platform a round trip to the calendar server. The shared
+ * request is forgotten once it settles: the next refresh asks again.
+ *
  * @returns {Promise<Array>} the agenda calendar ids, possibly empty
  */
 export const getShareableCalendars = () => {
-  return fetch(`${window.location.origin}/caldav/rest/calendars/shareable`, {credentials: 'include'})
-    .then(resp => (resp && resp.ok ? resp.json() : null))
-    .then(payload => (payload && Array.isArray(payload.calendarIds) ? payload.calendarIds : []))
-    .catch(() => []);
+  if (!shareableCalendarsInFlight) {
+    shareableCalendarsInFlight = fetch(`${window.location.origin}/caldav/rest/calendars/shareable`, {credentials: 'include'})
+      .then(resp => (resp && resp.ok ? resp.json() : null))
+      .then(payload => (payload && Array.isArray(payload.calendarIds) ? payload.calendarIds : []))
+      .catch(() => [])
+      .finally(() => shareableCalendarsInFlight = null);
+  }
+  return shareableCalendarsInFlight;
 };
+
+/** The shareable-calendars request in flight, shared by concurrent callers. */
+let shareableCalendarsInFlight = null;
 
 /**
  * Who one of the user's calendars is shared with, read from the server now.
