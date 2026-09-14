@@ -1292,7 +1292,7 @@ public class CaldavCalendarShareServiceTest {
 
   /**
    * The calendar eXo writes meeting copies into is flagged, through the push's
-   * own resolution: an imported calendar named by {@code currentMirror} carries
+   * own resolution: an imported calendar named by {@code mirrorDestination} carries
    * the flag even when the push spells its href percent-encoded, one the push
    * does not name does not, and an eXo-created calendar the push adopted as its
    * destination is flagged too.
@@ -1305,7 +1305,7 @@ public class CaldavCalendarShareServiceTest {
     String href = "/dav/calendars/__uids__/" + FRANCOIS_UID + "/" + container;
     onBlueMindImported(href);
     when(blueMindAclClient.readAcl(endpoint, container)).thenReturn(owner());
-    when(caldavPushService.currentMirror(ALICE, "alice"))
+    when(caldavPushService.mirrorDestination(ALICE, "alice"))
         .thenReturn(new MirrorTarget("/dav/calendars/__uids__/" + FRANCOIS_UID + "/calendar%3ADefault%3A" + FRANCOIS_UID + "/", false, null),
                     new MirrorTarget("/dav/calendars/__uids__/" + FRANCOIS_UID + "/exo-meetings", false, null));
 
@@ -1314,7 +1314,7 @@ public class CaldavCalendarShareServiceTest {
 
     onBlueMind();
     when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner());
-    when(caldavPushService.currentMirror(ALICE, "alice")).thenReturn(new MirrorTarget(BM_COLLECTION, true, "eXo"));
+    when(caldavPushService.mirrorDestination(ALICE, "alice")).thenReturn(new MirrorTarget(BM_COLLECTION, true, "eXo"));
     assertTrue(service.listShares(ALICE, "alice", CALENDAR).meetingCopies(), "an eXo-created calendar the push adopted");
   }
 
@@ -1331,7 +1331,7 @@ public class CaldavCalendarShareServiceTest {
     String href = "/dav/calendars/__uids__/" + FRANCOIS_UID + "/" + container;
     onBlueMindImported(href);
     when(blueMindAclClient.readAcl(endpoint, container)).thenReturn(owner());
-    when(caldavPushService.currentMirror(ALICE, "alice")).thenThrow(new CalDavUnreachableException("down"));
+    when(caldavPushService.mirrorDestination(ALICE, "alice")).thenThrow(new CalDavUnreachableException("down"));
     CaldavUserSetting settings = connectedTo(STALWART);
     when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(settings);
 

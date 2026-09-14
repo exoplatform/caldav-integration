@@ -2180,8 +2180,11 @@ public class HttpCalDavClient implements CalDavClient {
       if (canonical.endsWith("/" + CaldavPushService.MIRROR_COLLECTION_SLUG)) {
         throw new IllegalArgumentException("The meetings mirror collection is never shared");
       }
-      if (pair.getStatus() != CalendarSyncStatus.ACTIVE || StringUtils.isBlank(pair.getLocalCalendarSyncUid()) || href.isEmpty()) {
-        throw new IllegalArgumentException("Only an active, anchored imported calendar may be shared; this pair is " + pair.getStatus());
+      if (pair.getStatus() != CalendarSyncStatus.ACTIVE) {
+        throw new IllegalArgumentException("Only an active imported calendar may be shared; this pair is " + pair.getStatus());
+      }
+      if (StringUtils.isBlank(pair.getLocalCalendarSyncUid()) || href.isEmpty()) {
+        throw new IllegalArgumentException("An imported pair with no calendar anchor or no collection authorises no share");
       }
       return href + "/";
     }

@@ -73,8 +73,8 @@ import org.exoplatform.social.core.manager.IdentityManager;
 
 /**
  * Shares a user's own eXo calendar, read-only, with colleagues connected to
- * the same CalDAV server, by changing who may read the collection eXo exported
- * that calendar to — through the server's own granting mechanism, confirmed by
+ * the same CalDAV server, by changing who may read the collection that
+ * calendar is bound to — through the server's own granting mechanism, confirmed by
  * reading the access list back (EXO-90253).
  *
  * <p>
@@ -279,7 +279,9 @@ public class CaldavCalendarShareService {
    * decodes group 2 and looks the container up by it). BlueMind names a user's
    * default {@code calendar:Default:<uid>} and a calendar created through its
    * calendar service {@code calendar:UserCreated:<uid>:<uuid>}
-   * ({@code ICalendarUids}, {@code UserCalendarService}); a DAV MKCALENDAR keeps
+   * ({@code UserCalendarService}; {@code ICalendarUids.userCreatedCalendar}
+   * also allows a uid-less {@code calendar:UserCreated:<seed>}, which this rule
+   * refuses); a DAV MKCALENDAR keeps
    * the client's segment, bare. The home also lists every subscription under
    * the subscriber's uid, with the subscribed container's own uid:
    * {@code calendar:Default:<other>}, {@code calendar:UserCreated:<other>:…},
@@ -646,8 +648,9 @@ public class CaldavCalendarShareService {
    * @throws IllegalAccessException when the caller does not own it
    * @throws IllegalArgumentException when it is bound to no collection eXo can share
    * @throws CaldavShareException when sharing is not offered on the server,
-   *           the credentials are refused, the server cannot be reached, or the
-   *           caller's principal cannot be named
+   *           the credentials are refused, the server cannot be reached, the
+   *           caller's principal cannot be named, or the calendar is an
+   *           imported one the caller does not own on the server
    */
   public List<ShareUser> candidates(long userIdentityId,
                                     String username,
@@ -1661,7 +1664,8 @@ public class CaldavCalendarShareService {
   /**
    * Says whether the shared calendar is also where eXo writes the copies of the
    * user's eXo meetings, asked through the push's own resolution
-   * ({@link CaldavPushService#currentMirror}), so that the drawer's warning
+   * ({@link CaldavPushService#mirrorDestination}, the lookup
+   * {@code currentMirror} and {@code ensureMirror} share), so that the drawer's warning
    * never disagrees with where the copies go. Asked for every calendar: the
    * copies usually land in an imported main calendar, but the push can also
    * adopt an existing calendar, an eXo-created one included, when it cannot
@@ -1686,7 +1690,7 @@ public class CaldavCalendarShareService {
     String href = CaldavSyncStorage.canonicalHref(target.href());
     boolean copies;
     try {
-      MirrorTarget mirror = caldavPushService.currentMirror(target.userIdentityId(), username);
+      MirrorTarget mirror = caldavPushService.mirrorDestination(target.userIdentityId(), username);
       copies = mirror != null && StringUtils.isNotBlank(mirror.href()) && CaldavSyncStorage.canonicalHref(mirror.href()).equals(href);
     } catch (RuntimeException e) {
       CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(target.userIdentityId());
