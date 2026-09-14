@@ -1647,13 +1647,15 @@ public class CaldavCalendarShareService {
    * colleague's calendar listed in that home fails the owner or the home check.
    *
    * @param collection the collection as read, may be null
-   * @param canonicalHref its canonical href
+   * @param canonicalHref its canonical href, blank when the server named none this
+   *          client can use (no href, or one on another host): never owned
    * @param homeHref the caller's calendar home
    * @param principal the caller's recorded principal
    * @return true when all hold
    */
   private static boolean isOwnedRfc3744Collection(CalendarCollection collection, String canonicalHref, String homeHref, String principal) {
-    if (collection == null || StringUtils.isBlank(collection.owner()) || !collection.privilegesAnswered() || !collection.writable()) {
+    if (collection == null || StringUtils.isBlank(canonicalHref) || StringUtils.isBlank(collection.owner()) || !collection.privilegesAnswered()
+        || !collection.writable()) {
       return false;
     }
     if (!CalendarCollection.principalPathOf(collection.owner()).equals(CalendarCollection.principalPathOf(principal))) {

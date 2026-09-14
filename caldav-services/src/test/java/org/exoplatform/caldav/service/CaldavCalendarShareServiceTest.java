@@ -1155,9 +1155,10 @@ public class CaldavCalendarShareServiceTest {
    * On Stalwart an imported calendar is never shared unless all three hold,
    * whichever fails: a colleague's calendar listed in alice's home (another
    * {@code DAV:owner}), one read-only for her, one outside her calendar home,
-   * one the server does not describe, and any calendar when her principal was
-   * never recorded. Each is left out of the menu and refused before its access
-   * list is read or anything is written.
+   * one the server does not describe, and any imported calendar when her
+   * principal was never recorded (an eXo-created calendar beside it stays
+   * offered). Each is left out of the menu and refused before its access list
+   * is read or anything is written.
    *
    * @throws Exception never
    */
@@ -1465,6 +1466,30 @@ public class CaldavCalendarShareServiceTest {
     assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"), "an unreachable server");
     verify(calDavClient, never()).capabilities(endpoint, STALWART_IMPORTED + "/");
     verify(calDavClient, org.mockito.Mockito.times(2)).capabilities(eq(endpoint), anyString());
+  }
+
+  /**
+   * An entry of the home listing with no href this client can use — none, or
+   * one on another host — is never taken for a calendar alice owns, and does
+   * not hide Share on her other calendars: the eXo-created calendar stays
+   * offered.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aHomeListingEntryWithoutAUsableHrefDoesNotHideShareOnOtherCalendars() throws Exception {
+    CalendarSync imported = importedPair(STALWART_IMPORTED);
+    imported.setLocalCalendarSyncUid("imported");
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.EXO)).thenReturn(List.of(exoPair()));
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.REMOTE)).thenReturn(List.of(imported));
+    lenient().when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice"))
+             .thenReturn(List.of(calendar(14L, ALICE, "imported"), calendar(CALENDAR, ALICE, ANCHOR)));
+    lenient().when(calDavClient.discoverHome(endpoint)).thenReturn(new CalendarHome("/dav/pal/alice%40stalwart.local/", ALICE_HOME));
+    lenient().when(calDavClient.listCalendars(endpoint, ALICE_HOME))
+             .thenReturn(List.of(collection(null, "/dav/pal/alice%40stalwart.local/", true)));
+
+    assertEquals(List.of(CALENDAR), service.shareableCalendarIds(ALICE, "alice"),
+                 "an entry without a usable href: the import is not offered, the eXo-created calendar stays");
   }
 
   // ---------------------------------------------------------------- helpers
