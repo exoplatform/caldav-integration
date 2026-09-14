@@ -45,7 +45,11 @@ public class CalendarSync {
   /** The declared server registration the remote side lives on. */
   private long               serverId;
 
-  /** Agenda's immutable calendar anchor; null for the mirror pair alone. */
+  /**
+   * Agenda's immutable calendar anchor; null for the mirror pair alone. A
+   * hidden share (EXO-90239), which has no calendar, records one derived from
+   * its collection path instead, so that it never names an agenda calendar.
+   */
   private String             localCalendarSyncUid;
 
   /** Canonical collection path: percent-decoded, no trailing slash. */
