@@ -26,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.caldav.dao.CaldavConnectionDAO;
 import org.exoplatform.caldav.entity.CaldavConnectionEntity;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
 
 /**
  * Reads and writes who each connected eXo user is on their CalDAV server
@@ -50,22 +51,6 @@ public class CaldavConnectionStorage {
 
   @Autowired
   private CaldavConnectionDAO connectionDAO;
-
-  /**
-   * The principal recorded for a user on one server.
-   *
-   * @param userIdentityId the eXo user
-   * @param serverId the declared server registration, zero for an account
-   *          attached before registrations existed
-   * @return the canonical principal, or null when none is recorded for that
-   *         user on that server
-   */
-  public String getPrincipal(long userIdentityId, long serverId) {
-    return connectionDAO.findByUserIdentityId(userIdentityId)
-                        .filter(connection -> connection.getServerId() == serverId)
-                        .map(CaldavConnectionEntity::getPrincipal)
-                        .orElse(null);
-  }
 
   /**
    * Records the principal a user is connected as on one server, replacing
@@ -107,15 +92,35 @@ public class CaldavConnectionStorage {
   }
 
   /**
+   * How many users hold an active pair on one server without an identity
+   * recorded for that server.
+   *
+   * @param serverId the declared server registration
+   * @return the number of such users, zero when every one is recorded
+   */
+  public long countActiveUsersWithoutIdentity(long serverId) {
+    return connectionDAO.countUsersWithPairsButNoIdentity(serverId, CalendarSyncStatus.ACTIVE);
+  }
+
+  /**
    * The users recorded as connected under exactly one principal on one
    * server, lowest identity first, at most {@link #CONNECTED_USERS_READ}.
    *
    * <p>
    * The database answers the candidates and this keeps only the exact
-   * matches: MySQL compares the column under {@code utf8mb4_0900_ai_ci},
-   * where {@code /dav/pal/josé} equals {@code /dav/pal/JOSE}, and an owner
-   * mapped to the wrong person through a collation is worse than an owner not
-   * mapped at all.
+   * matches: MySQL and MariaDB give the {@code NVARCHAR} column the national
+   * character set, {@code utf8mb3} with {@code utf8mb3_general_ci}, whatever
+   * the table's own collation, and compare it case- and accent-insensitively
+   * — so {@code /dav/pal/josé} equals {@code /dav/pal/JOSE} there, and an
+   * owner mapped to the wrong person through a collation is worse than an
+   * owner not mapped at all.
+   *
+   * <p>
+   * The bound applies to the candidates, before that filter: on such a
+   * collation, more than {@link #CONNECTED_USERS_READ} lookalike rows with
+   * lower identities could push the exact ones off the page. No server hands
+   * out a population of principals differing only by case or accent, and that
+   * case is accepted rather than paid for with an unbounded read.
    *
    * @param serverId the declared server registration
    * @param principal the principal, canonical

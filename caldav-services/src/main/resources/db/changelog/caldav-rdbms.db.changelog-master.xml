@@ -727,16 +727,24 @@
       tables are asked about one account with the same number.
 
       PRINCIPAL is stored canonical: percent-decoding undone, trailing slash
-      dropped, the form a DAV:owner is compared in. NVARCHAR(250) so that the
-      (SERVER_ID, PRINCIPAL) index below stays at 1008 bytes under utf8mb4, the
-      bound 1.0.0-10 already lives within; a principal longer than that is not
+      dropped, the form a DAV:owner is compared in. NVARCHAR(250), the type every
+      text column of this changelog uses. On MySQL and MariaDB Liquibase emits it
+      as written and the engine gives it the national character set - utf8mb3
+      with utf8mb3_general_ci, whatever the table's CHARSET=UTF8MB4 (checked on
+      MySQL 8.0.46, 8.4.11 and MariaDB 11.4.13) - so the (SERVER_ID, PRINCIPAL)
+      key below is 8 + 250x3 = 758 bytes, well inside the 3072-byte limit, the
+      comparison ignores case and accents, and a character outside the Basic
+      Multilingual Plane cannot be stored. Exactness is therefore decided by the
+      code rather than by the index, and a principal the column cannot hold as it
+      is - longer than 250 characters, or carrying such a character - is not
       recorded at all, never truncated, since a truncated principal could equal
       somebody else's.
 
       No backfill: every connected account's row is written by its first
-      synchronisation pass after the upgrade, and until then that user is simply
-      not known by identity - which the engine reads as "nobody", never as
-      "somebody else".
+      synchronisation pass after the upgrade. Until every user synchronising with
+      a server has one, no share on that server has its owner mapped to an eXo
+      user: a login two eXo users share would otherwise read as one user's while
+      only one of them is recorded.
     </comment>
     <createTable tableName="CALDAV_CONNECTION">
       <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
@@ -778,8 +786,8 @@
       the column order serves the lookup and no direction needs declaring - no
       query sorts on this index. Not unique: two eXo users on one login is a
       legitimate shape, and the one the shared-account warning reports. 8 bytes
-      plus NVARCHAR(250) is 1008 bytes under utf8mb4, inside MySQL's 3072-byte
-      key limit, as for 1.0.0-10. Own changeset, no modifySql, automatic rollback.
+      plus NVARCHAR(250) is 758 bytes on MySQL, where the column is utf8mb3 (see
+      1.0.0-45). Own changeset, no modifySql, automatic rollback.
     </comment>
     <createIndex tableName="CALDAV_CONNECTION" indexName="IDX_CALDAV_CONNECTION_PRINCIPAL">
       <column name="SERVER_ID"/>

@@ -27,6 +27,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.caldav.entity.CaldavConnectionEntity;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
 
 /**
  * Persistence access to who each connected eXo user is on their CalDAV server
@@ -67,6 +68,37 @@ public interface CaldavConnectionDAO extends JpaRepository<CaldavConnectionEntit
   List<CaldavConnectionEntity> findByServerAndPrincipal(@Param("serverId") long serverId,
                                                         @Param("principal") String principal,
                                                         Pageable pageable);
+
+  /**
+   * How many users hold a pair in one state on one server without an identity
+   * recorded for that server.
+   *
+   * <p>
+   * The completeness question behind the owner of a share (EXO-90243): "exactly
+   * one user is connected as this principal" can be read off the table only
+   * once every user synchronising with the server is in it, because a second
+   * user on the same login who has not been recorded yet is invisible to
+   * {@link #findByServerAndPrincipal}. Asked with the active state: an account
+   * whose pairs are active is one whose discoveries succeed, and each of them
+   * records its identity. An identity recorded for another server does not
+   * count, since it says nothing about who the user is on this one.
+   *
+   * <p>
+   * What it costs: the status index {@code IDX_CALDAV_CALENDAR_SYNC_STATUS}
+   * serves the state, the server is compared on the rows it yields, and the
+   * {@code NOT EXISTS} is a point lookup on {@code UQ_CALDAV_CONNECTION_USER}
+   * per user. Asked only when a share's owner principal has exactly one
+   * recorded user, once per principal per listing.
+   *
+   * @param serverId the declared server registration
+   * @param status the state a pair has to be in to count, active in practice
+   * @return the number of distinct such users, zero when every one is recorded
+   */
+  @Query("SELECT COUNT(DISTINCT p.userIdentityId) FROM CaldavCalendarSyncEntity p"
+      + " WHERE p.serverId = :serverId AND p.status = :status"
+      + " AND NOT EXISTS (SELECT c.id FROM CaldavConnectionEntity c"
+      + " WHERE c.userIdentityId = p.userIdentityId AND c.serverId = p.serverId)")
+  long countUsersWithPairsButNoIdentity(@Param("serverId") long serverId, @Param("status") CalendarSyncStatus status);
 
   /**
    * Removes the identity recorded for one eXo user.

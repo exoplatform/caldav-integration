@@ -813,6 +813,43 @@ public class CaldavSyncDAOQueryTest {
   }
 
   /**
+   * <b>Who is synchronising without a recorded identity, on the engine.</b>
+   * Just after the upgrade: alice (two active pairs) recorded, alice2 (two
+   * active pairs, same login) not yet; bob recorded; dave's pairs paused, no
+   * row; carol active on Stalwart but recorded for another server. Missing on
+   * Stalwart: alice2 and carol — each counted once however many pairs they
+   * hold, dave not at all. Once alice2 is recorded and carol's identity is
+   * recorded for Stalwart, nobody is missing.
+   */
+  @Test
+  public void theUsersSynchronisingWithoutARecordedIdentityAreCountedOnTheEngine() {
+    persistPair(ALICE, STALWART, SyncOrigin.MIRROR, "/dav/cal/alice@stalwart.local/exo-meetings");
+    persistPair(ALICE, STALWART, SyncOrigin.EXO, "/dav/cal/alice@stalwart.local/exo-cal-a");
+    persistPair(ALICE2, STALWART, SyncOrigin.REMOTE, "/dav/cal/alice@stalwart.local/default");
+    persistPair(ALICE2, STALWART, SyncOrigin.EXO, "/dav/cal/alice@stalwart.local/exo-cal-b");
+    persistPair(BOB, STALWART, SyncOrigin.EXO, "/dav/cal/bob@stalwart.local/exo-cal-c");
+    persistPair(11L, STALWART, SyncOrigin.EXO, "/dav/cal/dave@stalwart.local/exo-cal-d", CalendarSyncStatus.PAUSED);
+    persistPair(10L, STALWART, SyncOrigin.EXO, "/dav/cal/carol@stalwart.local/exo-cal-e");
+    persistConnection(ALICE, STALWART, ALICE_PRINCIPAL);
+    persistConnection(BOB, STALWART, BOB_PRINCIPAL);
+    persistConnection(10L, 2L, "/dav/pal/carol@elsewhere");
+    entityManager.flush();
+
+    assertEquals(2L, connectionDAO.countUsersWithPairsButNoIdentity(STALWART, CalendarSyncStatus.ACTIVE));
+    assertEquals(0L, connectionDAO.countUsersWithPairsButNoIdentity(2L, CalendarSyncStatus.ACTIVE),
+                 "nobody holds a pair on the other server");
+
+    persistConnection(ALICE2, STALWART, ALICE_PRINCIPAL);
+    CaldavConnectionEntity carol = connectionDAO.findByUserIdentityId(10L).orElseThrow();
+    carol.setServerId(STALWART);
+    carol.setPrincipal("/dav/pal/carol@stalwart.local");
+    connectionDAO.save(carol);
+    entityManager.flush();
+
+    assertEquals(0L, connectionDAO.countUsersWithPairsButNoIdentity(STALWART, CalendarSyncStatus.ACTIVE));
+  }
+
+  /**
    * @param serverId the registration the account names
    * @return a connected account on it
    */

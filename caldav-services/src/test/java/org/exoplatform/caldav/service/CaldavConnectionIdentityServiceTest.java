@@ -135,6 +135,23 @@ public class CaldavConnectionIdentityServiceTest {
   }
 
   /**
+   * A principal carrying a character outside the Basic Multilingual Plane is
+   * not recorded, and not looked up: MySQL's utf8mb3 column would refuse it on
+   * every pass or, out of strict mode, cut it down into another value.
+   */
+  @Test
+  public void aPrincipalOutsideTheBasicMultilingualPlaneIsNeitherRecordedNorLookedUp() {
+    String supplementary = "/dav/pal/alice\uD83D\uDE00@stalwart.local/";
+
+    service.recordPrincipal(ALICE, STALWART, supplementary);
+    assertTrue(service.usersConnectedAs(STALWART, supplementary).isEmpty());
+
+    verify(caldavConnectionStorage).deletePrincipal(ALICE);
+    verify(caldavConnectionStorage, never()).savePrincipal(anyLong(), anyLong(), anyString());
+    verify(caldavConnectionStorage, never()).getUsersConnectedAs(anyLong(), anyString());
+  }
+
+  /**
    * Two nodes recording one user at once: the second meets the unique index,
    * and its recording lands on the row the first wrote.
    */
@@ -223,6 +240,19 @@ public class CaldavConnectionIdentityServiceTest {
     assertEquals(List.of(ALICE2), service.otherUsersConnectedAs(ALICE, STALWART, ALICE_ANSWERED));
 
     verify(caldavConnectorStorage, never()).getCaldavSetting(ALICE);
+  }
+
+  /**
+   * The server's users are all recorded only when none holding an active pair
+   * is missing: one missing — alice2, before her first pass — is enough to say
+   * no.
+   */
+  @Test
+  public void everyActiveUserIsRecordedOnlyWhenNoneIsMissing() {
+    when(caldavConnectionStorage.countActiveUsersWithoutIdentity(STALWART)).thenReturn(0L, 1L);
+
+    assertTrue(service.isEveryActiveUserRecordedOn(STALWART));
+    org.junit.jupiter.api.Assertions.assertFalse(service.isEveryActiveUserRecordedOn(STALWART));
   }
 
   /**

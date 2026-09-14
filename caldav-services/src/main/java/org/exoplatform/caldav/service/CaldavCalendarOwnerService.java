@@ -57,9 +57,11 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * <li>A <b>share the server reported</b> names an owner principal. When
  * exactly one eXo user of this deployment is connected to that server as
  * that principal — the identity each connection's discovery records
- * (EXO-90243) — the owner is that user, named as a colleague is. Otherwise —
- * nobody connected as it, several eXo users on that one login, or the
- * viewer themself — the owner is a name alone: the principal's
+ * (EXO-90243), and every user synchronising with that server has been
+ * recorded, so that "exactly one" is not merely "one so far" — the owner is
+ * that user, named as a colleague is. Otherwise — nobody connected as it,
+ * several eXo users on that one login, the viewer themself, or a server whose
+ * users are not all recorded yet — the owner is a name alone: the principal's
  * {@code DAV:displayname}, read with one PROPFIND of depth 0, or when the
  * server answers none, refuses, or cannot be reached, the decoded last
  * segment of the principal path — the very path the server returned to the
@@ -237,7 +239,10 @@ public class CaldavCalendarOwnerService {
    * the server says, and naming one of them would be a guess; nobody is named
    * then, and the principal's own name stands. The viewer is never named:
    * the owner principal is by construction not theirs, so a viewer recorded
-   * under it is a record the next discovery corrects, not an owner. A user
+   * under it is a record the next discovery corrects, not an owner. Nobody is
+   * named either while a user synchronising with the server has no identity
+   * recorded for it — after an upgrade, before that user's first pass — since
+   * one recorded user of a login cannot then be told from the only one. A user
    * the registry does not know or knows as deleted names nobody either, and
    * the name falls back as for any principal. A lookup that fails costs the
    * listing nothing but the identity.
@@ -261,6 +266,13 @@ public class CaldavCalendarOwnerService {
         LOG.debug("The principal {} owning a share is recorded for its own viewer {}; it is named by the principal alone",
                   ownerPath,
                   viewerIdentityId);
+        return CalendarOwner.NONE;
+      }
+      if (!caldavConnectionIdentityService.isEveryActiveUserRecordedOn(serverId)) {
+        LOG.debug("Not every user synchronising with server {} has a recorded identity yet; the share of principal {} is"
+            + " named by the principal alone",
+                  serverId,
+                  ownerPath);
         return CalendarOwner.NONE;
       }
       return eXoUserOf(userIdentityId);

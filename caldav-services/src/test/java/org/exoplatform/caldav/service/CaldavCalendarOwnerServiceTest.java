@@ -347,6 +347,7 @@ public class CaldavCalendarOwnerServiceTest {
   @Test
   public void aShareOwnedByThePrincipalOneUserIsConnectedAsNamesThatUser() {
     when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.isEveryActiveUserRecordedOn(SERVER)).thenReturn(true);
     when(identityManager.getIdentity(ALICE_USER)).thenReturn(user("5", "alice", "Alice Liddell"));
 
     CalendarOwner owner = ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
@@ -365,6 +366,28 @@ public class CaldavCalendarOwnerServiceTest {
   @Test
   public void aShareOwnedByAPrincipalSeveralUsersAreConnectedAsNamesThePrincipalAlone() {
     when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER, ALICE2_USER));
+    when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
+
+    CalendarOwner owner = ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+
+    assertNull(owner.identityId());
+    assertNull(owner.username());
+    assertEquals("Alice", owner.displayName());
+    verify(identityManager, never()).getIdentity(anyLong());
+  }
+
+  /**
+   * <b>One recorded user is not the only user until the server's users are
+   * all recorded.</b> Just after the upgrade alice has had her first pass and
+   * alice2, on the same login, has not: the table says one user is connected
+   * as Alice's principal, and naming alice would tell bob the login is hers
+   * alone. Nobody is named while a user synchronising with the server has no
+   * recorded identity; the principal's own name stands.
+   */
+  @Test
+  public void aShareIsNamedByThePrincipalAloneWhileAUserOfTheServerIsNotRecordedYet() {
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.isEveryActiveUserRecordedOn(SERVER)).thenReturn(false);
     when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
 
     CalendarOwner owner = ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
@@ -399,6 +422,7 @@ public class CaldavCalendarOwnerServiceTest {
   @Test
   public void aConnectedUserTheRegistryDoesNotShowFallsBackToThePrincipalsName() {
     when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.isEveryActiveUserRecordedOn(SERVER)).thenReturn(true);
     when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
     when(identityManager.getIdentity(ALICE_USER)).thenReturn(null);
 
@@ -429,6 +453,7 @@ public class CaldavCalendarOwnerServiceTest {
   @Test
   public void theConnectedUserIsLookedUpOncePerPrincipalPerListing() {
     when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.isEveryActiveUserRecordedOn(SERVER)).thenReturn(true);
     when(identityManager.getIdentity(ALICE_USER)).thenReturn(user("5", "alice", "Alice Liddell"));
 
     ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));

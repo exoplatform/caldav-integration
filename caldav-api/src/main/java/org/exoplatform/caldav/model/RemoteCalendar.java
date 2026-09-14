@@ -93,8 +93,8 @@ public class RemoteCalendar {
   /**
    * How to name the owner to the viewer: the eXo user's full name when the
    * owner is a user of this deployment; for a share the server alone
-   * reported and no single user of this deployment is connected as, the
-   * owner principal's display name, else the decoded last
+   * reported and no single user of this deployment is connected as that
+   * principal, the owner principal's display name, else the decoded last
    * segment of the principal path; null when nobody can be named, and
    * always null when {@code shared} is false.
    */

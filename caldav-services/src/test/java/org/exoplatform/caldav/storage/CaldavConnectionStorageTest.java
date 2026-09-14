@@ -41,6 +41,7 @@ import org.springframework.data.domain.Pageable;
 
 import org.exoplatform.caldav.dao.CaldavConnectionDAO;
 import org.exoplatform.caldav.entity.CaldavConnectionEntity;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
 
 /**
  * The mechanical guarantees of the connection-identity storage
@@ -62,28 +63,6 @@ public class CaldavConnectionStorageTest {
 
   @InjectMocks
   private CaldavConnectionStorage storage;
-
-  /**
-   * The principal recorded for a user is answered for the server it names,
-   * and for no other.
-   */
-  @Test
-  public void aPrincipalIsAnsweredForTheServerItWasRecordedOn() {
-    when(connectionDAO.findByUserIdentityId(ALICE)).thenReturn(Optional.of(row(11L, ALICE, STALWART, PRINCIPAL)));
-
-    assertEquals(PRINCIPAL, storage.getPrincipal(ALICE, STALWART));
-    assertNull(storage.getPrincipal(ALICE, 2L), "an identity on another server says nothing about this one");
-  }
-
-  /**
-   * A user nobody recorded has no principal.
-   */
-  @Test
-  public void aUserNobodyRecordedHasNoPrincipal() {
-    when(connectionDAO.findByUserIdentityId(ALICE)).thenReturn(Optional.empty());
-
-    assertNull(storage.getPrincipal(ALICE, STALWART));
-  }
 
   /**
    * The first recording inserts the row, with every field set.
@@ -166,6 +145,17 @@ public class CaldavConnectionStorageTest {
     verify(connectionDAO).findByServerAndPrincipal(eq(STALWART), eq(PRINCIPAL), page.capture());
     assertEquals(CaldavConnectionStorage.CONNECTED_USERS_READ, page.getValue().getPageSize());
     assertEquals(0, page.getValue().getPageNumber());
+  }
+
+  /**
+   * The users missing an identity are counted among the active pairs of the
+   * server, the state whose discoveries succeed.
+   */
+  @Test
+  public void theUsersMissingAnIdentityAreCountedAmongActivePairs() {
+    when(connectionDAO.countUsersWithPairsButNoIdentity(STALWART, CalendarSyncStatus.ACTIVE)).thenReturn(2L);
+
+    assertEquals(2L, storage.countActiveUsersWithoutIdentity(STALWART));
   }
 
   /**

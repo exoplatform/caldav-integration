@@ -54,8 +54,13 @@ import org.exoplatform.services.log.Log;
  * credentials just changed, and the identity recorded under the previous ones
  * must not outlive a first discovery that fails — and when it is
  * disconnected. There is no backfill: a user is known by identity from their
- * first pass after the upgrade, and until then is simply not known, which
- * every reader takes as "nobody", never as "somebody else".
+ * first pass after the upgrade. Until then the shared-account warning is only
+ * late — it names what it finds and is asked again every pass — while the
+ * owner of a share could be misread: a login two eXo users share would look
+ * like one user's as long as only one of them is recorded. So no share owner
+ * on a server is mapped to an eXo user while any user holding an active pair
+ * there has no identity recorded for it ({@link #isEveryActiveUserRecordedOn}).
+ * What that cannot see is a connected user holding no pair at all.
  *
  * <p>
  * <b>What is believed.</b> A user matched by principal counts only while their
@@ -63,7 +68,10 @@ import org.exoplatform.services.log.Log;
  * forgotten on disconnect through the kernel bridge, and that resolution can
  * fail; a row left behind must not keep naming someone who is no longer
  * connected. The recorded principal of a user who connected <em>another</em>
- * account on the same server is replaced by that account's first discovery.
+ * account on the same server is forgotten when they connect it and recorded
+ * again by the next discovery after it; a pass already running for that user
+ * on another node at that moment may write the previous principal back, and
+ * it then stands until that user's next discovery, one pass later.
  *
  * <p>
  * Never allowed to fail a connection, a pass or a listing: recording and
@@ -100,10 +108,12 @@ public class CaldavConnectionIdentityService {
    * Records the principal a discovery found for a user's account.
    *
    * <p>
-   * A principal the server did not name, or one too long for the column, is
-   * recorded as unknown: whatever was stored before is removed rather than
-   * left to describe an account nobody confirmed, and a long principal is
-   * never truncated into somebody else's. A second node recording the same
+   * A principal the server did not name, or one the column cannot hold
+   * faithfully — longer than it, or carrying a character outside the Basic
+   * Multilingual Plane, which MySQL's {@code utf8mb3} column refuses or, out
+   * of strict mode, truncates — is recorded as unknown: whatever was stored
+   * before is removed rather than left to describe an account nobody
+   * confirmed, and a principal is never cut down into somebody else's. A second node recording the same
    * user at the same instant meets the unique index; its row is then updated
    * instead, the end state being the same.
    *
@@ -151,6 +161,23 @@ public class CaldavConnectionIdentityService {
                userIdentityId,
                e);
     }
+  }
+
+  /**
+   * Whether every user holding an active pair on a server has an identity
+   * recorded for that server.
+   *
+   * <p>
+   * What makes "exactly one user is connected as this principal" true rather
+   * than merely what the table says: until it holds, a second user of the same
+   * login may simply not be recorded yet.
+   *
+   * @param serverId the server key
+   * @return true when nobody synchronising with that server is missing
+   * @throws RuntimeException when the question itself fails; the caller degrades
+   */
+  public boolean isEveryActiveUserRecordedOn(long serverId) {
+    return caldavConnectionStorage.countActiveUsersWithoutIdentity(serverId) == 0;
   }
 
   /**
@@ -244,10 +271,20 @@ public class CaldavConnectionIdentityService {
   /**
    * Whether a canonical principal can be recorded and looked up.
    *
+   * <p>
+   * Held to what every supported database stores unchanged: at most the
+   * column's length, and characters of the Basic Multilingual Plane only. On
+   * MySQL and MariaDB the {@code NVARCHAR} column is {@code utf8mb3} whatever
+   * the table's character set, so a supplementary character is refused at
+   * insert — a warning on every pass — or, without strict mode, cut off with
+   * the rest of the value, which could leave another account's principal
+   * behind. Refusing it here makes every database agree.
+   *
    * @param canonical the canonical principal, may be null
-   * @return true when it is present and fits the column
+   * @return true when it is present and every database holds it as it is
    */
   private static boolean isRecordable(String canonical) {
-    return canonical != null && canonical.length() <= CaldavConnectionEntity.PRINCIPAL_MAX_LENGTH;
+    return canonical != null && canonical.length() <= CaldavConnectionEntity.PRINCIPAL_MAX_LENGTH
+        && canonical.codePoints().allMatch(Character::isBmpCodePoint);
   }
 }
