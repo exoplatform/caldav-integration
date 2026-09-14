@@ -88,7 +88,8 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * active, whose collection carries the slug eXo derives from the calendar's
  * own anchor — or to an <b>imported collection the caller really owns</b>: an
  * active, anchored {@link SyncOrigin#REMOTE} pair that is not the meetings
- * mirror, whose ownership is confirmed on the server before anything else
+ * mirror, whose ownership is confirmed on the server before its access list is read or anything is
+ * changed (only the capability probe, which selects the rule, comes first)
  * (on RFC 3744 servers its {@code DAV:owner} is the caller's recorded
  * principal, it is writable for them and it sits under their calendar home;
  * on BlueMind its path is under the caller's own uid, it is no subscription
@@ -290,6 +291,9 @@ public class CaldavCalendarShareService {
    */
   private static final Pattern     BLUEMIND_CONTAINER     = Pattern.compile("/dav/calendars/__uids__/([^/]+)/([^/]+)");
 
+  /** How many of the user's calendars the menu probes for capabilities before giving up. */
+  private static final int         MAX_CAPABILITY_PROBES  = 3;
+
   /** The BlueMind verbs that let a user decide who sees a container. */
   private static final Set<String> BLUEMIND_MANAGING      = Set.of("All", "Manage");
 
@@ -408,8 +412,31 @@ public class CaldavCalendarShareService {
         return List.of();
       }
       CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
-      CalendarSync probe = pairs.get(calendars.get(0).getSyncUid());
-      DavOptions capabilities = calDavClient.capabilities(endpoint, collectionOf(probe));
+      // Probe a collection eXo created first: it is the user's own and exists as long as its pair is active,
+      // while an imported one may be a subscription that went away. A probe that fails for any other reason than
+      // the credentials tries the next calendar, so one unreachable collection does not hide Share everywhere.
+      List<CalendarSync> probes = calendars.stream()
+                                           .map(calendar -> pairs.get(calendar.getSyncUid()))
+                                           .sorted(Comparator.comparingInt(pair -> pair.getOrigin() == SyncOrigin.EXO ? 0 : 1))
+                                           .limit(MAX_CAPABILITY_PROBES)
+                                           .toList();
+      CalendarSync probe = null;
+      DavOptions capabilities = null;
+      CalDavException failure = null;
+      for (CalendarSync candidate : probes) {
+        try {
+          capabilities = calDavClient.capabilities(endpoint, collectionOf(candidate));
+          probe = candidate;
+          break;
+        } catch (CalDavAuthenticationException e) {
+          throw e;
+        } catch (CalDavException e) {
+          failure = e;
+        }
+      }
+      if (probe == null) {
+        throw failure;
+      }
       SharingMechanism mechanism = SharingMechanism.of(capabilities, collectionOf(probe));
       if (!mechanism.isOffered()) {
         noteNotOffered(serverId, collectionOf(probe), capabilities, mechanism);
@@ -1550,7 +1577,8 @@ public class CaldavCalendarShareService {
 
   /**
    * Refuses an imported calendar the caller does not own on the server, before
-   * anything is read or changed; an eXo-created calendar passes untouched. On
+   * its access list is read or anything is changed (only the capability probe,
+   * which selects the rule, comes first); an eXo-created calendar passes untouched. On
    * BlueMind this is the path rule, and {@link #requireBlueMindManager} checks
    * the access list read next. On an RFC 3744 server the collection's own
    * {@code DAV:owner} and privileges, read at depth 0, and the caller's
@@ -1752,7 +1780,7 @@ public class CaldavCalendarShareService {
 
     /**
      * Whether the calendar is an imported one, whose ownership on the server
-     * must be confirmed before anything is read or changed.
+     * must be confirmed before its access list is read or anything is changed.
      *
      * @return true for a {@link SyncOrigin#REMOTE} pair
      */

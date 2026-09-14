@@ -1126,7 +1126,8 @@ public class CaldavCalendarShareServiceTest {
    * An imported calendar alice owns on Stalwart — its {@code DAV:owner} is her
    * recorded principal, she may write it, and it sits under her calendar home
    * — is offered in the menu and can be shared: its sharees and candidates are
-   * read after that check, and nothing refuses it.
+   * read after that check, each confirming ownership again, and nothing
+   * refuses it.
    *
    * @throws Exception never
    */
@@ -1140,10 +1141,14 @@ public class CaldavCalendarShareServiceTest {
     when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR)));
     when(calDavClient.listCalendars(endpoint, ALICE_HOME)).thenReturn(List.of(collection(ALICE_HOME + "default/", "/dav/pal/alice%40stalwart.local/", true)));
 
+    when(calDavClient.readAcl(endpoint, STALWART_IMPORTED + "/")).thenReturn(CollectionAcl.of(List.of(), Set.of()));
     assertEquals(List.of(CALENDAR), service.shareableCalendarIds(ALICE, "alice"));
     service.candidates(ALICE, "alice", CALENDAR, null);
+    CalendarShares shares = service.listShares(ALICE, "alice", CALENDAR);
 
-    verify(calDavClient).readCalendar(endpoint, STALWART_IMPORTED + "/");
+    assertTrue(shares.sharees().isEmpty());
+    verify(calDavClient, org.mockito.Mockito.times(2)).readCalendar(endpoint, STALWART_IMPORTED + "/");
+    verify(calDavClient).readAcl(endpoint, STALWART_IMPORTED + "/");
   }
 
   /**
@@ -1151,8 +1156,8 @@ public class CaldavCalendarShareServiceTest {
    * whichever fails: a colleague's calendar listed in alice's home (another
    * {@code DAV:owner}), one read-only for her, one outside her calendar home,
    * one the server does not describe, and any calendar when her principal was
-   * never recorded. Each is left out of the menu and refused before anything
-   * is read or written.
+   * never recorded. Each is left out of the menu and refused before its access
+   * list is read or anything is written.
    *
    * @throws Exception never
    */
@@ -1385,6 +1390,36 @@ public class CaldavCalendarShareServiceTest {
     ArgumentCaptor<CalendarSync> pair = ArgumentCaptor.forClass(CalendarSync.class);
     verify(calDavClient).postCalendarServerShare(eq(endpoint), pair.capture(), eq(ERIC_ADDRESS), eq(false));
     assertEquals(SyncOrigin.REMOTE, pair.getValue().getOrigin());
+  }
+
+  /**
+   * The menu probes a collection eXo created before an imported one, whatever
+   * order agenda lists the calendars in, and a probe that fails tries the next
+   * calendar: an imported collection that went away, or one that cannot be
+   * reached, does not hide Share on the user's other calendars.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void theMenuProbesAnExportedCollectionFirstAndSurvivesOneThatFails() throws Exception {
+    CalendarSync imported = importedPair(STALWART_IMPORTED);
+    imported.setLocalCalendarSyncUid("imported");
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.EXO)).thenReturn(List.of(exoPair()));
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.REMOTE)).thenReturn(List.of(imported));
+    lenient().when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice"))
+             .thenReturn(List.of(calendar(14L, ALICE, "imported"), calendar(CALENDAR, ALICE, ANCHOR)));
+    lenient().when(calDavClient.discoverHome(endpoint)).thenReturn(new CalendarHome("/dav/pal/alice%40stalwart.local/", ALICE_HOME));
+    lenient().when(calDavClient.listCalendars(endpoint, ALICE_HOME)).thenReturn(List.of());
+
+    assertEquals(List.of(CALENDAR), service.shareableCalendarIds(ALICE, "alice"));
+    verify(calDavClient, never()).capabilities(endpoint, STALWART_IMPORTED + "/");
+
+    when(calDavClient.capabilities(endpoint, COLLECTION)).thenThrow(new CalDavException("gone"));
+    lenient().when(calDavClient.capabilities(endpoint, STALWART_IMPORTED + "/")).thenReturn(stalwartOptions());
+
+    assertEquals(List.of(CALENDAR), service.shareableCalendarIds(ALICE, "alice"),
+                 "the exported calendar is still offered once another collection answered the probe");
+    verify(calDavClient).capabilities(endpoint, STALWART_IMPORTED + "/");
   }
 
   // ---------------------------------------------------------------- helpers
