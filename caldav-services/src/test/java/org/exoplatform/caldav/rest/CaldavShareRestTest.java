@@ -207,8 +207,9 @@ public class CaldavShareRestTest {
 
   /**
    * The JSON the drawer reads: sharees with kind, users, name, access and
-   * whether they can be removed; the shareable ids; a request body with the
-   * login alone.
+   * whether they can be removed; whether a colleague must subscribe on the
+   * server first, which decides the drawer's BlueMind note; the shareable ids;
+   * a request body with the login alone.
    *
    * @throws Exception never
    */
@@ -231,6 +232,11 @@ public class CaldavShareRestTest {
     JsonNode json = mapper.readTree(mapper.writeValueAsString(shares));
 
     assertEquals(12L, json.get("calendarId").asLong());
+    assertTrue(json.has("subscriptionRequired"), "the drawer reads shares.subscriptionRequired");
+    assertEquals(false, json.get("subscriptionRequired").asBoolean(), "a server where a grant is seen at once");
+    assertEquals(true,
+                 mapper.readTree(mapper.writeValueAsString(new CalendarShares(12L, List.of(), true))).get("subscriptionRequired").asBoolean(),
+                 "BlueMind: the colleague must subscribe first");
     JsonNode bob = json.get("sharees").get(0);
     assertEquals("/dav/pal/bob%40stalwart.local/", bob.get("principal").asText());
     assertEquals("EXO_USERS", bob.get("kind").asText());

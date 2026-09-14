@@ -173,16 +173,19 @@ public class CaldavShareRest {
   @DeleteMapping("/calendars/{calendarId}/shares/{username}")
   @Secured("users")
   @Operation(summary = "Stops sharing a calendar of the user's with a colleague",
-      description = "Removes the colleague's view-only grants and nothing else. A colleague holding more, granted "
-          + "outside eXo, is refused rather than partly removed. A colleague with no grant changes nothing and "
-          + "succeeds.")
+      description = "Removes the colleague's view-only grants and nothing else. On a server using RFC 3744 ACLs the "
+          + "access list is read, the grant removed, written back and read again; on BlueMind a CS:share remove naming "
+          + "the colleague's own BlueMind address is posted, and confirmed when the colleague is gone from the access "
+          + "list read through BlueMind's REST API. A colleague holding more, granted outside eXo, is refused rather "
+          + "than partly removed. A colleague with no grant changes nothing and succeeds.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Removed; the sharees as read back"),
       @ApiResponse(responseCode = "400", description = "Unknown colleague, not connected, the user themself, holding more "
           + "than view access, or a calendar with no collection eXo created"),
       @ApiResponse(responseCode = "403", description = "Not the user's calendar"),
       @ApiResponse(responseCode = "404", description = "No such calendar"),
       @ApiResponse(responseCode = "409", description = "No account, not offered, access list unusable, another person "
-          + "holding access that writing the list back could change (caldav.share.foreignAccessNotPreserved), or refused"),
+          + "holding access that writing the list back could change (caldav.share.foreignAccessNotPreserved), the "
+          + "colleague's mail address not published by the server (caldav.share.shareeAddressUnknown), or refused"),
       @ApiResponse(responseCode = "502", description = "Unreachable, or not applied when read back") })
   public CalendarShares unshare(@Parameter(description = "Agenda calendar id", required = true)
                                 @PathVariable("calendarId")
