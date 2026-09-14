@@ -354,6 +354,69 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
+   * Carol was given more than read access outside eXo — what Stalwart shows as
+   * {@code DAV:write} for a JMAP "may delete" grant, which written back becomes
+   * full write. Sharing with bob, or stopping, must not rewrite her access: the
+   * list is not written, whatever the change asked for.
+   */
+  @Test
+  public void anotherPrincipalWithMoreThanReadStopsTheWrite() {
+    AccessControlEntry bobs = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    AccessControlEntry carolWrites = new AccessControlEntry(AcePrincipal.href("/dav/pal/carol%40stalwart.local/"), false, false,
+                                                            Set.of("{DAV:}write"), false, null);
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(carolWrites), Set.of()),
+                                                                CollectionAcl.of(List.of(bobs, carolWrites), Set.of()));
+
+    CaldavShareException granting = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
+    CaldavShareException revoking = assertThrows(CaldavShareException.class, () -> service.revoke(ALICE, "alice", CALENDAR, "bob"));
+
+    assertEquals(CaldavCalendarShareService.FOREIGN_ACCESS_NOT_PRESERVED, granting.getCode());
+    assertEquals(CaldavCalendarShareService.FOREIGN_ACCESS_NOT_PRESERVED, revoking.getCode());
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+  }
+
+  /**
+   * Every other shape that could come back different stops the write too: an
+   * access-control privilege, a deny, an inverted entry.
+   */
+  @Test
+  public void anyOtherEntryBeyondAPlainReadGrantStopsTheWrite() {
+    for (AccessControlEntry foreign : List.of(new AccessControlEntry(AcePrincipal.href("/dav/pal/carol/"), false, false,
+                                                                     Set.of("{DAV:}read", "{DAV:}write-acl"), false, null),
+                                              new AccessControlEntry(AcePrincipal.href("/dav/pal/carol/"), false, true,
+                                                                     Set.of("{DAV:}read"), false, null),
+                                              new AccessControlEntry(AcePrincipal.href("/dav/pal/bob%40stalwart.local/"), true, false,
+                                                                     Set.of("{DAV:}read"), false, null))) {
+      when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(foreign), Set.of()));
+
+      assertEquals(CaldavCalendarShareService.FOREIGN_ACCESS_NOT_PRESERVED,
+                   assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob")).getCode(),
+                   String.valueOf(foreign));
+    }
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+  }
+
+  /**
+   * A plain read-only grant to somebody else — read, or free-busy alone — is
+   * written back as it was: those never widen.
+   */
+  @Test
+  public void aPlainReadOnlyGrantToSomebodyElseIsWrittenBack() throws Exception {
+    AccessControlEntry freeBusy = new AccessControlEntry(AcePrincipal.href("/dav/pal/carol%40stalwart.local/"), false, false,
+                                                         Set.of("{urn:ietf:params:xml:ns:caldav}read-free-busy"), false, null);
+    AccessControlEntry bobs = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(freeBusy), Set.of()),
+                                                                CollectionAcl.of(List.of(freeBusy, bobs), Set.of()));
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<AccessControlEntry>> written = ArgumentCaptor.forClass(List.class);
+    when(calDavClient.writeAcl(eq(endpoint), any(), written.capture())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    service.grant(ALICE, "alice", CALENDAR, "bob");
+
+    assertEquals(List.of(freeBusy, bobs), written.getValue());
+  }
+
+  /**
    * A colleague who can already read the calendar is left alone: nothing is
    * written.
    */

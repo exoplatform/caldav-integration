@@ -93,12 +93,29 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * <b>Read-modify-write, never overwrite.</b> RFC 3744 §8.1 has an {@code ACL}
  * request replace every entry that is neither protected nor inherited, and
  * Stalwart replaces its grant list the same way. So a grant reads the list,
- * keeps every modifiable entry as it was — including entries eXo did not
- * write, a share made from another client — adds one {@code DAV:read} grant,
- * and writes the list back; a revoke removes that principal's read-only
- * grants and nothing else. A list with an entry the client cannot represent
- * is never written. Protected and inherited entries are never sent: the
- * server keeps them.
+ * keeps every modifiable entry — including entries eXo did not write, a share
+ * made from another client — adds one {@code DAV:read} grant, and writes the
+ * list back; a revoke removes that principal's read-only grants and nothing
+ * else. A list with an entry the client cannot represent is never written.
+ * Protected and inherited entries are never sent: the server keeps them.
+ *
+ * <p>
+ * <b>What a list read over DAV cannot carry back.</b> A server's access list
+ * over DAV is a projection of its own rights, and not a faithful one: on
+ * Stalwart (source, {@code crates/dav/src/common/acl.rs} and
+ * {@code crates/jmap-proto/src/object/calendar.rs}, main {@code 474dd022})
+ * a colleague given "may delete" or "may write all" through JMAP reads back
+ * as {@code DAV:write}, and that entry written back becomes full write — eXo
+ * would widen somebody's rights by sharing with somebody else. Every
+ * widening is an entry reading back with more than the read-only privileges,
+ * so another principal holding any such entry stops the write
+ * ({@link #FOREIGN_ACCESS_NOT_PRESERVED}), and the owner manages that
+ * calendar's access where it was set. What remains is narrowing: rights DAV
+ * does not show at all (JMAP "may write own", "may update private", "may
+ * RSVP"; the invite and reply parts of a scheduling grant) sit behind a
+ * read-only entry and are dropped when it is written back. That is accepted
+ * as the lesser loss, and stated here so it is a decision rather than a
+ * surprise.
  *
  * <p>
  * <b>Verified, not claimed.</b> The list is read again after every write,
@@ -164,6 +181,12 @@ public class CaldavCalendarShareService {
    * apart.
    */
   public static final String      OWNER_UNKNOWN          = "caldav.share.ownerUnknown";
+
+  /**
+   * Another principal holds access beyond seeing the calendar, which writing
+   * the list back could change on the server.
+   */
+  public static final String      FOREIGN_ACCESS_NOT_PRESERVED = "caldav.share.foreignAccessNotPreserved";
 
   /** The server accepted the change, and the list read back does not hold it. */
   public static final String      NOT_APPLIED            = "caldav.share.notApplied";
@@ -339,7 +362,7 @@ public class CaldavCalendarShareService {
           LOG.debug("Calendar {} is already readable by {}; nothing is written", calendarId, sharee.principal());
           return sharesOf(target, before, ownerPrincipal);
         }
-        List<AccessControlEntry> entries = new ArrayList<>(modifiableEntriesOf(before));
+        List<AccessControlEntry> entries = new ArrayList<>(preservableEntriesOf(target, before, sharee.principal()));
         entries.add(AccessControlEntry.readGrantTo(AccessControlEntry.principalHrefOf(sharee.principal())));
         write(target, entries);
         CollectionAcl after = readBack(target);
@@ -408,9 +431,9 @@ public class CaldavCalendarShareService {
         if (grants.stream().anyMatch(entry -> !entry.isModifiable() || !entry.grantsReadOnly())) {
           throw new IllegalArgumentException(NOT_READ_ONLY);
         }
-        List<AccessControlEntry> entries = modifiableEntriesOf(before).stream()
-                                                                      .filter(entry -> !grants.contains(entry))
-                                                                      .toList();
+        List<AccessControlEntry> entries = preservableEntriesOf(target, before, sharee.principal()).stream()
+                                                                                                 .filter(entry -> !grants.contains(entry))
+                                                                                                 .toList();
         write(target, entries);
         CollectionAcl after = readBack(target);
         if (after.entries().stream().anyMatch(entry -> entry.appliesTo(sharee.principal()) && entry.grantsRead())) {
@@ -659,6 +682,41 @@ public class CaldavCalendarShareService {
                result.missingPrivileges());
       throw new CaldavShareException(SERVER_REFUSED, result.preconditions(), result.missingPrivileges(), null);
     }
+  }
+
+  /**
+   * The modifiable entries a write may carry back unchanged, or a refusal
+   * when one of them, for a principal other than the one being changed, could
+   * come back with different rights.
+   *
+   * <p>
+   * Only a plain read-only grant — {@code DAV:read},
+   * {@code read-current-user-privilege-set}, {@code CALDAV:read-free-busy} —
+   * is written back for somebody else: those never widen. Anything more (a
+   * write privilege, access-control privileges, a scheduling or vendor
+   * privilege), a deny and an inverted entry stop the write before a request
+   * is built. See the class documentation for why a list read over DAV cannot
+   * be trusted to carry more back, and what narrowing remains.
+   *
+   * @param target the calendar being shared
+   * @param acl the list as read
+   * @param changedPrincipal the principal the write is about, whose entries are
+   *          eXo's to change
+   * @return the modifiable entries, in order
+   * @throws CaldavShareException with {@link #FOREIGN_ACCESS_NOT_PRESERVED}
+   */
+  private List<AccessControlEntry> preservableEntriesOf(ShareTarget target, CollectionAcl acl, String changedPrincipal) {
+    List<AccessControlEntry> modifiable = modifiableEntriesOf(acl);
+    long unsafe = modifiable.stream()
+                            .filter(entry -> !entry.appliesTo(changedPrincipal))
+                            .filter(entry -> !entry.grantsReadOnly())
+                            .count();
+    if (unsafe > 0) {
+      LOG.info("Calendar {} ({}) gives {} other access entries more than read access; its list is not written back, since"
+          + " the server could return those rights changed", target.calendarId(), target.href(), unsafe);
+      throw new CaldavShareException(FOREIGN_ACCESS_NOT_PRESERVED);
+    }
+    return modifiable;
   }
 
   /**
