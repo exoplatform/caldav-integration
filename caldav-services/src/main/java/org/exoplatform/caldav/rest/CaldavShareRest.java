@@ -89,8 +89,9 @@ public class CaldavShareRest {
   @Secured("users")
   @Operation(summary = "Lists the connected user's calendars that can be shared from eXo",
       description = "A calendar is listed when the user owns it, eXo created a collection for it on the user's CalDAV "
-          + "server, and that server offers a verified way to grant access (today Stalwart's RFC 3744 ACL method; not "
-          + "BlueMind). Never fails: no account, an unreachable server or any other obstacle answers an empty list.")
+          + "server, and that server offers a way to grant access whose every change eXo confirms by reading it back (Stalwart's RFC 3744 ACL "
+          + "method; BlueMind's CS:share, confirmed through BlueMind's REST access list, when the account's credentials are a "
+          + "login and password). Never fails: no account, an unreachable server or any other obstacle answers an empty list.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The shareable calendar ids, possibly none") })
   public ShareableCalendars shareableCalendars() {
     return new ShareableCalendars(caldavCalendarShareService.shareableCalendarIds(currentUser(), currentLogin()));

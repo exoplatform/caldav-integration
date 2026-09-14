@@ -86,7 +86,7 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * request, so a calendar materialised from the server, the mirror, or any
  * other collection cannot be addressed; the client's
  * {@link CalDavClient#writeAcl} applies the same rule again;</li>
- * <li>the server offers a verified granting mechanism
+ * <li>the server offers a granting mechanism whose every change eXo confirms
  * ({@link SharingMechanism}) — Stalwart's RFC 3744 {@code ACL} method, or
  * BlueMind's {@code CS:share} confirmed through its REST API;</li>
  * <li>the sharee is an eXo user, not the caller, <b>connected to the same
@@ -159,7 +159,7 @@ public class CaldavCalendarShareService {
   /** The calendar has no collection eXo created for it on the server. */
   public static final String      CALENDAR_NOT_ON_SERVER = "caldav.share.calendarNotOnServer";
 
-  /** The server offers no verified way to grant access. */
+  /** The server offers no way to grant access whose changes eXo can confirm. */
   public static final String      NOT_SUPPORTED          = "caldav.share.notSupported";
 
   /** No sharee was named. */
@@ -307,7 +307,7 @@ public class CaldavCalendarShareService {
 
   /**
    * The caller's calendars that can be shared from eXo: owned, bound to a
-   * collection eXo created, on a server offering a verified mechanism.
+   * collection eXo created, on a server offering a mechanism whose changes eXo can confirm.
    *
    * <p>
    * What decides whether agenda shows "Share" on a calendar, so it never
@@ -657,7 +657,7 @@ public class CaldavCalendarShareService {
   }
 
   /**
-   * Refuses a server offering no verified granting mechanism, from what the
+   * Refuses a server offering no granting mechanism eXo can confirm, from what the
    * collection itself answers.
    *
    * @param target the calendar being shared

@@ -120,7 +120,7 @@ public enum SharingMechanism {
   /**
    * Whether eXo offers granting through this mechanism.
    *
-   * @return true only for a mechanism verified on a real server
+   * @return true for a mechanism whose every change eXo can confirm by reading it back
    */
   public boolean isOffered() {
     return offered;

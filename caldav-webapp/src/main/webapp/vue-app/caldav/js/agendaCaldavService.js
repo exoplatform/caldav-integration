@@ -494,7 +494,7 @@ function codedRefusal(resp) {
 /**
  * The ids of the user's own calendars agenda may offer "Share" on
  * (EXO-90253): owned, exported by eXo to the connected CalDAV account, on a
- * server where granting is verified.
+ * server where every grant is confirmed.
  *
  * Never rejects. Whether an entry is offered is not worth an error: a
  * platform that cannot answer offers no calendar, and the menu reads as it
