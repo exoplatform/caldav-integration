@@ -34,6 +34,7 @@ import static org.mockito.Mockito.when;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -57,6 +58,7 @@ import org.exoplatform.caldav.model.RemoteCalendarsRead;
 import org.exoplatform.caldav.model.RemoteEventsRead;
 import org.exoplatform.caldav.model.RemoteIcsEvent;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
@@ -859,6 +861,151 @@ public class CaldavReadServiceTest {
 
     assertEquals(1, service.listCalendars(USER, LOGIN).calendars().size());
     assertEquals("Family", service.listCalendars(USER, LOGIN).calendars().get(0).getName());
+  }
+
+  // ------------------------------------ a share the user hid, EXO-90239
+
+  /**
+   * A hidden share is a pair, and a pair of any state drops its collection
+   * from the list and keeps its events unserved — the mechanism hiding rests
+   * on. Pinned on the status itself, not through the generic helper: a
+   * filter that started reading the status would pass every older test and
+   * put the hidden calendar straight back on the user's screen.
+   */
+  @Test
+  public void aHiddenShareLeavesTheListAndItsEventsAreNotServed() {
+    givenCalendars(owned(ALICES, "Alice", ALICE, true, false), calendar("/dav/calendars/john/work/", "Work"));
+    givenHiddenShare(ALICES);
+
+    List<RemoteCalendar> calendars = service.listCalendars(USER, LOGIN).calendars();
+    RemoteEventsRead read = service.readEvents(USER, LOGIN, FROM, TO);
+
+    assertEquals(1, calendars.size());
+    assertEquals("/dav/calendars/john/work/", calendars.get(0).getId());
+    assertFalse(read.failed());
+    verify(calDavClient, never()).calendarQuery(any(), eq(ALICES), any(), any());
+    verify(calDavClient).calendarQuery(any(), eq("/dav/calendars/john/work/"), any(), any());
+  }
+
+  /**
+   * The hidden-calendars listing asks about bound collections, which the
+   * calendar list can never describe: a hidden share is named, classified a
+   * share and given its owner exactly as the list would have, while the
+   * list itself no longer holds it.
+   */
+  @Test
+  public void aBoundShareIsDescribedAsTheListWouldHaveListedIt() {
+    givenCalendars(owned(ALICES, "Alice", ALICE, true, false), calendar("/dav/calendars/john/work/", "Work"));
+    givenHiddenShare(ALICES);
+    when(calDavClient.readDisplayName(any(), eq(ALICE))).thenReturn("Alice Martin");
+
+    RemoteCalendarsRead described = service.describeCollections(USER, LOGIN, Set.of(CaldavSyncStorage.canonicalHref(ALICES)));
+
+    assertTrue(service.listCalendars(USER, LOGIN).calendars().stream().noneMatch(c -> ALICES.equals(c.getId())),
+               "the list drops it");
+    assertFalse(described.failed());
+    assertEquals(1, described.calendars().size());
+    RemoteCalendar alices = described.calendars().get(0);
+    assertEquals(ALICES, alices.getId());
+    assertEquals("Alice", alices.getName());
+    assertTrue(alices.isShared());
+    assertTrue(alices.isReadOnly());
+    assertEquals("Alice Martin", alices.getOwnerDisplayName());
+  }
+
+  /**
+   * A colleague's eXo calendar hidden on BlueMind is named from the pair this
+   * deployment holds, as the list names it — identity, login, full name.
+   */
+  @Test
+  public void aBoundColleaguesExoCalendarIsDescribedWithTheColleague() {
+    givenCalendars(owned(CAL2_UNDER_OWN_HOME, "CAL2", PRINCIPAL, true, true));
+    givenHiddenShare(CAL2_UNDER_OWN_HOME);
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME))).thenReturn(true);
+    when(caldavOutboundService.exportingUserOf(SERVER, CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME))).thenReturn(1L);
+    when(identityManager.getIdentity(1L)).thenReturn(user("1", "root", "Root Root"));
+
+    RemoteCalendarsRead described = service.describeCollections(USER,
+                                                                LOGIN,
+                                                                Set.of(CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME)));
+
+    assertEquals(1, described.calendars().size());
+    assertTrue(described.calendars().get(0).isShared());
+    assertEquals("Root Root", described.calendars().get(0).getOwnerDisplayName());
+    assertEquals(1L, described.calendars().get(0).getOwnerIdentityId());
+  }
+
+  /**
+   * Only what was asked about, and only what the server still lists: a path
+   * the account no longer holds is simply absent from an unfailed answer,
+   * and the other collections of the account are not described uninvited.
+   */
+  @Test
+  public void describingNamesOnlyWhatWasAskedAndTheServerStillLists() {
+    givenCalendars(calendar("/dav/calendars/john/work/", "Work"), calendar("/dav/calendars/john/private/", "Private"));
+
+    RemoteCalendarsRead described = service.describeCollections(USER,
+                                                                LOGIN,
+                                                                Set.of("/dav/calendars/john/private", ALICES));
+
+    assertFalse(described.failed());
+    assertEquals(1, described.calendars().size());
+    assertEquals("/dav/calendars/john/private/", described.calendars().get(0).getId());
+  }
+
+  /**
+   * An account that cannot be listed says so, rather than answering an empty
+   * list a caller would read as "every hidden calendar is gone".
+   */
+  @Test
+  public void describingSaysWhenTheAccountCouldNotBeListed() {
+    when(calDavClient.discoverHome(any())).thenThrow(new CalDavException("down"));
+
+    RemoteCalendarsRead described = service.describeCollections(USER, LOGIN, Set.of(ALICES));
+
+    assertTrue(described.failed());
+    assertTrue(described.calendars().isEmpty());
+  }
+
+  /**
+   * An account whose endpoint cannot even be resolved — no server declared
+   * any more, a declared URL that is not one — is a listing that failed, not
+   * an exception: the hidden-calendars row is a settings screen, and the
+   * endpoint behind it would otherwise answer every visit with a 500.
+   */
+  @Test
+  public void describingSaysWhenTheEndpointCannotBeResolved() {
+    when(calDavClient.endpoint(anyLong(), anyString())).thenThrow(new CalDavException("No CalDAV server is declared to talk to"));
+
+    RemoteCalendarsRead described = service.describeCollections(USER, LOGIN, Set.of(ALICES));
+
+    assertTrue(described.failed());
+    assertTrue(described.calendars().isEmpty());
+  }
+
+  /**
+   * Nothing asked, nothing read: the common case of a user with nothing
+   * hidden must not cost a round trip.
+   */
+  @Test
+  public void describingNothingAsksTheServerNothing() {
+    assertTrue(service.describeCollections(USER, LOGIN, Set.of()).calendars().isEmpty());
+
+    verify(calDavClient, never()).discoverHome(any());
+  }
+
+  /**
+   * @param href the collection the user hid
+   */
+  private void givenHiddenShare(String href) {
+    CalendarSync pair = new CalendarSync();
+    pair.setId(12L);
+    pair.setUserIdentityId(USER);
+    pair.setServerId(SERVER);
+    pair.setRemoteHref(CaldavSyncStorage.canonicalHref(href));
+    pair.setOrigin(SyncOrigin.REMOTE);
+    pair.setStatus(CalendarSyncStatus.HIDDEN_SHARE);
+    when(caldavSyncStorage.getPairs(anyLong(), anyLong())).thenReturn(List.of(pair));
   }
 
   /**

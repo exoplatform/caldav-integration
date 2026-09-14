@@ -45,8 +45,10 @@ public record CalendarSyncState(long id, long calendarId, String name, CalendarS
    * <p>
    * A calendar that is synchronising is not news, and a tombstone has its own
    * row — the hidden-calendars one, which offers to bring it back rather than
-   * to worry about it. What is left is the three states where something the
-   * user might do would change the outcome.
+   * to worry about it; so does a hidden share
+   * ({@link CalendarSyncStatus#HIDDEN_SHARE}, EXO-90239), which is a choice
+   * the user made and not a state to warn them about. What is left is the
+   * states where something the user might do would change the outcome.
    *
    * @return true when this belongs on screen
    */
