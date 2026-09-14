@@ -119,9 +119,9 @@ public class HttpCalDavClientShareTest {
   /**
    * BlueMind's DAV header, CAPTURED on 2026-08-20
    * ({@code caldav-webapp/src/test/js/fixtures/bluemind-principal.captured.xml:10}),
-   * as its PROPFIND answers carry it: BlueMind's {@code OPTIONS} comes back as
-   * a bare 204 with no {@code DAV} header, answered in front of its DAV server
-   * ({@code bluemind-options-bare-204.http}).
+   * as its PROPFIND answers carry it. On the deployments observed, BlueMind's
+   * {@code OPTIONS} came back as a bare 204 with no {@code DAV} header, answered
+   * in front of its DAV server ({@code bluemind-options-bare-204.http}).
    */
   private static final String   BLUEMIND_DAV    =
                                              "1, access-control, calendar-access, calendar-schedule, calendar-auto-schedule, calendar-availability, inbox-availability, calendar-proxy, calendarserver-private-events, calendarserver-sharing, calendarserver-sharing-no-scheduling, calendar-query-extended, calendar-default-alarms, calendarserver-partstat-changes, extended-mkcol, calendarserver-principal-property-search, calendarserver-principal-search, calendarserver-home-sync, addressbook";

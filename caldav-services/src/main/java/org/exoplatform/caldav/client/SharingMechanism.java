@@ -182,10 +182,10 @@ public enum SharingMechanism {
    * by two independent facts that must both hold: it advertises
    * {@code calendarserver-sharing} in the {@code DAV} header of its PROPFIND
    * answers ({@code PropFindProtocol.java:125}, captured in
-   * {@code bluemind-principal.captured.xml}; its {@code OPTIONS} comes back as
-   * a bare 204 from in front of its DAV server, so
-   * {@link CalDavClient#capabilities} reads the PROPFIND), and the collection
-   * has the path
+   * {@code bluemind-principal.captured.xml}; where its {@code OPTIONS} is
+   * answered bare in front of its DAV server, as on the deployments observed,
+   * {@link CalDavClient#capabilities} reads them from a PROPFIND), and the
+   * collection has the path
    * BlueMind's DAV server gives every calendar,
    * {@code /dav/calendars/__uids__/<owner uid>/<container uid>/}
    * ({@code ResType.VSTUFF_CONTAINER}). Apple's CalendarServer uses the same
