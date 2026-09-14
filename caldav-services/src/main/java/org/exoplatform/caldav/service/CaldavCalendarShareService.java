@@ -167,7 +167,7 @@ public class CaldavCalendarShareService {
   /** The caller has no connected CalDAV account. */
   public static final String      NOT_CONNECTED          = "caldav.share.notConnected";
 
-  /** The calendar has no collection eXo created for it on the server. */
+  /** The calendar is bound to no collection eXo can share: none eXo created for it, and no active imported one. */
   public static final String      CALENDAR_NOT_ON_SERVER = "caldav.share.calendarNotOnServer";
 
   /**
@@ -450,7 +450,7 @@ public class CaldavCalendarShareService {
    * @return the sharees
    * @throws ObjectNotFoundException when the calendar does not exist
    * @throws IllegalAccessException when the caller does not own it
-   * @throws IllegalArgumentException when it has no collection eXo created
+   * @throws IllegalArgumentException when it is bound to no collection eXo can share
    * @throws CaldavShareException when the account, the server or its answer
    *           stops the read
    */
@@ -644,7 +644,7 @@ public class CaldavCalendarShareService {
    * @return the candidates, by full name
    * @throws ObjectNotFoundException when the calendar does not exist
    * @throws IllegalAccessException when the caller does not own it
-   * @throws IllegalArgumentException when it has no collection eXo created
+   * @throws IllegalArgumentException when it is bound to no collection eXo can share
    * @throws CaldavShareException when sharing is not offered on the server,
    *           the credentials are refused, the server cannot be reached, or the
    *           caller's principal cannot be named
@@ -1662,8 +1662,17 @@ public class CaldavCalendarShareService {
    * Says whether the shared calendar is also where eXo writes the copies of the
    * user's eXo meetings, asked through the push's own resolution
    * ({@link CaldavPushService#currentMirror}), so that the drawer's warning
-   * never disagrees with where the copies go. Only an imported calendar can be
-   * that destination; a failed lookup is said at debug and gives no warning.
+   * never disagrees with where the copies go. Asked for every calendar: the
+   * copies usually land in an imported main calendar, but the push can also
+   * adopt an existing calendar, an eXo-created one included, when it cannot
+   * create its dedicated one.
+   *
+   * <p>
+   * A lookup that fails warns rather than stays silent, since a missed warning
+   * exposes meetings while a false one costs a click. The destination the
+   * push last recorded decides when there is one
+   * ({@code CaldavUserSetting.getMirrorCalendarHref}, saved by
+   * {@code ensureMirror}). With none recorded, the warning is shown.
    *
    * @param target the calendar
    * @param username the caller's login
@@ -1671,17 +1680,20 @@ public class CaldavCalendarShareService {
    * @return the shares with the flag
    */
   private CalendarShares withMeetingCopies(ShareTarget target, String username, CalendarShares shares) {
-    if (shares == null || !target.imported()) {
+    if (shares == null) {
       return shares;
     }
-    boolean copies = false;
+    String href = CaldavSyncStorage.canonicalHref(target.href());
+    boolean copies;
     try {
       MirrorTarget mirror = caldavPushService.currentMirror(target.userIdentityId(), username);
-      copies = mirror != null && StringUtils.isNotBlank(mirror.href())
-          && CaldavSyncStorage.canonicalHref(mirror.href()).equals(CaldavSyncStorage.canonicalHref(target.href()));
+      copies = mirror != null && StringUtils.isNotBlank(mirror.href()) && CaldavSyncStorage.canonicalHref(mirror.href()).equals(href);
     } catch (RuntimeException e) {
-      LOG.debug("Where the meeting copies of user {} go could not be read; no warning is given for calendar {}",
-                target.userIdentityId(), target.calendarId(), e);
+      CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(target.userIdentityId());
+      String recorded = settings == null ? null : settings.getMirrorCalendarHref();
+      copies = StringUtils.isBlank(recorded) || CaldavSyncStorage.canonicalHref(recorded).equals(href);
+      LOG.debug("Where the meeting copies of user {} go could not be asked; calendar {} is {} by the destination last recorded",
+                target.userIdentityId(), target.calendarId(), copies ? "warned about" : "cleared", e);
     }
     return shares.withMeetingCopies(copies);
   }

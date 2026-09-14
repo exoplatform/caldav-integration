@@ -673,7 +673,8 @@ public class HttpCalDavClientShareTest {
    * active imported one that is not the meetings mirror — whose ownership the
    * share service confirms — and nothing else. Refused before a request is
    * built: an eXo pair whose href is not the derived slug or has no anchor, a
-   * hidden share, a paused import, the meetings mirror as an import, a mirror
+   * hidden share, a paused import, the meetings mirror as an import (in any
+   * spelling of its slug), a mirror
    * pair, an unanchored import, and no pair. Deleting keeps the eXo-created
    * rule: an imported collection is never deleted.
    *
@@ -690,13 +691,14 @@ public class HttpCalDavClientShareTest {
     CalendarSync paused = importedPair("/dav/cal/alice%40stalwart.local/default/");
     paused.setStatus(CalendarSyncStatus.PAUSED);
     CalendarSync mirrorImport = importedPair("/dav/cal/alice%40stalwart.local/exo-meetings/");
+    CalendarSync mirrorEncoded = importedPair("/dav/cal/alice%40stalwart.local/exo%2Dmeetings/");
     CalendarSync mirror = importedPair("/dav/cal/alice%40stalwart.local/default/");
     mirror.setOrigin(SyncOrigin.MIRROR);
     CalendarSync unanchoredImport = importedPair("/dav/cal/alice%40stalwart.local/default/");
     unanchoredImport.setLocalCalendarSyncUid(null);
     List<AccessControlEntry> grant = List.of(AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/"));
 
-    for (CalendarSync refused : java.util.Arrays.asList(elsewhere, unanchored, hidden, paused, mirrorImport, mirror, unanchoredImport, null)) {
+    for (CalendarSync refused : java.util.Arrays.asList(elsewhere, unanchored, hidden, paused, mirrorImport, mirrorEncoded, mirror, unanchoredImport, null)) {
       assertThrows(IllegalArgumentException.class, () -> client.writeAcl(endpoint, refused, grant), String.valueOf(refused));
     }
     verify(transport, never()).send(any(HttpRequest.class), any());

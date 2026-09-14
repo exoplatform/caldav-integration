@@ -1182,6 +1182,10 @@ public class CaldavCalendarShareServiceTest {
                    assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob")).getCode(),
                    (String) kase[2]);
     }
+    // The empty menus above are the ownership rule's answer, not a listing that failed earlier and was swallowed:
+    // every case reached the home listing and the collection read.
+    verify(calDavClient, org.mockito.Mockito.atLeast(cases.length)).listCalendars(endpoint, ALICE_HOME);
+    verify(calDavClient, org.mockito.Mockito.atLeast(2 * cases.length)).readCalendar(eq(endpoint), anyString());
     onStalwartImported(STALWART_IMPORTED);
     lenient().when(calDavClient.readCalendar(endpoint, STALWART_IMPORTED + "/"))
              .thenReturn(collection(ALICE_HOME + "default/", "/dav/pal/alice%40stalwart.local/", true));
@@ -1253,6 +1257,8 @@ public class CaldavCalendarShareServiceTest {
                    assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode(),
                    container);
     }
+    // Each empty menu is the path rule's answer: the listing got as far as the capability check every time.
+    verify(calDavClient, org.mockito.Mockito.atLeast(8)).capabilities(eq(endpoint), anyString());
     verify(blueMindAclClient, never()).readAcl(any(), anyString());
   }
 
@@ -1286,9 +1292,10 @@ public class CaldavCalendarShareServiceTest {
 
   /**
    * The calendar eXo writes meeting copies into is flagged, through the push's
-   * own resolution: an imported calendar named by {@code currentMirror} (any
-   * spelling) carries the flag, another does not, and an eXo-created calendar
-   * never asks.
+   * own resolution: an imported calendar named by {@code currentMirror} carries
+   * the flag even when the push spells its href percent-encoded, one the push
+   * does not name does not, and an eXo-created calendar the push adopted as its
+   * destination is flagged too.
    *
    * @throws Exception never
    */
@@ -1298,16 +1305,86 @@ public class CaldavCalendarShareServiceTest {
     String href = "/dav/calendars/__uids__/" + FRANCOIS_UID + "/" + container;
     onBlueMindImported(href);
     when(blueMindAclClient.readAcl(endpoint, container)).thenReturn(owner());
-    when(caldavPushService.currentMirror(ALICE, "alice")).thenReturn(new MirrorTarget(href + "/", false, null),
-                                                                     new MirrorTarget("/dav/calendars/__uids__/" + FRANCOIS_UID + "/exo-meetings", false, null));
+    when(caldavPushService.currentMirror(ALICE, "alice"))
+        .thenReturn(new MirrorTarget("/dav/calendars/__uids__/" + FRANCOIS_UID + "/calendar%3ADefault%3A" + FRANCOIS_UID + "/", false, null),
+                    new MirrorTarget("/dav/calendars/__uids__/" + FRANCOIS_UID + "/exo-meetings", false, null));
 
-    assertTrue(service.listShares(ALICE, "alice", CALENDAR).meetingCopies());
-    assertFalse(service.listShares(ALICE, "alice", CALENDAR).meetingCopies());
+    assertTrue(service.listShares(ALICE, "alice", CALENDAR).meetingCopies(), "named by the push, percent-encoded");
+    assertFalse(service.listShares(ALICE, "alice", CALENDAR).meetingCopies(), "the push names its dedicated collection");
 
     onBlueMind();
     when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner());
-    assertFalse(service.listShares(ALICE, "alice", CALENDAR).meetingCopies());
-    verify(caldavPushService, org.mockito.Mockito.times(2)).currentMirror(ALICE, "alice");
+    when(caldavPushService.currentMirror(ALICE, "alice")).thenReturn(new MirrorTarget(BM_COLLECTION, true, "eXo"));
+    assertTrue(service.listShares(ALICE, "alice", CALENDAR).meetingCopies(), "an eXo-created calendar the push adopted");
+  }
+
+  /**
+   * When where the copies go cannot be asked, the warning errs towards being
+   * shown: the destination the push last recorded decides when there is one,
+   * and with none recorded the calendar is flagged.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aMeetingCopiesLookupThatFailsWarnsUnlessTheRecordedDestinationIsElsewhere() throws Exception {
+    String container = "calendar:Default:" + FRANCOIS_UID;
+    String href = "/dav/calendars/__uids__/" + FRANCOIS_UID + "/" + container;
+    onBlueMindImported(href);
+    when(blueMindAclClient.readAcl(endpoint, container)).thenReturn(owner());
+    when(caldavPushService.currentMirror(ALICE, "alice")).thenThrow(new CalDavUnreachableException("down"));
+    CaldavUserSetting settings = connectedTo(STALWART);
+    when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(settings);
+
+    settings.setMirrorCalendarHref(href + "/");
+    assertTrue(service.listShares(ALICE, "alice", CALENDAR).meetingCopies(), "recorded destination is this calendar");
+    settings.setMirrorCalendarHref("/dav/calendars/__uids__/" + FRANCOIS_UID + "/exo-meetings/");
+    assertFalse(service.listShares(ALICE, "alice", CALENDAR).meetingCopies(), "recorded destination is elsewhere");
+    settings.setMirrorCalendarHref(null);
+    assertTrue(service.listShares(ALICE, "alice", CALENDAR).meetingCopies(), "no destination known");
+  }
+
+  /**
+   * A grant on an imported Stalwart calendar alice owns goes all the way: the
+   * ownership check passes and the RFC 3744 write is sent for her imported
+   * pair, then read back.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aGrantOnAnImportedCalendarAliceOwnsReachesTheWrite() throws Exception {
+    onStalwartImported(STALWART_IMPORTED);
+    when(calDavClient.readCalendar(endpoint, STALWART_IMPORTED + "/"))
+        .thenReturn(collection(ALICE_HOME + "default/", "/dav/pal/alice%40stalwart.local/", true));
+    AccessControlEntry bobs = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, STALWART_IMPORTED + "/")).thenReturn(CollectionAcl.of(List.of(), Set.of()),
+                                                                             CollectionAcl.of(List.of(bobs), Set.of()));
+    ArgumentCaptor<CalendarSync> pair = ArgumentCaptor.forClass(CalendarSync.class);
+    when(calDavClient.writeAcl(eq(endpoint), pair.capture(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    service.grant(ALICE, "alice", CALENDAR, "bob");
+
+    assertEquals(SyncOrigin.REMOTE, pair.getValue().getOrigin());
+    assertEquals(STALWART_IMPORTED, pair.getValue().getRemoteHref());
+  }
+
+  /**
+   * A grant on an imported BlueMind calendar alice owns goes all the way: the
+   * path rule and the access list pass, the {@code CS:share} is posted for her
+   * imported pair, and the grant is confirmed on the access list read back.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aGrantOnAnImportedBlueMindCalendarAliceOwnsReachesTheShare() throws Exception {
+    String container = "calendar:Default:" + FRANCOIS_UID;
+    onBlueMindImported("/dav/calendars/__uids__/" + FRANCOIS_UID + "/" + container);
+    when(blueMindAclClient.readAcl(endpoint, container)).thenReturn(owner(), acl(owner(), expanded(ERIC_UID, "Read")));
+
+    service.grant(ALICE, "alice", CALENDAR, "bob");
+
+    ArgumentCaptor<CalendarSync> pair = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), pair.capture(), eq(ERIC_ADDRESS), eq(false));
+    assertEquals(SyncOrigin.REMOTE, pair.getValue().getOrigin());
   }
 
   // ---------------------------------------------------------------- helpers

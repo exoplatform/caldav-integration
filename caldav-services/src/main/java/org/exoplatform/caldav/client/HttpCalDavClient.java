@@ -2176,10 +2176,12 @@ public class HttpCalDavClient implements CalDavClient {
   private String shareTarget(CalendarSync pair) {
     if (pair != null && pair.getOrigin() == SyncOrigin.REMOTE) {
       String href = StringUtils.stripEnd(StringUtils.trimToEmpty(pair.getRemoteHref()), "/");
-      if (pair.getStatus() != CalendarSyncStatus.ACTIVE || StringUtils.isBlank(pair.getLocalCalendarSyncUid()) || href.isEmpty()
-          || href.endsWith("/" + CaldavPushService.MIRROR_COLLECTION_SLUG)) {
-        throw new IllegalArgumentException("Only an active imported calendar, never the meetings mirror, may be shared; this pair is "
-            + pair.getStatus());
+      String canonical = StringUtils.stripEnd(StringUtils.trimToEmpty(org.exoplatform.caldav.storage.CaldavSyncStorage.canonicalHref(href)), "/");
+      if (canonical.endsWith("/" + CaldavPushService.MIRROR_COLLECTION_SLUG)) {
+        throw new IllegalArgumentException("The meetings mirror collection is never shared");
+      }
+      if (pair.getStatus() != CalendarSyncStatus.ACTIVE || StringUtils.isBlank(pair.getLocalCalendarSyncUid()) || href.isEmpty()) {
+        throw new IllegalArgumentException("Only an active, anchored imported calendar may be shared; this pair is " + pair.getStatus());
       }
       return href + "/";
     }

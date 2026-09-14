@@ -90,6 +90,7 @@ describe('CaldavShareCalendarDrawer', () => {
         'user-avatar': true,
         'exo-confirm-dialog': {
           template: '<div></div>',
+          props: ['title', 'message', 'okLabel', 'cancelLabel'],
           methods: {
             open() {
               confirms++;
@@ -223,8 +224,12 @@ describe('CaldavShareCalendarDrawer', () => {
 
     expect(confirms).toBe(1);
     expect(caldavConnectorService.shareCalendar).not.toHaveBeenCalled();
+    const dialog = wrapper.findComponent({ref: 'meetingCopiesConfirm'});
+    expect(dialog.props('message')).toBe('caldav.share.drawer.meetingCopies');
 
-    await wrapper.vm.doShare();
+    // What the platform's dialog does on OK: emit `ok`. The drawer must then share the colleague still selected.
+    dialog.vm.$emit('ok');
+    await settle();
 
     expect(caldavConnectorService.shareCalendar).toHaveBeenCalledWith(12, 'bob');
     expect(wrapper.vm.meetingCopies).toBe(true);
