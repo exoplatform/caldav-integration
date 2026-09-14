@@ -744,7 +744,10 @@
       synchronisation pass after the upgrade. Until every user synchronising with
       a server has one, no share on that server has its owner mapped to an eXo
       user: a login two eXo users share would otherwise read as one user's while
-      only one of them is recorded.
+      only one of them is recorded. A user who keeps active pairs on a server and
+      is never recorded for it - an account pointed at another server without
+      being disconnected, a principal this column cannot hold - keeps that true
+      for good; the engine says so once per server at info.
     </comment>
     <createTable tableName="CALDAV_CONNECTION">
       <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">

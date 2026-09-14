@@ -243,16 +243,16 @@ public class CaldavConnectionIdentityServiceTest {
   }
 
   /**
-   * The server's users are all recorded only when none holding an active pair
-   * is missing: one missing — alice2, before her first pass — is enough to say
-   * no.
+   * The users missing on a server are counted among those holding an active
+   * pair there: none once every one is recorded, one — alice2, before her
+   * first pass — while she is not.
    */
   @Test
-  public void everyActiveUserIsRecordedOnlyWhenNoneIsMissing() {
+  public void theUsersMissingOnAServerAreCountedAmongItsActiveUsers() {
     when(caldavConnectionStorage.countActiveUsersWithoutIdentity(STALWART)).thenReturn(0L, 1L);
 
-    assertTrue(service.isEveryActiveUserRecordedOn(STALWART));
-    org.junit.jupiter.api.Assertions.assertFalse(service.isEveryActiveUserRecordedOn(STALWART));
+    assertEquals(0L, service.activeUsersWithoutIdentityOn(STALWART));
+    assertEquals(1L, service.activeUsersWithoutIdentityOn(STALWART));
   }
 
   /**

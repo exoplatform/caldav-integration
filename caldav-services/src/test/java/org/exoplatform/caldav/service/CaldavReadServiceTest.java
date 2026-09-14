@@ -681,7 +681,7 @@ public class CaldavReadServiceTest {
   public void aCalendarAColleagueSharedOnStalwartIsOwnedByTheEXoUserConnectedAsHerPrincipal() {
     givenCalendars(owned(ALICES, "Alice", ALICE, true, false));
     when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(5L));
-    when(caldavConnectionIdentityService.isEveryActiveUserRecordedOn(SERVER)).thenReturn(true);
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(0L);
     org.exoplatform.social.core.identity.model.Identity alice = new org.exoplatform.social.core.identity.model.Identity("5");
     alice.setRemoteId("alice");
     org.exoplatform.social.core.identity.model.Profile profile = new org.exoplatform.social.core.identity.model.Profile(alice);

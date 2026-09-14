@@ -19,6 +19,8 @@ package org.exoplatform.caldav.service;
 import java.net.URI;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -91,6 +93,14 @@ public class CaldavCalendarOwnerService {
   private final CalDavClient                    calDavClient;
 
   private final CaldavConnectionIdentityService caldavConnectionIdentityService;
+
+  /**
+   * The servers already said, at info, to have users without a recorded
+   * identity — see {@link #connectedUserAs}. Once per server per process: the
+   * condition can last for good, and a line per listing would repeat it on
+   * every agenda load.
+   */
+  private final Set<Long>                       incompleteServersSaid = ConcurrentHashMap.newKeySet();
 
   /**
    * @param caldavOutboundService the one place that knows which user's pair
@@ -242,7 +252,9 @@ public class CaldavCalendarOwnerService {
    * under it is a record the next discovery corrects, not an owner. Nobody is
    * named either while a user synchronising with the server has no identity
    * recorded for it — after an upgrade, before that user's first pass — since
-   * one recorded user of a login cannot then be told from the only one. A user
+   * one recorded user of a login cannot then be told from the only one; that
+   * is said once per server at info, since for some accounts it lasts for
+   * good (see {@link CaldavConnectionIdentityService}). A user
    * the registry does not know or knows as deleted names nobody either, and
    * the name falls back as for any principal. A lookup that fails costs the
    * listing nothing but the identity.
@@ -268,11 +280,22 @@ public class CaldavCalendarOwnerService {
                   viewerIdentityId);
         return CalendarOwner.NONE;
       }
-      if (!caldavConnectionIdentityService.isEveryActiveUserRecordedOn(serverId)) {
-        LOG.debug("Not every user synchronising with server {} has a recorded identity yet; the share of principal {} is"
-            + " named by the principal alone",
-                  serverId,
-                  ownerPath);
+      long unrecorded = caldavConnectionIdentityService.activeUsersWithoutIdentityOn(serverId);
+      if (unrecorded > 0) {
+        if (incompleteServersSaid.add(serverId)) {
+          LOG.info("{} eXo users synchronising with CalDAV server {} have no recorded server identity; until each of them"
+              + " has one, calendars shared on that server are named by their owner's principal, not as eXo users. It"
+              + " lasts until their next successful synchronisation, or for good for an account left on another server"
+              + " or one whose principal cannot be recorded",
+                   unrecorded,
+                   serverId);
+        } else {
+          LOG.debug("Server {} still has {} users without a recorded identity; the share of principal {} is named by the"
+              + " principal alone",
+                    serverId,
+                    unrecorded,
+                    ownerPath);
+        }
         return CalendarOwner.NONE;
       }
       return eXoUserOf(userIdentityId);

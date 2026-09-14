@@ -59,8 +59,14 @@ import org.exoplatform.services.log.Log;
  * owner of a share could be misread: a login two eXo users share would look
  * like one user's as long as only one of them is recorded. So no share owner
  * on a server is mapped to an eXo user while any user holding an active pair
- * there has no identity recorded for it ({@link #isEveryActiveUserRecordedOn}).
- * What that cannot see is a connected user holding no pair at all.
+ * there has no identity recorded for it ({@link #activeUsersWithoutIdentityOn}).
+ * Two residuals follow. A connected user holding no pair at all is not seen
+ * by that check. And a user who keeps active pairs on a server without ever
+ * being recorded for it — pointed at another server without disconnecting, a
+ * principal the column cannot hold, settings removed without the pairs being
+ * paused, a discovery failing for good — keeps every share on that server
+ * named by its principal alone, for as long as that lasts: the safe
+ * direction, said at info by the owner lookup.
  *
  * <p>
  * <b>What is believed.</b> A user matched by principal counts only while their
@@ -164,20 +170,22 @@ public class CaldavConnectionIdentityService {
   }
 
   /**
-   * Whether every user holding an active pair on a server has an identity
+   * How many users holding an active pair on a server have no identity
    * recorded for that server.
    *
    * <p>
-   * What makes "exactly one user is connected as this principal" true rather
-   * than merely what the table says: until it holds, a second user of the same
-   * login may simply not be recorded yet.
+   * Zero is what makes "exactly one user is connected as this principal" true
+   * rather than merely what the table says: until then, a second user of the
+   * same login may simply not be recorded yet — or may never be, for the
+   * shapes the class documentation lists.
    *
    * @param serverId the server key
-   * @return true when nobody synchronising with that server is missing
+   * @return the number of such users, zero when nobody synchronising with that
+   *         server is missing
    * @throws RuntimeException when the question itself fails; the caller degrades
    */
-  public boolean isEveryActiveUserRecordedOn(long serverId) {
-    return caldavConnectionStorage.countActiveUsersWithoutIdentity(serverId) == 0;
+  public long activeUsersWithoutIdentityOn(long serverId) {
+    return caldavConnectionStorage.countActiveUsersWithoutIdentity(serverId);
   }
 
   /**

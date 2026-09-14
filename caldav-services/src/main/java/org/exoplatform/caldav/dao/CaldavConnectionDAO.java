@@ -78,10 +78,22 @@ public interface CaldavConnectionDAO extends JpaRepository<CaldavConnectionEntit
    * one user is connected as this principal" can be read off the table only
    * once every user synchronising with the server is in it, because a second
    * user on the same login who has not been recorded yet is invisible to
-   * {@link #findByServerAndPrincipal}. Asked with the active state: an account
-   * whose pairs are active is one whose discoveries succeed, and each of them
-   * records its identity. An identity recorded for another server does not
-   * count, since it says nothing about who the user is on this one.
+   * {@link #findByServerAndPrincipal}. Asked with the active state, the state
+   * of an account being synchronised, whose next successful discovery records
+   * its identity. An identity recorded for another server does not count,
+   * since it says nothing about who the user is on this one.
+   *
+   * <p>
+   * <b>Active is not "will be recorded".</b> Some users keep active pairs on a
+   * server and are never recorded for it: an account pointed at another server
+   * without being disconnected (its old pairs stay active, and every discovery
+   * records it under the new server), a principal the column cannot hold (its
+   * row is removed on every pass), settings removed without the disconnect
+   * that pauses the pairs, a discovery that keeps failing with something other
+   * than a refused credential. Each of them keeps this count above zero for as
+   * long as it lasts — possibly for good — and so keeps every share on that
+   * server named by its principal alone. That is the safe direction; the owner
+   * service says so once per server at info.
    *
    * <p>
    * What it costs: the status index {@code IDX_CALDAV_CALENDAR_SYNC_STATUS}

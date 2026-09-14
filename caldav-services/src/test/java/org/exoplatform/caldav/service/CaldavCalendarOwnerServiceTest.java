@@ -347,7 +347,7 @@ public class CaldavCalendarOwnerServiceTest {
   @Test
   public void aShareOwnedByThePrincipalOneUserIsConnectedAsNamesThatUser() {
     when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
-    when(caldavConnectionIdentityService.isEveryActiveUserRecordedOn(SERVER)).thenReturn(true);
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(0L);
     when(identityManager.getIdentity(ALICE_USER)).thenReturn(user("5", "alice", "Alice Liddell"));
 
     CalendarOwner owner = ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
@@ -387,7 +387,7 @@ public class CaldavCalendarOwnerServiceTest {
   @Test
   public void aShareIsNamedByThePrincipalAloneWhileAUserOfTheServerIsNotRecordedYet() {
     when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
-    when(caldavConnectionIdentityService.isEveryActiveUserRecordedOn(SERVER)).thenReturn(false);
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(1L);
     when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
 
     CalendarOwner owner = ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
@@ -395,6 +395,38 @@ public class CaldavCalendarOwnerServiceTest {
     assertNull(owner.identityId());
     assertNull(owner.username());
     assertEquals("Alice", owner.displayName());
+    verify(identityManager, never()).getIdentity(anyLong());
+  }
+
+  /**
+   * <b>The veto is said, once per server.</b> It can last for good — an
+   * account left on another server keeps active pairs here and is never
+   * recorded — so a line at debug alone would switch the owner mapping off
+   * for a whole server without anybody being told. Said at info with how many
+   * users are missing, once per server per process however many listings and
+   * principals meet it.
+   */
+  @Test
+  public void aServerWhoseUsersAreNotAllRecordedIsSaidOnceAtInfo() {
+    String carol = "/dav/pal/carol%40stalwart.local/";
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, carol)).thenReturn(List.of(10L));
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(2L);
+    java.util.List<ch.qos.logback.classic.spi.ILoggingEvent> said;
+    try (org.exoplatform.caldav.LogRecorder log = new org.exoplatform.caldav.LogRecorder(CaldavCalendarOwnerService.class)) {
+      ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+      owners = new HashMap<>();
+      ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+      ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/carol%40stalwart.local/default/", carol));
+      said = log.events()
+                .stream()
+                .filter(event -> event.getLevel() == ch.qos.logback.classic.Level.INFO)
+                .toList();
+    }
+
+    assertEquals(1, said.size(), "once per server per process");
+    org.junit.jupiter.api.Assertions.assertTrue(said.get(0).getFormattedMessage().startsWith("2 eXo users synchronising with CalDAV server " + SERVER),
+                                                said.get(0).getFormattedMessage());
     verify(identityManager, never()).getIdentity(anyLong());
   }
 
@@ -422,7 +454,7 @@ public class CaldavCalendarOwnerServiceTest {
   @Test
   public void aConnectedUserTheRegistryDoesNotShowFallsBackToThePrincipalsName() {
     when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
-    when(caldavConnectionIdentityService.isEveryActiveUserRecordedOn(SERVER)).thenReturn(true);
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(0L);
     when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
     when(identityManager.getIdentity(ALICE_USER)).thenReturn(null);
 
@@ -453,7 +485,7 @@ public class CaldavCalendarOwnerServiceTest {
   @Test
   public void theConnectedUserIsLookedUpOncePerPrincipalPerListing() {
     when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
-    when(caldavConnectionIdentityService.isEveryActiveUserRecordedOn(SERVER)).thenReturn(true);
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(0L);
     when(identityManager.getIdentity(ALICE_USER)).thenReturn(user("5", "alice", "Alice Liddell"));
 
     ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
