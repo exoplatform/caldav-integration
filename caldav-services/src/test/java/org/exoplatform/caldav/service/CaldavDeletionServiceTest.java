@@ -1260,6 +1260,20 @@ public class CaldavDeletionServiceTest {
     assertTrue(service.listSyncStates(USER, LOGIN).isEmpty());
   }
 
+  /**
+   * A share the user hid (EXO-90239) is a choice, not a state to warn about:
+   * it has its row among the hidden calendars, and the calendar-states row
+   * neither lists it nor asks the server for a name it would never show.
+   */
+  @Test
+  public void aShareTheUserHidIsNotReportedHere() {
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(hiddenShare()));
+
+    assertTrue(service.listSyncStates(USER, LOGIN).isEmpty());
+
+    verify(calDavClient, never()).listCalendars(any(), anyString());
+  }
+
   @Test
   public void aPausedCalendarIsReportedWithItsName() {
     CalendarSync paused = pair(SyncOrigin.REMOTE, CalendarSyncStatus.PAUSED);
