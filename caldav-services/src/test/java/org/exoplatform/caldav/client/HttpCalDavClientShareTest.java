@@ -295,8 +295,9 @@ public class HttpCalDavClientShareTest {
    * {@code bluemind-options-bare-204.http}), which alone selects nothing. The
    * classes are then read from the {@code DAV} header of a depth-0 PROPFIND of
    * the same collection, with the same credentials — the header BlueMind's DAV
-   * server sets on every PROPFIND answer, here as CAPTURED on its calendar home
-   * — and select BlueMind's sharing, offered, with no method taken from the
+   * server sets on every PROPFIND answer, here as CAPTURED on its principal
+   * (the {@code calendar-home-set} discovery,
+   * {@code bluemind-calendar-home.captured.xml}) — and select BlueMind's sharing, offered, with no method taken from the
    * PROPFIND.
    *
    * @throws Exception when a fixture cannot be read
@@ -850,8 +851,9 @@ public class HttpCalDavClientShareTest {
   }
 
   /**
-   * The {@code dav} header BlueMind's DAV server sent on a PROPFIND of a
-   * calendar home, from the CAPTURED transcript the webapp's tests read.
+   * The {@code dav} header BlueMind's DAV server sent on a PROPFIND of its
+   * principal (the {@code calendar-home-set} discovery), from the CAPTURED
+   * transcript the webapp's tests read.
    *
    * @return the header value, whole
    * @throws IOException when the capture cannot be read

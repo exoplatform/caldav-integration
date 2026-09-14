@@ -531,10 +531,11 @@ public interface CalDavClient {
    * One {@code OPTIONS} comes first; Stalwart answers both headers there. When
    * that answer carries no {@code DAV} header, the compliance classes come from
    * the {@code DAV} header of a depth-0 {@code PROPFIND} of the same resource.
-   * This is the BlueMind case. Its {@code OPTIONS} comes back as a bare 204
-   * with neither header, answered in front of its DAV server (seen as nginx
-   * on the rig on 2026-09-14, and noted for an authenticated request in
-   * {@code dev/golden-capture/capture-bluemind.sh}), although that DAV server
+   * This is the BlueMind case on the deployments observed (the rig on
+   * 2026-09-14, seen as nginx, and step 1 of
+   * {@code dev/golden-capture/capture-bluemind.sh}, an authenticated request):
+   * its {@code OPTIONS} came back as a bare 204 with neither header, answered
+   * in front of its DAV server, although that DAV server
    * would set both headers itself ({@code OptionsProtocol.write}). That server
    * sets
    * {@code DAV} on every PROPFIND answer ({@code PropFindProtocol.java:125};

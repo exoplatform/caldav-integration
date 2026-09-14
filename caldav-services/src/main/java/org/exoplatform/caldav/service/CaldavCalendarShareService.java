@@ -325,7 +325,7 @@ public class CaldavCalendarShareService {
    * reached, agenda failing — answers no calendar, and the entry is simply
    * not offered. The server is asked what the first such collection
    * advertises — one {@code OPTIONS}, plus a depth-0 {@code PROPFIND} where
-   * that answer carries no {@code DAV} header, as on BlueMind — since what a server supports does not vary between two
+   * that answer carries no {@code DAV} header, as on the BlueMind deployments observed — since what a server supports does not vary between two
    * collections of one account in any server characterised; every share
    * operation asks its own collection again.
    *

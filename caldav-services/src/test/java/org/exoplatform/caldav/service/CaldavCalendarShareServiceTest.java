@@ -1057,8 +1057,9 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
-   * A server whose collection advertises no sharing mechanism — BlueMind's
-   * bare 204 before its PROPFIND was read, say — is reported at INFO the first
+   * A server whose collection advertises no sharing mechanism — a BlueMind
+   * collection whose PROPFIND answer carries no {@code DAV} header either
+   * (stripped by a proxy, say) — is reported at INFO the first
    * time this node meets it, with what it advertised, and at debug afterwards:
    * the refusal is no longer silent, and a panel refreshed every minute does
    * not flood the log.
