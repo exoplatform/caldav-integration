@@ -394,6 +394,10 @@ public class CaldavCalendarShareService {
    * <p>
    * Idempotent: a colleague who can already read it — through a grant eXo
    * made or one made elsewhere — is left as they are and nothing is written.
+   * On BlueMind that holds for plain view access only: its access list shows
+   * a colleague holding more as reading too, and such a colleague is refused
+   * ({@link #NOT_READ_ONLY}) rather than rewritten, as is one holding only
+   * other access given outside eXo ({@link #SHAREE_HAS_OTHER_ACCESS}).
    *
    * @param userIdentityId the caller
    * @param username the caller's login

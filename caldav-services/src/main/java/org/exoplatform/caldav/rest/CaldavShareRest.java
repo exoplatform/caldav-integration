@@ -139,8 +139,10 @@ public class CaldavShareRest {
           + "server using RFC 3744 ACLs, the access list is read, the grant added beside every existing entry, written "
           + "back, and read again. On BlueMind, a CS:share naming the colleague's own BlueMind address is posted, and "
           + "the access list is read back through BlueMind's REST API. Either way, the answer is the list as read after "
-          + "the change, and a grant it does not hold is reported as not applied. Sharing with a colleague who can "
-          + "already read it changes nothing and succeeds.")
+          + "the change, and a grant it does not hold is reported as not applied. On a server using RFC 3744 ACLs, "
+          + "sharing with a colleague who can already read it changes nothing and succeeds. On BlueMind only a "
+          + "colleague holding plain view access does; one holding more is refused (caldav.share.notReadOnly), and one "
+          + "holding only other access given outside eXo too (caldav.share.shareeHasOtherAccess).")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Shared; the sharees as read back"),
       @ApiResponse(responseCode = "400", description = "No colleague named, unknown, the user themself, not connected to "
           + "this server, on the user's own login, already holding more than view access given outside eXo "
