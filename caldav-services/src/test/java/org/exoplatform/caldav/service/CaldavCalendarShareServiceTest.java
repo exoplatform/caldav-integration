@@ -158,7 +158,7 @@ public class CaldavCalendarShareServiceTest {
    * BlueMind's DAV classes as {@code capabilities} answers them: from the DAV
    * header of its PROPFIND answers (bluemind-principal.captured.xml:10,
    * abridged to its sharing tokens), its OPTIONS being a bare 204 with no
-   * methods.
+   * methods, as observed on the rig.
    */
   private static final String BLUEMIND_DAV     = "1, access-control, calendar-access, calendar-proxy, calendarserver-sharing, addressbook";
 
