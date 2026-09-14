@@ -20,8 +20,8 @@ import caldavConnector, {createCaldavConnector} from '../../main/webapp/vue-app/
  * EXO-90239. The connector contract the agenda half builds its "Hide" action
  * against: `hideCalendar(calendarId)` posts the id of a `listCalendars()`
  * entry to the platform as a JSON body, resolves on success, rejects with the
- * platform's coded error otherwise, and on success dispatches the
- * personal-calendars refresh on the document. Every per-server descriptor
+ * platform's coded error otherwise, and dispatches nothing — the caller, which
+ * holds the agenda's root, emits the refresh. Every per-server descriptor
  * inherits it.
  */
 
@@ -80,12 +80,18 @@ describe('hideCalendar on the CalDAV connector', () => {
     expect(JSON.parse(options.body)).toEqual({calendarId: ALICES});
   });
 
-  it('asks the agenda to re-read its calendars once the platform has hidden it', async () => {
+  it('resolves once the platform has hidden it, and leaves the refresh to the caller', async () => {
     respondWith({ok: true, status: 204});
 
-    const events = await documentEventsDuring('agenda-refresh-personal-calendars', () => caldavConnector.hideCalendar(ALICES));
+    let resolved = false;
+    const events = await documentEventsDuring('agenda-refresh-personal-calendars',
+      () => caldavConnector.hideCalendar(ALICES).then(() => resolved = true));
 
-    expect(events).toEqual(['agenda-refresh-personal-calendars']);
+    // The row that offered "Hide" emits agenda-refresh on the agenda's root
+    // once this resolves; a document event here would only re-list the
+    // personal calendars for nothing a hide changes.
+    expect(resolved).toBe(true);
+    expect(events).toEqual([]);
   });
 
   it('rejects with the code a refusal carries, and refreshes nothing', async () => {

@@ -202,19 +202,19 @@ const caldavConnector = {
    * Error whose `code` is the machine-readable reason and whose `status` is
    * the HTTP status.
    *
-   * On success the personal-calendars refresh is dispatched on the document,
-   * the same signal the settings drawer sends when a calendar is shown
-   * again. The Remote section re-reads on the root events
-   * `agenda-refresh-personal-calendars` and `agenda-refresh`, which a plain
-   * module cannot reach — the row that offered "Hide" emits one of those
-   * once this resolves, so the calendar disappears without a reload.
+   * Dispatches no event of its own. The refresh belongs to the caller, which
+   * holds the Vue root this module cannot reach: the Remote section re-reads
+   * its calendars on the root event `agenda-refresh`, and the row that
+   * offered "Hide" emits it once this resolves, so the calendar and its
+   * events disappear without a reload. A document event here would only
+   * make the personal calendars list itself again for nothing a hide
+   * changes.
    *
    * @param {String} calendarId the calendar's identity, as listCalendars gave it
    * @returns {Promise} resolves once the calendar is hidden
    */
   hideCalendar(calendarId) {
-    return caldavConnectorService.hideCalendar(calendarId)
-      .then(() => document.dispatchEvent(new CustomEvent('agenda-refresh-personal-calendars')));
+    return caldavConnectorService.hideCalendar(calendarId);
   },
 
   /**

@@ -184,8 +184,21 @@ public class CaldavReadService {
     if (!connected(settings) || hrefs == null || hrefs.isEmpty()) {
       return RemoteCalendarsRead.empty();
     }
-    CalDavEndpoint endpoint = endpointOf(settings, username);
-    CollectionListing account = collectionsOf(endpoint, settings);
+    CalDavEndpoint endpoint;
+    CollectionListing account;
+    try {
+      endpoint = endpointOf(settings, username);
+      account = collectionsOf(endpoint, settings);
+    } catch (RuntimeException e) {
+      // Resolving the endpoint happens before the listing's own catch, and
+      // fails on its own: no server declared any more, a login no URL can
+      // carry, a declared URL that is not one. The hidden-calendars row is a
+      // settings screen that must render whatever the account is doing, so
+      // this is a listing that failed — the rule the name lookup it replaced
+      // always applied — never an exception the endpoint answers as a 500.
+      LOG.debug("The collections of user {} could not be described", userIdentityId, e);
+      return new RemoteCalendarsRead(List.of(), true);
+    }
     if (account.failed()) {
       return new RemoteCalendarsRead(List.of(), true);
     }

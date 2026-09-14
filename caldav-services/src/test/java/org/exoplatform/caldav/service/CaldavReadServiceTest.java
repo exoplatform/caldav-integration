@@ -968,6 +968,22 @@ public class CaldavReadServiceTest {
   }
 
   /**
+   * An account whose endpoint cannot even be resolved — no server declared
+   * any more, a declared URL that is not one — is a listing that failed, not
+   * an exception: the hidden-calendars row is a settings screen, and the
+   * endpoint behind it would otherwise answer every visit with a 500.
+   */
+  @Test
+  public void describingSaysWhenTheEndpointCannotBeResolved() {
+    when(calDavClient.endpoint(anyLong(), anyString())).thenThrow(new CalDavException("No CalDAV server is declared to talk to"));
+
+    RemoteCalendarsRead described = service.describeCollections(USER, LOGIN, Set.of(ALICES));
+
+    assertTrue(described.failed());
+    assertTrue(described.calendars().isEmpty());
+  }
+
+  /**
    * Nothing asked, nothing read: the common case of a user with nothing
    * hidden must not cost a round trip.
    */

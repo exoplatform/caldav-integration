@@ -445,7 +445,18 @@ public class CaldavDeletionService {
       // share, and none is hidden through here.
       throw new IllegalArgumentException(NOT_A_SHARE);
     }
-    RemoteCalendarsRead listing = caldavReadService.listCalendars(userIdentityId, username);
+    RemoteCalendarsRead listing;
+    try {
+      listing = caldavReadService.listCalendars(userIdentityId, username);
+    } catch (CalDavException e) {
+      // The account's endpoint could not even be resolved — no server
+      // declared any more, a login no URL can carry, a declared URL that is
+      // not one. The listing reports a server that did not answer as failed,
+      // but resolves the endpoint before it asks; either way whether this is
+      // a share cannot be told, and the answer is the same.
+      LOG.debug("The calendars of user {} could not be listed to hide {}", userIdentityId, href, e);
+      listing = new RemoteCalendarsRead(List.of(), true);
+    }
     if (listing.failed()) {
       throw new CaldavPushException(ACCOUNT_UNAVAILABLE,
                                     "The account's calendars could not be listed; whether " + href

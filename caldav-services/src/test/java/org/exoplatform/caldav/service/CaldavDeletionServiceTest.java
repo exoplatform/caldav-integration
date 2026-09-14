@@ -1027,6 +1027,22 @@ public class CaldavDeletionServiceTest {
   }
 
   /**
+   * An account whose endpoint cannot even be resolved — its server
+   * registration gone, a declared URL that is not one — is the same answer
+   * as one that did not reply: nothing hidden, said with the account's code,
+   * never an unhandled failure the endpoint would answer as a 500.
+   */
+  @Test
+  public void anAccountWhoseEndpointCannotBeResolvedHidesNothingAndSaysWhy() {
+    when(caldavReadService.listCalendars(USER, LOGIN)).thenThrow(new CalDavException("No CalDAV server is declared to talk to"));
+
+    CaldavPushException refused = assertThrows(CaldavPushException.class, () -> service.hideShare(USER, LOGIN, ALICES));
+
+    assertEquals(CaldavDeletionService.ACCOUNT_UNAVAILABLE, refused.getCode());
+    verify(caldavSyncStorage, never()).savePair(any());
+  }
+
+  /**
    * Both kinds are listed, told apart by {@code shared}: the tombstone named
    * from the server and naming nobody, the share named and naming whoever
    * shared it — the very owner the calendar list would name.
