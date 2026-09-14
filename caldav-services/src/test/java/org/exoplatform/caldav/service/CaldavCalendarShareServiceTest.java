@@ -18,6 +18,7 @@ package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -73,6 +74,7 @@ import org.exoplatform.caldav.client.DavOptions;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarShares;
 import org.exoplatform.caldav.model.CalendarShares.CalendarSharee;
+import org.exoplatform.caldav.model.CalendarShares.PublishedLinkMode;
 import org.exoplatform.caldav.model.CalendarShares.ShareAccess;
 import org.exoplatform.caldav.model.CalendarShares.ShareUser;
 import org.exoplatform.caldav.model.CalendarShares.ShareeKind;
@@ -479,6 +481,106 @@ public class CaldavCalendarShareServiceTest {
     assertEquals("Zoé Stranger", stranger.displayName());
     assertEquals(ShareAccess.READ, stranger.access());
     assertFalse(stranger.removable());
+  }
+
+  /**
+   * The access entries BlueMind's calendar publishing adds, one per link and
+   * whose subject is the secret part of the link's URL, are listed as one row
+   * per mode, private then public, next to the colleague the calendar is
+   * shared with. They are never someone outside eXo and never removable, and
+   * the secret is nowhere: not in the answer, not in its JSON, not in a
+   * request eXo sends, not in what it logs.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAPublishedLinkIsListedByItsModeAndNeverByItsSecret() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(derivedAcl(PUBLISHED_LINKS));
+    Logger logger = (Logger) LoggerFactory.getLogger(CaldavCalendarShareService.class);
+    Level previousLevel = logger.getLevel();
+    ListAppender<ILoggingEvent> logged = new ListAppender<>();
+    logged.start();
+    logger.addAppender(logged);
+    logger.setLevel(Level.DEBUG);
+    CalendarShares shares;
+    try {
+      shares = service.listShares(ALICE, "alice", CALENDAR);
+    } finally {
+      logger.detachAppender(logged);
+      logger.setLevel(previousLevel);
+    }
+
+    assertEquals(List.of(ShareeKind.EXO_USERS, ShareeKind.PUBLISHED_LINK, ShareeKind.PUBLISHED_LINK),
+                 shares.sharees().stream().map(CalendarSharee::kind).toList(),
+                 "two private links make one row: " + shares.sharees());
+    assertEquals("bob", shares.sharees().get(0).users().get(0).username());
+    CalendarSharee privateLink = shares.sharees().get(1);
+    CalendarSharee publicLink = shares.sharees().get(2);
+    assertEquals(PublishedLinkMode.PRIVATE, privateLink.publishedLink());
+    assertEquals(PublishedLinkMode.PUBLIC, publicLink.publishedLink());
+    for (CalendarSharee link : List.of(privateLink, publicLink)) {
+      assertEquals(ShareAccess.READ, link.access());
+      assertFalse(link.removable(), "eXo never removes a published link");
+      assertTrue(link.users().isEmpty());
+      assertNull(link.displayName());
+    }
+    assertNotEquals(privateLink.principal(), publicLink.principal(), "the drawer keys its rows by principal");
+    assertNull(shares.sharees().get(0).publishedLink());
+    assertNoPublishedSecret(String.valueOf(shares));
+    assertNoPublishedSecret(tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(shares));
+    logged.list.forEach(event -> assertNoPublishedSecret(event.getFormattedMessage()));
+    verify(calDavClient, never()).readDisplayName(any(), org.mockito.ArgumentMatchers.contains("x-calendar"));
+    verify(caldavConnectionIdentityService, never()).usersConnectedAs(anyLong(), org.mockito.ArgumentMatchers.contains("x-calendar"));
+  }
+
+  /**
+   * A grant and a revoke on a calendar BlueMind published leave its links as
+   * the access list read back holds them: eXo sends only a {@code CS:share}
+   * naming the colleague, whose handler replaces that colleague's entries
+   * alone ({@code SharingProtocol}, l.61-82), and never writes the list. The
+   * links are nobody's other access and block nothing, and a list read back
+   * that lost one is warned about without its secret.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAGrantAndARevokeLeavePublishedLinksAsTheyWere() throws Exception {
+    onBlueMind();
+    List<BlueMindAce> shared = derivedAcl(PUBLISHED_LINKS);
+    List<BlueMindAce> unshared = shared.stream().filter(ace -> !ace.subject().equals(ERIC_UID)).toList();
+    List<BlueMindAce> sharedLosingThePublicLink = shared.stream().filter(ace -> !ace.subject().startsWith("x-calendar-public-")).toList();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(unshared, shared, shared, unshared, unshared, sharedLosingThePublicLink);
+    Logger logger = (Logger) LoggerFactory.getLogger(CaldavCalendarShareService.class);
+    Level previousLevel = logger.getLevel();
+    ListAppender<ILoggingEvent> logged = new ListAppender<>();
+    logged.start();
+    logger.addAppender(logged);
+    logger.setLevel(Level.DEBUG);
+    CalendarShares granted;
+    CalendarShares revoked;
+    List<ILoggingEvent> warnedBefore;
+    try {
+      granted = service.grant(ALICE, "alice", CALENDAR, "bob");
+      revoked = service.revoke(ALICE, "alice", CALENDAR, "bob");
+      warnedBefore = logged.list.stream().filter(event -> event.getLevel() == Level.WARN).toList();
+      service.grant(ALICE, "alice", CALENDAR, "bob");
+    } finally {
+      logger.detachAppender(logged);
+      logger.setLevel(previousLevel);
+    }
+
+    assertEquals(List.of(ShareeKind.EXO_USERS, ShareeKind.PUBLISHED_LINK, ShareeKind.PUBLISHED_LINK),
+                 granted.sharees().stream().map(CalendarSharee::kind).toList());
+    assertTrue(granted.sharees().get(0).removable());
+    assertEquals(List.of(ShareeKind.PUBLISHED_LINK, ShareeKind.PUBLISHED_LINK), revoked.sharees().stream().map(CalendarSharee::kind).toList());
+    verify(calDavClient, org.mockito.Mockito.times(2)).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(true));
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), org.mockito.ArgumentMatchers.contains("x-calendar"), anyBoolean());
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+    assertTrue(warnedBefore.isEmpty(), "the links read back as they were: " + warnedBefore);
+    assertEquals(1, logged.list.stream().filter(event -> event.getLevel() == Level.WARN).count(), "a list that lost a link is warned about");
+    logged.list.forEach(event -> assertNoPublishedSecret(event.getFormattedMessage()));
   }
 
   /**
@@ -1639,6 +1741,47 @@ public class CaldavCalendarShareServiceTest {
   @SafeVarargs
   private static List<BlueMindAce> acl(List<BlueMindAce>... parts) {
     return java.util.Arrays.stream(parts).flatMap(List::stream).toList();
+  }
+
+  /** The DERIVED access list of a calendar shared with eric and published as two private links and a public one. */
+  private static final String       PUBLISHED_LINKS   = "bluemind-rest-acl-published-links.derived.json";
+
+  /** The secret parts of the published links in {@link #PUBLISHED_LINKS}, and the prefix every link subject starts with. */
+  private static final List<String> PUBLISHED_SECRETS = List.of("x-calendar",
+                                                                "PUBLISH_PRIVATE",
+                                                                "5ec2e7f0a1b24c3d9e5f60718293a4b5",
+                                                                "7b1d9c3ea4f2468b8c0d1e2f3a4b5c6d",
+                                                                "0ABB3E9C71D24F5A8B6C0D1E2F3A4B5C");
+
+  /**
+   * A DERIVED BlueMind access list fixture, its {@code //} header lines
+   * removed, read entry by entry as the REST client reads the answer.
+   *
+   * @param name the file name
+   * @return the entries, in the fixture's order
+   */
+  private static List<BlueMindAce> derivedAcl(String name) {
+    try (java.io.InputStream stream = CaldavCalendarShareServiceTest.class.getResourceAsStream("/caldav/transcripts/" + name)) {
+      String json = new String(stream.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).lines()
+                                                                                              .filter(line -> !line.startsWith("//"))
+                                                                                              .collect(java.util.stream.Collectors.joining("\n"));
+      List<BlueMindAce> aces = new java.util.ArrayList<>();
+      for (tools.jackson.databind.JsonNode entry : tools.jackson.databind.json.JsonMapper.builder().build().readTree(json)) {
+        aces.add(new BlueMindAce(entry.get("subject").asText(), entry.get("verb").asText()));
+      }
+      return aces;
+    } catch (java.io.IOException | NullPointerException e) {
+      throw new IllegalStateException("missing fixture " + name, e);
+    }
+  }
+
+  /**
+   * Asserts a text carries no part of a published link's secret.
+   *
+   * @param text the text, may be null
+   */
+  private static void assertNoPublishedSecret(String text) {
+    PUBLISHED_SECRETS.forEach(secret -> assertFalse(text != null && text.contains(secret), "a published link's secret leaked: " + text));
   }
 
   /**

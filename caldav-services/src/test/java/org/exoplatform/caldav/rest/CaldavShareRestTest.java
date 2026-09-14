@@ -17,6 +17,7 @@
 package org.exoplatform.caldav.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -45,6 +46,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import org.exoplatform.caldav.model.CalendarShares;
 import org.exoplatform.caldav.model.CalendarShares.CalendarSharee;
+import org.exoplatform.caldav.model.CalendarShares.PublishedLinkMode;
 import org.exoplatform.caldav.model.CalendarShares.ShareAccess;
 import org.exoplatform.caldav.model.CalendarShares.ShareUser;
 import org.exoplatform.caldav.model.CalendarShares.ShareeKind;
@@ -206,8 +208,8 @@ public class CaldavShareRestTest {
   }
 
   /**
-   * The JSON the drawer reads: sharees with kind, users, name, access and
-   * whether they can be removed; whether a colleague must subscribe on the
+   * The JSON the drawer reads: sharees with kind, users, name, access,
+   * whether they can be removed and, for a link BlueMind published, its mode; whether a colleague must subscribe on the
    * server first, which decides the drawer's BlueMind note; whether the
    * calendar also holds the copies of the user's eXo meetings, which decides
    * the drawer's warning and confirmation; the shareable ids; a request body
@@ -229,7 +231,14 @@ public class CaldavShareRestTest {
                                                                           List.of(),
                                                                           "Zoé Partner",
                                                                           ShareAccess.MORE,
-                                                                          false)));
+                                                                          false),
+                                                       new CalendarSharee("published-link:private",
+                                                                          ShareeKind.PUBLISHED_LINK,
+                                                                          List.of(),
+                                                                          null,
+                                                                          ShareAccess.READ,
+                                                                          false,
+                                                                          PublishedLinkMode.PRIVATE)));
 
     JsonNode json = mapper.readTree(mapper.writeValueAsString(shares));
 
@@ -258,6 +267,12 @@ public class CaldavShareRestTest {
     assertEquals("OUTSIDE_EXO", zoe.get("kind").asText());
     assertEquals("Zoé Partner", zoe.get("displayName").asText());
     assertEquals("MORE", zoe.get("access").asText());
+    assertTrue(zoe.get("publishedLink").isNull(), "only a published link has a mode");
+    JsonNode link = json.get("sharees").get(2);
+    assertEquals("PUBLISHED_LINK", link.get("kind").asText());
+    assertEquals("PRIVATE", link.get("publishedLink").asText(), "the drawer names a published link by its mode");
+    assertTrue(link.get("displayName").isNull());
+    assertFalse(link.get("removable").asBoolean());
 
     assertEquals("[12,14]", mapper.readTree(mapper.writeValueAsString(new ShareableCalendars(List.of(12L, 14L)))).get("calendarIds").toString());
     assertEquals("bob", mapper.readValue("{\"username\":\"bob\"}", ShareCalendarRequest.class).username());

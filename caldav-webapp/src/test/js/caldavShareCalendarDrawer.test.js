@@ -61,6 +61,19 @@ describe('CaldavShareCalendarDrawer', () => {
 
   const EVERYONE = {principal: '{DAV:}authenticated', kind: 'EVERYONE', users: [], displayName: null, access: 'READ', removable: false};
 
+  // Links BlueMind published, as the platform answers them: a mode, never the secret.
+  const PRIVATE_LINK = {
+    principal: 'published-link:private',
+    kind: 'PUBLISHED_LINK',
+    publishedLink: 'PRIVATE',
+    users: [],
+    displayName: null,
+    access: 'READ',
+    removable: false,
+  };
+
+  const PUBLIC_LINK = {...PRIVATE_LINK, principal: 'published-link:public', publishedLink: 'PUBLIC'};
+
   const CANDIDATES = [
     {identityId: 9, username: 'bob', fullName: 'Bob Test', avatarUrl: '/avatar/bob'},
     {identityId: 10, username: 'carol', fullName: 'Carol Test', avatarUrl: null},
@@ -262,6 +275,30 @@ describe('CaldavShareCalendarDrawer', () => {
     expect(caldavConnectorService.unshareCalendar).toHaveBeenCalledWith(12, 'bob');
     expect(wrapper.vm.sharees).toEqual([ZOE]);
     expect(wrapper.vm.removing).toBeNull();
+  });
+
+  it('shows a link BlueMind published by its mode, with a link icon and nothing to remove', async () => {
+    caldavConnectorService.getCalendarShares.mockResolvedValue({calendarId: 12, sharees: [BOB, PRIVATE_LINK, PUBLIC_LINK], subscriptionRequired: true});
+    const wrapper = mountDrawer();
+
+    await wrapper.vm.open(WORK);
+    await settle();
+
+    expect(wrapper.vm.nameOf(PRIVATE_LINK)).toBe('caldav.share.publishedLink.private');
+    expect(wrapper.vm.nameOf(PUBLIC_LINK)).toBe('caldav.share.publishedLink.public');
+    expect(wrapper.vm.accessOf(PRIVATE_LINK)).toBe('caldav.share.access.read');
+    expect(wrapper.vm.avatarUserOf(PRIVATE_LINK)).toBeNull();
+    expect(wrapper.text()).toContain('caldav.share.publishedLink.private');
+    expect(wrapper.text()).toContain('caldav.share.publishedLink.public');
+    expect(wrapper.text()).not.toContain('caldav.share.outsideExo');
+    expect(wrapper.findAll('v-icon').filter(icon => icon.text() === 'fa-link').length).toBe(2);
+    // Bob's row alone carries a remove button.
+    expect(wrapper.findAll('v-btn-stub, v-btn').filter(button => button.attributes('aria-label')).length).toBe(1);
+
+    await wrapper.vm.unshare(PRIVATE_LINK);
+    await wrapper.vm.unshare(PUBLIC_LINK);
+
+    expect(caldavConnectorService.unshareCalendar).not.toHaveBeenCalled();
   });
 
   it('never tries to remove a sharee eXo cannot name', async () => {

@@ -72,26 +72,46 @@ public record CalendarShares(long calendarId, List<CalendarSharee> sharees, bool
   /**
    * One principal a calendar is shared with.
    *
-   * @param principal the principal's href as the server wrote it, or the
+   * @param principal the principal's href as the server wrote it, the
    *          pseudo-principal's Clark name ({@code {DAV:}all}) for
-   *          {@link ShareeKind#EVERYONE}
+   *          {@link ShareeKind#EVERYONE}, or a fixed key naming the mode for
+   *          {@link ShareeKind#PUBLISHED_LINK}, never the link's secret
    * @param kind who the principal is to eXo
    * @param users the eXo users connected to the server as that principal —
    *          several when they share one login — empty unless
    *          {@link ShareeKind#EXO_USERS}
    * @param displayName what to call a principal eXo cannot name as a user:
    *          the server's {@code DAV:displayname}, else the decoded last
-   *          segment of its path; null for eXo users and for everyone
+   *          segment of its path; null for eXo users, for everyone and for
+   *          a published link
    * @param access what the entries grant
    * @param removable whether eXo may remove the grant: a read-only grant to
    *          eXo users, that the server lets be changed
+   * @param publishedLink how a link BlueMind published gives access; null
+   *          unless {@link ShareeKind#PUBLISHED_LINK}
    */
   public record CalendarSharee(String principal,
                                ShareeKind kind,
                                List<ShareUser> users,
                                String displayName,
                                ShareAccess access,
-                               boolean removable) {
+                               boolean removable,
+                               PublishedLinkMode publishedLink) {
+
+    /**
+     * A sharee that is not a published link.
+     *
+     * @param principal the principal's href as the server wrote it, or the
+     *          pseudo-principal's Clark name
+     * @param kind who the principal is to eXo
+     * @param users the eXo users connected to the server as that principal
+     * @param displayName what to call a principal eXo cannot name as a user
+     * @param access what the entries grant
+     * @param removable whether eXo may remove the grant
+     */
+    public CalendarSharee(String principal, ShareeKind kind, List<ShareUser> users, String displayName, ShareAccess access, boolean removable) {
+      this(principal, kind, users, displayName, access, removable, null);
+    }
   }
 
   /** Who a principal on a calendar's access list is, to eXo. */
@@ -101,7 +121,21 @@ public record CalendarShares(long calendarId, List<CalendarSharee> sharees, bool
     /** A principal no eXo user is connected as: someone outside eXo, or a colleague no longer connected. */
     OUTSIDE_EXO,
     /** A pseudo-principal: every user, every authenticated user, every unauthenticated user. */
-    EVERYONE
+    EVERYONE,
+    /**
+     * A link BlueMind's calendar publishing gave out. Its access entry's
+     * subject is the secret part of the link's URL, so eXo shows the link's
+     * mode alone, and never removes it.
+     */
+    PUBLISHED_LINK
+  }
+
+  /** Which of BlueMind's two kinds of published link a calendar was published as. */
+  public enum PublishedLinkMode {
+    /** A link BlueMind publishes as private ({@code PublishMode.PRIVATE}). */
+    PRIVATE,
+    /** A link BlueMind publishes as public ({@code PublishMode.PUBLIC}). */
+    PUBLIC
   }
 
   /** What a principal's entries grant. */

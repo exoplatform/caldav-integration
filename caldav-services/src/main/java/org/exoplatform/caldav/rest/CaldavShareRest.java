@@ -108,7 +108,9 @@ public class CaldavShareRest {
   @Operation(summary = "Lists who a calendar of the user's is shared with",
       description = "Read from the server's access list on every call — over DAV on a server using RFC 3744 ACLs, "
           + "through BlueMind's REST API on BlueMind; nothing is stored. Each sharee is a principal: "
-          + "`EXO_USERS` with the eXo users connected as it, `OUTSIDE_EXO` named by the server, or `EVERYONE`. "
+          + "`EXO_USERS` with the eXo users connected as it, `OUTSIDE_EXO` named by the server, `EVERYONE`, or "
+          + "`PUBLISHED_LINK` for a link BlueMind's calendar publishing gave out, with `publishedLink` `PRIVATE` or `PUBLIC` "
+          + "and never the link's secret, which is its access entry's subject; a published link is never removable. "
           + "`access` is `READ` for a view-only grant and `MORE` for one made outside eXo; `removable` says whether "
           + "eXo may take it away. `subscriptionRequired` is true where a colleague sees a shared calendar only after "
           + "subscribing to it on the server itself, as on BlueMind. `meetingCopies` is true when the calendar is also where "

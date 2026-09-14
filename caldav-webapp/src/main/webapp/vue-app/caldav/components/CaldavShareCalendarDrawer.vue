@@ -135,7 +135,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
               owner: it renders a disabled or deleted account, which a bare
               image would not. It looks the user up once per row, which a list
               of the few people a calendar is shared with can afford. A
-              principal eXo cannot name, and everyone, keep a plain icon.
+              principal eXo cannot name, everyone and a link BlueMind
+              published keep a plain icon.
             -->
             <v-list-item-avatar size="32" class="me-3">
               <user-avatar
@@ -150,7 +151,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
                 v-else
                 size="18"
                 class="disabled--text">
-                {{ sharee.kind === 'EVERYONE' ? 'fa-users' : 'fa-user' }}
+                {{ iconOf(sharee) }}
               </v-icon>
             </v-list-item-avatar>
             <v-list-item-content>
@@ -431,7 +432,8 @@ export default {
     },
     /**
      * What a sharee row is called: the eXo users connected as the principal,
-     * or what the server calls a principal no eXo user is, or everyone.
+     * what the server calls a principal no eXo user is, everyone, or the mode
+     * of a link BlueMind published, never its secret.
      *
      * @param {Object} sharee the sharee row
      * @returns {String} the name
@@ -439,6 +441,9 @@ export default {
     nameOf(sharee) {
       if (sharee.kind === 'EVERYONE') {
         return this.$t('caldav.share.everyone');
+      }
+      if (sharee.kind === 'PUBLISHED_LINK') {
+        return this.$t(sharee.publishedLink === 'PUBLIC' ? 'caldav.share.publishedLink.public' : 'caldav.share.publishedLink.private');
       }
       if (sharee.users && sharee.users.length) {
         return sharee.users.map(user => user.fullName || user.username).join(', ');
@@ -455,6 +460,19 @@ export default {
     accessOf(sharee) {
       const access = this.$t(sharee.access === 'READ' ? 'caldav.share.access.read' : 'caldav.share.access.more');
       return sharee.kind === 'OUTSIDE_EXO' ? `${this.$t('caldav.share.outsideExo')} · ${access}` : access;
+    },
+    /**
+     * The icon of a sharee row without an avatar: a link for a link BlueMind
+     * published, a group for everyone, a person otherwise.
+     *
+     * @param {Object} sharee the sharee row
+     * @returns {String} the icon class
+     */
+    iconOf(sharee) {
+      if (sharee.kind === 'PUBLISHED_LINK') {
+        return 'fa-link';
+      }
+      return sharee.kind === 'EVERYONE' ? 'fa-users' : 'fa-user';
     },
     /**
      * The one eXo user a sharee row shows an avatar for: a principal a single

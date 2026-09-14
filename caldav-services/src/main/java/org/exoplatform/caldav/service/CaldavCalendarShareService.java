@@ -55,6 +55,7 @@ import org.exoplatform.caldav.client.SharingMechanism;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarShares;
 import org.exoplatform.caldav.model.CalendarShares.CalendarSharee;
+import org.exoplatform.caldav.model.CalendarShares.PublishedLinkMode;
 import org.exoplatform.caldav.model.CalendarShares.ShareAccess;
 import org.exoplatform.caldav.model.CalendarShares.ShareUser;
 import org.exoplatform.caldav.model.CalendarShares.ShareeKind;
@@ -296,6 +297,19 @@ public class CaldavCalendarShareService {
 
   /** The BlueMind verbs that let a user decide who sees a container. */
   private static final Set<String> BLUEMIND_MANAGING      = Set.of("All", "Manage");
+
+  /**
+   * The subject prefix of a private link BlueMind's calendar publishing gave
+   * out ({@code PublishCalendarService.PRIVATE_URL_PREFIX}): the rest of the
+   * subject is the secret part of the link's URL.
+   */
+  private static final String      BLUEMIND_PRIVATE_LINK  = "x-calendar-private-";
+
+  /** The subject prefix of a public published link ({@code PublishCalendarService.PUBLIC_URL_PREFIX}). */
+  private static final String      BLUEMIND_PUBLIC_LINK   = "x-calendar-public-";
+
+  /** What a published link's row is keyed by, before its mode: a fixed key, never the link's secret. */
+  private static final String      PUBLISHED_LINK_KEY     = "published-link:";
 
   /**
    * A mail address a {@code CS:share} can carry, as
@@ -1355,6 +1369,14 @@ public class CaldavCalendarShareService {
    * calendar and is not listed. Anything beyond reading lists as more access
    * given outside eXo, never removable.
    *
+   * <p>
+   * A subject starting with a prefix BlueMind's calendar publishing gives its
+   * links ({@code PublishCalendarService}) is a published link, the rest of
+   * the subject being the secret part of the link's URL. Published links are
+   * listed after the others, one row per mode, keyed and named by the mode
+   * alone and never removable: their subject is never listed, looked up,
+   * sent or logged.
+   *
    * @param target the calendar
    * @param aces the expanded access list
    * @param ownerPrincipal the owner's canonical principal, may be null
@@ -1371,8 +1393,12 @@ public class CaldavCalendarShareService {
       owners.add(ownerUid);
     }
     Map<String, Set<String>> verbsBySubject = new LinkedHashMap<>();
+    Map<PublishedLinkMode, Set<String>> verbsByLinkMode = new java.util.EnumMap<>(PublishedLinkMode.class);
     for (BlueMindAce ace : aces) {
-      if (!owners.contains(ace.subject())) {
+      PublishedLinkMode linkMode = publishedLinkModeOf(ace.subject());
+      if (linkMode != null) {
+        verbsByLinkMode.computeIfAbsent(linkMode, mode -> new java.util.LinkedHashSet<>()).add(ace.verb());
+      } else if (!owners.contains(ace.subject())) {
         verbsBySubject.computeIfAbsent(ace.subject(), subject -> new java.util.LinkedHashSet<>()).add(ace.verb());
       }
     }
@@ -1392,7 +1418,29 @@ public class CaldavCalendarShareService {
         sharees.add(new CalendarSharee(href, ShareeKind.EXO_USERS, users, null, access, isPlainBlueMindRead(verbs)));
       }
     });
+    verbsByLinkMode.forEach((mode, verbs) -> sharees.add(new CalendarSharee(PUBLISHED_LINK_KEY + (mode == PublishedLinkMode.PUBLIC ? "public" : "private"),
+                                                                           ShareeKind.PUBLISHED_LINK,
+                                                                           List.of(),
+                                                                           null,
+                                                                           BLUEMIND_READ_CLOSURE.containsAll(verbs) ? ShareAccess.READ
+                                                                                                                    : ShareAccess.MORE,
+                                                                           false,
+                                                                           mode)));
     return new CalendarShares(target.calendarId(), sharees, true);
+  }
+
+  /**
+   * The mode of a link BlueMind's calendar publishing gave out, recognised by
+   * the prefix of its access entry's subject.
+   *
+   * @param subject an access entry's subject
+   * @return the link's mode, or null for a subject that is no published link
+   */
+  private static PublishedLinkMode publishedLinkModeOf(String subject) {
+    if (subject.startsWith(BLUEMIND_PRIVATE_LINK)) {
+      return PublishedLinkMode.PRIVATE;
+    }
+    return subject.startsWith(BLUEMIND_PUBLIC_LINK) ? PublishedLinkMode.PUBLIC : null;
   }
 
   /**
