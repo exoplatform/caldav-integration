@@ -826,4 +826,26 @@
     </addColumn>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-53">
+    <comment>
+      Through which door eXo writes and removes the meeting copies of a server
+      (EXO-90307): CALDAV, or BLUEMIND_IMPORT - BlueMind's own ICS import API,
+      whose every add, modify and delete carries sendNotification=false where a
+      CalDAV PUT or DELETE reaches the same service with it hard-coded true,
+      and so makes BlueMind schedule the meeting a second time.
+
+      A name rather than a number, NOT NULL with a DEFAULT, NVARCHAR(32), and
+      addColumn with deliberately NO modifySql and no rollback written - each
+      for the reason 1.0.0-25 (MIRROR_TARGET) records. The DEFAULT is the whole
+      upgrade story: every registration an existing deployment holds keeps the
+      door it always used, and only an administrator's explicit choice - or the
+      seed of a fresh BlueMind row - moves one to the other.
+    </comment>
+    <addColumn tableName="CALDAV_SERVER">
+      <column name="WRITE_CHANNEL" type="NVARCHAR(32)" defaultValue="CALDAV">
+        <constraints nullable="false"/>
+      </column>
+    </addColumn>
+  </changeSet>
+
 </databaseChangeLog>
