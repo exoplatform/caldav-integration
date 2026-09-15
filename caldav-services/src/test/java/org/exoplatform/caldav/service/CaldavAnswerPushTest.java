@@ -27,6 +27,8 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -50,6 +52,9 @@ import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.client.CalDavClient;
+import org.exoplatform.caldav.client.CalendarObjectWriter;
+import org.exoplatform.caldav.client.CalendarObjectWriters;
+import org.exoplatform.caldav.client.CalDavObjectWriter;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.client.PutResult;
@@ -120,6 +125,15 @@ public class CaldavAnswerPushTest {
   @Mock
   private CalDavClient             calDavClient;
 
+  /**
+   * The door resolver, answering the CalDAV door over the mocked client for
+   * every endpoint: what keeps every verification on {@code calDavClient}
+   * meaningful now that the service writes through {@code CalendarObjectWriters}
+   * (EXO-90307).
+   */
+  @Mock
+  private CalendarObjectWriters    calendarObjectWriters;
+
   @Mock
   private CaldavConnectorStorage   caldavConnectorStorage;
 
@@ -155,6 +169,7 @@ public class CaldavAnswerPushTest {
    */
   @BeforeEach
   public void connectAnAccountHoldingTheCopy() {
+    lenient().when(calendarObjectWriters.writer(any())).thenReturn(new CalDavObjectWriter(calDavClient));
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     // The client is asked with the eXo login: the DAV account below is what
     // the provider derives from it, and the two are deliberately different.
@@ -1063,6 +1078,36 @@ public class CaldavAnswerPushTest {
                        "END:VEVENT",
                        "END:VCALENDAR",
                        "");
+  }
+
+
+  /**
+   * <b>The seam pin of EXO-90307 for answers.</b> An answer carried onto a
+   * copy — the user's own, and another attendee's onto this account's — goes
+   * through the door the registry resolved and issues no CalDAV PUT: on
+   * BlueMind, that PUT of an invitee's copy is what makes the server send a
+   * REPLY of its own.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void onTheImportDoorAnAnswerIssuesNoCalDavWrite() throws Exception {
+    CalendarObjectWriter door = mock(CalendarObjectWriter.class);
+    when(calendarObjectWriters.writer(any())).thenReturn(door);
+    when(door.updateObject(any(), anyString(), anyString(), anyString())).thenReturn(new PutResult(204, "\"etag-2\"", null));
+    givenTheMeetingIsCopied();
+    givenTheCopySays("DECLINED");
+
+    assertTrue(service.pushAnswer(USER, LOGIN, EVENT, "ACCEPTED"));
+
+    givenTheCopyAlsoNames(CAROL_ADDRESS, "NEEDS-ACTION");
+    assertEquals(CaldavPushService.AnswerOutcome.WRITTEN,
+                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
+
+    verify(door, times(2)).updateObject(eq(endpoint), eq(HREF), anyString(), eq("\"etag-1\""));
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString());
   }
 
   /**

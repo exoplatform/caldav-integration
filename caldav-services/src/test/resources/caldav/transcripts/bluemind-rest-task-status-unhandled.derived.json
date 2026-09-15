@@ -1,0 +1,16 @@
+// DERIVED, not captured. The answer to GET /api/tasks/{taskId} once an import
+// ended WITHOUT applying the series it carried - the shape a stale
+// LAST-MODIFIED produces, from BlueMind's source:
+// - parent/calendar/net.bluemind.calendar.service/src/net/bluemind/calendar/service/internal/ICSImportTask.java:171-179
+//   a series whose LAST-MODIFIED is not after the stored one is added to
+//   ret.unhandled and never written;
+// - ICSImportTask.java:83-89: uids holds only added + updated, total counts
+//   the unhandled series too - hence uids empty, total 1.
+// Lines starting with "//" are removed by the test before parsing.
+{
+  "steps": 3.0,
+  "progress": 3.0,
+  "lastLogEntry": "1 events synchronized",
+  "state": "Success",
+  "result": "{\"uids\":[],\"total\":1}"
+}

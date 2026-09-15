@@ -163,7 +163,7 @@ public class HttpCalDavClientShareTest {
     CaldavServerService registry = mock(CaldavServerService.class);
     lenient().when(registry.resolveServer(1L))
              .thenReturn(new CaldavServer(1L, "agenda.caldavCalendar", "Stalwart", null, SERVER_URL, true, null, null, null,
-                                          null, true, null, null, null, null, null, null, "personal", null));
+                                          null, true, null, null, null, null, null, null, "personal", null, null));
     ConnectorCredentialsService credentials = mock(ConnectorCredentialsService.class);
     lenient().doReturn(new HttpConnectorCredentials(AUTHORIZATION, null)).when(credentials).produce(any());
     lenient().doReturn(USER).when(credentials).resolveTargetIdentity(any());
