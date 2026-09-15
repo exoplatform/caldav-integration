@@ -516,4 +516,151 @@ public interface CalDavClient {
    * @throws CalDavException when the server refuses or cannot be reached
    */
   int deleteCollection(CalDavEndpoint endpoint, CalendarSync pair);
+
+  /**
+   * What a resource supports: the compliance classes of its {@code DAV} header
+   * and the methods of its {@code Allow} header (EXO-90253).
+   *
+   * <p>
+   * The evidence {@link SharingMechanism#of(DavOptions, String)} selects a
+   * granting mechanism from. It is asked of the collection itself, not of the
+   * server root, because RFC 4918 §10.1 lets the {@code DAV} header vary per
+   * resource.
+   *
+   * <p>
+   * One {@code OPTIONS} comes first; Stalwart answers both headers there. When
+   * that answer carries no {@code DAV} header, the compliance classes come from
+   * the {@code DAV} header of a depth-0 {@code PROPFIND} of the same resource.
+   * This is the BlueMind case on the deployments observed (the rig on
+   * 2026-09-14, seen as nginx, and step 1 of
+   * {@code dev/golden-capture/capture-bluemind.sh}, an authenticated request):
+   * its {@code OPTIONS} came back as a bare 204 with neither header, answered
+   * in front of its DAV server, although that DAV server
+   * would set both headers itself ({@code OptionsProtocol.write}). That server
+   * sets
+   * {@code DAV} on every PROPFIND answer ({@code PropFindProtocol.java:125};
+   * captured on its principal and calendar homes). The methods come from
+   * {@code OPTIONS} only, since a PROPFIND answer does not list them. A
+   * mechanism that needs a method — {@link SharingMechanism#WEBDAV_ACL} and its
+   * {@code ACL} — is therefore selected only on a server that lists it where
+   * methods are listed.
+   *
+   * @param endpoint the account's endpoint
+   * @param href the resource's server-absolute path
+   * @return the normalised classes and methods, empty sets where neither answer
+   *         carried them
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached, answers the
+   *           {@code OPTIONS} with neither 200 nor 204, or refuses the
+   *           {@code PROPFIND}
+   */
+  DavOptions capabilities(CalDavEndpoint endpoint, String href);
+
+  /**
+   * Reads a collection's access control list and the caller's own privileges
+   * on it, in one PROPFIND of depth 0 (EXO-90253).
+   *
+   * <p>
+   * The whole list or nothing usable: an entry outside RFC 3744 §5.5's
+   * grammar makes the answer {@link CollectionAcl#understood() not
+   * understood}, because the list is read in order to be written back, and a
+   * skipped entry would be deleted by that write. A property the server does
+   * not grant — no {@code DAV:read-acl}, or no RFC 3744 at all — is
+   * {@link CollectionAcl#readable() not readable}, not an exception.
+   *
+   * @param endpoint the account's endpoint
+   * @param href the collection's server-absolute path
+   * @return the list as the server answered it
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached, errors, or
+   *           answers something that is not DAV XML
+   */
+  CollectionAcl readAcl(CalDavEndpoint endpoint, String href);
+
+  /**
+   * Replaces the modifiable entries of a collection's access control list
+   * with the given ones: RFC 3744 §8.1's {@code ACL} method (EXO-90253).
+   *
+   * <p>
+   * <b>Replaces, never adds.</b> Every entry that is neither protected nor
+   * inherited and is absent from the request is removed by the server. The
+   * caller therefore sends the list it read with its one change applied, and
+   * this method refuses an entry that is protected or inherited rather than
+   * sending what the server would refuse as a conflict.
+   *
+   * <p>
+   * Takes the <b>pair</b>, not a path, so that it cannot address anything a
+   * browser named. The collection must belong to an {@link SyncOrigin#EXO} pair
+   * and carry the slug eXo derives from that pair's calendar anchor, or to an
+   * active, anchored {@link SyncOrigin#REMOTE} pair that is not the meetings
+   * mirror — an imported calendar, whose ownership on the server the share
+   * service confirms before calling. It never addresses the mirror, a hidden
+   * share, or a collection bound to no pair. {@link #deleteCollection} keeps
+   * the stricter eXo-created rule.
+   *
+   * <p>
+   * The answer is a claim: {@link AclWriteResult#accepted()} says the server
+   * took the body, and only the list read back says what it holds.
+   *
+   * @param endpoint the account's endpoint
+   * @param pair the binding whose collection's ACL is written
+   * @param entries the complete list of modifiable entries to hold
+   * @return the status and, for a refusal, the preconditions it named
+   * @throws IllegalArgumentException when the pair does not authorise
+   *           addressing its collection, or an entry is protected, inherited
+   *           or not representable
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached
+   */
+  AclWriteResult writeAcl(CalDavEndpoint endpoint, CalendarSync pair, List<AccessControlEntry> entries);
+
+  /**
+   * The addresses a principal publishes as a calendar user
+   * ({@code CALDAV:calendar-user-address-set}, RFC 6638 §2.4.1), read with a
+   * PROPFIND of depth 0 through this endpoint (EXO-90253).
+   *
+   * <p>
+   * On BlueMind the set holds the principal path, a {@code urn:uuid:} and
+   * {@code mailto:} followed by the directory entry's e-mail — the one column
+   * BlueMind's share handler looks a sharee up by
+   * ({@code plugins/net.bluemind.dav.server/.../props/caldav/CalendarUserAddressSet.java},
+   * {@code DirEntryStore.java} {@code dir.email ilike}).
+   *
+   * @param endpoint the endpoint the question is asked through
+   * @param principalHref the principal's server-absolute path
+   * @return every href of the set in order, empty when the server states none
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached or errors
+   */
+  List<String> readCalendarUserAddresses(CalDavEndpoint endpoint, String principalHref);
+
+  /**
+   * Shares a collection with one sharee, read-only, or stops sharing it, with
+   * Apple's {@code POST CS:share} (EXO-90253).
+   *
+   * <p>
+   * Takes the <b>pair</b>, like {@link #writeAcl}, under the same rule: a
+   * collection eXo created for the pair's calendar, or an active imported one
+   * that is not the meetings mirror. The sharee is named by a mail
+   * address, sent as {@code mailto:}; only reading is ever granted.
+   *
+   * <p>
+   * The answer is a claim and, on BlueMind, not even that: its handler
+   * swallows every failure and answers 200 ({@code SharingProtocol.java},
+   * {@code VEventStuffPostProtocol.java}). The caller confirms the change by
+   * reading the access list back.
+   *
+   * @param endpoint the owner's endpoint
+   * @param pair the binding whose collection is shared
+   * @param address the sharee's mail address, without {@code mailto:}
+   * @param remove true to stop sharing, false to share read-only
+   * @return the 2xx status the server answered
+   * @throws IllegalArgumentException when the pair does not authorise
+   *           addressing its collection, or the address is not a mail address
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavForbiddenException when the server refuses with 403
+   * @throws CalDavException when the server cannot be reached or answers
+   *           anything else
+   */
+  int postCalendarServerShare(CalDavEndpoint endpoint, CalendarSync pair, String address, boolean remove);
 }

@@ -65,6 +65,48 @@ document.addEventListener('open-caldav-connector-settings-drawer',function(event
   });
 });
 
+// The share drawer (EXO-90253), opened from agenda's calendar menu through the
+// connector's runCalendarAction. Mounted in an app of its own on the first
+// request and kept for the life of the page: exo-drawer moves itself under
+// #vuetify-apps and only removes its overlay in close(), so a drawer destroyed
+// while open leaves an overlay nobody can dismiss (EXO-90239). Every later
+// request reuses the same instance.
+let shareDrawerApp = null;
+document.addEventListener('open-caldav-share-calendar-drawer', event => {
+  const calendar = event && event.detail;
+  if (!calendar || !calendar.id) {
+    return;
+  }
+  if (!shareDrawerApp) {
+    // The shared i18n instance when the bundle could not be fetched: raw keys
+    // in a drawer beat a menu entry that does nothing. A mount that failed is
+    // forgotten, so the next click tries again rather than meeting the same
+    // rejected promise for the life of the page.
+    shareDrawerApp = i18nPromise
+      .catch(() => exoi18n.i18n)
+      .then(i18n => {
+        const element = document.createElement('div');
+        element.id = 'caldavShareCalendarDrawerApp';
+        document.body.appendChild(element);
+        const app = Vue.createApp({
+          template: '<caldav-share-calendar-drawer ref="drawer" />',
+          vuetify,
+          i18n,
+        }, element, 'CalDAV Share Calendar Drawer');
+        if (!app) {
+          throw new Error('the share drawer could not be mounted');
+        }
+        return app;
+      });
+  }
+  shareDrawerApp
+    .then(app => app.$refs.drawer.open(calendar))
+    .catch(error => {
+      shareDrawerApp = null;
+      console.error('cannot open the share drawer', error);
+    });
+});
+
 // Whether this instance chose the user's CalDAV server, fetched ONCE and
 // shared by the two things that need it: which nested rows this module
 // registers on the agenda settings page, and how the connector descriptors are

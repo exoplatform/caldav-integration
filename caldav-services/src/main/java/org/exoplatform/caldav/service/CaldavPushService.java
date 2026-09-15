@@ -1804,6 +1804,26 @@ public class CaldavPushService {
   }
 
   /**
+   * Where the copies of a user's space events are written, asked of the
+   * account now with exactly the resolution {@link #currentMirror} and
+   * {@link #ensureMirror} use, but without {@link #currentMirror}'s leniency:
+   * a lookup that fails is thrown, never read as "no destination" (EXO-90253).
+   * For a caller that must not mistake an unreachable server for an account
+   * without copies — the share drawer, which warns when the calendar being
+   * shared holds them. Nothing is written.
+   *
+   * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
+   * @return the destination, or null when the account really holds none
+   * @throws CaldavPushException when the user has no connected account
+   * @throws RuntimeException when the account cannot be asked
+   */
+  public MirrorTarget mirrorDestination(long userIdentityId, String username) {
+    return lookUpMirror(userIdentityId, username, connectedSettings(userIdentityId));
+  }
+
+  /**
    * Asks the account for the calendar holding the copies.
    *
    * @param userIdentityId identity of the user, so that a main calendar which

@@ -295,6 +295,35 @@ public class CaldavPushServiceTest {
     assertNull(service.currentMirror(USER, "john"));
   }
 
+  /**
+   * The share drawer's lookup (EXO-90253) is the one {@code currentMirror}
+   * makes, without its leniency: with nothing recorded, an account that cannot
+   * be reached is thrown rather than read as having no destination, so the
+   * drawer can warn instead of wrongly clearing the calendar being shared.
+   */
+  @Test
+  public void theShareLookupRaisesForAnUnreachableServerEvenWithNothingRecorded() {
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.discoverCalendarHome(any()))
+        .thenThrow(new IllegalStateException("the calendar server could not be reached"));
+
+    assertNull(service.currentMirror(USER, "john"));
+    assertThrows(IllegalStateException.class, () -> service.mirrorDestination(USER, "john"));
+  }
+
+  /**
+   * When the account answers, the share drawer's lookup names the same
+   * destination the settings screen and the next push do.
+   */
+  @Test
+  public void theShareLookupNamesTheDestinationTheSettingsScreenNames() {
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of(calendar(MIRROR, "eXo Meetings")));
+
+    assertEquals(service.currentMirror(USER, "john").href(), service.mirrorDestination(USER, "john").href());
+    assertEquals(MIRROR, service.mirrorDestination(USER, "john").href());
+  }
+
   @Test
   public void anUnreachableServerStillRaisesForARecordedMirror() {
     // The user chose this destination, so the screen must say the account is
