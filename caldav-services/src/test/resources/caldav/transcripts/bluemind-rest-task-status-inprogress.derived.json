@@ -1,0 +1,17 @@
+// DERIVED, not captured. The answer to GET /api/tasks/{taskId} (ITask.status)
+// while the import is still running, from BlueMind's source:
+// - parent/core/net.bluemind.core.task.api/src/net/bluemind/core/task/api/ITask.java
+//   @Path("/tasks/{taskId}"), @GET status();
+// - parent/core/net.bluemind.core.task.api/src/net/bluemind/core/task/api/TaskStatus.java
+//   fields steps, progress, lastLogEntry, state (NotStarted | InProgress |
+//   InError | Success; only the last two are "ended"), result;
+// - parent/calendar/net.bluemind.calendar.service/src/net/bluemind/calendar/service/internal/ICSImportTask.java:34,56
+//   monitor.begin(3, "Begin import") then progress(1, "ICS parsed ( N events )").
+// Lines starting with "//" are removed by the test before parsing.
+{
+  "steps": 3.0,
+  "progress": 1.0,
+  "lastLogEntry": "ICS parsed ( 1 events )",
+  "state": "InProgress",
+  "result": null
+}
