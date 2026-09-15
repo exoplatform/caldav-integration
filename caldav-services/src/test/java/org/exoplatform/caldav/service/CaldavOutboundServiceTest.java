@@ -48,6 +48,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
+import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -93,6 +94,9 @@ public class CaldavOutboundServiceTest {
 
   private static final String        HOME   = "/dav/calendars/john/";
 
+  /** Who the account is on the server, as the discovery answers it (EXO-90243). */
+  private static final String        ACCOUNT_PRINCIPAL = "/dav/principals/john%40dav.example/";
+
   private static final String        ANCHOR = "c0ffee-uid";
 
   private static final String        WANTED = "/dav/calendars/john/exo-cal-c0ffee-uid/";
@@ -112,6 +116,9 @@ public class CaldavOutboundServiceTest {
   @Mock
   private CalDavEndpoint             endpoint;
 
+  @Mock
+  private CaldavConnectionIdentityService caldavConnectionIdentityService;
+
   @InjectMocks
   private CaldavOutboundService      service;
 
@@ -119,7 +126,7 @@ public class CaldavOutboundServiceTest {
   public void connectAnAccount() {
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
-    lenient().when(calDavClient.discoverCalendarHome(any())).thenReturn(HOME);
+    lenient().when(calDavClient.discoverHome(any())).thenReturn(new CalendarHome(ACCOUNT_PRINCIPAL, HOME));
     lenient().when(caldavSyncStorage.savePair(any())).thenAnswer(invocation -> invocation.getArgument(0));
     // The stand-in server takes every rename and, unless a test says
     // otherwise, cannot be read back — the pessimistic default, so that no
@@ -508,12 +515,13 @@ public class CaldavOutboundServiceTest {
     when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
 
     assertTrue(service.bindPersonalCalendars(USER, LOGIN).isEmpty());
-    verify(calDavClient, never()).discoverCalendarHome(any());
+    verify(calDavClient, never()).discoverHome(any());
+    verify(caldavConnectionIdentityService, never()).recordPrincipal(anyLong(), anyLong(), any());
   }
 
   @Test
   public void aServerThatCannotBeListedBindsNothingRatherThanFailing() {
-    when(calDavClient.discoverCalendarHome(any()))
+    when(calDavClient.discoverHome(any()))
                                                                             .thenThrow(new org.exoplatform.caldav.client.CalDavException("unreachable"));
 
     assertTrue(service.bindPersonalCalendars(USER, LOGIN).isEmpty());
@@ -527,7 +535,7 @@ public class CaldavOutboundServiceTest {
     // credential-bearing requests, each rediscovering the same absent server.
     // A server that is not there is settled after one attempt, and the caller
     // is the only party that can act on it.
-    when(calDavClient.discoverCalendarHome(any()))
+    when(calDavClient.discoverHome(any()))
                                                                             .thenThrow(new CalDavUnreachableException("gateway said 502"));
 
     assertThrows(CalDavUnreachableException.class, () -> service.bindPersonalCalendars(USER, LOGIN));
@@ -539,10 +547,69 @@ public class CaldavOutboundServiceTest {
     // is a CalDavException, so absorbing the parent here swallowed it too —
     // the pass's own "pause this account rather than retry a stale password"
     // branch could never fire from the first step that meets the server.
-    when(calDavClient.discoverCalendarHome(any()))
+    when(calDavClient.discoverHome(any()))
                                                                             .thenThrow(new CalDavAuthenticationException("401"));
 
     assertThrows(CalDavAuthenticationException.class, () -> service.bindPersonalCalendars(USER, LOGIN));
+  }
+
+  /**
+   * The first discovery of a connection or a pass records who the account is
+   * on its server, under the server key its pairs use, before the calendars
+   * are even listed (EXO-90243).
+   */
+  @Test
+  public void bindingRecordsWhoTheAccountIsOnItsServer() {
+    givenPersonalCalendars(calendar(1L, USER, null, "Work"));
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of());
+
+    service.bindPersonalCalendars(USER, LOGIN);
+
+    verify(caldavConnectionIdentityService).recordPrincipal(USER, SERVER, ACCOUNT_PRINCIPAL);
+  }
+
+  /**
+   * An account attached before registrations existed is recorded under server
+   * zero, the key its pairs carry.
+   */
+  @Test
+  public void aLegacyAccountIsRecordedUnderServerZero() {
+    CaldavUserSetting legacy = settings();
+    legacy.setServerId(null);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(legacy);
+    when(calDavClient.endpoint(null, LOGIN)).thenReturn(endpoint);
+    givenPersonalCalendars(calendar(1L, USER, null, "Work"));
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenReturn(List.of());
+
+    service.bindPersonalCalendars(USER, LOGIN);
+
+    verify(caldavConnectionIdentityService).recordPrincipal(USER, 0L, ACCOUNT_PRINCIPAL);
+  }
+
+  /**
+   * Who the account is does not depend on whether its calendars can be
+   * listed: the principal is recorded even when the listing then fails.
+   */
+  @Test
+  public void thePrincipalIsRecordedEvenWhenTheListingThenFails() {
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenThrow(new org.exoplatform.caldav.client.CalDavException("500"));
+
+    assertTrue(service.bindPersonalCalendars(USER, LOGIN).isEmpty());
+
+    verify(caldavConnectionIdentityService).recordPrincipal(USER, SERVER, ACCOUNT_PRINCIPAL);
+  }
+
+  /**
+   * A discovery that failed recorded nobody: nothing was learnt about the
+   * account.
+   */
+  @Test
+  public void aDiscoveryThatFailedRecordsNothing() {
+    when(calDavClient.discoverHome(any())).thenThrow(new org.exoplatform.caldav.client.CalDavException("unreachable"));
+
+    service.bindPersonalCalendars(USER, LOGIN);
+
+    verify(caldavConnectionIdentityService, never()).recordPrincipal(anyLong(), anyLong(), any());
   }
 
   @Test

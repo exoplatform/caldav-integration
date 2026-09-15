@@ -96,6 +96,9 @@ public class ChangelogExecutionTest {
   /** The per-server credentials provider EXO-89657 appends. */
   private static final String AUTH_PROVIDER_COLUMN = "AUTH_PROVIDER_NAME";
 
+  /** Who each connected user is on their server, the table EXO-90243 adds. */
+  private static final String CONNECTION_TABLE    = "CALDAV_CONNECTION";
+
   /** The index the platform builds its EntityManager from. */
   private static final String ENTITY_INDEX        = "jpa-entities.idx";
 
@@ -143,6 +146,7 @@ public class ChangelogExecutionTest {
     // behind and nobody would notice until the next reader of it.
     assertFalse(columnExists("CALDAV_OBJECT_SYNC", "PUSHED_HASH"),
                 "the digest column 1.0.0-12 dropped must be gone");
+    assertTrue(tableExists(CONNECTION_TABLE), "and the connection identities EXO-90243 records");
   }
 
   /**
@@ -163,6 +167,7 @@ public class ChangelogExecutionTest {
     rollbackEverything();
 
     assertFalse(tableExists("CALDAV_SERVER"), "rolling everything back must leave no registry table");
+    assertFalse(tableExists(CONNECTION_TABLE), "nor a connection-identity table");
 
     update();
 
@@ -174,6 +179,68 @@ public class ChangelogExecutionTest {
     assertTrue(columnExists("CALDAV_SERVER", SETTINGS_UPDATED_COLUMN), "including the copy-settings stamp");
     assertTrue(columnExists("CALDAV_CALENDAR_SYNC", SETTINGS_APPLIED_COLUMN), "and the one the pair applies it with");
     assertTrue(columnExists("CALDAV_SERVER", MIRROR_TARGET_COLUMN), "and " + MIRROR_TARGET_COLUMN);
+    assertEquals(List.of("SERVER_ID", "PRINCIPAL"),
+                 indexColumns(CONNECTION_TABLE, "IDX_CALDAV_CONNECTION_PRINCIPAL"),
+                 "and the connection identities with the index their lookup needs");
+  }
+
+  /**
+   * <b>One identity per user, and one principal may be many users'.</b>
+   *
+   * <p>
+   * The two constraints EXO-90243's table rests on, asked of the database the
+   * changelog built rather than of the entity. The unique index on the user
+   * is what makes a user who reconnects replace their row and two nodes
+   * recording one user collide instead of writing two; the lookup index on
+   * (server, principal) must NOT be unique, because two eXo users on one login
+   * is the legitimate shape the shared-account warning reports. And the
+   * principal is NOT NULL: a row saying nothing about who the account is would
+   * be a row every reader has to guess about.
+   *
+   * @throws Exception when a changeset cannot be applied or a row not written
+   */
+  @Test
+  public void aConnectionIdentityIsOneRowPerUserAndOnePrincipalMayBeSeveralUsers() throws Exception {
+    update();
+
+    assertEquals(List.of("USER_IDENTITY_ID"), indexColumns(CONNECTION_TABLE, "UQ_CALDAV_CONNECTION_USER"));
+    assertEquals(0, nullableFlag(CONNECTION_TABLE, "PRINCIPAL"), "the principal must be NOT NULL");
+    try (Statement statement = connection.createStatement()) {
+      statement.executeUpdate("INSERT INTO CALDAV_CONNECTION (ID, USER_IDENTITY_ID, SERVER_ID, PRINCIPAL) "
+          + "VALUES (1, 5, 1, '/dav/pal/alice@stalwart.local')");
+      statement.executeUpdate("INSERT INTO CALDAV_CONNECTION (ID, USER_IDENTITY_ID, SERVER_ID, PRINCIPAL) "
+          + "VALUES (2, 6, 1, '/dav/pal/alice@stalwart.local')");
+      java.sql.SQLException refused = org.junit.jupiter.api.Assertions.assertThrows(java.sql.SQLException.class,
+                                                                                    () -> statement.executeUpdate("INSERT INTO CALDAV_CONNECTION"
+                                                                                        + " (ID, USER_IDENTITY_ID, SERVER_ID, PRINCIPAL)"
+                                                                                        + " VALUES (3, 5, 2, '/dav/pal/other')"));
+      assertTrue(refused.getSQLState().startsWith("23"), "a second identity for one user is an integrity violation");
+      try (ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM CALDAV_CONNECTION"
+          + " WHERE SERVER_ID = 1 AND PRINCIPAL = '/dav/pal/alice@stalwart.local'")) {
+        assertTrue(rows.next());
+        assertEquals(2, rows.getInt(1), "two users on one login are both recorded");
+      }
+    }
+  }
+
+  /**
+   * The columns of one index, in index order.
+   *
+   * @param table name of the table
+   * @param index name of the index
+   * @return the column names, empty when the index does not exist
+   * @throws Exception when the catalogue cannot be read
+   */
+  private List<String> indexColumns(String table, String index) throws Exception {
+    java.util.Map<Short, String> columns = new java.util.TreeMap<>();
+    try (ResultSet rows = connection.getMetaData().getIndexInfo(null, null, table.toUpperCase(Locale.ROOT), false, false)) {
+      while (rows.next()) {
+        if (index.equalsIgnoreCase(rows.getString("INDEX_NAME"))) {
+          columns.put(rows.getShort("ORDINAL_POSITION"), rows.getString("COLUMN_NAME"));
+        }
+      }
+    }
+    return new ArrayList<>(columns.values());
   }
 
   /**
