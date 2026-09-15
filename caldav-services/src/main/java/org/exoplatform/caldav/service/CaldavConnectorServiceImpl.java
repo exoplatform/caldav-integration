@@ -50,6 +50,12 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
    */
   private CaldavDeletionService  caldavDeletionService;
 
+  /**
+   * Who each account is on its server (EXO-90243), resolved lazily for the
+   * same reason as the three above.
+   */
+  private CaldavConnectionIdentityService caldavConnectionIdentityService;
+
   public CaldavConnectorServiceImpl(CaldavConnectorStorage caldavConnectorStorage) {
     String caldavUrl = System.getProperty("exo.agenda.caldav.connector.url");
     this.caldavConnectorStorage = caldavConnectorStorage;
@@ -60,6 +66,12 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   public void createCaldavSetting(CaldavUserSetting caldavUserSetting, long userIdentityId) throws IllegalAccessException {
     if (StringUtils.isNotBlank(caldavUserSetting.getPassword()) && StringUtils.isNotBlank(caldavUserSetting.getUsername())) {
       caldavConnectorStorage.createCaldavSetting(caldavUserSetting, userIdentityId);
+      // The credentials just changed, so the server identity recorded under
+      // the previous ones no longer describes this account (EXO-90243). Gone
+      // before anything else is asked of the server: the destinations step
+      // below records the new one from its own discovery, and if that
+      // discovery fails the account is unknown rather than wrongly known.
+      forgetServerIdentity(userIdentityId);
       // Disconnecting froze the bindings of the calendars eXo pushed out, so
       // that reconnecting would find its collections again. Reconnecting is
       // what thaws them: until it does, the account is connected while the
@@ -284,6 +296,55 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
       }
     }
     caldavConnectorStorage.deleteCaldavSetting(userIdentityId);
+    // After the settings, so that a failure here leaves a row that every
+    // reader already ignores: an identity counts only while its account is
+    // connected (EXO-90243).
+    forgetServerIdentity(userIdentityId);
+  }
+
+  /**
+   * Forgets who the user's account is on its server, when that engine can be
+   * resolved.
+   *
+   * <p>
+   * Nothing here may fail a connection or a disconnection: the service absorbs
+   * its own failures, and an engine the bridge cannot provide leaves a row that
+   * the next discovery replaces, or that no reader believes once the account
+   * is gone.
+   *
+   * @param userIdentityId identity of the user
+   */
+  private void forgetServerIdentity(long userIdentityId) {
+    CaldavConnectionIdentityService identityService = getCaldavConnectionIdentityService();
+    if (identityService != null) {
+      identityService.forgetPrincipal(userIdentityId);
+    }
+  }
+
+  /**
+   * The connection-identity engine, resolved through the bridge on first use.
+   *
+   * @return the engine, or null when the bridge cannot provide it
+   */
+  protected CaldavConnectionIdentityService getCaldavConnectionIdentityService() {
+    if (caldavConnectionIdentityService == null) {
+      try {
+        caldavConnectionIdentityService = ExoContainerContext.getService(CaldavConnectionIdentityService.class);
+      } catch (Exception | LinkageError e) {
+        LOG.debug("CalDAV connection identity engine not resolvable; the recorded server identity is left as it is", e);
+      }
+    }
+    return caldavConnectionIdentityService;
+  }
+
+  /**
+   * Hands the connection-identity engine to tests, which have no container to
+   * resolve it from.
+   *
+   * @param caldavConnectionIdentityService the engine to use
+   */
+  protected void setCaldavConnectionIdentityService(CaldavConnectionIdentityService caldavConnectionIdentityService) {
+    this.caldavConnectionIdentityService = caldavConnectionIdentityService;
   }
 
   /**

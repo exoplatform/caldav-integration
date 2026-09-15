@@ -218,7 +218,7 @@ public record CalendarCollection(String href,
     if (StringUtils.isBlank(owner) || StringUtils.isBlank(currentUserPrincipal)) {
       return false;
     }
-    return !comparablePath(owner).equals(comparablePath(currentUserPrincipal));
+    return !principalPathOf(owner).equals(principalPathOf(currentUserPrincipal));
   }
 
   /**
@@ -233,10 +233,16 @@ public record CalendarCollection(String href,
    * explain, and treating it as "another owner" would hide a calendar over a
    * spelling.
    *
-   * @param path a server-absolute raw path
+   * <p>
+   * Public because it is also the form a connection's own principal is
+   * recorded in (EXO-90243): a principal stored in one spelling and an owner
+   * compared in another would fail to meet, and the owner of a share would
+   * never be recognised as the eXo user connected under that principal.
+   *
+   * @param path a server-absolute raw path, not null
    * @return the comparable form
    */
-  private static String comparablePath(String path) {
+  public static String principalPathOf(String path) {
     String trimmed = path.trim();
     try {
       String decoded = URI.create(trimmed).getPath();
