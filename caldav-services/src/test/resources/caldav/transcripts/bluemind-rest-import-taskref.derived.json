@@ -1,0 +1,11 @@
+// DERIVED, not captured: no import was run on a BlueMind server for this
+// fixture. The answer to PUT /api/calendars/vevent/{containerUid}
+// (IVEvent.importIcs), from BlueMind's source (bluemind-public master):
+// - parent/calendar/net.bluemind.calendar.api/src/net/bluemind/calendar/api/IVEvent.java:31,52-53
+//   @Path("/calendars/vevent/{containerUid}"), @PUT, returns TaskRef;
+// - parent/core/net.bluemind.core.task.api/src/net/bluemind/core/task/api/TaskRef.java
+//   one field, "id".
+// Lines starting with "//" are removed by the test before parsing.
+{
+  "id": "5d1f0b3e-2a7c-4c18-9e64-8f0a1b2c3d4e"
+}
