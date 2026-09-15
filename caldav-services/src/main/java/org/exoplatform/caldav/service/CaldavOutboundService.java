@@ -35,6 +35,7 @@ import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.MkCalendarResult;
 import org.exoplatform.caldav.client.PropPatchResult;
+import org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;

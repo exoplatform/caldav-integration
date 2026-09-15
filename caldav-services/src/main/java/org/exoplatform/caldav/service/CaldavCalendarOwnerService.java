@@ -28,6 +28,7 @@ import org.springframework.stereotype.Component;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
