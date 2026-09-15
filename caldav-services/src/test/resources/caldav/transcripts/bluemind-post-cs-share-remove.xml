@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DERIVED, not captured: nothing is ever posted to a BlueMind server from
+  this add-on's tests. The body BlueMind's share handler reads as "stop
+  sharing with this address", from its source:
+  - plugins/net.bluemind.dav.server/src/net/bluemind/dav/server/proto/sharing/SharingQuerySaxHandler.java
+    "remove" starts a Remove, "href" is the sharee with "mailto:" removed;
+  - plugins/net.bluemind.dav.server/src/net/bluemind/dav/server/proto/sharing/SharingProtocol.java
+    a Remove deletes every access entry whose subject is that sharee's
+    directory entry uid.
+-->
+<CS:share xmlns:D="DAV:" xmlns:CS="http://calendarserver.org/ns/"><CS:remove><D:href>mailto:eric.meyer@bm.example.com</D:href></CS:remove></CS:share>

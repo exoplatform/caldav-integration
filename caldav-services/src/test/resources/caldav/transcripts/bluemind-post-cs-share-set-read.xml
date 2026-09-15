@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DERIVED, not captured: nothing is ever posted to a BlueMind server from
+  this add-on's tests. The body BlueMind's share handler reads as "share
+  read-only with this address", from its source:
+  - plugins/net.bluemind.dav.server/src/net/bluemind/dav/server/proto/sharing/SharingQuerySaxHandler.java
+    matches local names only: "set" starts a Set, "href" is the sharee with
+    "mailto:" removed, "read" makes it ReadOnly ("read-write" would make it
+    ReadWrite, and is never sent);
+  - plugins/net.bluemind.dav.server/src/net/bluemind/dav/server/proto/post/VEventStuffPostProtocol.java
+    a POST body not containing "multiput" is the SHARING implementation;
+  - Apple's CalendarServer sharing extension names the elements in
+    http://calendarserver.org/ns/.
+-->
+<CS:share xmlns:D="DAV:" xmlns:CS="http://calendarserver.org/ns/"><CS:set><D:href>mailto:eric.meyer@bm.example.com</D:href><CS:read/></CS:set></CS:share>
