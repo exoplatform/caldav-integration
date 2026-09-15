@@ -68,6 +68,9 @@ public class CaldavConnectorServiceImplTest {
   @Mock
   private CaldavDeletionService          caldavDeletionService;
 
+  @Mock
+  private CaldavConnectionIdentityService caldavConnectionIdentityService;
+
   @InjectMocks
   private CaldavConnectorServiceImpl     caldavConnectorService;
 
@@ -498,6 +501,72 @@ public class CaldavConnectorServiceImplTest {
     caldavConnectorService.setCaldavDeletionService(caldavDeletionService);
 
     assertEquals(caldavDeletionService, caldavConnectorService.getCaldavDeletionService());
+  }
+
+  /**
+   * Connecting forgets the server identity recorded under the previous
+   * credentials, after the new ones are stored and before anything asks the
+   * server — so the destinations step records the new identity from its own
+   * discovery, and a discovery that fails leaves the account unknown rather
+   * than known as the account it used to be (EXO-90243).
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void connectingForgetsTheIdentityOfThePreviousCredentialsBeforeAskingTheServer() throws Exception {
+    caldavConnectorService.setCaldavSyncService(caldavSyncService);
+    caldavConnectorService.setCaldavConnectionIdentityService(caldavConnectionIdentityService);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    InOrder inOrder = inOrder(caldavConnectorStorage, caldavConnectionIdentityService, caldavSyncService);
+    inOrder.verify(caldavConnectorStorage).createCaldavSetting(setting, USER_IDENTITY_ID);
+    inOrder.verify(caldavConnectionIdentityService).forgetPrincipal(USER_IDENTITY_ID);
+    inOrder.verify(caldavSyncService).establishDestinations(USER_IDENTITY_ID);
+  }
+
+  /**
+   * A refused connection stores nothing, and so forgets nothing either.
+   */
+  @Test
+  public void aRefusedConnectionForgetsNothing() {
+    caldavConnectorService.setCaldavConnectionIdentityService(caldavConnectionIdentityService);
+    CaldavUserSetting passwordless = new CaldavUserSetting();
+    passwordless.setUsername("root");
+
+    assertThrows(IllegalAccessException.class, () -> caldavConnectorService.createCaldavSetting(passwordless, USER_IDENTITY_ID));
+
+    verifyNoInteractions(caldavConnectionIdentityService);
+  }
+
+  /**
+   * Disconnecting forgets the server identity, after the settings are gone:
+   * a failure there leaves a row no reader believes once the account is not
+   * connected (EXO-90243).
+   */
+  @Test
+  public void disconnectingForgetsTheIdentityAfterTheSettings() {
+    caldavConnectorService.setCaldavConnectionIdentityService(caldavConnectionIdentityService);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(settingsOnServer(7L));
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID, "john");
+
+    InOrder inOrder = inOrder(caldavConnectorStorage, caldavConnectionIdentityService);
+    inOrder.verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+    inOrder.verify(caldavConnectionIdentityService).forgetPrincipal(USER_IDENTITY_ID);
+  }
+
+  /**
+   * The engine handed in is the one used, and remembered.
+   */
+  @Test
+  public void theConnectionIdentityEngineHandedInIsTheOneUsed() {
+    caldavConnectorService.setCaldavConnectionIdentityService(caldavConnectionIdentityService);
+
+    assertEquals(caldavConnectionIdentityService, caldavConnectorService.getCaldavConnectionIdentityService());
   }
 
   /**

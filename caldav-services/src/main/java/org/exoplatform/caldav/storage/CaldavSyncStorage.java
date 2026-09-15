@@ -65,13 +65,6 @@ public class CaldavSyncStorage {
                                                             java.util.regex.Pattern.compile("^/caldav/rest/dav/\\d+");
 
 
-  /**
-   * How many other users the shared-account question names at most: enough
-   * to list every member of a shared team account, and a bound on a scan of
-   * the href column that would otherwise list a deployment.
-   */
-  static final int              OTHER_USERS_NAMED = 20;
-
   @Autowired
   private CaldavCalendarSyncDAO calendarSyncDAO;
 
@@ -308,36 +301,6 @@ public class CaldavSyncStorage {
                                                                     SyncOrigin.MIRROR,
                                                                     icsUid,
                                                                     homePrefix) > 0;
-  }
-
-  /**
-   * The other users whose active pairs on this server live under one calendar
-   * home — the users who connected the same account.
-   *
-   * <p>
-   * The home is made canonical the way every stored href is, so the prefix
-   * compares against what the rows hold, and the LIKE pattern's own wildcards
-   * are escaped: an account path may carry an underscore, and unescaped it
-   * would match any character. Capped at {@link #OTHER_USERS_NAMED}: the
-   * warning this feeds names who else is on the account, and a bound keeps a
-   * scan of the href column from listing a whole deployment.
-   *
-   * @param userIdentityId identity of the user asking, who does not count
-   * @param serverId the declared server registration
-   * @param calendarHome the account's calendar home, in any spelling
-   * @return the other users' identities, at most {@link #OTHER_USERS_NAMED},
-   *         empty when nobody else is under it
-   */
-  public List<Long> getOtherUsersUnderCalendarHome(long userIdentityId, long serverId, String calendarHome) {
-    String canonical = canonicalHref(calendarHome);
-    if (StringUtils.isBlank(canonical)) {
-      return List.of();
-    }
-    return calendarSyncDAO.findOtherUsersUnderHref(userIdentityId,
-                                                   serverId,
-                                                   CalendarSyncStatus.ACTIVE,
-                                                   homePrefix(canonical),
-                                                   PageRequest.of(0, OTHER_USERS_NAMED));
   }
 
   /**
