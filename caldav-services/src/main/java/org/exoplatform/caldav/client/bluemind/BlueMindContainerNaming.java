@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-package org.exoplatform.caldav.service;
+package org.exoplatform.caldav.client.bluemind;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -70,7 +70,7 @@ import org.exoplatform.caldav.storage.CaldavSyncStorage;
  * The uid comparison ignores case, as {@code CaldavPushService} does when it
  * picks the account's own {@code :Default:} calendar (EXO-90225).
  */
-final class BlueMindContainerNaming {
+public final class BlueMindContainerNaming {
 
   /** The type prefix every BlueMind calendar container uid starts with. */
   private static final String CALENDAR_PREFIX     = "calendar:";
@@ -91,7 +91,7 @@ final class BlueMindContainerNaming {
    * @param ownerUid the uid of the person or resource the calendar belongs to
    * @param resource true when the container is a resource's calendar
    */
-  record Subscription(String ownerUid, boolean resource) {
+  public record Subscription(String ownerUid, boolean resource) {
   }
 
   /**
@@ -110,7 +110,7 @@ final class BlueMindContainerNaming {
    * @return the subscription, or null when the collection is not one of the
    *         three shapes, names the account itself, or no principal is known
    */
-  static Subscription subscriptionOf(String href, String principal) {
+  public static Subscription subscriptionOf(String href, String principal) {
     String principalPath = principal == null ? null : CalendarCollection.principalPathOf(principal);
     String principalUid = lastSegmentOf(principalPath);
     String collectionPath = CaldavSyncStorage.canonicalHref(href);
@@ -154,7 +154,7 @@ final class BlueMindContainerNaming {
    * @param uid the owner's uid, as {@link #subscriptionOf} returned it
    * @return the owner's principal path, slash-terminated like the account's
    */
-  static String principalOf(String principal, String uid) {
+  public static String principalOf(String principal, String uid) {
     String canonical = CalendarCollection.principalPathOf(principal);
     return StringUtils.substringBeforeLast(canonical, "/") + "/" + uid + "/";
   }
