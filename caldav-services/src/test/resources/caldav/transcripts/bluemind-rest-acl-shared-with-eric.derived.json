@@ -1,0 +1,34 @@
+// DERIVED, not captured: no access list was read from a BlueMind server for
+// this fixture. The answer to GET /api/containers/_manage/{uid}/_acl for
+// FRANCOIS's calendar shared read-only with eric and, from BlueMind itself,
+// with write access to a third user, from BlueMind's source:
+// - parent/core/net.bluemind.core.container.api/src/net/bluemind/core/container/model/acl/AccessControlEntry.java
+//   {subject, verb};
+// - parent/core/net.bluemind.core.container.service/src/net/bluemind/core/container/service/internal/AclService.java
+//   get() = filterRelevantVerbs(expand(addOwnerRights(stored))): the owner
+//   is listed with every verb, each stored verb is expanded, and SendAs and
+//   SendOnBehalf are removed outside mailbox containers;
+// - parent/core/net.bluemind.core.container.api/src/net/bluemind/core/container/model/acl/Verb.java
+//   Read(Freebusy, Visible), Freebusy(Invitation), Write(Read),
+//   ReadExtended(Read), All(Write, Manage, SendAs, ReadExtended).
+// Expansion goes through HashSets, so the order is not BlueMind's.
+// Lines starting with "//" are removed by the test before parsing.
+[
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "All"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "Write"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "Manage"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "ReadExtended"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "Read"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "Freebusy"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "Invitation"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "Visible"},
+  {"subject": "6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17", "verb": "Read"},
+  {"subject": "6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17", "verb": "Freebusy"},
+  {"subject": "6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17", "verb": "Invitation"},
+  {"subject": "6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17", "verb": "Visible"},
+  {"subject": "D41A7C22-3E5B-4F60-8A19-2B7C9D0E1F35", "verb": "Write"},
+  {"subject": "D41A7C22-3E5B-4F60-8A19-2B7C9D0E1F35", "verb": "Read"},
+  {"subject": "D41A7C22-3E5B-4F60-8A19-2B7C9D0E1F35", "verb": "Freebusy"},
+  {"subject": "D41A7C22-3E5B-4F60-8A19-2B7C9D0E1F35", "verb": "Invitation"},
+  {"subject": "D41A7C22-3E5B-4F60-8A19-2B7C9D0E1F35", "verb": "Visible"}
+]

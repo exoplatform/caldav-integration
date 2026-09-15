@@ -16,7 +16,9 @@
  */
 package org.exoplatform.caldav.storage;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,6 +53,46 @@ public class CaldavConnectionStorage {
 
   @Autowired
   private CaldavConnectionDAO connectionDAO;
+
+  /**
+   * How many rows of one server are read at most when listing who a calendar
+   * on it could be shared with (EXO-90253): a bound on a deployment where a
+   * whole company is connected to one server, above which the later users
+   * are not offered.
+   */
+  static final int            CONNECTIONS_ON_SERVER_READ = 500;
+
+  /**
+   * The principal recorded for one user on one server.
+   *
+   * @param userIdentityId the eXo user
+   * @param serverId the declared server registration
+   * @return the principal, canonical, or null when none is recorded for that
+   *         user on that server
+   */
+  public String getRecordedPrincipal(long userIdentityId, long serverId) {
+    return connectionDAO.findByUserIdentityId(userIdentityId)
+                        .filter(connection -> connection.getServerId() == serverId)
+                        .map(CaldavConnectionEntity::getPrincipal)
+                        .filter(StringUtils::isNotBlank)
+                        .orElse(null);
+  }
+
+  /**
+   * The principals recorded on one server, by user, lowest identity first, at
+   * most {@link #CONNECTIONS_ON_SERVER_READ}.
+   *
+   * @param serverId the declared server registration
+   * @return user identity to canonical principal, in identity order
+   */
+  public Map<Long, String> getPrincipalsOn(long serverId) {
+    Map<Long, String> principals = new LinkedHashMap<>();
+    connectionDAO.findByServer(serverId, PageRequest.of(0, CONNECTIONS_ON_SERVER_READ))
+                 .stream()
+                 .filter(connection -> StringUtils.isNotBlank(connection.getPrincipal()))
+                 .forEach(connection -> principals.put(connection.getUserIdentityId(), connection.getPrincipal()));
+    return principals;
+  }
 
   /**
    * Records the principal a user is connected as on one server, replacing
