@@ -576,6 +576,54 @@ public class CaldavSyncStorage {
   }
 
   /**
+   * The eXo event a copy eXo wrote into <b>any</b> account of one server stands
+   * for (EXO-90247).
+   *
+   * <p>
+   * The question a receiving account has to ask when a server schedules for
+   * itself. BlueMind delivers the organizer's own copy into each invitee's
+   * account keeping its UID, so in the invitee's home the object sits on no
+   * pair of theirs and under no calendar home eXo wrote to: the account-scoped
+   * {@link #isMirrorOwned(long, String, String)} rightly answers "not ours
+   * here", and {@link #getMirrorEventId(long, long, String)} rightly answers
+   * "not this user's". Neither names the meeting, and the meeting is what the
+   * receiving pass needs so it can adopt the user's answer instead of importing
+   * a second event.
+   *
+   * <p>
+   * <b>This does not reopen EXO-90190.</b> The defect there was an
+   * <i>answer</i> attributed to the wrong person. What this returns is only the
+   * identity of a meeting; whether the reading user may answer for it is asked
+   * of agenda separately, and which attendee line is read is decided by the
+   * reading user's own addresses. The user-scoped sibling stays exactly as it
+   * is and keeps feeding the adoption on the mirror path — the two are
+   * different questions and are deliberately two methods.
+   *
+   * <p>
+   * A UID is a random UUID minted per (series, user), so one matching across
+   * two accounts of a server is the same object travelling, not a collision.
+   * Ambiguity answers "no event", as the user-scoped sibling does and for the
+   * same reason: nothing recorded beats something recorded against the wrong
+   * meeting.
+   *
+   * @param serverId the declared server registration
+   * @param icsUid the iCalendar UID being read
+   * @return the event the copy stands for, or null when no mirror on this
+   *         server wrote that UID, when it names no event, or when it names
+   *         more than one
+   */
+  public Long getMirrorEventIdOnServer(long serverId, String icsUid) {
+    if (StringUtils.isBlank(icsUid)) {
+      return null;
+    }
+    List<Long> events = objectSyncDAO.findEventIdsByServerAndOriginAndIcsUid(serverId, SyncOrigin.MIRROR, icsUid);
+    if (events == null || events.size() != 1) {
+      return null;
+    }
+    return events.get(0);
+  }
+
+  /**
    * The mapping for one eXo event inside a pair.
    *
    * @param calendarSyncId the pair

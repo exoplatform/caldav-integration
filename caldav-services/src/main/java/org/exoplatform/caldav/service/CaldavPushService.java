@@ -243,6 +243,9 @@ public class CaldavPushService {
   @Autowired
   private CaldavCopyPolicy       caldavCopyPolicy;
 
+  @Autowired
+  private CaldavNativeSchedulingService caldavNativeSchedulingService;
+
   /**
    * Where the account-wide ownership question lives. One definition for the
    * sweep and the push, so the two answers cannot drift (EXO-90226); the
@@ -944,8 +947,6 @@ public class CaldavPushService {
       return null;
     }
     long seriesId = event.getParentId() > 0 ? event.getParentId() : event.getId();
-    String icsUid = adoptOrMintUid(seriesId, userIdentityId);
-    IcsEvent icsEvent = agendaEventIcsMapper.toIcsEvent(event, icsUid, userIdentityId);
 
     // Where an event goes is decided from the calendar it lives in, not from
     // the caller. An event of one of the user's own calendars belongs in that
@@ -953,6 +954,30 @@ public class CaldavPushService {
     // attends — belongs in the mirror, which exists precisely because a space
     // calendar has no counterpart on a personal account.
     Calendar own = ownCalendarOf(event, userIdentityId);
+
+    String recorded = recordedUid(seriesId, userIdentityId);
+    if (recorded == null && own == null && caldavNativeSchedulingService.deliveredNatively(event, userIdentityId)) {
+      // The invitation reaches this user's calendar through their own server,
+      // which schedules it from the organizer's copy (EXO-90247). Writing a
+      // second object for the same meeting is what put it twice in their
+      // calendar and, once read back under a UID no pair of theirs maps, twice
+      // in their agenda.
+      //
+      // Asked here, and only here: before a UID is minted, so no identifier is
+      // recorded for an object that is never written; only on the mirror route,
+      // because an event of the user's own calendar is not an invitation
+      // anybody schedules for them; and only when no UID is recorded yet, so
+      // this declines to CREATE a copy and never to maintain one — a copy
+      // written before this rule existed goes on being rewritten, repaired and
+      // answered exactly as before.
+      //
+      // Null for the reason the date poll above answers null: nothing failed,
+      // and every caller already reads it as "not written".
+      return null;
+    }
+    String icsUid = recorded != null ? recorded : mintUid(seriesId, userIdentityId);
+    IcsEvent icsEvent = agendaEventIcsMapper.toIcsEvent(event, icsUid, userIdentityId);
+
     if (own != null) {
       CalendarSync personal = personalPairFor(own, userIdentityId);
       if (personal == null) {
@@ -984,16 +1009,51 @@ public class CaldavPushService {
    * the ones with events on the server, that is not an edge case but their
    * normal first run.
    *
+   * <h2>Read and mint are two methods, on purpose</h2>
+   *
+   * <p>
+   * Minting has a side effect — it records the identifier in agenda before
+   * anything is written — so a caller that may decide <i>not</i> to write must
+   * be able to ask what is already recorded without causing one to be. That
+   * caller exists since EXO-90247: a copy the user's own server will deliver
+   * itself is not written, and minting first would leave an identifier
+   * pointing at an object nothing ever creates. So the read is
+   * {@link #recordedUid(long, long)} and the write is
+   * {@link #mintUid(long, long)}, and this method is the pair for every caller
+   * that always writes.
+   *
    * @param seriesId the agenda event, or its parent for an occurrence — a
    *          series and its overrides share one UID
    * @param userIdentityId identity of the user
    * @return the UID to write under
    */
   private String adoptOrMintUid(long seriesId, long userIdentityId) {
+    String recorded = recordedUid(seriesId, userIdentityId);
+    return recorded != null ? recorded : mintUid(seriesId, userIdentityId);
+  }
+
+  /**
+   * The iCalendar UID agenda has already recorded for this user's copy of this
+   * series, without recording one.
+   *
+   * @param seriesId the agenda event, or its parent for an occurrence
+   * @param userIdentityId identity of the user
+   * @return the recorded UID, or null when none has been
+   */
+  private String recordedUid(long seriesId, long userIdentityId) {
     RemoteEvent known = agendaRemoteEventService.findRemoteEvent(seriesId, userIdentityId);
-    if (known != null && StringUtils.isNotBlank(known.getRemoteId())) {
-      return known.getRemoteId();
-    }
+    return known != null && StringUtils.isNotBlank(known.getRemoteId()) ? known.getRemoteId() : null;
+  }
+
+  /**
+   * A fresh iCalendar UID for this user's copy of this series, recorded in
+   * agenda before it is written anywhere.
+   *
+   * @param seriesId the agenda event, or its parent for an occurrence
+   * @param userIdentityId identity of the user
+   * @return the UID minted and recorded
+   */
+  private String mintUid(long seriesId, long userIdentityId) {
     String minted = UUID.randomUUID().toString();
     RemoteEvent remoteEvent = new RemoteEvent();
     remoteEvent.setEventId(seriesId);
