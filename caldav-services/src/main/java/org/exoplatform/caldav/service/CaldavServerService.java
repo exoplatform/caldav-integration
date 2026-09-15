@@ -37,6 +37,7 @@ import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.model.MirrorTargetKind;
+import org.exoplatform.caldav.model.WriteChannel;
 import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkDirection;
 import org.exoplatform.caldav.model.ServerQuirkEffect;
@@ -396,7 +397,7 @@ public class CaldavServerService {
         && !StringUtils.equalsIgnoreCase(System.getProperty(CALDAV_ENABLED_PROPERTY), "false");
     caldavServerStorage.createSeedServer(new CaldavServer(0, null, STALWART_SERVER_NAME, null, stalwartUrl, stalwartActive, null, null,
                                                           null, null, true, null, null, null, null, null,
-                                                          MirrorTargetKind.DEDICATED_CALENDAR, null, null),
+                                                          MirrorTargetKind.DEDICATED_CALENDAR, null, null, WriteChannel.CALDAV),
                                          CALDAV_PROVIDER_NAME);
     // The kernel plugin only CREATES the provider when missing — an existing
     // one keeps whatever enabled state it holds (an admin may have disabled
@@ -405,7 +406,7 @@ public class CaldavServerService {
     // fresh install both writes carry the same property-driven value.
     saveAgendaRemoteProvider(new CaldavServer(0, CALDAV_PROVIDER_NAME, STALWART_SERVER_NAME, null, stalwartUrl, stalwartActive, null,
                                               null, null, null, true, null, null, null, null, null,
-                                              MirrorTargetKind.DEDICATED_CALENDAR, null, null));
+                                              MirrorTargetKind.DEDICATED_CALENDAR, null, null, WriteChannel.CALDAV));
     LOG.info("Seeded the Stalwart CalDAV server ({}), active: {}", stalwartUrl, stalwartActive);
     boolean bluemindActive = isDeclarableSeedAddress(BLUEMIND_SERVER_NAME, DEFAULT_BLUEMIND_URL);
     CaldavServer bluemind = caldavServerStorage.createServer(new CaldavServer(0, null, BLUEMIND_SERVER_NAME, null, DEFAULT_BLUEMIND_URL,
@@ -413,7 +414,7 @@ public class CaldavServerService {
                                                                               seedExcusals(ServerQuirkDirection.ADDED),
                                                                               seedExcusals(ServerQuirkDirection.DROPPED),
                                                                               null, null, null,
-                                                                              MirrorTargetKind.MAIN_CALENDAR, null, null),
+                                                                              MirrorTargetKind.MAIN_CALENDAR, null, null, WriteChannel.BLUEMIND_IMPORT),
                                                              CALDAV_PROVIDER_NAME);
     saveAgendaRemoteProvider(bluemind);
     LOG.info("Seeded the Bluemind CalDAV server ({}), active: {}", DEFAULT_BLUEMIND_URL, bluemindActive);
@@ -901,7 +902,8 @@ public class CaldavServerService {
     saveAgendaRemoteProvider(new CaldavServer(server.getId(), server.getProviderName(), server.getName(),
                                               server.getDescription(), server.getServerUrl(), false, null, null, null, null,
                                               server.isAnswerLinksInCopy(), null, null, null, null,
-                                              server.getCopySettingsUpdated(), server.getMirrorTarget(), null, null));
+                                              server.getCopySettingsUpdated(), server.getMirrorTarget(), null, null,
+                                              server.getWriteChannel()));
     // The configuration first, the row second. The two writes share no transaction - the
     // row goes through JPA, the settings through the kernel's own RequestLifeCycle - so
     // the order is the guarantee: a failure here leaves the registration, which an

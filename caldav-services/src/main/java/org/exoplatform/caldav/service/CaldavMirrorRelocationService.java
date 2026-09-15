@@ -31,6 +31,7 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.client.PutResult;
+import org.exoplatform.caldav.client.CalendarObjectWriters;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.ObjectSync;
@@ -122,6 +123,14 @@ public class CaldavMirrorRelocationService {
 
   @Autowired
   private CalDavClient            calDavClient;
+
+  /**
+   * The door each account's server writes through (EXO-90307): the move
+   * writes the copy at its new place and removes the old one through the
+   * same writer every other write of that server uses.
+   */
+  @Autowired
+  private CalendarObjectWriters   calendarObjectWriters;
 
   @Autowired
   private CaldavSyncStorage       caldavSyncStorage;
@@ -472,7 +481,7 @@ public class CaldavMirrorRelocationService {
       // guarded write carries a version the destination has never had. What
       // makes the overwrite legitimate is that the object at the destination is
       // this connector's own writing under this connector's own UID.
-      written = calDavClient.overwriteObject(endpoint, to, ics);
+      written = calendarObjectWriters.writer(endpoint).overwriteObject(endpoint, to, ics);
     } catch (RuntimeException | LinkageError e) {
       LOG.warn("The copy at {} of user {} could not be written to {}; it stays where it is", from, userIdentityId, to, e);
       return Outcome.FAILED;
@@ -512,7 +521,7 @@ public class CaldavMirrorRelocationService {
                                 String from,
                                 String guard) {
     try {
-      int status = calDavClient.deleteObject(endpoint, from, guard);
+      int status = calendarObjectWriters.writer(endpoint).deleteObject(endpoint, from, guard);
       if (status != PutResult.PRECONDITION_FAILED) {
         return true;
       }
