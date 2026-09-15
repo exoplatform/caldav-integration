@@ -37,7 +37,6 @@ import org.exoplatform.agenda.model.EventFilter;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
-import org.exoplatform.agenda.service.AgendaUserSettingsService;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -141,9 +140,6 @@ public class CaldavPendingInvitationService {
   private AgendaEventAttendeeService               agendaEventAttendeeService;
 
   @Autowired
-  private AgendaUserSettingsService                agendaUserSettingsService;
-
-  @Autowired
   private CaldavPushService                        caldavPushService;
 
   @Autowired
@@ -151,6 +147,9 @@ public class CaldavPendingInvitationService {
 
   @Autowired
   private CaldavSyncStorage                        caldavSyncStorage;
+
+  @Autowired
+  private CaldavCopyConsent                        caldavCopyConsent;
 
   /**
    * How far ahead the pass looks for events to seed. Far enough that an
@@ -220,7 +219,7 @@ public class CaldavPendingInvitationService {
    * @return how many events were written this pass
    */
   public int pushUpcomingMeetings(long userIdentityId, String username) {
-    if (!copiesEnabled(userIdentityId)) {
+    if (!caldavCopyConsent.copiesEnabled(userIdentityId)) {
       return 0;
     }
     ZonedDateTime now = ZonedDateTime.now(ZoneOffset.UTC);
@@ -370,7 +369,7 @@ public class CaldavPendingInvitationService {
    * @return true when a copy was written
    */
   public boolean seedMeeting(long userIdentityId, String username, long eventId) {
-    if (userIdentityId <= 0 || eventId <= 0 || !copiesEnabled(userIdentityId)) {
+    if (userIdentityId <= 0 || eventId <= 0 || !caldavCopyConsent.copiesEnabled(userIdentityId)) {
       return false;
     }
     return seedOne(userIdentityId, username, eventId);
@@ -509,57 +508,6 @@ public class CaldavPendingInvitationService {
                 userIdentityId,
                 eventId,
                 e);
-      return false;
-    }
-  }
-
-  /**
-   * Whether a connected account's provider is one of this add-on's.
-   *
-   * <p>
-   * A declared CalDAV server gets a provider name of its own — the base name
-   * with the server's identifier appended — so only a user connected to the
-   * seed registration carries the bare name. Matching the bare name alone
-   * therefore read as "copies disabled" for everyone connected to a server an
-   * administrator had declared, and their meetings were never copied at all,
-   * silently: the pass returned before it did anything, and its own
-   * diagnostics printed nothing because nothing had been considered.
-   *
-   * @param providerName the provider a connected account names
-   * @return true when it is a CalDAV account of this add-on
-   */
-  private boolean isCaldavConnector(String providerName) {
-    return providerName != null
-        && (providerName.equals(CaldavPushService.CONNECTOR_NAME)
-            || providerName.startsWith(CaldavPushService.CONNECTOR_NAME + "."));
-  }
-
-  /**
-   * Whether this user receives copies at all — the same per-account switch the
-   * browser flow honours, read from agenda's settings for this add-on's
-   * provider. A user who turned copies off has said no to everything this
-   * service does, the seeded pending invitations included.
-   *
-   * <p>
-   * Its documentation used to sit above {@link #isCaldavConnector} instead,
-   * where the javadoc tool attributed it to that method and this one was
-   * generated undocumented.
-   *
-   * @param userIdentityId identity of the user
-   * @return true when the connected CalDAV account accepts copies
-   */
-  private boolean copiesEnabled(long userIdentityId) {
-    try {
-      var settings = agendaUserSettingsService.getAgendaUserSettings(userIdentityId);
-      return settings != null
-             && settings.getConnectedConnectors()
-                        .stream()
-                        .anyMatch(account -> isCaldavConnector(account.getProviderName())
-                                             && account.isPushEnabled());
-    } catch (RuntimeException e) {
-      // No settings readable means no consent readable, and consent is the
-      // one thing this pass must not assume.
-      LOG.debug("The agenda settings of user {} could not be read; no meeting is seeded", userIdentityId, e);
       return false;
     }
   }

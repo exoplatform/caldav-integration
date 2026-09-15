@@ -125,11 +125,23 @@ public class CaldavPendingInvitationServiceTest {
   @Spy
   private CaldavCopyPolicy              caldavCopyPolicy = new CaldavCopyPolicy();
 
+  /**
+   * The real consent rule over a mocked settings service, for the reason the
+   * copy policy above is real: whether a user receives copies is a decision
+   * this suite exercises, and a mocked one would answer whatever the test told
+   * it to. It moved out of this class into a bean of its own when a second
+   * reader arrived (EXO-90247); running the real one here keeps the coverage
+   * that move could otherwise have quietly dropped.
+   */
+  @Spy
+  private CaldavCopyConsent             caldavCopyConsent = new CaldavCopyConsent();
+
   @InjectMocks
   private CaldavPendingInvitationService service;
 
   @BeforeEach
   public void aConnectedUserReceivingCopies() {
+    ReflectionTestUtils.setField(caldavCopyConsent, "agendaUserSettingsService", agendaUserSettingsService);
     ReflectionTestUtils.setField(service, "seedDays", 60);
     ReflectionTestUtils.setField(service, "seedLimit", 200);
     givenCopies(true);
