@@ -1,0 +1,10 @@
+# DERIVED from a live observation, not a raw capture: Stalwart 0.16 on the rig (localhost:8081), OPTIONS on an
+# account's calendar collection with its credentials, reported by the EXO-90253 coordinator on 2026-09-14.
+# The dav header is verbatim from that observation. The allow header was reported as "… REPORT, ACL"; the
+# elided methods are the standard WebDAV and CalDAV set, as in HttpCalDavClientShareTest.STALWART_ALLOW.
+# Lines starting with "#" are removed by the test before parsing.
+HTTP/1.1 200 OK
+dav: 1, 2, 3, access-control, extended-mkcol, calendar-access, calendar-auto-schedule, calendar-no-timezone, addressbook
+allow: OPTIONS, GET, HEAD, POST, PUT, DELETE, COPY, MOVE, MKCALENDAR, MKCOL, PROPFIND, PROPPATCH, LOCK, UNLOCK, REPORT, ACL
+content-length: 0
+

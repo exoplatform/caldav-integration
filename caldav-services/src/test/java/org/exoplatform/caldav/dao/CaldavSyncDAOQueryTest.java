@@ -731,6 +731,35 @@ public class CaldavSyncDAOQueryTest {
   }
 
   /**
+   * Who a calendar on a server can be shared with (EXO-90253): every row of
+   * that server, lowest user first, bounded by the page, and nobody recorded
+   * on another server.
+   */
+  @Test
+  public void theConnectionsOfOneServerAreReadInUserOrderAndBounded() {
+    persistConnection(BOB, STALWART, BOB_PRINCIPAL);
+    persistConnection(ALICE2, STALWART, ALICE_PRINCIPAL);
+    persistConnection(ALICE, STALWART, ALICE_PRINCIPAL);
+    persistConnection(10L, 2L, ALICE_PRINCIPAL);
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(List.of(ALICE, ALICE2, BOB),
+                 connectionDAO.findByServer(STALWART, PageRequest.of(0, 10))
+                              .stream()
+                              .map(CaldavConnectionEntity::getUserIdentityId)
+                              .toList());
+    assertEquals(List.of(ALICE, ALICE2),
+                 connectionDAO.findByServer(STALWART, PageRequest.of(0, 2))
+                              .stream()
+                              .map(CaldavConnectionEntity::getUserIdentityId)
+                              .toList(),
+                 "the page bounds the answer, and the order keeps the same users inside it");
+    assertEquals(List.of(10L),
+                 connectionDAO.findByServer(2L, PageRequest.of(0, 10)).stream().map(CaldavConnectionEntity::getUserIdentityId).toList());
+  }
+
+  /**
    * One identity per user, enforced by the real unique index and told by its
    * JDBC cause — the refusal two nodes recording one user converge on.
    */
