@@ -443,7 +443,142 @@ public class CaldavInboundService {
     if (known != null) {
       return update(userIdentityId, pair, calendar, object, master, known, parsed);
     }
+    Long duplicated = duplicateOfOwnCopyEventOf(userIdentityId, pair, master.getUid());
+    if (duplicated != null) {
+      // A second object, in this account, for a meeting this user already holds
+      // in their agenda and whose copy eXo wrote on this server (EXO-90247).
+      // Importing it would give them a personal event standing for a meeting
+      // they are already an attendee of. Nothing is written and nothing is
+      // read off it — see the method for why the answer is deliberately not
+      // taken from here.
+      LOG.debug("Object {} duplicates eXo's own copy of event {} on server {} and is not imported",
+                object.href(),
+                duplicated,
+                pair.getServerId());
+      return false;
+    }
     return create(userIdentityId, pair, calendar, object, master, parsed, adoptable);
+  }
+
+  /**
+   * The eXo meeting an object in this account is a second, redundant copy of —
+   * one this deployment wrote itself on this server, for a meeting this user
+   * already holds (EXO-90247).
+   *
+   * <h2>What it is guarding against</h2>
+   *
+   * <p>
+   * eXo writes one copy of a meeting per invited user, each under a UID of its
+   * own. Several things can put a <i>second</i> object carrying one of those
+   * UIDs into a user's calendar home, and they have nothing in common except
+   * the consequence: a colleague's calendar materialised into eXo, carrying the
+   * copies eXo wrote into <i>their</i> account; an account two people share; a
+   * server that passes the organizer's stored object on keeping its UID.
+   * Whatever put it there, importing it gives the user a second, personal event
+   * standing for a meeting their agenda already holds them as an attendee of.
+   * That is the duplicate this refuses, and it refuses it without needing to
+   * know which of those produced it.
+   *
+   * <p>
+   * <b>The BlueMind case, corrected.</b> An earlier version of this note said
+   * a BlueMind {@code METHOD:REQUEST} invitation carried a fresh BlueMind UUID
+   * this could not see. That was wrong: BlueMind composes the invitation from
+   * the organizer's stored object and keeps its UID ({@code IcsHook} builds it
+   * from {@code message.vevent.icsUid}), and on the rig the object it delivered
+   * into the invitee's calendar carried exactly the UID eXo had minted for the
+   * organizer's copy on that server (EXO-90247, event 163). So this catches
+   * it; it is the "server passing the organizer's object on" case above, not
+   * an exception to it. What it still cannot see is an object under a UID
+   * nobody in this deployment minted — none has been observed — because
+   * recognising that needs a match on what the meeting <i>is</i>, organizer,
+   * start, summary, rather than on what it is called, a different and much
+   * less safe question. What this deliberately does <i>not</i> do is read an
+   * answer off the duplicate: the invitee's own copy is where eXo reads their
+   * answer, so an acceptance given on BlueMind's object reaches eXo only once
+   * BlueMind stops producing that object (EXO-90307).
+   *
+   * <h2>What identifies such an object, and why it is not the event link</h2>
+   *
+   * <p>
+   * The UID is one eXo minted: a random UUID, recorded against a mirror pair of
+   * this deployment on this server. So the witness is eXo's <i>own write
+   * record</i> — a row nothing outside this deployment can produce — and not
+   * the event link the object happens to carry, which is text a writer chooses
+   * and which the existing foreign-deployment detection has to verify the
+   * authority of for exactly that reason. The record also hands back the
+   * meeting directly, where the link would have to be parsed for an identifier
+   * and then believed.
+   *
+   * <h2>Reached only where it can mean this</h2>
+   *
+   * <p>
+   * By the time it is asked, the account-scoped ownership question has already
+   * said the object is not one eXo wrote into <i>this</i> calendar home (so the
+   * copies of a shared account — EXO-90190 — are handled by that arm, not this
+   * one), and the pair-scoped mapping has already said no pair of this user's
+   * maps the UID (so nothing that would have been updated is diverted). What is
+   * left is an object that would otherwise be created as a new event, carrying
+   * a UID this deployment wrote into somebody else's account on the same
+   * server. Another eXo deployment's copies have no such row here at all, so
+   * the foreign-writer path is untouched by construction.
+   *
+   * <h2>The authorization, and what it refuses</h2>
+   *
+   * <p>
+   * Naming a meeting is not being invited to it. Agenda is asked, through its
+   * own ACL-aware {@code isEventAttendee}, which resolves membership of a space
+   * carrying the attendee row as well as an attendee row of the user's own —
+   * the shape a space meeting has. A user who is not an attendee is refused,
+   * and the object goes on to be imported as the ordinary remote object it
+   * looks like, which is what happens today: they do not hold the meeting, so
+   * this object is not a duplicate of anything of theirs, and dropping it would
+   * take a real event away.
+   *
+   * <h2>Why no answer is read off it</h2>
+   *
+   * <p>
+   * Deliberately, and this is the one place the shape differs from the copy eXo
+   * wrote into this user's own mirror. That copy is the object their answer
+   * belongs on, and the verification pass reads it there. This one is somebody
+   * else's — the organizer's copy, or a colleague's — and the attendee line it
+   * carries for this user says what it said when <i>that</i> object was last
+   * written, which is routinely {@code NEEDS-ACTION} long after the user has
+   * answered in eXo. Reading an answer here would let a stale duplicate
+   * overwrite the answer the user gave, and the meeting would un-accept itself
+   * on a sync. Suppressing the import writes nothing and can only prevent a
+   * second event; that is the whole of what this is allowed to do.
+   *
+   * @param userIdentityId whose collection is being read
+   * @param pair the binding being imported
+   * @param icsUid the object's iCalendar UID
+   * @return the meeting this object duplicates, or null when it duplicates
+   *         nothing of this user's
+   */
+  private Long duplicateOfOwnCopyEventOf(long userIdentityId, CalendarSync pair, String icsUid) {
+    try {
+      Long localEventId = caldavSyncStorage.getMirrorEventIdOnServer(pair.getServerId(), icsUid);
+      if (localEventId == null || localEventId <= 0) {
+        return null;
+      }
+      if (!agendaEventAttendeeService.isEventAttendee(localEventId, userIdentityId)) {
+        LOG.debug("Object {} carries the UID of eXo's copy of event {} on server {}, but user {} is not an attendee of it;"
+            + " it is imported as any other object",
+                  pair.getRemoteHref(),
+                  localEventId,
+                  pair.getServerId(),
+                  userIdentityId);
+        return null;
+      }
+      return localEventId;
+    } catch (RuntimeException | LinkageError e) {
+      // Not knowing is not a reason to divert an object away from the import
+      // that would otherwise have happened.
+      LOG.debug("Whether object {} of user {} duplicates a copy eXo already wrote could not be told",
+                pair.getRemoteHref(),
+                userIdentityId,
+                e);
+      return null;
+    }
   }
 
   /**
