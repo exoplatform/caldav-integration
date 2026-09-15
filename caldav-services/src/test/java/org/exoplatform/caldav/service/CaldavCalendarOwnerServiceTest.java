@@ -29,6 +29,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -89,6 +90,15 @@ public class CaldavCalendarOwnerServiceTest {
 
   private static final String        ALICES      = "/dav/cal/alice%40stalwart.local/default/";
 
+  /** The viewer of every listing here: bob, identity 9 on the rig. */
+  private static final long          VIEWER      = 9L;
+
+  /** alice, identity 5, connected to Stalwart as Alice's principal. */
+  private static final long          ALICE_USER  = 5L;
+
+  /** alice2, identity 6, connected to the same Stalwart login. */
+  private static final long          ALICE2_USER = 6L;
+
   @Mock
   private CaldavOutboundService      caldavOutboundService;
 
@@ -101,14 +111,17 @@ public class CaldavCalendarOwnerServiceTest {
   @Mock
   private CalDavEndpoint             endpoint;
 
+  @Mock
+  private CaldavConnectionIdentityService caldavConnectionIdentityService;
+
   private CaldavCalendarOwnerService service;
 
-  private Map<String, String>        principalNames;
+  private CalendarOwnerMemo owners;
 
   @BeforeEach
   public void build() {
-    service = new CaldavCalendarOwnerService(caldavOutboundService, identityManager, calDavClient);
-    principalNames = new HashMap<>();
+    service = new CaldavCalendarOwnerService(caldavOutboundService, identityManager, calDavClient, caldavConnectionIdentityService);
+    owners = new CalendarOwnerMemo();
   }
 
   // ------------------------------------ a colleague's eXo calendar
@@ -130,6 +143,7 @@ public class CaldavCalendarOwnerServiceTest {
     assertEquals("root", owner.username());
     assertEquals("Root Root", owner.displayName());
     verify(calDavClient, never()).readDisplayName(any(), anyString());
+    verify(caldavConnectionIdentityService, never()).usersConnectedAs(anyLong(), any());
   }
 
   /**
@@ -238,11 +252,11 @@ public class CaldavCalendarOwnerServiceTest {
 
     // Re-stubbed with doThrow: a when(...) on a mock already stubbed to throw
     // would throw from inside the when.
-    principalNames = new HashMap<>();
+    owners = new CalendarOwnerMemo();
     doThrow(new CalDavException("403")).when(calDavClient).readDisplayName(endpoint, ALICE);
     assertEquals("alice@stalwart.local", ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)).displayName());
 
-    principalNames = new HashMap<>();
+    owners = new CalendarOwnerMemo();
     doThrow(new IllegalStateException("unexpected")).when(calDavClient).readDisplayName(endpoint, ALICE);
     assertEquals("alice@stalwart.local", ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)).displayName());
   }
@@ -290,6 +304,7 @@ public class CaldavCalendarOwnerServiceTest {
   public void aShareWithNoOwnerPrincipalNamesNobody() {
     assertSame(CalendarOwner.NONE, ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, null)));
     verify(calDavClient, never()).readDisplayName(any(), anyString());
+    verify(caldavConnectionIdentityService, never()).usersConnectedAs(anyLong(), any());
   }
 
   /**
@@ -308,6 +323,7 @@ public class CaldavCalendarOwnerServiceTest {
                        listed("/dav/cal/bob%40stalwart.local/locked/", BOB)),
                "the same principal, decoded and without its slash");
     verify(calDavClient, never()).readDisplayName(any(), anyString());
+    verify(caldavConnectionIdentityService, never()).usersConnectedAs(anyLong(), any());
   }
 
   /**
@@ -319,6 +335,211 @@ public class CaldavCalendarOwnerServiceTest {
   public void anOwnerCannotBeNamedWhenTheAccountsOwnPrincipalIsUnknown() {
     assertSame(CalendarOwner.NONE, ownerOf(null, CollectionOwnership.SHARED, listed(ALICES, ALICE)));
     verify(calDavClient, never()).readDisplayName(any(), anyString());
+  }
+
+  // ------------------------------------ a share whose owner principal an eXo user is connected as, EXO-90243
+
+  /**
+   * Alice's default on Stalwart, once alice is the one eXo user connected as
+   * Alice's principal: bob sees the share owned by alice — identity, login
+   * and full name — and her principal is not asked its name.
+   */
+  @Test
+  public void aShareOwnedByThePrincipalOneUserIsConnectedAsNamesThatUser() {
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(0L);
+    when(identityManager.getIdentity(ALICE_USER)).thenReturn(user("5", "alice", "Alice Liddell"));
+
+    CalendarOwner owner = ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+
+    assertEquals(ALICE_USER, owner.identityId());
+    assertEquals("alice", owner.username());
+    assertEquals("Alice Liddell", owner.displayName());
+    verify(calDavClient, never()).readDisplayName(any(), anyString());
+  }
+
+  /**
+   * The rig's shared login: alice and alice2 are both connected as Alice's
+   * principal, nothing tells them apart, and the share is named by the
+   * principal alone — nobody is guessed.
+   */
+  @Test
+  public void aShareOwnedByAPrincipalSeveralUsersAreConnectedAsNamesThePrincipalAlone() {
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER, ALICE2_USER));
+    when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
+
+    CalendarOwner owner = ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+
+    assertNull(owner.identityId());
+    assertNull(owner.username());
+    assertEquals("Alice", owner.displayName());
+    verify(identityManager, never()).getIdentity(anyLong());
+  }
+
+  /**
+   * <b>One recorded user is not the only user until the server's users are
+   * all recorded.</b> Just after the upgrade alice has had her first pass and
+   * alice2, on the same login, has not: the table says one user is connected
+   * as Alice's principal, and naming alice would tell bob the login is hers
+   * alone. Nobody is named while a user synchronising with the server has no
+   * recorded identity; the principal's own name stands.
+   */
+  @Test
+  public void aShareIsNamedByThePrincipalAloneWhileAUserOfTheServerIsNotRecordedYet() {
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(1L);
+    when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
+
+    CalendarOwner owner = ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+
+    assertNull(owner.identityId());
+    assertNull(owner.username());
+    assertEquals("Alice", owner.displayName());
+    verify(identityManager, never()).getIdentity(anyLong());
+  }
+
+  /**
+   * <b>The veto is said, once per server.</b> It can last for good — an
+   * account left on another server keeps active pairs here and is never
+   * recorded — so a line at debug alone would switch the owner mapping off
+   * for a whole server without anybody being told. Said at info with how many
+   * users are missing, once per server per process however many listings and
+   * principals meet it.
+   */
+  @Test
+  public void aServerWhoseUsersAreNotAllRecordedIsSaidOnceAtInfo() {
+    String carol = "/dav/pal/carol%40stalwart.local/";
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, carol)).thenReturn(List.of(10L));
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(2L);
+    java.util.List<ch.qos.logback.classic.spi.ILoggingEvent> said;
+    try (org.exoplatform.caldav.LogRecorder log = new org.exoplatform.caldav.LogRecorder(CaldavCalendarOwnerService.class)) {
+      ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+      owners = new CalendarOwnerMemo();
+      ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+      ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/carol%40stalwart.local/default/", carol));
+      said = log.events()
+                .stream()
+                .filter(event -> event.getLevel() == ch.qos.logback.classic.Level.INFO)
+                .toList();
+    }
+
+    assertEquals(1, said.size(), "once per server per process");
+    org.junit.jupiter.api.Assertions.assertTrue(said.get(0).getFormattedMessage().startsWith("2 eXo users synchronising with CalDAV server " + SERVER),
+                                                said.get(0).getFormattedMessage());
+    verify(identityManager, never()).getIdentity(anyLong());
+  }
+
+  /**
+   * <b>The server's count is asked once per listing, not once per colleague.</b>
+   * It is a count over every active pair of the deployment, and it depends on
+   * the server alone: two colleagues' shares in one listing ask it once, and
+   * the next listing asks it again, since users are recorded in between.
+   */
+  @Test
+  public void theUnrecordedCountIsAskedOncePerListingWhateverTheNumberOfColleagues() {
+    String carol = "/dav/pal/carol%40stalwart.local/";
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, carol)).thenReturn(List.of(10L));
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(0L);
+    when(identityManager.getIdentity(ALICE_USER)).thenReturn(user("5", "alice", "Alice Liddell"));
+    when(identityManager.getIdentity(10L)).thenReturn(user("10", "carol", "Carol Carter"));
+
+    ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+    CalendarOwner carols = ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/carol%40stalwart.local/default/", carol));
+    verify(caldavConnectionIdentityService, times(1)).activeUsersWithoutIdentityOn(SERVER);
+
+    owners = new CalendarOwnerMemo();
+    ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+
+    assertEquals("carol", carols.username());
+    verify(caldavConnectionIdentityService, times(2)).activeUsersWithoutIdentityOn(SERVER);
+  }
+
+  /**
+   * A count that fails is not remembered: the share it was asked for is named
+   * by its principal, and the next share of the listing asks again.
+   */
+  @Test
+  public void aFailedCountIsNotRememberedWithinTheListing() {
+    String carol = "/dav/pal/carol%40stalwart.local/";
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, carol)).thenReturn(List.of(10L));
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenThrow(new IllegalStateException("database down"))
+                                                                           .thenReturn(0L);
+    when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
+    when(identityManager.getIdentity(10L)).thenReturn(user("10", "carol", "Carol Carter"));
+
+    assertEquals(CalendarOwner.named("Alice"), ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)));
+    assertEquals("carol",
+                 ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/carol%40stalwart.local/default/", carol)).username());
+  }
+
+  /**
+   * The viewer is never named as the owner of a share they see, even when a
+   * record says they are connected as the owner principal — such a record is
+   * stale by construction, and the principal's name stands.
+   */
+  @Test
+  public void theViewerIsNeverNamedAsTheOwnerOfAShare() {
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(VIEWER));
+    when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
+
+    CalendarOwner owner = ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+
+    assertNull(owner.identityId());
+    assertEquals("Alice", owner.displayName());
+    verify(identityManager, never()).getIdentity(anyLong());
+  }
+
+  /**
+   * A connected user the registry no longer knows, or knows as deleted, is not
+   * shown: the principal's own name stands instead.
+   */
+  @Test
+  public void aConnectedUserTheRegistryDoesNotShowFallsBackToThePrincipalsName() {
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(0L);
+    when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
+    when(identityManager.getIdentity(ALICE_USER)).thenReturn(null);
+
+    assertEquals(CalendarOwner.named("Alice"), ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)));
+
+    owners = new CalendarOwnerMemo();
+    Identity gone = user("5", "alice", "Alice Liddell");
+    gone.setDeleted(true);
+    when(identityManager.getIdentity(ALICE_USER)).thenReturn(gone);
+    assertEquals(CalendarOwner.named("Alice"), ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)));
+  }
+
+  /**
+   * A lookup that fails costs the listing the identity and nothing else.
+   */
+  @Test
+  public void aConnectedUserLookupThatFailsFallsBackToThePrincipalsName() {
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenThrow(new IllegalStateException("database down"));
+    when(calDavClient.readDisplayName(endpoint, ALICE)).thenReturn("Alice");
+
+    assertEquals(CalendarOwner.named("Alice"), ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE)));
+  }
+
+  /**
+   * One lookup per owner principal per listing: Alice's three shares ask
+   * who is connected as her once, and the registry once.
+   */
+  @Test
+  public void theConnectedUserIsLookedUpOncePerPrincipalPerListing() {
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(ALICE_USER));
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(0L);
+    when(identityManager.getIdentity(ALICE_USER)).thenReturn(user("5", "alice", "Alice Liddell"));
+
+    ownerOf(BOB, CollectionOwnership.SHARED, listed(ALICES, ALICE));
+    ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/alice%40stalwart.local/work/", ALICE));
+    CalendarOwner third = ownerOf(BOB, CollectionOwnership.SHARED, listed("/dav/cal/alice%40stalwart.local/home/", ALICE));
+
+    assertEquals("alice", third.username());
+    verify(caldavConnectionIdentityService, times(1)).usersConnectedAs(SERVER, ALICE);
+    verify(identityManager, times(1)).getIdentity(ALICE_USER);
   }
 
   // ------------------------------------ the user's own
@@ -335,6 +556,7 @@ public class CaldavCalendarOwnerServiceTest {
     verify(calDavClient, never()).readDisplayName(any(), anyString());
     verify(caldavOutboundService, never()).exportingUserOf(anyLong(), anyString());
     verify(identityManager, never()).getIdentity(anyLong());
+    verify(caldavConnectionIdentityService, never()).usersConnectedAs(anyLong(), any());
   }
 
   /**
@@ -345,7 +567,7 @@ public class CaldavCalendarOwnerServiceTest {
    * @return the owner, resolved with this test's memo
    */
   private CalendarOwner ownerOf(String principal, CollectionOwnership ownership, CalendarCollection collection) {
-    return service.ownerOf(SERVER, endpoint, principal, ownership, collection, principalNames);
+    return service.ownerOf(VIEWER, SERVER, endpoint, principal, ownership, collection, owners);
   }
 
   /**

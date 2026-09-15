@@ -206,6 +206,7 @@ public class RepositoryQueryExecutionTest {
     return List.of(CaldavCalendarSyncDAO.class,
                    CaldavObjectSyncDAO.class,
                    CaldavPendingPushDAO.class,
-                   CaldavServerDAO.class);
+                   CaldavServerDAO.class,
+                   CaldavConnectionDAO.class);
   }
 }

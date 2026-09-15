@@ -270,8 +270,8 @@ public class CaldavSyncService {
   private final Set<Long>                 outboundInFlight    = ConcurrentHashMap.newKeySet();
 
   /**
-   * The accounts already asked whether other users connected them too, keyed
-   * by user and server — see {@link #warnOnceIfAccountIsShared}.
+   * The accounts already said to be connected by other users too, keyed by
+   * user, server and principal — see {@link #warnOnceIfAccountIsShared}.
    */
   private final Set<String>               sharedAccountsSaid  = ConcurrentHashMap.newKeySet();
 
@@ -342,6 +342,9 @@ public class CaldavSyncService {
 
   @Autowired
   private CaldavPushService           caldavPushService;
+
+  @Autowired
+  private CaldavConnectionIdentityService caldavConnectionIdentityService;
 
   /**
    * Synchronises the accounts that have gone longest without one.
@@ -1616,7 +1619,7 @@ public class CaldavSyncService {
       LOG.warn("The account's calendars could not be listed; nothing is materialised this round", e);
       return null;
     }
-    warnOnceIfAccountIsShared(userIdentityId, serverId, home);
+    warnOnceIfAccountIsShared(userIdentityId, serverId, principal);
     List<CalendarSync> known = forgetRevokedShares(userIdentityId,
                                                    caldavSyncStorage.getPairs(userIdentityId, serverId),
                                                    collections);
@@ -1804,37 +1807,56 @@ public class CaldavSyncService {
    * own calendars are exported next to the other's. Refusing the second
    * connection was rejected: it breaks legitimate shared accounts and the
    * providers that connect a whole deployment through one login. So it is
-   * said, and said where the account's calendar home is first in hand — the
-   * listing — rather than at connect time, which would have missed every
-   * account connected before this line existed.
+   * said, and said where the account's identity is in hand — the listing.
    *
    * <p>
-   * Once per account per process, remembered whichever way it answered. The
-   * question walks the href column, which this schema cannot index on MySQL,
-   * and asked on every sweep it would cost more than it says. A restart says it
-   * again, which is the right bias after a deploy. Never allowed to fail the
+   * <b>The same account is the same principal</b> (EXO-90243). The question
+   * used to be "which other users have active pairs under this calendar
+   * home", and a home cannot tell a shared account from a shared calendar:
+   * once a colleague granted a user read access, Stalwart listed her calendar
+   * in the user's home at her path, the pass bound nothing for it, but the
+   * user's earlier pair under her home was enough for her warning to name
+   * him as connected to her account. Two eXo users on one login are
+   * connected as one principal, a colleague with a share is not, and the
+   * principal is what each discovery records. The home question is gone, not
+   * kept as a fallback for a user whose principal is not recorded yet: that
+   * fallback would bring back exactly that false name during the passes that
+   * follow an upgrade.
+   *
+   * <p>
+   * <b>Asked every pass until it has something to say, said once.</b> The home
+   * question walked the href column, which is why it was asked once per
+   * process whatever it answered; this one is a point lookup on an index, so
+   * it can be asked again while silent — which is what lets a colleague on
+   * the same login, recorded only once their own first pass has run, be named
+   * on this user's next pass instead of after a restart. Once said, not said
+   * again for the same account in this process. Never allowed to fail the
    * pass: a warning is not worth a calendar.
    *
    * @param userIdentityId identity of the user whose account was just listed
    * @param serverId the declared server registration
-   * @param home the account's calendar home, as the server answered it
+   * @param principal the account's own principal, as the discovery answered
+   *          it; null when the server named none, and then nothing is said
    */
-  private void warnOnceIfAccountIsShared(long userIdentityId, long serverId, String home) {
-    String account = userIdentityId + ":" + serverId;
-    if (StringUtils.isBlank(home) || sharedAccountsSaid.contains(account)) {
+  private void warnOnceIfAccountIsShared(long userIdentityId, long serverId, String principal) {
+    String canonical = CaldavConnectionIdentityService.canonicalPrincipal(principal);
+    if (canonical == null) {
+      return;
+    }
+    String account = userIdentityId + ":" + serverId + ":" + canonical;
+    if (sharedAccountsSaid.contains(account)) {
       return;
     }
     try {
-      List<Long> others = caldavSyncStorage.getOtherUsersUnderCalendarHome(userIdentityId, serverId, home);
-      sharedAccountsSaid.add(account);
-      if (!others.isEmpty()) {
-        LOG.warn("The CalDAV account of user {} on server {} (calendar home {}) is also connected by eXo users {}."
+      List<Long> others = caldavConnectionIdentityService.otherUsersConnectedAs(userIdentityId, serverId, canonical);
+      if (!others.isEmpty() && sharedAccountsSaid.add(account)) {
+        LOG.warn("The CalDAV account of user {} on server {} (principal {}) is also connected by eXo users {}."
             + " Copies each of them writes are recognised as eXo's own and not imported back, but every shared"
             + " meeting is written into it once per connected user, and each user's own calendars are exported"
             + " into it beside the others'",
                  userIdentityId,
                  serverId,
-                 home,
+                 canonical,
                  others);
       }
     } catch (RuntimeException e) {
