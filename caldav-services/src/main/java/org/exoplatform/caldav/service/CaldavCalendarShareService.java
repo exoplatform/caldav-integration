@@ -295,8 +295,11 @@ public class CaldavCalendarShareService {
   /** How many of the user's calendars the menu probes for capabilities before giving up. */
   private static final int         MAX_CAPABILITY_PROBES  = 3;
 
+  /** The BlueMind verb a user needs, at least, to decide who sees a container. */
+  private static final String      BLUEMIND_MANAGE        = "Manage";
+
   /** The BlueMind verbs that let a user decide who sees a container. */
-  private static final Set<String> BLUEMIND_MANAGING      = Set.of("All", "Manage");
+  private static final Set<String> BLUEMIND_MANAGING      = Set.of("All", BLUEMIND_MANAGE);
 
   /**
    * The subject prefix of a private link BlueMind's calendar publishing gave
@@ -830,6 +833,10 @@ public class CaldavCalendarShareService {
    * @param mechanism what that selected
    */
   private void noteNotOffered(long serverId, String href, DavOptions capabilities, SharingMechanism mechanism) {
+    if (capabilities == null) {
+      LOG.debug("Server {} answered no capabilities for {}; sharing is not offered", serverId, href);
+      return;
+    }
     if (serversNotOffering.add(serverId)) {
       LOG.info("Sharing calendars is not offered on calendar server {}: collection {} advertised DAV classes {} and methods {},"
           + " which select {}. Reported once per server until restart", serverId, href, capabilities.davTokens(),
@@ -1304,9 +1311,9 @@ public class CaldavCalendarShareService {
       // created that is the caller's own, so a refusal is an unreadable list; for an imported calendar it is
       // what a subscriber to someone else's calendar gets, so it means not theirs.
       if (target.imported()) {
-        throw new CaldavShareException(NOT_OWNED_ON_SERVER, List.of(), List.of("Manage"), e);
+        throw new CaldavShareException(NOT_OWNED_ON_SERVER, List.of(), List.of(BLUEMIND_MANAGE), e);
       }
-      throw new CaldavShareException(ACL_UNREADABLE, List.of(), List.of("Manage"), e);
+      throw new CaldavShareException(ACL_UNREADABLE, List.of(), List.of(BLUEMIND_MANAGE), e);
     }
   }
 

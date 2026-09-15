@@ -123,6 +123,15 @@ public class HttpCalDavClient implements CalDavClient {
   /** Request header scoping how deep PROPFIND and REPORT descend. */
   private static final String         DEPTH_HEADER              = "Depth";
 
+  /** The WebDAV method that reads properties. */
+  private static final String         PROPFIND_METHOD           = "PROPFIND";
+
+  /** A privilege element of an ACL entry or a privilege set (RFC 3744). */
+  private static final String         PRIVILEGE_ELEMENT         = "privilege";
+
+  /** The principal element of an ACL entry (RFC 3744). */
+  private static final String         PRINCIPAL_ELEMENT         = "principal";
+
   /** Request header carrying the Basic credentials of the calendar account. */
   private static final String         AUTHORIZATION_HEADER      = "Authorization";
 
@@ -600,7 +609,7 @@ public class HttpCalDavClient implements CalDavClient {
                                               String collectionHref) {
     HttpRequest request = request(endpoint,
                                   collectionHref,
-                                  "PROPFIND",
+                                  PROPFIND_METHOD,
                                   PROPFIND_CAPABILITIES).header(DEPTH_HEADER, "0").build();
     DavResponse response = exchange(request);
     checkReadStatus(response, request);
@@ -972,7 +981,7 @@ public class HttpCalDavClient implements CalDavClient {
    * @return the multistatus element
    */
   private Element propfind(CalDavEndpoint endpoint, String href, String body, String depth) {
-    HttpRequest request = request(endpoint, href, "PROPFIND", body).header(DEPTH_HEADER, depth).build();
+    HttpRequest request = request(endpoint, href, PROPFIND_METHOD, body).header(DEPTH_HEADER, depth).build();
     DavResponse response = exchange(request);
     checkReadStatus(response, request);
     return parse(response.body(), request.uri());
@@ -1624,7 +1633,7 @@ public class HttpCalDavClient implements CalDavClient {
     List<String> davHeaders = response.response().headers().allValues("dav");
     List<String> allowHeaders = response.response().headers().allValues("allow");
     if (DavOptions.of(davHeaders, List.of()).davTokens().isEmpty()) {
-      HttpRequest propfind = request(endpoint, href, "PROPFIND", PROPFIND_RESOURCETYPE).header(DEPTH_HEADER, "0").build();
+      HttpRequest propfind = request(endpoint, href, PROPFIND_METHOD, PROPFIND_RESOURCETYPE).header(DEPTH_HEADER, "0").build();
       DavResponse answer = exchange(propfind);
       checkReadStatus(answer, propfind);
       davHeaders = answer.response().headers().allValues("dav");
@@ -1653,7 +1662,7 @@ public class HttpCalDavClient implements CalDavClient {
     Element acl = null;
     for (Element prop : grantedProps(response)) {
       for (Element set : childElements(prop, DAV_NS, "current-user-privilege-set")) {
-        for (Element privilege : childElements(set, DAV_NS, "privilege")) {
+        for (Element privilege : childElements(set, DAV_NS, PRIVILEGE_ELEMENT)) {
           String named = singleNameOf(privilege);
           if (named != null) {
             privileges.add(named);
@@ -1820,8 +1829,8 @@ public class HttpCalDavClient implements CalDavClient {
         return null;
       }
       String name = child.getLocalName();
-      if (("principal".equals(name) || "invert".equals(name)) && principal == null) {
-        principal = "principal".equals(name) ? principalOf(child) : invertedPrincipalOf(child);
+      if ((PRINCIPAL_ELEMENT.equals(name) || "invert".equals(name)) && principal == null) {
+        principal = PRINCIPAL_ELEMENT.equals(name) ? principalOf(child) : invertedPrincipalOf(child);
         inverted = "invert".equals(name);
         if (principal == null) {
           return null;
@@ -1858,7 +1867,7 @@ public class HttpCalDavClient implements CalDavClient {
    */
   private AccessControlEntry.AcePrincipal invertedPrincipalOf(Element invert) {
     List<Element> inner = elementChildren(invert);
-    if (hasText(invert) || inner.size() != 1 || !isDav(inner.get(0), "principal")) {
+    if (hasText(invert) || inner.size() != 1 || !isDav(inner.get(0), PRINCIPAL_ELEMENT)) {
       return null;
     }
     return principalOf(inner.get(0));
@@ -1913,7 +1922,7 @@ public class HttpCalDavClient implements CalDavClient {
     }
     Set<String> privileges = new HashSet<>();
     for (Element privilege : children) {
-      String named = isDav(privilege, "privilege") ? singleNameOf(privilege) : null;
+      String named = isDav(privilege, PRIVILEGE_ELEMENT) ? singleNameOf(privilege) : null;
       if (named == null) {
         return null;
       }
@@ -1971,7 +1980,7 @@ public class HttpCalDavClient implements CalDavClient {
           for (Element precondition : elementChildren(error)) {
             preconditions.add(shortName(precondition));
             if (isDav(precondition, "need-privileges")) {
-              for (Element privilege : descendants(precondition, DAV_NS, "privilege")) {
+              for (Element privilege : descendants(precondition, DAV_NS, PRIVILEGE_ELEMENT)) {
                 for (Element named : elementChildren(privilege)) {
                   missingPrivileges.add(shortName(named));
                 }

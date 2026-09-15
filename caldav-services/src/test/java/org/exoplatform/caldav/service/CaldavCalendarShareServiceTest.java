@@ -328,6 +328,21 @@ public class CaldavCalendarShareServiceTest {
    * Apple sharing, which is not offered: nothing is read, nothing is written,
    * and BlueMind's REST API is never called.
    */
+  /**
+   * A client answering no capabilities at all is refused as not supported, and
+   * saying so never dereferences the missing answer (Sonar javabugs:S2259 on
+   * the not-offered log line).
+   */
+  @Test
+  public void aServerAnsweringNoCapabilitiesIsNotOfferedWithoutFailing() {
+    when(calDavClient.capabilities(endpoint, COLLECTION)).thenReturn(null);
+
+    CaldavShareException refused = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
+
+    assertEquals(CaldavCalendarShareService.NOT_SUPPORTED, refused.getCode());
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+  }
+
   @Test
   public void appleSharingOutsideBlueMindsLayoutIsNotOffered() {
     when(calDavClient.capabilities(endpoint, COLLECTION)).thenReturn(DavOptions.of(List.of("1, access-control, calendar-access, calendarserver-sharing"),

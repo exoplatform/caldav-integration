@@ -95,6 +95,9 @@ public class BlueMindAclClient {
   /** What this client names itself as to BlueMind's login, for its logs. */
   static final String             LOGIN_ORIGIN     = "exo-caldav";
 
+  /** The media type BlueMind's REST API reads and answers. */
+  private static final String     JSON_MEDIA_TYPE  = "application/json";
+
   private static final Log        LOG              = ExoLogger.getLogger(BlueMindAclClient.class);
 
   /** The longest answer read from this API: an access list is a few entries. */
@@ -173,7 +176,7 @@ public class BlueMindAclClient {
       HttpRequest request = HttpRequest.newBuilder(uri)
                                        .timeout(REQUEST_TIMEOUT)
                                        .header(API_KEY_HEADER, key)
-                                       .header("Accept", "application/json")
+                                       .header("Accept", JSON_MEDIA_TYPE)
                                        .GET()
                                        .build();
       Answer answer = send(request, uri);
@@ -272,8 +275,8 @@ public class BlueMindAclClient {
     URI uri = URI.create(named + "?login=" + URLEncoder.encode(login, StandardCharsets.UTF_8) + "&origin=" + LOGIN_ORIGIN);
     HttpRequest request = HttpRequest.newBuilder(uri)
                                      .timeout(REQUEST_TIMEOUT)
-                                     .header("Content-Type", "application/json")
-                                     .header("Accept", "application/json")
+                                     .header("Content-Type", JSON_MEDIA_TYPE)
+                                     .header("Accept", JSON_MEDIA_TYPE)
                                      .POST(BodyPublishers.ofString(mapper.writeValueAsString(password), StandardCharsets.UTF_8))
                                      .build();
     Answer answer = send(request, named);
