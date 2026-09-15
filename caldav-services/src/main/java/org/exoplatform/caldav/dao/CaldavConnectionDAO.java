@@ -70,6 +70,23 @@ public interface CaldavConnectionDAO extends JpaRepository<CaldavConnectionEntit
                                                         Pageable pageable);
 
   /**
+   * The rows recorded on one server, lowest user first (EXO-90253).
+   *
+   * <p>
+   * The population a calendar on that server can be shared with: an eXo user
+   * is named to the server only by the principal recorded here. Served by the
+   * leading column of {@code IDX_CALDAV_CONNECTION_PRINCIPAL (SERVER_ID,
+   * PRINCIPAL)}; ordered so that a bounded page names the same users on every
+   * call.
+   *
+   * @param serverId the declared server registration
+   * @param pageable how many rows to read at most; required
+   * @return the rows
+   */
+  @Query("SELECT c FROM CaldavConnectionEntity c WHERE c.serverId = :serverId ORDER BY c.userIdentityId ASC")
+  List<CaldavConnectionEntity> findByServer(@Param("serverId") long serverId, Pageable pageable);
+
+  /**
    * How many users hold a pair in one state on one server without an identity
    * recorded for that server.
    *

@@ -170,6 +170,37 @@ public class CaldavConnectionStorageTest {
   }
 
   /**
+   * The principal a sharee is named by is the one recorded for that server
+   * (EXO-90253): a row recorded for another server says nothing about who
+   * the user is on this one, and no row names nobody.
+   */
+  @Test
+  public void aRecordedPrincipalIsTheOneOfThatServer() {
+    when(connectionDAO.findByUserIdentityId(ALICE)).thenReturn(Optional.of(row(11L, ALICE, STALWART, PRINCIPAL)));
+    when(connectionDAO.findByUserIdentityId(9L)).thenReturn(Optional.empty());
+
+    assertEquals(PRINCIPAL, storage.getRecordedPrincipal(ALICE, STALWART));
+    assertNull(storage.getRecordedPrincipal(ALICE, 2L), "recorded for another server");
+    assertNull(storage.getRecordedPrincipal(9L, STALWART), "never recorded");
+  }
+
+  /**
+   * The connections of a server are read in the DAO's order, bounded by the
+   * storage's page, keyed by user (EXO-90253).
+   */
+  @Test
+  public void theConnectionsOfAServerAreReadBoundedAndInOrder() {
+    ArgumentCaptor<Pageable> page = ArgumentCaptor.forClass(Pageable.class);
+    when(connectionDAO.findByServer(eq(STALWART), page.capture())).thenReturn(List.of(row(11L, ALICE, STALWART, PRINCIPAL),
+                                                                                      row(12L, 6L, STALWART, PRINCIPAL),
+                                                                                      row(13L, 9L, STALWART, "/dav/pal/bob@stalwart.local")));
+
+    assertEquals(List.of(ALICE, 6L, 9L), List.copyOf(storage.getPrincipalsOn(STALWART).keySet()));
+    assertEquals("/dav/pal/bob@stalwart.local", storage.getPrincipalsOn(STALWART).get(9L));
+    assertEquals(CaldavConnectionStorage.CONNECTIONS_ON_SERVER_READ, page.getValue().getPageSize());
+  }
+
+  /**
    * @param id the row id
    * @param user the eXo user
    * @param server the server key

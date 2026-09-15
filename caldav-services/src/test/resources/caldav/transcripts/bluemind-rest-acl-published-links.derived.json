@@ -1,0 +1,46 @@
+// DERIVED, not captured: no access list was read from a BlueMind server for
+// this fixture. The answer to GET /api/containers/_manage/{uid}/_acl for
+// FRANCOIS's calendar shared read-only with eric and published through
+// BlueMind's calendar publishing as two private links and one public link,
+// from BlueMind's source:
+// - parent/calendar/net.bluemind.calendar.service/src/net/bluemind/calendar/service/internal/PublishCalendarService.java
+//   TOKEN_PREFIX "x-calendar", PRIVATE_URL_PREFIX "x-calendar-private-" and
+//   PUBLIC_URL_PREFIX "x-calendar-public-" (l.68-70); setAclFor adds one entry
+//   per link, subject = prefix + token, verb Read, and computeUrl puts that
+//   subject in the link's URL; getGeneratedUrls reads the links back and
+//   disableUrl removes one by that subject (l.89-110). The subject is the
+//   secret part of the link.
+// - AclService.get expands every subject's stored verbs, a link's included:
+//   Read gives Read, Freebusy, Invitation and Visible (see
+//   bluemind-rest-acl-shared-with-eric.derived.json for the expansion rules).
+// The secrets are fake. The first private link follows generateToken (a UUID
+// without its dashes); the second follows the shape seen on the rig after the
+// prefix ("PUBLISH_PRIVATE-" then hex). eXo relies on the prefix alone.
+// Expansion goes through HashSets, so the order is not BlueMind's.
+// Lines starting with "//" are removed by the test before parsing.
+[
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "All"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "Write"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "Manage"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "ReadExtended"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "Read"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "Freebusy"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "Invitation"},
+  {"subject": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13", "verb": "Visible"},
+  {"subject": "x-calendar-private-5ec2e7f0a1b24c3d9e5f60718293a4b5", "verb": "Read"},
+  {"subject": "x-calendar-private-5ec2e7f0a1b24c3d9e5f60718293a4b5", "verb": "Freebusy"},
+  {"subject": "x-calendar-private-5ec2e7f0a1b24c3d9e5f60718293a4b5", "verb": "Invitation"},
+  {"subject": "x-calendar-private-5ec2e7f0a1b24c3d9e5f60718293a4b5", "verb": "Visible"},
+  {"subject": "6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17", "verb": "Read"},
+  {"subject": "6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17", "verb": "Freebusy"},
+  {"subject": "6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17", "verb": "Invitation"},
+  {"subject": "6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17", "verb": "Visible"},
+  {"subject": "x-calendar-public-7b1d9c3ea4f2468b8c0d1e2f3a4b5c6d", "verb": "Read"},
+  {"subject": "x-calendar-public-7b1d9c3ea4f2468b8c0d1e2f3a4b5c6d", "verb": "Freebusy"},
+  {"subject": "x-calendar-public-7b1d9c3ea4f2468b8c0d1e2f3a4b5c6d", "verb": "Invitation"},
+  {"subject": "x-calendar-public-7b1d9c3ea4f2468b8c0d1e2f3a4b5c6d", "verb": "Visible"},
+  {"subject": "x-calendar-private-PUBLISH_PRIVATE-0ABB3E9C71D24F5A8B6C0D1E2F3A4B5C", "verb": "Read"},
+  {"subject": "x-calendar-private-PUBLISH_PRIVATE-0ABB3E9C71D24F5A8B6C0D1E2F3A4B5C", "verb": "Freebusy"},
+  {"subject": "x-calendar-private-PUBLISH_PRIVATE-0ABB3E9C71D24F5A8B6C0D1E2F3A4B5C", "verb": "Invitation"},
+  {"subject": "x-calendar-private-PUBLISH_PRIVATE-0ABB3E9C71D24F5A8B6C0D1E2F3A4B5C", "verb": "Visible"}
+]
