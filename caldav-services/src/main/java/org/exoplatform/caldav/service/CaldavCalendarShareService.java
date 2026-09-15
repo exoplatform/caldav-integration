@@ -42,8 +42,8 @@ import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.client.AccessControlEntry;
 import org.exoplatform.caldav.client.AclWriteResult;
-import org.exoplatform.caldav.client.BlueMindAclClient;
-import org.exoplatform.caldav.client.BlueMindAclClient.BlueMindAce;
+import org.exoplatform.caldav.client.bluemind.BlueMindAclClient;
+import org.exoplatform.caldav.client.bluemind.BlueMindAclClient.BlueMindAce;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
@@ -1361,8 +1361,8 @@ public class CaldavCalendarShareService {
     }
     Lock lock = lockOf(target);
     lock.lock();
-    try (BlueMindAclClient.Session session = blueMindSessionOf(target)) {
-      List<BlueMindAce> before = blueMindAclOf(target, session);
+    try {
+      List<BlueMindAce> before = blueMindAclOf(target);
       requireBlueMindManager(target, before);
       Set<String> theirs = blueMindVerbsOf(before, shareeUid);
       if (!BLUEMIND_READ_CLOSURE.containsAll(theirs)) {
@@ -1376,7 +1376,7 @@ public class CaldavCalendarShareService {
         throw new IllegalArgumentException(SHAREE_HAS_OTHER_ACCESS);
       }
       postBlueMindShare(target, blueMindAddressOf(target, sharee), false);
-      List<BlueMindAce> after = blueMindAclOf(target, session);
+      List<BlueMindAce> after = blueMindAclOf(target);
       warnOnChangedBlueMindEntries(target, before, after, shareeUid);
       if (!blueMindVerbsOf(after, shareeUid).contains(BLUEMIND_READ)) {
         LOG.warn("The server answered the share of calendar {} ({}) with {}, but its access list read back gives entry {} no read"
@@ -1421,8 +1421,8 @@ public class CaldavCalendarShareService {
     }
     Lock lock = lockOf(target);
     lock.lock();
-    try (BlueMindAclClient.Session session = blueMindSessionOf(target)) {
-      List<BlueMindAce> before = blueMindAclOf(target, session);
+    try {
+      List<BlueMindAce> before = blueMindAclOf(target);
       requireBlueMindManager(target, before);
       Set<String> theirs = blueMindVerbsOf(before, shareeUid);
       if (theirs.isEmpty()) {
@@ -1433,7 +1433,7 @@ public class CaldavCalendarShareService {
         throw new IllegalArgumentException(NOT_READ_ONLY);
       }
       postBlueMindShare(target, blueMindAddressOf(target, sharee), true);
-      List<BlueMindAce> after = blueMindAclOf(target, session);
+      List<BlueMindAce> after = blueMindAclOf(target);
       warnOnChangedBlueMindEntries(target, before, after, shareeUid);
       if (!blueMindVerbsOf(after, shareeUid).isEmpty()) {
         LOG.warn("The server answered removing {} from calendar {} ({}), but its access list read back still names entry {};"
@@ -1462,30 +1462,6 @@ public class CaldavCalendarShareService {
    */
   private List<BlueMindAce> blueMindAclOf(ShareTarget target) {
     return blueMindAclOf(target, () -> blueMindAclClient.readAcl(target.endpoint(), containerUidOf(target)));
-  }
-
-  /**
-   * The list read through a session already open, so that a grant or a revoke
-   * — a read, the change, the read-back — authenticates to BlueMind's REST
-   * API once, not once per read.
-   *
-   * @param target the calendar
-   * @param session the open session
-   * @return the entries
-   */
-  private List<BlueMindAce> blueMindAclOf(ShareTarget target, BlueMindAclClient.Session session) {
-    return blueMindAclOf(target, () -> session.readAcl(containerUidOf(target)));
-  }
-
-  /**
-   * One REST session on the calendar's server, as its owner. Opening it fails
-   * as a read does, with the same codes.
-   *
-   * @param target the calendar
-   * @return the session, to close
-   */
-  private BlueMindAclClient.Session blueMindSessionOf(ShareTarget target) {
-    return blueMindAclOf(target, () -> blueMindAclClient.open(target.endpoint()));
   }
 
   private <T> T blueMindAclOf(ShareTarget target, Supplier<T> read) {

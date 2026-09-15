@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-package org.exoplatform.caldav.client;
+package org.exoplatform.caldav.client.bluemind;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -55,7 +55,13 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
-import org.exoplatform.caldav.client.BlueMindAclClient.BlueMindAce;
+import org.exoplatform.caldav.client.CalDavAuthenticationException;
+import org.exoplatform.caldav.client.CalDavEndpoint;
+import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavForbiddenException;
+import org.exoplatform.caldav.client.CalDavUnreachableException;
+import org.exoplatform.caldav.client.TestEndpoints;
+import org.exoplatform.caldav.client.bluemind.BlueMindAclClient.BlueMindAce;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
 import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
@@ -139,9 +145,9 @@ public class BlueMindAclClientTest {
     lenient().doReturn(new HttpConnectorCredentials(AUTHORIZATION, null)).when(credentials).produce(any());
     lenient().doReturn(LOGIN).when(credentials).resolveTargetIdentity(any());
     client = new BlueMindAclClient(transport, new CaldavCredentialsResolver(credentials));
-    endpoint = new CalDavEndpoint(1L, BASE, "personal", "root");
+    endpoint = TestEndpoints.endpoint(1L, BASE, "personal", "root");
 
-    logger = (Logger) LoggerFactory.getLogger(BlueMindAclClient.class);
+    logger = (Logger) LoggerFactory.getLogger(BlueMindRestSession.class);
     previousLevel = logger.getLevel();
     logger.setLevel(Level.TRACE);
     logged = new ListAppender<>();
@@ -156,30 +162,6 @@ public class BlueMindAclClientTest {
   void restoreLogger() {
     logger.detachAppender(logged);
     logger.setLevel(previousLevel);
-  }
-
-  /**
-   * A grant reads the list before and after its change: both reads travel in
-   * one session — one login, two reads under the same key, one logout — not a
-   * login per read (EXO-90190 review, round 1).
-   */
-  @Test
-  void oneSessionServesEveryReadOfAServiceCallWithOneLoginAndOneLogout() {
-    answer(200, derived("bluemind-rest-login-ok.derived.json"));
-    answer(200, derived("bluemind-rest-acl-shared-with-eric.derived.json"));
-    answer(200, derived("bluemind-rest-acl-shared-with-eric.derived.json"));
-    answer(200, "");
-
-    try (BlueMindAclClient.Session session = client.open(endpoint)) {
-      assertEquals(17, session.readAcl(CONTAINER).size());
-      assertEquals(17, session.readAcl(CONTAINER).size());
-    }
-
-    assertEquals(List.of("/api/auth/login", "/api/containers/_manage/" + CONTAINER + "/_acl",
-                         "/api/containers/_manage/" + CONTAINER + "/_acl", "/api/auth/logout"),
-                 sent.stream().map(request -> request.uri().getPath()).toList());
-    assertTrue(sent.subList(1, 4).stream().allMatch(request -> KEY.equals(request.headers().firstValue(BlueMindAclClient.API_KEY_HEADER).orElse(null))));
-    assertTrue(answers.isEmpty(), "nothing else was sent");
   }
 
   /**
@@ -249,7 +231,7 @@ public class BlueMindAclClientTest {
     assertEquals(null, sent.get(1).uri().getRawQuery());
 
     sent.clear();
-    CalDavEndpoint elsewhere = new CalDavEndpoint(1L, URI.create("ftp://bm.example.com/dav/"), "personal", "root");
+    CalDavEndpoint elsewhere = TestEndpoints.endpoint(1L, URI.create("ftp://bm.example.com/dav/"), "personal", "root");
     assertThrows(CalDavException.class, () -> client.readAcl(elsewhere, CONTAINER));
     assertTrue(sent.isEmpty());
   }
