@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DERIVED, not captured: no write and no principal of a colleague was asked
+  of the BlueMind test account for this fixture. Built from BlueMind's source
+  (github.com/bluemind-net/bluemind, HEAD of the public clone):
+  - plugins/net.bluemind.dav.server/src/net/bluemind/dav/server/proto/props/caldav/CalendarUserAddressSet.java
+    fetch(): the set is, in this order, Proxy.path + "/principals/__uids__/"
+    + uid + "/", "urn:uuid:" + uid, and "mailto:" + the directory entry's
+    email (IDirectory.findByEntryUid on the same uid);
+  - plugins/net.bluemind.dav.server/src/net/bluemind/dav/server/store/ResType.java
+    PRINCIPAL = Proxy.path + "/principals/__uids__/([^/]+)/", Proxy.path "/dav".
+  The uid and the address are the rig's colleague eric/MEYER, invented.
+-->
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:response>
+    <d:href>/dav/principals/__uids__/6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17/</d:href>
+    <d:propstat>
+      <d:prop>
+        <cal:calendar-user-address-set>
+          <d:href>/dav/principals/__uids__/6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17/</d:href>
+          <d:href>urn:uuid:6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17</d:href>
+          <d:href>mailto:eric.meyer@bm.example.com</d:href>
+        </cal:calendar-user-address-set>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>

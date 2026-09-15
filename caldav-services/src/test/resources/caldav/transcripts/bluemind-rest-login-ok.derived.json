@@ -1,0 +1,19 @@
+// DERIVED, not captured: no REST session was opened on a BlueMind server for
+// this fixture. The answer to POST /api/auth/login, from BlueMind's source:
+// - parent/authentication/net.bluemind.authentication.api/src/net/bluemind/authentication/api/LoginResponse.java
+//   fields status (Ok | Bad | Expired), message, authKey, latd, authUser;
+// - parent/core/net.bluemind.core.rest/src/net/bluemind/core/rest/base/RestRootHandler.java:465
+//   the key is then sent back in the X-BM-ApiKey header.
+// authUser is abridged to what this add-on never reads. Lines starting with
+// "//" are removed by the test before parsing.
+{
+  "status": "Ok",
+  "message": null,
+  "authKey": "bm-session-7f1e9c2a-4d6b-4e1f-9a3c-5b8d2e0f6a41",
+  "latd": "francois@bm.example.com",
+  "authUser": {
+    "uid": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13",
+    "domainUid": "bm.example.com",
+    "displayName": "FRANCOIS root"
+  }
+}
