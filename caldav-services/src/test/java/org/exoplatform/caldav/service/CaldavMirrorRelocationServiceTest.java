@@ -28,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -53,6 +54,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
 
 import org.exoplatform.caldav.client.CalDavClient;
+import org.exoplatform.caldav.client.CalendarObjectWriter;
+import org.exoplatform.caldav.client.CalendarObjectWriters;
+import org.exoplatform.caldav.client.CalDavObjectWriter;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.client.PutResult;
@@ -119,6 +123,15 @@ public class CaldavMirrorRelocationServiceTest {
   @Mock
   private CalDavClient                       calDavClient;
 
+  /**
+   * The door resolver, answering the CalDAV door over the mocked client for
+   * every endpoint: what keeps every verification on {@code calDavClient}
+   * meaningful now that the service writes through {@code CalendarObjectWriters}
+   * (EXO-90307).
+   */
+  @Mock
+  private CalendarObjectWriters              calendarObjectWriters;
+
   @Mock
   private CaldavSyncStorage                  caldavSyncStorage;
 
@@ -149,6 +162,7 @@ public class CaldavMirrorRelocationServiceTest {
 
   @BeforeEach
   public void connectAnAccount() {
+    lenient().when(calendarObjectWriters.writer(any())).thenReturn(new CalDavObjectWriter(calDavClient));
     logged.start();
     serviceLogger().addAppender(logged);
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
@@ -787,6 +801,33 @@ public class CaldavMirrorRelocationServiceTest {
     pair.setRemoteHref(href);
     pair.setOrigin(SyncOrigin.MIRROR);
     return pair;
+  }
+
+
+  /**
+   * <b>The seam pin of EXO-90307 for the move.</b> Writing the copy at its new
+   * place and removing it from the old go through the door the registry
+   * resolved; no CalDAV PUT or DELETE is issued for either.
+   */
+  @Test
+  public void onTheImportDoorTheMoveIssuesNoCalDavWrite() {
+    CalendarObjectWriter door = mock(CalendarObjectWriter.class);
+    when(calendarObjectWriters.writer(any())).thenReturn(door);
+    when(door.overwriteObject(endpoint, IN_MAIN, ICS)).thenReturn(new PutResult(201, "\"etag-9\"", null));
+    when(door.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"")).thenReturn(204);
+    givenTheDestinationIsNow(MAIN);
+    givenThePairPointsAt(DEDICATED);
+    givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\""));
+    givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
+
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+
+    assertEquals(1, relocation.moved());
+    verify(door).overwriteObject(endpoint, IN_MAIN, ICS);
+    verify(door).deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"");
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any());
   }
 
   /**

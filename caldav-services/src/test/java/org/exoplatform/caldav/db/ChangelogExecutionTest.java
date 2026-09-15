@@ -189,7 +189,8 @@ public class ChangelogExecutionTest {
 
   /**
    * The deployment-wide ownership index (1.0.0-48) exists with its columns in
-   * lookup order, and its rollback removes it without touching the table.
+   * lookup order, and its rollback removes it without touching the table. The
+   * changesets applied after it are rolled back first, however many there are.
    *
    * @throws Exception when a changeset cannot be applied or rolled back
    */
@@ -199,7 +200,7 @@ public class ChangelogExecutionTest {
     assertEquals(List.of("SERVER_ID", "ORIGIN", "LOCAL_CALENDAR_SYNC_UID"),
                  indexColumns("CALDAV_CALENDAR_SYNC", "IDX_CALDAV_CALENDAR_SYNC_ORIGIN"));
 
-    rollbackCount(1);
+    rollbackCount(appliedSince("1.0.0-48"));
 
     assertTrue(indexColumns("CALDAV_CALENDAR_SYNC", "IDX_CALDAV_CALENDAR_SYNC_ORIGIN").isEmpty(),
                "rolling 1.0.0-48 back must drop the index");
@@ -496,6 +497,25 @@ public class ChangelogExecutionTest {
    */
   private void update() throws Exception {
     liquibase().update(new Contexts(), new LabelExpression());
+  }
+
+  /**
+   * How many changesets have run since the given one, that one included: the
+   * count a rollback needs to undo it.
+   *
+   * @param id the changeset id
+   * @return the count, at least one
+   * @throws Exception when the changelog table cannot be read
+   */
+  private int appliedSince(String id) throws Exception {
+    try (Statement statement = connection.createStatement();
+        ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM DATABASECHANGELOG WHERE ORDEREXECUTED >= "
+            + "(SELECT ORDEREXECUTED FROM DATABASECHANGELOG WHERE ID = '" + id + "')")) {
+      rows.next();
+      int count = rows.getInt(1);
+      assertTrue(count > 0, id + " must have run");
+      return count;
+    }
   }
 
   /**
