@@ -657,6 +657,44 @@ public class CaldavSyncStorageTest {
     verify(objectSyncDAO, never()).findEventIdsByOwnerAndOriginAndIcsUid(anyLong(), anyLong(), any(), anyString());
   }
 
+  /**
+   * A copy eXo wrote into another account of the same server still names its
+   * meeting (EXO-90247).
+   */
+  @Test
+  public void aCopyInAnotherAccountOfTheServerStillNamesItsEvent() {
+    // The object a natively scheduling server delivered: eXo's UID, somebody
+    // else's calendar home, nobody's pair of the reading user's. The
+    // user-scoped question cannot name the meeting and must not be widened to;
+    // this one can.
+    when(objectSyncDAO.findEventIdsByServerAndOriginAndIcsUid(2L, SyncOrigin.MIRROR, "uid-1")).thenReturn(List.of(88L));
+
+    assertEquals(88L, storage.getMirrorEventIdOnServer(2L, "uid-1"));
+  }
+
+  /**
+   * A UID no mirror on the server wrote names no meeting, and neither does an
+   * ambiguous one.
+   */
+  @Test
+  public void aUidNoMirrorOnTheServerWroteNamesNoEvent() {
+    when(objectSyncDAO.findEventIdsByServerAndOriginAndIcsUid(2L, SyncOrigin.MIRROR, "uid-2")).thenReturn(List.of());
+    when(objectSyncDAO.findEventIdsByServerAndOriginAndIcsUid(2L, SyncOrigin.MIRROR, "uid-3")).thenReturn(List.of(88L, 99L));
+
+    assertNull(storage.getMirrorEventIdOnServer(2L, "uid-2"));
+    assertNull(storage.getMirrorEventIdOnServer(2L, "uid-3"), "two meetings behind one UID is not a guess to take");
+  }
+
+  /**
+   * A blank UID is nobody's copy and is not asked about.
+   */
+  @Test
+  public void anObjectWithNoUidNamesNoMirrorEventOnTheServerEither() {
+    assertNull(storage.getMirrorEventIdOnServer(2L, " "));
+
+    verify(objectSyncDAO, never()).findEventIdsByServerAndOriginAndIcsUid(anyLong(), any(), anyString());
+  }
+
   @Test
   public void theObjectsOfABindingComeBackAsAPage() {
     when(objectSyncDAO.findByCalendarSyncId(eq(3L), any(Pageable.class))).thenReturn(new PageImpl<>(List.of(objectEntity(1L))));

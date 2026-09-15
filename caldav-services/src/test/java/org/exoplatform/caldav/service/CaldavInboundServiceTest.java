@@ -1677,6 +1677,116 @@ public class CaldavInboundServiceTest {
     verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
   }
 
+  // ------------------------------- the invitation the server delivered itself
+
+  /**
+   * An invitation the user's own server delivered is adopted, not imported
+   * (EXO-90247).
+   *
+   * <p>
+   * The object is eXo's copy of the organizer's, travelling: same UID, another
+   * account of the same server. It is in the invitee's own calendar home, so
+   * the account-scoped ownership question says no and no pair of theirs maps
+   * the UID — which is exactly how it used to arrive as a second, personal
+   * event standing for a meeting their agenda already held.
+   */
+  @Test
+  public void anInvitationTheServerDeliveredIsAdoptedAndNotImported() throws Exception {
+    String answered = icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED");
+    givenServerObjects(object("o1.ics", "etag-1", answered));
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(false);
+    when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, "uid-1@example.test")).thenReturn(777L);
+    when(agendaEventAttendeeService.isEventAttendee(777L, USER)).thenReturn(true);
+    lenient().when(agendaEventService.createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong()))
+             .thenReturn(event(501L));
+
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    verify(caldavAnswerAdoptionService).adoptAnswer(USER, 777L, answered);
+    verify(agendaEventService, never()).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong());
+  }
+
+  /**
+   * Naming an eXo meeting is not being invited to it.
+   *
+   * <p>
+   * The adversarial pin. An object carrying a UID this deployment wrote, in a
+   * user's calendar, is not by itself permission to record that user's answer
+   * to the meeting behind it — the UID could have reached the calendar by any
+   * route, an export or a hand-copied invitation among them. Agenda's own
+   * attendee question is what decides, and it refuses: nothing is adopted, and
+   * the object goes on being imported as the ordinary remote object it looks
+   * like.
+   */
+  @Test
+  public void anInvitationForSomebodyElseIsNeverAdoptedOnThisUsersBehalf() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED")));
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(false);
+    when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, "uid-1@example.test")).thenReturn(777L);
+    when(agendaEventAttendeeService.isEventAttendee(777L, USER)).thenReturn(false);
+    givenAgendaCreates(501L);
+
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
+  }
+
+  /**
+   * A copy eXo wrote into <b>this</b> account keeps going through the arm that
+   * owns it.
+   *
+   * <p>
+   * Precedence, pinned rather than assumed. The mirror arm is the one that
+   * handles a shared account (EXO-90190), and it runs first; the server-scoped
+   * question must not even be asked of an object it already claimed.
+   */
+  @Test
+  public void aCopyEXoWroteIntoThisAccountIsStillTheMirrorArmsToHandle() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED")));
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(true);
+    when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-1@example.test")).thenReturn(777L);
+
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    verify(caldavSyncStorage, never()).getMirrorEventIdOnServer(anyLong(), anyString());
+    verify(agendaEventAttendeeService, never()).isEventAttendee(anyLong(), anyLong());
+  }
+
+  /**
+   * Another deployment's copy has no write record here, so nothing diverts it.
+   *
+   * <p>
+   * The foreign-writer path is untouched by construction and this says so:
+   * eXo's own mapping rows are the witness, and a copy this deployment never
+   * wrote has none whatever event link it carries.
+   */
+  @Test
+  public void aForeignDeploymentsCopyIsImportedAsBefore() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-9@example.test", "Dentist")));
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-9@example.test")).thenReturn(false);
+    when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, "uid-9@example.test")).thenReturn(null);
+    givenAgendaCreates(501L);
+
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    verify(agendaEventAttendeeService, never()).isEventAttendee(anyLong(), anyLong());
+    verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
+  }
+
+  /**
+   * Not being able to tell is not a reason to divert an object.
+   */
+  @Test
+  public void anUnanswerableDeliveryQuestionLeavesTheImportAsItWas() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-1", ics("uid-9@example.test", "Dentist")));
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-9@example.test")).thenReturn(false);
+    when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, "uid-9@example.test"))
+                                                                                  .thenThrow(new IllegalStateException("database is down"));
+    givenAgendaCreates(501L);
+
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+  }
+
   /**
    * An object no mirror owns is a genuine remote event and still imports.
    */

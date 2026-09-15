@@ -337,7 +337,134 @@ public class CaldavInboundService {
     if (known != null) {
       return update(userIdentityId, pair, calendar, object, master, known, parsed);
     }
+    Long natively = nativeInvitationEventOf(userIdentityId, pair, master.getUid());
+    if (natively != null) {
+      // The server delivered eXo's own invitation into this account itself
+      // (EXO-90247). The user already holds this meeting in their agenda, as an
+      // attendee; importing the object would give them a second, personal
+      // event standing for it. The answer on it is read for the same reason,
+      // and in the same order, as on a copy eXo wrote: the object is in hand
+      // and this is the only reader that was told it changed.
+      adoptNativeInvitation(userIdentityId, pair, object, natively);
+      return false;
+    }
     return create(userIdentityId, pair, calendar, object, master, parsed, adoptable);
+  }
+
+  /**
+   * The eXo meeting an object is the server's own delivery of, when it is one
+   * this user may answer for (EXO-90247).
+   *
+   * <p>
+   * <b>What identifies such an object, and why it is not the event link.</b> A
+   * server that schedules for itself delivers the organizer's copy into the
+   * invitee's account keeping its UID, and eXo minted that UID: it is a random
+   * UUID, recorded against a mirror pair of this deployment on this server. So
+   * the witness used here is eXo's <i>own write record</i> — a row nothing
+   * outside this deployment can produce — and not the event link the object
+   * happens to carry, which is text a writer chooses and which the existing
+   * foreign-deployment detection has to verify the authority of for exactly
+   * that reason. The record also hands back the meeting directly, where the
+   * link would have to be parsed for an identifier and then believed.
+   *
+   * <p>
+   * <b>Reached only where it can mean this.</b> By the time it is asked, the
+   * account-scoped ownership question has already said the object is not one
+   * eXo wrote into <i>this</i> calendar home (so the copies of a shared account
+   * — EXO-90190 — are handled by that arm, not this one), and the pair-scoped
+   * mapping has already said no pair of this user's maps the UID (so nothing
+   * that would have been updated is diverted). What is left is an object that
+   * would otherwise be created as a new event, carrying a UID this deployment
+   * wrote into somebody else's account on the same server. Another eXo
+   * deployment's copies have no such row here at all, so the foreign-writer
+   * path is untouched by construction.
+   *
+   * <p>
+   * <b>The authorization, and what it refuses.</b> Naming a meeting is not
+   * being invited to it. Agenda is asked, through its own ACL-aware
+   * {@code isEventAttendee}, which resolves membership of a space carrying the
+   * attendee row as well as an attendee row of the user's own — the shape a
+   * space meeting has. A user who is not an attendee is refused: nothing is
+   * adopted, no response is recorded, and the object goes on to be imported as
+   * the ordinary remote object it looks like, which is what happens today.
+   *
+   * @param userIdentityId whose collection is being read
+   * @param pair the binding being imported
+   * @param icsUid the object's iCalendar UID
+   * @return the meeting to adopt the answer onto, or null when the object is
+   *         not such a delivery or this user may not answer for it
+   */
+  private Long nativeInvitationEventOf(long userIdentityId, CalendarSync pair, String icsUid) {
+    try {
+      Long localEventId = caldavSyncStorage.getMirrorEventIdOnServer(pair.getServerId(), icsUid);
+      if (localEventId == null || localEventId <= 0) {
+        return null;
+      }
+      if (!agendaEventAttendeeService.isEventAttendee(localEventId, userIdentityId)) {
+        LOG.debug("Object {} carries the UID of eXo's copy of event {} on server {}, but user {} is not an attendee of it;"
+            + " nothing is adopted and it is imported as any other object",
+                  pair.getRemoteHref(),
+                  localEventId,
+                  pair.getServerId(),
+                  userIdentityId);
+        return null;
+      }
+      return localEventId;
+    } catch (RuntimeException | LinkageError e) {
+      // Not knowing is not a reason to divert an object away from the import
+      // that would otherwise have happened.
+      LOG.debug("Whether object {} of user {} is an invitation their own server delivered could not be told",
+                pair.getRemoteHref(),
+                userIdentityId,
+                e);
+      return null;
+    }
+  }
+
+  /**
+   * Records this user's answer off the invitation their own server delivered,
+   * on its way to leaving the object where it is.
+   *
+   * <p>
+   * The same shape, and the same reader, as the answer taken off a copy eXo
+   * wrote: {@code CaldavAnswerAdoptionService} is driven by the meeting's
+   * identifier and carries no assumption that the object is one of eXo's own,
+   * and it matches only the reading user's <i>own</i> attendee line — by their
+   * profile address or their CalDAV login — so no other attendee's answer on
+   * the object can be recorded as theirs.
+   *
+   * <p>
+   * Failures are swallowed to a line, as the mirror arm's are: one unreadable
+   * answer must not cost the collection its import.
+   *
+   * @param userIdentityId whose answer is being read
+   * @param pair the binding being imported
+   * @param object the object as the server holds it
+   * @param localEventId the meeting the answer belongs to
+   */
+  private void adoptNativeInvitation(long userIdentityId, CalendarSync pair, CalendarObject object, long localEventId) {
+    try {
+      if (StringUtils.isBlank(object.calendarData())) {
+        return;
+      }
+      CaldavAnswerAdoptionService.Outcome outcome = caldavAnswerAdoptionService.adoptAnswer(userIdentityId,
+                                                                                           localEventId,
+                                                                                           object.calendarData());
+      if (outcome == CaldavAnswerAdoptionService.Outcome.ADOPTED) {
+        LOG.info("User {} answered event {} on the invitation server {} delivered to their own account; the answer is"
+            + " adopted and the object is not imported as a second meeting",
+                 userIdentityId,
+                 localEventId,
+                 pair.getServerId());
+      } else {
+        LOG.debug("Object {} is the invitation server {} delivered for event {}; it is not imported",
+                  object.href(),
+                  pair.getServerId(),
+                  localEventId);
+      }
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("The answer on the invitation at {} could not be read", object.href(), e);
+    }
   }
 
   /**
