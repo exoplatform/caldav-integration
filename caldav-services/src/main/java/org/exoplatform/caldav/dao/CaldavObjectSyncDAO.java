@@ -288,6 +288,52 @@ public interface CaldavObjectSyncDAO extends JpaRepository<CaldavObjectSyncEntit
                                                    @Param("icsUid") String icsUid);
 
   /**
+   * Which eXo events any pair of one origin, on one server, holds that
+   * iCalendar UID for — whoever owns the pair.
+   *
+   * <p>
+   * The third question of the family, and the one the other two cannot answer
+   * (EXO-90247). A server that performs its own scheduling delivers a copy eXo
+   * wrote for the organizer into <em>another</em> account of the same server,
+   * keeping its UID. Seen from the receiving account, that object is in nobody
+   * else's calendar home and on nobody else's pair, so
+   * {@code countByHomeAndOriginAndIcsUid} says "not ours" and
+   * {@code findEventIdsByOwnerAndOriginAndIcsUid} says "not this user's" —
+   * both correctly, and neither names the meeting.
+   *
+   * <p>
+   * <b>Why widening the scope is safe here and is not at
+   * {@link #findEventIdsByOwnerAndOriginAndIcsUid}.</b> That one feeds the
+   * adoption of an answer directly, so a row of another user's is an answer
+   * attributed to the wrong person — the EXO-90190 defect, and its javadoc says
+   * so. This one answers only <em>which meeting</em> an object stands for.
+   * Whether the reading user may answer for that meeting is a separate question
+   * asked of agenda afterwards, and whose PARTSTAT is read is decided by
+   * matching the reading user's own addresses against the object's attendee
+   * lines. Neither of those becomes any looser for this query being asked of
+   * the server. The two methods stay separate for exactly that reason: they are
+   * not the same question and must not be merged.
+   *
+   * <p>
+   * A UID is a random UUID eXo mints per (series, user), so a match across
+   * accounts of one server is the same object and not a coincidence. The event
+   * identifiers and nothing else, for the reason the user-scoped sibling
+   * records: a row handed out is a row that can be written to; an identifier is
+   * a fact that can only be read.
+   *
+   * @param serverId the declared server registration
+   * @param origin which side created the collections that count as owning
+   * @param icsUid the iCalendar UID looked for
+   * @return the events those mappings name, empty when the UID is not ours
+   */
+  @Query("SELECT DISTINCT o.localEventId FROM CaldavObjectSyncEntity o, CaldavCalendarSyncEntity p"
+      + " WHERE o.calendarSyncId = p.id AND p.serverId = :serverId AND p.origin = :origin"
+      + " AND o.icsUid = :icsUid AND o.localEventId IS NOT NULL")
+  List<Long> findEventIdsByServerAndOriginAndIcsUid(@Param("serverId") long serverId,
+                                                    @Param("origin") SyncOrigin origin,
+                                                    @Param("icsUid") String icsUid);
+
+  /**
    * Drops every mapping of a pair. Called when a pair is unbound; the foreign
    * key would cascade on a row delete, but a pair is often kept as a tombstone
    * while its objects are not.
