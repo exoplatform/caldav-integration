@@ -104,15 +104,6 @@ public enum SharingMechanism {
    */
   static final Pattern BLUEMIND_COLLECTION = Pattern.compile("/dav/calendars/__uids__/[^/]+/[^/]+");
 
-  /**
-   * A user principal as BlueMind's DAV server names one
-   * ({@code net.bluemind.dav.server.proto.props.webdav.CurrentUserPrincipal#fetch}):
-   * the directory entry uid under {@code /dav/principals/__uids__/}. The
-   * sibling of {@link #BLUEMIND_COLLECTION}, kept beside it so the two halves
-   * of BlueMind's path vocabulary are read from one place.
-   */
-  static final Pattern BLUEMIND_PRINCIPAL  = Pattern.compile("/dav/principals/__uids__/[^/]+");
-
   /** The RFC 3744 method that writes an access control list. */
   static final String ACL_METHOD            = "ACL";
 
@@ -224,33 +215,5 @@ public enum SharingMechanism {
   public static boolean isBlueMindCollection(String collectionHref) {
     return collectionHref != null
         && BLUEMIND_COLLECTION.matcher(CalendarCollection.principalPathOf(collectionHref)).matches();
-  }
-
-  /**
-   * Whether a path is a user principal as BlueMind's DAV server names one.
-   *
-   * <p>
-   * The account half of the recognition {@link #isBlueMindCollection(String)}
-   * performs on a collection, and it exists because one caller has a principal
-   * and no collection: the connection registry records
-   * {@code current-user-principal} per (user, server) and answers it without a
-   * network call (EXO-90243), which is the only way an outbound decision taken
-   * per invitee can ask what product an account sits on at all (EXO-90247).
-   *
-   * <p>
-   * <b>What the shape is and is not evidence of.</b> Apple's CalendarServer
-   * uses the same {@code __uids__} layout without the {@code /dav} root, and
-   * Nextcloud and iCloud use other paths, so the shape does separate BlueMind
-   * from the servers this add-on has met — but it is a spelling, not a
-   * handshake, and no caller may treat it as one on its own. It is offered as
-   * <i>one</i> witness among the several its caller is required to hold
-   * together.
-   *
-   * @param principalHref the principal path, raw or canonical, may be null
-   * @return true for {@code /dav/principals/__uids__/<uid>}
-   */
-  public static boolean isBlueMindPrincipal(String principalHref) {
-    return principalHref != null
-        && BLUEMIND_PRINCIPAL.matcher(CalendarCollection.principalPathOf(principalHref)).matches();
   }
 }
