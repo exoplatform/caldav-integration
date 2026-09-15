@@ -244,7 +244,10 @@ public class CaldavReadService {
    * calendar of the user's own the server will not let them write is the
    * second without being the first. The owner is named from the witness that
    * made it a share — the colleague's pair, or the principal the server
-   * returned — and is nobody when neither can say.
+   * returned — and is nobody when neither can say. The owner's kind travels
+   * beside it (EXO-90275): a resource the user subscribed to on BlueMind is
+   * named by the resource's name and said to be a resource, so the list draws
+   * it as one rather than with an avatar.
    *
    * @param userIdentityId identity of the user the list is for, who is never
    *          named as the owner of a calendar shared with them
@@ -283,7 +286,8 @@ public class CaldavReadService {
                               ownership.isShared(),
                               owner.identityId(),
                               owner.username(),
-                              owner.displayName());
+                              owner.displayName(),
+                              ownership.ownerKind());
   }
 
   /**
