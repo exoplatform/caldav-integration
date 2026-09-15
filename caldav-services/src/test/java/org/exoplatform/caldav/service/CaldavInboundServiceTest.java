@@ -1981,7 +1981,7 @@ public class CaldavInboundServiceTest {
    * read, by the arm above.
    */
   @Test
-  public void noAnswerIsTakenOffTheDuplicate() throws Exception {
+  public void noAnswerIsTakenOffTheDuplicate() {
     givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED")));
     when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(false);
     when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, "uid-1@example.test")).thenReturn(777L);
@@ -2027,7 +2027,7 @@ public class CaldavInboundServiceTest {
    * question must not even be asked of an object it already claimed.
    */
   @Test
-  public void aCopyEXoWroteIntoThisAccountIsStillTheMirrorArmsToHandle() throws Exception {
+  public void aCopyEXoWroteIntoThisAccountIsStillTheMirrorArmsToHandle() {
     givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED")));
     when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(true);
     when(caldavSyncStorage.getMirrorEventId(USER, SERVER, "uid-1@example.test")).thenReturn(777L);
