@@ -41,6 +41,7 @@ import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.ics.IcsText;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.PendingPush;
 import org.exoplatform.caldav.model.PendingPushKind;
@@ -1239,6 +1240,14 @@ public class CaldavEventPropagationService {
                    mapping.getId(),
                    eventId,
                    mapping.getCalendarSyncId());
+          continue;
+        }
+        if (pair.getStatus() == CalendarSyncStatus.RETIRED_SUBSCRIPTION) {
+          // A calendar materialised from somebody else's collection and
+          // retired since (EXO-90275): its mappings name objects in that
+          // collection, and nothing is written there through it any more — a
+          // removal carried out here would delete a colleague's event or a
+          // resource's booking.
           continue;
         }
         holders.putIfAbsent(pair.getUserIdentityId(), mapping);
