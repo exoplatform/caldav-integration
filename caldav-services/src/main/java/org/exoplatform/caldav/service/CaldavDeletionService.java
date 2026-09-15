@@ -148,6 +148,15 @@ public class CaldavDeletionService {
       // reason a plain local deletion fails.
       return;
     }
+    if (pair.getStatus() == CalendarSyncStatus.RETIRED_SUBSCRIPTION) {
+      // A retired subscription is left exactly as it is (EXO-90275): its
+      // collection is somebody else's, nothing is claimed about it, and the
+      // binding is dropped by the orphan pruning once agenda has really
+      // deleted the calendar. Dropping it here would open a window — agenda's
+      // own deletion failing after this returns — in which the calendar has no
+      // binding, and the outbound half would export it as a new collection.
+      return;
+    }
     if (pair.getOrigin() != SyncOrigin.EXO) {
       // Nothing eXo created out there. A REMOTE pair's collection is the
       // user's own, made in their own client, and a deletion in eXo is a
@@ -206,10 +215,20 @@ public class CaldavDeletionService {
     if (pair == null) {
       return;
     }
+    if (pair.getStatus() == CalendarSyncStatus.RETIRED_SUBSCRIPTION) {
+      // A retired subscription is left exactly as it is (EXO-90275): its
+      // collection is somebody else's, nothing is claimed about it, and the
+      // binding is dropped by the orphan pruning once agenda has really
+      // deleted the calendar. Dropping it here would open a window — agenda's
+      // own deletion failing after this returns — in which the calendar has no
+      // binding, and the outbound half would export it as a new collection.
+      return;
+    }
     CalendarSyncStatus state = pair.getOrigin() == SyncOrigin.EXO ? CalendarSyncStatus.EXO_ORPHANED
                                                                  : CalendarSyncStatus.LOCALLY_DELETED;
     tombstone(pair, state, calendarId);
   }
+
 
   /**
    * What deleting this calendar would also do, so the page can say it before
@@ -228,7 +247,11 @@ public class CaldavDeletionService {
     Calendar calendar = agendaCalendarService.getCalendarById(calendarId);
     CalendarSync pair = pairOf(userIdentityId, calendar);
     if (pair == null || pair.getStatus() == CalendarSyncStatus.LOCALLY_DELETED
-        || pair.getStatus() == CalendarSyncStatus.EXO_ORPHANED) {
+        || pair.getStatus() == CalendarSyncStatus.EXO_ORPHANED
+        || pair.getStatus() == CalendarSyncStatus.RETIRED_SUBSCRIPTION) {
+      // A retired subscription claims nothing either (EXO-90275): its
+      // collection is somebody else's, neither deleted nor kept by this
+      // deletion, and the dialog has nothing to warn about.
       return new CalendarDeletionPlan(false, false, null);
     }
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
