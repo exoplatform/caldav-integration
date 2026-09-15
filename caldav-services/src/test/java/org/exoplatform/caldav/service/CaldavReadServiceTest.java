@@ -117,6 +117,9 @@ public class CaldavReadServiceTest {
   @Mock
   private IdentityManager            identityManager;
 
+  @Mock
+  private CaldavConnectionIdentityService caldavConnectionIdentityService;
+
   @InjectMocks
   private CaldavReadService          service;
 
@@ -128,7 +131,10 @@ public class CaldavReadServiceTest {
     // (EXO-90237). Set by hand: @InjectMocks wires mocks, and this one is not.
     ReflectionTestUtils.setField(service,
                                  "caldavCalendarOwnerService",
-                                 new CaldavCalendarOwnerService(caldavOutboundService, identityManager, calDavClient));
+                                 new CaldavCalendarOwnerService(caldavOutboundService,
+                                                                identityManager,
+                                                                calDavClient,
+                                                                caldavConnectionIdentityService));
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, "john")).thenReturn(endpoint);
     lenient().when(calDavClient.discoverHome(any())).thenReturn(new CalendarHome(PRINCIPAL, HOME));
@@ -644,8 +650,8 @@ public class CaldavReadServiceTest {
 
   /**
    * Alice's default as bob sees it on Stalwart: shared, named "Alice" from
-   * her principal's display name, and no identity — nothing maps a DAV
-   * principal to an eXo user.
+   * her principal's display name, and no identity — no eXo user is
+   * connected as her principal.
    */
   @Test
   public void aCalendarAColleagueSharedOnStalwartIsSharedAndNamedByHerPrincipal() {
@@ -663,6 +669,34 @@ public class CaldavReadServiceTest {
     // chain is not walked, so verifying the String overload would pass whatever
     // the service did.
     verify(identityManager, never()).getIdentity(anyLong());
+  }
+
+  /**
+   * The same share once alice (identity 5) is the one eXo user connected to
+   * that server as Alice's principal (EXO-90243): bob's list names her as
+   * the owner by identity, login and full name — what agenda needs to show
+   * her avatar — and her principal is not asked its name.
+   */
+  @Test
+  public void aCalendarAColleagueSharedOnStalwartIsOwnedByTheEXoUserConnectedAsHerPrincipal() {
+    givenCalendars(owned(ALICES, "Alice", ALICE, true, false));
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, ALICE)).thenReturn(List.of(5L));
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(0L);
+    org.exoplatform.social.core.identity.model.Identity alice = new org.exoplatform.social.core.identity.model.Identity("5");
+    alice.setRemoteId("alice");
+    org.exoplatform.social.core.identity.model.Profile profile = new org.exoplatform.social.core.identity.model.Profile(alice);
+    profile.setProperty(org.exoplatform.social.core.identity.model.Profile.FULL_NAME, "Alice Liddell");
+    alice.setProfile(profile);
+    when(identityManager.getIdentity(5L)).thenReturn(alice);
+
+    RemoteCalendar alices = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertTrue(alices.isReadOnly());
+    assertTrue(alices.isShared());
+    assertEquals(5L, alices.getOwnerIdentityId());
+    assertEquals("alice", alices.getOwnerUsername());
+    assertEquals("Alice Liddell", alices.getOwnerDisplayName());
+    verify(calDavClient, never()).readDisplayName(any(), anyString());
   }
 
   /**
