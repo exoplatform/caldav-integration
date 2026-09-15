@@ -32,6 +32,7 @@ import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.MkCalendarResult;
 import org.exoplatform.caldav.client.PropPatchResult;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -83,6 +84,9 @@ public class CaldavOutboundService {
   @Autowired
   private AgendaCalendarService  agendaCalendarService;
 
+  @Autowired
+  private CaldavConnectionIdentityService caldavConnectionIdentityService;
+
   /**
    * Binds every personal calendar of a user to a collection on their server,
    * creating what does not exist yet.
@@ -105,6 +109,15 @@ public class CaldavOutboundService {
    * account — those say nothing about the rest of the pass, whose later steps
    * ask the server different questions and may well be answered.
    *
+   * <p>
+   * Being that first step, it is also where the account's identity is
+   * recorded (EXO-90243): the discovery answers the
+   * {@code current-user-principal} on its way to the home, so keeping it costs
+   * no request, and it is kept on connect and at the start of every pass
+   * alike. Recorded as soon as the discovery answers, before the listing,
+   * because who the account is does not depend on whether its calendars can
+   * be listed.
+   *
    * @param userIdentityId identity of the user
    * @param username the user's login, which agenda's ACL reads
    * @return the pairs, bound or refused, one per personal calendar
@@ -121,7 +134,11 @@ public class CaldavOutboundService {
     String home;
     List<CalendarCollection> collections;
     try {
-      home = calDavClient.discoverCalendarHome(endpoint);
+      CalendarHome account = calDavClient.discoverHome(endpoint);
+      home = account.href();
+      caldavConnectionIdentityService.recordPrincipal(userIdentityId,
+                                                      settings.getServerId() == null ? 0L : settings.getServerId(),
+                                                      account.principal());
       collections = calDavClient.listCalendars(endpoint, home);
     } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
       // Not logged here, and that is the point: the caller says it once, for

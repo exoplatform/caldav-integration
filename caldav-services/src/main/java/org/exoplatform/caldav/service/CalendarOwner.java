@@ -26,7 +26,9 @@ package org.exoplatform.caldav.service;
  * owner is one of its users and all three fields are set — identity, login
  * and full name — so agenda can show the person, avatar and popover
  * included. When only <b>the server</b> said the collection is somebody
- * else's, nothing maps its principal to an eXo user, and the owner is a
+ * else's, its owner principal is an eXo user only when exactly one user of
+ * this deployment is connected to that server as that principal
+ * (EXO-90243), and is then named the same way; otherwise the owner is a
  * display name alone: what the principal calls itself, or failing that the
  * last segment of the path the server returned. {@link #NONE} is the answer
  * for the user's own calendars and for a share whose owner cannot be named.
