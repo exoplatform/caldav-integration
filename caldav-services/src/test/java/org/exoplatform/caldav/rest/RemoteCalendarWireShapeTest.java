@@ -105,5 +105,50 @@ public class RemoteCalendarWireShapeTest {
     assertTrue(json.get("ownerIdentityId").isNull());
     assertTrue(json.get("ownerUsername").isNull());
     assertTrue(json.get("ownerDisplayName").isNull());
+    assertTrue(json.has("ownerKind") && json.get("ownerKind").isNull(), "present and null on the user's own");
+  }
+
+  /**
+   * The pool vehicle as root receives it (EXO-90275): shared, read-only, a
+   * resource named by its name, no identity — the kind spelled as the enum
+   * constant, which is what agenda compares against.
+   */
+  @Test
+  public void aResourceSubscriptionCarriesItsKindAndName() throws Exception {
+    RemoteCalendar vehicle = new RemoteCalendar("/dav/calendars/__uids__/751E6D1A-7FDB-49B2-B668-B569E9A5A42D/calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/",
+                                                "Véhicule de pool 1",
+                                                "#4a90d9",
+                                                true,
+                                                true,
+                                                null,
+                                                null,
+                                                "Véhicule de pool 1",
+                                                org.exoplatform.caldav.model.CalendarOwnerKind.RESOURCE);
+
+    JsonNode json = mapper.readTree(mapper.writeValueAsString(vehicle));
+
+    assertTrue(json.get("shared").asBoolean());
+    assertTrue(json.get("readOnly").asBoolean());
+    assertEquals("RESOURCE", json.get("ownerKind").asText());
+    assertEquals("Véhicule de pool 1", json.get("ownerDisplayName").asText());
+    assertTrue(json.get("ownerUsername").isNull());
+  }
+
+  /**
+   * A share built the way every caller built one before the kind existed is
+   * a person's.
+   */
+  @Test
+  public void aShareBuiltWithoutAKindIsAPersons() throws Exception {
+    JsonNode json = mapper.readTree(mapper.writeValueAsString(new RemoteCalendar("/dav/cal/alice%40stalwart.local/default/",
+                                                                                 "Alice's",
+                                                                                 "#b8e986",
+                                                                                 true,
+                                                                                 true,
+                                                                                 null,
+                                                                                 null,
+                                                                                 "Alice")));
+
+    assertEquals("PERSON", json.get("ownerKind").asText());
   }
 }
