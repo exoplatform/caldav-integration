@@ -141,6 +141,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           v-model="server.mirrorTarget"
           :stored-value="storedMirrorTarget" />
         <!--
+          Through which door the copies are written, under the same heading:
+          on BlueMind a CalDAV write makes the server schedule the meeting
+          itself, and this radio is what turns that off - and back on
+          (EXO-90307).
+        -->
+        <caldav-admin-server-write-channel-select
+          v-model="server.writeChannel" />
+        <!--
           Always rendered, empty or not. Two drawers with different SHAPES teach
           an administrator nothing: on a server that has shown nothing, a missing
           section reads as "unsupported here" or "not implemented" rather than as
@@ -307,6 +315,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 import {applyExcusals, describeQuirk} from '../../js/serverQuirks.js';
 import {DEFAULT_MIRROR_TARGET, mirrorTargetOf} from '../../js/mirrorTargets.js';
+import {DEFAULT_WRITE_CHANNEL, writeChannelOf} from '../../js/writeChannels.js';
 
 export default {
   data: () => ({
@@ -343,6 +352,8 @@ export default {
       // "not stated" and keeps whatever the row already had, which was the
       // right reading only while no drawer carried the control.
       mirrorTarget: DEFAULT_MIRROR_TARGET,
+      // Stated for the same reason as the destination above (EXO-90307).
+      writeChannel: DEFAULT_WRITE_CHANNEL,
       observedQuirks: [],
     },
     // The behaviours this server has been seen doing, as the drawer edits
@@ -450,6 +461,7 @@ export default {
       // administrator never chose.
       this.server.mirrorTarget = mirrorTargetOf(this.server.mirrorTarget);
       this.storedMirrorTarget = this.server.id && this.server.mirrorTarget || null;
+      this.server.writeChannel = writeChannelOf(this.server.writeChannel);
       this.observedQuirks = (this.server.observedQuirks || []).map(describeQuirk);
       this.providerConfig = {};
       this.foreignWriters = [];
@@ -525,6 +537,7 @@ export default {
         droppedProperties: null,
         omittedProperties: null,
         mirrorTarget: DEFAULT_MIRROR_TARGET,
+        writeChannel: DEFAULT_WRITE_CHANNEL,
         observedQuirks: [],
       };
       this.observedQuirks = [];
@@ -588,6 +601,9 @@ export default {
       // while this drawer had nothing to say about it, and a save that left it
       // out now would be relying on a guard that no longer guards anything.
       payload.mirrorTarget = mirrorTargetOf(this.server.mirrorTarget);
+      // Same rule for the door: the storage keeps the stored channel when the
+      // field is absent, so a save from this drawer always states it (EXO-90307).
+      payload.writeChannel = writeChannelOf(this.server.writeChannel);
       // Relayed as typed. The keys belong to the provider's descriptor, and the
       // server validates them against it before anything is written.
       payload.providerConfig = this.providerConfig;

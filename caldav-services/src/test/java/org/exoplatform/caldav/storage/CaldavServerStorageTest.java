@@ -52,6 +52,7 @@ import org.exoplatform.caldav.entity.CaldavServerEntity;
 import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
+import org.exoplatform.caldav.model.WriteChannel;
 import org.exoplatform.caldav.model.ObservedQuirk;
 import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkDirection;
@@ -149,7 +150,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldUpdateEverythingButTheProviderName() {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     CaldavServer updated = caldavServerStorage.updateServer(server(7, "hijacked.name", "New", "desc",
@@ -175,7 +176,7 @@ public class CaldavServerStorageTest {
   @Test
   public void shouldLeaveTheDestinationAloneWhenTheSaveDoesNotMentionIt() {
     CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null,
-                                                         true, null, null, null, null, null, "MAIN_CALENDAR", null, null);
+                                                         true, null, null, null, null, null, "MAIN_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
     CaldavServer payload = server(7, null, "New", null, "https://new/", true);
     payload.setMirrorTarget(null);
@@ -194,7 +195,7 @@ public class CaldavServerStorageTest {
   @Test
   public void shouldWriteTheDestinationWhenTheSaveStatesOne() {
     CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null,
-                                                         true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null);
+                                                         true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
     CaldavServer payload = server(7, null, "New", null, "https://new/", true);
     payload.setMirrorTarget(MirrorTargetKind.MAIN_CALENDAR);
@@ -213,10 +214,51 @@ public class CaldavServerStorageTest {
   @Test
   public void shouldReadAnUnknownDestinationAsTheDedicatedCalendar() {
     CaldavServerEntity row = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null, true,
-                                                     null, null, null, null, null, "SOMETHING_A_LATER_VERSION_WROTE", null, null);
+                                                     null, null, null, null, null, "SOMETHING_A_LATER_VERSION_WROTE", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(row));
 
     assertEquals(MirrorTargetKind.DEDICATED_CALENDAR, caldavServerStorage.getServerById(7L).getMirrorTarget());
+  }
+
+  /**
+   * <b>The rollback flag of the BlueMind import channel (EXO-90307), under the
+   * same rule as the destination.</b> A save that says nothing about the
+   * channel leaves it alone; an explicit value moves it; a value this version
+   * does not know reads as CalDAV rather than making the row unreadable.
+   */
+  @Test
+  public void shouldTreatTheWriteChannelLikeTheDestination() {
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null,
+                                                         true, null, null, null, null, null, "MAIN_CALENDAR", null, null,
+                                                         "BLUEMIND_IMPORT");
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+    CaldavServer payload = server(7, null, "New", null, "https://new/", true);
+    payload.setWriteChannel(null);
+
+    assertEquals(WriteChannel.BLUEMIND_IMPORT, caldavServerStorage.updateServer(payload).getWriteChannel());
+    assertEquals("BLUEMIND_IMPORT", existing.getWriteChannel());
+
+    payload.setWriteChannel(WriteChannel.CALDAV);
+    assertEquals(WriteChannel.CALDAV, caldavServerStorage.updateServer(payload).getWriteChannel());
+    assertEquals("CALDAV", existing.getWriteChannel());
+
+    existing.setWriteChannel("SOMETHING_A_LATER_VERSION_WROTE");
+    assertEquals(WriteChannel.CALDAV, caldavServerStorage.getServerById(7L).getWriteChannel());
+  }
+
+  /**
+   * A create that states a channel writes it; one that states nothing keeps
+   * the entity's own default, so a NOT NULL column never receives a null.
+   */
+  @Test
+  public void shouldWriteTheChannelOnCreateOnlyWhenStated() {
+    CaldavServer stated = server(0, null, "BlueMind", null, "https://bm/", true);
+    stated.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
+    CaldavServer silent = server(0, null, "Other", null, "https://other/", true);
+    silent.setWriteChannel(null);
+
+    assertEquals(WriteChannel.BLUEMIND_IMPORT, caldavServerStorage.createServer(stated, PREFIX).getWriteChannel());
+    assertEquals(WriteChannel.CALDAV, caldavServerStorage.createServer(silent, PREFIX).getWriteChannel());
   }
 
   /**
@@ -266,7 +308,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldPersistIconAndDropRemovedImageOnUpdate() {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     CaldavServer payload = server(7, null, "New", null, "https://new/", true);
@@ -285,7 +327,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldDeleteRowAndItsImage() {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     assertEquals(true, caldavServerStorage.deleteServer(7L));
@@ -305,9 +347,9 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldListServersOrderedById() {
-    CaldavServerEntity seed = new CaldavServerEntity(1L, PREFIX, "Stalwart", null, "https://seed/", true, null, null, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null);
+    CaldavServerEntity seed = new CaldavServerEntity(1L, PREFIX, "Stalwart", null, "https://seed/", true, null, null, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     CaldavServerEntity declared = new CaldavServerEntity(7L, PREFIX + ".7", "Nextcloud", null, "https://declared/", false, null,
-                                                         null, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null);
+                                                         null, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     ArgumentCaptor<Sort> sort = ArgumentCaptor.forClass(Sort.class);
     when(caldavServerDAO.findAll(sort.capture())).thenReturn(List.of(seed, declared));
 
@@ -327,7 +369,7 @@ public class CaldavServerStorageTest {
   @Test
   public void shouldReadOneServerByIdOrAnswerNull() {
     CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Nextcloud", "desc", "https://declared/", true,
-                                                         null, null, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null);
+                                                         null, null, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
     when(caldavServerDAO.findById(99L)).thenReturn(Optional.empty());
 
@@ -345,7 +387,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldReadOneServerByProviderNameOrAnswerNull() {
-    CaldavServerEntity seed = new CaldavServerEntity(1L, PREFIX, "Stalwart", null, "https://seed/", true, null, null, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null);
+    CaldavServerEntity seed = new CaldavServerEntity(1L, PREFIX, "Stalwart", null, "https://seed/", true, null, null, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findByProviderName(PREFIX)).thenReturn(Optional.of(seed));
     when(caldavServerDAO.findByProviderName("unknown")).thenReturn(Optional.empty());
 
@@ -376,7 +418,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldUpdateTheStoredFileWhenReplacingTheImage() throws Exception {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
     java.io.File upload = java.io.File.createTempFile("caldav-icon", ".png");
     upload.deleteOnExit();
@@ -415,7 +457,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldDeleteAnImagelessRowWithoutTouchingFileStorage() {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, null, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     assertEquals(true, caldavServerStorage.deleteServer(7L));
@@ -431,7 +473,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldTreatAZeroImageFileIdAsNoImage() {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 0L, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 0L, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     CaldavServer server = caldavServerStorage.getServerById(7L);
@@ -446,7 +488,7 @@ public class CaldavServerStorageTest {
    */
   @Test
   public void shouldDropTheRemovedImageWhenReportedAsZero() {
-    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null);
+    CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Old", null, "https://old/", true, null, 55L, true, null, null, null, null, null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     CaldavServer payload = server(7, null, "Old", null, "https://old/", true);
@@ -488,7 +530,7 @@ public class CaldavServerStorageTest {
   public void shouldMapTheStoredSummaryIntoWhatTheDrawerLists() {
     CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://bm/", true, null, null,
                                                          true, null, null, null,
-                                                         "DROPPED:CONFERENCE=399;ADDED:X-MOZ-GENERATION=41", null, "DEDICATED_CALENDAR", null, null);
+                                                         "DROPPED:CONFERENCE=399;ADDED:X-MOZ-GENERATION=41", null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     List<ObservedQuirk> observed = caldavServerStorage.getServerById(7L).getObservedQuirks();
@@ -508,7 +550,7 @@ public class CaldavServerStorageTest {
     // The catalogue is code and deliberately incomplete; an administrator meeting
     // a server nobody here has seen must still be able to excuse what it does.
     CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Odd", null, "https://odd/", true, null, null, true,
-                                                         null, null, null, "ADDED:X-BM-FOO=3", null, "DEDICATED_CALENDAR", null, null);
+                                                         null, null, null, "ADDED:X-BM-FOO=3", null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     List<ObservedQuirk> observed = caldavServerStorage.getServerById(7L).getObservedQuirks();
@@ -531,7 +573,7 @@ public class CaldavServerStorageTest {
                                                          "ADDED:X-MICROSOFT-CDO-BUSYSTATUS=1;ADDED:X-MICROSOFT-DISALLOW-COUNTER=1;"
                                                              + "ADDED:X-MOZ-LASTACK=1;DROPPED:CONFERENCE=1;ADDED:X-ALT-DESC=1;"
                                                              + "DROPPED:ORGANIZER=1",
-                                                         null, "DEDICATED_CALENDAR", null, null);
+                                                         null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     List<ObservedQuirk> observed = caldavServerStorage.getServerById(7L).getObservedQuirks();
@@ -556,7 +598,7 @@ public class CaldavServerStorageTest {
     // properties are one habit, each of them genuinely is its own behaviour and
     // folding them together would invent a decision nobody wrote.
     CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Odd", null, "https://odd/", true, null, null, true,
-                                                         null, null, null, "ADDED:X-BM-FOO=4;ADDED:X-BM-BAR=2", null, "DEDICATED_CALENDAR", null, null);
+                                                         null, null, null, "ADDED:X-BM-FOO=4;ADDED:X-BM-BAR=2", null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
 
     List<ObservedQuirk> observed = caldavServerStorage.getServerById(7L).getObservedQuirks();
@@ -795,7 +837,7 @@ public class CaldavServerStorageTest {
     // The summary is the sweep's column. Routed through the ordinary update it
     // would be wiped by every save from a drawer that never carried it.
     CaldavServerEntity existing = new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://bm/", true, null, null,
-                                                         true, null, null, null, "DROPPED:CONFERENCE=399", null, "DEDICATED_CALENDAR", null, null);
+                                                         true, null, null, null, "DROPPED:CONFERENCE=399", null, "DEDICATED_CALENDAR", null, null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
     CaldavServer edited = server(7L, PREFIX + ".7", "Bluemind renamed", null, "https://bm/", true);
     edited.setDroppedProperties("CONFERENCE");
@@ -814,7 +856,7 @@ public class CaldavServerStorageTest {
    */
   private CaldavServerEntity observedOn(String summary) {
     return new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://bm/", true, null, null, true, null, null, null,
-                                  summary, null, "DEDICATED_CALENDAR", null, null);
+                                  summary, null, "DEDICATED_CALENDAR", null, null, "CALDAV");
   }
 
   /**
@@ -860,7 +902,7 @@ public class CaldavServerStorageTest {
   @Test
   public void shouldCarryTheAuthProviderNameToTheModel() {
     CaldavServerEntity entity = new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://declared/", true, null,
-                                                       null, true, null, null, null, null, null, null, "bluemind-sudo", null);
+                                                       null, true, null, null, null, null, null, null, "bluemind-sudo", null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(entity));
 
     assertEquals("bluemind-sudo", caldavServerStorage.getServerById(7L).getAuthProviderName());
@@ -875,7 +917,7 @@ public class CaldavServerStorageTest {
   @Test
   public void shouldNotResetTheAuthProviderNameOnUpdate() {
     CaldavServerEntity entity = new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://declared/", true, null,
-                                                       null, true, null, null, null, null, null, null, "bluemind-sudo", null);
+                                                       null, true, null, null, null, null, null, null, "bluemind-sudo", null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(entity));
     when(caldavServerDAO.save(any(CaldavServerEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -898,7 +940,7 @@ public class CaldavServerStorageTest {
    */
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
-    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null, null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null, null);
+    return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null, null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null, null, null);
   }
 
   /**
@@ -911,7 +953,7 @@ public class CaldavServerStorageTest {
   @Test
   public void shouldWriteAnExplicitAuthProviderNameOnUpdate() {
     CaldavServerEntity entity = new CaldavServerEntity(7L, PREFIX + ".7", "Bluemind", null, "https://declared/", true, null,
-                                                       null, true, null, null, null, null, null, null, "personal", null);
+                                                       null, true, null, null, null, null, null, null, "personal", null, "CALDAV");
     when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(entity));
     when(caldavServerDAO.save(any(CaldavServerEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
     CaldavServer posted = server(7L, PREFIX + ".7", "Bluemind", null, "https://declared/", true);

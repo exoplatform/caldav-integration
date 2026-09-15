@@ -50,6 +50,8 @@ import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.client.CalDavClient;
+import org.exoplatform.caldav.client.CalendarObjectWriters;
+import org.exoplatform.caldav.client.CalDavObjectWriter;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarHome;
@@ -775,6 +777,17 @@ public class NormalisingServerMirrorTest {
    */
   private void inject(Object service) {
     ReflectionTestUtils.setField(service, "calDavClient", server);
+    if (service instanceof CaldavPushService) {
+      // The door resolver, over a registry that declares nothing: every write
+      // of this rig goes through the CalDAV door onto the CURRENT fake server —
+      // tests swap the server and inject again, so the writer is rebuilt here
+      // rather than once in the setup (EXO-90307).
+      ReflectionTestUtils.setField(service,
+                                   "calendarObjectWriters",
+                                   new CalendarObjectWriters(org.mockito.Mockito.mock(CaldavServerService.class),
+                                                             new CalDavObjectWriter(server),
+                                                             null));
+    }
     ReflectionTestUtils.setField(service, "caldavConnectorStorage", caldavConnectorStorage);
     ReflectionTestUtils.setField(service, "caldavSyncStorage", caldavSyncStorage);
   }
