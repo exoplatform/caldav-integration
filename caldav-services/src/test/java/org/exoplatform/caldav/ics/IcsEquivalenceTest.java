@@ -386,6 +386,23 @@ public class IcsEquivalenceTest {
     assertEquivalent(EXO.replace("STATUS:CONFIRMED", "LAST-MODIFIED:20261114T235959Z\r\nSTATUS:CONFIRMED"));
   }
 
+  /**
+   * <b>The BlueMind import door's pin (EXO-90307).</b> eXo renders
+   * {@code LAST-MODIFIED} from the event's modification date and takes it out
+   * of the document it imports into BlueMind, which then renders the stored
+   * object's {@code LAST-MODIFIED} from its own item timestamp
+   * ({@code VEventServiceHelper.java:151}). So the copy read back carries a
+   * value eXo's render never held — or none at all — and neither may register
+   * as an edit, or every import would be judged a client's rewrite and repaired
+   * for ever.
+   */
+  @Test
+  public void aLastModifiedTheServerRenderedOrOmittedIsNotAnEdit() {
+    String inExo = EXO.replace("STATUS:CONFIRMED", "LAST-MODIFIED:20260901T080000Z\r\nSTATUS:CONFIRMED");
+    assertEquivalent(EXO.replace("STATUS:CONFIRMED", "LAST-MODIFIED:20260915T213000Z\r\nSTATUS:CONFIRMED"), inExo);
+    assertEquivalent(EXO, inExo);
+  }
+
   // ---------------------------------------------------------------- URL
 
   /**
