@@ -260,4 +260,29 @@ public class CaldavServer {
    * endpoint.
    */
   private Map<String, String> providerConfig;
+
+  /**
+   * Through which door eXo writes and removes the meeting copies of this
+   * server: CalDAV, or BlueMind's own ICS import API
+   * ({@link WriteChannel#BLUEMIND_IMPORT}, EXO-90307). Chosen per server,
+   * because whether a CalDAV write makes the server schedule the meeting
+   * itself is a property of the server and of nothing else.
+   *
+   * <p>
+   * Declared LAST — after {@link #providerConfig} — for the reason
+   * {@link #answerLinksInCopy} records: the model is built positionally
+   * through its all-args constructor, so appending keeps every existing
+   * argument on its own field, and the next field appended goes after this
+   * one. The initialiser is what makes the default a real one: a row built
+   * through the no-args constructor resolves to CalDAV, the door every
+   * deployment already used.
+   *
+   * <p>
+   * <b>Null means "not stated" on the way IN</b>, exactly as
+   * {@link #mirrorTarget}: a save from a drawer that does not know the field
+   * arrives here as null and the storage leaves the stored value alone. Only
+   * an explicit value changes the row — which is what makes the flag a
+   * rollback an administrator can perform, and nothing else can undo.
+   */
+  private WriteChannel writeChannel = WriteChannel.CALDAV;
 }

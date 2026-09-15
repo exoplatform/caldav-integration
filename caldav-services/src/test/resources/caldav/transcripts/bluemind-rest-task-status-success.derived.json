@@ -1,0 +1,21 @@
+// DERIVED, not captured. The answer to GET /api/tasks/{taskId} once an import
+// in Mode.IMPORT has ended, from BlueMind's source:
+// - parent/core/net.bluemind.core.task.api/src/net/bluemind/core/task/api/TaskStatus.java
+//   state "Success", result a String;
+// - parent/calendar/net.bluemind.calendar.service/src/net/bluemind/calendar/service/internal/ICSImportTask.java:83-89
+//   in IMPORT mode the task ends with JsonUtils.asString(ImportStats) where
+//   uids = added + updated and total = added + updated + unhandled;
+// - parent/core/net.bluemind.core.api/src/net/bluemind/core/api/ImportStats.java
+//   public fields uids (List<String>) and total (int);
+// - parent/core/net.bluemind.core.task.service/src/net/bluemind/core/task/service/internal/TaskMonitor.java:85-92
+//   the FIRST end() wins - the summary end() that follows at
+//   ICSImportTask.java:104-116 is ignored, so the result is the ImportStats.
+// The result travels as a JSON document inside a JSON string.
+// Lines starting with "//" are removed by the test before parsing.
+{
+  "steps": 3.0,
+  "progress": 3.0,
+  "lastLogEntry": "1 events synchronized",
+  "state": "Success",
+  "result": "{\"uids\":[\"evt-1\"],\"total\":1}"
+}

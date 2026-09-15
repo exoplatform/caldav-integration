@@ -98,6 +98,7 @@
  */
 
 import {MIRROR_TARGET_DEDICATED_CALENDAR, MIRROR_TARGET_MAIN_CALENDAR} from './mirrorTargets.js';
+import {WRITE_CHANNEL_CALDAV, WRITE_CHANNEL_BLUEMIND_IMPORT} from './writeChannels.js';
 
 /**
  * The identifier of the option that fills nothing.
@@ -145,10 +146,18 @@ const ANSWER_LINKS = 'answerLinksInCopy';
 const MIRROR_TARGET = 'mirrorTarget';
 
 /**
- * The two fields above, as one list: they are stated together, omitted
+ * The registration field deciding through which door the copies are written
+ * and removed: CalDAV, or BlueMind's own ICS import API (EXO-90307). Per server
+ * like the two above, because whether a CalDAV write makes the server schedule
+ * the meeting itself is a property of the server.
+ */
+const WRITE_CHANNEL = 'writeChannel';
+
+/**
+ * The three fields above, as one list: they are stated together, omitted
  * together, and are the only preset-owned fields a preset may decline to state.
  */
-const COPY_SETTINGS = [ANSWER_LINKS, MIRROR_TARGET];
+const COPY_SETTINGS = [ANSWER_LINKS, MIRROR_TARGET, WRITE_CHANNEL];
 
 /**
  * The catalogue entries a preset may name, with the list each writes into and
@@ -224,6 +233,14 @@ export const SERVER_PRESETS = [
      *
      * Answer links on: BlueMind shows its own answer buttons on the default
      * calendar only, so eXo's links are what covers anything else.
+     *
+     * The import door (EXO-90307), because a copy written over CalDAV reaches
+     * BlueMind's calendar service with notifications hard-coded on, and
+     * BlueMind then schedules the meeting itself: same-server invitees get it
+     * twice, an answer given on BlueMind's own object never reaches eXo, and
+     * external attendees get BlueMind's mail on top of eXo's. BlueMind's ICS
+     * import applies every change with notifications off. The radio beside
+     * the preset is the rollback.
      */
     id: 'bluemind',
     name: 'BlueMind',
@@ -232,6 +249,7 @@ export const SERVER_PRESETS = [
     quirks: ['dropsConference', 'addsCompatibilityMarkers', 'addsFormattedDescription', 'stampsDefaultPriority'],
     [ANSWER_LINKS]: true,
     [MIRROR_TARGET]: MIRROR_TARGET_MAIN_CALENDAR,
+    [WRITE_CHANNEL]: WRITE_CHANNEL_BLUEMIND_IMPORT,
   },
   {
     /*
@@ -266,6 +284,9 @@ export const SERVER_PRESETS = [
     quirks: [],
     [ANSWER_LINKS]: false,
     [MIRROR_TARGET]: MIRROR_TARGET_DEDICATED_CALENDAR,
+    // CalDAV, stated: Stalwart schedules nothing on a PUT, and the standard
+    // door is the one every server is known to have.
+    [WRITE_CHANNEL]: WRITE_CHANNEL_CALDAV,
   },
   {
     /*
@@ -288,6 +309,7 @@ export const SERVER_PRESETS = [
     quirks: null,
     [ANSWER_LINKS]: null,
     [MIRROR_TARGET]: null,
+    [WRITE_CHANNEL]: null,
   },
 ];
 
@@ -338,10 +360,11 @@ function storedList(list) {
  * uncharacterised option writes null — "nobody has asked" — which leaves the
  * deployment-wide list in force, exactly as before.
  *
- * The two copy settings are the one exception to "always present", and for the
- * same reason. An excusal list has a value meaning "nobody has asked" and it is
- * null; `answerLinksInCopy` and `mirrorTarget` have none — a null there is read
- * as "no links" and as the default destination, which are decisions. So the
+ * The three copy settings are the one exception to "always present", and for
+ * the same reason. An excusal list has a value meaning "nobody has asked" and it
+ * is null; `answerLinksInCopy`, `mirrorTarget` and `writeChannel` have none — a
+ * null there is read as "no links", the default destination and the CalDAV
+ * door, which are decisions. So the
  * uncharacterised option omits the KEYS, and choosing it leaves whatever the
  * form carried. That is deliberate and it is asymmetric: an administrator who
  * picked BlueMind, then changed their mind to a server we have not
