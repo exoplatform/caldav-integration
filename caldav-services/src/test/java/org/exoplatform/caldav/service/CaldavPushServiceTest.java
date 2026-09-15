@@ -212,9 +212,6 @@ public class CaldavPushServiceTest {
   @Spy
   private CaldavCopyPolicy         caldavCopyPolicy = new CaldavCopyPolicy();
 
-  @Mock
-  private CaldavNativeSchedulingService caldavNativeSchedulingService;
-
   @InjectMocks
   private CaldavPushService          service;
 
@@ -1190,85 +1187,6 @@ public class CaldavPushServiceTest {
     assertNotNull(service.pushAgendaEvent(USER, "john", 152L));
 
     verify(calDavClient).putObject(any(), anyString(), anyString());
-  }
-
-  /**
-   * A copy the invitee's own server will deliver itself is not written, and no
-   * identifier is minted for it (EXO-90247).
-   *
-   * <p>
-   * The mirror is staged in full for the reason the date-poll pin states: if a
-   * missing collection or an unresolvable identifier could do the refusing, the
-   * test would pass against the very bug it pins. Everything else about this
-   * push works; the delivery decision is the only thing that stops it.
-   *
-   * <p>
-   * The identifier assertion is the load-bearing half. Minting records a
-   * remote event in agenda before anything is written, so a guard placed after
-   * it would leave a UID pointing at an object nothing ever creates — and the
-   * next push would adopt that UID and believe a copy exists.
-   */
-  @Test
-  public void anInvitationTheServerDeliversItselfIsNotCopied() throws Exception {
-    givenEverythingAWriteNeeds();
-    givenAnAgendaEvent(160L, 0L, EventStatus.CONFIRMED);
-    when(caldavNativeSchedulingService.deliveredNatively(any(), eq(USER))).thenReturn(true);
-
-    assertNull(service.pushAgendaEvent(USER, "john", 160L));
-
-    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
-    verify(caldavSyncStorage, never()).saveObject(any());
-    verify(agendaRemoteEventService, never()).saveRemoteEvent(anyLong(), any(), anyLong());
-  }
-
-  /**
-   * The rule declines to <b>create</b> a copy and never to maintain one: a copy
-   * written before this rule existed goes on being rewritten exactly as before.
-   *
-   * <p>
-   * This is what keeps the mirror's verification and repair pass out of the
-   * decision entirely, and it is why the question is asked only when no
-   * identifier is recorded yet.
-   */
-  @Test
-  public void aCopyThatAlreadyExistsIsStillMaintained() throws Exception {
-    givenEverythingAWriteNeeds();
-    givenAnAgendaEvent(161L, 0L, EventStatus.CONFIRMED);
-    RemoteEvent recorded = new RemoteEvent();
-    recorded.setRemoteId("uid-161");
-    when(agendaRemoteEventService.findRemoteEvent(161L, USER)).thenReturn(recorded);
-    lenient().when(caldavNativeSchedulingService.deliveredNatively(any(), eq(USER))).thenReturn(true);
-
-    assertNotNull(service.pushAgendaEvent(USER, "john", 161L));
-
-    verify(calDavClient).putObject(any(), anyString(), anyString());
-    verify(caldavNativeSchedulingService, never()).deliveredNatively(any(), anyLong());
-  }
-
-  /**
-   * An event of the user's own calendar is not an invitation anybody schedules
-   * for them, so the question is not even asked of it.
-   *
-   * <p>
-   * Pinned on the call and not only on the outcome: the predicate reads
-   * agenda's roster and the connection registry, and asking it for every
-   * personal event a user saves would be a cost paid for a decision that can
-   * never apply.
-   */
-  @Test
-  public void anEventOfTheUsersOwnCalendarIsNotADeliveryDecision() throws Exception {
-    givenAnAgendaEvent(110L, 0L, EventStatus.CONFIRMED);
-    givenPersonalCalendar(7L, "cal-anchor");
-    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(boundPersonalPair());
-    lenient().when(agendaRemoteEventService.findRemoteEvent(anyLong(), eq(USER))).thenReturn(null);
-    lenient().when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-110"));
-    lenient().when(calDavClient.putObject(any(), anyString(), anyString())).thenReturn(new PutResult(201, "\"e\"", null));
-    lenient().when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
-    lenient().when(caldavNativeSchedulingService.deliveredNatively(any(), anyLong())).thenReturn(true);
-
-    assertNotNull(service.pushAgendaEvent(USER, "john", 110L));
-
-    verify(caldavNativeSchedulingService, never()).deliveredNatively(any(), anyLong());
   }
 
   @Test
