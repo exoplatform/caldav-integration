@@ -71,6 +71,7 @@ import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkEffect;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.model.MirrorTargetKind;
+import org.exoplatform.caldav.model.WriteChannel;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.connector.credentials.ConnectorProviderConfigStorage;
@@ -711,6 +712,9 @@ public class CaldavServerServiceTest {
     // no answer buttons, so a row seeded onto it disagrees with the preset an
     // administrator is about to apply to that very row.
     assertEquals(MirrorTargetKind.MAIN_CALENDAR, bluemind.getValue().getMirrorTarget());
+    // The door (EXO-90307): a fresh BlueMind row writes through the import
+    // API, because a CalDAV write makes BlueMind schedule the meeting itself.
+    assertEquals(WriteChannel.BLUEMIND_IMPORT, bluemind.getValue().getWriteChannel());
 
     ArgumentCaptor<CaldavServer> stalwart = ArgumentCaptor.forClass(CaldavServer.class);
     verify(caldavServerStorage).createSeedServer(stalwart.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
@@ -724,6 +728,7 @@ public class CaldavServerServiceTest {
     // And only BlueMind moves: Stalwart's dedicated calendar has no such cost,
     // and the caution on the option stands everywhere it is not answered.
     assertEquals(MirrorTargetKind.DEDICATED_CALENDAR, stalwart.getValue().getMirrorTarget());
+    assertEquals(WriteChannel.CALDAV, stalwart.getValue().getWriteChannel());
   }
 
   /**
@@ -1398,7 +1403,7 @@ public class CaldavServerServiceTest {
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
     return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null,
-                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null, null);
+                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null, null, null);
   }
 
   /**

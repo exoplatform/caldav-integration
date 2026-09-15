@@ -1,0 +1,13 @@
+// DERIVED, not captured. The answer to GET /api/tasks/{taskId} for a task that
+// ended in error, from BlueMind's source:
+// - parent/core/net.bluemind.core.task.api/src/net/bluemind/core/task/api/TaskStatus.java
+//   State.status(success=false, end=true) is InError; result is whatever the
+//   task handed to end(), null when it threw.
+// Lines starting with "//" are removed by the test before parsing.
+{
+  "steps": 3.0,
+  "progress": 1.0,
+  "lastLogEntry": "Failed to deal with series evt-1",
+  "state": "InError",
+  "result": null
+}

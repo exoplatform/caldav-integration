@@ -37,6 +37,7 @@ import org.exoplatform.caldav.entity.CaldavServerEntity;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.model.MirrorTargetKind;
+import org.exoplatform.caldav.model.WriteChannel;
 import org.exoplatform.caldav.model.ObservedQuirk;
 import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkEffect;
@@ -205,6 +206,13 @@ public class CaldavServerStorage {
       if (server.getMirrorTarget() != null) {
         entity.setMirrorTarget(server.getMirrorTarget().name());
       }
+      // Same rule as the destination above, and for a sharper reason: this
+      // field is the rollback of the BlueMind import channel (EXO-90307), so a
+      // save from a drawer that does not carry it must not be able to move a
+      // server back onto the door that makes BlueMind schedule every meeting.
+      if (server.getWriteChannel() != null) {
+        entity.setWriteChannel(server.getWriteChannel().name());
+      }
       // Only an explicit value moves the provider, for the reason above and its
       // mirror image: a drawer that carries the control sends the administrator's
       // choice and it must be written - an update that rewrote every field except
@@ -313,7 +321,8 @@ public class CaldavServerStorage {
                             entity.getAuthProviderName(),
                             // providerConfig is inbound only: it lives in the settings,
                             // and the secret in it must not travel back out.
-                            null);
+                            null,
+                            WriteChannel.of(entity.getWriteChannel()));
   }
 
   /**
@@ -666,6 +675,10 @@ public class CaldavServerStorage {
     // writing a null into a NOT NULL column.
     if (server.getMirrorTarget() != null) {
       entity.setMirrorTarget(server.getMirrorTarget().name());
+    }
+    // Same rule: a create that states no channel keeps the column's default.
+    if (server.getWriteChannel() != null) {
+      entity.setWriteChannel(server.getWriteChannel().name());
     }
     // Same rule, same reason: the drawer carries the provider choice since
     // EXO-89648, and a payload that states one must reach the column - while a

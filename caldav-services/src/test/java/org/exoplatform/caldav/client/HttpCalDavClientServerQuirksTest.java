@@ -141,7 +141,7 @@ public class HttpCalDavClientServerQuirksTest {
     lenient().when(caldavServerService.resolveServer(1L))
              .thenReturn(new CaldavServer(1L, "agenda.caldavCalendar", "BlueMind", null, SERVER_URL, true, null, null, null,
                                           null, true, null, null, null,
-                                          null, null, null, "personal", null));
+                                          null, null, null, "personal", null, null));
     // The declared URL carries no {username}, so minting never asks the
     // provider for an account — only the requests on this endpoint do.
     endpoint = client.endpoint(1L, USER);
@@ -647,6 +647,37 @@ public class HttpCalDavClientServerQuirksTest {
     List<CalendarCollection> found = calendars.stream().filter(calendar -> href.equals(calendar.href())).toList();
     assertEquals(1, found.size(), href + " should be listed exactly once among " + calendars.stream().map(CalendarCollection::href).toList());
     return found.get(0);
+  }
+
+
+  /**
+   * <b>The listing shape the BlueMind import door compares against
+   * (EXO-90307, review F1/F4).</b> BlueMind publishes {@code getetag} on a
+   * child {@code .ics} as the raw token {@code bmdav_<lnum>_0}
+   * ({@code GetTag.java:46-56}: "unsupported ressource type", timestamp 0),
+   * unquoted and constant for the object's life, and on the container itself
+   * as the same token carrying its last modification. {@code listResourceEtags}
+   * hands both back verbatim — the container included, because the rule is
+   * "anything with a version", not "anything that is not the collection" —
+   * and that is the value the verification pass adopts into the row, so it is
+   * the value {@code BlueMindImportWriter} must read the precondition from.
+   *
+   * @throws Exception never — the mock declares it
+   */
+  @Test
+  void blueMindListsChildObjectsWithARawConstantGetetag() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "text/xml"), fixture("bluemind-propfind-collection-depth1-items.derived.xml"));
+    String collection = BLUEMIND_HOME + "calendar:Default:9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/";
+
+    Map<String, String> etags = client.listResourceEtags(endpoint, collection);
+
+    assertEquals("bmdav_851210693_0", etags.get(collection + "evt-1.ics"));
+    assertEquals("bmdav_2859517047_0", etags.get(collection + "f909181a-04fc-486d-aa6a-136586320ae1.ics"));
+    assertEquals("bmdav_4158572241_1757971200000", etags.get(collection));
+    assertEquals(3, etags.size());
+    HttpRequest request = sent.get(0);
+    assertEquals("PROPFIND", request.method());
+    assertEquals("1", request.headers().firstValue("Depth").orElse(null));
   }
 
   /**
