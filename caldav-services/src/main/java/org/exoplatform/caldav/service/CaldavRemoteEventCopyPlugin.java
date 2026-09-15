@@ -101,14 +101,14 @@ public class CaldavRemoteEventCopyPlugin implements RemoteEventCopyPlugin {
    */
   @Override
   public boolean writesCopyOf(Event event, long recipientIdentityId) {
+    if (event == null || recipientIdentityId <= 0) {
+      return false;
+    }
     try {
-      return event != null
-             && recipientIdentityId > 0
-             && caldavCopyPolicy.mayHoldCopy(event)
-             && caldavCopyConsent.copiesEnabled(recipientIdentityId);
+      return caldavCopyPolicy.mayHoldCopy(event) && caldavCopyConsent.copiesEnabled(recipientIdentityId);
     } catch (RuntimeException | LinkageError e) {
       LOG.debug("Whether a copy of event {} is written for user {} could not be told; it is answered as no copy",
-                event == null ? null : event.getId(),
+                event.getId(),
                 recipientIdentityId,
                 e);
       return false;
