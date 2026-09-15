@@ -1030,18 +1030,96 @@ public class CaldavOutboundServiceTest {
     assertEquals(CollectionOwnership.OWN,
                  service.ownershipOf(SERVER, PRINCIPAL, List.of(), collection("/dav/calendars/john/google/")),
                  "silence is not a signal: no owner, no privilege set, the user's own");
-    // BlueMind's resource subscriptions — a pool vehicle, a room — are listed
-    // as calendar:<uid> with a uid that is not the principal's, the user as
-    // owner and the full set. Not read here, on purpose: whether such a
-    // resource should be the user's calendar is an open product question,
-    // and today it is materialised like any other collection.
-    assertEquals(CollectionOwnership.OWN,
-                 service.ownershipOf(SERVER,
-                                     PRINCIPAL,
-                                     List.of(),
-                                     owned("/dav/calendars/john/calendar:7E3AE6F3-0000-0000-0000-000000000000/", PRINCIPAL, true, true)));
     verify(caldavSyncStorage, never()).isExoCalendarOnServer(anyLong(), anyString());
     verify(caldavSyncStorage, never()).isExoCollectionOnServer(anyLong(), anyString());
+  }
+
+  // ------------------------------------ subscriptions the server's naming reveals, EXO-90275
+
+  /** An account of BlueMind's shape, which is where the naming is read. */
+  private static final String        BM_PRINCIPAL = "/dav/principals/__uids__/john-uid/";
+
+  /** That account's home, where BlueMind lists its subscriptions. */
+  private static final String        BM_HOME      = "/dav/calendars/__uids__/john-uid/";
+
+  /**
+   * BlueMind's resource subscription — the pool vehicle, a room — is listed
+   * as {@code calendar:<uid>} with a uid that is not the principal's, the
+   * user as owner and the full privilege set: the server's two signals are
+   * silent, and the naming alone makes it a resource's calendar, a share. It
+   * used to be OWN and materialised (rig calendar 16). No database question.
+   */
+  @Test
+  public void aResourceSubscriptionIsAResourcesCalendarByTheServersNaming() {
+    CollectionOwnership ownership = service.ownershipOf(SERVER,
+                                                        BM_PRINCIPAL,
+                                                        List.of(),
+                                                        owned(BM_HOME + "calendar:7E3AE6F3-0000-0000-0000-000000000000/",
+                                                              BM_PRINCIPAL,
+                                                              true,
+                                                              true));
+
+    assertEquals(CollectionOwnership.SUBSCRIBED_RESOURCE, ownership);
+    assertTrue(ownership.isShared());
+    assertEquals(org.exoplatform.caldav.model.CalendarOwnerKind.RESOURCE, ownership.ownerKind());
+    verify(caldavSyncStorage, never()).isExoCalendarOnServer(anyLong(), anyString());
+    verify(caldavSyncStorage, never()).isExoCollectionOnServer(anyLong(), anyString());
+  }
+
+  /**
+   * A colleague's main calendar the user subscribed to — the acceptance
+   * shape, calendar 33 — is a person's by the same naming; the user's own
+   * main calendar, which names their own uid, stays their own (EXO-90225).
+   */
+  @Test
+  public void aColleaguesMainCalendarIsAPersonsAndTheUsersOwnStaysTheirs() {
+    CollectionOwnership colleague = service.ownershipOf(SERVER,
+                                                        BM_PRINCIPAL,
+                                                        List.of(),
+                                                        owned(BM_HOME + "calendar:Default:camille/", BM_PRINCIPAL, true, true));
+
+    assertEquals(CollectionOwnership.SUBSCRIBED_PERSON, colleague);
+    assertEquals(org.exoplatform.caldav.model.CalendarOwnerKind.PERSON, colleague.ownerKind());
+    assertEquals(CollectionOwnership.OWN,
+                 service.ownershipOf(SERVER, BM_PRINCIPAL, List.of(), owned(BM_HOME + "calendar:Default:john-uid/", BM_PRINCIPAL, true, true)));
+    assertEquals(null, CollectionOwnership.OWN.ownerKind(), "the user's own calendar has no owner kind");
+  }
+
+  /**
+   * The naming is heard after the deployment and before the server's
+   * signals: a colleague's eXo calendar stays the deployment's to name
+   * (EXO-90234), and a resource whose owner the server also named keeps the
+   * resource kind rather than a person's.
+   */
+  @Test
+  public void theNamingIsHeardAfterTheDeploymentAndBeforeTheServer() {
+    when(caldavSyncStorage.isExoCalendarOnServer(SERVER, ANCHOR)).thenReturn(true);
+    assertEquals(CollectionOwnership.COLLEAGUES_EXO_CALENDAR,
+                 service.ownershipOf(SERVER, PRINCIPAL, List.of(), owned(WANTED, PRINCIPAL, true, true)));
+
+    assertEquals(CollectionOwnership.SUBSCRIBED_RESOURCE,
+                 service.ownershipOf(SERVER, BM_PRINCIPAL, List.of(), owned(BM_HOME + "calendar:room-1/", ALICE, true, false)));
+  }
+
+  /**
+   * A server that names no principal leaves the naming off, as it leaves the
+   * owner comparison off.
+   */
+  @Test
+  public void noPrincipalLeavesTheNamingOff() {
+    assertEquals(CollectionOwnership.OWN,
+                 service.ownershipOf(SERVER, null, List.of(), owned(BM_HOME + "calendar:room-1/", null, true, true)));
+  }
+
+  /**
+   * On an account of another shape a {@code calendar:} segment is a name a
+   * client chose, and says nothing about an owner: the collection is decided
+   * by the server's signals as before.
+   */
+  @Test
+  public void anAccountOfAnotherShapeIsNotReadByTheNaming() {
+    assertEquals(CollectionOwnership.OWN,
+                 service.ownershipOf(SERVER, PRINCIPAL, List.of(), owned("/dav/calendars/john/calendar:room-1/", PRINCIPAL, true, true)));
   }
 
   /**

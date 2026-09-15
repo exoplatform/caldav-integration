@@ -74,6 +74,9 @@ const PRESENTATION = {
   PAUSED: {icon: 'fa-exclamation-triangle', colour: 'warning'},
   EXO_ORPHANED: {icon: 'fa-info-circle', colour: 'info'},
   REMOTE_GONE: {icon: 'fa-exclamation-triangle', colour: 'warning'},
+  // A calendar copied from somebody else's calendar and no longer synchronised
+  // (EXO-90275): nothing failed, and the user's one action is to delete it.
+  RETIRED_SUBSCRIPTION: {icon: 'fa-info-circle', colour: 'info'},
 };
 
 export default {

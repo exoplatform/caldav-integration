@@ -165,7 +165,50 @@ public class CaldavCalendarOwnerService {
       // the user as owner; naming that owner would say "shared by yourself".
       return shareOwnedBy(viewerIdentityId, serverId, endpoint, collection.ownerIfAnother(principal), memo);
     }
+    if (ownership.isSubscription()) {
+      // BlueMind names the viewer as the owner of a subscription, so the
+      // owner comes from the container uid instead (EXO-90275).
+      BlueMindContainerNaming.Subscription subscription = BlueMindContainerNaming.subscriptionOf(collection.href(), principal);
+      if (subscription == null) {
+        return CalendarOwner.NONE;
+      }
+      String ownerPath = BlueMindContainerNaming.principalOf(principal, subscription.ownerUid());
+      return subscription.resource() ? resourceNamed(endpoint, ownerPath, collection, memo)
+                                     : shareOwnedBy(viewerIdentityId, serverId, endpoint, ownerPath, memo);
+    }
     return CalendarOwner.NONE;
+  }
+
+  /**
+   * A resource the user subscribed to, as an owner to show: by name only.
+   *
+   * <p>
+   * The resource's principal is asked its {@code DAV:displayname}, which
+   * BlueMind answers from the directory entry of that uid
+   * ({@code DisplayName#fetch}, case PRINCIPAL:
+   * {@code lc.principalDirEntry(dr).displayName}). A resource is never an eXo
+   * user, so no identity is looked up. When the principal cannot say, the
+   * collection's own display name stands in — on BlueMind the container's
+   * name, which is the resource's — and never the uid, which names nothing a
+   * person recognises.
+   *
+   * @param endpoint the account's endpoint
+   * @param ownerPath the resource's principal path
+   * @param collection the listed collection, whose name is the fallback
+   * @param memo the listing's memo, keyed by principal path
+   * @return the resource named, or {@link CalendarOwner#NONE} when neither
+   *         the principal nor the collection carries a name
+   */
+  private CalendarOwner resourceNamed(CalDavEndpoint endpoint,
+                                      String ownerPath,
+                                      CalendarCollection collection,
+                                      CalendarOwnerMemo memo) {
+    CalendarOwner named = memo.ownerOf(ownerPath);
+    if (named == null) {
+      named = CalendarOwner.named(displayNameOf(endpoint, ownerPath));
+      memo.remember(ownerPath, named);
+    }
+    return named == CalendarOwner.NONE ? CalendarOwner.named(StringUtils.trimToNull(collection.displayName())) : named;
   }
 
   /**
