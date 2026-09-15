@@ -101,6 +101,49 @@ public class RemoteCalendar {
   private String  ownerDisplayName;
 
   /**
+   * Whether the owner is a person or a resource (EXO-90275): the list draws
+   * a resource with a resource glyph and names it "Resource: …" rather than
+   * showing an avatar. {@code RESOURCE} for a BlueMind resource the user
+   * subscribed to, whose {@code ownerDisplayName} is then the resource's
+   * name and whose identity fields are null; {@code PERSON} for every other
+   * share; always null when {@code shared} is false.
+   */
+  private CalendarOwnerKind ownerKind;
+
+  /**
+   * A calendar with its owner named and its kind derived: a share belongs to
+   * a person unless said otherwise — the shape every caller built before the
+   * kind was carried (EXO-90275).
+   *
+   * @param id the collection href
+   * @param name its display name
+   * @param color a usable colour
+   * @param readOnly whether events may be written into it
+   * @param shared whether it is somebody else's
+   * @param ownerIdentityId the owner's identity, when a user of this deployment
+   * @param ownerUsername the owner's login, under the same condition
+   * @param ownerDisplayName how to name the owner
+   */
+  public RemoteCalendar(String id,
+                        String name,
+                        String color,
+                        boolean readOnly,
+                        boolean shared,
+                        Long ownerIdentityId,
+                        String ownerUsername,
+                        String ownerDisplayName) {
+    this(id,
+         name,
+         color,
+         readOnly,
+         shared,
+         ownerIdentityId,
+         ownerUsername,
+         ownerDisplayName,
+         shared ? CalendarOwnerKind.PERSON : null);
+  }
+
+  /**
    * A calendar nothing is said about beyond its own properties: not shared,
    * no owner named — the shape every caller built before ownership was
    * carried (EXO-90237), kept so that a calendar built by hand never

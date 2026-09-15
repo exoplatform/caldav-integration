@@ -678,13 +678,19 @@ public class CaldavOutboundService {
    * shares and other deployments' collections.
    *
    * <p>
-   * What this deliberately does <b>not</b> read is the shape of any other
-   * server-minted slug. BlueMind lists a subscribed resource — a pool
-   * vehicle, a room — as {@code calendar:<uid>} with a uid that is not the
-   * principal's, and that is a signal a later rule could read; it is left
-   * out here, because whether such a resource should be the user's calendar
-   * at all is a product question nobody has answered, and today it is
-   * materialised like any other collection.
+   * <b>The server's naming</b> is heard between the two (EXO-90275). BlueMind
+   * lists a calendar the user subscribed to — a colleague's main or created
+   * calendar, a pool vehicle, a room — under the user's own home with the
+   * user as owner and the full privilege set, so neither server signal fires;
+   * the container uid it names the collection by carries the owner instead
+   * ({@link BlueMindContainerNaming}). A uid other than the account's own is
+   * {@link CollectionOwnership#SUBSCRIBED_PERSON} or
+   * {@link CollectionOwnership#SUBSCRIBED_RESOURCE}. Before the server's two
+   * signals, so that a resource is told from a person wherever both could
+   * speak; after the deployment, because no eXo-minted slug has that shape.
+   * It costs no query. Until it was read, a subscribed resource and a
+   * subscribed colleague's main calendar were materialised as the user's own
+   * calendars (rig calendar 16, acceptance calendar 33).
    *
    * @param serverId the declared server registration, which scopes the
    *          account-wide question
@@ -713,6 +719,10 @@ public class CaldavOutboundService {
       if (isMintedByThisDeployment(serverId, href)) {
         return CollectionOwnership.COLLEAGUES_EXO_CALENDAR;
       }
+    }
+    BlueMindContainerNaming.Subscription subscription = BlueMindContainerNaming.subscriptionOf(href, principal);
+    if (subscription != null) {
+      return subscription.resource() ? CollectionOwnership.SUBSCRIBED_RESOURCE : CollectionOwnership.SUBSCRIBED_PERSON;
     }
     if (collection.isSharedWith(principal)) {
       return CollectionOwnership.SHARED;
