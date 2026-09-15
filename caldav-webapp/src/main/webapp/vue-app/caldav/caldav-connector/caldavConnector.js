@@ -218,6 +218,53 @@ const caldavConnector = {
   },
 
   /**
+   * What this connector adds to the menu of the user's own calendars in
+   * agenda's left panel (EXO-90253): "Share", on each calendar the platform
+   * says can be shared from eXo — owned, exported to the connected account or
+   * imported from it and owned there, on
+   * a server where every grant is confirmed. Agenda asks connectors declaring this
+   * and `runCalendarAction`, and draws the labels as given.
+   *
+   * Never rejects: a connector that cannot answer adds nothing.
+   *
+   * @returns {Promise<Object>} {calendarId: [{id, label, icon}]}, empty when
+   *          no calendar can be shared
+   */
+  calendarActions() {
+    return Promise.all([caldavConnectorService.getShareableCalendars(), labels()])
+      .then(([calendarIds, bundle]) => {
+        // The key itself when the bundle could not be read, like every other
+        // label of this add-on: an English word would pass for a translation.
+        const label = bundle && bundle['caldav.share.menu'] || 'caldav.share.menu';
+        const actions = {};
+        (calendarIds || []).forEach(calendarId => {
+          actions[calendarId] = [{id: 'caldavShareCalendar', label, icon: 'fa-share-alt'}];
+        });
+        return actions;
+      })
+      .catch(() => ({}));
+  },
+
+  /**
+   * Runs an action `calendarActions` offered. "Share" opens the share drawer
+   * of this add-on, which lives in a Vue app of its own: the request crosses
+   * as a document event, the one signal that reaches it from agenda's app.
+   *
+   * @param {String} actionId the id of the action offered
+   * @param {Object} calendar the agenda calendar, {id, name}
+   * @returns {Promise<Boolean>} true when the action was this connector's
+   */
+  runCalendarAction(actionId, calendar) {
+    if (actionId !== 'caldavShareCalendar' || !calendar || !calendar.id) {
+      return Promise.resolve(false);
+    }
+    document.dispatchEvent(new CustomEvent('open-caldav-share-calendar-drawer', {
+      detail: {id: calendar.id, name: calendar.name || calendar.title || ''},
+    }));
+    return Promise.resolve(true);
+  },
+
+  /**
    * What unlinking this account costs, in the user's language.
    *
    * <p>
@@ -728,7 +775,11 @@ function labels() {
   if (!labelsPromise) {
     const lang = (window.eXo && eXo.env && eXo.env.portal && eXo.env.portal.language) || 'en';
     const url = `${window.location.origin}/portal/rest/i18n/bundle/locale.portlet.Caldav-${lang}.json`;
-    labelsPromise = fetch(url, {credentials: 'include'})
+    // cache: 'no-cache' makes the browser revalidate the bundle with the server
+    // (a 304 when unchanged). The bundle is served public for a week, and
+    // without revalidation a browser that fetched it before an upgrade kept
+    // showing raw keys for new labels such as caldav.share.menu (EXO-90253).
+    labelsPromise = fetch(url, {credentials: 'include', cache: 'no-cache'})
       .then(resp => resp && resp.ok && resp.json() || {})
       // A missing bundle must not stop a deletion being confirmed: the dialog
       // still asks, it simply asks with less to say.

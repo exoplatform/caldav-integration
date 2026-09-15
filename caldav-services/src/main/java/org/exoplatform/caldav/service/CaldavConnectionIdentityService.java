@@ -16,7 +16,9 @@
  */
 package org.exoplatform.caldav.service;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -218,6 +220,44 @@ public class CaldavConnectionIdentityService {
    */
   public List<Long> otherUsersConnectedAs(long userIdentityId, long serverId, String principal) {
     return connectedAs(serverId, principal, userIdentityId);
+  }
+
+  /**
+   * The principal one user is connected as on one server, believed only
+   * while their settings still hold a connected account there (EXO-90253).
+   *
+   * <p>
+   * What a sharee is named by in an access control entry: nothing else ties
+   * an eXo user to a principal, and a principal is never guessed from a
+   * login.
+   *
+   * @param userIdentityId the eXo user
+   * @param serverId the server key
+   * @return the canonical principal, or null when none is recorded for that
+   *         server or the user is no longer connected to it
+   * @throws RuntimeException when the lookup itself fails; the caller degrades
+   */
+  public String principalOf(long userIdentityId, long serverId) {
+    String principal = caldavConnectionStorage.getRecordedPrincipal(userIdentityId, serverId);
+    return isRecordable(principal) && isStillConnectedTo(userIdentityId, serverId) ? principal : null;
+  }
+
+  /**
+   * The principals of every user still connected to one server, by user,
+   * lowest identity first, as far as the storage's bound reads (EXO-90253).
+   *
+   * @param serverId the server key
+   * @return user identity to canonical principal
+   * @throws RuntimeException when the lookup itself fails; the caller degrades
+   */
+  public Map<Long, String> principalsOn(long serverId) {
+    Map<Long, String> connected = new LinkedHashMap<>();
+    caldavConnectionStorage.getPrincipalsOn(serverId).forEach((user, principal) -> {
+      if (isRecordable(principal) && isStillConnectedTo(user, serverId)) {
+        connected.put(user, principal);
+      }
+    });
+    return connected;
   }
 
   /**
