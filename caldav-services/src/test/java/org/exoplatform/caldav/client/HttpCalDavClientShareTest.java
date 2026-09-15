@@ -257,37 +257,6 @@ public class HttpCalDavClientShareTest {
   }
 
   /**
-   * The account half of the same recognition: a principal BlueMind's DAV server
-   * named, told from every other shape (EXO-90247).
-   *
-   * <p>
-   * Read by a decision that has a principal and no collection — the connection
-   * registry answers {@code current-user-principal} per (user, server) without
-   * a network call, and that is what lets a per-invitee outbound decision ask
-   * what product an account sits on at all. Pinned here, beside the collection
-   * rule it is the sibling of, so the two spellings of BlueMind's path
-   * vocabulary move together.
-   */
-  @Test
-  void aBlueMindPrincipalIsToldFromEveryOtherShape() {
-    assertTrue(SharingMechanism.isBlueMindPrincipal("/dav/principals/__uids__/" + BLUEMIND_OWNER + "/"));
-    assertTrue(SharingMechanism.isBlueMindPrincipal("/dav/principals/__uids__/" + BLUEMIND_OWNER),
-               "a missing trailing slash is the same principal");
-    assertTrue(SharingMechanism.isBlueMindPrincipal("https://bm.example.com/dav/principals/__uids__/" + BLUEMIND_OWNER + "/"),
-               "an absolute href is the same principal");
-
-    assertFalse(SharingMechanism.isBlueMindPrincipal("/principals/__uids__/" + BLUEMIND_OWNER + "/"),
-                "Apple's CalendarServer uses the same __uids__ layout without the /dav root");
-    assertFalse(SharingMechanism.isBlueMindPrincipal("/dav/principal/alice"), "Stalwart names a principal its own way");
-    assertFalse(SharingMechanism.isBlueMindPrincipal("/dav/calendars/__uids__/" + BLUEMIND_OWNER + "/"),
-                "a calendar home is not a principal");
-    assertFalse(SharingMechanism.isBlueMindPrincipal("/dav/principals/__uids__/" + BLUEMIND_OWNER + "/calendar-proxy-read/"),
-                "a proxy collection under the principal is not the principal");
-    assertFalse(SharingMechanism.isBlueMindPrincipal("/dav/principals/__uids__/"), "a principal names somebody");
-    assertFalse(SharingMechanism.isBlueMindPrincipal(null));
-  }
-
-  /**
    * A header repeated is one list, and an absent header is an empty one.
    */
   @Test

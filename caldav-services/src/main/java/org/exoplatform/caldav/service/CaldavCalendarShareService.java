@@ -265,17 +265,7 @@ public class CaldavCalendarShareService {
    */
   private static final Set<String> BLUEMIND_READ_CLOSURE  = Set.of("Read", "Freebusy", "Invitation", "Visible");
 
-  /**
-   * A BlueMind user principal: the segment is the directory entry uid.
-   *
-   * <p>
-   * An <b>extractor</b>, which is why it keeps its capturing group and stays
-   * here. The same spelling read as a plain shape — "is this account
-   * BlueMind's" — is
-   * {@link org.exoplatform.caldav.client.SharingMechanism#isBlueMindPrincipal(String)},
-   * beside the collection shape it belongs with; that is the authority for the
-   * recognition, and a change to what BlueMind spells moves both.
-   */
+  /** A BlueMind user principal: the segment is the directory entry uid. */
   private static final Pattern     BLUEMIND_PRINCIPAL     = Pattern.compile("/dav/principals/__uids__/([^/]+)");
 
   /**
