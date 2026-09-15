@@ -42,7 +42,7 @@ import org.exoplatform.caldav.model.CalendarOwnerKind;
  * (EXO-90275): the <b>server's naming</b>. A calendar the user subscribed to
  * — a colleague's main or created calendar, a resource such as a pool
  * vehicle — is listed under a container uid that carries its owner's uid
- * ({@code BlueMindContainerNaming}), and a uid other than the account's own
+ * ({@code org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming}), and a uid other than the account's own
  * makes it {@link #SUBSCRIBED_PERSON} or {@link #SUBSCRIBED_RESOURCE}.
  *
  * <p>
@@ -112,7 +112,7 @@ public enum CollectionOwnership {
    * Another person's calendar the user subscribed to, by the server's
    * <em>naming</em> (EXO-90275): a BlueMind container
    * {@code calendar:Default:<uid>} or {@code calendar:UserCreated:<uid>:…}
-   * whose uid is not the account's ({@link BlueMindContainerNaming}). The
+   * whose uid is not the account's ({@link org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming}). The
    * third witness, heard because the other two are silent there: BlueMind
    * lists the subscription under the user's own home, names the user as its
    * owner and grants the full privilege set. Treated exactly as
