@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-package org.exoplatform.caldav.client;
+package org.exoplatform.caldav.client.bluemind;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -27,10 +27,9 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.Base64;
-import java.util.List;
 import java.util.Locale;
+import java.util.function.Function;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,26 +38,23 @@ import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
+import org.exoplatform.caldav.client.CalDavAuthenticationException;
+import org.exoplatform.caldav.client.CalDavEndpoint;
+import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
 /**
- * Reads the access control list of a BlueMind calendar through BlueMind's own
- * REST API — the one place its sharing state can be read (EXO-90253).
+ * The one way eXo talks to BlueMind's own REST API: a short session opened
+ * with the account's stored login and password, every call carrying the key
+ * it answered, and the session always closed afterwards.
  *
  * <p>
- * BlueMind's DAV server answers a {@code CS:share} with 200 whatever it did
- * and publishes no sharee list over DAV ({@code CS:invite} is a stub:
- * {@code plugins/net.bluemind.dav.server/.../proto/props/calendarserver/Invite.java}),
- * so the only proof that a grant was applied is the container's access list,
- * {@code GET /api/containers/_manage/{containerUid}/_acl}
- * ({@code parent/core/net.bluemind.core.container.api/.../IContainerManagement.java}),
- * which the container's owner may read
- * ({@code ContainerPermissionResolver.java}: the owner holds every verb).
- *
- * <p>
- * The conversation, and what keeps it safe:
+ * Extracted from {@code BlueMindAclClient} (EXO-90253) when a second
+ * conversation needed it (EXO-90307, the ICS import channel), so that both
+ * share one transport, one authentication path and one set of rules:
  * <ul>
  * <li><b>Same server, never another.</b> The REST root is the scheme, host
  * and port of the endpoint minted from the server registry for the DAV calls,
@@ -66,72 +62,74 @@ import org.exoplatform.services.log.Log;
  * ({@code RestServiceApiDescriptionParser.java} prefixes every path with
  * {@code /api}; {@code bluemind-vhosts.conf} proxies {@code location /api/}).
  * Nothing a caller passes can name a host; redirects are never followed.</li>
- * <li><b>The owner's own credentials, from storage.</b> The login and password
- * are the ones the configured credentials provider produces for the owner's
- * DAV requests, taken from its Basic header; a provider producing anything
- * else is not a login this API accepts, and sharing is not offered.</li>
- * <li><b>A session for one read.</b> {@code POST /api/auth/login?login=…} with
- * the password as a JSON string, {@code Content-Type: application/json} —
- * what BlueMind's own client proxy sends ({@code ClientProxyGenerator.java},
- * {@code ByMimeTypeCodec.encode}); BlueMind picks the body codec by the exact
- * {@code Content-Type} value ({@code DefaultBodyParameterCodecs.java}), so a
- * {@code text/plain} carrying a charset parameter would be read as JSON,
- * refused with a 500 and logged by BlueMind with the password in it —
- * answers a {@code LoginResponse} whose
+ * <li><b>The account's own credentials, from storage.</b> The login and
+ * password are the ones the configured credentials provider produces for the
+ * account's DAV requests, taken from its Basic header; a provider producing
+ * anything else is not a login this API accepts.</li>
+ * <li><b>A session for one job.</b> {@code POST /api/auth/login?login=…} with
+ * the password as a JSON string under exactly
+ * {@code Content-Type: application/json} — what BlueMind's own client proxy
+ * sends ({@code ClientProxyGenerator.java}, {@code ByMimeTypeCodec.encode});
+ * BlueMind picks the body codec by the exact {@code Content-Type} value
+ * ({@code DefaultBodyParameterCodecs.java}), so a {@code text/plain} carrying
+ * a charset parameter would be read as JSON, refused with a 500 and logged by
+ * BlueMind with the password in it — answers a {@code LoginResponse} whose
  * {@code authKey} travels in the {@code X-BM-ApiKey} header
  * ({@code parent/core/net.bluemind.core.rest/.../base/RestRootHandler.java}
  * reads it, {@code BasicClientProxy.java} sends it); the key is used for the
- * read and {@code POST /api/auth/logout} is always sent after it. The key and
- * the password are never logged, never stored, and never part of an
+ * calls and {@code POST /api/auth/logout} is always sent after them. The key
+ * and the password are never logged, never stored, and never part of an
  * exception message.</li>
+ * <li><b>Bounded answers.</b> Every body is read up to a fixed size and
+ * refused beyond it: nothing this add-on reads from this API is large.</li>
  * </ul>
  */
 @Component
-public class BlueMindAclClient {
+public class BlueMindRestSession {
 
   /** The header BlueMind's REST API reads a session key from. */
-  public static final String      API_KEY_HEADER   = "X-BM-ApiKey";
-
-  /** What this client names itself as to BlueMind's login, for its logs. */
-  static final String             LOGIN_ORIGIN     = "exo-caldav";
+  public static final String      API_KEY_HEADER  = "X-BM-ApiKey";
 
   /** The media type BlueMind's REST API reads and answers. */
-  private static final String     JSON_MEDIA_TYPE  = "application/json";
+  public static final String      JSON_MEDIA_TYPE = "application/json";
 
-  private static final Log        LOG              = ExoLogger.getLogger(BlueMindAclClient.class);
+  /** What this add-on names itself as to BlueMind's login, for its logs. */
+  static final String             LOGIN_ORIGIN    = "exo-caldav";
 
-  /** The longest answer read from this API: an access list is a few entries. */
-  private static final long       MAX_BODY_BYTES   = 1024L * 1024;
+  private static final Log        LOG             = ExoLogger.getLogger(BlueMindRestSession.class);
 
-  private static final Duration   REQUEST_TIMEOUT  = Duration.ofSeconds(30);
+  /** The longest answer read from this API: a list of a few entries. */
+  private static final long       MAX_BODY_BYTES  = 1024L * 1024;
+
+  private static final Duration   REQUEST_TIMEOUT = Duration.ofSeconds(30);
 
   /** The characters left as they are in a path segment: RFC 3986 unreserved. */
-  private static final String     UNRESERVED       = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  private static final String     UNRESERVED      =
+                                             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
 
   private final HttpClient                httpClient;
 
   private final CaldavCredentialsResolver caldavCredentialsResolver;
 
-  private final JsonMapper                mapper   = JsonMapper.builder().build();
+  private final JsonMapper                mapper  = JsonMapper.builder().build();
 
   /**
-   * One entry of a BlueMind container's access list.
+   * An answer: status and body text.
    *
-   * @param subject the directory entry uid it applies to — a user's uid is the
-   *          segment of their DAV principal
-   *          {@code /dav/principals/__uids__/<uid>/}
-   * @param verb the BlueMind verb, {@code Read}, {@code Write}, {@code Manage}…
+   * @param status the HTTP status
+   * @param body the body, decoded as UTF-8
    */
-  public record BlueMindAce(String subject, String verb) {
+  public record Answer(int status, String body) {
   }
 
   /**
-   * The client Spring builds: no redirects, bounded timeouts.
+   * The transport Spring builds: no redirects, bounded timeouts.
    *
-   * @param caldavCredentialsResolver the seam producing the owner's credentials
+   * @param caldavCredentialsResolver the seam producing the account's
+   *          credentials
    */
   @Autowired
-  public BlueMindAclClient(CaldavCredentialsResolver caldavCredentialsResolver) {
+  public BlueMindRestSession(CaldavCredentialsResolver caldavCredentialsResolver) {
     this(HttpClient.newBuilder()
                    .connectTimeout(Duration.ofSeconds(10))
                    .followRedirects(HttpClient.Redirect.NEVER)
@@ -145,81 +143,16 @@ public class BlueMindAclClient {
    * @param httpClient the transport
    * @param caldavCredentialsResolver the credentials seam
    */
-  BlueMindAclClient(HttpClient httpClient, CaldavCredentialsResolver caldavCredentialsResolver) {
+  BlueMindRestSession(HttpClient httpClient, CaldavCredentialsResolver caldavCredentialsResolver) {
     this.httpClient = httpClient;
     this.caldavCredentialsResolver = caldavCredentialsResolver;
   }
 
   /**
-   * A container's access list, read as its owner in one short REST session.
+   * Whether the account's configured credentials are a login and password
+   * this API can take, without calling the server.
    *
-   * @param endpoint the owner's DAV endpoint, minted from the registry
-   * @param containerUid the container uid, the last segment of the calendar
-   *          collection's path
-   * @return the entries, in the order BlueMind lists them
-   * @throws UnsupportedOperationException when the configured credentials are
-   *           not a login and password
-   * @throws CalDavAuthenticationException when BlueMind refuses the login
-   * @throws CalDavForbiddenException when the account may not read the list
-   * @throws CalDavUnreachableException when the server cannot be reached
-   * @throws CalDavException when the answer is anything else
-   */
-  public List<BlueMindAce> readAcl(CalDavEndpoint endpoint, String containerUid) {
-    if (StringUtils.isBlank(containerUid)) {
-      throw new IllegalArgumentException("A container uid is required");
-    }
-    String root = apiRootOf(endpoint);
-    String[] account = accountOf(endpoint);
-    String key = login(root, account[0], account[1]);
-    try {
-      URI uri = URI.create(root + "/api/containers/_manage/" + encodeSegment(containerUid) + "/_acl");
-      HttpRequest request = HttpRequest.newBuilder(uri)
-                                       .timeout(REQUEST_TIMEOUT)
-                                       .header(API_KEY_HEADER, key)
-                                       .header("Accept", JSON_MEDIA_TYPE)
-                                       .GET()
-                                       .build();
-      Answer answer = send(request, uri);
-      if (answer.status() == 401) {
-        throw new CalDavAuthenticationException("The calendar server refused the session for GET " + uri);
-      }
-      if (answer.status() == 403) {
-        throw new CalDavForbiddenException("The calendar server refused to list the access of " + uri);
-      }
-      checkGateway(answer.status(), "GET", uri);
-      if (answer.status() != 200) {
-        throw new CalDavException("The calendar server answered " + answer.status() + " for GET " + uri);
-      }
-      return acesOf(answer.body(), uri);
-    } finally {
-      logout(root, key);
-    }
-  }
-
-  /**
-   * The REST root of the declared server: the endpoint's scheme, host and
-   * port, and nothing a caller supplies.
-   *
-   * @param endpoint the endpoint minted from the registry
-   * @return {@code scheme://host[:port]}
-   */
-  static String apiRootOf(CalDavEndpoint endpoint) {
-    URI base = endpoint.getBaseUri();
-    String scheme = base.getScheme() == null ? "" : base.getScheme().toLowerCase(Locale.ROOT);
-    if (!("https".equals(scheme) || "http".equals(scheme)) || StringUtils.isBlank(base.getHost())) {
-      throw new CalDavException("The declared calendar server has no usable address for its REST API");
-    }
-    return scheme + "://" + base.getHost() + (base.getPort() == -1 ? "" : ":" + base.getPort());
-  }
-
-  /**
-   * Whether the owner's configured credentials are a login and password this
-   * API can take, without calling the server: what decides whether sharing
-   * on BlueMind is offered at all, so that a registration whose provider
-   * produces a token never shows an action every click of which would be
-   * refused.
-   *
-   * @param endpoint the owner's endpoint, minted from the registry
+   * @param endpoint the account's endpoint, minted from the registry
    * @return true when the provider produces a Basic login and password
    */
   public boolean acceptsCredentials(CalDavEndpoint endpoint) {
@@ -231,10 +164,113 @@ public class BlueMindAclClient {
   }
 
   /**
-   * The owner's login and password, as the configured provider produces them
-   * for the DAV requests.
+   * Runs one job inside a REST session opened as the account: log in, hand
+   * the open session to the job, log out whatever the job did.
    *
-   * @param endpoint the owner's endpoint
+   * @param <T> what the job produces
+   * @param endpoint the account's DAV endpoint, minted from the registry
+   * @param job the calls to make with the session
+   * @return what the job produced
+   * @throws UnsupportedOperationException when the configured credentials are
+   *           not a login and password
+   * @throws CalDavAuthenticationException when BlueMind refuses the login
+   * @throws CalDavUnreachableException when the server cannot be reached
+   * @throws CalDavException when the login answers anything else
+   */
+  public <T> T call(CalDavEndpoint endpoint, Function<Session, T> job) {
+    String root = apiRootOf(endpoint);
+    String[] account = accountOf(endpoint);
+    String key = login(root, account[0], account[1]);
+    try {
+      return job.apply(new Session(root, key));
+    } finally {
+      logout(root, key);
+    }
+  }
+
+  /**
+   * Parses a JSON answer.
+   *
+   * @param body the body
+   * @param uri the request, for the message
+   * @return the tree
+   * @throws CalDavException when the body is not JSON
+   */
+  public JsonNode parse(String body, URI uri) {
+    try {
+      return mapper.readTree(body);
+    } catch (RuntimeException e) {
+      throw new CalDavException("The calendar server answered something that is not JSON for " + uri);
+    }
+  }
+
+  /**
+   * One text member of a JSON object.
+   *
+   * @param node the object
+   * @param name the member
+   * @return its text, or null when absent, null or not a value
+   */
+  public static String textOf(JsonNode node, String name) {
+    JsonNode member = node == null ? null : node.get(name);
+    return member == null || member.isNull() || !member.isValueNode() ? null : StringUtils.trimToNull(member.asText());
+  }
+
+  /**
+   * One path segment, percent-encoded outside the unreserved set.
+   *
+   * @param segment the decoded segment
+   * @return the encoded segment
+   */
+  public static String encodeSegment(String segment) {
+    StringBuilder encoded = new StringBuilder();
+    for (byte b : segment.getBytes(StandardCharsets.UTF_8)) {
+      char c = (char) (b & 0xFF);
+      if (b >= 0 && UNRESERVED.indexOf(c) >= 0) {
+        encoded.append(c);
+      } else {
+        encoded.append('%').append(String.format("%02X", b & 0xFF));
+      }
+    }
+    return encoded.toString();
+  }
+
+  /**
+   * The REST root of the declared server: the endpoint's scheme, host and
+   * port, and nothing a caller supplies.
+   *
+   * @param endpoint the endpoint minted from the registry
+   * @return {@code scheme://host[:port]}
+   * @throws CalDavException when the endpoint names no usable address
+   */
+  static String apiRootOf(CalDavEndpoint endpoint) {
+    URI base = endpoint.getBaseUri();
+    String scheme = base.getScheme() == null ? "" : base.getScheme().toLowerCase(Locale.ROOT);
+    if (!("https".equals(scheme) || "http".equals(scheme)) || StringUtils.isBlank(base.getHost())) {
+      throw new CalDavException("The declared calendar server has no usable address for its REST API");
+    }
+    return scheme + "://" + base.getHost() + (base.getPort() == -1 ? "" : ":" + base.getPort());
+  }
+
+  /**
+   * A gateway status becomes the unreachable failure, as on the DAV side.
+   *
+   * @param status the status
+   * @param method the method
+   * @param uri the request, without its query
+   * @throws CalDavUnreachableException on 502, 503 and 504
+   */
+  static void checkGateway(int status, String method, URI uri) {
+    if (status == 502 || status == 503 || status == 504) {
+      throw new CalDavUnreachableException("The calendar server could not be reached (" + status + ") for " + method + " " + uri);
+    }
+  }
+
+  /**
+   * The account's login and password, as the configured provider produces
+   * them for the DAV requests.
+   *
+   * @param endpoint the account's endpoint
    * @return login and password
    * @throws UnsupportedOperationException when the provider produces anything
    *           but a Basic login and password
@@ -315,72 +351,6 @@ public class BlueMindAclClient {
   }
 
   /**
-   * The access list in an answer: a JSON array of {@code subject} and
-   * {@code verb}. Anything else is refused rather than read partly, since a
-   * grant is confirmed on it.
-   *
-   * @param body the answer's body
-   * @param uri the request, for the message
-   * @return the entries
-   */
-  private List<BlueMindAce> acesOf(String body, URI uri) {
-    JsonNode list = parse(body, uri);
-    if (!list.isArray()) {
-      throw new CalDavException("The calendar server answered no access list for GET " + uri);
-    }
-    List<BlueMindAce> aces = new ArrayList<>();
-    for (JsonNode entry : list) {
-      String subject = textOf(entry, "subject");
-      String verb = textOf(entry, "verb");
-      if (StringUtils.isBlank(subject) || StringUtils.isBlank(verb)) {
-        throw new CalDavException("The calendar server answered an access entry without subject or verb for GET " + uri);
-      }
-      aces.add(new BlueMindAce(subject, verb));
-    }
-    return aces;
-  }
-
-  /**
-   * One text member of a JSON object.
-   *
-   * @param node the object
-   * @param name the member
-   * @return its text, or null
-   */
-  private static String textOf(JsonNode node, String name) {
-    JsonNode member = node == null ? null : node.get(name);
-    return member == null || member.isNull() || !member.isValueNode() ? null : StringUtils.trimToNull(member.asText());
-  }
-
-  /**
-   * Parses a JSON answer.
-   *
-   * @param body the body
-   * @param uri the request, for the message
-   * @return the tree
-   */
-  private JsonNode parse(String body, URI uri) {
-    try {
-      return mapper.readTree(body);
-    } catch (RuntimeException e) {
-      throw new CalDavException("The calendar server answered something that is not JSON for " + uri);
-    }
-  }
-
-  /**
-   * A gateway status becomes the unreachable failure, as on the DAV side.
-   *
-   * @param status the status
-   * @param method the method
-   * @param uri the request, without its query
-   */
-  private static void checkGateway(int status, String method, URI uri) {
-    if (status == 502 || status == 503 || status == 504) {
-      throw new CalDavUnreachableException("The calendar server could not be reached (" + status + ") for " + method + " " + uri);
-    }
-  }
-
-  /**
    * Sends a request and reads a bounded body. A redirect is refused, never
    * followed; transport failure is unreachable. Messages name the request
    * without its query, and never a header.
@@ -414,30 +384,93 @@ public class BlueMindAclClient {
   }
 
   /**
-   * One path segment, percent-encoded outside the unreserved set.
-   *
-   * @param segment the decoded segment
-   * @return the encoded segment
+   * An open session: the REST root and the key every call carries. Paths are
+   * given relative to the root and always start with {@code /api/}; a query
+   * may follow, and is never named in a message.
    */
-  static String encodeSegment(String segment) {
-    StringBuilder encoded = new StringBuilder();
-    for (byte b : segment.getBytes(StandardCharsets.UTF_8)) {
-      char c = (char) (b & 0xFF);
-      if (b >= 0 && UNRESERVED.indexOf(c) >= 0) {
-        encoded.append(c);
-      } else {
-        encoded.append('%').append(String.format("%02X", b & 0xFF));
-      }
-    }
-    return encoded.toString();
-  }
+  public final class Session {
 
-  /**
-   * An answer: status and body.
-   *
-   * @param status the HTTP status
-   * @param body the body text
-   */
-  private record Answer(int status, String body) {
+    private final String root;
+
+    private final String key;
+
+    /**
+     * An open session.
+     *
+     * @param root the REST root
+     * @param key the session key
+     */
+    private Session(String root, String key) {
+      this.root = root;
+      this.key = key;
+    }
+
+    /**
+     * A GET.
+     *
+     * @param path the path under the root, query included if any
+     * @return the answer
+     */
+    public Answer get(String path) {
+      return exchange("GET", path, null, null);
+    }
+
+    /**
+     * A PUT with a body.
+     *
+     * @param path the path under the root
+     * @param body the body text
+     * @param contentType its media type, sent exactly as given
+     * @return the answer
+     */
+    public Answer put(String path, String body, String contentType) {
+      return exchange("PUT", path, body, contentType);
+    }
+
+    /**
+     * A DELETE.
+     *
+     * @param path the path under the root, query included if any
+     * @return the answer
+     */
+    public Answer delete(String path) {
+      return exchange("DELETE", path, null, null);
+    }
+
+    /**
+     * The URI a message may name for a path: root and path, without the
+     * query.
+     *
+     * @param path the path under the root
+     * @return the URI, query stripped
+     */
+    public URI named(String path) {
+      return URI.create(root + StringUtils.substringBefore(path, "?"));
+    }
+
+    /**
+     * One call of the session, the key on it.
+     *
+     * @param method the HTTP method
+     * @param path the path under the root
+     * @param body the body, or null for none
+     * @param contentType the body's media type, or null with no body
+     * @return the answer
+     */
+    private Answer exchange(String method, String path, String body, String contentType) {
+      URI uri = URI.create(root + path);
+      HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
+                                               .timeout(REQUEST_TIMEOUT)
+                                               .header(API_KEY_HEADER, key)
+                                               .header("Accept", JSON_MEDIA_TYPE);
+      if (body == null) {
+        builder.method(method, BodyPublishers.noBody());
+      } else {
+        builder.header("Content-Type", contentType).method(method, BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+      }
+      Answer answer = send(builder.build(), named(path));
+      checkGateway(answer.status(), method, named(path));
+      return answer;
+    }
   }
 }
