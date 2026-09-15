@@ -286,4 +286,62 @@ public class CaldavConnectionIdentityServiceTest {
     setting.setServerId(serverId);
     return setting;
   }
+
+  // ------------------------------------ who a calendar can be shared with (EXO-90253)
+
+  /**
+   * A sharee is named by the principal recorded for them on that server, and
+   * only while they are still connected to it: a row left by a user who
+   * disconnected, or moved to another server, names nobody.
+   */
+  @Test
+  public void aShareeIsNamedByTheirRecordedPrincipalOnlyWhileConnectedThere() {
+    when(caldavConnectionStorage.getRecordedPrincipal(BOB, STALWART)).thenReturn("/dav/pal/bob@stalwart.local");
+    when(caldavConnectorStorage.getCaldavSetting(BOB)).thenReturn(connectedTo(STALWART));
+
+    assertEquals("/dav/pal/bob@stalwart.local", service.principalOf(BOB, STALWART));
+
+    when(caldavConnectorStorage.getCaldavSetting(BOB)).thenReturn(connectedTo(2L));
+    assertNull(service.principalOf(BOB, STALWART), "connected to another server now");
+
+    when(caldavConnectorStorage.getCaldavSetting(BOB)).thenReturn(null);
+    assertNull(service.principalOf(BOB, STALWART), "disconnected");
+
+    when(caldavConnectionStorage.getRecordedPrincipal(ALICE, STALWART)).thenReturn(null);
+    assertNull(service.principalOf(ALICE, STALWART), "never recorded on that server");
+    verify(caldavConnectorStorage, never()).getCaldavSetting(ALICE);
+  }
+
+  /**
+   * The principals of a server are those of the users still connected to it,
+   * in the storage's order.
+   */
+  @Test
+  public void theServersPrincipalsAreThoseOfUsersStillConnected() {
+    java.util.Map<Long, String> recorded = new java.util.LinkedHashMap<>();
+    recorded.put(ALICE, ALICE_PRINCIPAL);
+    recorded.put(ALICE2, ALICE_PRINCIPAL);
+    recorded.put(BOB, "/dav/pal/bob@stalwart.local");
+    when(caldavConnectionStorage.getPrincipalsOn(STALWART)).thenReturn(recorded);
+    when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(connectedTo(STALWART));
+    when(caldavConnectorStorage.getCaldavSetting(ALICE2)).thenReturn(null);
+    when(caldavConnectorStorage.getCaldavSetting(BOB)).thenReturn(connectedTo(STALWART));
+
+    assertEquals(List.of(ALICE, BOB), List.copyOf(service.principalsOn(STALWART).keySet()));
+    assertEquals(ALICE_PRINCIPAL, service.principalsOn(STALWART).get(ALICE));
+  }
+
+  /**
+   * Settings connected to a server.
+   *
+   * @param serverId the server key
+   * @return the settings
+   */
+  private static CaldavUserSetting connectedTo(long serverId) {
+    CaldavUserSetting settings = new CaldavUserSetting();
+    settings.setUsername("login");
+    settings.setPassword("secret");
+    settings.setServerId(serverId);
+    return settings;
+  }
 }
