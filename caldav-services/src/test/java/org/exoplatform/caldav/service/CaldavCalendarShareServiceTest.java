@@ -62,8 +62,8 @@ import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.client.AccessControlEntry;
 import org.exoplatform.caldav.client.AccessControlEntry.AcePrincipal;
 import org.exoplatform.caldav.client.AclWriteResult;
-import org.exoplatform.caldav.client.BlueMindAclClient;
-import org.exoplatform.caldav.client.BlueMindAclClient.BlueMindAce;
+import org.exoplatform.caldav.client.bluemind.BlueMindAclClient;
+import org.exoplatform.caldav.client.bluemind.BlueMindAclClient.BlueMindAce;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
@@ -202,8 +202,6 @@ public class CaldavCalendarShareServiceTest {
   @Mock
   private BlueMindAclClient               blueMindAclClient;
 
-  @Mock
-  private BlueMindAclClient.Session       blueMindSession;
 
   @Mock
   private CaldavPushService               caldavPushService;
@@ -226,10 +224,6 @@ public class CaldavCalendarShareServiceTest {
                                              caldavPushService,
                                              Duration.ZERO,
                                              () -> 0L);
-    // A grant or a revoke reads BlueMind's list through one session; the stubs below answer per read, in order, as before.
-    lenient().when(blueMindAclClient.open(endpoint)).thenReturn(blueMindSession);
-    lenient().when(blueMindSession.readAcl(anyString()))
-             .thenAnswer(invocation -> blueMindAclClient.readAcl(endpoint, invocation.getArgument(0)));
     lenient().when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(calendar(CALENDAR, ALICE, ANCHOR));
     lenient().when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(connectedTo(STALWART));
     lenient().when(caldavSyncStorage.getPairByLocalCalendar(ALICE, STALWART, ANCHOR)).thenReturn(exoPair());
@@ -1312,37 +1306,9 @@ public class CaldavCalendarShareServiceTest {
     IllegalArgumentException refusedOnBlueMind = assertThrows(IllegalArgumentException.class,
                                                               () -> service.revoke(ALICE, "alice", CALENDAR, "alice2"));
     assertEquals(CaldavCalendarShareService.SAME_PRINCIPAL, refusedOnBlueMind.getMessage());
-    verify(blueMindAclClient, never()).open(any());
     verify(blueMindAclClient, never()).readAcl(any(), anyString());
   }
 
-  // ---------------------------------------------------------------- one BlueMind session per action
-
-  /**
-   * A grant on BlueMind reads the list, posts the share and reads the list
-   * back in one REST session: one login, both reads, one logout — not a login
-   * per read. The revoke does the same.
-   *
-   * @throws Exception never
-   */
-  @Test
-  public void onBlueMindAGrantAndARevokeAuthenticateOnceForTheirReadAndReadBack() throws Exception {
-    onBlueMind();
-    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner(),
-                                                                        acl(owner(), expanded(ERIC_UID, "Read")),
-                                                                        acl(owner(), expanded(ERIC_UID, "Read")),
-                                                                        owner());
-
-    service.grant(ALICE, "alice", CALENDAR, "bob");
-    verify(blueMindAclClient, times(1)).open(endpoint);
-    verify(blueMindSession, times(2)).readAcl(BM_CONTAINER);
-    verify(blueMindSession, times(1)).close();
-
-    service.revoke(ALICE, "alice", CALENDAR, "bob");
-    verify(blueMindAclClient, times(2)).open(endpoint);
-    verify(blueMindSession, times(4)).readAcl(BM_CONTAINER);
-    verify(blueMindSession, times(2)).close();
-  }
 
   /**
    * When BlueMind answers the share and the list read back does not hold the
