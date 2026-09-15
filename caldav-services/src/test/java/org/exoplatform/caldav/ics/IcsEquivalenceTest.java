@@ -328,6 +328,54 @@ public class IcsEquivalenceTest {
     assertEquivalent(EXO.replace("PARTSTAT=ACCEPTED", "PARTSTAT=ACCEPTED;SCHEDULE-STATUS=2.0"));
   }
 
+  /**
+   * The ORGANIZER half of the same tolerance, on a copy with real attendees
+   * (EXO-90247).
+   *
+   * <p>
+   * The case above strips the parameter from a fixture whose ORGANIZER never
+   * carried one, so it says nothing about the line an attendee's copy actually
+   * has: {@code IcsWriter.addPeople} puts {@code SCHEDULE-AGENT=CLIENT} on
+   * ORGANIZER whenever the pushing user is not the organizer. A scheduling
+   * server that consumes the parameter on both lines is the shape reported as
+   * a repair loop, and the tolerance has to cover both or the loop is real.
+   *
+   * <p>
+   * This is a <b>pin on behaviour that already holds</b> — the parameter set is
+   * applied by a property-agnostic normaliser — written because the delivery
+   * that looked for the loop's cause needed to rule this out, and an untested
+   * half is not ruled out.
+   */
+  @Test
+  public void aServerConsumingScheduleAgentOnTheOrganizerTooIsNotAnEdit() {
+    String exo = EXO.replace("ORGANIZER;CN=The Boss:", "ORGANIZER;CN=The Boss;SCHEDULE-AGENT=CLIENT:");
+
+    assertEquivalent(exo.replace(";SCHEDULE-AGENT=CLIENT", ""), exo);
+  }
+
+  /**
+   * The paired case, and the reason the one above is a tolerance rather than a
+   * blind spot: on the very same copy, a summary somebody changed is still a
+   * change eXo writes back over.
+   */
+  @Test
+  public void aChangedSummaryOnSuchACopyIsStillAnEdit() {
+    String exo = EXO.replace("ORGANIZER;CN=The Boss:", "ORGANIZER;CN=The Boss;SCHEDULE-AGENT=CLIENT:");
+
+    assertDifferent(exo.replace(";SCHEDULE-AGENT=CLIENT", "").replace("SUMMARY:Sprint review", "SUMMARY:Sprint retro"), exo);
+  }
+
+  /**
+   * And the organizer's identity is not given up with the parameter: an
+   * ORGANIZER the server re-addressed is a change, parameter or no parameter.
+   */
+  @Test
+  public void anOrganizerTheServerReaddressedIsStillAnEdit() {
+    String exo = EXO.replace("ORGANIZER;CN=The Boss:", "ORGANIZER;CN=The Boss;SCHEDULE-AGENT=CLIENT:");
+
+    assertDifferent(exo.replace(";SCHEDULE-AGENT=CLIENT", "").replace("mailto:boss@acme.test", "mailto:mallory@acme.test"), exo);
+  }
+
   // ------------------------------------------------- CREATED, LAST-MODIFIED
 
   @Test
