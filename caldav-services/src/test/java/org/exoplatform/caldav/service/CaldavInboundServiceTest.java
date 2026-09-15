@@ -1938,21 +1938,23 @@ public class CaldavInboundServiceTest {
     verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
   }
 
-  // ------------------------------- the invitation the server delivered itself
+  // ------------------------- a second object for a meeting eXo already copied
 
   /**
-   * An invitation the user's own server delivered is adopted, not imported
-   * (EXO-90247).
+   * A second object for a meeting eXo already copied on this server is not
+   * imported (EXO-90247).
    *
    * <p>
-   * The object is eXo's copy of the organizer's, travelling: same UID, another
-   * account of the same server. It is in the invitee's own calendar home, so
-   * the account-scoped ownership question says no and no pair of theirs maps
-   * the UID — which is exactly how it used to arrive as a second, personal
-   * event standing for a meeting their agenda already held.
+   * The object carries the UID of a copy this deployment wrote, into another
+   * account of the same server — the organizer's, a colleague's whose calendar
+   * this user subscribes to, or one a scheduling server delivered on. It is in
+   * this user's own calendar home, so the account-scoped ownership question
+   * says no and no pair of theirs maps the UID, which is exactly how it used to
+   * arrive as a second, personal event standing for a meeting their agenda
+   * already held.
    */
   @Test
-  public void anInvitationTheServerDeliveredIsAdoptedAndNotImported() throws Exception {
+  public void aSecondObjectForAMeetingEXoAlreadyCopiedIsNotImported() throws Exception {
     String answered = icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED");
     givenServerObjects(object("o1.ics", "etag-1", answered));
     when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(false);
@@ -1963,24 +1965,47 @@ public class CaldavInboundServiceTest {
 
     assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
 
-    verify(caldavAnswerAdoptionService).adoptAnswer(USER, 777L, answered);
     verify(agendaEventService, never()).createEvent(any(), any(), any(), any(), any(), any(), anyBoolean(), anyLong());
   }
 
   /**
-   * Naming an eXo meeting is not being invited to it.
+   * And no answer is taken off it, however plainly it carries one.
+   *
+   * <p>
+   * The pin on the one thing this arm is deliberately not allowed to do. The
+   * object is somebody else's copy of the meeting, and the attendee line it
+   * carries for this user says what it said when <b>that</b> object was last
+   * written — routinely {@code NEEDS-ACTION} long after the user answered in
+   * eXo. Reading it here would let a stale duplicate un-accept a meeting on a
+   * sync. The user's own copy, in their own mirror, is where their answer is
+   * read, by the arm above.
+   */
+  @Test
+  public void noAnswerIsTakenOffTheDuplicate() throws Exception {
+    givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED")));
+    when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(false);
+    when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, "uid-1@example.test")).thenReturn(777L);
+    when(agendaEventAttendeeService.isEventAttendee(777L, USER)).thenReturn(true);
+
+    assertEquals(0, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
+  }
+
+  /**
+   * Naming an eXo meeting is not holding it.
    *
    * <p>
    * The adversarial pin. An object carrying a UID this deployment wrote, in a
-   * user's calendar, is not by itself permission to record that user's answer
-   * to the meeting behind it — the UID could have reached the calendar by any
-   * route, an export or a hand-copied invitation among them. Agenda's own
-   * attendee question is what decides, and it refuses: nothing is adopted, and
-   * the object goes on being imported as the ordinary remote object it looks
-   * like.
+   * user's calendar, is not by itself evidence that this user already holds the
+   * meeting behind it — the UID could have reached the calendar by any route,
+   * an export or a hand-copied invitation among them. Agenda's own attendee
+   * question is what decides, and it refuses: the object duplicates nothing of
+   * theirs, so dropping it would take a real event away, and it goes on being
+   * imported as the ordinary remote object it looks like.
    */
   @Test
-  public void anInvitationForSomebodyElseIsNeverAdoptedOnThisUsersBehalf() throws Exception {
+  public void anObjectForSomebodyElsesMeetingIsStillImported() throws Exception {
     givenServerObjects(object("o1.ics", "etag-1", icsAnsweredBy("uid-1@example.test", "Sprint review", "ACCEPTED")));
     when(caldavSyncStorage.isMirrorOwned(SERVER, HREF, "uid-1@example.test")).thenReturn(false);
     when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, "uid-1@example.test")).thenReturn(777L);
