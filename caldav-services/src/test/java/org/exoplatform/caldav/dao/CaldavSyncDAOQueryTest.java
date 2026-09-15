@@ -253,6 +253,53 @@ public class CaldavSyncDAOQueryTest {
   }
 
   /**
+   * The third question of the family runs, binds by name, and names the meeting
+   * behind a copy eXo wrote into <b>another account</b> of the same server
+   * (EXO-90247).
+   *
+   * <p>
+   * The shape a server that schedules for itself produces: user one's copy is
+   * in user one's own home, and its UID turns up in user eight's home, which is
+   * a different account of the same server. Both scoped questions answer
+   * "nothing" there, correctly, and neither names the meeting; this one does.
+   */
+  @Test
+  public void theEventBehindACopyIsNamedAcrossAccountsOfOneServer() {
+    long mirrorOfOne = persistPair(USER_ONE, SHARED_SERVER, SyncOrigin.MIRROR, "/dav/calendars/751E/exo-meetings");
+    persistObjectSync(mirrorOfOne, SHARED_UID, 52L);
+
+    // What user eight's own pass can ask today, on their own account, about the
+    // object their server delivered to them: neither question reaches it.
+    assertEquals(0,
+                 objectSyncDAO.countByHomeAndOriginAndIcsUid(SHARED_SERVER, SyncOrigin.MIRROR, SHARED_UID, OWN_HOME),
+                 "the copy is not in user eight's calendar home, so the account-scoped question rightly says no");
+    assertTrue(objectSyncDAO.findEventIdsByOwnerAndOriginAndIcsUid(USER_EIGHT, SHARED_SERVER, SyncOrigin.MIRROR, SHARED_UID)
+                            .isEmpty(),
+               "the copy is not user eight's, so the user-scoped question rightly says nothing");
+
+    assertEquals(List.of(52L), objectSyncDAO.findEventIdsByServerAndOriginAndIcsUid(SHARED_SERVER, SyncOrigin.MIRROR, SHARED_UID));
+  }
+
+  /**
+   * The server-scoped question stays inside its server and its origin, so it
+   * cannot answer for a copy on another registration or for a collection eXo
+   * did not write meeting copies into.
+   */
+  @Test
+  public void theServerScopedQuestionIsBoundedByServerAndOrigin() {
+    long mirrorOfOne = persistPair(USER_ONE, SHARED_SERVER, SyncOrigin.MIRROR, "/dav/calendars/751E/exo-meetings");
+    persistObjectSync(mirrorOfOne, SHARED_UID, 52L);
+    long remoteOfSix = persistPair(USER_SIX, SHARED_SERVER, SyncOrigin.REMOTE, "/dav/calendars/751E/calendar");
+    persistObjectSync(remoteOfSix, "not-a-copy-uid", 53L);
+
+    assertTrue(objectSyncDAO.findEventIdsByServerAndOriginAndIcsUid(99L, SyncOrigin.MIRROR, SHARED_UID).isEmpty(),
+               "another server's registration is another world");
+    assertTrue(objectSyncDAO.findEventIdsByServerAndOriginAndIcsUid(SHARED_SERVER, SyncOrigin.REMOTE, SHARED_UID).isEmpty(),
+               "only a mirror pair holds a copy eXo wrote");
+    assertTrue(objectSyncDAO.findEventIdsByServerAndOriginAndIcsUid(SHARED_SERVER, SyncOrigin.MIRROR, "unknown-uid").isEmpty());
+  }
+
+  /**
    * The outbound lock tells another user's copy from one's own, on one account.
    */
   @Test
