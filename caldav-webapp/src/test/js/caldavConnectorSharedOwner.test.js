@@ -109,6 +109,26 @@ describe('listCalendars hands the shared-calendar owner through to agenda', () =
     });
   });
 
+  it('passes the owner kind through, a resource subscription included (EXO-90275)', () => {
+    const vehicle = {
+      id: '/dav/calendars/__uids__/751E6D1A-7FDB-49B2-B668-B569E9A5A42D/calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/',
+      name: 'Véhicule de pool 1',
+      color: '#4a90d9',
+      readOnly: true,
+      shared: true,
+      ownerIdentityId: null,
+      ownerUsername: null,
+      ownerDisplayName: 'Véhicule de pool 1',
+      ownerKind: 'RESOURCE',
+    };
+    respondWith({calendars: [vehicle, {...ALICES, ownerKind: 'PERSON'}, {...OWN, ownerKind: null}], failed: false});
+    return caldavConnector.listCalendars().then(calendars => {
+      expect(calendars[0]).toEqual(vehicle);
+      expect(calendars[1].ownerKind).toBe('PERSON');
+      expect(calendars[2]).toHaveProperty('ownerKind', null);
+    });
+  });
+
   it('tolerates a stale services jar that answers none of the four fields', () => {
     // The webapp bundle and the services jar ship together, but a redeploy
     // is known to serve one before the other: an entry without the fields

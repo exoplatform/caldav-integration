@@ -16,6 +16,8 @@
  */
 package org.exoplatform.caldav.service;
 
+import org.exoplatform.caldav.model.CalendarOwnerKind;
+
 /**
  * Whose a listed calendar collection is, to the eXo user whose account listed
  * it — the one answer the sweep, the calendar list and the event read-through
@@ -34,6 +36,14 @@ package org.exoplatform.caldav.service;
  * their own calendar by anything the server answers, and distinguishable by
  * the one fact only eXo holds, which is whose calendar it pushed out under
  * that slug.
+ *
+ * <p>
+ * A third witness speaks for the rest of what BlueMind lists that way
+ * (EXO-90275): the <b>server's naming</b>. A calendar the user subscribed to
+ * — a colleague's main or created calendar, a resource such as a pool
+ * vehicle — is listed under a container uid that carries its owner's uid
+ * ({@code BlueMindContainerNaming}), and a uid other than the account's own
+ * makes it {@link #SUBSCRIBED_PERSON} or {@link #SUBSCRIBED_RESOURCE}.
  *
  * <p>
  * Before this existed the three paths asked three different questions of the
@@ -96,7 +106,28 @@ public enum CollectionOwnership {
    * the user's edits into the colleague's calendar; listed read-only; events
    * served.
    */
-  COLLEAGUES_EXO_CALENDAR;
+  COLLEAGUES_EXO_CALENDAR,
+
+  /**
+   * Another person's calendar the user subscribed to, by the server's
+   * <em>naming</em> (EXO-90275): a BlueMind container
+   * {@code calendar:Default:<uid>} or {@code calendar:UserCreated:<uid>:…}
+   * whose uid is not the account's ({@link BlueMindContainerNaming}). The
+   * third witness, heard because the other two are silent there: BlueMind
+   * lists the subscription under the user's own home, names the user as its
+   * owner and grants the full privilege set. Treated exactly as
+   * {@link #SHARED} — a subscription to a colleague's main calendar used to be
+   * materialised as the user's own and every one of her events imported.
+   */
+  SUBSCRIBED_PERSON,
+
+  /**
+   * A resource's calendar the user subscribed to — a room, a pool vehicle —
+   * by the same naming: a BlueMind container {@code calendar:<uid>} whose uid
+   * is not the account's (EXO-90275). Treated exactly as {@link #SHARED}, and
+   * told apart from a person's so the list can draw it as a resource.
+   */
+  SUBSCRIBED_RESOURCE;
 
   /**
    * Whether the collection is somebody else's, whichever witness said so.
@@ -104,11 +135,37 @@ public enum CollectionOwnership {
    * <p>
    * The one test the three paths branch on: a shared collection is never
    * bound, is offered read-only, and is served. Which witness spoke matters
-   * only to the line that explains the skip.
+   * only to the line that explains the skip, and to the owner's kind.
    *
-   * @return true for {@link #SHARED} and {@link #COLLEAGUES_EXO_CALENDAR}
+   * @return true for {@link #SHARED}, {@link #COLLEAGUES_EXO_CALENDAR},
+   *         {@link #SUBSCRIBED_PERSON} and {@link #SUBSCRIBED_RESOURCE}
    */
   public boolean isShared() {
-    return this == SHARED || this == COLLEAGUES_EXO_CALENDAR;
+    return this == SHARED || this == COLLEAGUES_EXO_CALENDAR || this == SUBSCRIBED_PERSON || this == SUBSCRIBED_RESOURCE;
+  }
+
+  /**
+   * Whether the collection is a subscription the server's naming revealed —
+   * the only shares a sweep retires once it finds them materialised
+   * (EXO-90275).
+   *
+   * @return true for {@link #SUBSCRIBED_PERSON} and {@link #SUBSCRIBED_RESOURCE}
+   */
+  public boolean isSubscription() {
+    return this == SUBSCRIBED_PERSON || this == SUBSCRIBED_RESOURCE;
+  }
+
+  /**
+   * The kind of owner a shared collection has, as the calendar list says it.
+   *
+   * @return {@link CalendarOwnerKind#RESOURCE} for a resource subscription,
+   *         {@link CalendarOwnerKind#PERSON} for every other share, null for
+   *         a collection that is the user's own
+   */
+  public CalendarOwnerKind ownerKind() {
+    if (!isShared()) {
+      return null;
+    }
+    return this == SUBSCRIBED_RESOURCE ? CalendarOwnerKind.RESOURCE : CalendarOwnerKind.PERSON;
   }
 }
