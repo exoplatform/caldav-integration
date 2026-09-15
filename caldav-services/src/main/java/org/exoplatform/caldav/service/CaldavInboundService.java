@@ -374,17 +374,22 @@ public class CaldavInboundService {
    * know which of those produced it.
    *
    * <p>
-   * <b>What it cannot see, said plainly.</b> The witness is a UID eXo minted,
-   * so an object carrying a UID somebody <i>else</i> minted for the same
-   * meeting is invisible to this — and that is not hypothetical: a BlueMind
-   * {@code METHOD:REQUEST} invitation, composed by that server's own scheduling
-   * engine and mailed to the invitee, was observed carrying a fresh BlueMind
-   * UUID, not eXo's. Accepted in a mail client, such an object lands in the
-   * invitee's calendar naming nothing this deployment has ever written, and
-   * eXo imports it as the unrelated meeting it looks like. Recognising that
-   * needs a match on what the meeting <i>is</i> — organizer, start, summary —
-   * rather than on what it is called, which is a different and much less safe
-   * question and is deliberately not attempted here (EXO-90247).
+   * <b>The BlueMind case, corrected.</b> An earlier version of this note said
+   * a BlueMind {@code METHOD:REQUEST} invitation carried a fresh BlueMind UUID
+   * this could not see. That was wrong: BlueMind composes the invitation from
+   * the organizer's stored object and keeps its UID ({@code IcsHook} builds it
+   * from {@code message.vevent.icsUid}), and on the rig the object it delivered
+   * into the invitee's calendar carried exactly the UID eXo had minted for the
+   * organizer's copy on that server (EXO-90247, event 163). So this catches
+   * it; it is the "server passing the organizer's object on" case above, not
+   * an exception to it. What it still cannot see is an object under a UID
+   * nobody in this deployment minted — none has been observed — because
+   * recognising that needs a match on what the meeting <i>is</i>, organizer,
+   * start, summary, rather than on what it is called, a different and much
+   * less safe question. What this deliberately does <i>not</i> do is read an
+   * answer off the duplicate: the invitee's own copy is where eXo reads their
+   * answer, so an acceptance given on BlueMind's object reaches eXo only once
+   * BlueMind stops producing that object (EXO-90307).
    *
    * <h2>What identifies such an object, and why it is not the event link</h2>
    *
