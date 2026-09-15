@@ -233,4 +233,20 @@ public class CaldavServerEntity {
    */
   @Column(name = "FOREIGN_WRITERS")
   private String  foreignWriters;
+
+  /**
+   * Through which door eXo writes and removes this server's meeting copies,
+   * as the name of a {@code WriteChannel} (EXO-90307).
+   *
+   * <p>
+   * A String rather than an {@code @Enumerated} field, NOT NULL with a
+   * DEFAULT, and read through {@code WriteChannel.of}, for exactly the
+   * reasons {@link #mirrorTarget} gives: an unknown value must degrade to the
+   * door every deployment already used rather than make the registration
+   * unreadable, and the column's own DEFAULT is what backfills every existing
+   * row with that same door. Declared LAST, after {@link #foreignWriters};
+   * the next column appended goes after it.
+   */
+  @Column(name = "WRITE_CHANNEL", nullable = false)
+  private String  writeChannel = "CALDAV";
 }

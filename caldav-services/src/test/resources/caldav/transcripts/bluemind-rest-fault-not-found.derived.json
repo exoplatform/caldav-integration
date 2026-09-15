@@ -1,0 +1,20 @@
+// DERIVED, not captured. The body BlueMind's REST layer answers with HTTP 500
+// when a service throws a ServerFault whose code is not PERMISSION_DENIED,
+// from BlueMind's source:
+// - parent/core/net.bluemind.core.rest/src/net/bluemind/core/rest/base/ResponseBuilder.java:44-58
+//   buildFault(): errorCode = fault.getCode().toString(), errorType = the
+//   exception's simple class name, message = the exception message;
+// - ResponseBuilder.java:70-76: replyServerFault answers 403 for
+//   PERMISSION_DENIED and 500 for every other code;
+// - parent/calendar/net.bluemind.calendar.service/src/net/bluemind/calendar/service/CalendarServiceBaseFactory.java:60
+//   an unknown CONTAINER uid throws ServerFault("container ... not found",
+//   ErrorCode.NOT_FOUND) before any calendar method runs;
+// - parent/calendar/net.bluemind.calendar.service/src/net/bluemind/calendar/service/internal/CalendarService.java:466-471
+//   a missing ITEM, by contrast, is only logged and the delete answers 200 -
+//   so this fault is what an unknown container answers, not a missing event.
+// Lines starting with "//" are removed by the test before parsing.
+{
+  "errorCode": "NOT_FOUND",
+  "errorType": "ServerFault",
+  "message": "container calendar:Default:unknown not found"
+}
