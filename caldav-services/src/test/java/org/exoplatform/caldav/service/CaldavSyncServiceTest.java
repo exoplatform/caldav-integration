@@ -171,6 +171,9 @@ public class CaldavSyncServiceTest {
   private CaldavPushService          caldavPushService;
 
   @Mock
+  private CaldavConnectionIdentityService caldavConnectionIdentityService;
+
+  @Mock
   private CalDavEndpoint             endpoint;
 
   @Mock
@@ -1936,25 +1939,29 @@ public class CaldavSyncServiceTest {
     verify(caldavInboundService).syncContents(eq(USER), eq(LOGIN), same(mine), any(), any(), any(), anyBoolean());
   }
 
+  /** The account's principal as it is recorded and compared: decoded, no trailing slash. */
+  private static final String        PRINCIPAL_CANONICAL = "/dav/principals/john";
+
   /**
-   * An account other users also connected is said once, at warn.
+   * An account other eXo users are connected as too — the same principal —
+   * is said once, at warn (EXO-90190, asked by identity since EXO-90243).
    */
   @Test
-  public void anAccountOtherUsersAlsoConnectedIsSaidOnceAtWarn() {
+  public void anAccountOtherUsersAreConnectedAsTooIsSaidOnceAtWarn() {
     // The condition is otherwise invisible: two users each connect their
     // credentials and nothing tells an administrator both sets of copies now
     // go into one account. Refusing was rejected — shared team accounts and
-    // sudo-mode providers are legitimate — so it is said. Once per account
-    // per process: the question walks the href column, which cannot be
-    // indexed on MySQL, and on every sweep it would cost more than it says.
+    // sudo-mode providers are legitimate — so it is said, once per account
+    // per process: once said, the question is not asked again.
     givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
     CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
     givenAgendaHasCalendar("anchor-1");
-    when(caldavSyncStorage.getOtherUsersUnderCalendarHome(USER, SERVER, HOME)).thenReturn(List.of(1L, 6L));
+    when(caldavConnectionIdentityService.otherUsersConnectedAs(USER, SERVER, PRINCIPAL_CANONICAL)).thenReturn(List.of(1L, 6L));
     List<ILoggingEvent> said;
     try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
       service.syncNow(USER, LOGIN);
+      service.forgetThrottle(USER);
       service.syncNow(USER, LOGIN);
       said = log.events()
                 .stream()
@@ -1965,22 +1972,30 @@ public class CaldavSyncServiceTest {
 
     assertEquals(1, said.size(), "once per account per process, not once per pass");
     assertTrue(said.get(0).getFormattedMessage().contains("[1, 6]"), said.get(0).getFormattedMessage());
-    verify(caldavSyncStorage, times(1)).getOtherUsersUnderCalendarHome(USER, SERVER, HOME);
+    assertTrue(said.get(0).getFormattedMessage().contains("principal " + PRINCIPAL_CANONICAL), said.get(0).getFormattedMessage());
+    verify(caldavConnectionIdentityService, times(1)).otherUsersConnectedAs(USER, SERVER, PRINCIPAL_CANONICAL);
   }
 
   /**
-   * An account nobody else connected is not said, and not asked about twice.
+   * An account nobody else is connected as is not said — and, the question
+   * being a point lookup now, it is asked again on the next pass, which is
+   * what names a colleague on the same login once their own first pass has
+   * recorded them.
    */
   @Test
-  public void anAccountNobodyElseConnectedIsNotSaid() {
+  public void anAccountNobodyElseIsConnectedAsIsNotSaidAndIsAskedAgainNextPass() {
     givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
     CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
     givenAgendaHasCalendar("anchor-1");
-    when(caldavSyncStorage.getOtherUsersUnderCalendarHome(USER, SERVER, HOME)).thenReturn(List.of());
+    when(caldavConnectionIdentityService.otherUsersConnectedAs(USER, SERVER, PRINCIPAL_CANONICAL)).thenReturn(List.of(),
+                                                                                                             List.of(6L));
     List<ILoggingEvent> said;
     try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
       service.syncNow(USER, LOGIN);
+      assertTrue(log.events().stream().noneMatch(recorded -> recorded.getFormattedMessage().contains("is also connected by eXo users")),
+                 "nobody else yet: nothing said");
+      service.forgetThrottle(USER);
       service.syncNow(USER, LOGIN);
       said = log.events()
                 .stream()
@@ -1988,8 +2003,61 @@ public class CaldavSyncServiceTest {
                 .toList();
     }
 
-    assertTrue(said.isEmpty());
-    verify(caldavSyncStorage, times(1)).getOtherUsersUnderCalendarHome(USER, SERVER, HOME);
+    assertEquals(1, said.size(), "the colleague recorded since is named on the next pass, not after a restart");
+    assertTrue(said.get(0).getFormattedMessage().contains("[6]"), said.get(0).getFormattedMessage());
+    verify(caldavConnectionIdentityService, times(2)).otherUsersConnectedAs(USER, SERVER, PRINCIPAL_CANONICAL);
+  }
+
+  /**
+   * The account is named by its principal, not by the calendar home: the
+   * question is never asked with the home, which is what named bob on
+   * Alice's account for a share under her home (EXO-90243).
+   */
+  @Test
+  public void theSharedAccountQuestionIsAskedByPrincipalNeverByHome() {
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavConnectionIdentityService).otherUsersConnectedAs(USER, SERVER, PRINCIPAL_CANONICAL);
+    verify(caldavConnectionIdentityService, never()).otherUsersConnectedAs(anyLong(), anyLong(), eq(HOME));
+    verify(caldavConnectionIdentityService, never()).otherUsersConnectedAs(anyLong(), anyLong(), eq("/dav/calendars/john"));
+  }
+
+  /**
+   * A server that named no principal leaves nothing to compare, and nothing
+   * is asked or said.
+   */
+  @Test
+  public void anAccountWhoseServerNamedNoPrincipalIsNotAskedAbout() {
+    when(calDavClient.discoverHome(any())).thenReturn(new CalendarHome(null, HOME));
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    CalendarSync pair = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair));
+    givenAgendaHasCalendar("anchor-1");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavConnectionIdentityService, never()).otherUsersConnectedAs(anyLong(), anyLong(), any());
+  }
+
+  /**
+   * A lookup that fails costs the pass nothing: the calendar is still
+   * materialised.
+   */
+  @Test
+  public void aSharedAccountQuestionThatFailsDoesNotFailThePass() throws Exception {
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    givenNoKnownPairs();
+    givenAgendaCreates("new-anchor");
+    when(caldavConnectionIdentityService.otherUsersConnectedAs(anyLong(), anyLong(), any())).thenThrow(new IllegalStateException("database down"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSyncStorage).savePair(any());
   }
 
   /**
