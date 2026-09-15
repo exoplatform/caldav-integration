@@ -67,6 +67,7 @@ import org.exoplatform.agenda.model.EventAttendeeList;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.PendingPush;
 import org.exoplatform.caldav.model.PendingPushKind;
@@ -797,6 +798,28 @@ public class CaldavEventPropagationServiceTest {
 
     verify(caldavPushService).deleteEvent(ALICE, login(ALICE), "uid-8801");
     verify(caldavPushService).deleteEvent(BOB, login(BOB), "uid-8801");
+  }
+
+  /**
+   * EXO-90275. A copy mapped under a retired subscription — a calendar
+   * materialised from somebody else's collection — is not a copy to remove:
+   * deleting the event in eXo must not delete the colleague's event or the
+   * resource's booking it was imported from, nor owe that removal. Bob's
+   * mirror copy is still removed.
+   */
+  @Test
+  public void aDeletionLeavesACopyUnderARetiredSubscriptionAlone() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/calendars/__uids__/alice-uid/calendar:room-1/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    caldavSyncStorage.getPair(100L).setStatus(CalendarSyncStatus.RETIRED_SUBSCRIPTION);
+    givenPair(200L, BOB);
+
+    assertEquals(1, service.propagateDeletion(EVENT));
+
+    verify(caldavPushService, never()).deleteEvent(eq(ALICE), anyString(), anyString());
+    verify(caldavPushService).deleteEvent(BOB, login(BOB), "uid-8801");
+    verify(caldavPendingPushStorage, never()).owe(eq(1L), anyLong(), any(), any(), any());
   }
 
   /**

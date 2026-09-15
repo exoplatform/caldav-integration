@@ -764,6 +764,104 @@ public class CaldavReadServiceTest {
     assertNull(cal2.getOwnerDisplayName());
   }
 
+  // ------------------------------------ subscriptions the server's naming reveals, EXO-90275
+
+  /** An account of BlueMind's shape, which is where the naming is read. */
+  private static final String        BM_PRINCIPAL           = "/dav/principals/__uids__/john-uid/";
+
+  /** That account's home, where BlueMind lists its subscriptions. */
+  private static final String        BM_HOME                = "/dav/calendars/__uids__/john-uid/";
+
+  /** The pool vehicle as BlueMind lists it under the user's home. */
+  private static final String        POOL_VEHICLE           = BM_HOME + "calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/";
+
+  /** The resource's own principal, in the account principal's collection. */
+  private static final String        POOL_VEHICLE_PRINCIPAL = "/dav/principals/__uids__/7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/";
+
+  /**
+   * Connects the account as one of BlueMind's shape, listing these calendars.
+   *
+   * @param collections what the home lists
+   */
+  private void givenBlueMindAccountListing(CalendarCollection... collections) {
+    when(calDavClient.discoverHome(any())).thenReturn(new CalendarHome(BM_PRINCIPAL, BM_HOME));
+    when(calDavClient.listCalendars(any(), eq(BM_HOME))).thenReturn(List.of(collections));
+  }
+
+  /**
+   * The pool vehicle, listed with the user as owner and write granted, is
+   * shared, read-only, a resource, and named as the directory names it
+   * through its principal — never as an eXo user, whom nobody is asked about.
+   */
+  @Test
+  public void aResourceSubscriptionIsListedAsASharedReadOnlyResourceNamedByItsPrincipal() {
+    givenBlueMindAccountListing(owned(POOL_VEHICLE, "Véhicule de pool 1", BM_PRINCIPAL, true, true));
+    when(calDavClient.readDisplayName(endpoint, POOL_VEHICLE_PRINCIPAL)).thenReturn("Véhicule de pool 1 (directory)");
+
+    RemoteCalendar vehicle = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertTrue(vehicle.isShared());
+    assertTrue(vehicle.isReadOnly());
+    assertEquals(org.exoplatform.caldav.model.CalendarOwnerKind.RESOURCE, vehicle.getOwnerKind());
+    assertEquals("Véhicule de pool 1 (directory)", vehicle.getOwnerDisplayName());
+    assertNull(vehicle.getOwnerIdentityId());
+    assertNull(vehicle.getOwnerUsername());
+    verify(caldavConnectionIdentityService, never()).usersConnectedAs(anyLong(), anyString());
+    verify(identityManager, never()).getIdentity(anyLong());
+  }
+
+  /**
+   * A resource whose principal will not say its name is named by the
+   * collection, which on BlueMind carries the resource's name — never by
+   * its uid.
+   */
+  @Test
+  public void aResourceWhosePrincipalSaysNothingIsNamedByTheCollection() {
+    givenBlueMindAccountListing(owned(POOL_VEHICLE, "Véhicule de pool 1", BM_PRINCIPAL, true, true));
+    when(calDavClient.readDisplayName(endpoint, POOL_VEHICLE_PRINCIPAL)).thenReturn(null);
+
+    RemoteCalendar vehicle = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertEquals(org.exoplatform.caldav.model.CalendarOwnerKind.RESOURCE, vehicle.getOwnerKind());
+    assertEquals("Véhicule de pool 1", vehicle.getOwnerDisplayName());
+  }
+
+  /**
+   * A colleague's main calendar the user subscribed to is a person's share,
+   * owned by the eXo user connected as the principal its container uid names
+   * (EXO-90243) — not by the viewer, whom BlueMind names as owner.
+   */
+  @Test
+  public void aSubscribedColleaguesMainCalendarIsOwnedByTheEXoUserConnectedAsHerPrincipal() {
+    givenBlueMindAccountListing(owned(BM_HOME + "calendar:Default:camille/", "Camille", BM_PRINCIPAL, true, true));
+    when(caldavConnectionIdentityService.usersConnectedAs(SERVER, "/dav/principals/__uids__/camille/")).thenReturn(List.of(5L));
+    when(caldavConnectionIdentityService.activeUsersWithoutIdentityOn(SERVER)).thenReturn(0L);
+    when(identityManager.getIdentity(5L)).thenReturn(user("5", "camille", "Camille Claudel"));
+
+    RemoteCalendar camilles = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertTrue(camilles.isShared());
+    assertTrue(camilles.isReadOnly());
+    assertEquals(org.exoplatform.caldav.model.CalendarOwnerKind.PERSON, camilles.getOwnerKind());
+    assertEquals(5L, camilles.getOwnerIdentityId());
+    assertEquals("camille", camilles.getOwnerUsername());
+    assertEquals("Camille Claudel", camilles.getOwnerDisplayName());
+  }
+
+  /**
+   * The user's own main calendar is not a share and has no owner kind.
+   */
+  @Test
+  public void theUsersOwnMainCalendarHasNoOwnerKind() {
+    givenBlueMindAccountListing(owned(BM_HOME + "calendar:Default:john-uid/", "John", BM_PRINCIPAL, true, true));
+
+    RemoteCalendar own = service.listCalendars(USER, LOGIN).calendars().get(0);
+
+    assertFalse(own.isShared());
+    assertFalse(own.isReadOnly());
+    assertNull(own.getOwnerKind());
+  }
+
   /**
    * One colleague sharing three calendars is asked her name once per
    * listing, and a second listing asks again: the memo lives and dies with
