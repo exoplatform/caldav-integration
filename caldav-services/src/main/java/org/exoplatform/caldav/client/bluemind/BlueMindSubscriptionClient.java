@@ -305,13 +305,20 @@ public class BlueMindSubscriptionClient {
    *
    * <p>
    * <b>The code, and nothing else of the body.</b> A fault also carries a
-   * {@code message}, which is free text BlueMind chose — and this add-on's
-   * one rule about logging is that no secret reaches a line, which cannot be
-   * a rule if what it covers is decided by another vendor's string. The code
-   * is a closed vocabulary ({@code ErrorCode}), so it is the part that can be
-   * both useful and safe; the whole body remains available to an operator
-   * through a capture, which is where a fault text belongs. The same rule
-   * already governed the exception messages this method feeds.
+   * {@code message}, which is free text BlueMind chose — and the rule this
+   * client keeps, that no secret reaches a line, cannot be a rule here if
+   * what it covers is decided by another vendor's string. The code is a
+   * closed vocabulary ({@code ErrorCode}), so it is the part that can be both
+   * useful and safe; the whole body remains available to an operator through
+   * a capture, which is where a fault text belongs. The same rule already
+   * governed the exception messages this method feeds.
+   *
+   * <p>
+   * Stated for <em>this</em> client deliberately: {@code BlueMindCalendarImportClient}'s
+   * own {@code faultCode} still logs BlueMind's text, and argues for it in
+   * its comment. Narrowing that one is a separate call — this client is the
+   * one that authenticates as somebody else, which is why it takes the
+   * stricter reading of the same rule.
    *
    * @param answer the answer
    * @param named the request, for the debug line
