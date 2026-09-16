@@ -103,6 +103,13 @@ import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
  * that live listing: the same capture plus the collection an MKCALENDAR
  * declaring the component set had just created, as observed live in the
  * browser the same day.</li>
+ * <li>{@code bluemind-propfind-object-depth0-getetag.derived.xml},
+ * {@code bluemind-report-multiget-one-href-getetag.derived.xml} and
+ * {@code bluemind-report-multiget-missing-href.derived.xml} — DERIVED from
+ * BlueMind's DAV server source for the import door's single-object reads
+ * (EXO-90307, review F7); each file's header cites the lines. The capture
+ * script {@code dev/golden-capture/capture-bluemind-object-etags.sh}
+ * records the live answers that replace them.</li>
  * <li>{@code bluemind-mkcalendar-207-failing-propstat.xml} and
  * {@code bluemind-propfind-dav-rooted.xml} — RECONSTRUCTED from the browser
  * connector's documented transcripts (caldavConnector.js:2272-2306 and the
@@ -678,6 +685,99 @@ public class HttpCalDavClientServerQuirksTest {
     HttpRequest request = sent.get(0);
     assertEquals("PROPFIND", request.method());
     assertEquals("1", request.headers().firstValue("Depth").orElse(null));
+  }
+
+  /**
+   * <b>The single-object version read of the import door (EXO-90307, review
+   * F7).</b> A {@code Depth: 0} PROPFIND of {@code getetag} on an
+   * {@code .ics} href is answered by BlueMind with one response for that href
+   * and the raw token {@code bmdav_<lnum>_0} — hashed from the request path
+   * ({@code GetTag.java:46-56}, {@code SyncTokens.java:39-47}), so equal to
+   * the Depth:1 listing's for the same object iff the two paths are spelled
+   * alike, which the writer verifies live before trusting it.
+   *
+   * @throws Exception never — the mock declares it
+   */
+  @Test
+  void blueMindAnswersADepthZeroGetetagOnAnIcsHrefAsARawToken() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-propfind-object-depth0-getetag.derived.xml"));
+    String href = BLUEMIND_HOME + "calendar:Default:9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/evt-1.ics";
+
+    String etag = client.readEtag(endpoint, href);
+
+    assertEquals("bmdav_851210693_0", etag);
+    HttpRequest request = sent.get(0);
+    assertEquals("PROPFIND", request.method());
+    assertEquals("0", request.headers().firstValue("Depth").orElse(null));
+    assertTrue(request.uri().getRawPath().endsWith("/evt-1.ics"), request.uri().toString());
+    assertTrue(bodyOf(request).contains("<d:getetag/>"), bodyOf(request));
+  }
+
+  /**
+   * A server that checks existence answers a Depth:0 on a missing object
+   * with 404, and that is "no version", not a failure — the shape BlueMind
+   * never produces for an {@code .ics} ({@code DavStore.java:474-502},
+   * "assume yes"), which is why the writer establishes presence elsewhere.
+   *
+   * @throws Exception never — the mock declares it
+   */
+  @Test
+  void aDepthZeroOnAMissingObjectAnswersNoVersionWhenTheServerSays404() throws Exception {
+    givenAnswer(404, Map.of(), "");
+
+    assertNull(client.readEtag(endpoint, BLUEMIND_HOME + "calendar:Default:9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/gone.ics"));
+  }
+
+  /**
+   * <b>The presence read of the import door (EXO-90307, review F7).</b> A
+   * one-href {@code calendar-multiget} asking {@code getetag} only: BlueMind
+   * answers one response per item its store returned
+   * ({@code CalendarMultigetExecutor.java:82,114-130}), under the REPORT
+   * channel's version — quoted base64 ({@code :123}), another string than
+   * the listing's raw token, which is why this answer is presence and never
+   * the version recorded. The body asks no {@code calendar-data}: the server
+   * renders no iCalendar for a question about existence.
+   *
+   * @throws Exception never — the mock declares it
+   */
+  @Test
+  void blueMindAnswersAOneHrefMultigetWithOneResponsePerStoredItem() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-report-multiget-one-href-getetag.derived.xml"));
+    String collection = BLUEMIND_HOME + "calendar:Default:9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/";
+    String href = collection + "evt-1.ics";
+
+    Map<String, String> etags = client.multigetEtags(endpoint, collection, List.of(href));
+
+    assertEquals(Map.of(href, "\"Ym1kYXZfODUxMjEwNjkzXzEyNw==\""), etags);
+    HttpRequest request = sent.get(0);
+    assertEquals("REPORT", request.method());
+    String body = bodyOf(request);
+    assertTrue(body.contains("calendar-multiget"), body);
+    assertTrue(body.contains("<d:href>" + href + "</d:href>"), body);
+    assertTrue(body.contains("<d:getetag/>"), body);
+    assertFalse(body.contains("calendar-data"), body);
+  }
+
+  /**
+   * A missing href is answered by BlueMind with an empty multistatus — no
+   * per-href 404 element ({@code CalendarMultigetExecutor.java:114-130}
+   * builds one response per returned item and nothing else) — and the same
+   * empty document is what a failed lookup answers ({@code :83-86}). The
+   * client hands back an empty map; reading absence into it is the writer's
+   * decision, and it declines.
+   *
+   * @throws Exception never — the mock declares it
+   */
+  @Test
+  void blueMindAnswersAnEmptyMultistatusForAMissingHref() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-report-multiget-missing-href.derived.xml"));
+    String collection = BLUEMIND_HOME + "calendar:Default:9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/";
+
+    Map<String, String> etags = client.multigetEtags(endpoint, collection, List.of(collection + "gone.ics"));
+
+    assertTrue(etags.isEmpty(), etags.toString());
+    assertTrue(client.multigetEtags(endpoint, collection, List.of()).isEmpty());
+    assertEquals(1, sent.size(), "an empty question is not sent");
   }
 
   /**

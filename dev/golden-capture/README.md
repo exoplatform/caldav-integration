@@ -44,3 +44,31 @@ dev/golden-capture/capture-bluemind.sh
 
 Review the produced files before committing them: credentials are scrubbed,
 but your own login may appear inside hrefs.
+
+## capture-bluemind-object-etags.sh — BlueMind, the import door's ETag channels (run it yourself)
+
+Same prompts and the same scrubbing as `capture-bluemind.sh`. On **one
+existing object of the main calendar** it records five scrubbed transcripts
+into `caldav-services/src/test/resources/caldav/transcripts/`: the Depth:1
+`getetag` listing of the collection, a Depth:0 `getetag` PROPFIND on the
+object's href, a one-href `calendar-multiget` (getetag only), and the same
+Depth:0 + multiget on a **non-existent** href. All probes are reads; the
+missing-object probes address an href that does not exist and create
+nothing. Together they settle the two halves of the review-F7 hypothesis the
+import door verifies live (`BlueMindImportWriter`): whether the Depth:0 token
+equals the listing's for the same object (the spelling hypothesis), and
+whether a Depth:0 on a missing object answers 404 or a node minted from the
+path. The script prints what each capture says at the end; the captures
+supersede the four `bluemind-*.derived.xml` fixtures named in its header
+(`bluemind-propfind-collection-depth1-items`,
+`bluemind-propfind-object-depth0-getetag`,
+`bluemind-report-multiget-one-href-getetag`,
+`bluemind-report-multiget-missing-href`), which should then be dropped and
+the tests pointed at the captured files.
+
+```sh
+dev/golden-capture/capture-bluemind-object-etags.sh
+```
+
+Review the produced files before committing them: credentials are scrubbed,
+but your login and the object uids appear inside hrefs.
