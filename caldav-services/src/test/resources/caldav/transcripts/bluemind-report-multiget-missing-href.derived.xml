@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DERIVED, not captured: the answer of a one-href calendar-multiget REPORT
+  for an href BlueMind's calendar does not hold (EXO-90307, review F7; the
+  capture script dev/golden-capture/capture-bluemind-object-etags.sh records
+  it). Shape from BlueMind's source (bluemind-public master):
+  - plugins/net.bluemind.dav.server/src/net/bluemind/dav/server/proto/report/caldav/CalendarMultigetExecutor.java:82
+    ICalendar.multipleGet(extIds) returns the stored items only, so an
+    unknown uid contributes nothing;
+  - CalendarMultigetExecutor.java:114-130
+    write() emits one d:response per returned item and nothing else: NO
+    per-href 404 response element (the RFC 4791 shape) is ever built, so a
+    missing href answers an EMPTY multistatus;
+  - CalendarMultigetExecutor.java:83-86
+    a lookup that throws is logged and answered with the same empty
+    document - which is why BlueMindImportWriter never reads absence from
+    this channel and asks the Depth:1 listing instead;
+  - plugins/net.bluemind.dav.server/src/net/bluemind/dav/server/xml/MultiStatusBuilder.java:36-49
+    the envelope and its namespace attributes (the constructor).
+-->
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:rd="urn:ietf:params:xml:ns:carddav" xmlns:cso="http://calendarserver.org/ns/" xmlns:aic="http://apple.com/ns/ical/" xmlns:me="http://me.com/_namespace/"/>
