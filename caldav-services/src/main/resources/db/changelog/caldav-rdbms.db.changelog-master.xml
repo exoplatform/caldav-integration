@@ -848,4 +848,105 @@
     </addColumn>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-49" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The pending-subscription sequence, on the vendors that have sequences -
+      created in the same breath as its table, the lesson 1.0.0-0 records
+      (EXO-90277). Named as the entity's PortableSequence names it. Rollback is
+      createSequence's automatic one.
+    </comment>
+    <createSequence sequenceName="SEQ_CALDAV_PENDING_SUBSCRIPTION_ID" startValue="1"/>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-50">
+    <comment>
+      One row per subscription change eXo owes a colleague's BlueMind account
+      and has not managed to make (EXO-90277).
+
+      On BlueMind a share granted from eXo writes an access entry and nothing
+      else; the colleague's DAV home and webmail list SUBSCRIPTIONS, so the
+      calendar appears nowhere - not in BlueMind, not under "Shared with me" in
+      eXo - until they are subscribed. eXo now subscribes them at grant time
+      with their own stored credentials (PO decision, 2026-09-16), and
+      unsubscribes them on a revoke, because BlueMind auto-unsubscribes on an
+      access removal for mailboxes only and a dangling calendar subscription
+      keeps a dead calendar in the colleague's listing. A change that does not
+      land - server unreachable, colleague's password stale - must not fail the
+      owner's grant, so it is recorded here and drained later.
+
+      USER_IDENTITY_ID is the SHAREE, not the owner: the account the change is
+      made on. There is deliberately NO foreign key, unlike CALDAV_PENDING_PUSH:
+      the sharee holds no CALDAV_CALENDAR_SYNC pair for a calendar somebody
+      shared with them, and it is precisely because they hold none that the
+      account sweep never visits them - the drain reads this table instead.
+
+      SERVER_ID is the key the pairs and CALDAV_CONNECTION use, zero for an
+      account attached before registrations existed. CONTAINER_UID is the
+      BlueMind container uid, the last segment of the calendar collection's
+      path, NVARCHAR(250) like every text column of this changelog (see 1.0.0-45
+      for what that means on MySQL). KIND is SUBSCRIBE or UNSUBSCRIBE, a name
+      rather than a number. ATTEMPTS bounds how hard eXo argues with a server
+      that keeps refusing, NOT NULL with a default of zero.
+
+      Rollback is createTable's automatic one.
+    </comment>
+    <createTable tableName="CALDAV_PENDING_SUBSCRIPTION">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_CALDAV_PENDING_SUBSCRIPTION"/>
+      </column>
+      <column name="USER_IDENTITY_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SERVER_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="CONTAINER_UID" type="NVARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="KIND" type="NVARCHAR(20)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="ATTEMPTS" type="INT" defaultValueNumeric="0">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SINCE" type="TIMESTAMP"/>
+    </createTable>
+    <modifySql dbms="mysql">
+      <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
+    </modifySql>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-51">
+    <comment>
+      One change per colleague, server and container: the latest instruction
+      is the one that stands. A revoke recorded before a pending subscribe was
+      drained replaces it with a removal rather than queueing behind it, and
+      two nodes recording the same change meet this index instead of writing
+      two rows. 8 + 8 + 250x3 bytes on MySQL, inside the key limit. Own
+      changeset with no modifySql, per 1.0.0-2; rollback is createIndex's
+      automatic one.
+    </comment>
+    <createIndex tableName="CALDAV_PENDING_SUBSCRIPTION" indexName="UQ_CALDAV_PENDING_SUBSCRIPTION" unique="true">
+      <column name="USER_IDENTITY_ID"/>
+      <column name="SERVER_ID"/>
+      <column name="CONTAINER_UID"/>
+    </createIndex>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-52">
+    <comment>
+      The drain is table-wide - which colleagues are owed a change is the
+      question, not which of one colleague's rows - and on a converged
+      deployment it must find nothing without reading anything: an index on
+      the attempt count makes that one lookup answering no rows. The
+      abandoned rows are left where they are, below the bound, as the only
+      record that eXo gave up on them. A colleague's own pass asks by user,
+      which the unique index above already leads with. Own changeset, no
+      modifySql, automatic rollback.
+    </comment>
+    <createIndex tableName="CALDAV_PENDING_SUBSCRIPTION" indexName="IDX_CALDAV_PENDING_SUBSCRIPTION_ATTEMPTS">
+      <column name="ATTEMPTS"/>
+    </createIndex>
+  </changeSet>
+
 </databaseChangeLog>

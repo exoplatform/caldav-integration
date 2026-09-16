@@ -40,6 +40,8 @@ import org.springframework.test.context.TestPropertySource;
 
 import org.exoplatform.caldav.entity.CaldavCalendarSyncEntity;
 import org.exoplatform.caldav.entity.CaldavConnectionEntity;
+import org.exoplatform.caldav.entity.CaldavPendingSubscriptionEntity;
+import org.exoplatform.caldav.model.PendingSubscriptionKind;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.service.CaldavConnectionIdentityService;
 import org.exoplatform.caldav.storage.CaldavConnectionStorage;
@@ -89,6 +91,9 @@ public class CaldavSyncDAOQueryTest {
   @Autowired
   private CaldavConnectionDAO   connectionDAO;
 
+  @Autowired
+  private CaldavPendingSubscriptionDAO pendingSubscriptionDAO;
+
   /** The server two users share in the EXO-90190 scenarios below. */
   private static final long     SHARED_SERVER = 5L;
 
@@ -98,6 +103,66 @@ public class CaldavSyncDAOQueryTest {
 
   /** The one meeting user one's mirror wrote a copy of. */
   private static final String   SHARED_UID    = "485e6afe-c5f5-4026-ae51-8c1ad905c45c";
+
+  // ---------------------------------------------------------------------
+  // EXO-90277 - the subscription changes eXo owes colleagues on BlueMind.
+  // ---------------------------------------------------------------------
+
+  /**
+   * <b>Hole 2 of the brief, on the engine.</b> Bob (77) received a share and
+   * holds no CALDAV_CALENDAR_SYNC row at all, so the sweep's due-accounts
+   * query never names him - and the owed-subscription query does. Every
+   * hand-written query of the DAO binds its named parameters and runs; the
+   * two bulk updates reach the one row they name.
+   */
+  @Test
+  public void aColleagueWhoHoldsNoPairIsDrainedFromTheOwedTableNotFromTheAccounts() {
+    long bob = 77L;
+    persistCalendarSync(1L, "alices", CalendarSyncStatus.ACTIVE, new Date(0L));
+    long owed = persistPendingSubscription(bob, 5L, "exo-cal-shared", PendingSubscriptionKind.SUBSCRIBE, 0);
+    long spent = persistPendingSubscription(bob, 5L, "exo-cal-given-up", PendingSubscriptionKind.SUBSCRIBE, 5);
+    persistPendingSubscription(1L, 5L, "exo-cal-other", PendingSubscriptionKind.UNSUBSCRIBE, 2);
+
+    var due = calendarSyncDAO.findDueAccounts(CalendarSyncStatus.ACTIVE, new Date(), PageRequest.of(0, 10));
+    assertFalse(due.getContent().contains(bob), "the account sweep never reaches a colleague without a pair");
+
+    List<CaldavPendingSubscriptionEntity> attemptable = pendingSubscriptionDAO.findAttemptable(5, PageRequest.of(0, 10, org.springframework.data.domain.Sort.by("id")));
+    assertEquals(2, attemptable.size(), "the spent row is left out");
+    assertEquals(owed, attemptable.get(0).getId(), "oldest first, and bob is reached");
+    assertTrue(attemptable.stream().noneMatch(e -> e.getId() == spent));
+
+    List<CaldavPendingSubscriptionEntity> bobs = pendingSubscriptionDAO.findAttemptableOf(bob, 5, PageRequest.of(0, 10, org.springframework.data.domain.Sort.by("id")));
+    assertEquals(List.of(owed), bobs.stream().map(CaldavPendingSubscriptionEntity::getId).toList());
+
+    assertEquals(1, pendingSubscriptionDAO.recordAttempt(owed));
+    assertEquals(1, pendingSubscriptionDAO.spendBudget(owed, 5));
+    entityManager.clear();
+    assertEquals(5, pendingSubscriptionDAO.findById(owed).orElseThrow().getAttempts());
+    assertTrue(pendingSubscriptionDAO.findAttemptableOf(bob, 5, PageRequest.of(0, 10)).isEmpty());
+    assertTrue(pendingSubscriptionDAO.findByUserIdentityIdAndServerIdAndContainerUid(bob, 5L, "exo-cal-shared").isPresent());
+    assertTrue(pendingSubscriptionDAO.findByUserIdentityIdAndServerIdAndContainerUid(bob, 6L, "exo-cal-shared").isEmpty());
+  }
+
+  /**
+   * One owed change, written straight through the repository.
+   *
+   * @param userIdentityId the sharee
+   * @param serverId the server key
+   * @param containerUid the container
+   * @param kind the change
+   * @param attempts refusals so far
+   * @return the row id
+   */
+  private long persistPendingSubscription(long userIdentityId, long serverId, String containerUid, PendingSubscriptionKind kind, int attempts) {
+    CaldavPendingSubscriptionEntity entity = new CaldavPendingSubscriptionEntity();
+    entity.setUserIdentityId(userIdentityId);
+    entity.setServerId(serverId);
+    entity.setContainerUid(containerUid);
+    entity.setKind(kind);
+    entity.setAttempts(attempts);
+    entity.setSince(new Date());
+    return pendingSubscriptionDAO.save(entity).getId();
+  }
 
   @Test
   public void findDueBindsItsNamedParametersAndRuns() {
