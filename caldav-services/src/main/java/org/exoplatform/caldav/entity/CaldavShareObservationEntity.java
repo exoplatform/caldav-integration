@@ -162,15 +162,16 @@ import lombok.NoArgsConstructor;
  *
  * <p>
  * {@code @DynamicUpdate}, carried by convention rather than for an effect that
- * can be observed today. One writer touches this row —
- * {@code CaldavShareObservationStorage#reconcile}, which rewrites
- * {@code OWNER_IDENTITY_ID} and {@code OBSERVED} together inside one
- * transaction while the other three columns are immutable for the row's life —
- * so two nodes racing reach the same last-write-wins state with or without it,
- * and no column-set test could tell the two apart. It is kept because the
- * norm asks it of a multi-writer row with no version, and the day a second
- * writer touches a strict subset of this row the annotation must already be
- * there rather than be remembered.
+ * can be observed today. Two writers touch this row —
+ * {@code CaldavShareObservationStorage#reconcile}, and {@code #record} on the
+ * grant path's idempotent arm — and they rewrite the same pair,
+ * {@code OWNER_IDENTITY_ID} and {@code OBSERVED}, each inside one transaction,
+ * while the other three columns are immutable for the row's life. So two
+ * nodes racing reach the same last-write-wins state with or without the
+ * annotation, and no column-set test could tell the two apart. It is kept
+ * because the norm asks it of a multi-writer row with no version, and the day
+ * a writer touches a strict <em>subset</em> of this pair the annotation must
+ * already be there rather than be remembered.
  */
 @Data
 @NoArgsConstructor

@@ -52,7 +52,9 @@ import org.exoplatform.caldav.model.CalendarShares.ShareUser;
 import org.exoplatform.caldav.model.CalendarShares.ShareeKind;
 import org.exoplatform.caldav.rest.model.ShareCalendarRequest;
 import org.exoplatform.caldav.rest.model.ShareableCalendars;
+import org.exoplatform.caldav.rest.model.ObservedShares;
 import org.exoplatform.caldav.service.CaldavCalendarShareService;
+import org.exoplatform.caldav.service.CaldavShareObservationService;
 import org.exoplatform.caldav.service.CaldavShareException;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.services.security.ConversationState;
@@ -76,6 +78,9 @@ public class CaldavShareRestTest {
 
   @Mock
   private CaldavCalendarShareService caldavCalendarShareService;
+
+  @Mock
+  private CaldavShareObservationService caldavShareObservationService;
 
   @Mock
   private IdentityManager            identityManager;
@@ -149,11 +154,17 @@ public class CaldavShareRestTest {
     List<ShareUser> candidates = List.of(new ShareUser(9L, "bob", "Bob Test", null));
     when(caldavCalendarShareService.candidates(IDENTITY_ID, USER_NAME, 12L, "bo")).thenReturn(candidates);
     when(caldavCalendarShareService.shareableCalendarIds(IDENTITY_ID, USER_NAME)).thenReturn(List.of(12L, 14L));
+    when(caldavShareObservationService.shareeCountsByCalendar(IDENTITY_ID, USER_NAME)).thenReturn(Map.of(12L, 3L));
 
     assertSame(shares, caldavShareRest.unshare(12L, "bob"));
     assertSame(shares, caldavShareRest.shares(12L));
     assertSame(candidates, caldavShareRest.candidates(12L, "bo"));
     assertEquals(List.of(12L, 14L), caldavShareRest.shareableCalendars().calendarIds());
+    // EXO-90331. The observed-shares endpoint takes no parameter at all, so
+    // the only thing that could make it answer about somebody else is the
+    // identity it passes down — which is exactly what this asserts, and what
+    // nothing would have caught while it was the one endpoint left out.
+    assertEquals(Map.of(12L, 3L), caldavShareRest.observedShares().sharedWith());
   }
 
   /**
@@ -253,6 +264,17 @@ public class CaldavShareRestTest {
     assertEquals(true,
                  mapper.readTree(mapper.writeValueAsString(new CalendarShares(12L, List.of()).withMeetingCopies(true))).get("meetingCopies").asBoolean(),
                  "a calendar holding the meeting copies");
+    // EXO-90331. The observed-shares shape, pinned here for the reason every
+    // other field on this method is: agenda hand-writes `payload.sharedWith`
+    // in getObservedShares and indexes the map by `calendar.id`, so a renamed
+    // record component or a key Jackson spells differently takes the mark away
+    // with every test on both sides still green.
+    JsonNode observed = mapper.readTree(mapper.writeValueAsString(new ObservedShares(Map.of(12L, 3L))));
+    assertTrue(observed.has("sharedWith"), "agenda reads payload.sharedWith");
+    assertEquals(3L, observed.get("sharedWith").get("12").asLong(), "keyed by the agenda calendar id, as a JSON object key");
+    assertTrue(mapper.readTree(mapper.writeValueAsString(new ObservedShares(Map.of()))).get("sharedWith").isEmpty(),
+               "no calendar observed is an empty object, never a null the front end would have to guard");
+
     JsonNode bob = json.get("sharees").get(0);
     assertEquals("/dav/pal/bob%40stalwart.local/", bob.get("principal").asText());
     assertEquals("EXO_USERS", bob.get("kind").asText());

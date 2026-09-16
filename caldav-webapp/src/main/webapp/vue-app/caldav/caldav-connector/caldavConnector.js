@@ -266,12 +266,14 @@ const caldavConnector = {
    * longer be shared leaves behind.
    *
    * Two bounds ride with the count, and the tooltip agenda draws is worded for
-   * them: a calendar eXo did not export but the user owns on the server can be
-   * shared and is never counted, and a share made outside eXo — in the
-   * calendar server's own web client — is only seen by a colleague's pass, so
-   * it needs that colleague to be an eXo user with a connected CalDAV account
-   * and it shows up to one synchronisation period later. A share eXo made is
-   * subject to neither and is counted at once. It is a floor on the exposure —
+   * them. The first: a calendar eXo did not export but the user owns on the
+   * server can be shared and is never counted — including when eXo itself made
+   * the share, which is the case a reader is most likely to assume is covered.
+   * The second: a share made outside eXo, in the calendar server's own web
+   * client, is only seen by a colleague's pass, so it needs that colleague to
+   * be an eXo user with a connected CalDAV account and it shows up to one
+   * synchronisation period later — and a share eXo made on a calendar it
+   * exported is subject to neither half of that one, being counted at once. It is a floor on the exposure —
    * the Share drawer answers who.
    *
    * Never rejects: a connector that cannot answer marks nothing. The catch
