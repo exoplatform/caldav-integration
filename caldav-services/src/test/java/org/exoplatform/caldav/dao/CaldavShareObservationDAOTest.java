@@ -53,7 +53,7 @@ import org.exoplatform.caldav.storage.CaldavShareObservationStorage;
  * {@code CaldavSyncDAOQueryTest} records: a mock DAO answers happily to a
  * query string the engine would refuse, and neither a {@code GROUP BY} nor a
  * unique index has any meaning against one. Three things in particular can
- * only be seen here — that changesets {@code 1.0.0-49} to {@code 1.0.0-52}
+ * only be seen here — that changesets {@code 1.0.0-53} to {@code 1.0.0-56}
  * apply, that {@code countShareesByCalendar} parses, binds by name and groups,
  * and that the unique key is what makes a repeated pass idempotent under two
  * writers rather than merely by convention.
@@ -305,7 +305,7 @@ public class CaldavShareObservationDAOTest {
       entityManager.flush();
     });
     // The index the changeset declares, named by the engine that refused —
-    // so this pins changeset 1.0.0-51 and not merely "some constraint".
+    // so this pins changeset 1.0.0-55 and not merely "some constraint".
     assertTrue(rootCauseMessage(refused).contains("UQ_CALDAV_SHARE_OBSERVATION"), rootCauseMessage(refused));
     entityManager.clear();
 

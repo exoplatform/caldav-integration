@@ -820,7 +820,7 @@
     </addColumn>
   </changeSet>
 
-  <changeSet author="caldav" id="1.0.0-49" dbms="oracle,postgresql,hsqldb">
+  <changeSet author="caldav" id="1.0.0-53" dbms="oracle,postgresql,hsqldb">
     <comment>
       The share-observation sequence, on the vendors that have sequences -
       created in the same breath as its table, per 1.0.0-0 and 1.0.0-44.
@@ -828,7 +828,7 @@
     <createSequence sequenceName="SEQ_CALDAV_SHARE_OBSERVATION_ID" startValue="1"/>
   </changeSet>
 
-  <changeSet author="caldav" id="1.0.0-50">
+  <changeSet author="caldav" id="1.0.0-54">
     <comment>
       Which of a user's calendars another eXo user's CalDAV home lists
       (EXO-90331): one row per (sharee, server, calendar anchor), written by
@@ -888,7 +888,7 @@
     </modifySql>
   </changeSet>
 
-  <changeSet author="caldav" id="1.0.0-51">
+  <changeSet author="caldav" id="1.0.0-55">
     <comment>
       One observation per sharee, server and calendar. This is what makes a
       repeated pass idempotent: the reconciliation inserts only what the
@@ -904,7 +904,7 @@
     </createIndex>
   </changeSet>
 
-  <changeSet author="caldav" id="1.0.0-52">
+  <changeSet author="caldav" id="1.0.0-56">
     <comment>
       The question the table exists for: how many colleagues see each of one
       owner's calendars. Both columns are compared for equality and the result
