@@ -342,6 +342,8 @@ public class CaldavCalendarShareService {
 
   private final CaldavPushService               caldavPushService;
 
+  private final CaldavShareSubscriptionService  caldavShareSubscriptionService;
+
   /**
    * The servers this node has already reported, at INFO, as offering no
    * sharing. Reported once per server per process, so the reason is visible
@@ -391,6 +393,9 @@ public class CaldavCalendarShareService {
    * @param identityManager the social identities of caller and sharees
    * @param blueMindAclClient reads a BlueMind calendar's access list back
    * @param caldavPushService says where the copies of eXo meetings are written
+   * @param caldavShareSubscriptionService subscribes a BlueMind colleague to
+   *          the calendar just shared with them, and unsubscribes them on a
+   *          revoke (EXO-90277)
    */
   @Autowired
   public CaldavCalendarShareService(AgendaCalendarService agendaCalendarService,
@@ -401,6 +406,7 @@ public class CaldavCalendarShareService {
                                     IdentityManager identityManager,
                                     BlueMindAclClient blueMindAclClient,
                                     CaldavPushService caldavPushService,
+                                    CaldavShareSubscriptionService caldavShareSubscriptionService,
                                     @Value("${exo.caldav.share.probeMemoSeconds:300}")
                                     long probeMemoSeconds) {
     this(agendaCalendarService,
@@ -411,6 +417,7 @@ public class CaldavCalendarShareService {
          identityManager,
          blueMindAclClient,
          caldavPushService,
+         caldavShareSubscriptionService,
          Duration.ofSeconds(Math.max(0, probeMemoSeconds)),
          System::nanoTime);
   }
@@ -429,6 +436,7 @@ public class CaldavCalendarShareService {
                              IdentityManager identityManager,
                              BlueMindAclClient blueMindAclClient,
                              CaldavPushService caldavPushService,
+                             CaldavShareSubscriptionService caldavShareSubscriptionService,
                              Duration probeMemo,
                              LongSupplier nanoTime) {
     this.probeMemo = probeMemo;
@@ -441,6 +449,7 @@ public class CaldavCalendarShareService {
     this.identityManager = identityManager;
     this.blueMindAclClient = blueMindAclClient;
     this.caldavPushService = caldavPushService;
+    this.caldavShareSubscriptionService = caldavShareSubscriptionService;
     for (int i = 0; i < LOCK_STRIPES; i++) {
       locks[i] = new ReentrantLock();
     }
@@ -1383,6 +1392,7 @@ public class CaldavCalendarShareService {
             + " access; reported as not applied", target.calendarId(), target.href(), sharee.principal(), shareeUid);
         throw new CaldavShareException(NOT_APPLIED);
       }
+      followShareeSubscription(target, sharee, username, shareeUid, true);
       LOG.info("CalDAV share granted: user {} gave {} read access to calendar {} ({}) as BlueMind entry {} on server {}",
                username,
                sharee.username(),
@@ -1440,6 +1450,7 @@ public class CaldavCalendarShareService {
             + " reported as not applied", sharee.principal(), target.calendarId(), target.href(), shareeUid);
         throw new CaldavShareException(NOT_APPLIED);
       }
+      followShareeSubscription(target, sharee, username, shareeUid, false);
       LOG.info("CalDAV share revoked: user {} took read access to calendar {} ({}) away from {} as BlueMind entry {} on server {}",
                username,
                target.calendarId(),
@@ -1450,6 +1461,43 @@ public class CaldavCalendarShareService {
       return blueMindSharesOf(target, after, ownerPrincipal);
     } finally {
       lock.unlock();
+    }
+  }
+
+  /**
+   * Makes the colleague's BlueMind account follow the change just confirmed
+   * on the access list: subscribed to the calendar after a grant, unsubscribed
+   * after a revoke (EXO-90277). Inside the stripe lock, after the read-back,
+   * before the audit line — and never a failure of the owner's action: the
+   * service records what did not land and never throws, and this seam guards
+   * against it anyway, because the share on the server is already made.
+   *
+   * @param target the calendar
+   * @param sharee the colleague
+   * @param username the owner's login, for the audit line
+   * @param shareeUid the colleague's directory entry uid
+   * @param subscribe true after a grant, false after a revoke
+   */
+  private void followShareeSubscription(ShareTarget target, Sharee sharee, String username, String shareeUid, boolean subscribe) {
+    try {
+      CaldavShareSubscriptionService.ShareeSubscription subscription =
+                                                                     new CaldavShareSubscriptionService.ShareeSubscription(username,
+                                                                                                                           sharee.identityId(),
+                                                                                                                           sharee.username(),
+                                                                                                                           shareeUid,
+                                                                                                                           target.serverId(),
+                                                                                                                           containerUidOf(target));
+      if (subscribe) {
+        caldavShareSubscriptionService.subscribeSharee(subscription);
+      } else {
+        caldavShareSubscriptionService.unsubscribeSharee(subscription);
+      }
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("The subscription of {} to calendar {} ({}) could not be followed on the server; the share itself is applied",
+               sharee.username(),
+               target.calendarId(),
+               target.href(),
+               e);
     }
   }
 

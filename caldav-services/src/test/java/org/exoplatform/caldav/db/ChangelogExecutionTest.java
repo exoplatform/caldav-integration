@@ -102,6 +102,9 @@ public class ChangelogExecutionTest {
   /** The index the platform builds its EntityManager from. */
   private static final String ENTITY_INDEX        = "jpa-entities.idx";
 
+  /** The subscription changes eXo owes colleagues on BlueMind, the table EXO-90277 adds. */
+  private static final String PENDING_SUBSCRIPTION_TABLE = "CALDAV_PENDING_SUBSCRIPTION";
+
   private Connection          connection;
 
   /**
@@ -242,6 +245,44 @@ public class ChangelogExecutionTest {
         assertTrue(rows.next());
         assertEquals(2, rows.getInt(1), "two users on one login are both recorded");
       }
+    }
+  }
+
+  /**
+   * A pending subscription is one row per colleague, server and container,
+   * and belongs to no other table: no foreign key, because the colleague it
+   * names holds no pair for a calendar somebody shared with them - a row for
+   * a user with no CALDAV_CALENDAR_SYNC row inserts, and a second row for the
+   * same colleague, server and container is an integrity violation (EXO-90277).
+   *
+   * @throws Exception when a changeset cannot be applied or the rows not written
+   */
+  @Test
+  public void aPendingSubscriptionIsOneRowPerColleagueServerAndContainerAndNeedsNoPair() throws Exception {
+    update();
+
+    assertEquals(List.of("USER_IDENTITY_ID", "SERVER_ID", "CONTAINER_UID"),
+                 indexColumns(PENDING_SUBSCRIPTION_TABLE, "UQ_CALDAV_PENDING_SUBSCRIPTION"));
+    assertEquals(List.of("ATTEMPTS"), indexColumns(PENDING_SUBSCRIPTION_TABLE, "IDX_CALDAV_PENDING_SUBSCRIPTION_ATTEMPTS"));
+    assertEquals(0, nullableFlag(PENDING_SUBSCRIPTION_TABLE, "CONTAINER_UID"), "the container must be NOT NULL");
+    assertEquals(0, nullableFlag(PENDING_SUBSCRIPTION_TABLE, "KIND"), "the kind must be NOT NULL");
+    try (ResultSet keys = connection.getMetaData().getImportedKeys(null, null, PENDING_SUBSCRIPTION_TABLE)) {
+      assertFalse(keys.next(), "no foreign key: the sharee holds no pair to point at");
+    }
+    try (Statement statement = connection.createStatement()) {
+      statement.executeUpdate("INSERT INTO CALDAV_PENDING_SUBSCRIPTION (ID, USER_IDENTITY_ID, SERVER_ID, CONTAINER_UID, KIND) "
+          + "VALUES (1, 77, 5, 'exo-cal-shared', 'SUBSCRIBE')");
+      try (ResultSet rows = statement.executeQuery("SELECT ATTEMPTS FROM CALDAV_PENDING_SUBSCRIPTION WHERE ID = 1")) {
+        assertTrue(rows.next());
+        assertEquals(0, rows.getInt(1), "a row written without naming ATTEMPTS counts from zero");
+      }
+      java.sql.SQLException refused = org.junit.jupiter.api.Assertions.assertThrows(java.sql.SQLException.class,
+                                                                                    () -> statement.executeUpdate("INSERT INTO CALDAV_PENDING_SUBSCRIPTION"
+                                                                                        + " (ID, USER_IDENTITY_ID, SERVER_ID, CONTAINER_UID, KIND)"
+                                                                                        + " VALUES (2, 77, 5, 'exo-cal-shared', 'UNSUBSCRIBE')"));
+      assertTrue(refused.getSQLState().startsWith("23"), "a second change for one colleague, server and container is an integrity violation");
+      statement.executeUpdate("INSERT INTO CALDAV_PENDING_SUBSCRIPTION (ID, USER_IDENTITY_ID, SERVER_ID, CONTAINER_UID, KIND) "
+          + "VALUES (3, 77, 6, 'exo-cal-shared', 'SUBSCRIBE')");
     }
   }
 

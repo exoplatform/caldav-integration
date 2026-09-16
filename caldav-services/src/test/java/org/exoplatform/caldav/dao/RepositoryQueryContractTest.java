@@ -34,6 +34,7 @@ import org.springframework.data.repository.query.Param;
 import org.exoplatform.caldav.entity.CaldavCalendarSyncEntity;
 import org.exoplatform.caldav.entity.CaldavObjectSyncEntity;
 import org.exoplatform.caldav.entity.CaldavConnectionEntity;
+import org.exoplatform.caldav.entity.CaldavPendingSubscriptionEntity;
 import org.exoplatform.caldav.entity.CaldavPendingPushEntity;
 import org.exoplatform.caldav.entity.CaldavServerEntity;
 
@@ -103,7 +104,8 @@ public class RepositoryQueryContractTest {
                                     nameOf(CaldavObjectSyncEntity.class),
                                     nameOf(CaldavPendingPushEntity.class),
                                     nameOf(CaldavServerEntity.class),
-                                    nameOf(CaldavConnectionEntity.class));
+                                    nameOf(CaldavConnectionEntity.class),
+                                    nameOf(CaldavPendingSubscriptionEntity.class));
     List<String> unknown = new ArrayList<>();
     for (Class<?> dao : repositories()) {
       for (Method method : dao.getDeclaredMethods()) {
@@ -298,6 +300,7 @@ public class RepositoryQueryContractTest {
                    CaldavObjectSyncDAO.class,
                    CaldavPendingPushDAO.class,
                    CaldavServerDAO.class,
-                   CaldavConnectionDAO.class);
+                   CaldavConnectionDAO.class,
+                   CaldavPendingSubscriptionDAO.class);
   }
 }
