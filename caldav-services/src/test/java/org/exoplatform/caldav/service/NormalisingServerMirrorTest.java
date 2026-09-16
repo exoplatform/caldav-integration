@@ -1451,6 +1451,18 @@ public class NormalisingServerMirrorTest {
     }
 
     @Override
+    public Map<String, String> multigetEtags(CalDavEndpoint endpoint,
+                                             String collectionHref,
+                                             List<String> hrefs) {
+      return new LinkedHashMap<>();
+    }
+
+    @Override
+    public String readEtag(CalDavEndpoint endpoint, String href) {
+      return null;
+    }
+
+    @Override
     public SyncCollectionResult syncCollection(CalDavEndpoint endpoint,
                                                String collectionHref,
                                                String syncToken) {
