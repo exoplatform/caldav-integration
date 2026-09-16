@@ -182,6 +182,9 @@ public class CaldavSyncServiceTest {
   private CaldavSubscriptionRetirementService caldavSubscriptionRetirementService;
 
   @Mock
+  private CaldavShareSubscriptionService caldavShareSubscriptionService;
+
+  @Mock
   private CalDavEndpoint             endpoint;
 
   @Mock
@@ -2441,6 +2444,41 @@ public class CaldavSyncServiceTest {
     Identity identity = new Identity(String.valueOf(USER));
     identity.setRemoteId(LOGIN);
     when(identityManager.getIdentity(String.valueOf(USER))).thenReturn(identity);
+  }
+
+  /**
+   * EXO-90277, PO decision 4: the subscriptions a colleague is owed are
+   * drained at the top of their own pass, before the home is listed, so the
+   * calendar just shared with them is in this pass's listing.
+   */
+  @Test
+  public void theOwedSubscriptionsAreDrainedBeforeTheHomeIsListed() {
+    givenNoKnownPairs();
+    givenServerCalendars();
+
+    service.syncNow(USER, LOGIN);
+
+    InOrder order = inOrder(caldavShareSubscriptionService, caldavOutboundService, calDavClient);
+    order.verify(caldavShareSubscriptionService).retryOwed(USER, CaldavShareSubscriptionService.OWN_DRAIN_BATCH);
+    order.verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+  }
+
+  /**
+   * The drain is another account's business talking to the server as this
+   * user: whatever it throws - a refused login included - neither ends the
+   * pass nor pauses this user's own bindings.
+   */
+  @Test
+  public void aDrainThatFailsNeitherEndsThePassNorPausesTheAccount() {
+    CalendarSync bound = activeRemotePair("/dav/calendars/john/private/", "anchor-1");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(bound));
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    when(caldavShareSubscriptionService.retryOwed(anyLong(), anyInt())).thenThrow(new CalDavAuthenticationException("stale"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+    assertEquals(CalendarSyncStatus.ACTIVE, bound.getStatus());
   }
 
   /**

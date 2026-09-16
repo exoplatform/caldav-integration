@@ -348,6 +348,9 @@ public class CaldavSyncService {
   @Autowired
   private CaldavSubscriptionRetirementService caldavSubscriptionRetirementService;
 
+  @Autowired
+  private CaldavShareSubscriptionService caldavShareSubscriptionService;
+
   /**
    * Synchronises the accounts that have gone longest without one.
    *
@@ -952,6 +955,11 @@ public class CaldavSyncService {
       return;
     }
     try {
+      // First, before the home is listed: a calendar a colleague shared from
+      // eXo on BlueMind that eXo still owes this user a subscription to
+      // (EXO-90277) is subscribed now, so this same pass lists it. One index
+      // lookup answering nothing for everybody it does not concern.
+      drainOwedSubscriptions(userIdentityId);
       caldavOutboundService.bindPersonalCalendars(userIdentityId, username);
       // Before materialising, not after: a binding with nothing behind it is
       // exactly what makes materialisation skip a collection, so healing it
@@ -993,6 +1001,21 @@ public class CaldavSyncService {
       // Whatever the pass did, anyone waiting on it is waiting for it to be
       // over, not for it to have succeeded.
       pass.done().complete(null);
+    }
+  }
+
+  /**
+   * Drains the BlueMind subscription changes eXo owes this user, and lets
+   * nothing about them end the pass: the service never throws by contract,
+   * and a pass that lists the user's calendars must not depend on it.
+   *
+   * @param userIdentityId identity of the user
+   */
+  private void drainOwedSubscriptions(long userIdentityId) {
+    try {
+      caldavShareSubscriptionService.retryOwed(userIdentityId, CaldavShareSubscriptionService.OWN_DRAIN_BATCH);
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("The BlueMind subscriptions owed to user {} could not be drained before their pass", userIdentityId, e);
     }
   }
 
