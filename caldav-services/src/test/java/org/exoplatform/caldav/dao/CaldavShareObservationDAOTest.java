@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -81,6 +82,15 @@ public class CaldavShareObservationDAOTest {
 
   /** Eric's second calendar. */
   private static final String            CAL3        = "c434ba2a-3f58-4d9c-9a0a-2b2f8e1f7a10";
+
+  /**
+   * The storage's page size, mirrored here so the bound is exercised rather
+   * than assumed — the constant itself is package-private to the storage
+   * package. Same idiom as {@code CaldavSyncServiceTest.SEEDING_QUEUE_DEPTH}.
+   * If the storage's number moves and this one does not, the page-boundary
+   * test below simply stops straddling the boundary, so keep them in step.
+   */
+  private static final int               SIGHTINGS_PER_SHAREE_READ = 500;
 
   @Autowired
   private CaldavShareObservationDAO      shareObservationDAO;
@@ -228,6 +238,49 @@ public class CaldavShareObservationDAOTest {
     assertEquals(Map.of(CAL2, 1L), storage.countShareesByAnchor(ERIC, SERVER));
     assertTrue(storage.countShareesByAnchor(ERIC, 99L).isEmpty());
     assertEquals(0, storage.forgetSharee(ROOT), "forgetting a user who saw nothing costs one statement and removes nothing");
+  }
+
+  /**
+   * <b>Past one page of stored rows the reconciliation still works.</b>
+   *
+   * <p>
+   * The page size was a cap once, and the failure it produced was not the
+   * graceful one its comment promised. A home whose stored rows outran the cap
+   * had the later ones missing from the comparison, so the insert loop rebuilt
+   * them, the unique index refused the duplicate, and the whole transaction
+   * rolled back — no row refreshed, no row removed, on that pass or on any
+   * pass after it, while the service logged one WARN and carried on. Executed
+   * here rather than reasoned about: one page plus one anchor, reconciled
+   * twice, then a removal past the page boundary.
+   */
+  @Test
+  public void aHomeWithMoreSightingsThanOnePageStillReconciles() {
+    CaldavShareObservationStorage storage = storage();
+    int beyondOnePage = SIGHTINGS_PER_SHAREE_READ + 1;
+    Map<String, Long> listing = new LinkedHashMap<>();
+    for (int i = 0; i < beyondOnePage; i++) {
+      listing.put(String.format("anchor-%04d", i), ERIC);
+    }
+
+    assertEquals(beyondOnePage, storage.reconcile(ROOT, SERVER, listing));
+    entityManager.flush();
+    entityManager.clear();
+
+    // The pass that used to throw: the same listing again, writing nothing.
+    assertEquals(0, storage.reconcile(ROOT, SERVER, listing), "the same listing again is still a no-op past one page");
+    entityManager.flush();
+    entityManager.clear();
+    assertEquals(beyondOnePage, shareObservationDAO.count());
+    assertEquals(beyondOnePage, storage.countShareesByAnchor(ERIC, SERVER).size());
+
+    // And removal still reaches a row that sits past the page boundary.
+    Map<String, Long> shorter = new LinkedHashMap<>(listing);
+    shorter.remove(String.format("anchor-%04d", beyondOnePage - 1));
+    assertEquals(1, storage.reconcile(ROOT, SERVER, shorter));
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(beyondOnePage - 1L, shareObservationDAO.count());
   }
 
   /**

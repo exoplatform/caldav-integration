@@ -68,7 +68,12 @@ import lombok.NoArgsConstructor;
  * <li>a share granted, or revoked, since the sharee's last pass is not in the
  * table yet: the mark lags by up to one synchronisation period (five minutes
  * by default), which is why it is drawn as a state and never as a
- * confirmation that a grant succeeded.</li>
+ * confirmation that a grant succeeded;</li>
+ * <li>a colleague's calendar that a pass materialised into their eXo before
+ * EXO-90234 taught the sweep to skip it is bound as an ordinary calendar of
+ * theirs, not seen as a share, and so is in no row. Those bindings are the
+ * migration {@code CaldavSyncService#skipShare} records as left to a human;
+ * until one is cleaned up its owner sees no mark for that sharee.</li>
  * </ul>
  * The count this table answers is therefore a floor on the exposure, never a
  * ceiling, and the Share drawer — which reads the server live — stays the

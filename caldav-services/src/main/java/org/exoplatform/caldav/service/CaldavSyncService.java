@@ -1685,6 +1685,7 @@ public class CaldavSyncService {
       if (isAlreadyOurs(collection, known)) {
         reviveIfMarkedGone(known, collection);
         retireIfSubscription(userIdentityId, serverId, endpoint, principal, known, collection);
+        noteHiddenColleaguesExoCalendar(userIdentityId, serverId, known, collection, colleaguesCalendars);
         continue;
       }
       if (!collection.holdsEvents()) {
@@ -1761,6 +1762,99 @@ public class CaldavSyncService {
     if (ownership != CollectionOwnership.COLLEAGUES_EXO_CALENDAR) {
       return;
     }
+    noteSighting(userIdentityId, serverId, collection, colleaguesCalendars);
+  }
+
+  /**
+   * Notes the same sighting for a collection the user has <em>hidden</em>
+   * (EXO-90331).
+   *
+   * <p>
+   * <b>Why this exists at all.</b> Hiding a shared calendar writes nothing to
+   * the server: it records a {@link CalendarSyncStatus#HIDDEN_SHARE} pair so
+   * that the calendar stops being offered under Remote, and the colleague's
+   * grant is untouched ({@link CaldavDeletionService#hideShare}). But a
+   * HIDDEN_SHARE pair makes {@link #isAlreadyOurs} true, which short-circuits
+   * the loop above <em>before</em> ownership is asked — so without this the
+   * collection would be absent from the listing's map, the reconciliation
+   * would read that absence as "the share has stopped existing", and the
+   * owner's mark would vanish while they were still exposed. One user's
+   * display preference would have silently rewritten what another user is
+   * told about their own calendar, which is the false negative this whole
+   * design exists to avoid.
+   *
+   * <p>
+   * Only a hidden share is noted from this branch. Every other pair matched by
+   * {@link #isAlreadyOurs} binds a calendar the user genuinely holds in eXo —
+   * their own, or one an earlier pass materialised — and a bound calendar is
+   * not a sighting of somebody else's. <b>The exception, deliberately left
+   * uncovered:</b> a colleague's calendar a pass materialised before
+   * EXO-90234 taught the sweep to skip it is bound as an ordinary REMOTE pair
+   * and is not noted, so its owner sees no mark for that sharee. Those
+   * bindings are the migration question {@link #skipShare} records as left to
+   * a human; adopting them here would mean counting a calendar the sharee
+   * holds a writable local copy of, which is a different fact from the one
+   * this table records.
+   *
+   * <p>
+   * Costs one indexed lookup per hidden share per pass, and nothing at all for
+   * the pairs that are not hidden shares — the status is read from the pair
+   * already in hand.
+   *
+   * @param userIdentityId identity of the user whose home listed it
+   * @param serverId the declared server registration
+   * @param known every pair this user holds on this server
+   * @param collection the listed collection, already bound
+   * @param colleaguesCalendars the map being gathered for this listing,
+   *          calendar anchor to the owner's identity
+   */
+  private void noteHiddenColleaguesExoCalendar(long userIdentityId,
+                                               long serverId,
+                                               List<CalendarSync> known,
+                                               CalendarCollection collection,
+                                               Map<String, Long> colleaguesCalendars) {
+    String href = CaldavSyncStorage.canonicalHref(collection.href());
+    boolean hidden = known.stream()
+                          .filter(pair -> pair.getStatus() == CalendarSyncStatus.HIDDEN_SHARE)
+                          .anyMatch(pair -> href.equals(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())));
+    if (!hidden) {
+      return;
+    }
+    noteSighting(userIdentityId, serverId, collection, colleaguesCalendars);
+  }
+
+  /**
+   * Resolves which calendar a collection stands for and whose it is, and puts
+   * the sighting in the listing's map (EXO-90331).
+   *
+   * <p>
+   * The owner is the user whose EXO pair stands behind the collection, which
+   * is the same question, asked the same two ways, that made the
+   * classification say COLLEAGUES_EXO_CALENDAR in the first place
+   * ({@link CaldavOutboundService#exportingUserOf}); a pair that vanished
+   * between the two answers null, and then nothing is noted rather than a
+   * sighting attributed to nobody. That is also what makes this safe to call
+   * from the hidden-share branch, where no classification has been run: a
+   * collection carrying no anchor eXo minted, or one minted by another
+   * deployment, resolves to nobody and is dropped here.
+   *
+   * <p>
+   * The user's own identity is never noted against them — a collection of
+   * theirs classifies as {@link CollectionOwnership#OWN_EXO_CALENDAR} and
+   * never reaches the classified path — but the guard is explicit, because
+   * "shared with yourself" is the one count that would be wrong in a way
+   * nobody would question.
+   *
+   * @param userIdentityId identity of the user whose home listed it
+   * @param serverId the declared server registration
+   * @param collection the listed collection
+   * @param colleaguesCalendars the map being gathered for this listing,
+   *          calendar anchor to the owner's identity
+   */
+  private void noteSighting(long userIdentityId,
+                            long serverId,
+                            CalendarCollection collection,
+                            Map<String, Long> colleaguesCalendars) {
     String href = CaldavSyncStorage.canonicalHref(collection.href());
     String anchor = CaldavOutboundService.anchorOf(href);
     if (!CaldavShareObservationService.isRecordableAnchor(anchor)) {

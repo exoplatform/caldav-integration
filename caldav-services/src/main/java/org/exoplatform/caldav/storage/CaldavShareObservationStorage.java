@@ -55,11 +55,26 @@ import org.exoplatform.caldav.entity.CaldavShareObservationEntity;
 public class CaldavShareObservationStorage {
 
   /**
-   * How many sightings of one sharee's home are read at most when reconciling
-   * it: a bound on a home that lists an implausible number of colleagues' eXo
-   * calendars, above which the later rows are neither refreshed nor removed by
-   * that pass. Well above any home observed — a user subscribed to every
-   * calendar of a hundred-person deployment is still inside it.
+   * How many of one sharee's sightings are read per statement.
+   *
+   * <p>
+   * A page size, <b>not</b> a cap: {@link #storedFor} pages until the rows are
+   * exhausted. It was a cap once, and that was a defect rather than a
+   * degradation — a home past the cap had its later rows missing from the
+   * comparison, so the insert loop rebuilt them, the unique index refused the
+   * duplicate, and the <em>whole</em> reconciliation rolled back with a
+   * {@code DataIntegrityViolationException} that
+   * {@code CaldavShareObservationService.observed} swallowed as one WARN. Not
+   * "the later rows are not refreshed": no row was refreshed or removed, on
+   * that pass or on any pass after it, for as long as the home stayed above
+   * the cap. Measured on HSQLDB with 501 anchors, first pass writing 501 rows
+   * and every pass after it throwing.
+   *
+   * <p>
+   * The read stays bounded by what it is a read of — one user's colleagues'
+   * eXo calendars on one server, which is a subset of one CalDAV home's
+   * listing — so paging to exhaustion reads a page or two in practice and
+   * never a table.
    */
   static final int                  SIGHTINGS_PER_SHAREE_READ = 500;
 
@@ -74,7 +89,11 @@ public class CaldavShareObservationStorage {
    * The whole removal story is here, and it is why the write is a
    * reconciliation rather than an insert. A listing is complete by
    * construction — the sweep asked the server for the home's collections and
-   * classified every one of them — so a calendar that is in the stored set and
+   * accounted for every one of them, the ones it classified as a colleague's
+   * eXo calendar and the ones it short-circuited because the user had hidden
+   * them ({@code CaldavSyncService#noteHiddenColleaguesExoCalendar}; that
+   * second path was missing once, and a user hiding a calendar took the mark
+   * off its owner's row) — so a calendar that is in the stored set and
    * not in the listing is a share that has stopped existing, and a row kept
    * for it would draw a mark on a calendar nobody can see any more. A stale
    * mark is worse than no mark: it tells its owner they are exposed when they
@@ -83,9 +102,18 @@ public class CaldavShareObservationStorage {
    * <p>
    * Idempotent by the same construction: a pass that finds the same set as the
    * last one deletes nothing, inserts nothing, and writes only the sighting
-   * instants. The unique index {@code UQ_CALDAV_SHARE_OBSERVATION} is what
-   * makes that true under two nodes reconciling the same home at once — the
-   * loser updates the row the winner inserted instead of adding a second.
+   * instants.
+   *
+   * <p>
+   * <b>Two nodes reconciling the same home at once</b> is settled by the
+   * unique index {@code UQ_CALDAV_SHARE_OBSERVATION}, and settled by refusal
+   * rather than by merging: the loser's insert raises
+   * {@code DataIntegrityViolationException} and its whole transaction rolls
+   * back, so it writes nothing at all — it does not add a second row, and it
+   * does not update the winner's. {@code CaldavShareObservationService} logs
+   * that and the next pass, reading the winner's rows, converges. What the
+   * index guarantees is that the count can never be inflated by a race; it
+   * does not make a losing pass succeed.
    *
    * <p>
    * Called only for a listing that succeeded. An empty map from a home that
@@ -103,9 +131,7 @@ public class CaldavShareObservationStorage {
    */
   @Transactional
   public int reconcile(long shareeIdentityId, long serverId, Map<String, Long> ownersByAnchor) {
-    List<CaldavShareObservationEntity> stored = shareObservationDAO.findBySharee(shareeIdentityId,
-                                                                                 serverId,
-                                                                                 PageRequest.of(0, SIGHTINGS_PER_SHAREE_READ));
+    List<CaldavShareObservationEntity> stored = storedFor(shareeIdentityId, serverId);
     Date now = new Date();
     int changed = 0;
     List<CaldavShareObservationEntity> gone = new ArrayList<>();
@@ -139,6 +165,40 @@ public class CaldavShareObservationStorage {
       shareObservationDAO.saveAll(written);
     }
     return changed;
+  }
+
+  /**
+   * Every sighting stored for one sharee's home on one server.
+   *
+   * <p>
+   * Paged to exhaustion rather than read in one statement, keeping the
+   * {@code Pageable} the norm asks of a repository query while still comparing
+   * the listing against the <em>whole</em> stored set — which is what the
+   * reconciliation needs to be correct at all. A partial set makes the insert
+   * loop rebuild rows that already exist, and the unique index turns that into
+   * a failed transaction rather than a smaller update (see
+   * {@link #SIGHTINGS_PER_SHAREE_READ}).
+   *
+   * <p>
+   * The last page is recognised by being short, so an exact multiple of the
+   * page size costs one extra empty read and never loops on a full page it has
+   * already seen.
+   *
+   * @param shareeIdentityId the eXo user whose home was listed
+   * @param serverId the declared server registration
+   * @return the rows, oldest first, possibly empty
+   */
+  private List<CaldavShareObservationEntity> storedFor(long shareeIdentityId, long serverId) {
+    List<CaldavShareObservationEntity> stored = new ArrayList<>();
+    for (int page = 0;; page++) {
+      List<CaldavShareObservationEntity> read = shareObservationDAO.findBySharee(shareeIdentityId,
+                                                                                 serverId,
+                                                                                 PageRequest.of(page, SIGHTINGS_PER_SHAREE_READ));
+      stored.addAll(read);
+      if (read.size() < SIGHTINGS_PER_SHAREE_READ) {
+        return stored;
+      }
+    }
   }
 
   /**

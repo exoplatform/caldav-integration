@@ -1899,6 +1899,61 @@ public class CaldavSyncServiceTest {
   }
 
   /**
+   * <b>Hiding a colleague's calendar must not take the mark off its owner's
+   * row.</b>
+   *
+   * <p>
+   * The defect this closes, found in review. Hiding writes nothing to the
+   * server — it records a HIDDEN_SHARE pair so the calendar stops being
+   * offered under Remote, and eric's grant to root is untouched. But a
+   * HIDDEN_SHARE pair makes {@code isAlreadyOurs} true, which short-circuits
+   * the listing loop before ownership is asked, so the anchor fell out of the
+   * map, the reconciliation read that absence as "the share has stopped
+   * existing", and eric's mark disappeared while he was still exposed. One
+   * user's display preference silently rewriting what another user is told
+   * about their own calendar is exactly the false negative this design exists
+   * to avoid.
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void aColleaguesExoCalendarTheUserHasHiddenIsStillObservedForItsOwner() throws Exception {
+    givenServerCalendars(owned(CAL2_UNDER_OWN_HOME, "CAL2", PRINCIPAL, true, true));
+    String href = CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(hiddenShare(href)));
+    when(caldavOutboundService.exportingUserOf(SERVER, href)).thenReturn(ERIC);
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavShareObservationService).observed(USER, SERVER, Map.of(CAL2_ANCHOR, ERIC));
+    // Still hidden: the sighting is for the owner's row, and changes nothing
+    // about what the user who hid it sees.
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  /**
+   * A calendar the user genuinely holds — their own, bound by an ordinary
+   * pair — is not a sighting of somebody else's, and the hidden-share branch
+   * must not turn every already-bound collection into one.
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void aCalendarTheUserActuallyHoldsIsNotObservedAsAColleaguesShare() throws Exception {
+    givenServerCalendars(owned(CAL2_UNDER_OWN_HOME, "CAL2", PRINCIPAL, true, true));
+    String href = CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME);
+    CalendarSync mine = exoPair(href);
+    mine.setLocalCalendarSyncUid(CAL2_ANCHOR);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(mine));
+    givenAgendaHasCalendar(CAL2_ANCHOR);
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavShareObservationService).observed(USER, SERVER, Map.of());
+    verify(caldavOutboundService, never()).exportingUserOf(anyLong(), anyString());
+  }
+
+  /**
    * <b>The removal.</b> A home that lists no colleague's calendar hands on an
    * empty set, which is what takes away the mark of a share that has stopped
    * existing. The reconciliation cannot be expressed per collection — a
