@@ -71,6 +71,10 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   @Override
   public void createCaldavSetting(CaldavUserSetting caldavUserSetting, long userIdentityId) throws IllegalAccessException {
     if (StringUtils.isNotBlank(caldavUserSetting.getPassword()) && StringUtils.isNotBlank(caldavUserSetting.getUsername())) {
+      // Read before the write, because the write is an upsert: afterwards
+      // there is no way left to tell a new account from the same one entered
+      // again (EXO-90331).
+      CaldavUserSetting previous = caldavConnectorStorage.getCaldavSetting(userIdentityId);
       caldavConnectorStorage.createCaldavSetting(caldavUserSetting, userIdentityId);
       // The credentials just changed, so the server identity recorded under
       // the previous ones no longer describes this account (EXO-90243). Gone
@@ -78,7 +82,9 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
       // below records the new one from its own discovery, and if that
       // discovery fails the account is unknown rather than wrongly known.
       forgetServerIdentity(userIdentityId);
-      forgetShareObservations(userIdentityId);
+      if (accountChanged(previous, caldavUserSetting)) {
+        forgetShareObservations(userIdentityId);
+      }
       // Disconnecting froze the bindings of the calendars eXo pushed out, so
       // that reconnecting would find its collections again. Reconnecting is
       // what thaws them: until it does, the account is connected while the
@@ -338,10 +344,15 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
    * sightings would keep drawing a "shared" mark on colleagues' calendar rows
    * with nothing able to contradict them ever again — the stale mark that is
    * worse than no mark, since it tells its owner they are exposed when they
-   * may no longer be. Asked on both acts for the same reason the recorded
-   * identity is: a reconnection may be to another account entirely, and what
-   * the old one saw says nothing about the new one. The first pass after a
-   * connection records whatever is still true.
+   * may no longer be. The first pass after a connection records whatever is
+   * still true.
+   *
+   * <p>
+   * Asked unconditionally on a disconnection, and on a connection only when
+   * the account actually changed ({@link #accountChanged}) — unlike the
+   * recorded server identity, which is cleared either way. The asymmetry is
+   * deliberate and its reason is on that method: these rows are other owners'
+   * marks, not this user's.
    *
    * <p>
    * Nothing here may fail a connection or a disconnection; the service absorbs
@@ -356,6 +367,56 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     if (observationService != null) {
       observationService.forgetObservationsOf(userIdentityId);
     }
+  }
+
+  /**
+   * Whether a connection is to a different account from the one recorded
+   * (EXO-90331).
+   *
+   * <p>
+   * <b>Why the sightings are not cleared unconditionally, while the recorded
+   * server identity is.</b> The two look alike and their costs are not. A
+   * forgotten identity costs this user one rediscovery; forgotten sightings
+   * cost <em>other</em> owners their marks, because
+   * {@code forgetObservationsOf} deletes every row in which this user is the
+   * sharee, and those rows are what draws the mark on their colleagues' rows.
+   * Those owners did nothing, cannot see that it happened, and cannot cause
+   * the pass that would restore it — their own pass never lists their own
+   * calendar as a colleague's. So the clear is worth its cost when the account
+   * really changed, and is pure damage when it did not.
+   *
+   * <p>
+   * Not a hypothetical, and not the everyday path either. The agenda drawer
+   * offers Connect only on a row that is not connected, so a user normally
+   * reaches a re-connect through Disconnect — which clears by design — and the
+   * front end then chains a full synchronising pass that re-records within
+   * seconds. What has no guard at all is {@code POST /v1/caldav} called
+   * directly, and any state where agenda's connected-account setting is
+   * missing while the credential is not, which puts Connect back on a live
+   * account. There the pass may not follow, and the marks then wait on the
+   * sweep — which does not pick an account whose bindings were just written
+   * until it is stale ({@code exo.agenda.caldav.sync.sweep.staleMinutes},
+   * thirty minutes by default), not merely until the next sweep tick.
+   *
+   * <p>
+   * Compared on the two things that make an account a different account: the
+   * login and the server registration. Deliberately <b>not</b> on the
+   * password — a password change is the same account, and its sightings go on
+   * describing it. A first connection has nothing recorded and counts as a
+   * change, which is right and costs nothing: there are no rows yet.
+   *
+   * @param previous what was recorded before this call, null when nothing was
+   * @param incoming what is being recorded now
+   * @return true when the sightings this user's home produced no longer
+   *         describe the account being connected
+   */
+  private static boolean accountChanged(CaldavUserSetting previous, CaldavUserSetting incoming) {
+    if (previous == null || StringUtils.isBlank(previous.getUsername())) {
+      return true;
+    }
+    long before = previous.getServerId() == null ? 0L : previous.getServerId();
+    long now = incoming.getServerId() == null ? 0L : incoming.getServerId();
+    return before != now || !StringUtils.equals(previous.getUsername(), incoming.getUsername());
   }
 
   /**

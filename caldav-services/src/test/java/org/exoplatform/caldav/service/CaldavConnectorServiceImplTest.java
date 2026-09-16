@@ -586,16 +586,20 @@ public class CaldavConnectorServiceImplTest {
   }
 
   /**
-   * Connecting forgets them too, before anything is asked of the server: a
-   * reconnection may be to another account entirely, and what the old one saw
-   * says nothing about the new one.
+   * Connecting to <em>another</em> account forgets them too, before anything
+   * is asked of the server: what the old account saw says nothing about the
+   * new one.
    *
    * @throws Exception never, everything is mocked
    */
   @Test
-  public void connectingForgetsWhatThePreviousAccountSawBeforeAskingTheServer() throws Exception {
+  public void connectingToAnotherAccountForgetsWhatThePreviousOneSawBeforeAskingTheServer() throws Exception {
     caldavConnectorService.setCaldavSyncService(caldavSyncService);
     caldavConnectorService.setCaldavShareObservationService(caldavShareObservationService);
+    CaldavUserSetting previous = new CaldavUserSetting();
+    previous.setUsername("john.old");
+    previous.setPassword("secret");
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(previous);
     CaldavUserSetting setting = new CaldavUserSetting();
     setting.setUsername("john");
     setting.setPassword("secret");
@@ -606,6 +610,88 @@ public class CaldavConnectorServiceImplTest {
     inOrder.verify(caldavConnectorStorage).createCaldavSetting(setting, USER_IDENTITY_ID);
     inOrder.verify(caldavShareObservationService).forgetObservationsOf(USER_IDENTITY_ID);
     inOrder.verify(caldavSyncService).establishDestinations(USER_IDENTITY_ID);
+  }
+
+  /**
+   * A first connection forgets them as well — there is nothing recorded to
+   * compare against, and nothing to lose either (EXO-90331).
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void aFirstConnectionForgetsWhateverWasThere() throws Exception {
+    caldavConnectorService.setCaldavSyncService(caldavSyncService);
+    caldavConnectorService.setCaldavShareObservationService(caldavShareObservationService);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(caldavShareObservationService).forgetObservationsOf(USER_IDENTITY_ID);
+  }
+
+  /**
+   * Re-entering the <em>same</em> account keeps them (EXO-90331).
+   *
+   * <p>
+   * The rows this deletes are not the reconnecting user's: they are every
+   * sighting in which they are the sharee, which is what draws the mark on
+   * their colleagues' own rows. Those owners did nothing, cannot see it
+   * happen, and cannot cause the pass that would restore it — their own pass
+   * never lists their own calendar as a colleague's. So a clear that buys
+   * nothing is pure damage to third parties. The recorded server identity is
+   * still cleared either way: it costs this user one rediscovery and nobody
+   * else anything.
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void reEnteringTheSameAccountKeepsEverybodyElsesMarks() throws Exception {
+    caldavConnectorService.setCaldavSyncService(caldavSyncService);
+    caldavConnectorService.setCaldavShareObservationService(caldavShareObservationService);
+    caldavConnectorService.setCaldavConnectionIdentityService(caldavConnectionIdentityService);
+    CaldavUserSetting previous = new CaldavUserSetting();
+    previous.setUsername("john");
+    previous.setPassword("old");
+    previous.setServerId(7L);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(previous);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    // A new password is the same account: its sightings go on describing it.
+    setting.setPassword("rotated");
+    setting.setServerId(7L);
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(caldavShareObservationService, never()).forgetObservationsOf(anyLong());
+    verify(caldavConnectionIdentityService).forgetPrincipal(USER_IDENTITY_ID);
+  }
+
+  /**
+   * The same login on another server registration is another account
+   * (EXO-90331) — one login may exist on two servers, and a home on one says
+   * nothing about a home on the other.
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void theSameLoginOnAnotherServerIsAnotherAccount() throws Exception {
+    caldavConnectorService.setCaldavSyncService(caldavSyncService);
+    caldavConnectorService.setCaldavShareObservationService(caldavShareObservationService);
+    CaldavUserSetting previous = new CaldavUserSetting();
+    previous.setUsername("john");
+    previous.setPassword("secret");
+    previous.setServerId(7L);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(previous);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+    setting.setServerId(9L);
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(caldavShareObservationService).forgetObservationsOf(USER_IDENTITY_ID);
   }
 
   /**
