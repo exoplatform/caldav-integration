@@ -98,10 +98,12 @@ public class CaldavPendingSubscriptionStorage {
    * <p>
    * <b>For the caller who cannot be stale</b> — the grant and the revoke. They
    * decide the instruction in the same call, inside the share service's stripe
-   * lock and after the access list was read back, and nothing else writes to
-   * this table; so whatever row stands for the container is older than what
-   * they just did, whichever kind it asks for, and leaving it would have the
-   * drain later re-apply an instruction the owner has already replaced. A
+   * lock and after the access list was read back, and {@link #owe} — the only
+   * method here that records an instruction, as opposed to settling or
+   * counting one — has a single call site, theirs. So whatever row stands for
+   * the container is older than what they just did, whichever kind it asks
+   * for, and leaving it would have the drain later re-apply an instruction the
+   * owner has already replaced. A
    * pending SUBSCRIBE surviving a landed revoke is the worst of those: the
    * drain re-subscribes the colleague to a calendar whose access entry is
    * gone — the dangling subscription this feature exists to prevent — and
@@ -117,7 +119,7 @@ public class CaldavPendingSubscriptionStorage {
    * @param containerUid the container uid
    */
   @Transactional
-  public void settled(long userIdentityId, long serverId, String containerUid) {
+  public void settledWhateverWasOwed(long userIdentityId, long serverId, String containerUid) {
     pendingSubscriptionDAO.findByUserIdentityIdAndServerIdAndContainerUid(userIdentityId, serverId, containerUid)
                           .ifPresent(entity -> pendingSubscriptionDAO.deleteById(entity.getId()));
   }
@@ -141,7 +143,7 @@ public class CaldavPendingSubscriptionStorage {
    * <p>
    * The guard belongs here and <b>only</b> here: at the grant and the revoke
    * it could only ever refuse a delete that was right, which is why
-   * {@link #settled(long, long, String)} exists beside it.
+   * {@link #settledWhateverWasOwed(long, long, String)} exists beside it.
    *
    * @param userIdentityId the sharee
    * @param serverId the server key
@@ -150,7 +152,7 @@ public class CaldavPendingSubscriptionStorage {
    *          left alone
    */
   @Transactional
-  public void settled(long userIdentityId, long serverId, String containerUid, PendingSubscriptionKind kind) {
+  public void settledIfStillAsking(long userIdentityId, long serverId, String containerUid, PendingSubscriptionKind kind) {
     pendingSubscriptionDAO.findByUserIdentityIdAndServerIdAndContainerUid(userIdentityId, serverId, containerUid)
                           .ifPresent(entity -> {
                             if (entity.getKind() == kind) {

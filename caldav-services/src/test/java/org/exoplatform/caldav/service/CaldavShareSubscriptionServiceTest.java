@@ -186,7 +186,7 @@ public class CaldavShareSubscriptionServiceTest {
     verify(calDavClient, never()).endpoint(anyLong(), eq("alice"));
     verify(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
     verify(edits).subscribe(CONTAINER);
-    verify(caldavPendingSubscriptionStorage).settled(BOB, SERVER, CONTAINER);
+    verify(caldavPendingSubscriptionStorage).settledWhateverWasOwed(BOB, SERVER, CONTAINER);
     verify(caldavPendingSubscriptionStorage, never()).owe(anyLong(), anyLong(), anyString(), any());
     assertTrue(infoLines().stream().anyMatch(line -> line.contains("subscribed to") && line.contains("bob")
         && line.contains("alice") && line.contains(CONTAINER) && line.contains("server 1")), infoLines().toString());
@@ -204,7 +204,7 @@ public class CaldavShareSubscriptionServiceTest {
 
     verify(edits).unsubscribe(CONTAINER);
     verify(edits, never()).subscribe(anyString());
-    verify(caldavPendingSubscriptionStorage).settled(BOB, 0L, CONTAINER);
+    verify(caldavPendingSubscriptionStorage).settledWhateverWasOwed(BOB, 0L, CONTAINER);
     assertTrue(infoLines().stream().anyMatch(line -> line.contains("unsubscribed from")));
   }
 
@@ -245,8 +245,8 @@ public class CaldavShareSubscriptionServiceTest {
                                                                                          SERVER,
                                                                                          CONTAINER,
                                                                                          PendingSubscriptionKind.SUBSCRIBE);
-    verify(caldavPendingSubscriptionStorage, never()).settled(anyLong(), anyLong(), anyString());
-    verify(caldavPendingSubscriptionStorage, never()).settled(anyLong(), anyLong(), anyString(), any());
+    verify(caldavPendingSubscriptionStorage, never()).settledWhateverWasOwed(anyLong(), anyLong(), anyString());
+    verify(caldavPendingSubscriptionStorage, never()).settledIfStillAsking(anyLong(), anyLong(), anyString(), any());
   }
 
   /**
@@ -275,9 +275,9 @@ public class CaldavShareSubscriptionServiceTest {
     assertDoesNotThrow(() -> service.subscribeSharee(share()));
 
     org.mockito.Mockito.doNothing().when(edits).subscribe(CONTAINER);
-    doThrow(new IllegalStateException("db")).when(caldavPendingSubscriptionStorage).settled(anyLong(), anyLong(), anyString());
+    doThrow(new IllegalStateException("db")).when(caldavPendingSubscriptionStorage).settledWhateverWasOwed(anyLong(), anyLong(), anyString());
     assertDoesNotThrow(() -> service.subscribeSharee(share()));
-    verify(caldavPendingSubscriptionStorage).settled(BOB, SERVER, CONTAINER);
+    verify(caldavPendingSubscriptionStorage).settledWhateverWasOwed(BOB, SERVER, CONTAINER);
   }
 
   // ---------------------------------------------------------------- the drain
@@ -307,7 +307,7 @@ public class CaldavShareSubscriptionServiceTest {
 
     assertEquals(1, settled);
     verify(blueMindSubscriptionClient, times(1)).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
-    verify(caldavPendingSubscriptionStorage).settled(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
+    verify(caldavPendingSubscriptionStorage).settledIfStillAsking(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
     verify(caldavPendingSubscriptionStorage).abandoned(2L, 5);
     verify(caldavPendingSubscriptionStorage).abandoned(3L, 5);
     verify(caldavPendingSubscriptionStorage).refused(4L);
@@ -336,7 +336,7 @@ public class CaldavShareSubscriptionServiceTest {
     verify(caldavPendingSubscriptionStorage).refused(1L);
     verify(caldavPendingSubscriptionStorage).refused(2L);
     verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), anyInt());
-    verify(caldavPendingSubscriptionStorage).settled(CAROL, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
+    verify(caldavPendingSubscriptionStorage).settledIfStillAsking(CAROL, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
     verify(blueMindSubscriptionClient).asSharee(eq(carolEndpoint), eq(WRITER_UID), any());
 
     doThrow(new CalDavUnreachableException("down")).when(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
@@ -380,7 +380,7 @@ public class CaldavShareSubscriptionServiceTest {
 
     verify(blueMindSubscriptionClient, times(2)).asSharee(any(), anyString(), any());
     verify(caldavPendingSubscriptionStorage, never()).refused(anyLong());
-    verify(caldavPendingSubscriptionStorage, never()).settled(anyLong(), anyLong(), anyString(), any());
+    verify(caldavPendingSubscriptionStorage, never()).settledIfStillAsking(anyLong(), anyLong(), anyString(), any());
   }
 
   /**
@@ -401,7 +401,7 @@ public class CaldavShareSubscriptionServiceTest {
     verify(edits, never()).subscribe(OTHER);
     verify(caldavPendingSubscriptionStorage, never()).refused(2L);
     verify(caldavPendingSubscriptionStorage, never()).abandoned(eq(2L), anyInt());
-    verify(caldavPendingSubscriptionStorage, never()).settled(eq(BOB), anyLong(), eq(OTHER), any());
+    verify(caldavPendingSubscriptionStorage, never()).settledIfStillAsking(eq(BOB), anyLong(), eq(OTHER), any());
   }
 
   /**
@@ -460,7 +460,7 @@ public class CaldavShareSubscriptionServiceTest {
     verify(caldavPendingSubscriptionStorage).refused(1L);
     verify(caldavPendingSubscriptionStorage).refused(2L);
     verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), anyInt());
-    verify(caldavPendingSubscriptionStorage, never()).settled(anyLong(), anyLong(), anyString(), any());
+    verify(caldavPendingSubscriptionStorage, never()).settledIfStillAsking(anyLong(), anyLong(), anyString(), any());
   }
 
   /**
@@ -480,7 +480,7 @@ public class CaldavShareSubscriptionServiceTest {
 
     verify(caldavPendingSubscriptionStorage).refused(1L);
     verify(edits).subscribe(OTHER);
-    verify(caldavPendingSubscriptionStorage).settled(BOB, SERVER, OTHER, PendingSubscriptionKind.SUBSCRIBE);
+    verify(caldavPendingSubscriptionStorage).settledIfStillAsking(BOB, SERVER, OTHER, PendingSubscriptionKind.SUBSCRIBE);
     verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), anyInt());
   }
 
@@ -509,8 +509,8 @@ public class CaldavShareSubscriptionServiceTest {
     service.subscribeSharee(share());
     service.unsubscribeSharee(share());
 
-    verify(caldavPendingSubscriptionStorage, times(2)).settled(BOB, SERVER, CONTAINER);
-    verify(caldavPendingSubscriptionStorage, never()).settled(anyLong(), anyLong(), anyString(), any());
+    verify(caldavPendingSubscriptionStorage, times(2)).settledWhateverWasOwed(BOB, SERVER, CONTAINER);
+    verify(caldavPendingSubscriptionStorage, never()).settledIfStillAsking(anyLong(), anyLong(), anyString(), any());
 
     when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L,
                                                                                      BOB,
@@ -520,8 +520,8 @@ public class CaldavShareSubscriptionServiceTest {
 
     service.retryOwed(50);
 
-    verify(caldavPendingSubscriptionStorage).settled(BOB, SERVER, OTHER, PendingSubscriptionKind.UNSUBSCRIBE);
-    verify(caldavPendingSubscriptionStorage, never()).settled(BOB, SERVER, OTHER);
+    verify(caldavPendingSubscriptionStorage).settledIfStillAsking(BOB, SERVER, OTHER, PendingSubscriptionKind.UNSUBSCRIBE);
+    verify(caldavPendingSubscriptionStorage, never()).settledWhateverWasOwed(BOB, SERVER, OTHER);
   }
 
   /**

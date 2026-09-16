@@ -99,12 +99,13 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * BlueMind afterwards is not re-subscribed: eXo acts at grant and at revoke,
  * never on the listing. Hiding the calendar in eXo ({@code HIDDEN_SHARE})
  * covers "subscribed for me, I do not want it shown" exactly as for a hand
- * subscription. The one bounded edge is a row drained after they unsubscribed
- * by hand — the drain re-subscribes them — which lasts at most
- * {@code maxAttempts} sweep periods after the grant.
+ * subscription. One edge here is bounded: a row drained after they
+ * unsubscribed by hand re-subscribes them, for at most {@code maxAttempts}
+ * sweep periods after the grant. The seventh limit below is the other one,
+ * and it is not bounded at all.
  *
  * <p>
- * <b>Six limits, named because each is a decision somebody may want to
+ * <b>Seven limits, named because each is a decision somebody may want to
  * revisit rather than an oversight.</b>
  * <ul>
  * <li><b>Only a revoke made from eXo unsubscribes.</b> An owner who removes
@@ -156,10 +157,45 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * verdict on the <em>old</em> subscribe is written against the <em>new</em>
  * removal — a spent budget retires a removal nobody attempted, a counted
  * refusal costs it one of its five. It needs a genuinely concurrent revoke,
- * and it cannot leave a dangling subscription (those verdicts mean the
- * subscribe did not land either), so it is recorded rather than fixed:
- * making both writes match on KIND as well is an Architect's call on an N1
- * surface.</li>
+ * and it cannot leave a dangling subscription — the two verdicts it concerns
+ * are RETRY and FINAL, which by definition mean the change did not land. The
+ * LANDED case of the same window is a different animal and is the seventh
+ * limit, below. So this one is recorded rather than fixed: making both writes
+ * match on KIND as well is an Architect's call on an N1 surface.</li>
+ * <li><b>A revoke landing inside a drain's open session leaves a dangling
+ * subscription that nothing records and nothing retries: documented, not
+ * closed.</b> Unlike the hand-unsubscribe edge above, this one is not bounded.
+ * The drain and the share service share no lock and no lease — the stripe lock
+ * is taken inside {@code CaldavCalendarShareService} only, and the drain reads
+ * its rows, opens the colleague's session and posts without it. So: a grant
+ * whose subscribe failed leaves a pending SUBSCRIBE; a drain opens the session
+ * and is about to post it; the owner revokes from eXo in that window; the
+ * revoke's {@code _unsubscribe} lands and clears the row, as it must; the
+ * drain's {@code _subscribe} then lands too, because BlueMind performs no
+ * access check on a subscribe; and the drain's own settle finds no row and
+ * does nothing. Two success lines in the log, and
+ * {@code CaldavSyncService.forgetRevokedShares} cannot heal it either, because
+ * the dangling subscription is exactly what keeps the href in their listing.
+ * <p>
+ * <b>What it costs, which is why the decision was to document it.</b> The
+ * window needs a revoke to land between the drain opening the colleague's
+ * session and its subscribe returning. What it leaves is one stale calendar in
+ * that colleague's listing — not lost data, and not access to anything they
+ * could not already see: a subscription only makes a calendar appear for them,
+ * and BlueMind still enforces its own ACL on the contents
+ * ({@code CalendarService} checks {@code Verb.Read} on the container for every
+ * read, subscribed or not), so the calendar is listed and answers nothing.
+ * <p>
+ * <b>What closing it would take.</b> A version or a claim column on
+ * {@code CALDAV_PENDING_SUBSCRIPTION}, so that a drain finding no row could
+ * tell "the owner revoked while I was in flight" from "a later grant settled
+ * it" — a distinction nothing in the table can make today, and the reason the
+ * obvious repair is wrong: having the drain re-record an UNSUBSCRIBE whenever
+ * it finds no row would, in that second case, unsubscribe a calendar that is
+ * legitimately shared. That column is deliberately left to a follow-up rather
+ * than added to this branch. None of it is about how settling is spelled: the
+ * same interleaving reaches the same end state whichever of the two settle
+ * methods the drain uses.</li>
  * </ul>
  */
 @Service
@@ -301,14 +337,15 @@ public class CaldavShareSubscriptionService {
                  share.containerUid(),
                  share.ownerUsername(),
                  share.serverId());
-        // Unconditional, and the kind-guarded overload is deliberately NOT used
+        // Unconditional, and settledIfStillAsking is deliberately NOT used
         // here: this instruction was decided in this call, inside the share's
-        // stripe lock and after the read-back, and nothing else writes this
-        // table - so whatever row stands for the container is older than what
-        // just landed. Guarding it would leave a pending SUBSCRIBE alive past a
+        // stripe lock and after the read-back, and owe() - the only thing that
+        // records an instruction at all - has exactly this one call site. So
+        // whatever row stands for the container is older than what just
+        // landed. Guarding it would leave a pending SUBSCRIBE alive past a
         // revoke, and the next drain would re-subscribe the colleague to a
         // calendar whose access entry is gone.
-        caldavPendingSubscriptionStorage.settled(share.shareeIdentityId(), share.serverId(), share.containerUid());
+        caldavPendingSubscriptionStorage.settledWhateverWasOwed(share.shareeIdentityId(), share.serverId(), share.containerUid());
         return;
       }
       LOG.warn("User {} could not be {} calendar container {} on server {} (shared by {}); recorded, the sweep retries it: {}",
@@ -498,7 +535,10 @@ public class CaldavShareSubscriptionService {
   private void settle(PendingSubscription row, Attempt attempt) {
     switch (attempt.outcome()) {
     case LANDED -> {
-      caldavPendingSubscriptionStorage.settled(row.getUserIdentityId(), row.getServerId(), row.getContainerUid(), row.getKind());
+      caldavPendingSubscriptionStorage.settledIfStillAsking(row.getUserIdentityId(),
+                                                          row.getServerId(),
+                                                          row.getContainerUid(),
+                                                          row.getKind());
       LOG.info("Owed BlueMind {} landed: user {} and calendar container {} on server {}",
                row.getKind(),
                row.getUserIdentityId(),
