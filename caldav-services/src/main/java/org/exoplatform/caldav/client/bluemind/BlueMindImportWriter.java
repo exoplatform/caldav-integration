@@ -105,7 +105,12 @@ import org.exoplatform.services.log.Log;
  * response is <i>not</i> taken as absence: a failed lookup answers the same
  * empty document ({@code :83-86}), so absence is only ever the listing's
  * word — which is why {@link #putObject}, whose accepting answer <i>is</i>
- * absence, reads the listing directly and asks nothing else.</li>
+ * absence, reads the listing directly and asks nothing else. Both multiget
+ * shapes were observed on the rig on 2026-09-16
+ * ({@code bluemind-report-multiget-one-href-getetag.captured.xml}: one
+ * response, {@code "Ym1kYXZfMzk4MDk2NjI5Nl8x"};
+ * {@code bluemind-report-multiget-missing-href.captured.xml}: an empty
+ * multistatus).</li>
  * <li><i>Which version does the listing publish for it?</i> — a
  * {@code Depth: 0} PROPFIND of {@code getetag} on the href
  * ({@code CalDavClient#readEtag}). BlueMind resolves it through the same
@@ -113,14 +118,22 @@ import org.exoplatform.services.log.Log;
  * {@code dr.getPath()} ({@code GetTag.java:47,56}, {@code SyncTokens.java:42}),
  * so the token equals the listing's iff the request path equals
  * {@code containerPath + uid + ".ics"} as {@code addEvents} builds it
- * ({@code DavStore.java:402}) — a hypothesis about spelling, not verified on
- * a server. This read cannot answer existence either: the router assumes an
+ * ({@code DavStore.java:402}) — a hypothesis about spelling, observed to
+ * hold on the rig on 2026-09-16 for one object of the main calendar
+ * ({@code bluemind-propfind-object-depth0-getetag.captured.xml} against
+ * {@code bluemind-propfind-collection-depth1-getetag.captured.xml}, the same
+ * {@code bmdav_3980966296_0}), and still verified live per collection below
+ * because one object on one server is an observation, not a proof. This
+ * read cannot answer existence either: the router assumes an
  * {@code .ics} node exists whenever its path is well formed
  * ({@code MethodRouter.java:162-175}, {@code DavStore.java:474-502}, the
  * {@code default} "assume yes"), {@code ResType.VSTUFF} mints the node from
  * the path with no lookup, and {@code Depth: 0} adds only that node
  * ({@code DavStore.java:355-357}); a missing object is answered 207 with a
- * token. So it is asked only once presence is established.</li>
+ * token — observed on the rig the same day on a probe href that did not
+ * exist ({@code bluemind-propfind-missing-object-depth0.captured.xml},
+ * {@code bmdav_3856992451_0}). So it is asked only once presence is
+ * established.</li>
  * </ul>
  * <b>Nothing here rests on the spelling hypothesis.</b> The first time the
  * {@code Depth: 0} read answers on a collection, its token is compared with
