@@ -71,6 +71,9 @@ public class CaldavConnectorServiceImplTest {
   @Mock
   private CaldavConnectionIdentityService caldavConnectionIdentityService;
 
+  @Mock
+  private CaldavShareObservationService  caldavShareObservationService;
+
   @InjectMocks
   private CaldavConnectorServiceImpl     caldavConnectorService;
 
@@ -557,6 +560,62 @@ public class CaldavConnectorServiceImplTest {
     InOrder inOrder = inOrder(caldavConnectorStorage, caldavConnectionIdentityService);
     inOrder.verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
     inOrder.verify(caldavConnectionIdentityService).forgetPrincipal(USER_IDENTITY_ID);
+  }
+
+  /**
+   * Disconnecting also forgets what this user's own calendar home listed of
+   * their colleagues' eXo calendars (EXO-90331).
+   *
+   * <p>
+   * The stale-mark case the whole design is written against, in its one shape
+   * that a listing can never correct: a home nobody reads any more goes on
+   * asserting shares that may have been revoked since, with nothing able to
+   * contradict it. Forgetting says "not seen" instead of "seen once", and the
+   * first pass after a reconnection restores whatever is still true.
+   */
+  @Test
+  public void disconnectingForgetsWhatThisHomeSawOfItsColleaguesCalendars() {
+    caldavConnectorService.setCaldavShareObservationService(caldavShareObservationService);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(settingsOnServer(7L));
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID, "john");
+
+    InOrder inOrder = inOrder(caldavConnectorStorage, caldavShareObservationService);
+    inOrder.verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+    inOrder.verify(caldavShareObservationService).forgetObservationsOf(USER_IDENTITY_ID);
+  }
+
+  /**
+   * Connecting forgets them too, before anything is asked of the server: a
+   * reconnection may be to another account entirely, and what the old one saw
+   * says nothing about the new one.
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void connectingForgetsWhatThePreviousAccountSawBeforeAskingTheServer() throws Exception {
+    caldavConnectorService.setCaldavSyncService(caldavSyncService);
+    caldavConnectorService.setCaldavShareObservationService(caldavShareObservationService);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    InOrder inOrder = inOrder(caldavConnectorStorage, caldavShareObservationService, caldavSyncService);
+    inOrder.verify(caldavConnectorStorage).createCaldavSetting(setting, USER_IDENTITY_ID);
+    inOrder.verify(caldavShareObservationService).forgetObservationsOf(USER_IDENTITY_ID);
+    inOrder.verify(caldavSyncService).establishDestinations(USER_IDENTITY_ID);
+  }
+
+  /**
+   * The share-observation engine handed in is the one used, and remembered.
+   */
+  @Test
+  public void theShareObservationEngineHandedInIsTheOneUsed() {
+    caldavConnectorService.setCaldavShareObservationService(caldavShareObservationService);
+
+    assertEquals(caldavShareObservationService, caldavConnectorService.getCaldavShareObservationService());
   }
 
   /**

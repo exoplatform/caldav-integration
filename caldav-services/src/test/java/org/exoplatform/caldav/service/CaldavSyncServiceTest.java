@@ -46,6 +46,7 @@ import java.time.Instant;
 import java.util.Date;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import java.util.concurrent.AbstractExecutorService;
@@ -180,6 +181,9 @@ public class CaldavSyncServiceTest {
 
   @Mock
   private CaldavSubscriptionRetirementService caldavSubscriptionRetirementService;
+
+  @Mock
+  private CaldavShareObservationService caldavShareObservationService;
 
   @Mock
   private CalDavEndpoint             endpoint;
@@ -1867,6 +1871,125 @@ public class CaldavSyncServiceTest {
     assertTrue(line.contains("minted by this deployment for another user"), line);
     assertTrue(line.contains("owned by " + ALICE), line);
     assertTrue(line.contains("read-only"), line);
+  }
+
+  // ------------------------------------ the owner's share mark, EXO-90331
+
+  /** Eric, the eXo user whose calendar CAL2 is. */
+  private static final long          ERIC = 41L;
+
+  /**
+   * The observation the owner's mark is made of. The sharee's own pass is the
+   * only place in the platform that learns "calendar CAL2 is visible to this
+   * user", because the grant lives on the server and eXo reads it back
+   * nowhere else — so what used to be one log line and a process-lifetime
+   * memory set is handed on to be persisted.
+   */
+  @Test
+  public void aColleaguesExoCalendarIsRecordedAgainstItsOwnerForTheOwnersMark() throws Exception {
+    givenServerCalendars(owned(CAL2_UNDER_OWN_HOME, "CAL2", PRINCIPAL, true, true));
+    givenNoKnownPairs();
+    String href = CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME);
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, href)).thenReturn(true);
+    when(caldavOutboundService.exportingUserOf(SERVER, href)).thenReturn(ERIC);
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavShareObservationService).observed(USER, SERVER, Map.of(CAL2_ANCHOR, ERIC));
+  }
+
+  /**
+   * <b>The removal.</b> A home that lists no colleague's calendar hands on an
+   * empty set, which is what takes away the mark of a share that has stopped
+   * existing. The reconciliation cannot be expressed per collection — a
+   * per-collection write could add a sighting and never take one away — so the
+   * empty listing has to reach the engine as a listing, not as silence.
+   */
+  @Test
+  public void aHomeThatListsNoColleaguesCalendarStillSaysSoSoThatAStaleMarkGoes() throws Exception {
+    givenServerCalendars(collection("/dav/calendars/john/private/", "Private"));
+    givenNoKnownPairs();
+    givenAgendaCreates("new-anchor");
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavShareObservationService).observed(USER, SERVER, Map.of());
+  }
+
+  /**
+   * <b>An absence of evidence is not evidence of absence.</b> A listing that
+   * failed says nothing about which shares still exist, and handing it on as an
+   * empty set would erase every mark the user's colleagues have — the whole
+   * deployment's marks, from one server's bad minute.
+   */
+  @Test
+  public void aListingThatFailedRecordsNothingAtAll() {
+    when(calDavClient.listCalendars(any(), eq(HOME))).thenThrow(new CalDavException("the server had a bad minute"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavShareObservationService, never()).observed(anyLong(), anyLong(), any());
+  }
+
+  /**
+   * A share the <em>server</em> names — a colleague's ordinary calendar, whose
+   * path carries no anchor eXo minted — is not recorded, and costs no lookup:
+   * there is no owner's row in this platform for a mark to land on, and asking
+   * whose calendar it is would be one database question per foreign collection
+   * per pass for an answer that is always "nobody's".
+   */
+  @Test
+  public void aShareWithNoExoCalendarBehindItIsNotRecorded() throws Exception {
+    givenServerCalendars(owned(ALICES, "Alice", ALICE, true, false));
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavShareObservationService).observed(USER, SERVER, Map.of());
+    verify(caldavOutboundService, never()).exportingUserOf(anyLong(), anyString());
+  }
+
+  /**
+   * An anchor the column cannot hold faithfully is not recorded at all, rather
+   * than cut down: a truncated anchor could equal another calendar's, and the
+   * mark would then land on the wrong owner's row.
+   *
+   * <p>
+   * The only shape that reaches the anchor test with a classification of
+   * COLLEAGUES_EXO_CALENDAR — a slug eXo's prefix but a suffix longer than the
+   * column, as a server that rewrites slugs can produce (EXO-89590).
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void anAnchorTheColumnCannotHoldIsNotRecordedRatherThanTruncated() throws Exception {
+    String oversized = HOME + "exo-cal-" + "a".repeat(251) + "/";
+    givenServerCalendars(owned(oversized, "CAL2", PRINCIPAL, true, true));
+    givenNoKnownPairs();
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, CaldavSyncStorage.canonicalHref(oversized))).thenReturn(true);
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavShareObservationService).observed(USER, SERVER, Map.of());
+    verify(caldavOutboundService, never()).exportingUserOf(anyLong(), anyString());
+  }
+
+  /**
+   * A colleague's eXo calendar whose pair names nobody any more — removed
+   * between the classification and this question — is not recorded rather than
+   * attributed to a user id of zero, which is somebody's identity somewhere.
+   */
+  @Test
+  public void aColleaguesCalendarWhosePairNamesNobodyIsNotRecorded() throws Exception {
+    givenServerCalendars(owned(CAL2_UNDER_OWN_HOME, "CAL2", PRINCIPAL, true, true));
+    givenNoKnownPairs();
+    String href = CaldavSyncStorage.canonicalHref(CAL2_UNDER_OWN_HOME);
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, href)).thenReturn(true);
+    when(caldavOutboundService.exportingUserOf(SERVER, href)).thenReturn(null);
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavShareObservationService).observed(USER, SERVER, Map.of());
   }
 
   /**

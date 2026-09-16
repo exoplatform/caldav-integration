@@ -24,6 +24,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.HashMap;
 import java.util.Map;
@@ -347,6 +348,9 @@ public class CaldavSyncService {
 
   @Autowired
   private CaldavSubscriptionRetirementService caldavSubscriptionRetirementService;
+
+  @Autowired
+  private CaldavShareObservationService caldavShareObservationService;
 
   /**
    * Synchronises the accounts that have gone longest without one.
@@ -1668,6 +1672,15 @@ public class CaldavSyncService {
     List<CalendarSync> known = forgetRevokedShares(userIdentityId,
                                                    caldavSyncStorage.getPairs(userIdentityId, serverId),
                                                    collections);
+    // The colleagues' eXo calendars this listing holds, gathered across the
+    // loop and handed on once at the end (EXO-90331). Once, because removing a
+    // share that has stopped being listed is only expressible against the
+    // whole set: a per-collection write could add a sighting but never take
+    // one away, and a mark on a calendar nobody can see any more is worse than
+    // no mark at all. Reached only past the listing failures above, which
+    // return before this point — an absence of evidence must never be handed
+    // on as evidence of absence.
+    Map<String, Long> colleaguesCalendars = new LinkedHashMap<>();
     for (CalendarCollection collection : collections) {
       if (isAlreadyOurs(collection, known)) {
         reviveIfMarkedGone(known, collection);
@@ -1695,14 +1708,72 @@ public class CaldavSyncService {
       }
       if (ownership.isShared()) {
         skipShare(userIdentityId, serverId, principal, collection, ownership);
+        noteColleaguesExoCalendar(userIdentityId, serverId, collection, ownership, colleaguesCalendars);
         continue;
       }
       materialise(userIdentityId, username, serverId, collection);
     }
+    caldavShareObservationService.observed(userIdentityId, serverId, colleaguesCalendars);
     // Handed on rather than listed a second time: the import needs each
     // collection's ctag to decide whether it has anything to read, and one
     // PROPFIND already carries them all.
     return collections;
+  }
+
+  /**
+   * Notes, for the owner's sake, that this user's home listed a colleague's
+   * eXo calendar (EXO-90331).
+   *
+   * <p>
+   * The one classification that names a calendar eXo itself holds:
+   * {@link CollectionOwnership#COLLEAGUES_EXO_CALENDAR} means the slug carries
+   * the anchor of a calendar this deployment exported for another of its
+   * users, so both ends of the fact — which calendar, and whose — are
+   * resolvable here without asking the server anything. The other shared
+   * kinds are deliberately not noted: {@link CollectionOwnership#SHARED} and
+   * the two subscriptions are somebody's calendar on the server with no eXo
+   * calendar behind it, so there is no owner's row for a mark to land on.
+   *
+   * <p>
+   * The owner is the user whose EXO pair stands behind the collection, which
+   * is the same question, asked the same two ways, that made the
+   * classification say COLLEAGUES_EXO_CALENDAR in the first place
+   * ({@link CaldavOutboundService#exportingUserOf}); a pair that vanished
+   * between the two answers null, and then nothing is noted rather than a
+   * sighting attributed to nobody. The user's own identity is never noted
+   * against them — a collection of theirs classifies as
+   * {@link CollectionOwnership#OWN_EXO_CALENDAR} and never reaches here — but
+   * the guard is explicit, because "shared with yourself" is the one count
+   * that would be wrong in a way nobody would question.
+   *
+   * @param userIdentityId identity of the user whose home listed it
+   * @param serverId the declared server registration
+   * @param collection the listed collection, already classified
+   * @param ownership what the classification said about it
+   * @param colleaguesCalendars the map being gathered for this listing,
+   *          calendar anchor to the owner's identity
+   */
+  private void noteColleaguesExoCalendar(long userIdentityId,
+                                         long serverId,
+                                         CalendarCollection collection,
+                                         CollectionOwnership ownership,
+                                         Map<String, Long> colleaguesCalendars) {
+    if (ownership != CollectionOwnership.COLLEAGUES_EXO_CALENDAR) {
+      return;
+    }
+    String href = CaldavSyncStorage.canonicalHref(collection.href());
+    String anchor = CaldavOutboundService.anchorOf(href);
+    if (!CaldavShareObservationService.isRecordableAnchor(anchor)) {
+      LOG.debug("Collection {} carries no anchor that can be recorded; whose calendar it is stays unsaid", collection.href());
+      return;
+    }
+    Long owner = caldavOutboundService.exportingUserOf(serverId, href);
+    if (owner == null || owner == userIdentityId) {
+      LOG.debug("Collection {} is a colleague's eXo calendar whose pair names no other user; nothing is noted for it",
+                collection.href());
+      return;
+    }
+    colleaguesCalendars.put(anchor, owner);
   }
 
   /**

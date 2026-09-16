@@ -524,6 +524,45 @@ export const getShareableCalendars = () => {
 let shareableCalendarsInFlight = null;
 
 /**
+ * How many colleagues each of the user's own calendars has been observed to be
+ * shared with (EXO-90331), keyed by agenda calendar id.
+ *
+ * Answered from what other eXo users' CalDAV homes listed on their own
+ * synchronisation passes, so it is a local read and costs the calendar server
+ * nothing — which is what makes it askable on every refresh of the agenda's
+ * left panel, where a per-calendar access-list read could not be.
+ *
+ * Two bounds travel with the number, and a caller must not read past them: a
+ * sharee who is not an eXo user with a connected CalDAV account is never
+ * observed, and a share granted or revoked since that colleague's last pass is
+ * not reflected for up to one synchronisation period. So it is a floor on a
+ * calendar's exposure; the Share drawer, which reads the server live, is what
+ * answers who.
+ *
+ * Never rejects, for the reason getShareableCalendars does not: a mark that
+ * cannot be computed is a mark that is not drawn.
+ *
+ * One request for every caller asking at the same moment, shared exactly as
+ * the shareable-calendars one is — agenda asks every registered connector on
+ * every refresh, and the add-on registers one per declared server.
+ *
+ * @returns {Promise<Object>} {calendarId: sharees}, empty when none is observed
+ */
+export const getObservedShares = () => {
+  if (!observedSharesInFlight) {
+    observedSharesInFlight = fetch(`${window.location.origin}/caldav/rest/calendars/observed-shares`, {credentials: 'include'})
+      .then(resp => (resp && resp.ok ? resp.json() : null))
+      .then(payload => (payload && payload.sharedWith && typeof payload.sharedWith === 'object' ? payload.sharedWith : {}))
+      .catch(() => ({}))
+      .finally(() => observedSharesInFlight = null);
+  }
+  return observedSharesInFlight;
+};
+
+/** The observed-shares request in flight, shared by concurrent callers. */
+let observedSharesInFlight = null;
+
+/**
  * Who one of the user's calendars is shared with, read from the server now.
  *
  * @param {Number} calendarId the agenda calendar id

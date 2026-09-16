@@ -56,6 +56,12 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
    */
   private CaldavConnectionIdentityService caldavConnectionIdentityService;
 
+  /**
+   * What each account's home listed of its colleagues' eXo calendars
+   * (EXO-90331), resolved lazily for the same reason as the four above.
+   */
+  private CaldavShareObservationService caldavShareObservationService;
+
   public CaldavConnectorServiceImpl(CaldavConnectorStorage caldavConnectorStorage) {
     String caldavUrl = System.getProperty("exo.agenda.caldav.connector.url");
     this.caldavConnectorStorage = caldavConnectorStorage;
@@ -72,6 +78,7 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
       // below records the new one from its own discovery, and if that
       // discovery fails the account is unknown rather than wrongly known.
       forgetServerIdentity(userIdentityId);
+      forgetShareObservations(userIdentityId);
       // Disconnecting froze the bindings of the calendars eXo pushed out, so
       // that reconnecting would find its collections again. Reconnecting is
       // what thaws them: until it does, the account is connected while the
@@ -300,6 +307,7 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     // reader already ignores: an identity counts only while its account is
     // connected (EXO-90243).
     forgetServerIdentity(userIdentityId);
+    forgetShareObservations(userIdentityId);
   }
 
   /**
@@ -319,6 +327,61 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     if (identityService != null) {
       identityService.forgetPrincipal(userIdentityId);
     }
+  }
+
+  /**
+   * Forgets what this user's calendar home listed of their colleagues' eXo
+   * calendars, when that engine can be resolved (EXO-90331).
+   *
+   * <p>
+   * A home that is no longer read confirms nothing. Left in place, its
+   * sightings would keep drawing a "shared" mark on colleagues' calendar rows
+   * with nothing able to contradict them ever again — the stale mark that is
+   * worse than no mark, since it tells its owner they are exposed when they
+   * may no longer be. Asked on both acts for the same reason the recorded
+   * identity is: a reconnection may be to another account entirely, and what
+   * the old one saw says nothing about the new one. The first pass after a
+   * connection records whatever is still true.
+   *
+   * <p>
+   * Nothing here may fail a connection or a disconnection; the service absorbs
+   * its own failures, and an engine the bridge cannot provide leaves rows the
+   * next pass reconciles, or that nobody's panel asks about while the account
+   * is gone.
+   *
+   * @param userIdentityId identity of the user
+   */
+  private void forgetShareObservations(long userIdentityId) {
+    CaldavShareObservationService observationService = getCaldavShareObservationService();
+    if (observationService != null) {
+      observationService.forgetObservationsOf(userIdentityId);
+    }
+  }
+
+  /**
+   * The share-observation engine, resolved through the bridge on first use.
+   *
+   * @return the engine, or null when the bridge cannot provide it
+   */
+  protected CaldavShareObservationService getCaldavShareObservationService() {
+    if (caldavShareObservationService == null) {
+      try {
+        caldavShareObservationService = ExoContainerContext.getService(CaldavShareObservationService.class);
+      } catch (Exception | LinkageError e) {
+        LOG.debug("CalDAV share-observation engine not resolvable; the recorded sightings are left as they are", e);
+      }
+    }
+    return caldavShareObservationService;
+  }
+
+  /**
+   * Hands the share-observation engine to tests, which have no container to
+   * resolve it from.
+   *
+   * @param caldavShareObservationService the engine to use
+   */
+  protected void setCaldavShareObservationService(CaldavShareObservationService caldavShareObservationService) {
+    this.caldavShareObservationService = caldavShareObservationService;
   }
 
   /**

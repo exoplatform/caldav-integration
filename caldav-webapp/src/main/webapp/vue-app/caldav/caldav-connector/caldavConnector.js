@@ -246,6 +246,55 @@ const caldavConnector = {
   },
 
   /**
+   * Which of the user's own calendars colleagues can see, and how many of them
+   * (EXO-90331) — the outbound direction of sharing, which nothing in agenda
+   * could show before: a calendar shared WITH the user carries its owner's
+   * avatar, while one the user shares themselves carried nothing at all.
+   *
+   * Declaring this is what lets agenda draw a share mark on the owner's own
+   * row; a connector without it marks none. Answered from what other eXo
+   * users' homes were observed to list, never by reading the server's access
+   * list per calendar — that read costs one remote round trip per shareable
+   * calendar and cannot sit on a panel refresh.
+   *
+   * `actionId` names the entry of `calendarActions()` that manages the share,
+   * so a click on the mark reaches the drawer through `runCalendarAction`
+   * rather than through agenda knowing this connector's action ids. It is
+   * given whether or not that entry is currently offered: agenda ignores a
+   * mark whose action it cannot find, which is what a calendar that can no
+   * longer be shared leaves behind.
+   *
+   * Two bounds ride with the count, and the tooltip agenda draws is worded for
+   * them: a sharee who is not an eXo user with a connected CalDAV account is
+   * never observed, and a share granted or revoked since that colleague's last
+   * pass shows up to one synchronisation period later. It is a floor on the
+   * exposure — the Share drawer answers who.
+   *
+   * Never rejects: a connector that cannot answer marks nothing. The catch
+   * below and the one in `getObservedShares` are a deliberate double net —
+   * either alone upholds the contract, so removing one is invisible to any
+   * single test, and both are kept because a caller of the service that is not
+   * this method would otherwise inherit a rejection nobody expects.
+   *
+   * @returns {Promise<Object>} {calendarId: {sharees, actionId}}, empty when no
+   *          calendar of the user's is seen by anyone
+   */
+  calendarShares() {
+    return caldavConnectorService.getObservedShares()
+      .then(counts => {
+        const shares = {};
+        Object.keys(counts || {}).forEach(calendarId => {
+          const sharees = Number(counts[calendarId]);
+          if (sharees > 0) {
+            shares[calendarId] = {sharees, actionId: 'caldavShareCalendar'};
+          }
+        });
+        return shares;
+      })
+      .catch(() => ({}));
+  },
+
+  /**
    * Runs an action `calendarActions` offered. "Share" opens the share drawer
    * of this add-on, which lives in a Vue app of its own: the request crosses
    * as a document event, the one signal that reaches it from agenda's app.

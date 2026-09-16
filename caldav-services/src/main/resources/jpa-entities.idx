@@ -3,3 +3,4 @@ org.exoplatform.caldav.entity.CaldavCalendarSyncEntity
 org.exoplatform.caldav.entity.CaldavObjectSyncEntity
 org.exoplatform.caldav.entity.CaldavPendingPushEntity
 org.exoplatform.caldav.entity.CaldavConnectionEntity
+org.exoplatform.caldav.entity.CaldavShareObservationEntity

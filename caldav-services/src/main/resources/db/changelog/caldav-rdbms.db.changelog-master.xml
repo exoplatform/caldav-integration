@@ -820,4 +820,105 @@
     </addColumn>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-49" dbms="oracle,postgresql,hsqldb">
+    <comment>
+      The share-observation sequence, on the vendors that have sequences -
+      created in the same breath as its table, per 1.0.0-0 and 1.0.0-44.
+    </comment>
+    <createSequence sequenceName="SEQ_CALDAV_SHARE_OBSERVATION_ID" startValue="1"/>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-50">
+    <comment>
+      Which of a user's calendars another eXo user's CalDAV home lists
+      (EXO-90331): one row per (sharee, server, calendar anchor), written by
+      the sharee's own synchronisation pass when it classifies a collection as
+      a colleague's eXo calendar, and reconciled against every listing.
+
+      A table rather than a counter column on CALDAV_CALENDAR_SYNC. The fact is
+      a pair - this calendar, that colleague - with cardinality N, observed by
+      a user who is not the owner of the pair row; a number on the pair row
+      would be written by another user's pass, could not be reconciled to a
+      listing, and could not be decremented when one of several sharees stops
+      seeing the calendar. Rows are the only shape that reconciles.
+
+      CALENDAR_SYNC_UID is agenda's calendar syncUid, the anchor the
+      collection's slug carries, and NOT an agenda calendar id: the pair table
+      records the anchor, and a calendar id is a number a restore may renumber.
+      NVARCHAR(250), the type every text column of this changelog uses; on
+      MySQL and MariaDB Liquibase emits it as written and the engine gives it
+      the national character set, utf8mb3 with utf8mb3_general_ci, whatever the
+      table's CHARSET=UTF8MB4 (see 1.0.0-45) - so the unique key below is
+      8 + 8 + 250x3 = 766 bytes, well inside the 3072-byte limit. An anchor is
+      a UUID agenda mints, so neither the length nor the case-insensitive
+      collation can make two anchors collide.
+
+      OBSERVED is when the sighting was last confirmed. Nothing reads it to
+      decide a count - a row exists only while the last listing held it - and
+      it is kept for whoever has to explain a mark from the table itself.
+
+      No backfill: every share is recorded by the sharee's first pass after the
+      upgrade, so a mark appears within one synchronisation period rather than
+      at once. That lag, and the sharees who are not eXo users with a connected
+      account and are therefore in no row at all, are the two bounds this
+      table's count carries - it is a floor on the exposure, never a ceiling.
+    </comment>
+    <createTable tableName="CALDAV_SHARE_OBSERVATION">
+      <column name="ID" type="BIGINT" autoIncrement="${autoIncrement}" startWith="1">
+        <constraints nullable="false" primaryKey="true" primaryKeyName="PK_CALDAV_SHARE_OBSERVATION"/>
+      </column>
+      <column name="OWNER_IDENTITY_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SHAREE_IDENTITY_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="SERVER_ID" type="BIGINT">
+        <constraints nullable="false"/>
+      </column>
+      <column name="CALENDAR_SYNC_UID" type="NVARCHAR(250)">
+        <constraints nullable="false"/>
+      </column>
+      <column name="OBSERVED" type="TIMESTAMP">
+        <constraints nullable="false"/>
+      </column>
+    </createTable>
+    <modifySql dbms="mysql">
+      <append value=" ENGINE=INNODB CHARSET=UTF8MB4 COLLATE utf8mb4_0900_ai_ci"/>
+    </modifySql>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-51">
+    <comment>
+      One observation per sharee, server and calendar. This is what makes a
+      repeated pass idempotent: the reconciliation inserts only what the
+      listing added, and two nodes reconciling the same home at once meet this
+      index instead of writing the same sighting twice. Own changeset with no
+      modifySql, per 1.0.0-2. No rollback written: createIndex has an automatic
+      one.
+    </comment>
+    <createIndex tableName="CALDAV_SHARE_OBSERVATION" indexName="UQ_CALDAV_SHARE_OBSERVATION" unique="true">
+      <column name="SHAREE_IDENTITY_ID"/>
+      <column name="SERVER_ID"/>
+      <column name="CALENDAR_SYNC_UID"/>
+    </createIndex>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-52">
+    <comment>
+      The question the table exists for: how many colleagues see each of one
+      owner's calendars. Both columns are compared for equality and the result
+      is grouped by the third, which the index carries so the grouping reads no
+      table row - the column order serves that lookup and no direction needs
+      declaring, since no query sorts on this index. Not unique: an owner has
+      many calendars and each may have many sharees. Own changeset, no
+      modifySql, automatic rollback.
+    </comment>
+    <createIndex tableName="CALDAV_SHARE_OBSERVATION" indexName="IDX_CALDAV_SHARE_OBSERVATION_OWNER">
+      <column name="OWNER_IDENTITY_ID"/>
+      <column name="SERVER_ID"/>
+      <column name="CALENDAR_SYNC_UID"/>
+    </createIndex>
+  </changeSet>
+
 </databaseChangeLog>

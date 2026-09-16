@@ -51,6 +51,7 @@ import org.exoplatform.caldav.dao.CaldavCalendarSyncDAO;
 import org.exoplatform.caldav.dao.CaldavObjectSyncDAO;
 import org.exoplatform.caldav.entity.CaldavCalendarSyncEntity;
 import org.exoplatform.caldav.entity.CaldavConnectionEntity;
+import org.exoplatform.caldav.entity.CaldavShareObservationEntity;
 import org.exoplatform.caldav.entity.CaldavObjectSyncEntity;
 import org.exoplatform.caldav.entity.CaldavPendingPushEntity;
 import org.exoplatform.caldav.entity.CaldavServerEntity;
@@ -233,6 +234,7 @@ public class CaldavSyncStorageRawEntityManagerFactoryTest {
                                                                           .managedClass(CaldavObjectSyncEntity.class)
                                                                           .managedClass(CaldavPendingPushEntity.class)
                                                                           .managedClass(CaldavConnectionEntity.class)
+                                                                          .managedClass(CaldavShareObservationEntity.class)
                                                                           .property(JdbcSettings.JAKARTA_NON_JTA_DATASOURCE,
                                                                                     dataSource)
                                                                           .property("hibernate.hbm2ddl.auto", "none")
