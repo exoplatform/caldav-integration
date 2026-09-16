@@ -1,0 +1,43 @@
+// DERIVED, not captured (EXO-90277). The answer to
+// GET /api/users/{domainUid}/subscriptions/{subject}?type=calendar - the
+// listing dev/golden-capture/capture-bluemind-subscription.sh steps 2, 4 and
+// 10 record before and after a subscribe and an unsubscribe. From BlueMind's
+// source at master 1ef9ae23:
+// - parent/user/net.bluemind.user.api/src/net/bluemind/user/api/IUserSubscription.java:44-47
+//   listSubscriptions(subject, type) returns List<ContainerSubscriptionDescriptor>;
+// - parent/core/net.bluemind.core.container.api/src/net/bluemind/core/container/api/ContainerSubscriptionDescriptor.java
+//   fields of ContainerSubscriptionModel (containerUid, containerType, owner,
+//   offlineSync, automount, defaultContainer, name) plus ownerDisplayName and
+//   ownerDirEntryPath;
+// - parent/user/net.bluemind.user.service/src/net/bluemind/user/service/internal/UserSubscriptionService.java:79-110
+//   names are translated to the session's language and owners resolved
+//   through IDirectory.
+// Shown: eric's own default calendar and, after step 3, FRANCOIS's
+// exo-cal-... container shared read-only and subscribed with
+// offlineSync=true, automount=true. The add-on reads this listing nowhere;
+// the fixture documents the shape the captures are compared against.
+// Lines starting with "//" are removed by the test before parsing.
+[
+  {
+    "containerUid": "calendar:Default:6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17",
+    "containerType": "calendar",
+    "owner": "6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17",
+    "offlineSync": true,
+    "automount": true,
+    "defaultContainer": true,
+    "name": "eric MEYER",
+    "ownerDisplayName": "eric MEYER",
+    "ownerDirEntryPath": "bm.example.com/users/6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17"
+  },
+  {
+    "containerUid": "exo-cal-9f1c2d3e-4b5a-6c7d-8e9f-0a1b2c3d4e5f",
+    "containerType": "calendar",
+    "owner": "9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13",
+    "offlineSync": true,
+    "automount": true,
+    "defaultContainer": false,
+    "name": "Projet Alpha",
+    "ownerDisplayName": "FRANCOIS root",
+    "ownerDirEntryPath": "bm.example.com/users/9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13"
+  }
+]
