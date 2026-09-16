@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -37,6 +38,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
@@ -66,7 +68,13 @@ public class BlueMindImportWriterTest {
       + "END:VEVENT\r\nEND:VCALENDAR\r\n";
 
   /** The version the collection listing publishes for the object: raw, constant (GetTag.java:46-56). */
-  private static final String STORED_ETAG = "bmdav_851210693_0";
+  private static final String STORED_ETAG   = "bmdav_851210693_0";
+
+  /** The version the multiget REPORT publishes for the same object: quoted base64 (CalendarMultigetExecutor.java:123). */
+  private static final String MULTIGET_ETAG = "\"Ym1kYXZfODUxMjEwNjkzXzEyNw==\"";
+
+  /** A Depth:0 token hashed from another spelling of the path — the shape hypothesis failing. */
+  private static final String OTHER_TOKEN   = "bmdav_1130583920_0";
 
   private final BlueMindCalendarImportClient importClient = mock(BlueMindCalendarImportClient.class);
 
@@ -123,10 +131,12 @@ public class BlueMindImportWriterTest {
 
   /**
    * <b>Trap 4.</b> The import answers no ETag, so the version eXo records is
-   * read back from the collection's {@code Depth: 1} listing — the very
+   * read back in the collection's {@code Depth: 1} listing's shape — the very
    * channel the verification pass lists with and adopts from — verbatim, raw
    * token included; never from a {@code calendar-multiget} REPORT or a GET,
    * whose shapes the pass would overwrite on its next round (review F1).
+   * Here the single-object reads answer nothing conclusive, so both reads are
+   * the listing itself.
    */
   @Test
   void theVersionIsReadBackFromTheCollectionListingAfterTheImport() {
@@ -136,9 +146,226 @@ public class BlueMindImportWriterTest {
 
     assertEquals(201, result.status());
     assertEquals(STORED_ETAG, result.etag());
-    verify(calDavClient, org.mockito.Mockito.times(2)).listResourceEtags(endpoint, COLLECTION);
+    verify(calDavClient, times(2)).listResourceEtags(endpoint, COLLECTION);
+    // The create's own precondition is absence, the listing's word alone:
+    // the single-object channel is asked once, after the import, never
+    // before it.
+    verify(calDavClient, times(1)).multigetEtags(endpoint, COLLECTION, List.of(HREF));
     verify(calDavClient, never()).multiget(any(), anyString(), any());
     verify(calDavClient, never()).fetchObject(any(), anyString());
+  }
+
+  /**
+   * <b>Review F7, the settled path.</b> Once the {@code Depth: 0} read has
+   * agreed with the listing on this collection — one listing, paid on the
+   * first conclusive read — a conditional write on it is two single-object
+   * requests before and two after, and lists the collection never again.
+   */
+  @Test
+  void aWriteOnAnAgreedCollectionListsTheCollectionNoMore() {
+    givenStored();
+    givenPresent(STORED_ETAG);
+    when(importClient.deleteEvent(endpoint, CONTAINER, "evt-1")).thenReturn(204);
+
+    assertEquals(200, writer.updateObject(endpoint, HREF, ICS, STORED_ETAG).status());
+    verify(calDavClient, times(1)).listResourceEtags(endpoint, COLLECTION);
+
+    PutResult second = writer.updateObject(endpoint, HREF, ICS, STORED_ETAG);
+
+    assertEquals(200, second.status());
+    assertEquals(STORED_ETAG, second.etag());
+    verify(calDavClient, times(1)).listResourceEtags(endpoint, COLLECTION);
+    verify(calDavClient, times(4)).multigetEtags(endpoint, COLLECTION, List.of(HREF));
+    verify(calDavClient, times(4)).readEtag(endpoint, HREF);
+    assertEquals(204, writer.deleteObject(endpoint, HREF, STORED_ETAG));
+    verify(calDavClient, times(1)).listResourceEtags(endpoint, COLLECTION);
+  }
+
+  /**
+   * <b>Review F7, the recorded version.</b> The version a write answers is
+   * the listing's shape whatever the {@code Depth: 0} read says: on a
+   * collection where the two agreed it is the token both publish; on one
+   * where they differed, the listing's value is recorded and the
+   * single-object channel is not asked again on that collection.
+   */
+  @Test
+  void theRecordedVersionIsTheListingShapedTokenUnderEitherVerdict() {
+    givenStored();
+    givenPresent(OTHER_TOKEN);
+
+    assertEquals(STORED_ETAG, writer.overwriteObject(endpoint, HREF, ICS).etag(), "the listing's value, not the Depth:0 one");
+    assertEquals(STORED_ETAG, writer.overwriteObject(endpoint, HREF, ICS).etag());
+    verify(calDavClient, times(2)).listResourceEtags(endpoint, COLLECTION);
+    verify(calDavClient, times(1)).multigetEtags(endpoint, COLLECTION, List.of(HREF));
+    verify(calDavClient, times(1)).readEtag(endpoint, HREF);
+    verify(calDavClient, never()).multiget(any(), anyString(), any());
+  }
+
+  /**
+   * <b>Review F7, every inconclusive shape.</b> No presence from the
+   * multiget, no {@code getetag} at {@code Depth: 0}, a blank one, a server
+   * error on either read: each falls back to the listing and the write goes
+   * on with the listing's answer.
+   */
+  @Test
+  void eachInconclusiveSingleObjectAnswerFallsBackToTheListing() {
+    givenStored();
+
+    when(calDavClient.multigetEtags(endpoint, COLLECTION, List.of(HREF))).thenReturn(Map.of());
+    when(calDavClient.readEtag(endpoint, HREF)).thenReturn(STORED_ETAG);
+    assertEquals(200, writer.updateObject(endpoint, HREF, ICS, STORED_ETAG).status());
+    verify(calDavClient, never()).readEtag(endpoint, HREF);
+    verify(calDavClient, times(2)).listResourceEtags(endpoint, COLLECTION);
+
+    when(calDavClient.multigetEtags(endpoint, COLLECTION, List.of(HREF))).thenReturn(Map.of(HREF, MULTIGET_ETAG));
+    when(calDavClient.readEtag(endpoint, HREF)).thenReturn(null);
+    assertEquals(200, writer.updateObject(endpoint, HREF, ICS, STORED_ETAG).status());
+    verify(calDavClient, times(4)).listResourceEtags(endpoint, COLLECTION);
+
+    when(calDavClient.readEtag(endpoint, HREF)).thenReturn(" ");
+    assertEquals(200, writer.updateObject(endpoint, HREF, ICS, STORED_ETAG).status());
+    verify(calDavClient, times(6)).listResourceEtags(endpoint, COLLECTION);
+
+    when(calDavClient.readEtag(endpoint, HREF)).thenThrow(new CalDavException("The calendar server answered 500 for PROPFIND"));
+    assertEquals(200, writer.updateObject(endpoint, HREF, ICS, STORED_ETAG).status());
+    verify(calDavClient, times(8)).listResourceEtags(endpoint, COLLECTION);
+
+    when(calDavClient.multigetEtags(endpoint, COLLECTION, List.of(HREF))).thenThrow(new CalDavException("The calendar server answered 500 for REPORT"));
+    assertEquals(200, writer.updateObject(endpoint, HREF, ICS, STORED_ETAG).status());
+    verify(calDavClient, times(10)).listResourceEtags(endpoint, COLLECTION);
+  }
+
+  /**
+   * <b>Review F7, round-3 finding 1.</b> Presence counts only under the exact
+   * spelling eXo sent: the server's response href is its own construction of
+   * the object's path, the one its listing hashes from, so an object answered
+   * under another spelling (a leaf eXo percent-encodes and the server does
+   * not) would hash apart at {@code Depth: 0} — the listing is read instead
+   * and the {@code Depth: 0} read is not asked, on an agreed collection too.
+   */
+  @Test
+  void presenceUnderAnotherSpellingOfTheHrefIsNotPresence() {
+    givenStored();
+    givenPresent(STORED_ETAG);
+    writer.updateObject(endpoint, HREF, ICS, STORED_ETAG);
+    verify(calDavClient, times(1)).listResourceEtags(endpoint, COLLECTION);
+
+    String encoded = COLLECTION + "evt%201.ics";
+    String decoded = COLLECTION + "evt 1.ics";
+    when(calDavClient.multigetEtags(endpoint, COLLECTION, List.of(encoded))).thenReturn(Map.of(decoded, MULTIGET_ETAG));
+    when(calDavClient.readEtag(endpoint, encoded)).thenReturn("bmdav_777_0");
+    when(calDavClient.listResourceEtags(endpoint, COLLECTION)).thenReturn(Map.of(decoded, "bmdav_888_0"));
+    when(importClient.importIcs(any(), anyString(), anyString())).thenReturn(new ImportReport(List.of("evt 1"), 1));
+
+    PutResult result = writer.updateObject(endpoint, encoded, ICS.replace("UID:evt-1", "UID:evt 1"), "bmdav_888_0");
+
+    assertEquals(200, result.status());
+    assertEquals("bmdav_888_0", result.etag(), "the listing's value, the Depth:0 read never asked");
+    verify(calDavClient, never()).readEtag(endpoint, encoded);
+    verify(calDavClient, times(3)).listResourceEtags(endpoint, COLLECTION);
+  }
+
+  /**
+   * A refused credential is not an inconclusive answer: it is thrown, never
+   * fallen back from, because the listing would meet the same refusal.
+   */
+  @Test
+  void aCredentialRefusalOnTheSingleObjectReadIsThrownNotFallenBackFrom() {
+    givenStored();
+    when(calDavClient.multigetEtags(endpoint, COLLECTION, List.of(HREF))).thenThrow(new CalDavAuthenticationException("refused"));
+
+    assertThrows(CalDavAuthenticationException.class, () -> writer.updateObject(endpoint, HREF, ICS, STORED_ETAG));
+
+    verify(calDavClient, never()).listResourceEtags(endpoint, COLLECTION);
+    verify(importClient, never()).importIcs(any(), anyString(), anyString());
+  }
+
+  /**
+   * <b>Review F7, a missing object under both hypotheses.</b> Whether a
+   * {@code Depth: 0} on a missing href answers 404 (no version) or a node
+   * minted from the path (a version for nothing — BlueMind,
+   * {@code DavStore.java:474-502}), the object is absent: the create goes
+   * through, the update is 412 with no version, the conditional removal is
+   * 404 — and the {@code Depth: 0} read is never even asked, because
+   * presence was not affirmed first.
+   */
+  @Test
+  void aMissingObjectIsAbsentWhetherDepthZeroAnswers404OrAPathMintedNode() {
+    for (String depthZero : new String[] { null, OTHER_TOKEN }) {
+      writer = new BlueMindImportWriter(importClient, calDavClient);
+      givenNothingStored();
+      when(calDavClient.multigetEtags(endpoint, COLLECTION, List.of(HREF))).thenReturn(Map.of());
+      when(calDavClient.readEtag(endpoint, HREF)).thenReturn(depthZero);
+
+      PutResult update = writer.updateObject(endpoint, HREF, ICS, STORED_ETAG);
+      assertTrue(update.preconditionFailed());
+      assertNull(update.etag());
+      assertEquals(404, writer.deleteObject(endpoint, HREF, STORED_ETAG));
+
+      givenNothingStoredThenStored();
+      PutResult created = writer.putObject(endpoint, HREF, ICS);
+      assertEquals(201, created.status());
+      assertEquals(STORED_ETAG, created.etag());
+    }
+    verify(calDavClient, never()).readEtag(endpoint, HREF);
+  }
+
+  /**
+   * <b>Review F7, no verdict on a listing that lacks the object.</b> The
+   * multiget affirming an object the listing does not carry — a race, or a
+   * listing that failed on the server — decides nothing about the two
+   * channels' agreement: the listing's answer stands for that call, and the
+   * next call on the collection is still allowed to settle the verdict.
+   */
+  @Test
+  void aListingThatLacksTheObjectRecordsNoVerdict() {
+    givenNothingStored();
+    givenPresent(STORED_ETAG);
+
+    PutResult gone = writer.updateObject(endpoint, HREF, ICS, STORED_ETAG);
+    assertTrue(gone.preconditionFailed());
+    assertNull(gone.etag());
+
+    givenStored();
+    assertEquals(200, writer.updateObject(endpoint, HREF, ICS, STORED_ETAG).status());
+    assertEquals(200, writer.updateObject(endpoint, HREF, ICS, STORED_ETAG).status());
+    verify(calDavClient, times(2)).listResourceEtags(endpoint, COLLECTION);
+    verify(calDavClient, times(5)).multigetEtags(endpoint, COLLECTION, List.of(HREF));
+  }
+
+  /**
+   * <b>Review F7, a refusal is the listing's word.</b> On an agreed
+   * collection, a {@code Depth: 0} version that differs from the one the
+   * caller conditions on does not refuse by itself: the listing is read, and
+   * it decides — a 412 carrying the listing's value when it disagrees too,
+   * an accepted write when it agrees after all; and a listing that
+   * contradicts the token revokes the collection's verdict, so nothing of
+   * the contradicted shape is ever recorded.
+   */
+  @Test
+  void aRefusalIsAlwaysConfirmedAgainstTheListing() {
+    givenStored();
+    givenPresent(STORED_ETAG);
+    writer.updateObject(endpoint, HREF, ICS, STORED_ETAG);
+    verify(calDavClient, times(1)).listResourceEtags(endpoint, COLLECTION);
+
+    PutResult refused = writer.updateObject(endpoint, HREF, ICS, "\"older\"");
+    assertTrue(refused.preconditionFailed());
+    assertEquals(STORED_ETAG, refused.etag());
+    verify(calDavClient, times(2)).listResourceEtags(endpoint, COLLECTION);
+
+    when(calDavClient.readEtag(endpoint, HREF)).thenReturn(OTHER_TOKEN);
+    PutResult accepted = writer.updateObject(endpoint, HREF, ICS, STORED_ETAG);
+    assertEquals(200, accepted.status());
+    assertEquals(STORED_ETAG, accepted.etag(), "the version recorded after the write is the listing's, not the contradicted token");
+    // The listing contradicted the token, so the verdict is revoked: the
+    // write-back and the next write read the listing again, and the
+    // single-object channel is left alone on this collection.
+    verify(calDavClient, times(4)).listResourceEtags(endpoint, COLLECTION);
+    assertEquals(200, writer.updateObject(endpoint, HREF, ICS, STORED_ETAG).status());
+    verify(calDavClient, times(6)).listResourceEtags(endpoint, COLLECTION);
+    verify(calDavClient, times(4)).multigetEtags(endpoint, COLLECTION, List.of(HREF));
+    verify(importClient, times(3)).importIcs(any(), anyString(), anyString());
   }
 
   /**
@@ -281,6 +508,18 @@ public class BlueMindImportWriterTest {
    */
   private void givenStored() {
     when(calDavClient.listResourceEtags(endpoint, COLLECTION)).thenReturn(listingWith(HREF));
+  }
+
+  /**
+   * The single-object channel affirms the object: the one-href multiget
+   * answers it under the REPORT channel's version, and the {@code Depth: 0}
+   * read answers the given token.
+   *
+   * @param depthZeroToken what the {@code Depth: 0} PROPFIND answers
+   */
+  private void givenPresent(String depthZeroToken) {
+    when(calDavClient.multigetEtags(endpoint, COLLECTION, List.of(HREF))).thenReturn(Map.of(HREF, MULTIGET_ETAG));
+    when(calDavClient.readEtag(endpoint, HREF)).thenReturn(depthZeroToken);
   }
 
   /**
