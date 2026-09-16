@@ -323,7 +323,10 @@ public interface CalDavClient {
    *         null; an href the server did not answer is simply absent — which
    *         on BlueMind is also what a failed lookup answers
    *         ({@code CalendarMultigetExecutor.java:83-86}), so absence here
-   *         is a reason to ask the listing, never a fact on its own
+   *         is a reason to ask the listing, never a fact on its own. Both
+   *         shapes captured on the rig, 2026-09-16
+   *         ({@code bluemind-report-multiget-one-href-getetag.captured.xml},
+   *         {@code bluemind-report-multiget-missing-href.captured.xml})
    * @throws CalDavAuthenticationException when the credentials are refused
    * @throws CalDavException when the server cannot be reached or errors
    */
@@ -344,8 +347,10 @@ public interface CalDavClient {
    * ({@code MethodRouter.java:162-175}, {@code DavStore.java:474-502}: the
    * {@code default} branch "assume yes") and mints a token from the path
    * ({@code GetTag.java:46-56}), so a missing object is answered 207 with a
-   * version there, and 404 only on a server that checks. A caller that needs
-   * existence establishes it elsewhere first.
+   * version there — captured on the rig on 2026-09-16
+   * ({@code bluemind-propfind-missing-object-depth0.captured.xml}) — and 404
+   * only on a server that checks. A caller that needs existence establishes
+   * it elsewhere first.
    *
    * @param endpoint the declared server
    * @param href the object's server-absolute path
