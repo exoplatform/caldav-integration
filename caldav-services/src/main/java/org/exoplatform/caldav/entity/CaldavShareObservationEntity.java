@@ -69,11 +69,19 @@ import lombok.NoArgsConstructor;
  * table yet: the mark lags by up to one synchronisation period (five minutes
  * by default), which is why it is drawn as a state and never as a
  * confirmation that a grant succeeded;</li>
- * <li>a colleague's calendar that a pass materialised into their eXo before
- * EXO-90234 taught the sweep to skip it is bound as an ordinary calendar of
- * theirs, not seen as a share, and so is in no row. Those bindings are the
- * migration {@code CaldavSyncService#skipShare} records as left to a human;
- * until one is cleaned up its owner sees no mark for that sharee.</li>
+ * <li>a colleague's calendar already bound as an ordinary calendar of the
+ * sharee's is not seen as a share, so it is in no row. Two things leave one
+ * bound that way, and neither is reachable by the sweep as it stands: a pass
+ * from before the outbound prefix was skipped at all (the first inbound sync,
+ * EXO-89530, whose {@code isAlreadyOurs} asked only this user's own pairs and
+ * so materialised a colleague's {@code exo-cal-} collection on a shared
+ * account), and a collection whose slug a server rewrote until it carries no
+ * anchor eXo minted (EXO-89590) — the second being a permanent limit of
+ * addressing a calendar by the anchor in its slug, not a migration. Adopting
+ * either here would count a calendar the sharee holds a writable local copy
+ * of, which is a different fact from the one this table records; cleaning
+ * them up is the migration {@code CaldavSyncService#skipShare} leaves to a
+ * human.</li>
  * </ul>
  * The count this table answers is therefore a floor on the exposure, never a
  * ceiling, and the Share drawer — which reads the server live — stays the

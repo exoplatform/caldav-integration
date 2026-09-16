@@ -1736,16 +1736,9 @@ public class CaldavSyncService {
    * calendar behind it, so there is no owner's row for a mark to land on.
    *
    * <p>
-   * The owner is the user whose EXO pair stands behind the collection, which
-   * is the same question, asked the same two ways, that made the
-   * classification say COLLEAGUES_EXO_CALENDAR in the first place
-   * ({@link CaldavOutboundService#exportingUserOf}); a pair that vanished
-   * between the two answers null, and then nothing is noted rather than a
-   * sighting attributed to nobody. The user's own identity is never noted
-   * against them — a collection of theirs classifies as
-   * {@link CollectionOwnership#OWN_EXO_CALENDAR} and never reaches here — but
-   * the guard is explicit, because "shared with yourself" is the one count
-   * that would be wrong in a way nobody would question.
+   * Which calendar the collection stands for, and whose it is, is
+   * {@link #noteSighting}'s — kept in one place because the hidden-share
+   * branch below resolves it the same way and the two must not drift.
    *
    * @param userIdentityId identity of the user whose home listed it
    * @param serverId the declared server registration
@@ -1788,13 +1781,15 @@ public class CaldavSyncService {
    * {@link #isAlreadyOurs} binds a calendar the user genuinely holds in eXo —
    * their own, or one an earlier pass materialised — and a bound calendar is
    * not a sighting of somebody else's. <b>The exception, deliberately left
-   * uncovered:</b> a colleague's calendar a pass materialised before
-   * EXO-90234 taught the sweep to skip it is bound as an ordinary REMOTE pair
-   * and is not noted, so its owner sees no mark for that sharee. Those
-   * bindings are the migration question {@link #skipShare} records as left to
-   * a human; adopting them here would mean counting a calendar the sharee
-   * holds a writable local copy of, which is a different fact from the one
-   * this table records.
+   * uncovered:</b> a colleague's calendar bound as an ordinary REMOTE pair is
+   * not noted, so its owner sees no mark for that sharee. Two things leave one
+   * bound that way, and the sweep as it stands produces neither — a pass from
+   * before the outbound prefix was skipped at all (EXO-89530's
+   * {@code isAlreadyOurs} asked only this user's own pairs), and a slug a
+   * server rewrote until no anchor can be read from it (EXO-89590). Adopting
+   * either would mean counting a calendar the sharee holds a writable local
+   * copy of, which is a different fact from the one this table records;
+   * cleaning them up is the migration {@link #skipShare} leaves to a human.
    *
    * <p>
    * Costs one indexed lookup per hidden share per pass, and nothing at all for
