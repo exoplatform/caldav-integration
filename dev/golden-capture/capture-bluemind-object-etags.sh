@@ -19,20 +19,20 @@
 #        -> the listing channel: the value the verification pass adopts into
 #           CALDAV_OBJECT_SYNC (expected: raw "bmdav_<lnum>_0" per child,
 #           GetTag.java:46-56). The reference every other capture is read
-#           against; replaces bluemind-propfind-collection-depth1-items.derived.xml.
+#           against; the fixture bluemind-propfind-collection-depth1-getetag.captured.xml.
 #   2. PROPFIND Depth:0 getetag on one existing .ics href
 #        -> the single-object VERSION read. SAME token as that href's line in
 #           (1): the spelling hypothesis holds (the request path hashes like
 #           containerPath + uid + ".ics", DavStore.java:402) and the writer's
 #           per-collection check will log "agrees". A DIFFERENT token: the
 #           hypothesis fails; the writer's check logs "differs" and keeps the
-#           listing for that collection — correct, at today's cost. Replaces
-#           bluemind-propfind-object-depth0-getetag.derived.xml.
+#           listing for that collection — correct, at today's cost. The
+#           fixture bluemind-propfind-object-depth0-getetag.captured.xml.
 #   3. calendar-multiget REPORT with that one href, getetag only
 #        -> the single-object PRESENCE read. One d:response for the href with
 #           a quoted base64 getetag (CalendarMultigetExecutor.java:114-130) is
 #           the expected shape; it confirms presence is answered per item.
-#           Replaces bluemind-report-multiget-one-href-getetag.derived.xml.
+#           The fixture bluemind-report-multiget-one-href-getetag.captured.xml.
 #   4. PROPFIND Depth:0 getetag on a NON-EXISTENT href in the same calendar
 #        -> the existence question. 207 with a getetag = the node is minted
 #           from the path (MethodRouter.java:162-175 + DavStore.java:474-502
@@ -45,8 +45,8 @@
 #           the source predicts (:82, :114-130) - and also what a failed
 #           lookup answers (:83-86), which is why the writer never reads
 #           absence from it. A d:response carrying "HTTP/1.1 404" would be
-#           the RFC 4791 shape instead. Replaces
-#           bluemind-report-multiget-missing-href.derived.xml.
+#           the RFC 4791 shape instead. The fixture
+#           bluemind-report-multiget-missing-href.captured.xml.
 #
 # This file ships in NO artifact: dev/ belongs to no Maven module.
 #
@@ -240,7 +240,7 @@ echo "    main calendar: $CAL"
 
 echo '1/5 PROPFIND Depth:1 getetag on the main calendar — the listing channel, the reference...'
 capture PROPFIND "$(absolutize "$CAL")" "$OUT/bluemind-propfind-collection-depth1-getetag.captured.xml" \
-  'The listing channel: what CaldavMirrorVerificationService.adoptVersion records. Expected per child .ics: the raw token bmdav_<lnum>_0 (GetTag.java:46-56). Supersedes bluemind-propfind-collection-depth1-items.derived.xml.' \
+  'The listing channel: what CaldavMirrorVerificationService.adoptVersion records. Expected per child .ics: the raw token bmdav_<lnum>_0 (GetTag.java:46-56). Fixture bluemind-propfind-collection-depth1-getetag.captured.xml.' \
   -H 'Depth: 1' -H 'Content-Type: application/xml' --data-binary "$GETETAG_BODY"
 LINE="$(first_ics_from "$OUT/bluemind-propfind-collection-depth1-getetag.captured.xml")"
 ICS="${LINE%%$'\t'*}"
@@ -255,13 +255,13 @@ echo "    listed getetag: $LISTED_ETAG"
 
 echo '2/5 PROPFIND Depth:0 getetag on that href — the single-object version read...'
 capture PROPFIND "$(absolutize "$ICS")" "$OUT/bluemind-propfind-object-depth0-getetag.captured.xml" \
-  'The single-object version read. Equal to the same href line of the Depth:1 capture = the spelling hypothesis holds (PropFindProtocol.java:69, GetTag.java:47,56, DavStore.java:402); different = the writer keeps the listing for this collection. Supersedes bluemind-propfind-object-depth0-getetag.derived.xml.' \
+  'The single-object version read. Equal to the same href line of the Depth:1 capture = the spelling hypothesis holds (PropFindProtocol.java:69, GetTag.java:47,56, DavStore.java:402); different = the writer keeps the listing for this collection. Fixture bluemind-propfind-object-depth0-getetag.captured.xml.' \
   -H 'Depth: 0' -H 'Content-Type: application/xml' --data-binary "$GETETAG_BODY"
 DEPTH0_ETAG="$(getetag_from "$OUT/bluemind-propfind-object-depth0-getetag.captured.xml")"
 
 echo '3/5 calendar-multiget REPORT with that one href, getetag only — the presence read...'
 capture REPORT "$(absolutize "$CAL")" "$OUT/bluemind-report-multiget-one-href-getetag.captured.xml" \
-  'The presence read. Expected: one d:response for the href with a quoted base64 getetag (CalendarMultigetExecutor.java:114-130, SyncTokens.java:78-83) - another string than the listing token, never recorded. Supersedes bluemind-report-multiget-one-href-getetag.derived.xml.' \
+  'The presence read. Expected: one d:response for the href with a quoted base64 getetag (CalendarMultigetExecutor.java:114-130, SyncTokens.java:78-83) - another string than the listing token, never recorded. Fixture bluemind-report-multiget-one-href-getetag.captured.xml.' \
   -H 'Depth: 1' -H 'Content-Type: application/xml' --data-binary "$(multiget_body "$ICS")"
 MULTIGET_ETAG="$(getetag_from "$OUT/bluemind-report-multiget-one-href-getetag.captured.xml")"
 
@@ -307,5 +307,5 @@ echo 'Done. Before committing, review the captured files in:'
 echo "  $OUT"
 echo 'Credentials are scrubbed, but your login/email and the object uids appear'
 echo 'inside hrefs — keep or anonymise them as you see fit. These captures'
-echo 'supersede the four DERIVED fixtures named in the notes above, which'
-echo 'should then be dropped and the tests pointed at the captured files.'
+echo 'are the fixtures HttpCalDavClientServerQuirksTest runs on; a re-run'
+echo 'refreshes them in place.'
