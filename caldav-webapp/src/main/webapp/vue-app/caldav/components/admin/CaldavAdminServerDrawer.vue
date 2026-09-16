@@ -147,6 +147,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           (EXO-90307).
         -->
         <caldav-admin-server-write-channel-select
+          v-if="offersWriteChannel"
           v-model="server.writeChannel" />
         <!--
           Always rendered, empty or not. Two drawers with different SHAPES teach
@@ -315,7 +316,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 import {applyExcusals, describeQuirk} from '../../js/serverQuirks.js';
 import {DEFAULT_MIRROR_TARGET, mirrorTargetOf} from '../../js/mirrorTargets.js';
-import {DEFAULT_WRITE_CHANNEL, writeChannelOf} from '../../js/writeChannels.js';
+import {DEFAULT_WRITE_CHANNEL, offersWriteChannel, writeChannelOf, writeChannelToSave} from '../../js/writeChannels.js';
 
 export default {
   data: () => ({
@@ -377,6 +378,16 @@ export default {
     providerConfigValid: true,
   }),
   computed: {
+    /**
+     * Whether the write-channel radio is shown: a BlueMind-only choice
+     * (EXO-90307), offered when the name says BlueMind or the row is already
+     * on the import channel. See `writeChannels.offersWriteChannel`.
+     *
+     * @returns {Boolean} true when the control is rendered
+     */
+    offersWriteChannel() {
+      return offersWriteChannel(this.server);
+    },
     disabled() {
       return !this.server.name || !this.server.serverUrl || !this.providerConfigValid;
     },
@@ -601,9 +612,10 @@ export default {
       // while this drawer had nothing to say about it, and a save that left it
       // out now would be relying on a guard that no longer guards anything.
       payload.mirrorTarget = mirrorTargetOf(this.server.mirrorTarget);
-      // Same rule for the door: the storage keeps the stored channel when the
-      // field is absent, so a save from this drawer always states it (EXO-90307).
-      payload.writeChannel = writeChannelOf(this.server.writeChannel);
+      // Same rule for the door, sharpened: where the radio is offered the save
+      // states the form's value; everywhere else it states CalDAV explicitly -
+      // an omitted key would keep a stale stored channel (EXO-90307).
+      payload.writeChannel = writeChannelToSave(this.server);
       // Relayed as typed. The keys belong to the provider's descriptor, and the
       // server validates them against it before anything is written.
       payload.providerConfig = this.providerConfig;
