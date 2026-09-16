@@ -217,16 +217,50 @@ public class CaldavPendingSubscriptionStorageTest {
    * Settled is by colleague, server and container, and forgets a renewal too.
    */
   @Test
-  public void settlingForgetsTheRowWhateverItWasRenewedTo() {
+  public void settlingForgetsTheInstructionThatLandedAndNoOther() {
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
     inTransaction(() -> storage.owe(BOB, SERVER, OTHER, PendingSubscriptionKind.SUBSCRIBE));
-    inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE));
 
-    inTransaction(() -> storage.settled(BOB, SERVER, CONTAINER));
+    inTransaction(() -> storage.settled(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
 
     assertEquals(OTHER, only(storage.attemptable(5, 10)).getContainerUid());
-    inTransaction(() -> storage.settled(BOB, SERVER, "never-owed"));
+    inTransaction(() -> storage.settled(BOB, SERVER, "never-owed", PendingSubscriptionKind.SUBSCRIBE));
     assertEquals(1, rowCount("SELECT COUNT(*) FROM CALDAV_PENDING_SUBSCRIPTION"), "settling what is not owed is a no-op");
+  }
+
+  /**
+   * <b>The race that made this a four-argument call.</b> A drain reads its
+   * rows once and then spends up to three round trips on each, holding no lock
+   * the share service takes. A revoke arriving in that window records an
+   * UNSUBSCRIBE over the pending SUBSCRIBE — the same row, by the
+   * one-row-per-container rule, so the row's own id is no help — and the drain
+   * then lands its now-stale SUBSCRIBE.
+   *
+   * <p>
+   * Settling by container alone would strike off the removal nobody has made
+   * yet, and the colleague would keep, silently and for good, a subscription
+   * to a calendar whose access entry is gone: the dangling subscription this
+   * feature exists to prevent, reached from the inside. The kind is what makes
+   * the delete refuse an instruction it did not land, and the surviving row
+   * still says UNSUBSCRIBE with its own patience intact.
+   */
+  @Test
+  public void aLandedSubscribeDoesNotSettleTheRevokeRecordedWhileItWasInFlight() {
+    inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
+    // The revoke lands in eXo while the drain's session is still open.
+    inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE));
+
+    // The drain comes back and reports the subscribe it posted before that.
+    inTransaction(() -> storage.settled(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
+
+    PendingSubscription standing = only(storage.attemptable(5, 10));
+    assertEquals(PendingSubscriptionKind.UNSUBSCRIBE, standing.getKind(), "the removal nobody has made yet is still owed");
+    assertEquals(CONTAINER, standing.getContainerUid());
+    assertEquals(0, standing.getAttempts());
+
+    // And when the drain does land that removal, it settles.
+    inTransaction(() -> storage.settled(BOB, SERVER, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE));
+    assertEquals(0, rowCount("SELECT COUNT(*) FROM CALDAV_PENDING_SUBSCRIPTION"));
   }
 
   /**
