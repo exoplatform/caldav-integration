@@ -125,6 +125,9 @@ public class CaldavCalendarShareServiceTest {
 
   private static final String COLLECTION       = "/dav/cal/alice%40stalwart.local/exo-cal-" + ANCHOR + "/";
 
+  /** The same collection as a pair stores it and as {@code canonicalHref} hands it on. */
+  private static final String CANONICAL_COLLECTION = CaldavSyncStorage.canonicalHref(COLLECTION);
+
   private static final String ALICE_PRINCIPAL  = "/dav/pal/alice@stalwart.local";
 
   private static final String BOB_PRINCIPAL    = "/dav/pal/bob@stalwart.local";
@@ -205,6 +208,9 @@ public class CaldavCalendarShareServiceTest {
   @Mock
   private CaldavShareObservationService   caldavShareObservationService;
 
+  @Mock
+  private CaldavOutboundService           caldavOutboundService;
+
   private CaldavCalendarShareService      service;
 
   /**
@@ -221,7 +227,8 @@ public class CaldavCalendarShareServiceTest {
                                              identityManager,
                                              blueMindAclClient,
                                              caldavPushService,
-                                             caldavShareObservationService);
+                                             caldavShareObservationService,
+                                             caldavOutboundService);
     lenient().when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(calendar(CALENDAR, ALICE, ANCHOR));
     lenient().when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(connectedTo(STALWART));
     lenient().when(caldavSyncStorage.getPairByLocalCalendar(ALICE, STALWART, ANCHOR)).thenReturn(exoPair());
@@ -240,6 +247,10 @@ public class CaldavCalendarShareServiceTest {
     lenient().when(caldavConnectionIdentityService.principalOf(ALICE, STALWART)).thenReturn(ALICE_PRINCIPAL);
     lenient().when(caldavConnectionIdentityService.usersConnectedAs(STALWART, BOB_PRINCIPAL)).thenReturn(List.of(BOB));
     lenient().when(caldavConnectionIdentityService.usersConnectedAs(STALWART, CAROL_PRINCIPAL)).thenReturn(List.of(CAROL));
+    // What a pass would say of alice's own exported collection: hers. The
+    // share-observation condition asks exactly this, through the same call
+    // CaldavSyncService#noteSighting makes.
+    lenient().when(caldavOutboundService.exportingUserOf(STALWART, CANONICAL_COLLECTION)).thenReturn(ALICE);
   }
 
   // ---------------------------------------------------------------- who may share what
@@ -1752,6 +1763,52 @@ public class CaldavCalendarShareServiceTest {
 
     service.revoke(ALICE, "alice", CALENDAR, "bob");
     verify(caldavShareObservationService).revoked(BOB, STALWART, ANCHOR);
+  }
+
+  /**
+   * A collection no pass could attribute to alice records no sighting
+   * (EXO-90331).
+   *
+   * <p>
+   * <b>A guard, not a shape production reaches.</b> {@code isShareablePair}
+   * already makes every {@code EXO} pair that gets this far one whose slug
+   * carries its own anchor, which {@code exportingUserOf} then resolves back
+   * to that same pair — so this answer cannot be null in the running system,
+   * and the collaborator is driven directly to produce it. It is pinned
+   * because the condition it protects belongs to a rule that lives in another
+   * class: the day a pass stops attributing what {@code isShareablePair}
+   * accepts, this must refuse rather than write rows the reconciliation
+   * erases.
+   */
+  @Test
+  public void aCollectionNoPassCouldAttributeRecordsNoSighting() throws Exception {
+    when(caldavOutboundService.exportingUserOf(STALWART, CANONICAL_COLLECTION)).thenReturn(null);
+    AccessControlEntry bobs = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(), Set.of()),
+                                                                CollectionAcl.of(List.of(bobs), Set.of()));
+    when(calDavClient.writeAcl(eq(endpoint), any(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    service.grant(ALICE, "alice", CALENDAR, "bob");
+
+    verify(caldavShareObservationService, never()).granted(anyLong(), anyLong(), anyLong(), anyString());
+  }
+
+  /**
+   * A collection a pass would attribute to somebody else records nothing
+   * either (EXO-90331) — the same guard, on the arm that would file the
+   * sighting under the wrong owner's row rather than under none.
+   */
+  @Test
+  public void aCollectionAPassWouldAttributeToSomebodyElseRecordsNoSighting() throws Exception {
+    when(caldavOutboundService.exportingUserOf(STALWART, CANONICAL_COLLECTION)).thenReturn(BOB);
+    AccessControlEntry bobs = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(), Set.of()),
+                                                                CollectionAcl.of(List.of(bobs), Set.of()));
+    when(calDavClient.writeAcl(eq(endpoint), any(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    service.grant(ALICE, "alice", CALENDAR, "bob");
+
+    verify(caldavShareObservationService, never()).granted(anyLong(), anyLong(), anyLong(), anyString());
   }
 
   /**

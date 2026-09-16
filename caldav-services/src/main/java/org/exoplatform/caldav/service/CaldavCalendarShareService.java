@@ -341,6 +341,8 @@ public class CaldavCalendarShareService {
 
   private final CaldavShareObservationService   caldavShareObservationService;
 
+  private final CaldavOutboundService           caldavOutboundService;
+
   /**
    * The servers this node has already reported, at INFO, as offering no
    * sharing. Reported once per server per process, so the reason is visible
@@ -359,6 +361,8 @@ public class CaldavCalendarShareService {
    * @param caldavPushService says where the copies of eXo meetings are written
    * @param caldavShareObservationService records a share the moment eXo makes
    *          it, and forgets it the moment eXo revokes it
+   * @param caldavOutboundService answers whose calendar a collection stands
+   *          for, which is how a pass attributes one
    */
   @Autowired
   public CaldavCalendarShareService(AgendaCalendarService agendaCalendarService,
@@ -369,7 +373,8 @@ public class CaldavCalendarShareService {
                                     IdentityManager identityManager,
                                     BlueMindAclClient blueMindAclClient,
                                     CaldavPushService caldavPushService,
-                                    CaldavShareObservationService caldavShareObservationService) {
+                                    CaldavShareObservationService caldavShareObservationService,
+                                    CaldavOutboundService caldavOutboundService) {
     this.agendaCalendarService = agendaCalendarService;
     this.caldavConnectorStorage = caldavConnectorStorage;
     this.caldavSyncStorage = caldavSyncStorage;
@@ -379,6 +384,7 @@ public class CaldavCalendarShareService {
     this.blueMindAclClient = blueMindAclClient;
     this.caldavPushService = caldavPushService;
     this.caldavShareObservationService = caldavShareObservationService;
+    this.caldavOutboundService = caldavOutboundService;
     for (int i = 0; i < LOCK_STRIPES; i++) {
       locks[i] = new ReentrantLock();
     }
@@ -813,72 +819,74 @@ public class CaldavCalendarShareService {
    * that listing does not hold is removed as a share that has stopped
    * existing. That is what keeps a revoke made in the server's own web client
    * from leaving a mark behind, and it must not be weakened. Its cost is that
-   * a row this class writes survives only if the sweep, listing the same
-   * collection in the sharee's home, derives the same key for it — otherwise
+   * a row this class writes survives only if the pass, meeting the same
+   * collection in the sharee's home, produces the same row for it — otherwise
    * the mark appears on the grant and is erased within one period, which is
    * worse than no mark because nothing the user did explains its going away.
    *
    * <p>
-   * So this states that condition in the two parts the sweep needs, and
-   * answers null unless both hold:
+   * So this asks the pass's own two questions, in the pass's own words rather
+   * than in a re-derivation of them, and answers null unless both hold:
    * <ol>
-   * <li><b>The pair is an {@link SyncOrigin#EXO} one</b> — eXo minted the
-   * collection for this calendar. The sweep attributes a collection through
-   * {@link CaldavOutboundService#exportingUserOf}, which resolves an anchor
-   * against {@code EXO} pairs only, so a collection eXo did not mint names
-   * nobody however the share was made.</li>
-   * <li><b>The slug still carries that anchor</b> — {@code exo-cal-<syncUid>},
-   * as {@link CaldavOutboundService#collectionHref} mints it and
-   * {@link CaldavOutboundService#anchorOf} reads it back. A server that
-   * rewrote the slug (EXO-89590) leaves the sweep keying the row by what it
-   * rewrote it to, so a row keyed by the calendar's own anchor would be
-   * deleted on the next pass — and would in any case never be read, the count
-   * resolving a calendar by its {@code syncUid}.</li>
+   * <li><b>Under which anchor would a pass file it?</b>
+   * {@link CaldavOutboundService#anchorOf} on the collection's path — the same
+   * call {@code CaldavSyncService#noteSighting} makes. It must be the
+   * calendar's own {@code syncUid}, because that is what the owner's count
+   * resolves a calendar by; a row filed under anything else is one no panel
+   * ever reads.</li>
+   * <li><b>Whom would a pass attribute it to?</b>
+   * {@link CaldavOutboundService#exportingUserOf}, again the call the pass
+   * makes. It must name this owner. A collection eXo did not mint, or one
+   * another deployment minted, names nobody — so a pass classifies it as
+   * something other than a colleague's eXo calendar and files no row, and the
+   * reconciliation would delete whatever this method had written.</li>
    * </ol>
-   *
-   * <p>
-   * <b>The second condition is unreachable from here today</b>, and is kept as
-   * a guard rather than as a live branch: {@link #isShareablePair} already
-   * refuses an {@code EXO} pair whose {@code remoteHref} does not end in
-   * {@code /exo-cal-<localCalendarSyncUid>}, so a rewritten slug is answered
-   * {@link #CALENDAR_NOT_ON_SERVER} by {@link #targetOf} long before a grant is
-   * attempted — which is what {@code aRewrittenSlugIsNotShareableAtAll} pins.
-   * The condition stated here belongs to <em>this</em> question all the same:
-   * what the sweep will key the row by is not a fact about shareability, and
-   * the day the two rules part company this must not silently start writing
-   * rows a pass erases.
    *
    * <p>
    * <b>What that leaves uncovered</b>, stated here because this is the only
    * place the boundary is decided: a {@link SyncOrigin#REMOTE} pair — a
    * calendar the user owns on the server and imported into eXo rather than
    * exported from it — is shareable ({@link #isShareableImportedPair}) and
-   * gets no mark, from this path or from the sweep. Its collection carries no
-   * anchor eXo minted, or carries one another deployment minted, so nothing
-   * ties it back to a calendar here; the sharee's pass does not even classify
-   * it as a colleague's calendar. Recording it anyway would produce exactly
-   * the appear-then-vanish mark described above. Widening the sweep to
-   * recognise such a collection is not a small change and not a safe one — the
-   * only local witness is a pair recorded at the same path, and two users who
-   * both imported one third party's calendar would make each the other's
-   * owner — so it stays a named gap rather than a guess.
+   * gets no mark, from this path or from a pass. It fails the first question:
+   * its collection keeps the server's own slug, or a slug another deployment
+   * minted, so the anchor read back is null or somebody else's. On a
+   * deployment whose calendars were mostly imported rather than created in
+   * eXo, that is most of them. Widening a pass to recognise such a collection
+   * is neither a small change nor a safe one — the only local witness is a
+   * pair recorded at the same path, and two users who both imported one third
+   * party's calendar would make each the other's owner — so it stays a named
+   * gap rather than a guess.
+   *
+   * <p>
+   * <b>The second question cannot fail on its own today</b>, and is asked all
+   * the same. {@link #isShareablePair} already refuses an {@code EXO} pair
+   * whose {@code remoteHref} does not end in
+   * {@code /exo-cal-<localCalendarSyncUid>}, so whatever passes the first
+   * question is an {@code EXO} pair of this owner's, which
+   * {@code exportingUserOf} then finds by that very anchor. Its two arms are
+   * pinned by {@code aCollectionNoPassCouldAttributeRecordsNoSighting} and
+   * {@code aCollectionAPassWouldAttributeToSomebodyElseRecordsNoSighting},
+   * which drive the collaborator directly: a guard against the two rules
+   * parting company, not a shape production can reach — the next reader should
+   * be able to tell which it is.
    *
    * @param target the calendar being shared
    * @return the anchor to record the sighting under, or null when this
    *         calendar must carry no recorded sighting
    */
   private String observableAnchorOf(ShareTarget target) {
-    CalendarSync pair = target.pair();
-    if (pair.getOrigin() != SyncOrigin.EXO) {
-      LOG.debug("Calendar {} is bound to an imported collection; the share is not recorded, since no pass could confirm it",
-                target.calendarId());
+    String href = CaldavSyncStorage.canonicalHref(target.href());
+    String anchor = CaldavOutboundService.anchorOf(href);
+    if (!CaldavShareObservationService.isRecordableAnchor(anchor)
+        || !anchor.equals(target.pair().getLocalCalendarSyncUid())) {
+      LOG.debug("Collection {} carries no anchor a pass would file calendar {} under; the share is not recorded",
+                target.href(), target.calendarId());
       return null;
     }
-    String anchor = pair.getLocalCalendarSyncUid();
-    if (!CaldavShareObservationService.isRecordableAnchor(anchor)
-        || !anchor.equals(CaldavOutboundService.anchorOf(CaldavSyncStorage.canonicalHref(pair.getRemoteHref())))) {
-      LOG.debug("Collection {} no longer carries the anchor of calendar {}; the share is not recorded, since a pass would"
-          + " key it otherwise", target.href(), target.calendarId());
+    Long attributed = caldavOutboundService.exportingUserOf(target.serverId(), href);
+    if (attributed == null || attributed != target.userIdentityId()) {
+      LOG.debug("Collection {} is one no pass would attribute to user {}; the share of calendar {} is not recorded",
+                target.href(), target.userIdentityId(), target.calendarId());
       return null;
     }
     return anchor;
