@@ -616,12 +616,49 @@ public class CaldavConnectorServiceImplTest {
    * A first connection forgets them as well — there is nothing recorded to
    * compare against, and nothing to lose either (EXO-90331).
    *
+   * <p>
+   * The previous setting is a <em>blank</em> one, not null, because that is
+   * what a first connection actually produces:
+   * {@code CaldavConnectorStorage.getCaldavSetting} builds a
+   * {@code new CaldavUserSetting()} and returns it whether or not anything is
+   * stored, filling only the keys it finds. Stubbing null here would drive the
+   * {@code previous == null} arm, which production never takes, and the test
+   * would agree with the code by accident.
+   *
    * @throws Exception never, everything is mocked
    */
   @Test
   public void aFirstConnectionForgetsWhateverWasThere() throws Exception {
     caldavConnectorService.setCaldavSyncService(caldavSyncService);
     caldavConnectorService.setCaldavShareObservationService(caldavShareObservationService);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(new CaldavUserSetting());
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(caldavShareObservationService).forgetObservationsOf(USER_IDENTITY_ID);
+  }
+
+  /**
+   * And a storage that answered nothing at all is treated the same way
+   * (EXO-90331).
+   *
+   * <p>
+   * Defensive: {@code getCaldavSetting} cannot return null today, so this arm
+   * is unreachable from production and is pinned as a guard rather than as a
+   * live case — a reader should be able to tell the two apart. It matters
+   * because the alternative to forgetting, on an unknown previous account, is
+   * keeping sightings that may describe a different one.
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void anUnknownPreviousAccountForgetsThemToo() throws Exception {
+    caldavConnectorService.setCaldavSyncService(caldavSyncService);
+    caldavConnectorService.setCaldavShareObservationService(caldavShareObservationService);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(null);
     CaldavUserSetting setting = new CaldavUserSetting();
     setting.setUsername("john");
     setting.setPassword("secret");

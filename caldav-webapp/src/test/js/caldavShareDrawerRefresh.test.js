@@ -148,7 +148,11 @@ describe('the share drawer, after it has changed a share', () => {
 
     const acting = wrapper.vm.doShare();
     wrapper.setData({calendar: {id: 14, name: 'Other'}});
-    resolve({calendarId: 12, sharees: []});
+    // A NON-EMPTY answer, deliberately: the drawer starts with no sharees, so
+    // resolving with none would leave `sharees` empty whether the guard held
+    // or not, and the second assertion below would pass against the very
+    // repaint it claims to forbid.
+    resolve({calendarId: 12, sharees: [{principal: '/p/bob', users: [{username: 'bob'}]}]});
     await acting;
 
     expect(refreshes()).toHaveLength(1);

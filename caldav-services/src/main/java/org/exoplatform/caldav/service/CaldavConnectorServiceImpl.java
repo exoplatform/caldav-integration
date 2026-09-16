@@ -390,13 +390,16 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
    * offers Connect only on a row that is not connected, so a user normally
    * reaches a re-connect through Disconnect — which clears by design — and the
    * front end then chains a full synchronising pass that re-records within
-   * seconds. What has no guard at all is {@code POST /v1/caldav} called
+   * seconds. What has no <em>upstream</em> guard — no affordance stopping the
+   * call from being made on a live account — is {@code POST /v1/caldav} called
    * directly, and any state where agenda's connected-account setting is
    * missing while the credential is not, which puts Connect back on a live
-   * account. There the pass may not follow, and the marks then wait on the
-   * sweep — which does not pick an account whose bindings were just written
-   * until it is stale ({@code exo.agenda.caldav.sync.sweep.staleMinutes},
-   * thirty minutes by default), not merely until the next sweep tick.
+   * account. This method is the guard those routes reach: it is why they now
+   * keep the rows instead of clearing them. Without it the pass may not
+   * follow, and the marks then wait on the sweep — which does not pick an
+   * account whose bindings were just written until it is stale
+   * ({@code exo.agenda.caldav.sync.sweep.staleMinutes}, thirty minutes by
+   * default), not merely until the next sweep tick.
    *
    * <p>
    * Compared on the two things that make an account a different account: the
