@@ -547,14 +547,81 @@ public class HttpCalDavClient implements CalDavClient {
     if (hrefs == null || hrefs.isEmpty()) {
       return List.of();
     }
+    String body = multigetBody(endpoint, "<d:getetag/><c:calendar-data/>", hrefs);
+    return readObjects(endpoint, report(endpoint, collectionHref, body, "1"));
+  }
+
+  @Override
+  public Map<String, String> multigetEtags(CalDavEndpoint endpoint,
+                                           String collectionHref,
+                                           List<String> hrefs) {
+    Map<String, String> etags = new LinkedHashMap<>();
+    if (hrefs == null || hrefs.isEmpty()) {
+      return etags;
+    }
+    String body = multigetBody(endpoint, "<d:getetag/>", hrefs);
+    Element multistatus = report(endpoint, collectionHref, body, "1");
+    for (Element response : childElements(multistatus, DAV_NS, RESPONSE_ELEMENT)) {
+      String href = responsePath(endpoint, response);
+      String etag = grantedText(response, DAV_NS, GETETAG_PROPERTY);
+      // The same rule as the listing's: an entry is what carries a version.
+      // A 404 response element (the RFC shape for a missing href) carries
+      // none and is left out, exactly like BlueMind's way of saying the same
+      // thing, which is to answer no element at all.
+      if (StringUtils.isNotBlank(href) && StringUtils.isNotBlank(etag)) {
+        etags.put(href, etag);
+      }
+    }
+    return etags;
+  }
+
+  @Override
+  public String readEtag(CalDavEndpoint endpoint, String href) {
+    HttpRequest request = request(endpoint, href, PROPFIND_METHOD, PROPFIND_ETAGS).header(DEPTH_HEADER, "0").build();
+    DavResponse response = exchange(request);
+    int status = response.status();
+    if (status == 404 || status == 410) {
+      // No such object, said the way a server that checks says it. Reported
+      // as "no version" rather than as a failure: the caller asked a question
+      // a missing object is a legitimate answer to.
+      return null;
+    }
+    checkReadStatus(response, request);
+    List<Element> responses = childElements(parse(response.body(), request.uri()), DAV_NS, RESPONSE_ELEMENT);
+    if (responses.size() == 1) {
+      // A Depth:0 answer names one resource, the one asked about; servers
+      // spell the href back in more than one way, none of which is a reason
+      // to doubt whose version it is.
+      return grantedText(responses.get(0), DAV_NS, GETETAG_PROPERTY);
+    }
+    String wanted = asPath(endpoint, href);
+    for (Element candidate : responses) {
+      if (StringUtils.equals(responsePath(endpoint, candidate), wanted)) {
+        return grantedText(candidate, DAV_NS, GETETAG_PROPERTY);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The body of a calendar-multiget REPORT for the given properties and
+   * hrefs — shared by the read that wants the data and the one that wants
+   * only the versions, so the two never drift apart in what they ask.
+   *
+   * @param endpoint the declared server, for href folding
+   * @param props the property elements to ask for, already as XML
+   * @param hrefs the object paths to ask about
+   * @return the request body
+   */
+  private String multigetBody(CalDavEndpoint endpoint, String props, List<String> hrefs) {
     StringBuilder body = new StringBuilder("""
         <?xml version="1.0" encoding="utf-8"?>
         <c:calendar-multiget xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
-          <d:prop><d:getetag/><c:calendar-data/></d:prop>
-        """);
+          <d:prop>%s</d:prop>
+        """.formatted(props));
     hrefs.forEach(href -> body.append("  <d:href>").append(escape(asPath(endpoint, href))).append("</d:href>\n"));
     body.append("</c:calendar-multiget>");
-    return readObjects(endpoint, report(endpoint, collectionHref, body.toString(), "1"));
+    return body.toString();
   }
 
   @Override
