@@ -309,7 +309,11 @@ export const SERVER_PRESETS = [
     quirks: null,
     [ANSWER_LINKS]: null,
     [MIRROR_TARGET]: null,
-    [WRITE_CHANNEL]: null,
+    // Stated, unlike the two above: the write channel is a BlueMind-only choice
+    // (EXO-90307), so "a server we have not characterised" IS the decision
+    // CalDAV, and a form that had BlueMind's import channel a moment ago must
+    // not carry it into a declaration of something else.
+    [WRITE_CHANNEL]: WRITE_CHANNEL_CALDAV,
   },
 ];
 
