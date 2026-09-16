@@ -272,17 +272,6 @@ public class BlueMindSubscriptionClient {
   }
 
   /**
-   * Whether the colleague's configured credentials are a login and password
-   * this API can take, without calling the server.
-   *
-   * @param shareeEndpoint the colleague's endpoint, minted from the registry
-   * @return true when the provider produces a Basic login and password
-   */
-  public boolean acceptsCredentials(CalDavEndpoint shareeEndpoint) {
-    return session.acceptsCredentials(shareeEndpoint);
-  }
-
-  /**
    * One POST of an edit, its answer read as BlueMind's service answers.
    *
    * @param open the session
@@ -312,8 +301,17 @@ public class BlueMindSubscriptionClient {
   }
 
   /**
-   * The {@code errorCode} of a fault body, when the body is one. Only the
-   * code travels into a message; BlueMind's own text is logged at debug.
+   * The {@code errorCode} of a fault body, when the body is one.
+   *
+   * <p>
+   * <b>The code, and nothing else of the body.</b> A fault also carries a
+   * {@code message}, which is free text BlueMind chose — and this add-on's
+   * one rule about logging is that no secret reaches a line, which cannot be
+   * a rule if what it covers is decided by another vendor's string. The code
+   * is a closed vocabulary ({@code ErrorCode}), so it is the part that can be
+   * both useful and safe; the whole body remains available to an operator
+   * through a capture, which is where a fault text belongs. The same rule
+   * already governed the exception messages this method feeds.
    *
    * @param answer the answer
    * @param named the request, for the debug line
@@ -327,11 +325,7 @@ public class BlueMindSubscriptionClient {
       JsonNode fault = session.parse(answer.body(), named);
       String code = BlueMindRestSession.textOf(fault, "errorCode");
       if (code != null) {
-        LOG.debug("The calendar server answered {} for {}: {} {}",
-                  answer.status(),
-                  named,
-                  code,
-                  BlueMindRestSession.textOf(fault, "message"));
+        LOG.debug("The calendar server answered {} for {}: {}", answer.status(), named, code);
       }
       return code;
     } catch (CalDavException e) {

@@ -888,6 +888,15 @@
       rather than a number. ATTEMPTS bounds how hard eXo argues with a server
       that keeps refusing, NOT NULL with a default of zero.
 
+      As 1.0.0-45 records for PRINCIPAL: NVARCHAR on MySQL is utf8mb3_general_ci,
+      so the unique index below and the lookup by user, server and container are
+      case- and accent-insensitive there and exact everywhere else. Nothing here
+      re-checks exactness, and nothing needs to: a BlueMind container uid is
+      calendar:Default:&lt;uuid&gt;, calendar:UserCreated:&lt;uuid&gt;:&lt;uuid&gt; or the
+      exo-cal-&lt;uuid&gt; this add-on mints, none of which differ from another by
+      case or by an accent. Said here so the next column of this shape inherits
+      the reasoning rather than the silence.
+
       Rollback is createTable's automatic one.
     </comment>
     <createTable tableName="CALDAV_PENDING_SUBSCRIPTION">
@@ -939,7 +948,8 @@
       question, not which of one colleague's rows - and on a converged
       deployment it must find nothing without reading anything: an index on
       the attempt count makes that one lookup answering no rows. The
-      abandoned rows are left where they are, below the bound, as the only
+      abandoned rows are left where they are, AT the bound - which is what
+      keeps them out of a query reading attempts &lt; :maxAttempts - as the only
       record that eXo gave up on them. A colleague's own pass asks by user,
       which the unique index above already leads with. Own changeset, no
       modifySql, automatic rollback.
