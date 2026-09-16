@@ -67,11 +67,20 @@ public class BlueMindImportWriterTest {
       + "SUMMARY:Sprint review\r\nDESCRIPTION:A long description that the writer folded onto\r\n  a second line\r\n"
       + "END:VEVENT\r\nEND:VCALENDAR\r\n";
 
-  /** The version the collection listing publishes for the object: raw, constant (GetTag.java:46-56). */
-  private static final String STORED_ETAG   = "bmdav_851210693_0";
+  /**
+   * The version the collection listing — and the Depth:0 read — publish for
+   * the object: raw, constant (GetTag.java:46-56); the values a rig capture
+   * answered for one object on 2026-09-16
+   * ({@code bluemind-propfind-object-depth0-getetag.captured.xml}).
+   */
+  private static final String STORED_ETAG   = "bmdav_3980966296_0";
 
-  /** The version the multiget REPORT publishes for the same object: quoted base64 (CalendarMultigetExecutor.java:123). */
-  private static final String MULTIGET_ETAG = "\"Ym1kYXZfODUxMjEwNjkzXzEyNw==\"";
+  /**
+   * The version the multiget REPORT publishes for the same object: quoted
+   * base64 of the token at its item version (CalendarMultigetExecutor.java:123),
+   * as captured the same day ({@code bluemind-report-multiget-one-href-getetag.captured.xml}).
+   */
+  private static final String MULTIGET_ETAG = "\"Ym1kYXZfMzk4MDk2NjI5Nl8x\"";
 
   /** A Depth:0 token hashed from another spelling of the path — the shape hypothesis failing. */
   private static final String OTHER_TOKEN   = "bmdav_1130583920_0";
