@@ -217,6 +217,16 @@ public class CaldavServerService {
 
   private static final String      SERVER_URL_MANDATORY_MESSAGE  = "caldav.server.urlMandatory";
 
+  /**
+   * The refusal of a write channel the server behind the registration cannot
+   * speak (EXO-90307): {@code BLUEMIND_IMPORT} calls BlueMind's own REST
+   * endpoints and is offered to a BlueMind registration only.
+   */
+  public static final String       WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE = "caldav.server.writeChannelNotSupported";
+
+  /** What a registration's name carries when it stands for a BlueMind server. */
+  static final String              BLUEMIND_NAME_MARKER          = "bluemind";
+
   private static final Log         LOG                           = ExoLogger.getLogger(CaldavServerService.class);
 
   @Autowired
@@ -648,6 +658,69 @@ public class CaldavServerService {
     return providerConfigStorage.readWithoutSecrets(providerConfigContext(serverId, stored.getAuthProviderName()));
   }
 
+
+  /**
+   * Whether a registration stands for a BlueMind server: its name carries
+   * {@value #BLUEMIND_NAME_MARKER}, which is what the shipped seed row
+   * ({@link #BLUEMIND_SERVER_NAME}) and the administrator drawer's BlueMind
+   * preset both write.
+   *
+   * <p>
+   * The name, because nothing else on the row says which product it is: a
+   * preset is a copy, never a link (the drawer's {@code serverPresets.js}
+   * states why), so no preset identifier is stored; the provider name is the
+   * agenda bridge's, not the product's; and the sharing mechanism is a runtime
+   * capability read from the server, not a stored fact a save can be judged
+   * by. An administrator who renames a BlueMind registration to something
+   * else therefore also gives up its BlueMind-only choices — and is told so by
+   * the refusal below rather than by a silent reset.
+   *
+   * @param server the registration, may be null
+   * @return true when its name says BlueMind
+   */
+  static boolean isBlueMind(CaldavServer server) {
+    return server != null && StringUtils.containsIgnoreCase(server.getName(), BLUEMIND_NAME_MARKER);
+  }
+
+  /**
+   * Refuses the BlueMind import channel on a registration that is not
+   * BlueMind's (EXO-90307): the import door only speaks BlueMind's REST
+   * endpoints, so on any other server every write through it would fail, and
+   * the drawer's radio exists to be BlueMind's kill-switch, not a choice for
+   * everybody. The drawer already hides the radio elsewhere; this is the
+   * guard the UI is not.
+   *
+   * <p>
+   * Two shapes of payload, two answers. A payload that <b>states</b>
+   * {@code BLUEMIND_IMPORT} for a non-BlueMind name is refused with
+   * {@value #WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE}: the administrator asked
+   * for something this server cannot do, and a 400 they can read beats a row
+   * silently written otherwise. A payload that states <b>nothing</b> — a
+   * drawer that does not carry the control — while the stored row is on the
+   * import channel and the name no longer says BlueMind is reset to CalDAV
+   * rather than refused: nobody asked for the impossible, the storage would
+   * otherwise keep a channel the server cannot speak, and CalDAV is what the
+   * drawer sends explicitly for every non-BlueMind server, so both paths end
+   * on the same value.
+   *
+   * @param server the registration as posted
+   * @param stored the registration as stored, or null on a declaration
+   * @throws IllegalArgumentException carrying the message code when the
+   *           channel is stated and the server cannot speak it
+   */
+  private void checkWriteChannel(CaldavServer server, CaldavServer stored) {
+    if (isBlueMind(server)) {
+      return;
+    }
+    if (server.getWriteChannel() == WriteChannel.BLUEMIND_IMPORT) {
+      throw new IllegalArgumentException(WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE);
+    }
+    if (server.getWriteChannel() == null && stored != null && stored.getWriteChannel() == WriteChannel.BLUEMIND_IMPORT) {
+      LOG.info("CalDAV server {} is no longer declared as BlueMind; its copies go back through CalDAV", server.getId());
+      server.setWriteChannel(WriteChannel.CALDAV);
+    }
+  }
+
   /**
    * Checks the posted configuration against its provider's descriptor, without writing.
    * <p>
@@ -752,6 +825,7 @@ public class CaldavServerService {
   public CaldavServer createServer(CaldavServer server, String username) throws IllegalAccessException {
     checkCanEdit(username);
     validate(server);
+    checkWriteChannel(server, null);
     validateProviderConfig(server);
     CaldavServer createdServer = caldavServerStorage.createServer(server, CALDAV_PROVIDER_NAME);
     storeProviderConfig(createdServer, server.getProviderConfig());
@@ -792,6 +866,7 @@ public class CaldavServerService {
     if (stored == null || !StringUtils.equals(stored.getServerUrl(), server.getServerUrl())) {
       caldavServerUrlValidator.validate(server.getServerUrl());
     }
+    checkWriteChannel(server, stored);
     stampCopySettings(server);
     // Before the row is written, for the reason the create path already carries: the
     // registration and its configuration are two writes, and a refusal on the second
