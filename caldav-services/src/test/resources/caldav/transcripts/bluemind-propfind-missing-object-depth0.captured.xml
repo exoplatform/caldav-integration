@@ -1,0 +1,17 @@
+# CAPTURED live on 2026-09-16 against BlueMind at https://webmail.demo3.livecollab.fr/dav/
+# by dev/golden-capture/capture-bluemind-object-etags.sh: PROPFIND https://webmail.demo3.livecollab.fr/dav/calendars/__uids__/751E6D1A-7FDB-49B2-B668-B569E9A5A42D/calendar:Default:751E6D1A-7FDB-49B2-B668-B569E9A5A42D/exo-absent-probe-1789544526.ics
+# The existence question on Depth:0. 207 with a getetag = a node minted from the path (MethodRouter.java:162-175, DavStore.java:474-502 default "assume yes"): Depth:0 cannot tell existence, as the writer assumes. 404 = the server checks after all.
+# Authorization header not recorded; password and Basic credentials scrubbed.
+# HTTP status: 207
+HTTP/2 207 
+content-security-policy: connect-src 'self' ws: wss: https: blob:; default-src 'self' ws: wss: blob: 'unsafe-inline' 'unsafe-eval'; img-src * data: blob:
+content-type: application/xml; charset="utf-8"
+date: Wed, 16 Sep 2026 07:42:06 GMT
+dav: 1, access-control, calendar-access, calendar-schedule, calendar-auto-schedule, calendar-availability, inbox-availability, calendar-proxy, calendarserver-private-events, calendarserver-sharing, calendarserver-sharing-no-scheduling, calendar-query-extended, calendar-default-alarms, calendarserver-partstat-changes, extended-mkcol, calendarserver-principal-property-search, calendarserver-principal-search, calendarserver-home-sync, addressbook
+feature-policy: accelerometer 'none'; ambient-light-sensor 'none'; autoplay 'self'; battery 'none'; camera 'none'; display-capture 'none'; document-domain 'none'; encrypted-media 'none'; execution-while-not-rendered 'self'; execution-while-out-of-viewport 'self'; fullscreen 'self'; geolocation 'none'; gyroscope 'none'; layout-animations 'none'; layout-animations 'none'; layout-animations 'none'; legacy-image-formats 'none'; magnetometer 'none'; microphone 'none'; midi 'none'; navigation-override 'none'; oversized-images 'none'; payment 'none'; picture-in-picture 'none'; publickey-credentials 'none'; sync-xhr 'none'; usb 'none'; vr 'none'; wake-lock 'none'; xr-spatial-tracking 'none';
+server: nginx
+vary: Origin
+content-length: 592
+
+
+<?xml version="1.0" encoding="UTF-8"?><d:multistatus xmlns:d="DAV:" xmlns:aic="http://apple.com/ns/ical/" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cso="http://calendarserver.org/ns/" xmlns:me="http://me.com/_namespace/" xmlns:rd="urn:ietf:params:xml:ns:carddav"><d:response><d:href>/dav/calendars/__uids__/751E6D1A-7FDB-49B2-B668-B569E9A5A42D/calendar:Default:751E6D1A-7FDB-49B2-B668-B569E9A5A42D/exo-absent-probe-1789544526.ics</d:href><d:propstat><d:status>HTTP/1.1 200 OK</d:status><d:prop><d:getetag>bmdav_3856992451_0</d:getetag></d:prop></d:propstat></d:response></d:multistatus>
