@@ -83,9 +83,24 @@ import lombok.NoArgsConstructor;
  * them up is the migration {@code CaldavSyncService#skipShare} leaves to a
  * human.</li>
  * </ul>
- * The count this table answers is therefore a floor on the exposure, never a
- * ceiling, and the Share drawer — which reads the server live — stays the
- * place that answers <em>who</em>.
+ * The count this table answers is therefore a floor on the exposure <em>as
+ * far as the homes still being read can see it</em>, and the Share drawer —
+ * which reads the server live — stays the place that answers <em>who</em>.
+ *
+ * <p>
+ * <b>The one direction it can overstate</b>, so that nobody reads the floor as
+ * an absolute: a sighting stands until something contradicts it, and only a
+ * home that is still read can contradict one. A sharee whose credentials the
+ * server has begun refusing has their bindings paused
+ * ({@code CaldavSyncService#pauseAll}) and stops listing anything, and a
+ * sharee removed as an eXo user disconnects nothing on their way out — in
+ * both cases their last sighting survives until the account is disconnected
+ * ({@code CaldavConnectorServiceImpl}), and the owner is told a colleague sees
+ * the calendar whose access may already be gone. That is deliberate rather
+ * than overlooked: the share is still live on the server in the common case —
+ * a refused password revokes nothing — so forgetting on a pause would
+ * manufacture the false negative this design is built to avoid, and the false
+ * positive is the safer of the two for a privacy signal.
  *
  * <p>
  * Keyed by the calendar's <b>anchor</b>, agenda's {@code syncUid}, not by an
@@ -95,10 +110,16 @@ import lombok.NoArgsConstructor;
  * id from their own calendars, which is a local read they already make.
  *
  * <p>
- * {@code @DynamicUpdate}: two nodes may reconcile the same sharee's listing at
- * once, each by a read-modify-save of {@code OBSERVED}, and the statement
- * should carry the column that changed and nothing else — the norm for a row
- * with several writers and no version.
+ * {@code @DynamicUpdate}, carried by convention rather than for an effect that
+ * can be observed today. One writer touches this row —
+ * {@code CaldavShareObservationStorage#reconcile}, which rewrites
+ * {@code OWNER_IDENTITY_ID} and {@code OBSERVED} together inside one
+ * transaction while the other three columns are immutable for the row's life —
+ * so two nodes racing reach the same last-write-wins state with or without it,
+ * and no column-set test could tell the two apart. It is kept because the
+ * norm asks it of a multi-writer row with no version, and the day a second
+ * writer touches a strict subset of this row the annotation must already be
+ * there rather than be remembered.
  */
 @Data
 @NoArgsConstructor

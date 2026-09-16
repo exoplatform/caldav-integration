@@ -49,7 +49,8 @@ import org.exoplatform.caldav.entity.CaldavShareObservationEntity;
  * (the population EXO-90277 documents as out of scope); and a share granted or
  * revoked since the sharee's last pass is not reflected until that pass runs
  * again, up to one synchronisation period later. The count is a floor on the
- * exposure, never a ceiling.
+ * exposure as far as the homes still being read can see it; it can overstate
+ * in one direction only, which {@code CaldavShareObservationEntity} sets out.
  */
 @Component
 public class CaldavShareObservationStorage {

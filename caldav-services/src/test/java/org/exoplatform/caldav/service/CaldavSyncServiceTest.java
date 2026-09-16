@@ -1972,6 +1972,32 @@ public class CaldavSyncServiceTest {
   }
 
   /**
+   * <b>A listing that succeeded but held nothing is not evidence either.</b>
+   *
+   * <p>
+   * The shape the failure guards miss: {@code listCalendars} can return an
+   * empty list without throwing — a 207 carrying no responses, a home whose
+   * members are all non-calendar collections, a body that parses but is not a
+   * multistatus. Read as a listing, that emptiness says "every share has
+   * stopped existing" and takes this sharee's row off every owner who shared
+   * with them on this server. This file had already ruled twice that a
+   * succeeded-but-empty listing is not trustworthy evidence for a removal
+   * ({@code forgetRevokedShares}, {@code importRemoteEvents}); the share
+   * observation now follows the same rule.
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void aListingThatSucceededButHeldNothingRecordsNothingEither() throws Exception {
+    givenServerCalendars();
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavShareObservationService, never()).observed(anyLong(), anyLong(), any());
+  }
+
+  /**
    * <b>An absence of evidence is not evidence of absence.</b> A listing that
    * failed says nothing about which shares still exist, and handing it on as an
    * empty set would erase every mark the user's colleagues have — the whole

@@ -84,13 +84,19 @@ public class CaldavShareObservationDAOTest {
   private static final String            CAL3        = "c434ba2a-3f58-4d9c-9a0a-2b2f8e1f7a10";
 
   /**
-   * The storage's page size, mirrored here so the bound is exercised rather
-   * than assumed — the constant itself is package-private to the storage
-   * package. Same idiom as {@code CaldavSyncServiceTest.SEEDING_QUEUE_DEPTH}.
-   * If the storage's number moves and this one does not, the page-boundary
-   * test below simply stops straddling the boundary, so keep them in step.
+   * The storage's page size, read from the storage rather than mirrored.
+   *
+   * <p>
+   * A copied number would decay in the one way that costs the most: raise the
+   * storage's page size and the boundary test below goes on writing its old
+   * count, stops straddling the boundary it was written for, and keeps
+   * passing against the very defect it pins. Reflection because the constant
+   * is package-private to the storage package and nothing outside it should
+   * need the value at runtime.
    */
-  private static final int               SIGHTINGS_PER_SHAREE_READ = 500;
+  private static final int               SIGHTINGS_PER_SHAREE_READ =
+                                                                  (int) ReflectionTestUtils.getField(CaldavShareObservationStorage.class,
+                                                                                                     "SIGHTINGS_PER_SHAREE_READ");
 
   @Autowired
   private CaldavShareObservationDAO      shareObservationDAO;

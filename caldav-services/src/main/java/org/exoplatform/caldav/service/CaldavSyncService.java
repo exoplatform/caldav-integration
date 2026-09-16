@@ -1714,7 +1714,23 @@ public class CaldavSyncService {
       }
       materialise(userIdentityId, username, serverId, collection);
     }
-    caldavShareObservationService.observed(userIdentityId, serverId, colleaguesCalendars);
+    // Only against a listing that holds something — the third place in this
+    // method's call tree to apply that rule, and for the reason the other two
+    // already give: a server briefly answering with nothing is far likelier
+    // than every share being revoked at once. listCalendars can succeed and
+    // return an empty list without throwing (a 207 with no responses, a home
+    // whose members are all non-calendar collections, a body that parses but
+    // is not a multistatus), and the failure guards above catch only the
+    // throwing shapes. Handed on, that empty listing would be read as "every
+    // share has stopped existing" and would take this sharee's row off EVERY
+    // owner who shared with them on this server — a false "not shared", which
+    // is the wrong direction for a signal about who can see your calendar.
+    // Costs nothing to withhold: a home that lists no collection has produced
+    // no sighting either, so the only removals skipped are the ones no
+    // evidence supports. Cf. forgetRevokedShares and importRemoteEvents.
+    if (!collections.isEmpty()) {
+      caldavShareObservationService.observed(userIdentityId, serverId, colleaguesCalendars);
+    }
     // Handed on rather than listed a second time: the import needs each
     // collection's ctag to decide whether it has anything to read, and one
     // PROPFIND already carries them all.
