@@ -272,7 +272,15 @@ public class CaldavShareRestTest {
     JsonNode observed = mapper.readTree(mapper.writeValueAsString(new ObservedShares(Map.of(12L, 3L))));
     assertTrue(observed.has("sharedWith"), "agenda reads payload.sharedWith");
     assertEquals(3L, observed.get("sharedWith").get("12").asLong(), "keyed by the agenda calendar id, as a JSON object key");
-    assertTrue(mapper.readTree(mapper.writeValueAsString(new ObservedShares(Map.of()))).get("sharedWith").isEmpty(),
+    // isObject() as well as isEmpty(), because isEmpty() alone cannot see the
+    // difference the message claims: NullNode.size() is 0, so it passes for
+    // {"sharedWith":null} exactly as it does for {"sharedWith":{}}.
+    // NullNode.isObject() is false, which is what makes the assertion mean
+    // what it says. Unreachable today - shareeCountsByCalendar answers Map.of()
+    // on every path, its catch-all included - so this is a guard on the wire
+    // contract rather than a live case.
+    JsonNode emptyObserved = mapper.readTree(mapper.writeValueAsString(new ObservedShares(Map.of()))).get("sharedWith");
+    assertTrue(emptyObserved.isObject() && emptyObserved.isEmpty(),
                "no calendar observed is an empty object, never a null the front end would have to guard");
 
     JsonNode bob = json.get("sharees").get(0);
