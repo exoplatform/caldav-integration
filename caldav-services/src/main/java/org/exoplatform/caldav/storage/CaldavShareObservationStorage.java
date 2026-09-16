@@ -101,8 +101,18 @@ public class CaldavShareObservationStorage {
    * off its owner's row) — so a calendar that is in the stored set and
    * not in the listing is a share that has stopped existing, and a row kept
    * for it would draw a mark on a calendar nobody can see any more. A stale
-   * mark is worse than no mark: it tells its owner they are exposed when they
-   * are not, which is the one thing this feature exists to get right.
+   * mark is worse than no mark <em>here</em>: it tells its owner they are
+   * exposed when they are not.
+   *
+   * <p>
+   * That reads against the maxim {@code CaldavShareObservationEntity} states
+   * for the three cases where a sighting is <em>kept</em> — "overstating is
+   * the safer of the two errors" — and the two do not in fact conflict. The
+   * discriminator is named there, and is what this method has that those cases
+   * lack: a complete listing is <b>evidence of absence</b>, so removing acts
+   * on a fact; a refused credential, a removed user and an empty listing are
+   * an <b>absence of evidence</b>, where removing would manufacture a fact.
+   * A reader meeting a new case decides by that, not by either sentence.
    *
    * <p>
    * Idempotent by the same construction: a pass that finds the same set as the

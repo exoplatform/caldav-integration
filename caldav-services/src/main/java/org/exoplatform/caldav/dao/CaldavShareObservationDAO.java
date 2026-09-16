@@ -61,9 +61,14 @@ public interface CaldavShareObservationDAO extends JpaRepository<CaldavShareObse
    * The question the table exists for, answered in one statement for every
    * calendar of the owner at once — the panel refresh asks it, so an answer
    * costing one statement per calendar would be the N the whole design exists
-   * to remove. Served by {@code IDX_CALDAV_SHARE_OBSERVATION_OWNER
-   * (OWNER_IDENTITY_ID, SERVER_ID, CALENDAR_SYNC_UID)}, whose third column
-   * carries the grouping.
+   * to remove. {@code IDX_CALDAV_SHARE_OBSERVATION_OWNER
+   * (OWNER_IDENTITY_ID, SERVER_ID, CALENDAR_SYNC_UID)} locates the owner's
+   * rows and carries the grouping key as its third column. It does <b>not</b>
+   * cover the statement: the aggregate counts distinct
+   * {@code SHAREE_IDENTITY_ID}, which the index does not hold, so a table row
+   * is read per matching row. Deliberate — the rows of one owner on one server
+   * are few, and a fourth index column is paid on every reconciliation write —
+   * but nothing here should be read as claiming an index-only scan.
    *
    * <p>
    * {@code COUNT(DISTINCT)} rather than {@code COUNT}: the unique index makes

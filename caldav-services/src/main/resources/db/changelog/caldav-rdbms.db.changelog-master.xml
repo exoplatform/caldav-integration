@@ -907,11 +907,16 @@
   <changeSet author="caldav" id="1.0.0-56">
     <comment>
       The question the table exists for: how many colleagues see each of one
-      owner's calendars. Both columns are compared for equality and the result
-      is grouped by the third, which the index carries so the grouping reads no
-      table row - the column order serves that lookup and no direction needs
-      declaring, since no query sorts on this index. Not unique: an owner has
-      many calendars and each may have many sharees. Own changeset, no
+      owner's calendars. The first two columns are compared for equality and
+      the result is grouped by the third, so the index locates the owner's rows
+      and hands them over already grouped - it does NOT cover the statement,
+      the aggregate counting distinct SHAREE_IDENTITY_ID, which is in no column
+      here, so a table row is still read per matching row. Adding it as a
+      fourth column would cover it, and is deliberately not done: the rows of
+      one owner on one server are few, and a wider index is paid on every
+      reconciliation write. The column order serves the lookup and no direction
+      needs declaring, since no query sorts on this index. Not unique: an owner
+      has many calendars and each may have many sharees. Own changeset, no
       modifySql, automatic rollback.
     </comment>
     <createIndex tableName="CALDAV_SHARE_OBSERVATION" indexName="IDX_CALDAV_SHARE_OBSERVATION_OWNER">

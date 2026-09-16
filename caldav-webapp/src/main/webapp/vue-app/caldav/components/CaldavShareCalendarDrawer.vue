@@ -348,12 +348,18 @@ export default {
       this.errorMessage = '';
       return caldavConnectorService.shareCalendar(calendarId, username)
         .then(shares => {
+          // Before the guard, and deliberately: the server has accepted the
+          // grant and the sighting is written, so the owner's row is stale
+          // whatever this drawer happens to be showing by now. The guard below
+          // exists so a slow answer does not paint one calendar's sharees
+          // under another's name; the panel has no such confusion to avoid —
+          // it re-reads every calendar's mark.
+          this.refreshCalendarList();
           if (!this.isShowing(calendarId)) {
             return;
           }
           this.applyShares(shares);
           this.selected = null;
-          this.refreshCalendarList();
           this.$root.$emit('alert-message', this.$t('caldav.share.added', {0: name}), 'success');
         })
         .catch(error => this.isShowing(calendarId) && this.showError(error))
@@ -376,11 +382,14 @@ export default {
       this.errorMessage = '';
       return caldavConnectorService.unshareCalendar(calendarId, user.username)
         .then(shares => {
+          // Before the guard, for the reason doShare gives — and here it
+          // matters more: the sighting has been removed, so a panel not told
+          // goes on marking a calendar nobody can see any more.
+          this.refreshCalendarList();
           if (!this.isShowing(calendarId)) {
             return;
           }
           this.applyShares(shares);
-          this.refreshCalendarList();
           this.$root.$emit('alert-message', this.$t('caldav.share.removed', {0: name}), 'success');
         })
         .catch(error => this.isShowing(calendarId) && this.showError(error))
@@ -405,6 +414,17 @@ export default {
      * changed, only what a connector says about one of them, and
      * `AgendaPersonalCalendarList` binds its share, problem and action reads
      * to this event while leaving the calendar read to the other.
+     *
+     * It is still the broader of two broad signals, and the cost is worth
+     * knowing before anyone narrows it: the same event also drives
+     * `retrieveProblems` and `retrieveConnectorActions` in that list, the
+     * connector refreshes of `AgendaLeftPanel`, `AgendaConnector` and
+     * `AgendaAdminConnectorSettings` — and `retrieveConnectorActions` reaches
+     * `GET /caldav/rest/calendars/shareable`, which probes the server's
+     * capabilities. So three colleagues added in one drawer session are three
+     * round trips to the calendar server this drawer did not use to make.
+     * Accepted because there is no narrower event the list already listens
+     * for, and inventing one would be the new wiring this deliberately avoids.
      *
      * @returns {void}
      */

@@ -645,6 +645,16 @@ public class CaldavCalendarShareServiceTest {
    * longer naming eric; still named is not applied; and nothing to revoke
    * sends nothing.
    *
+   * <p>
+   * No sighting assertion here, unlike its grant sibling, and the absence is
+   * the design rather than an oversight: a revoke reads
+   * {@code target.pair().getLocalCalendarSyncUid()} and asks no collaborator,
+   * so there is no fixture default that could silence it on one mechanism and
+   * not the other — which is exactly what happened to the grant, whose second
+   * arm a missing {@code exportingUserOf} stub switched off across every
+   * BlueMind case. The unconditional removal is pinned once, on the path it
+   * has (EXO-90331).
+   *
    * @throws Exception never
    */
   @Test

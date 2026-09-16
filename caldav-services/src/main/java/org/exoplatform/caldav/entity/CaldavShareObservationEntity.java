@@ -142,6 +142,18 @@ import lombok.NoArgsConstructor;
  * your calendar, overstating is the safer of the two errors.
  *
  * <p>
+ * <b>The discriminator</b>, stated once here because the reconciliation's own
+ * maxim is the opposite one ("a stale mark is worse than no mark", on
+ * {@code CaldavShareObservationStorage#reconcile}) and a reader meeting a
+ * fourth case must be able to tell which governs. It is not a preference but a
+ * question of what is in hand: a listing that succeeded is <b>evidence of
+ * absence</b> — the server was asked for the home's collections and accounted
+ * for every one — so what it omits has demonstrably stopped existing, and
+ * removing states a fact. The three above are an <b>absence of evidence</b>:
+ * nothing was asked, or the answer was withheld, and removing would state a
+ * fact nobody established. Remove on the first, keep on the second.
+ *
+ * <p>
  * Keyed by the calendar's <b>anchor</b>, agenda's {@code syncUid}, not by an
  * agenda calendar id: the pair table records the anchor and nothing else, the
  * anchor is what the collection's slug carries, and a calendar id is a number

@@ -136,10 +136,12 @@ describe('the share drawer, after it has changed a share', () => {
     expect(refreshes()).toHaveLength(0);
   });
 
-  it('asks nothing when the drawer has moved to another calendar meanwhile', async () => {
-    // The same guard the sharee list already applies: an answer for a calendar
-    // the drawer no longer shows is dropped, so it must not make the panel
-    // re-read on its behalf either.
+  it('asks all the same when the drawer has moved to another calendar meanwhile', async () => {
+    // Not subject to the guard the sharee list applies. That guard stops a
+    // slow answer painting calendar 12's sharees under calendar 14's name; the
+    // panel has no such confusion to avoid, and the grant did happen — a panel
+    // not told keeps a mark that no longer matches the server until some
+    // unrelated refresh comes along.
     let resolve;
     caldavConnectorService.shareCalendar.mockReturnValue(new Promise(done => resolve = done));
     const wrapper = drawer({selected: {remoteId: 'bob'}});
@@ -149,7 +151,9 @@ describe('the share drawer, after it has changed a share', () => {
     resolve({calendarId: 12, sharees: []});
     await acting;
 
-    expect(refreshes()).toHaveLength(0);
+    expect(refreshes()).toHaveLength(1);
+    // and the drawer it moved to is not repainted with calendar 12's answer
+    expect(wrapper.vm.sharees).toEqual([]);
   });
 
   it('draws no count of its own: the panel is told to ask, never told the answer', async () => {
