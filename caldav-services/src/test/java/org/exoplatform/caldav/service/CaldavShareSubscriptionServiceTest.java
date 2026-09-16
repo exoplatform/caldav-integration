@@ -425,6 +425,65 @@ public class CaldavShareSubscriptionServiceTest {
   }
 
   /**
+   * A failure that is not a server answer at all — eXo's own machinery giving
+   * way on the road to BlueMind — is an obligation like any other, and the
+   * two halves of this test are the two ways it used to disappear.
+   *
+   * <p>
+   * At grant time an unclassified escape reached the seam's outer guard,
+   * which logs "could not be recorded" and writes <b>no row</b>: the
+   * colleague was owed a subscription that nothing would ever retry, and
+   * nothing anywhere said so. At drain time it reached the per-colleague
+   * guard, which counts nothing: the row kept its attempt count, and being
+   * the oldest it came back at the head of the very next sweep — one login
+   * as that colleague, with their stored password, every sweep period, for
+   * ever, while the rest of the backlog waited behind it in the same batch.
+   * Classified, it is a row at grant time and a spent attempt at drain time,
+   * which is what the service's own Javadoc has always claimed.
+   */
+  @Test
+  public void aFailureThatIsNotAServerAnswerIsStillRecordedAndStillCounted() {
+    doThrow(new IllegalStateException("the credentials provider broke")).when(blueMindSubscriptionClient)
+                                                                        .asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
+
+    assertDoesNotThrow(() -> service.subscribeSharee(share()));
+
+    verify(caldavPendingSubscriptionStorage).owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
+
+    PendingSubscription first = row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0);
+    PendingSubscription second = row(2L, BOB, OTHER, PendingSubscriptionKind.SUBSCRIBE, 0);
+    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(first, second));
+
+    assertEquals(0, assertDoesNotThrow(() -> service.retryOwed(50)));
+
+    verify(caldavPendingSubscriptionStorage).refused(1L);
+    verify(caldavPendingSubscriptionStorage).refused(2L);
+    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), anyInt());
+    verify(caldavPendingSubscriptionStorage, never()).settled(anyLong(), anyLong(), anyString());
+  }
+
+  /**
+   * The same, thrown from inside the open session rather than at the door:
+   * the edit the row asks for fails on something that is not a CalDAV answer,
+   * and that row alone is counted while the colleague's next one is still
+   * tried in the same session.
+   */
+  @Test
+  public void aFailureInsideTheSessionCountsThatRowAndGoesOn() {
+    PendingSubscription broken = row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0);
+    PendingSubscription fine = row(2L, BOB, OTHER, PendingSubscriptionKind.SUBSCRIBE, 0);
+    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(broken, fine));
+    doThrow(new IllegalArgumentException("not a header value")).when(edits).subscribe(CONTAINER);
+
+    assertEquals(1, service.retryOwed(50));
+
+    verify(caldavPendingSubscriptionStorage).refused(1L);
+    verify(edits).subscribe(OTHER);
+    verify(caldavPendingSubscriptionStorage).settled(BOB, SERVER, OTHER);
+    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), anyInt());
+  }
+
+  /**
    * Nothing owed costs nothing: the client is not touched.
    */
   @Test

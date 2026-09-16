@@ -102,6 +102,42 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * subscription. The one bounded edge is a row drained after they unsubscribed
  * by hand — the drain re-subscribes them — which lasts at most
  * {@code maxAttempts} sweep periods after the grant.
+ *
+ * <p>
+ * <b>Four limits, named because each is a decision somebody may want to
+ * revisit rather than an oversight.</b>
+ * <ul>
+ * <li><b>Only a revoke made from eXo unsubscribes.</b> An owner who removes
+ * the access entry in BlueMind's own webmail never runs this service, and
+ * BlueMind does not auto-unsubscribe for a calendar — so that colleague keeps
+ * the dangling subscription this service exists to prevent. Covering it would
+ * mean noticing, at the colleague's own pass, a subscribed collection they can
+ * no longer read; the natural seam is
+ * {@code CaldavSyncService.forgetRevokedShares}, which already watches the
+ * listing. Out of scope until the PO asks for it.</li>
+ * <li><b>The grant-time attempt is synchronous, on the owner's thread, inside
+ * the share's stripe lock.</b> It is one login, one POST and one logout, each
+ * bounded by the REST session's 30-second timeout, so a stalled BlueMind can
+ * hold the owner's Share or Unshare — and every other share of that calendar —
+ * for up to a minute and a half beyond what the grant itself already costs.
+ * It buys immediacy in BlueMind's own webmail and on the colleague's devices;
+ * the drain alone would put the calendar in their very next eXo pass anyway.
+ * The trade is the PO's and the Architect's, not this class's.</li>
+ * <li><b>The attempt bound is per node.</b> {@code @Scheduled} is node-local
+ * and every node fires; the owed rows carry no claim and no lease, so on an
+ * N-node cluster each sweep period runs N drains of the same rows — N logins
+ * as the colleague, N counted refusals — and the bound is reached in about
+ * {@code maxAttempts / N} periods rather than {@code maxAttempts}. The
+ * account sweep beside it converges through its own last-sync column; this
+ * table has no equivalent, and adding one is an Ops-visible change.</li>
+ * <li><b>A row given up on is retired by spending the configured bound, not
+ * by a terminal marker</b> ({@code CaldavPendingPushDAO}'s pattern, reused).
+ * Raising {@code exo.agenda.caldav.push.maxAttempts} — a property shared with
+ * the meeting-copy push, so raised for reasons that have nothing to do with
+ * subscriptions — therefore makes every previously abandoned row attemptable
+ * again. For a meeting copy that is a harmless re-push; here it can
+ * re-subscribe a colleague who unsubscribed by hand.</li>
+ * </ul>
  */
 @Service
 public class CaldavShareSubscriptionService {
@@ -342,6 +378,14 @@ public class CaldavShareSubscriptionService {
     } catch (CalDavException e) {
       // The login itself: refused, unreachable, or an unexplained answer.
       return retryAll(rows, e.getMessage());
+    } catch (RuntimeException e) {
+      // Anything eXo's own machinery threw on the way, counted rather than
+      // dropped: a row this run left untouched is the same row at the head of
+      // the next run, which is a login as this colleague every sweep period
+      // and a batch the rest of the backlog never gets. Counting a row that
+      // already landed in this pass is a no-op - it was deleted - so this is
+      // safe to apply to the whole list.
+      return retryAll(rows, String.valueOf(e));
     }
     return landed[0];
   }
@@ -364,6 +408,16 @@ public class CaldavShareSubscriptionService {
       return new Attempt(Outcome.FINAL, e.getMessage(), false);
     } catch (CalDavException e) {
       return new Attempt(Outcome.RETRY, e.getMessage(), true);
+    } catch (RuntimeException e) {
+      // Not a server answer: eXo's own machinery failed on the way - a
+      // credentials provider that did not produce what its channel promised,
+      // a session key the transport will not put in a header. It is still an
+      // obligation the colleague is owed, and the line above this one is the
+      // reason it must be classified rather than thrown: an unclassified
+      // escape leaves NO row, and an obligation with no row is never retried
+      // and never seen again.
+      LOG.warn("The BlueMind subscription of user {} failed before any answer was read", shareeUsername, e);
+      return new Attempt(Outcome.RETRY, String.valueOf(e), true);
     }
   }
 
@@ -389,6 +443,13 @@ public class CaldavShareSubscriptionService {
       return new Attempt(Outcome.RETRY, e.getMessage(), true);
     } catch (CalDavException e) {
       return new Attempt(Outcome.RETRY, e.getMessage(), false);
+    } catch (RuntimeException e) {
+      // Same reason as at grant time, with a different cost: an escape here
+      // leaves the row exactly as it was, and a row that is never counted is
+      // handed out again at the head of every sweep - one login as the
+      // colleague per run, for ever. Counted, it spends its budget like any
+      // other refusal and stops.
+      return new Attempt(Outcome.RETRY, String.valueOf(e), false);
     }
   }
 
