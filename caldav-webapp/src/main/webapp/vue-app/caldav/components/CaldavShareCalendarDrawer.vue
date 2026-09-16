@@ -353,6 +353,7 @@ export default {
           }
           this.applyShares(shares);
           this.selected = null;
+          this.refreshCalendarList();
           this.$root.$emit('alert-message', this.$t('caldav.share.added', {0: name}), 'success');
         })
         .catch(error => this.isShowing(calendarId) && this.showError(error))
@@ -379,10 +380,36 @@ export default {
             return;
           }
           this.applyShares(shares);
+          this.refreshCalendarList();
           this.$root.$emit('alert-message', this.$t('caldav.share.removed', {0: name}), 'success');
         })
         .catch(error => this.isShowing(calendarId) && this.showError(error))
         .finally(() => this.removing = null);
+    },
+    /**
+     * Tells the agenda's calendar list that this calendar's exposure just
+     * changed (EXO-90331).
+     *
+     * The share mark on the owner's row is drawn from what the platform
+     * answers, never from what this drawer just did: an optimistic update
+     * would be right only in the session that acted, would be gone on the next
+     * reload, would say nothing to another device or another viewer, and would
+     * claim a share whose subscription is still owed. So the drawer's whole
+     * job here is to make the panel ask again.
+     *
+     * On the document, because this drawer lives in the add-on's own Vue app
+     * and a `$root` event never crosses that boundary — the idiom
+     * `CaldavHiddenCalendarsDrawer` and the admin server list already use.
+     * `agenda-connectors-refresh` rather than
+     * `agenda-refresh-personal-calendars`: the set of calendars has not
+     * changed, only what a connector says about one of them, and
+     * `AgendaPersonalCalendarList` binds its share, problem and action reads
+     * to this event while leaving the calendar read to the other.
+     *
+     * @returns {void}
+     */
+    refreshCalendarList() {
+      document.dispatchEvent(new CustomEvent('agenda-connectors-refresh'));
     },
     /**
      * Shows what the platform answered about the calendar's sharees.

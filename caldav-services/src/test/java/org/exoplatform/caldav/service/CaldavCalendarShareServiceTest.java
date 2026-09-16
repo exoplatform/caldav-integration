@@ -202,6 +202,9 @@ public class CaldavCalendarShareServiceTest {
   @Mock
   private CaldavPushService               caldavPushService;
 
+  @Mock
+  private CaldavShareObservationService   caldavShareObservationService;
+
   private CaldavCalendarShareService      service;
 
   /**
@@ -217,7 +220,8 @@ public class CaldavCalendarShareServiceTest {
                                              caldavConnectionIdentityService,
                                              identityManager,
                                              blueMindAclClient,
-                                             caldavPushService);
+                                             caldavPushService,
+                                             caldavShareObservationService);
     lenient().when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(calendar(CALENDAR, ALICE, ANCHOR));
     lenient().when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(connectedTo(STALWART));
     lenient().when(caldavSyncStorage.getPairByLocalCalendar(ALICE, STALWART, ANCHOR)).thenReturn(exoPair());
@@ -1619,6 +1623,163 @@ public class CaldavCalendarShareServiceTest {
    */
   private String refusal(String login) {
     return assertThrows(IllegalArgumentException.class, () -> service.grant(ALICE, "alice", CALENDAR, login)).getMessage();
+  }
+
+  // ---------------------------------------------------------------- the owner's mark, written as the share is made
+
+  /**
+   * A grant records the sighting at once, without waiting for bob's next
+   * synchronisation pass (EXO-90331).
+   *
+   * <p>
+   * The pass is what used to write it, and on the rig that meant a grant at
+   * 21:39:54 was marked only when a pass happened to follow seven seconds
+   * later — and would otherwise have waited five minutes, with nothing the
+   * owner could do to shorten it (their own <i>Synchronise now</i> runs their
+   * own pass, and their home never lists their own calendar as a colleague's).
+   * Recorded under the calendar's own anchor, which is what the owner's panel
+   * resolves a mark by, and against bob's identity rather than his principal.
+   */
+  @Test
+  public void aGrantRecordsTheSightingWithoutWaitingForAPass() throws Exception {
+    AccessControlEntry bobs = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(), Set.of()),
+                                                                CollectionAcl.of(List.of(bobs), Set.of()));
+    when(calDavClient.writeAcl(eq(endpoint), any(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    service.grant(ALICE, "alice", CALENDAR, "bob");
+
+    verify(caldavShareObservationService).granted(ALICE, BOB, STALWART, ANCHOR);
+    verify(caldavShareObservationService, never()).revoked(anyLong(), anyLong(), anyString());
+  }
+
+  /**
+   * A revoke removes the sighting at once (EXO-90331).
+   *
+   * <p>
+   * The half the pass cannot do in time, and the one answer this feature must
+   * never get wrong: observed on the rig, a revoke at 21:40:20 left the mark
+   * saying "still shared" because no pass ran afterwards. Scoped to bob's
+   * identity, so only his row goes.
+   */
+  @Test
+  public void aRevokeRemovesTheSightingWithoutWaitingForAPass() throws Exception {
+    AccessControlEntry bobs = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(bobs), Set.of()),
+                                                                CollectionAcl.of(List.of(), Set.of()));
+    when(calDavClient.writeAcl(eq(endpoint), any(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    service.revoke(ALICE, "alice", CALENDAR, "bob");
+
+    verify(caldavShareObservationService).revoked(BOB, STALWART, ANCHOR);
+    verify(caldavShareObservationService, never()).granted(anyLong(), anyLong(), anyLong(), anyString());
+  }
+
+  /**
+   * Revoking bob's access says nothing about carol's (EXO-90331).
+   *
+   * <p>
+   * The removal names one colleague, so the count falls by one rather than to
+   * zero. Carol's entry, made outside eXo, is kept on the server by the
+   * existing rule; her sighting must be kept with it, and a removal scoped to
+   * the calendar instead of to the sharee would take the whole mark off a
+   * calendar carol can still see.
+   */
+  @Test
+  public void revokingOneShareeLeavesTheOthersSightings() throws Exception {
+    AccessControlEntry bobs = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    AccessControlEntry carols = AccessControlEntry.readGrantTo("/dav/pal/carol%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(bobs, carols), Set.of()),
+                                                                CollectionAcl.of(List.of(carols), Set.of()));
+    when(calDavClient.writeAcl(eq(endpoint), any(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    service.revoke(ALICE, "alice", CALENDAR, "bob");
+
+    verify(caldavShareObservationService).revoked(BOB, STALWART, ANCHOR);
+    verify(caldavShareObservationService, never()).revoked(eq(CAROL), anyLong(), anyString());
+  }
+
+  /**
+   * A grant the server refused records nothing (EXO-90331).
+   *
+   * <p>
+   * The write sits past every arm that throws, so the mark can never claim a
+   * share the server does not hold — here the read-back does not carry bob's
+   * grant and the grant is reported as not applied.
+   */
+  @Test
+  public void aGrantTheServerDidNotApplyRecordsNoSighting() {
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(), Set.of()),
+                                                                CollectionAcl.of(List.of(), Set.of()));
+    when(calDavClient.writeAcl(eq(endpoint), any(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    assertEquals(CaldavCalendarShareService.NOT_APPLIED,
+                 assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob")).getCode());
+
+    verify(caldavShareObservationService, never()).granted(anyLong(), anyLong(), anyLong(), anyString());
+  }
+
+  /**
+   * A calendar eXo did not export records no sighting on a grant, and is
+   * removed all the same on a revoke (EXO-90331).
+   *
+   * <p>
+   * An imported collection — alice owns it on the server and eXo only pairs
+   * with it — is shareable, and carries no anchor this deployment minted. Bob's
+   * pass therefore cannot tie it back to a calendar here, and the
+   * reconciliation, which makes a home's stored set equal to what it just
+   * listed, would delete any row the grant wrote within one period: a mark
+   * that appears and vanishes with nothing the user did to explain it. So
+   * nothing is written. The revoke stays unconditional, because a removal can
+   * only take a mark away and never invent one.
+   */
+  @Test
+  public void anImportedCalendarRecordsNoSightingButIsStillForgottenOnRevoke() throws Exception {
+    onStalwartImported(STALWART_IMPORTED);
+    String href = STALWART_IMPORTED + "/";
+    when(calDavClient.readCalendar(endpoint, href)).thenReturn(collection(ALICE_HOME + "default/",
+                                                                          "/dav/pal/alice%40stalwart.local/",
+                                                                          true));
+    AccessControlEntry bobs = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, href)).thenReturn(CollectionAcl.of(List.of(), Set.of()),
+                                                          CollectionAcl.of(List.of(bobs), Set.of()),
+                                                          CollectionAcl.of(List.of(bobs), Set.of()),
+                                                          CollectionAcl.of(List.of(), Set.of()));
+    when(calDavClient.writeAcl(eq(endpoint), any(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    service.grant(ALICE, "alice", CALENDAR, "bob");
+    verify(caldavShareObservationService, never()).granted(anyLong(), anyLong(), anyLong(), anyString());
+
+    service.revoke(ALICE, "alice", CALENDAR, "bob");
+    verify(caldavShareObservationService).revoked(BOB, STALWART, ANCHOR);
+  }
+
+  /**
+   * An {@code EXO} pair whose slug no longer carries the calendar's anchor is
+   * refused before any share is attempted, which is why
+   * {@code observableAnchorOf}'s second condition is a guard and not a live
+   * branch (EXO-90331).
+   *
+   * <p>
+   * Written to establish the <em>reachability</em> of that condition rather
+   * than its behaviour, because the two are different claims and only this one
+   * can be checked against the caller: {@code isShareablePair} already demands
+   * that the {@code remoteHref} end in {@code /exo-cal-<syncUid>}, so a server
+   * that rewrote the slug (EXO-89590) makes the calendar unshareable rather
+   * than shareable-but-unrecordable. Should that rule ever loosen, this test
+   * fails and the guard behind it starts earning its place.
+   */
+  @Test
+  public void aRewrittenSlugIsNotShareableAtAll() {
+    CalendarSync pair = exoPair();
+    pair.setRemoteHref("/dav/cal/alice%40stalwart.local/exo-cal-something-else/");
+    when(caldavSyncStorage.getPairByLocalCalendar(ALICE, STALWART, ANCHOR)).thenReturn(pair);
+
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
+
+    assertEquals(CaldavCalendarShareService.CALENDAR_NOT_ON_SERVER, refused.getMessage());
+    verify(caldavShareObservationService, never()).granted(anyLong(), anyLong(), anyLong(), anyString());
   }
 
   /**

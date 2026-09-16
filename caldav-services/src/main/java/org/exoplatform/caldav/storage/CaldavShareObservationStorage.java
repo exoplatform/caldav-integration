@@ -35,22 +35,26 @@ import org.exoplatform.caldav.entity.CaldavShareObservationEntity;
  * list (EXO-90331).
  *
  * <p>
- * No business logic: which collections count as a colleague's eXo calendar,
- * and whose they are, is the classification the sweep already made
- * ({@code CollectionOwnership#COLLEAGUES_EXO_CALENDAR}). What lives here is
- * the mechanical part — that reconciling a listing to the same set writes
- * nothing, that a sighting the listing dropped is deleted, and that the count
- * is one statement whatever the number of calendars.
+ * No business logic: which collections count as a colleague's eXo calendar and
+ * whose they are is the sweep's classification
+ * ({@code CollectionOwnership#COLLEAGUES_EXO_CALENDAR}), and whether a share
+ * eXo just made may be recorded at all is
+ * {@code CaldavCalendarShareService#observableAnchorOf}'s. What lives here is
+ * the mechanical part, in two shapes that must not be confused: {@link
+ * #reconcile} answers "this is everything that home lists now" and may
+ * therefore delete, while {@link #record} and {@link #forget} answer "this one
+ * share changed" and touch one row, leaving every other exactly as it was.
  *
  * <p>
  * <b>What the rows cannot say</b>, and what nothing reading this class may
- * conclude from their absence: a sharee who is not an eXo user with a
- * connected CalDAV account never lists anything, so their share is in no row
- * (the population EXO-90277 documents as out of scope); and a share granted or
- * revoked since the sharee's last pass is not reflected until that pass runs
- * again, up to one synchronisation period later. The count is a floor on the
- * exposure as far as the homes still being read can see it; it can overstate
- * in one direction only, which {@code CaldavShareObservationEntity} sets out.
+ * conclude from their absence: a calendar eXo did not export is in no row
+ * however it was shared, neither writer being able to name it; and a share
+ * made outside eXo needs a pass to be seen, so it needs the sharee to be an
+ * eXo user with a connected CalDAV account and it lags by up to one
+ * synchronisation period, while a share eXo made is recorded as it is made.
+ * The count is a floor on the exposure as far as the homes still being read
+ * can see it; it can overstate in one direction only, which
+ * {@code CaldavShareObservationEntity} sets out.
  */
 @Component
 public class CaldavShareObservationStorage {
@@ -218,6 +222,64 @@ public class CaldavShareObservationStorage {
       }
     }
     return counts;
+  }
+
+  /**
+   * Records one sighting, without reading or touching any other.
+   *
+   * <p>
+   * The single-row counterpart of {@link #reconcile}, and the difference
+   * between the two is the whole reason both exist. A reconciliation is the
+   * answer to "what does this home list now", so it may delete; this is the
+   * answer to "this one share was just made", which says nothing about any
+   * other calendar and must therefore leave every other row exactly as it is.
+   * Handing a grant to {@code reconcile} as a one-entry map would erase every
+   * other mark that sharee's home feeds.
+   *
+   * <p>
+   * Idempotent: a sighting already recorded has its owner and its instant
+   * rewritten rather than a second row inserted, so a grant repeated — the
+   * idempotent arm of the share path, where the colleague could already read
+   * the calendar — writes the same single row. The unique index stands behind
+   * that rather than being relied on to raise.
+   *
+   * @param ownerIdentityId the eXo user whose calendar it is
+   * @param shareeIdentityId the colleague it is shared with
+   * @param serverId the declared server registration
+   * @param anchor the owner's calendar anchor
+   * @return true when the row was created, false when one was already there
+   */
+  @Transactional
+  public boolean record(long ownerIdentityId, long shareeIdentityId, long serverId, String anchor) {
+    CaldavShareObservationEntity sighting = shareObservationDAO.findSighting(shareeIdentityId, serverId, anchor);
+    Date now = new Date();
+    if (sighting == null) {
+      shareObservationDAO.save(new CaldavShareObservationEntity(null, ownerIdentityId, shareeIdentityId, serverId, anchor, now));
+      return true;
+    }
+    sighting.setOwnerIdentityId(ownerIdentityId);
+    sighting.setObserved(now);
+    shareObservationDAO.save(sighting);
+    return false;
+  }
+
+  /**
+   * Removes one sighting, without reading or touching any other.
+   *
+   * <p>
+   * The revoke path's write. Scoped to the one colleague named: the other
+   * sharees of the same calendar keep their rows, which is what makes the
+   * count fall by one rather than to zero.
+   *
+   * @param shareeIdentityId the colleague the calendar is no longer shared
+   *          with
+   * @param serverId the declared server registration
+   * @param anchor the owner's calendar anchor
+   * @return how many rows were removed, zero or one
+   */
+  @Transactional
+  public int forget(long shareeIdentityId, long serverId, String anchor) {
+    return shareObservationDAO.deleteSighting(shareeIdentityId, serverId, anchor);
   }
 
   /**

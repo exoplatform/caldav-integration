@@ -47,38 +47,59 @@ import org.exoplatform.services.log.Log;
  * left-panel list cannot pay at all.
  *
  * <p>
- * It comes instead from the other end, for free. Every user's synchronisation
- * pass lists their whole CalDAV home and classifies each collection; a
- * collection this deployment minted for <em>another</em> of its users is
+ * It comes from two writers instead, neither of which asks the server
+ * anything on the read path.
+ *
+ * <p>
+ * <b>The grant and the revoke write it directly.</b> When eXo itself shares a
+ * calendar it knows, exactly and at once, which calendar and which colleague:
+ * {@link #granted} and {@link #revoked} record that as the server accepts it.
+ * This is what makes the mark true immediately rather than at the next pass,
+ * and it is the only writer that can be right about a revoke — the sweep can
+ * only notice a revoke by a collection ceasing to be listed, which needs the
+ * colleague's pass to run, and the owner cannot cause that pass.
+ *
+ * <p>
+ * <b>The synchronisation pass reconciles.</b> Every user's pass lists their
+ * whole CalDAV home and classifies each collection; a collection this
+ * deployment minted for <em>another</em> of its users is
  * {@link CollectionOwnership#COLLEAGUES_EXO_CALENDAR}, recognised by the
  * anchor its slug carries ({@link CaldavOutboundService#anchorOf}), and the
  * pair behind that anchor names the owner
- * ({@link CaldavOutboundService#exportingUserOf}). So the sharee's own sweep
- * — a listing it already performs, on a schedule it already keeps — observes
- * exactly the outbound fact the owner's row needs. Persisted, the owner's mark
- * becomes a local indexed query and the server is asked nothing.
+ * ({@link CaldavOutboundService#exportingUserOf}). That covers what the first
+ * writer cannot see — a share made or removed in the calendar server's own web
+ * client — and corrects drift, since a row is confirmed by the next pass that
+ * still lists the collection and deleted by the first that does not.
  *
  * <p>
  * <b>The bounds of that answer</b>, stated here because this is where a
- * caller decides what to draw from it. Two of them make the count a floor:
+ * caller decides what to draw from it. Three of them make the count a floor:
  * <ol>
- * <li><b>Only eXo colleagues are counted.</b> A sharee who is not a user of
- * this deployment with a connected CalDAV account never runs a pass, so
- * nothing ever lists their home and their share is in no row. That is the same
- * population EXO-90277's first limit already puts out of scope for sharing
- * from eXo; a calendar shared only with such a sharee carries no mark.</li>
- * <li><b>The mark lags by up to one synchronisation period.</b> A share
- * granted a minute ago is seen when the sharee's next pass runs — five minutes
- * by default — and so is a share revoked a minute ago. The mark is therefore a
- * state indicator and never a confirmation that a grant succeeded; the Share
- * drawer, which reads the server live, is what confirms one.</li>
+ * <li><b>A calendar eXo did not export carries no mark at all.</b> A calendar
+ * the user owns on the server and imported into eXo — a {@code REMOTE} pair —
+ * can be shared from the Share drawer, and neither writer records it: its
+ * collection carries no anchor this deployment minted, so a colleague's pass
+ * cannot tie it back to a calendar here, and the grant path deliberately does
+ * not record what a pass would then erase
+ * ({@code CaldavCalendarShareService#observableAnchorOf}, where the condition
+ * and the reason are set out). On a deployment whose calendars were mostly
+ * imported rather than created in eXo, that is most of them.</li>
+ * <li><b>A share made outside eXo is only ever seen by a pass.</b> So it needs
+ * the sharee to be a user of this deployment with a connected CalDAV account —
+ * nobody else ever lists a home — and it appears, and goes away, up to one
+ * synchronisation period late. A share eXo made is subject to neither: it is
+ * recorded as it is made, and eXo can only share with a connected colleague in
+ * the first place ({@code CaldavCalendarShareService.SHAREE_NOT_CONNECTED}).</li>
+ * <li><b>The mark still confirms nothing.</b> It is a state indicator; the
+ * Share drawer, which reads the server live, is what confirms who can
+ * see a calendar.</li>
  * </ol>
- * Both make the count a <b>floor</b> on a calendar's exposure, and nothing may
- * read "no mark" as "shared with nobody".
+ * All three make the count a <b>floor</b> on a calendar's exposure, and
+ * nothing may read "no mark" as "shared with nobody".
  *
  * <p>
  * It is a floor only among the colleagues whose homes are still being read,
- * which is the third bound and the one that runs the other way: a sighting
+ * which is the fourth bound and the one that runs the other way: a sighting
  * nothing contradicts stands, so a suspended or removed colleague, and a home
  * whose listing comes back empty, each keep their last one. The three causes
  * and the reason none of them removes a row are set out once, on
@@ -137,6 +158,110 @@ public class CaldavShareObservationService {
     } catch (RuntimeException e) {
       LOG.warn("What the home of user {} lists of their colleagues' calendars could not be recorded;"
           + " the next pass records it", shareeIdentityId, e);
+    }
+  }
+
+  /**
+   * Records a share the moment eXo itself made it, without waiting for the
+   * sharee's next pass (EXO-90331).
+   *
+   * <p>
+   * <b>Why the sweep is not enough on its own.</b> The reconciliation observes
+   * a share from the sharee's end, so it can only report one after that
+   * colleague's home has been listed again — up to a whole synchronisation
+   * period. Measured on the rig: a grant at 21:39:54 was recorded at 21:40:01
+   * by the pass that happened to follow, a revoke at 21:40:20 was not, and the
+   * mark went on saying "still shared" because no pass ran afterwards. The
+   * owner cannot shorten that wait either — pressing <i>Synchronise now</i>
+   * runs the <em>owner's</em> pass, and an owner's home never lists their own
+   * calendar as a colleague's. So for the two acts eXo performs itself the
+   * observation is not something to wait for: it is already known, exactly,
+   * at the moment the server accepted the write.
+   *
+   * <p>
+   * <b>Why it does not make the sweep redundant.</b> This records what eXo
+   * did; the sweep records what the server says, which also covers a share
+   * made or removed in the server's own web client, and which is what removes
+   * a row this method wrote when the grant behind it goes away elsewhere. The
+   * two are the same table on purpose: the sweep reconciles a whole home
+   * against its listing, so a row written here is confirmed by the next pass
+   * that still lists the collection and deleted by the first that does not.
+   * That is why the caller must only write a sighting the sweep can derive
+   * again — {@code CaldavCalendarShareService#observableAnchorOf} is where
+   * that condition is stated and checked, and a calendar that fails it gets no
+   * mark rather than one that appears now and vanishes within the period.
+   *
+   * <p>
+   * Absorbs its own failure: a grant succeeded on the server is not undone
+   * because a state indicator could not be written, and the sharee's next pass
+   * writes it.
+   *
+   * @param ownerIdentityId the eXo user whose calendar it is
+   * @param shareeIdentityId the colleague it was just shared with
+   * @param serverId the declared server registration, zero for an account
+   *          attached before registrations existed
+   * @param anchor the owner's calendar anchor, one the sweep derives too
+   */
+  public void granted(long ownerIdentityId, long shareeIdentityId, long serverId, String anchor) {
+    if (!isRecordableAnchor(anchor)) {
+      return;
+    }
+    try {
+      if (caldavShareObservationStorage.record(ownerIdentityId, shareeIdentityId, serverId, anchor)) {
+        LOG.debug("Calendar {} of user {} is now seen by user {} on server {}", anchor, ownerIdentityId, shareeIdentityId, serverId);
+      }
+    } catch (RuntimeException e) {
+      LOG.warn("The share of calendar {} with user {} could not be recorded; the mark waits for that colleague's next pass",
+               anchor,
+               shareeIdentityId,
+               e);
+    }
+  }
+
+  /**
+   * Removes the sighting of a share the moment eXo itself revoked it
+   * (EXO-90331).
+   *
+   * <p>
+   * The half that matters most. A mark left saying "still shared" after a
+   * revoke is the one answer this feature must never give, and until this
+   * existed it gave it for up to a whole synchronisation period — longer in
+   * practice, since nothing forces a pass to run and the owner's own
+   * <i>Synchronise now</i> does not cause one for the sharee.
+   *
+   * <p>
+   * Unlike {@link #granted} this is not conditional on the sweep being able to
+   * derive the row again, and the asymmetry is deliberate: removing a sighting
+   * can only take a mark away, never invent one, so the worst a removal
+   * nothing supports can do is understate an exposure the Share drawer still
+   * reports correctly. Writing one has the opposite failure mode, which is why
+   * it is the guarded direction.
+   *
+   * <p>
+   * Scoped to the one colleague: a calendar shared with three people and
+   * revoked from one keeps the other two sightings and the count falls to two.
+   *
+   * <p>
+   * Absorbs its own failure, and the sharee's next pass removes what this
+   * could not — the revoke having succeeded on the server, the collection is
+   * gone from their home and the reconciliation drops the row.
+   *
+   * @param shareeIdentityId the colleague the calendar is no longer shared
+   *          with
+   * @param serverId the declared server registration
+   * @param anchor the owner's calendar anchor
+   */
+  public void revoked(long shareeIdentityId, long serverId, String anchor) {
+    if (!isRecordableAnchor(anchor)) {
+      return;
+    }
+    try {
+      if (caldavShareObservationStorage.forget(shareeIdentityId, serverId, anchor) > 0) {
+        LOG.debug("Calendar {} is no longer seen by user {} on server {}", anchor, shareeIdentityId, serverId);
+      }
+    } catch (RuntimeException e) {
+      LOG.warn("The revoked share of calendar {} from user {} could not be forgotten;"
+          + " the mark it feeds says shared until that colleague's next pass", anchor, shareeIdentityId, e);
     }
   }
 

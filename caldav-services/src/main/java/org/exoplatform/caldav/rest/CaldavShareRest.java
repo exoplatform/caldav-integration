@@ -111,12 +111,15 @@ public class CaldavShareRest {
   @GetMapping("/calendars/observed-shares")
   @Secured("users")
   @Operation(summary = "How many colleagues each of the connected user's calendars is shared with",
-      description = "Answered from what other eXo users' CalDAV homes were observed to list on their own synchronisation "
-          + "passes, so it costs no request to the server and is meant for a list refresh. `sharedWith` maps an agenda "
-          + "calendar id to a number of colleagues, and carries only the calendars with at least one. Bounds: a sharee "
-          + "who is not an eXo user with a connected CalDAV account is never observed and is not counted, and a share "
-          + "granted or revoked since that colleague's last pass is not reflected for up to one synchronisation period. "
-          + "Those two make the count a floor on a calendar's exposure. It can also overstate, in one direction: a "
+      description = "Answered locally, so it costs no request to the calendar server and is meant for a list refresh. A "
+          + "count is recorded either when eXo itself grants or revokes the share - at once, as the server accepts it - "
+          + "or from what another eXo user's CalDAV home was observed to list on its own synchronisation pass, which is "
+          + "what also catches a share made in the calendar server's own web client. `sharedWith` maps an agenda "
+          + "calendar id to a number of colleagues, and carries only the calendars with at least one. Bounds: a "
+          + "calendar eXo did not export but the user owns on the server can be shared and is never counted, neither "
+          + "writer being able to name it; and a share made outside eXo is only seen by a pass, so it needs the sharee "
+          + "to be an eXo user with a connected CalDAV account and it is not reflected for up to one synchronisation "
+          + "period. Those make the count a floor on a calendar's exposure. It can also overstate, in one direction: a "
           + "sighting stands until a listing contradicts it, so a colleague who has been suspended or removed, or whose "
           + "home listed nothing, keeps their last one. Use `GET /calendars/{calendarId}/shares`, which "
           + "reads the server live, to know who. Never fails: no account or any other obstacle answers no counts.")

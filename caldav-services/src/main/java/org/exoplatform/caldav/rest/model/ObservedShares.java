@@ -23,15 +23,18 @@ import java.util.Map;
  * shared with (EXO-90331).
  *
  * <p>
- * "Observed", not "granted": the counts come from what other eXo users' CalDAV
- * homes listed on their own synchronisation passes, so a calendar shared only
- * with somebody who is not an eXo user with a connected account is absent, and
- * a share granted or revoked since that user's last pass is not reflected yet.
- * Those two make a count a floor on a calendar's exposure. It can also
- * overstate, in one direction: a sighting stands until a listing contradicts
- * it, so a colleague who has been suspended or removed, or whose home listed
- * nothing, keeps their last one. The Share drawer, which reads the server
- * live, answers who.
+ * "Observed", not "granted": a count is written either by the share eXo itself
+ * made — recorded as the server accepts it, so it is right at once — or by
+ * what another eXo user's CalDAV home listed on its own synchronisation pass,
+ * which is what also catches a share made in the calendar server's own web
+ * client. Two things are therefore absent: a calendar eXo did not export but
+ * the user owns on the server, which neither writer can name; and a share made
+ * outside eXo with somebody who is not an eXo user with a connected account,
+ * or made outside eXo less than one synchronisation period ago. Those make a
+ * count a floor on a calendar's exposure. It can also overstate, in one
+ * direction: a sighting stands until a listing contradicts it, so a colleague
+ * who has been suspended or removed, or whose home listed nothing, keeps their
+ * last one. The Share drawer, which reads the server live, answers who.
  *
  * @param sharedWith agenda calendar id to the number of colleagues, carrying
  *          only the calendars with at least one — a calendar nobody is

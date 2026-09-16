@@ -527,17 +527,19 @@ let shareableCalendarsInFlight = null;
  * How many colleagues each of the user's own calendars has been observed to be
  * shared with (EXO-90331), keyed by agenda calendar id.
  *
- * Answered from what other eXo users' CalDAV homes listed on their own
- * synchronisation passes, so it is a local read and costs the calendar server
- * nothing — which is what makes it askable on every refresh of the agenda's
- * left panel, where a per-calendar access-list read could not be.
+ * Answered from what the platform recorded — the share eXo itself made, at the
+ * moment it made it, and what other eXo users' CalDAV homes listed on their
+ * own synchronisation passes — so it is a local read and costs the calendar
+ * server nothing, which is what makes it askable on every refresh of the
+ * agenda's left panel, where a per-calendar access-list read could not be.
  *
  * Two bounds travel with the number, and a caller must not read past them: a
- * sharee who is not an eXo user with a connected CalDAV account is never
- * observed, and a share granted or revoked since that colleague's last pass is
- * not reflected for up to one synchronisation period. So it is a floor on a
- * calendar's exposure; the Share drawer, which reads the server live, is what
- * answers who.
+ * calendar eXo did not export but the user owns on the server can be shared
+ * and is never counted, and a share made outside eXo is only seen by a
+ * colleague's pass — so it needs that colleague to be an eXo user with a
+ * connected CalDAV account, and it is not reflected for up to one
+ * synchronisation period. So it is a floor on a calendar's exposure; the Share
+ * drawer, which reads the server live, is what answers who.
  *
  * Never rejects, for the reason getShareableCalendars does not: a mark that
  * cannot be computed is a mark that is not drawn.

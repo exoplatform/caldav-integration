@@ -36,39 +36,63 @@ import lombok.NoArgsConstructor;
  * collection this deployment minted for the owner's calendar.
  *
  * <p>
- * The fact the owner's row needs, observed from the other end. Sharing is
- * never recorded when it is granted — the grant is made on the server and
- * {@code CaldavCalendarShareService} reads the access list back live, storing
- * nothing — so eXo held no answer to "which of my calendars are exposed" that
- * did not cost one remote ACL read per calendar per panel refresh. What eXo
- * does already have is the other direction: every sharee's synchronisation
- * pass lists their whole calendar home, classifies each collection, and
- * recognises a colleague's eXo calendar by the anchor in its slug
- * ({@code CollectionOwnership#COLLEAGUES_EXO_CALENDAR}). That classification
- * used to be spent on one log line and a process-lifetime memory set. Written
- * down here, the owner's mark becomes a local indexed query and costs the
- * server nothing.
+ * The fact the owner's row needs, written by two hands. eXo held no answer to
+ * "which of my calendars are exposed" that did not cost one remote ACL read
+ * per calendar per panel refresh: the grant is made on the server and
+ * {@code CaldavCalendarShareService} reads the access list back live. So a row
+ * here is written from whichever of the two knows first.
  *
  * <p>
- * <b>A row is an observation, not a grant.</b> It says "on this pass, this
- * sharee's home listed that owner's calendar", which is the server's word
- * rather than eXo's belief — so a share made or removed directly in the
- * server's own web client is seen too, and an eXo grant the server did not
- * apply is not counted. The set is reconciled against each listing
- * ({@code CaldavShareObservationService#observed}), so the same pass repeated
- * writes nothing and a share that stops being listed is removed.
+ * <b>The act, when eXo is the one performing it.</b> A grant and a revoke made
+ * from the Share drawer name their calendar and their colleague exactly, and
+ * are recorded as the server accepts them
+ * ({@code CaldavShareObservationService#granted} and {@code #revoked}). This
+ * is the only writer that can be timely about a revoke: the other can notice
+ * one only by a collection ceasing to be listed, which waits on the
+ * colleague's own pass — and the owner cannot cause that pass, their own
+ * home never listing their own calendar as a colleague's.
+ *
+ * <p>
+ * <b>The listing, for everything eXo did not do.</b> Every sharee's
+ * synchronisation pass lists their whole calendar home, classifies each
+ * collection, and recognises a colleague's eXo calendar by the anchor in its
+ * slug ({@code CollectionOwnership#COLLEAGUES_EXO_CALENDAR}). That
+ * classification used to be spent on one log line and a process-lifetime
+ * memory set. Written down here it covers the share made in the server's own
+ * web client, and it is what reconciles: the set is compared against each
+ * listing ({@code CaldavShareObservationService#observed}), so the same pass
+ * repeated writes nothing and a share that stops being listed is removed —
+ * including one the act above recorded.
+ *
+ * <p>
+ * <b>A row is still an observation, not a promise.</b> Even the act's row
+ * survives only while a listing keeps agreeing with it, which is why the act
+ * may only write a row a listing can produce again
+ * ({@code CaldavCalendarShareService#observableAnchorOf}); an eXo grant the
+ * server did not apply throws before anything is written, and one undone
+ * elsewhere is dropped by the next pass.
  *
  * <p>
  * <b>What this cannot see</b>, and what a reader of this table must not
  * conclude from its silence:
  * <ul>
- * <li>a sharee who is not an eXo user with a connected CalDAV account never
- * runs a pass, so their share is in no row — the population EXO-90277 already
- * documents as out of scope for sharing from eXo at all;</li>
- * <li>a share granted, or revoked, since the sharee's last pass is not in the
- * table yet: the mark lags by up to one synchronisation period (five minutes
- * by default), which is why it is drawn as a state and never as a
- * confirmation that a grant succeeded;</li>
+ * <li>a calendar eXo did not export — a {@code REMOTE} pair, one the user owns
+ * on the server and imported — is in no row however it was shared. Its
+ * collection carries no anchor this deployment minted, so no pass can tie it
+ * back to a calendar here, and the act does not record one either, precisely
+ * because the reconciliation would erase it within the period
+ * ({@code CaldavCalendarShareService#observableAnchorOf}). On a deployment
+ * whose calendars were mostly imported rather than created in eXo this is the
+ * common case, not the exotic one;</li>
+ * <li>a share made <em>outside</em> eXo needs a pass to be seen at all, so it
+ * needs the sharee to be an eXo user with a connected CalDAV account — nobody
+ * else lists a home — and it appears, or goes away, up to one synchronisation
+ * period late (five minutes by default). Neither applies to a share eXo made:
+ * that one is recorded as it is made, and eXo refuses to share with a
+ * colleague who has no connected account in the first place
+ * ({@code CaldavCalendarShareService.SHAREE_NOT_CONNECTED}). The mark is drawn
+ * as a state either way and never as a confirmation that a grant
+ * succeeded;</li>
  * <li>a colleague's calendar already bound as an ordinary calendar of the
  * sharee's is not seen as a share, so it is in no row. Two things leave one
  * bound that way, and neither is reachable by the sweep as it stands: a pass

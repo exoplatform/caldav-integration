@@ -252,10 +252,11 @@ const caldavConnector = {
    * avatar, while one the user shares themselves carried nothing at all.
    *
    * Declaring this is what lets agenda draw a share mark on the owner's own
-   * row; a connector without it marks none. Answered from what other eXo
-   * users' homes were observed to list, never by reading the server's access
-   * list per calendar — that read costs one remote round trip per shareable
-   * calendar and cannot sit on a panel refresh.
+   * row; a connector without it marks none. Answered from what the platform
+   * recorded — a share eXo made, as it made it, and what other eXo users'
+   * homes were observed to list on their own passes — never by reading the
+   * server's access list per calendar, a read that costs one remote round trip
+   * per shareable calendar and cannot sit on a panel refresh.
    *
    * `actionId` names the entry of `calendarActions()` that manages the share,
    * so a click on the mark reaches the drawer through `runCalendarAction`
@@ -265,10 +266,13 @@ const caldavConnector = {
    * longer be shared leaves behind.
    *
    * Two bounds ride with the count, and the tooltip agenda draws is worded for
-   * them: a sharee who is not an eXo user with a connected CalDAV account is
-   * never observed, and a share granted or revoked since that colleague's last
-   * pass shows up to one synchronisation period later. It is a floor on the
-   * exposure — the Share drawer answers who.
+   * them: a calendar eXo did not export but the user owns on the server can be
+   * shared and is never counted, and a share made outside eXo — in the
+   * calendar server's own web client — is only seen by a colleague's pass, so
+   * it needs that colleague to be an eXo user with a connected CalDAV account
+   * and it shows up to one synchronisation period later. A share eXo made is
+   * subject to neither and is counted at once. It is a floor on the exposure —
+   * the Share drawer answers who.
    *
    * Never rejects: a connector that cannot answer marks nothing. The catch
    * below and the one in `getObservedShares` are a deliberate double net —

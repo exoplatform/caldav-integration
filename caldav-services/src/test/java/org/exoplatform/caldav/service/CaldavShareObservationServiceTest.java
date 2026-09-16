@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -189,6 +190,67 @@ public class CaldavShareObservationServiceTest {
     when(caldavShareObservationStorage.forgetSharee(42L)).thenThrow(new IllegalStateException("down"));
 
     assertDoesNotThrow(() -> service.forgetObservationsOf(42L));
+  }
+
+  /**
+   * A grant records its one sighting, and only that one (EXO-90331).
+   *
+   * <p>
+   * Through {@code record} and never through {@code reconcile}: the
+   * reconciliation makes a home's whole stored set equal to what it is given,
+   * so a grant handed on as a one-entry map would erase every other mark that
+   * colleague's home feeds.
+   */
+  @Test
+  public void aGrantRecordsOneSightingAndNeverReconciles() {
+    service.granted(ERIC, 42L, SERVER, CAL2);
+
+    verify(caldavShareObservationStorage).record(ERIC, 42L, SERVER, CAL2);
+    verify(caldavShareObservationStorage, never()).reconcile(anyLong(), anyLong(), any());
+  }
+
+  /**
+   * A revoke removes the one sighting, and never a whole home's worth
+   * (EXO-90331).
+   */
+  @Test
+  public void aRevokeForgetsOneSightingAndNeverAWholeHome() {
+    service.revoked(42L, SERVER, CAL2);
+
+    verify(caldavShareObservationStorage).forget(42L, SERVER, CAL2);
+    verify(caldavShareObservationStorage, never()).forgetSharee(anyLong());
+    verify(caldavShareObservationStorage, never()).reconcile(anyLong(), anyLong(), any());
+  }
+
+  /**
+   * An anchor the column cannot hold faithfully reaches the storage from
+   * neither act (EXO-90331) — the same rule the pass already applies, applied
+   * before the write rather than after it.
+   */
+  @Test
+  public void anUnrecordableAnchorIsWrittenByNeitherAct() {
+    service.granted(ERIC, 42L, SERVER, "cal-📅");
+    service.revoked(42L, SERVER, "  ");
+
+    verify(caldavShareObservationStorage, never()).record(anyLong(), anyLong(), anyLong(), anyString());
+    verify(caldavShareObservationStorage, never()).forget(anyLong(), anyLong(), anyString());
+  }
+
+  /**
+   * Both acts absorb their own failure (EXO-90331).
+   *
+   * <p>
+   * The server has already accepted the share by the time either runs, so
+   * neither may undo a grant or a revoke because a state indicator could not
+   * be written. The colleague's next pass reconciles what was missed.
+   */
+  @Test
+  public void bothActsAbsorbTheirOwnFailure() {
+    when(caldavShareObservationStorage.record(ERIC, 42L, SERVER, CAL2)).thenThrow(new IllegalStateException("down"));
+    when(caldavShareObservationStorage.forget(42L, SERVER, CAL2)).thenThrow(new IllegalStateException("down"));
+
+    assertDoesNotThrow(() -> service.granted(ERIC, 42L, SERVER, CAL2));
+    assertDoesNotThrow(() -> service.revoked(42L, SERVER, CAL2));
   }
 
   /**

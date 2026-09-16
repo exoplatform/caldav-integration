@@ -84,6 +84,51 @@ public interface CaldavShareObservationDAO extends JpaRepository<CaldavShareObse
   List<Object[]> countShareesByCalendar(@Param("ownerIdentityId") long ownerIdentityId, @Param("serverId") long serverId);
 
   /**
+   * The one sighting recorded for one sharee, one server and one calendar.
+   *
+   * <p>
+   * A point lookup on {@code UQ_CALDAV_SHARE_OBSERVATION}, which is what makes
+   * "at most one" a property of the schema rather than of this query: the
+   * index covers exactly these three columns, so the engine can return two
+   * rows only if the index is gone. Asked by the grant and the revoke paths,
+   * which know the one calendar and the one colleague they just changed and
+   * must not read a whole home to write a single row.
+   *
+   * @param shareeIdentityId the colleague the calendar is shared with
+   * @param serverId the declared server registration
+   * @param calendarSyncUid the owner's calendar anchor
+   * @return the row, or null when nothing has been recorded for the three
+   */
+  @Query("SELECT o FROM CaldavShareObservationEntity o WHERE o.shareeIdentityId = :shareeIdentityId"
+      + " AND o.serverId = :serverId AND o.calendarSyncUid = :calendarSyncUid")
+  CaldavShareObservationEntity findSighting(@Param("shareeIdentityId") long shareeIdentityId,
+                                            @Param("serverId") long serverId,
+                                            @Param("calendarSyncUid") String calendarSyncUid);
+
+  /**
+   * Removes the one sighting recorded for one sharee, one server and one
+   * calendar.
+   *
+   * <p>
+   * The revoke path's write, and a bulk statement for the same reason
+   * {@link #deleteBySharee} is one: removing a row nobody recorded costs one
+   * statement and no read. Idempotent — nothing recorded removes nothing.
+   *
+   * @param shareeIdentityId the colleague the calendar is no longer shared
+   *          with
+   * @param serverId the declared server registration
+   * @param calendarSyncUid the owner's calendar anchor
+   * @return how many rows were removed, zero or one
+   */
+  @Modifying
+  @Transactional
+  @Query("DELETE FROM CaldavShareObservationEntity o WHERE o.shareeIdentityId = :shareeIdentityId"
+      + " AND o.serverId = :serverId AND o.calendarSyncUid = :calendarSyncUid")
+  int deleteSighting(@Param("shareeIdentityId") long shareeIdentityId,
+                     @Param("serverId") long serverId,
+                     @Param("calendarSyncUid") String calendarSyncUid);
+
+  /**
    * Removes every sighting one sharee's home ever produced, on whichever
    * server.
    *

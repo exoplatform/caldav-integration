@@ -18,6 +18,7 @@ package org.exoplatform.caldav.dao;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
@@ -157,6 +158,165 @@ public class CaldavShareObservationDAOTest {
     assertEquals(firstIds, ids(), "the very same rows, not rewritten ones");
     assertEquals(Map.of(CAL2, 1L, CAL3, 1L), storage.countShareesByAnchor(ERIC, SERVER),
                  "one sharee per calendar, counted once however many passes have run");
+  }
+
+  /**
+   * <b>The act.</b> A grant records its one sighting through the engine, and
+   * the count answers it at once — no pass has run (EXO-90331).
+   *
+   * <p>
+   * The whole point of the second writer: until it existed, this table only
+   * ever learned of a share when the sharee's home was listed again, so the
+   * owner's mark waited up to a synchronisation period for a fact eXo already
+   * knew exactly.
+   */
+  @Test
+  public void aGrantRecordsItsSightingAndIsCountedAtOnce() {
+    CaldavShareObservationStorage storage = storage();
+
+    assertTrue(storage.record(ERIC, ROOT, SERVER, CAL2), "the row is created");
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(Map.of(CAL2, 1L), storage.countShareesByAnchor(ERIC, SERVER));
+  }
+
+  /**
+   * A grant repeated writes the same single row rather than a second one
+   * (EXO-90331).
+   *
+   * <p>
+   * The share path has an idempotent arm — the colleague could already read
+   * the calendar — which records all the same, so this is a live shape and not
+   * a hypothetical. The unique index stands behind it; what is checked here is
+   * that the storage does not rely on the index raising.
+   */
+  @Test
+  public void aGrantRepeatedKeepsOneRowAndOneCount() {
+    CaldavShareObservationStorage storage = storage();
+    storage.record(ERIC, ROOT, SERVER, CAL2);
+    entityManager.flush();
+    entityManager.clear();
+    List<Long> firstIds = ids();
+
+    assertFalse(storage.record(ERIC, ROOT, SERVER, CAL2), "nothing new is created");
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(firstIds, ids(), "the very same row");
+    assertEquals(Map.of(CAL2, 1L), storage.countShareesByAnchor(ERIC, SERVER));
+  }
+
+  /**
+   * <b>The act's removal.</b> A revoke takes the sighting away at once, and
+   * the mark with it (EXO-90331).
+   *
+   * <p>
+   * The answer this feature must never get wrong. Before the revoke path
+   * wrote, the row survived until the sharee's next pass noticed the
+   * collection gone — and on the rig no pass followed, so the mark went on
+   * saying "still shared".
+   */
+  @Test
+  public void aRevokeRemovesTheSightingAtOnce() {
+    CaldavShareObservationStorage storage = storage();
+    storage.record(ERIC, ROOT, SERVER, CAL2);
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(1, storage.forget(ROOT, SERVER, CAL2));
+    entityManager.flush();
+    entityManager.clear();
+
+    assertTrue(storage.countShareesByAnchor(ERIC, SERVER).isEmpty());
+  }
+
+  /**
+   * A revoke names one colleague, so the others keep their sightings and the
+   * count falls by one rather than to zero (EXO-90331).
+   *
+   * <p>
+   * The shape that tells a per-sharee removal from a per-calendar one. A
+   * removal scoped to the calendar would take the mark off a calendar john can
+   * still see, which is the false negative the design exists to avoid — and
+   * against a mock DAO the two are indistinguishable.
+   */
+  @Test
+  public void revokingOneShareeLeavesTheOthers() {
+    CaldavShareObservationStorage storage = storage();
+    storage.record(ERIC, ROOT, SERVER, CAL2);
+    storage.record(ERIC, JOHN, SERVER, CAL2);
+    entityManager.flush();
+    entityManager.clear();
+    assertEquals(Map.of(CAL2, 2L), storage.countShareesByAnchor(ERIC, SERVER));
+
+    assertEquals(1, storage.forget(ROOT, SERVER, CAL2));
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(Map.of(CAL2, 1L), storage.countShareesByAnchor(ERIC, SERVER), "john still sees it");
+    assertEquals(List.of(JOHN),
+                 shareObservationDAO.findBySharee(JOHN, SERVER, PageRequest.of(0, 10))
+                                    .stream()
+                                    .map(CaldavShareObservationEntity::getShareeIdentityId)
+                                    .toList());
+  }
+
+  /**
+   * A revoke of a share nothing recorded removes nothing and raises nothing
+   * (EXO-90331).
+   *
+   * <p>
+   * Reached whenever the revoke path runs for a calendar the sweep cannot see
+   * — an imported one — or for an idempotent revoke of a colleague who held
+   * nothing. It must be a plain no-op, not an error on a path whose server
+   * write has already succeeded.
+   */
+  @Test
+  public void revokingASightingNobodyRecordedIsANoOp() {
+    CaldavShareObservationStorage storage = storage();
+    storage.record(ERIC, JOHN, SERVER, CAL2);
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(0, storage.forget(ROOT, SERVER, CAL2));
+    entityManager.flush();
+    entityManager.clear();
+
+    assertEquals(Map.of(CAL2, 1L), storage.countShareesByAnchor(ERIC, SERVER), "john's row is untouched");
+  }
+
+  /**
+   * A row the grant wrote is kept by a pass that still lists the collection,
+   * and removed by the first that does not (EXO-90331).
+   *
+   * <p>
+   * The seam between the two writers, and the reason the grant path may only
+   * record a sighting a pass can derive again
+   * ({@code CaldavCalendarShareService#observableAnchorOf}): the
+   * reconciliation makes a home's stored set equal to what it just listed, so
+   * it owns a row the act wrote exactly as it owns one it wrote itself. That
+   * is what keeps a revoke made in the calendar server's own web client from
+   * leaving the act's row behind — and what would erase, within one period, a
+   * row written under a key no listing produces.
+   */
+  @Test
+  public void aPassOwnsTheRowTheGrantWrote() {
+    CaldavShareObservationStorage storage = storage();
+    storage.record(ERIC, ROOT, SERVER, CAL2);
+    entityManager.flush();
+    entityManager.clear();
+    List<Long> grantedIds = ids();
+
+    assertEquals(0, storage.reconcile(ROOT, SERVER, Map.of(CAL2, ERIC)), "a pass that still lists it changes nothing");
+    entityManager.flush();
+    entityManager.clear();
+    assertEquals(grantedIds, ids(), "the very same row, adopted rather than rebuilt");
+
+    assertEquals(1, storage.reconcile(ROOT, SERVER, Map.of()), "a pass that no longer lists it removes it");
+    entityManager.flush();
+    entityManager.clear();
+    assertTrue(storage.countShareesByAnchor(ERIC, SERVER).isEmpty());
   }
 
   /**
