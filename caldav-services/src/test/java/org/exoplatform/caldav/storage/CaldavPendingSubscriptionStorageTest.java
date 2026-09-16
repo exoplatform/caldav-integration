@@ -38,8 +38,14 @@ import jakarta.persistence.Persistence;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.jpa.repository.support.JpaRepositoryFactory;
 import org.springframework.test.util.ReflectionTestUtils;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 
 import liquibase.Contexts;
 import liquibase.LabelExpression;
@@ -97,6 +103,12 @@ public class CaldavPendingSubscriptionStorageTest {
 
   private CaldavPendingSubscriptionStorage storage;
 
+  private ListAppender<ILoggingEvent>      logged;
+
+  private Logger                           logger;
+
+  private Level                            previousLevel;
+
   /**
    * Builds a database of this test's own from the changelog, and a storage
    * talking to it through a real repository proxy.
@@ -121,6 +133,13 @@ public class CaldavPendingSubscriptionStorageTest {
     CaldavPendingSubscriptionDAO dao = new JpaRepositoryFactory(entityManager).getRepository(CaldavPendingSubscriptionDAO.class);
     storage = new CaldavPendingSubscriptionStorage();
     ReflectionTestUtils.setField(storage, "pendingSubscriptionDAO", dao);
+
+    logger = (Logger) LoggerFactory.getLogger(CaldavPendingSubscriptionStorage.class);
+    previousLevel = logger.getLevel();
+    logger.setLevel(Level.DEBUG);
+    logged = new ListAppender<>();
+    logged.start();
+    logger.addAppender(logged);
   }
 
   /**
@@ -130,6 +149,10 @@ public class CaldavPendingSubscriptionStorageTest {
    */
   @AfterEach
   public void dropTheDatabase() throws Exception {
+    if (logger != null) {
+      logger.detachAppender(logged);
+      logger.setLevel(previousLevel);
+    }
     if (entityManager != null) {
       entityManager.close();
     }
@@ -221,10 +244,10 @@ public class CaldavPendingSubscriptionStorageTest {
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
     inTransaction(() -> storage.owe(BOB, SERVER, OTHER, PendingSubscriptionKind.SUBSCRIBE));
 
-    inTransaction(() -> storage.settled(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
+    inTransaction(() -> storage.settledIfStillAsking(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
 
     assertEquals(OTHER, only(storage.attemptable(5, 10)).getContainerUid());
-    inTransaction(() -> storage.settled(BOB, SERVER, "never-owed", PendingSubscriptionKind.SUBSCRIBE));
+    inTransaction(() -> storage.settledIfStillAsking(BOB, SERVER, "never-owed", PendingSubscriptionKind.SUBSCRIBE));
     assertEquals(1, rowCount("SELECT COUNT(*) FROM CALDAV_PENDING_SUBSCRIPTION"), "settling what is not owed is a no-op");
   }
 
@@ -255,15 +278,25 @@ public class CaldavPendingSubscriptionStorageTest {
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE));
 
     // The drain comes back and reports the subscribe it posted before that.
-    inTransaction(() -> storage.settled(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
+    inTransaction(() -> storage.settledIfStillAsking(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
 
     PendingSubscription standing = only(storage.attemptable(5, 10));
     assertEquals(PendingSubscriptionKind.UNSUBSCRIBE, standing.getKind(), "the removal nobody has made yet is still owed");
     assertEquals(CONTAINER, standing.getContainerUid());
     assertEquals(0, standing.getAttempts(), "and with its own patience, not the subscribe's two spent attempts");
 
+    // The decline is the only trace this race leaves: settle logs "landed"
+    // either way, so without this line the guard doing its work and the guard
+    // never running look identical to whoever is reading the log afterwards.
+    String declined = logged.list.stream()
+                                 .filter(event -> event.getLevel() == Level.DEBUG)
+                                 .map(ILoggingEvent::getFormattedMessage)
+                                 .collect(java.util.stream.Collectors.joining("\n"));
+    assertTrue(declined.contains("SUBSCRIBE") && declined.contains("UNSUBSCRIBE") && declined.contains(CONTAINER),
+               "the decline names the container and both kinds: " + declined);
+
     // And when the drain does land that removal, it settles.
-    inTransaction(() -> storage.settled(BOB, SERVER, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE));
+    inTransaction(() -> storage.settledIfStillAsking(BOB, SERVER, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE));
     assertEquals(0, rowCount("SELECT COUNT(*) FROM CALDAV_PENDING_SUBSCRIPTION"));
   }
 
@@ -286,9 +319,9 @@ public class CaldavPendingSubscriptionStorageTest {
     inTransaction(() -> storage.owe(BOB, SERVER, OTHER, PendingSubscriptionKind.UNSUBSCRIBE));
 
     // A revoke that landed, over a subscribe that never did.
-    inTransaction(() -> storage.settled(BOB, SERVER, CONTAINER));
+    inTransaction(() -> storage.settledWhateverWasOwed(BOB, SERVER, CONTAINER));
     // And a grant that landed, over a revoke that never did.
-    inTransaction(() -> storage.settled(BOB, SERVER, OTHER));
+    inTransaction(() -> storage.settledWhateverWasOwed(BOB, SERVER, OTHER));
 
     assertEquals(0, rowCount("SELECT COUNT(*) FROM CALDAV_PENDING_SUBSCRIPTION"), "nothing is left for a drain to re-apply");
   }
