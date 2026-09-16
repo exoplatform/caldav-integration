@@ -88,19 +88,34 @@ import lombok.NoArgsConstructor;
  * which reads the server live — stays the place that answers <em>who</em>.
  *
  * <p>
- * <b>The one direction it can overstate</b>, so that nobody reads the floor as
- * an absolute: a sighting stands until something contradicts it, and only a
- * home that is still read can contradict one. A sharee whose credentials the
- * server has begun refusing has their bindings paused
- * ({@code CaldavSyncService#pauseAll}) and stops listing anything, and a
- * sharee removed as an eXo user disconnects nothing on their way out — in
- * both cases their last sighting survives until the account is disconnected
- * ({@code CaldavConnectorServiceImpl}), and the owner is told a colleague sees
- * the calendar whose access may already be gone. That is deliberate rather
- * than overlooked: the share is still live on the server in the common case —
- * a refused password revokes nothing — so forgetting on a pause would
- * manufacture the false negative this design is built to avoid, and the false
- * positive is the safer of the two for a privacy signal.
+ * <b>The one direction it can overstate</b>, stated here once so the other
+ * readers of this table can point at it rather than each keep their own list.
+ * A sighting stands until a <em>listing</em> contradicts it, and three things
+ * leave one uncontradicted:
+ * <ol>
+ * <li>a sharee whose credentials the server has begun refusing — their
+ * bindings are paused ({@code CaldavSyncService#pauseAll}) and they stop
+ * listing anything;</li>
+ * <li>a sharee removed as an eXo user, who disconnects nothing on the way
+ * out;</li>
+ * <li>a home that is still read but whose listing comes back empty — it is
+ * deliberately not treated as a listing at all
+ * ({@code CaldavSyncService#materialiseRemoteCalendars}), because an empty
+ * answer is far likelier to be a server having a bad minute than every share
+ * being revoked at once.</li>
+ * </ol>
+ * In the first two the last sighting survives until the account is
+ * disconnected ({@code CaldavConnectorServiceImpl}); in the third it survives
+ * until a listing that holds something contradicts it. In each the owner may
+ * be told a colleague sees a calendar whose access is already gone.
+ *
+ * <p>
+ * All three are deliberate rather than overlooked, and they are the same
+ * decision made three times: the share is still live on the server in the
+ * common case — a refused password revokes nothing, and an empty listing
+ * asserts nothing — so removing on any of these signals would manufacture the
+ * false negative this design exists to avoid. For a signal about who can see
+ * your calendar, overstating is the safer of the two errors.
  *
  * <p>
  * Keyed by the calendar's <b>anchor</b>, agenda's {@code syncUid}, not by an

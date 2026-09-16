@@ -59,8 +59,8 @@ import org.exoplatform.services.log.Log;
  * becomes a local indexed query and the server is asked nothing.
  *
  * <p>
- * <b>The two bounds of that answer</b>, stated here because this is where a
- * caller decides what to draw from it:
+ * <b>The bounds of that answer</b>, stated here because this is where a
+ * caller decides what to draw from it. Two of them make the count a floor:
  * <ol>
  * <li><b>Only eXo colleagues are counted.</b> A sharee who is not a user of
  * this deployment with a connected CalDAV account never runs a pass, so
@@ -73,8 +73,17 @@ import org.exoplatform.services.log.Log;
  * state indicator and never a confirmation that a grant succeeded; the Share
  * drawer, which reads the server live, is what confirms one.</li>
  * </ol>
- * Both make the count a <b>floor</b> on a calendar's exposure. Nothing may
+ * Both make the count a <b>floor</b> on a calendar's exposure, and nothing may
  * read "no mark" as "shared with nobody".
+ *
+ * <p>
+ * It is a floor only among the colleagues whose homes are still being read,
+ * which is the third bound and the one that runs the other way: a sighting
+ * nothing contradicts stands, so a suspended or removed colleague, and a home
+ * whose listing comes back empty, each keep their last one. The three causes
+ * and the reason none of them removes a row are set out once, on
+ * {@code CaldavShareObservationEntity}; this is the caller's summary of them,
+ * not a second list to keep in step.
  */
 @Service
 public class CaldavShareObservationService {
