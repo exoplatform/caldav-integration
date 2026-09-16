@@ -396,6 +396,9 @@ public class CaldavCalendarShareServiceTest {
     verify(calDavClient, never()).postCalendarServerShare(any(), any(), eq("bob@exo.example.com"), anyBoolean());
     verify(calDavClient, never()).readAcl(any(), anyString());
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+    // The mark is written on BlueMind's mechanism too: the sighting belongs to
+    // the share, not to the protocol that carried it (EXO-90331).
+    verify(caldavShareObservationService).granted(ALICE, BOB, STALWART, ANCHOR);
     assertTrue(shares.subscriptionRequired());
     assertEquals(1, shares.sharees().size());
     CalendarSharee eric = shares.sharees().get(0);
@@ -1868,6 +1871,12 @@ public class CaldavCalendarShareServiceTest {
     lenient().when(caldavSyncStorage.getPairByLocalCalendar(ALICE, STALWART, ANCHOR)).thenReturn(pair);
     lenient().when(calDavClient.capabilities(endpoint, BM_COLLECTION))
              .thenReturn(DavOptions.of(List.of(BLUEMIND_DAV), List.of()));
+    // As on Stalwart: a pass meeting alice's exported collection in a
+    // colleague's home would call it hers. Without this the BlueMind grant
+    // would silently record nothing here while recording in production, and
+    // no assertion in this class could tell the two apart.
+    lenient().when(caldavOutboundService.exportingUserOf(STALWART, CaldavSyncStorage.canonicalHref(BM_COLLECTION)))
+             .thenReturn(ALICE);
     lenient().when(calDavClient.discoverPrincipal(endpoint)).thenReturn(FRANCOIS_PRINCIPAL + "/");
     lenient().when(caldavConnectionIdentityService.principalOf(ALICE, STALWART)).thenReturn(FRANCOIS_PRINCIPAL);
     lenient().when(caldavConnectionIdentityService.principalOf(BOB, STALWART)).thenReturn(ERIC_PRINCIPAL);
