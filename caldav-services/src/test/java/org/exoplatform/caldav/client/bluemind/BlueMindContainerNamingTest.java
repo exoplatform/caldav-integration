@@ -30,6 +30,8 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.apache.commons.lang3.StringUtils;
+
 import org.junit.jupiter.api.Test;
 
 /**
@@ -223,6 +225,49 @@ public class BlueMindContainerNamingTest {
     assertEquals("/dav/principals/__uids__/" + MEYER_UID + "/",
                  BlueMindContainerNaming.principalOf("/dav/principals/__uids__/751E6D1A-7FDB-49B2-B668-B569E9A5A42D", MEYER_UID),
                  "whether or not the account's principal ends with a slash");
+  }
+
+  /**
+   * The uid a recorded principal yields is the one eXo addresses that account
+   * by over BlueMind's REST API — the {@code subject} of an access entry and
+   * of a subscription edit (EXO-90253, EXO-90277) — so the rule that reads it
+   * is the one deciding <em>whose account eXo edits with a stored password</em>.
+   * It answers only for BlueMind's own principal spelling
+   * {@code …/principals/__uids__/<uid>/}, whatever the root, the trailing
+   * slash or the encoding.
+   *
+   * <p>
+   * And it answers <b>nothing</b> for every other shape, which is the half
+   * that matters: a Stalwart principal, a principal under another collection
+   * than {@code __uids__}, and — the near miss — a BlueMind <em>calendar
+   * home</em>, which carries the same {@code __uids__} segment and the same
+   * uid but is not a principal. Acting on a guessed uid is worse than not
+   * acting, and a caller reading null gives the change up rather than
+   * addressing somebody.
+   */
+  @Test
+  public void aUserUidIsReadOnlyFromABlueMindPrincipalAndFromNothingThatMerelyLooksLikeOne() {
+    assertEquals("751E6D1A-7FDB-49B2-B668-B569E9A5A42D", BlueMindContainerNaming.userUidOf(ROOT_PRINCIPAL));
+    assertEquals("751E6D1A-7FDB-49B2-B668-B569E9A5A42D",
+                 BlueMindContainerNaming.userUidOf(StringUtils.stripEnd(ROOT_PRINCIPAL, "/")),
+                 "whether or not it ends with a slash");
+    assertEquals(MEYER_UID,
+                 BlueMindContainerNaming.userUidOf("https://bm.example.com:8443/dav/principals/__uids__/" + MEYER_UID + "/"),
+                 "a principal the server answered as a full URL");
+    assertEquals("a b",
+                 BlueMindContainerNaming.userUidOf("/dav/principals/__uids__/a%20b/"),
+                 "and a percent-encoded spelling, decoded as every other path of this add-on is");
+
+    assertNull(BlueMindContainerNaming.userUidOf(null));
+    assertNull(BlueMindContainerNaming.userUidOf("  "));
+    assertNull(BlueMindContainerNaming.userUidOf("/dav/pal/eric@stalwart.local"), "another server's principal names no uid");
+    assertNull(BlueMindContainerNaming.userUidOf("/dav/principals/users/" + MEYER_UID + "/"),
+               "a principal that is not under __uids__");
+    assertNull(BlueMindContainerNaming.userUidOf(ROOT_HOME),
+               "a calendar home carries __uids__ and the uid, and is still not a principal");
+    assertNull(BlueMindContainerNaming.userUidOf("/dav/calendars/__uids__/" + MEYER_UID + "/calendar:Default:" + MEYER_UID + "/"),
+               "nor is a collection inside one");
+    assertNull(BlueMindContainerNaming.userUidOf("/dav/principals/__uids__/"), "and a principal collection names nobody");
   }
 
   /**
