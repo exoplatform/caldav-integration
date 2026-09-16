@@ -113,12 +113,12 @@ public class CaldavShareRest {
   @Operation(summary = "How many colleagues each of the connected user's calendars is shared with",
       description = "Answered from what other eXo users' CalDAV homes were observed to list on their own synchronisation "
           + "passes, so it costs no request to the server and is meant for a list refresh. `sharedWith` maps an agenda "
-          + "calendar id to a number of colleagues, and carries only the calendars with at least one. Two bounds: a sharee "
+          + "calendar id to a number of colleagues, and carries only the calendars with at least one. Bounds: a sharee "
           + "who is not an eXo user with a connected CalDAV account is never observed and is not counted, and a share "
           + "granted or revoked since that colleague's last pass is not reflected for up to one synchronisation period. "
-          + "The count is therefore a floor on a calendar's exposure among the colleagues whose accounts are still "
-          + "being read: a sighting stands until a listing contradicts it, so a colleague whose account has been "
-          + "suspended or removed keeps their last one until it is disconnected. Use `GET /calendars/{calendarId}/shares`, which "
+          + "Those two make the count a floor on a calendar's exposure. It can also overstate, in one direction: a "
+          + "sighting stands until a listing contradicts it, so a colleague who has been suspended or removed, or whose "
+          + "home listed nothing, keeps their last one. Use `GET /calendars/{calendarId}/shares`, which "
           + "reads the server live, to know who. Never fails: no account or any other obstacle answers no counts.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The counts by calendar, possibly none") })
   public ObservedShares observedShares() {

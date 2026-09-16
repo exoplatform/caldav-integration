@@ -27,11 +27,11 @@ import java.util.Map;
  * homes listed on their own synchronisation passes, so a calendar shared only
  * with somebody who is not an eXo user with a connected account is absent, and
  * a share granted or revoked since that user's last pass is not reflected yet.
- * A count is a floor on a calendar's exposure as far as the colleagues' homes
- * still being read can see it — a sighting stands until a listing contradicts
- * it, so a colleague whose account has stopped being read keeps their last one
- * until it is disconnected. The Share drawer, which reads the server live,
- * answers who.
+ * Those two make a count a floor on a calendar's exposure. It can also
+ * overstate, in one direction: a sighting stands until a listing contradicts
+ * it, so a colleague who has been suspended or removed, or whose home listed
+ * nothing, keeps their last one. The Share drawer, which reads the server
+ * live, answers who.
  *
  * @param sharedWith agenda calendar id to the number of colleagues, carrying
  *          only the calendars with at least one — a calendar nobody is
