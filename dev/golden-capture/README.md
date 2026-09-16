@@ -79,3 +79,47 @@ dev/golden-capture/capture-bluemind-object-etags.sh
 
 Review the produced files before committing them: credentials are scrubbed,
 but your login and the object uids appear inside hrefs.
+
+## capture-bluemind-subscription.sh — BlueMind, the sharee's subscription (run it yourself — WRITES on the sharee's account, rig only)
+
+Same prompts and the same scrubbing as the other BlueMind scripts, plus the
+`X-BM-ApiKey` session key scrubbed from every byte, and three more prompts:
+the container uid of the calendar shared from eXo, a container uid the sharee
+has **no** access to, and another user's directory entry uid. It logs in **as
+the sharee** (the colleague the calendar was shared with) and records, into
+`caldav-services/src/test/resources/caldav/transcripts/`, the twelve steps
+the EXO-90277 brief (Tribe task 90277, comment 337358) asks for: the login
+answer with `authUser.uid`/`domainUid` (1); the calendar subscriptions
+before (2), after the subscribe (4) and after the unsubscribe (10); the
+`_subscribe` of the shared container (3) and its repeat (6, idempotency); the
+sharee's DAV home listing the shared collection (5); an `_subscribe` of an
+unknown container (7 — the 404-vs-500 `NOT_FOUND` question); an `_subscribe`
+of a container without access and a PROPFIND on it (8, undone at once); an
+`_subscribe` addressed to another uid (9 — the `ROLE_SELF` 403); the
+`_unsubscribe` (10); whether the sharee received BlueMind's access-change
+mail (11, typed in); and the dangling-subscription sequence behind hole 3 —
+subscribe again, the owner revokes from eXo while the script waits, then the
+listing, the home and the collection are captured (12), followed by a final
+`_unsubscribe` that leaves the account as found.
+
+**These are writes on the sharee's BlueMind account** (steps 3, 6, 8, 9, 10,
+12): run it against a test account on the rig, never a colleague's real one.
+The script prints what each capture settled at the end. The captured files
+supersede the DERIVED fixtures `bluemind-rest-subscribe-200-empty.derived.json`,
+`bluemind-rest-fault-permission-denied.derived.json`,
+`bluemind-rest-fault-subscribe-not-found.derived.json` and
+`bluemind-rest-subscriptions-calendar.derived.json`; point
+`BlueMindSubscriptionClientTest` at them and drop the DERIVED ones, as
+EXO-90307 did.
+
+**Not yet run**: as of 2026-09-16 no capture has been made; every BlueMind
+answer the feature relies on is derived from BlueMind's source at master
+`1ef9ae23` and stated as such in the fixtures' headers.
+
+```sh
+dev/golden-capture/capture-bluemind-subscription.sh
+```
+
+Review the produced files before committing them: credentials and the key
+are scrubbed, but the sharee's login, the uids and the container uids appear
+in URLs and bodies.
