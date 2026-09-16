@@ -180,11 +180,11 @@ public class BlueMindRestSession {
   public <T> T call(CalDavEndpoint endpoint, Function<Session, T> job) {
     String root = apiRootOf(endpoint);
     String[] account = accountOf(endpoint);
-    String key = login(root, account[0], account[1]);
+    Login login = login(root, account[0], account[1]);
     try {
-      return job.apply(new Session(root, key));
+      return job.apply(new Session(root, login));
     } finally {
-      logout(root, key);
+      logout(root, login.key());
     }
   }
 
@@ -296,17 +296,42 @@ public class BlueMindRestSession {
   }
 
   /**
+   * What a login answered and a session carries: the key, and who BlueMind
+   * says the session belongs to.
+   *
+   * @param key the session key, sent in {@link #API_KEY_HEADER}
+   * @param userUid the directory entry uid of the authenticated user
+   *          ({@code LoginResponse.authUser.uid}), or null when the answer
+   *          named none
+   * @param domainUid the uid of their domain
+   *          ({@code LoginResponse.authUser.domainUid}), or null when the
+   *          answer named none
+   */
+  private record Login(String key, String userUid, String domainUid) {
+  }
+
+  /**
    * Opens a REST session: {@code IAuthentication.login}. The password is the
    * body, encoded as a JSON string under exactly
    * {@code Content-Type: application/json}; see the class comment for why no
    * other shape is safe.
    *
+   * <p>
+   * Besides the key, the answer names the authenticated user: {@code authUser}
+   * carries the directory entry {@code uid} and the {@code domainUid}
+   * ({@code parent/authentication/net.bluemind.authentication.api/.../LoginResponse.java},
+   * {@code AuthUser.java}). Both are read here and carried on the session,
+   * because a call addressed to an account — a subscription edit — needs the
+   * domain in its path and must be able to check that the account it is about
+   * to edit is the one the session opened (EXO-90277). Their absence is not a
+   * refusal: a caller needing them says so itself.
+   *
    * @param root the REST root
    * @param login the login
    * @param password the password
-   * @return the session key
+   * @return the key and the authenticated user
    */
-  private String login(String root, String login, String password) {
+  private Login login(String root, String login, String password) {
     URI named = URI.create(root + "/api/auth/login");
     URI uri = URI.create(named + "?login=" + URLEncoder.encode(login, StandardCharsets.UTF_8) + "&origin=" + LOGIN_ORIGIN);
     HttpRequest request = HttpRequest.newBuilder(uri)
@@ -330,7 +355,8 @@ public class BlueMindRestSession {
       throw new CalDavAuthenticationException("The calendar server refused the login (" + StringUtils.defaultString(status, "no status")
           + ") for POST " + named);
     }
-    return key;
+    JsonNode authUser = response.get("authUser");
+    return new Login(key, textOf(authUser, "uid"), textOf(authUser, "domainUid"));
   }
 
   /**
@@ -392,17 +418,38 @@ public class BlueMindRestSession {
 
     private final String root;
 
-    private final String key;
+    private final Login  login;
 
     /**
      * An open session.
      *
      * @param root the REST root
-     * @param key the session key
+     * @param login the key and the authenticated user
      */
-    private Session(String root, String key) {
+    private Session(String root, Login login) {
       this.root = root;
-      this.key = key;
+      this.login = login;
+    }
+
+    /**
+     * The directory entry uid BlueMind authenticated this session as, the
+     * segment of the account's DAV principal
+     * {@code /dav/principals/__uids__/<uid>/}.
+     *
+     * @return the uid, or null when the login answer named none
+     */
+    public String userUid() {
+      return login.userUid();
+    }
+
+    /**
+     * The uid of the domain the authenticated account belongs to: the
+     * {@code {domainUid}} segment of BlueMind's per-user REST paths.
+     *
+     * @return the domain uid, or null when the login answer named none
+     */
+    public String domainUid() {
+      return login.domainUid();
     }
 
     /**
@@ -413,6 +460,18 @@ public class BlueMindRestSession {
      */
     public Answer get(String path) {
       return exchange("GET", path, null, null);
+    }
+
+    /**
+     * A POST with a body.
+     *
+     * @param path the path under the root
+     * @param body the body text
+     * @param contentType its media type, sent exactly as given
+     * @return the answer
+     */
+    public Answer post(String path, String body, String contentType) {
+      return exchange("POST", path, body, contentType);
     }
 
     /**
@@ -461,7 +520,7 @@ public class BlueMindRestSession {
       URI uri = URI.create(root + path);
       HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
                                                .timeout(REQUEST_TIMEOUT)
-                                               .header(API_KEY_HEADER, key)
+                                               .header(API_KEY_HEADER, login.key())
                                                .header("Accept", JSON_MEDIA_TYPE);
       if (body == null) {
         builder.method(method, BodyPublishers.noBody());

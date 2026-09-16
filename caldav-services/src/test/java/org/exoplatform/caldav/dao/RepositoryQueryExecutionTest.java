@@ -207,6 +207,7 @@ public class RepositoryQueryExecutionTest {
                    CaldavObjectSyncDAO.class,
                    CaldavPendingPushDAO.class,
                    CaldavServerDAO.class,
-                   CaldavConnectionDAO.class);
+                   CaldavConnectionDAO.class,
+                   CaldavPendingSubscriptionDAO.class);
   }
 }
