@@ -235,6 +235,85 @@ public class CaldavServerServiceTest {
     }
   }
 
+
+  /**
+   * <b>The BlueMind-only guard on the write channel (EXO-90307, PO decision of
+   * 2026-09-16).</b> The import door speaks BlueMind's REST endpoints and
+   * nothing else, so a registration whose name does not say BlueMind is
+   * refused {@code BLUEMIND_IMPORT} with a code the drawer can read — on a
+   * declaration and on an update alike, before anything is written — while a
+   * BlueMind registration may state either channel.
+   */
+  @Test
+  public void shouldRefuseTheImportChannelOnAServerThatIsNotBlueMind() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stalwart = server(0, null, "Stalwart", null, SERVER_URL, true);
+    stalwart.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
+
+    IllegalArgumentException created = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.createServer(stalwart, ADMIN_USER));
+    assertEquals(CaldavServerService.WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE, created.getMessage());
+
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, "Other", null, SERVER_URL, true));
+    CaldavServer other = server(7, null, "Other", null, SERVER_URL, true);
+    other.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
+    IllegalArgumentException updated = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.updateServer(other, ADMIN_USER));
+    assertEquals(CaldavServerService.WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE, updated.getMessage());
+
+    verify(caldavServerStorage, never()).createServer(any(), anyString());
+    verify(caldavServerStorage, never()).updateServer(any());
+  }
+
+  /**
+   * The other half of the guard: CalDAV is accepted everywhere, and a
+   * registration named BlueMind — the seed's spelling or the preset's — may
+   * take either channel. The name is the one product fact a row carries.
+   */
+  @Test
+  public void shouldAcceptEitherChannelOnBlueMindAndCalDavEverywhere() {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    for (String name : List.of("Bluemind", "BlueMind", "Our BLUEMIND at Lyon")) {
+      when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, name, null, SERVER_URL, true));
+      for (WriteChannel channel : WriteChannel.values()) {
+        CaldavServer bluemind = server(7, null, name, null, SERVER_URL, true);
+        bluemind.setWriteChannel(channel);
+        assertEquals(channel, assertDoesNotThrow(() -> caldavServerService.updateServer(bluemind, ADMIN_USER)).getWriteChannel());
+      }
+    }
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, "Stalwart", null, SERVER_URL, true));
+    CaldavServer stalwart = server(7, null, "Stalwart", null, SERVER_URL, true);
+    stalwart.setWriteChannel(WriteChannel.CALDAV);
+    assertEquals(WriteChannel.CALDAV, assertDoesNotThrow(() -> caldavServerService.updateServer(stalwart, ADMIN_USER)).getWriteChannel());
+  }
+
+  /**
+   * A save that states no channel — a drawer without the control — for a row
+   * that is on the import channel but is no longer named BlueMind is reset to
+   * CalDAV rather than refused: nobody asked for the impossible, and the
+   * storage would otherwise keep a channel the server cannot speak. Reset and
+   * not refusal, because the drawer that does carry the control sends CalDAV
+   * explicitly for every non-BlueMind server, so both paths end on one value.
+   */
+  @Test
+  public void shouldResetTheChannelWhenARowLeavesBlueMindWithoutStatingOne() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Bluemind", null, SERVER_URL, true);
+    stored.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    CaldavServer renamed = server(7, null, "Mail server", null, SERVER_URL, true);
+    renamed.setWriteChannel(null);
+
+    CaldavServer result = assertDoesNotThrow(() -> caldavServerService.updateServer(renamed, ADMIN_USER));
+
+    assertEquals(WriteChannel.CALDAV, result.getWriteChannel());
+    ArgumentCaptor<CaldavServer> written = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).updateServer(written.capture());
+    assertEquals(WriteChannel.CALDAV, written.getValue().getWriteChannel(), "stated to the storage, which keeps a null as-is");
+  }
+
   /**
    * Makes the mocked ACL recognise a user as platform administrator (or not).
    *
