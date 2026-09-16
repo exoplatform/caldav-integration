@@ -31,6 +31,8 @@ import org.exoplatform.caldav.dao.CaldavPendingSubscriptionDAO;
 import org.exoplatform.caldav.entity.CaldavPendingSubscriptionEntity;
 import org.exoplatform.caldav.model.PendingSubscription;
 import org.exoplatform.caldav.model.PendingSubscriptionKind;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
 
 /**
  * Maps the subscription changes eXo owes colleagues' BlueMind accounts
@@ -47,6 +49,8 @@ import org.exoplatform.caldav.model.PendingSubscriptionKind;
  */
 @Component
 public class CaldavPendingSubscriptionStorage {
+
+  private static final Log LOG = ExoLogger.getLogger(CaldavPendingSubscriptionStorage.class);
 
   @Autowired
   private CaldavPendingSubscriptionDAO pendingSubscriptionDAO;
@@ -88,27 +92,56 @@ public class CaldavPendingSubscriptionStorage {
   }
 
   /**
-   * Forgets what was owed about one container, because <em>that</em> change
-   * landed.
+   * Forgets whatever was owed about one container, because the caller has just
+   * decided and applied the newest instruction about it.
+   *
+   * <p>
+   * <b>For the caller who cannot be stale</b> — the grant and the revoke. They
+   * decide the instruction in the same call, inside the share service's stripe
+   * lock and after the access list was read back, and nothing else writes to
+   * this table; so whatever row stands for the container is older than what
+   * they just did, whichever kind it asks for, and leaving it would have the
+   * drain later re-apply an instruction the owner has already replaced. A
+   * pending SUBSCRIBE surviving a landed revoke is the worst of those: the
+   * drain re-subscribes the colleague to a calendar whose access entry is
+   * gone — the dangling subscription this feature exists to prevent — and
+   * BlueMind's subscribe makes no access check, so it lands.
    *
    * <p>
    * By the colleague, server and container rather than by the row's own
    * identifier, because {@link #owe} reuses the row and an id says nothing
-   * about which instruction it now carries — but <b>only when the row still
-   * asks for the change that landed</b>, which is the whole reason the kind is
-   * a parameter here.
+   * about which instruction it now carries.
+   *
+   * @param userIdentityId the sharee
+   * @param serverId the server key
+   * @param containerUid the container uid
+   */
+  @Transactional
+  public void settled(long userIdentityId, long serverId, String containerUid) {
+    pendingSubscriptionDAO.findByUserIdentityIdAndServerIdAndContainerUid(userIdentityId, serverId, containerUid)
+                          .ifPresent(entity -> pendingSubscriptionDAO.deleteById(entity.getId()));
+  }
+
+  /**
+   * Forgets what was owed about one container, because <em>that</em> change
+   * landed — and only if the row is still asking for it.
    *
    * <p>
-   * <b>What that guard is for.</b> A drain reads its rows once and then spends
-   * up to three round trips on each, outside any lock the share service holds.
+   * <b>For the caller who can be stale</b> — the drain, and only the drain. It
+   * reads its rows once and then spends a round trip on each, inside a session
+   * that costs a login and a logout, holding no lock the share service takes.
    * A revoke arriving in that window records an UNSUBSCRIBE over the pending
    * SUBSCRIBE — the same row, by the one-row-per-container rule — and the
    * drain then lands its now-stale SUBSCRIBE. Deleting by container alone
    * would strike off the removal nobody has made yet, and the colleague would
-   * keep, for good and without a line to say so, a subscription to a calendar
-   * whose access entry is gone: the dangling subscription this whole feature
-   * exists to prevent, arrived at from the inside. With the guard the removal
-   * survives its predecessor's success and the next drain makes it.
+   * keep, for good and without a line to say so, the dangling subscription
+   * again. With the guard the removal survives its predecessor's success and
+   * the next drain makes it.
+   *
+   * <p>
+   * The guard belongs here and <b>only</b> here: at the grant and the revoke
+   * it could only ever refuse a delete that was right, which is why
+   * {@link #settled(long, long, String)} exists beside it.
    *
    * @param userIdentityId the sharee
    * @param serverId the server key
@@ -119,8 +152,19 @@ public class CaldavPendingSubscriptionStorage {
   @Transactional
   public void settled(long userIdentityId, long serverId, String containerUid, PendingSubscriptionKind kind) {
     pendingSubscriptionDAO.findByUserIdentityIdAndServerIdAndContainerUid(userIdentityId, serverId, containerUid)
-                          .filter(entity -> entity.getKind() == kind)
-                          .ifPresent(entity -> pendingSubscriptionDAO.deleteById(entity.getId()));
+                          .ifPresent(entity -> {
+                            if (entity.getKind() == kind) {
+                              pendingSubscriptionDAO.deleteById(entity.getId());
+                            } else {
+                              LOG.debug("A drained BlueMind {} landed for user {} and container {} on server {}, but the row now"
+                                  + " asks for {}; it is left for the next drain",
+                                        kind,
+                                        userIdentityId,
+                                        containerUid,
+                                        serverId,
+                                        entity.getKind());
+                            }
+                          });
   }
 
   /**
