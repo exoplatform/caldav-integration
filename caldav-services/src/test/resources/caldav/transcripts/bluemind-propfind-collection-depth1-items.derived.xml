@@ -12,7 +12,7 @@
   - plugins/net.bluemind.dav.server/src/net/bluemind/dav/server/proto/props/webdav/GetTag.java:46-56
     getetag on the CONTAINER is SyncTokens.get(path, lastMod) and on a
     child .ics (VEventNode, "unsupported ressource type") SyncTokens.get(path, 0):
-    both the RAW token "bmdav_<lnum>_<timestamp>" (SyncTokens.java:8-16),
+    both the RAW token "bmdav_<lnum>_<timestamp>" (SyncTokens.java:40-50),
     unquoted, the child's timestamp always 0 - a value that never moves for
     the object's life. This is what CaldavMirrorVerificationService lists
     with (listResourceEtags) and adopts into CALDAV_OBJECT_SYNC.ETAG, and
