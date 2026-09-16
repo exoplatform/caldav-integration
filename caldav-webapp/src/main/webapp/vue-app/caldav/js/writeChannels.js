@@ -64,3 +64,44 @@ export function writeChannelOf(value) {
   const named = typeof value === 'string' && value.trim().toUpperCase() || '';
   return WRITE_CHANNELS.some(channel => channel.value === named) && named || DEFAULT_WRITE_CHANNEL;
 }
+
+/**
+ * What a registration's name carries when it stands for a BlueMind server:
+ * the shipped seed row is named "Bluemind", the drawer's preset writes
+ * "BlueMind", and the registry's own guard reads the same marker
+ * (`CaldavServerService.isBlueMind`).
+ */
+const BLUEMIND_NAME_MARKER = 'bluemind';
+
+/**
+ * Whether the write-channel control is offered for a registration (EXO-90307,
+ * PO decision of 2026-09-16: a BlueMind-only choice).
+ *
+ * <p>Offered when the name says BlueMind — the only product fact a row
+ * carries, a preset being a copy and never a link — and also when the row is
+ * already on the import channel whatever its name says: hiding the control
+ * there would let a save silently put a server back through CalDAV, and the
+ * registry refuses the import channel on a non-BlueMind name anyway, so the
+ * administrator meets a refusal they can read rather than a reset they
+ * cannot see.</p>
+ *
+ * @param {Object} server the registration as the form carries it
+ * @returns {Boolean} true when the radio is shown and the form's own value is
+ *          what the save states
+ */
+export function offersWriteChannel(server) {
+  const name = server && typeof server.name === 'string' && server.name.toLowerCase() || '';
+  return name.includes(BLUEMIND_NAME_MARKER) || writeChannelOf(server && server.writeChannel) === WRITE_CHANNEL_BLUEMIND_IMPORT;
+}
+
+/**
+ * The channel a save states for a registration: the form's own value where
+ * the control is offered, CalDAV — explicitly, never an omitted key that would
+ * keep a stale stored value — everywhere else.
+ *
+ * @param {Object} server the registration as the form carries it
+ * @returns {String} one of the stored values, never null
+ */
+export function writeChannelToSave(server) {
+  return offersWriteChannel(server) ? writeChannelOf(server.writeChannel) : WRITE_CHANNEL_CALDAV;
+}
