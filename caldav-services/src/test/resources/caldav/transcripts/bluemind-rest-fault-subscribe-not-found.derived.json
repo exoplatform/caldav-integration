@@ -1,0 +1,23 @@
+// DERIVED, not captured (EXO-90277). The fault body an _subscribe naming a
+// container BlueMind does not hold answers, from BlueMind's source at master
+// 1ef9ae23:
+// - parent/user/net.bluemind.user.service/src/net/bluemind/user/service/internal/UserSubscriptionService.java:282-298
+//   subscriptionToContainer(): a null container throws
+//   ServerFault.notFound("Failed to subscribe. Container not found : " + uid);
+// - parent/core/net.bluemind.core.rest/src/net/bluemind/core/rest/base/ResponseBuilder.java:44-58,70-76
+//   buildFault() shapes it; replyServerFault answers 403 for
+//   PERMISSION_DENIED and 500 for every other code - so at master this body
+//   travels with HTTP 500.
+// OPEN QUESTION the capture settles: the implementation brief on Tribe task
+// 90277 predicted a 404 for NOT_FOUND at master; the source read here says
+// 500 (RestRootHandler.java:144,151 answers NOT_FOUND only for an unknown
+// route, not for a service fault). BlueMindSubscriptionClient treats a 404
+// and a 500 carrying errorCode NOT_FOUND as the same absence, so either
+// answer is handled; dev/golden-capture/capture-bluemind-subscription.sh
+// step 7 records which one the rig sends.
+// Lines starting with "//" are removed by the test before parsing.
+{
+  "errorCode": "NOT_FOUND",
+  "errorType": "ServerFault",
+  "message": "Failed to subscribe. Container not found : calendar:Default:unknown"
+}
