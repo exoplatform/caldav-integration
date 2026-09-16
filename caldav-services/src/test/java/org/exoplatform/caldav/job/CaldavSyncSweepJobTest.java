@@ -17,6 +17,7 @@
 package org.exoplatform.caldav.job;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -149,6 +150,25 @@ public class CaldavSyncSweepJobTest {
     when(caldavSyncService.sweepDueAccounts(30L, 20)).thenReturn(0);
 
     job.sweep();
+
+    verify(caldavShareSubscriptionService).retryOwed(20);
+  }
+
+  /**
+   * <b>Hole 2 again, one door further.</b> The account sweep reads its due
+   * accounts outside any guard, so a database that will not answer it ends
+   * the run — and the colleagues owed a subscription are precisely the ones
+   * who hold no account for that sweep to visit. The second hand-off is
+   * therefore made whatever the first did, and the failure still reaches the
+   * scheduler rather than being swallowed here.
+   */
+  @Test
+  public void theOwedSubscriptionsAreDrainedEvenWhenTheAccountSweepFails() {
+    when(caldavTuningService.getSweepStaleMinutes()).thenReturn(30L);
+    when(caldavTuningService.getSweepBatchSize()).thenReturn(20);
+    when(caldavSyncService.sweepDueAccounts(30L, 20)).thenThrow(new IllegalStateException("the database is away"));
+
+    assertThrows(IllegalStateException.class, job::sweep);
 
     verify(caldavShareSubscriptionService).retryOwed(20);
   }
