@@ -214,7 +214,7 @@ public class CaldavPendingSubscriptionStorageTest {
   }
 
   /**
-   * Settled is by colleague, server and container, and forgets a renewal too.
+   * Settling forgets the instruction that landed and no other.
    */
   @Test
   public void settlingForgetsTheInstructionThatLandedAndNoOther() {
@@ -229,9 +229,10 @@ public class CaldavPendingSubscriptionStorageTest {
   }
 
   /**
-   * <b>The race that made this a four-argument call.</b> A drain reads its
-   * rows once and then spends up to three round trips on each, holding no lock
-   * the share service takes. A revoke arriving in that window records an
+   * <b>The race that made the drain's settle a four-argument call.</b> A drain
+   * reads its rows once and then spends one round trip on each, inside a
+   * session that costs a login and a logout, holding no lock the share service
+   * takes. A revoke arriving in that window records an
    * UNSUBSCRIBE over the pending SUBSCRIBE — the same row, by the
    * one-row-per-container rule, so the row's own id is no help — and the drain
    * then lands its now-stale SUBSCRIBE.
@@ -247,6 +248,9 @@ public class CaldavPendingSubscriptionStorageTest {
   @Test
   public void aLandedSubscribeDoesNotSettleTheRevokeRecordedWhileItWasInFlight() {
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
+    long owed = only(storage.attemptable(5, 10)).getId();
+    inTransaction(() -> storage.refused(owed));
+    inTransaction(() -> storage.refused(owed));
     // The revoke lands in eXo while the drain's session is still open.
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE));
 
@@ -256,11 +260,37 @@ public class CaldavPendingSubscriptionStorageTest {
     PendingSubscription standing = only(storage.attemptable(5, 10));
     assertEquals(PendingSubscriptionKind.UNSUBSCRIBE, standing.getKind(), "the removal nobody has made yet is still owed");
     assertEquals(CONTAINER, standing.getContainerUid());
-    assertEquals(0, standing.getAttempts());
+    assertEquals(0, standing.getAttempts(), "and with its own patience, not the subscribe's two spent attempts");
 
     // And when the drain does land that removal, it settles.
     inTransaction(() -> storage.settled(BOB, SERVER, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE));
     assertEquals(0, rowCount("SELECT COUNT(*) FROM CALDAV_PENDING_SUBSCRIPTION"));
+  }
+
+  /**
+   * <b>The other overload, and why it is not the same one.</b> The grant and
+   * the revoke decide their instruction in the call that then settles it,
+   * inside the share's stripe lock and after the read-back — nothing they can
+   * be stale about. So they clear whatever row stands for the container, and
+   * the kind-guarded overload would be wrong for them in the one way that
+   * matters: a grant whose subscribe failed leaves a pending SUBSCRIBE, the
+   * owner revokes, the unsubscribe lands — and a guarded settle would keep
+   * that SUBSCRIBE alive for the next drain to post, subscribing the colleague
+   * to a calendar whose access entry is gone. BlueMind's subscribe makes no
+   * access check, so it would land, and the only trace would be a success
+   * line.
+   */
+  @Test
+  public void theUnconditionalSettleClearsTheOtherKindToo() {
+    inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
+    inTransaction(() -> storage.owe(BOB, SERVER, OTHER, PendingSubscriptionKind.UNSUBSCRIBE));
+
+    // A revoke that landed, over a subscribe that never did.
+    inTransaction(() -> storage.settled(BOB, SERVER, CONTAINER));
+    // And a grant that landed, over a revoke that never did.
+    inTransaction(() -> storage.settled(BOB, SERVER, OTHER));
+
+    assertEquals(0, rowCount("SELECT COUNT(*) FROM CALDAV_PENDING_SUBSCRIPTION"), "nothing is left for a drain to re-apply");
   }
 
   /**
