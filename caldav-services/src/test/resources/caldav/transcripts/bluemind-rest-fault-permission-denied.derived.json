@@ -1,0 +1,20 @@
+// DERIVED, not captured (EXO-90277). The body BlueMind's REST layer answers
+// with HTTP 403 when a service throws a ServerFault whose code is
+// PERMISSION_DENIED, from BlueMind's source at master 1ef9ae23:
+// - parent/core/net.bluemind.core.rest/src/net/bluemind/core/rest/base/ResponseBuilder.java:44-58
+//   buildFault(): errorCode = fault.getCode().toString(), errorType = the
+//   exception's simple class name, message = the exception message;
+// - ResponseBuilder.java:70-76: replyServerFault answers 403 for
+//   PERMISSION_DENIED and 500 for every other code;
+// - parent/user/net.bluemind.user.service/src/net/bluemind/user/service/internal/UserSubscriptionService.java:129-130
+//   subscribe checks ROLE_MANAGE_USER_SUBSCRIPTIONS or ROLE_SELF on the
+//   {subject} in the container's domain, so a session editing ANOTHER user's
+//   subscriptions, or a subject in another domain, is refused this way -
+//   the 403 dev/golden-capture/capture-bluemind-subscription.sh step 9 records.
+// The message text is BlueMind's own and is never quoted by the client.
+// Lines starting with "//" are removed by the test before parsing.
+{
+  "errorCode": "PERMISSION_DENIED",
+  "errorType": "ServerFault",
+  "message": "Doesn't have role ROLE_MANAGE_USER_SUBSCRIPTIONS or ROLE_SELF on bm.example.com/6B2E4F10-8A3C-4D7E-9B51-0C2D4E6F8A17"
+}
