@@ -202,6 +202,9 @@ public class CaldavCalendarShareServiceTest {
   @Mock
   private CaldavPushService               caldavPushService;
 
+  @Mock
+  private CaldavShareSubscriptionService  caldavShareSubscriptionService;
+
   private CaldavCalendarShareService      service;
 
   /**
@@ -217,7 +220,8 @@ public class CaldavCalendarShareServiceTest {
                                              caldavConnectionIdentityService,
                                              identityManager,
                                              blueMindAclClient,
-                                             caldavPushService);
+                                             caldavPushService,
+                                             caldavShareSubscriptionService);
     lenient().when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(calendar(CALENDAR, ALICE, ANCHOR));
     lenient().when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(connectedTo(STALWART));
     lenient().when(caldavSyncStorage.getPairByLocalCalendar(ALICE, STALWART, ANCHOR)).thenReturn(exoPair());
@@ -646,6 +650,109 @@ public class CaldavCalendarShareServiceTest {
     assertEquals(CaldavCalendarShareService.NOT_APPLIED, notApplied.getCode());
     assertTrue(nothing.sharees().isEmpty());
     verify(calDavClient, org.mockito.Mockito.times(2)).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(true));
+  }
+
+  /**
+   * EXO-90277: once the access list read back confirms eric reads, and
+   * before the grant is audited, the colleague's own account is subscribed
+   * to the calendar - named by alice's login, bob's identity and login,
+   * eric's directory entry uid, the server and the container uid. A grant
+   * the server did not apply, and a colleague already reading, subscribe
+   * nobody: eXo takes the step only for a share it made.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAGrantSubscribesTheColleagueAfterTheReadBackConfirmsIt() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner(), acl(owner(), expanded(ERIC_UID, "Read")));
+
+    service.grant(ALICE, "alice", CALENDAR, "bob");
+
+    ArgumentCaptor<CaldavShareSubscriptionService.ShareeSubscription> subscribed =
+                                                                                 ArgumentCaptor.forClass(CaldavShareSubscriptionService.ShareeSubscription.class);
+    org.mockito.InOrder order = org.mockito.Mockito.inOrder(blueMindAclClient, calDavClient, caldavShareSubscriptionService);
+    order.verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
+    order.verify(blueMindAclClient).readAcl(endpoint, BM_CONTAINER);
+    order.verify(caldavShareSubscriptionService).subscribeSharee(subscribed.capture());
+    assertEquals(new CaldavShareSubscriptionService.ShareeSubscription("alice", BOB, "bob", ERIC_UID, STALWART, BM_CONTAINER),
+                 subscribed.getValue());
+    verify(caldavShareSubscriptionService, never()).unsubscribeSharee(any());
+
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner(), owner());
+    assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Read")));
+    service.grant(ALICE, "alice", CALENDAR, "bob");
+    verify(caldavShareSubscriptionService, org.mockito.Mockito.times(1)).subscribeSharee(any());
+  }
+
+  /**
+   * EXO-90277: a revoke the access list confirms unsubscribes the colleague;
+   * one the server did not apply, and one with nothing to revoke, do not.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindARevokeUnsubscribesTheColleagueAfterTheReadBackConfirmsIt() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Read")),
+                                                                        owner(),
+                                                                        acl(owner(), expanded(ERIC_UID, "Read")),
+                                                                        acl(owner(), expanded(ERIC_UID, "Read")),
+                                                                        owner());
+
+    service.revoke(ALICE, "alice", CALENDAR, "bob");
+    assertThrows(CaldavShareException.class, () -> service.revoke(ALICE, "alice", CALENDAR, "bob"));
+    service.revoke(ALICE, "alice", CALENDAR, "bob");
+
+    verify(caldavShareSubscriptionService, org.mockito.Mockito.times(1))
+                                                                        .unsubscribeSharee(new CaldavShareSubscriptionService.ShareeSubscription("alice",
+                                                                                                                                                 BOB,
+                                                                                                                                                 "bob",
+                                                                                                                                                 ERIC_UID,
+                                                                                                                                                 STALWART,
+                                                                                                                                                 BM_CONTAINER));
+    verify(caldavShareSubscriptionService, never()).subscribeSharee(any());
+  }
+
+  /**
+   * EXO-90277: the colleague's subscription never fails the owner's action.
+   * The subscription service does not throw by contract; should it, the
+   * grant still returns the access list as read back and is still audited,
+   * and so is the revoke.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindTheGrantAndTheRevokeStandWhenTheSubscriptionSeamThrows() throws Exception {
+    onBlueMind();
+    doThrow(new IllegalStateException("subscription bean broke")).when(caldavShareSubscriptionService).subscribeSharee(any());
+    doThrow(new IllegalStateException("subscription bean broke")).when(caldavShareSubscriptionService).unsubscribeSharee(any());
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner(),
+                                                                        acl(owner(), expanded(ERIC_UID, "Read")),
+                                                                        acl(owner(), expanded(ERIC_UID, "Read")),
+                                                                        owner());
+    Logger logger = (Logger) LoggerFactory.getLogger(CaldavCalendarShareService.class);
+    Level previousLevel = logger.getLevel();
+    logger.setLevel(Level.INFO);
+    ListAppender<ILoggingEvent> logged = new ListAppender<>();
+    logged.start();
+    logger.addAppender(logged);
+    try {
+      CalendarShares granted = service.grant(ALICE, "alice", CALENDAR, "bob");
+      CalendarShares revoked = service.revoke(ALICE, "alice", CALENDAR, "bob");
+
+      assertEquals(1, granted.sharees().size());
+      assertEquals(ShareAccess.READ, granted.sharees().get(0).access());
+      assertTrue(revoked.sharees().isEmpty());
+      List<String> lines = logged.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+      assertTrue(lines.stream().anyMatch(line -> line.startsWith("CalDAV share granted")), lines.toString());
+      assertTrue(lines.stream().anyMatch(line -> line.startsWith("CalDAV share revoked")), lines.toString());
+      assertEquals(2, logged.list.stream().filter(event -> event.getLevel() == Level.WARN).count(), "one WARN per seam failure");
+    } finally {
+      logger.detachAppender(logged);
+      logger.setLevel(previousLevel);
+    }
   }
 
   /**

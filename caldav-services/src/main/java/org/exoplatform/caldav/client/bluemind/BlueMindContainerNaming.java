@@ -160,6 +160,31 @@ public final class BlueMindContainerNaming {
   }
 
   /**
+   * The directory entry uid a BlueMind user principal names: the last segment
+   * of {@code <dav root>/principals/__uids__/<uid>/}
+   * ({@code CurrentUserPrincipal#fetch}; {@code ResType.PRINCIPAL}).
+   *
+   * <p>
+   * The uid is what BlueMind's REST API addresses a user by — the
+   * {@code subject} of an access entry, of a subscription edit — so it is the
+   * one thing a recorded principal has to yield for eXo to act on that user's
+   * behalf (EXO-90253, EXO-90277). A principal of another shape yields nothing:
+   * acting on a guessed uid is worse than not acting.
+   *
+   * @param principal a principal path, any spelling, may be null
+   * @return the uid, or null when the path is not a BlueMind user principal
+   */
+  public static String userUidOf(String principal) {
+    if (StringUtils.isBlank(principal)) {
+      return null;
+    }
+    String canonical = CalendarCollection.principalPathOf(principal);
+    String uid = lastSegmentOf(canonical);
+    String parent = StringUtils.substringBeforeLast(StringUtils.stripEnd(canonical, "/"), "/");
+    return StringUtils.isBlank(uid) || !UIDS_SEGMENT.equals(lastSegmentOf(parent)) || !parent.contains("/principals/") ? null : uid;
+  }
+
+  /**
    * Whether the account and the collection have BlueMind's shape, which is
    * the only place the rule is known to hold.
    *
