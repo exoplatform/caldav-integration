@@ -405,16 +405,35 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
    * Compared on the two things that make an account a different account: the
    * login and the server registration. Deliberately <b>not</b> on the
    * password — a password change is the same account, and its sightings go on
-   * describing it. A first connection has nothing recorded and counts as a
-   * change, which is right and costs nothing: there are no rows yet.
+   * describing it.
    *
-   * @param previous what was recorded before this call, null when nothing was
-   * @param incoming what is being recorded now
+   * <p>
+   * A first connection needs no arm of its own, and deliberately has none.
+   * {@code CaldavConnectorStorage.getCaldavSetting} answers a blank
+   * {@code CaldavUserSetting} rather than nothing when a user has never
+   * connected, so {@code previous.getUsername()} is null while the caller has
+   * already refused a blank incoming one — the login comparison below is
+   * therefore true, and the rows (of which there are none yet) are cleared.
+   * An explicit blank-username arm was written here first and removed: it
+   * could not be made to fail, which is the definition of a branch nothing
+   * holds in place.
+   *
+   * <p>
+   * The null guard is not of that kind. It is unreachable from production for
+   * the same reason — the storage never answers null — but it is load-bearing
+   * all the same, since without it the {@code getServerId()} below throws
+   * rather than returning an answer. {@code anUnknownPreviousAccountForgetsThemToo}
+   * pins it and says it is a guard.
+   *
+   * @param previous what was recorded before this call, blank when the user
+   *          has never connected; null only if the storage contract changes
+   * @param incoming what is being recorded now, its login already checked
+   *          non-blank by the caller
    * @return true when the sightings this user's home produced no longer
    *         describe the account being connected
    */
   private static boolean accountChanged(CaldavUserSetting previous, CaldavUserSetting incoming) {
-    if (previous == null || StringUtils.isBlank(previous.getUsername())) {
+    if (previous == null) {
       return true;
     }
     long before = previous.getServerId() == null ? 0L : previous.getServerId();
