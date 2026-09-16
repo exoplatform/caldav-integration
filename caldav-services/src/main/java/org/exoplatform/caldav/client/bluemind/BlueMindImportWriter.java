@@ -16,16 +16,20 @@
  */
 package org.exoplatform.caldav.client.bluemind;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarObjectWriter;
 import org.exoplatform.caldav.client.PutResult;
 import org.exoplatform.caldav.client.bluemind.BlueMindCalendarImportClient.ImportReport;
@@ -77,25 +81,62 @@ import org.exoplatform.services.log.Log;
  * path already accepts on every server.
  *
  * <p>
- * <b>A known cost, accepted for now (review round 2, F7 — an Architect
- * decision).</b> Reading through the listing means one {@code Depth: 1}
- * ETag-only PROPFIND of the <i>whole</i> collection before each conditional
- * write and one after each write; on BlueMind the destination is the main
- * calendar, so every push, answer, exclusion or removal lists the user's
- * entire calendar twice, and BlueMind logs one INFO line per child on each
- * listing ({@code GetTag.java:53-54}). The pass already pays one such listing
- * per collection per cycle; writes are per object and answers fan out per
- * attendee, so the door is heavier than a CalDAV PUT by two multistatus
- * documents of N responses. The hypothesis that would remove it: a
- * {@code Depth: 0} PROPFIND of {@code getetag} on the href itself, which
- * BlueMind resolves through the same {@code ds.from(path)}
- * ({@code PropFindProtocol.java:69}) and hashes {@code dr.getPath()}
- * ({@code GetTag.java:47,56}, {@code SyncTokens.java:42}), so the token
- * equals the listing's iff the request path string equals
+ * <b>Reading one object rather than the whole calendar (review round 2, F7
+ * — fixed on the Architect's decision).</b> Read through the listing alone,
+ * every conditional write cost one {@code Depth: 1} ETag-only PROPFIND of
+ * the <i>whole</i> collection before it and one after it; on BlueMind the
+ * destination is the main calendar, so every push, answer, exclusion or
+ * removal listed the user's entire calendar twice, and BlueMind logged one
+ * INFO line per child each time ({@code GetTag.java:53-54}). This door now
+ * asks two single-object questions instead, and asks the listing only when
+ * their answers are not conclusive:
+ * <ul>
+ * <li><i>Is the object there?</i> — a one-href {@code calendar-multiget}
+ * REPORT asking {@code getetag} only ({@code CalDavClient#multigetEtags}).
+ * BlueMind answers one response per item its store returned
+ * ({@code CalendarMultigetExecutor.java:82,114-130}) and none for a uid it
+ * does not hold, so a response for the href is presence — taken only when
+ * its href is byte-equal to the one eXo sent: the server spells it as
+ * {@code <REPORT path> + uid + ".ics"} ({@code :117}), the construction the
+ * listing hashes from ({@code DavStore.java:402}), so equality means the
+ * {@code Depth: 0} request path below hashes like the listing's child for
+ * <i>this</i> object, whatever the collection-wide verdict. Its version is
+ * the REPORT channel's, quoted base64 ({@code :123}), and is never recorded. No
+ * response is <i>not</i> taken as absence: a failed lookup answers the same
+ * empty document ({@code :83-86}), so absence is only ever the listing's
+ * word — which is why {@link #putObject}, whose accepting answer <i>is</i>
+ * absence, reads the listing directly and asks nothing else.</li>
+ * <li><i>Which version does the listing publish for it?</i> — a
+ * {@code Depth: 0} PROPFIND of {@code getetag} on the href
+ * ({@code CalDavClient#readEtag}). BlueMind resolves it through the same
+ * {@code ds.from(path)} ({@code PropFindProtocol.java:69}) and hashes
+ * {@code dr.getPath()} ({@code GetTag.java:47,56}, {@code SyncTokens.java:42}),
+ * so the token equals the listing's iff the request path equals
  * {@code containerPath + uid + ".ics"} as {@code addEvents} builds it
- * ({@code DavStore.java:402}) — and iff a missing object answers 404 rather
- * than a node minted from the path. Both need a rig capture of the two
- * requests on one object before any code; nothing here assumes them.
+ * ({@code DavStore.java:402}) — a hypothesis about spelling, not verified on
+ * a server. This read cannot answer existence either: the router assumes an
+ * {@code .ics} node exists whenever its path is well formed
+ * ({@code MethodRouter.java:162-175}, {@code DavStore.java:474-502}, the
+ * {@code default} "assume yes"), {@code ResType.VSTUFF} mints the node from
+ * the path with no lookup, and {@code Depth: 0} adds only that node
+ * ({@code DavStore.java:355-357}); a missing object is answered 207 with a
+ * token. So it is asked only once presence is established.</li>
+ * </ul>
+ * <b>Nothing here rests on the spelling hypothesis.</b> The first time the
+ * {@code Depth: 0} read answers on a collection, its token is compared with
+ * the {@code Depth: 1} listing's for the same href, the way the pass compares
+ * ({@link #sameVersion}); the verdict is kept per collection for the life of
+ * the process ({@link #depthZeroAgreesWithListing}) and stated once at INFO.
+ * Agreement makes later writes on that collection single-object reads only;
+ * disagreement keeps them on the listing, at today's cost. And a refusal is
+ * never pronounced on the single-object channel alone: when its version
+ * differs from the one the caller conditions on, the listing is read and its
+ * value compared instead ({@link #versionOf}); a listing that contradicts
+ * the token there revokes the verdict as well — so even a verdict that went
+ * stale can cost a listing, never a wrong 412 and never a recorded version
+ * of the wrong shape. Every fall-back is taken at DEBUG. Request count per conditional write on the settled path: two
+ * single-object requests before and two after, none listing the collection;
+ * a create still lists once, before the import.
  *
  * <p>
  * <b>Switching a server onto this door.</b> A row written over CalDAV holds
@@ -143,11 +184,20 @@ public class BlueMindImportWriter implements CalendarObjectWriter {
   private final CalDavClient                 calDavClient;
 
   /**
+   * Per collection — keyed by server and canonical collection path — whether
+   * the {@code Depth: 0} read of an object's version agreed with the
+   * {@code Depth: 1} listing's for the same href when both were read once.
+   * Absent until an object of the collection has been read both ways; the
+   * verdict lives as long as the process.
+   */
+  private final Map<String, Boolean>         depthZeroAgreesWithListing = new ConcurrentHashMap<>();
+
+  /**
    * The writer over the import API and the CalDAV client its reads use.
    *
    * @param importClient BlueMind's calendar REST API
-   * @param calDavClient the CalDAV client, for the {@code Depth: 1} listing
-   *          that learns the stored version in the pass's own shape
+   * @param calDavClient the CalDAV client, for the reads that learn whether
+   *          an object is stored and under which listed version
    */
   @Autowired
   public BlueMindImportWriter(BlueMindCalendarImportClient importClient, CalDavClient calDavClient) {
@@ -161,6 +211,8 @@ public class BlueMindImportWriter implements CalendarObjectWriter {
    * <p>
    * Create-only, emulated: an object the listing already carries at the href
    * is answered 412 with its version, the way {@code If-None-Match: *} would.
+   * The listing is read directly here: the answer that lets a create proceed
+   * is absence, and absence is the listing's word alone.
    */
   @Override
   public PutResult putObject(CalDavEndpoint endpoint, String href, String icsData) {
@@ -193,7 +245,7 @@ public class BlueMindImportWriter implements CalendarObjectWriter {
     if (StringUtils.isBlank(ifMatch)) {
       throw new IllegalArgumentException("An update needs the ETag its read answered; an unconditional overwrite is refused");
     }
-    String existing = listed(endpoint, href);
+    String existing = versionOf(endpoint, href, ifMatch);
     if (!sameVersion(ifMatch, existing)) {
       return new PutResult(PutResult.PRECONDITION_FAILED, existing, null);
     }
@@ -211,7 +263,7 @@ public class BlueMindImportWriter implements CalendarObjectWriter {
   @Override
   public int deleteObject(CalDavEndpoint endpoint, String href, String ifMatch) {
     if (StringUtils.isNotBlank(ifMatch)) {
-      String existing = listed(endpoint, href);
+      String existing = versionOf(endpoint, href, ifMatch);
       if (existing == null) {
         return 404;
       }
@@ -230,7 +282,8 @@ public class BlueMindImportWriter implements CalendarObjectWriter {
 
   /**
    * Imports the document and reads back the version the listing now publishes
-   * for the href.
+   * for the href — through the single-object reads when they are conclusive
+   * on this collection, through the listing otherwise.
    *
    * @param endpoint the account's endpoint
    * @param href the object's path
@@ -250,7 +303,7 @@ public class BlueMindImportWriter implements CalendarObjectWriter {
       throw new CalDavException("The calendar server did not import " + uid + " into " + containerUid + " (" + report.uids().size()
           + " of " + report.total() + " series applied)");
     }
-    String stored = listed(endpoint, href);
+    String stored = versionOf(endpoint, href, null);
     if (stored == null) {
       throw new CalDavException("The calendar server reported " + uid + " imported into " + containerUid
           + " but lists nothing at " + href);
@@ -264,6 +317,132 @@ public class BlueMindImportWriter implements CalendarObjectWriter {
   }
 
   /**
+   * The version the collection's listing publishes for one href, read the
+   * way the caller wants it read: through the single-object channel when it
+   * is conclusive on this collection and agrees with {@code expected}, and
+   * through the {@code Depth: 1} listing in every other case — the channel
+   * not being conclusive, the collection having no verdict yet or a negative
+   * one, or the channel's version differing from the one the caller
+   * conditions on, in which case the listing's own value is what is compared
+   * and returned, so a refusal never rests on the single-object channel
+   * alone. The listing is read at most once per call.
+   *
+   * @param endpoint the account's endpoint
+   * @param href the object's path
+   * @param expected the version the caller conditions on, or null when it
+   *          conditions on nothing
+   * @return the version in the listing's shape, or null when the object is
+   *         not there
+   */
+  private String versionOf(CalDavEndpoint endpoint, String href, String expected) {
+    String collection = collectionOf(href);
+    String key = endpoint.getServerId() + " " + CaldavSyncStorage.canonicalHref(collection);
+    Boolean agrees = depthZeroAgreesWithListing.get(key);
+    if (Boolean.FALSE.equals(agrees)) {
+      return listed(endpoint, href);
+    }
+    String token = singleObjectToken(endpoint, href, collection);
+    if (token == null) {
+      return listed(endpoint, href);
+    }
+    if (agrees == null) {
+      // The first conclusive read on this collection: both channels, once,
+      // and the listing's own value is what this call answers.
+      String fromListing = listed(endpoint, href);
+      settle(key, collection, token, fromListing);
+      return fromListing;
+    }
+    if (expected != null && !sameVersion(expected, token)) {
+      LOG.debug("The single-object read of {} names version {} where {} was expected; the collection listing has the last word",
+                href,
+                token,
+                expected);
+      String fromListing = listed(endpoint, href);
+      // A listing that contradicts the token contradicts the verdict too: the
+      // channels no longer agree here, so this collection goes back to the
+      // listing for the rest of the process.
+      if (fromListing != null && !sameVersion(fromListing, token)) {
+        settle(key, collection, token, fromListing);
+      }
+      return fromListing;
+    }
+    return token;
+  }
+
+  /**
+   * The object's version through the single-object channel — the one-href
+   * multiget for presence, then the {@code Depth: 0} PROPFIND for the value —
+   * or null when that channel is not conclusive here: presence not affirmed
+   * under the exact spelling eXo sends, no {@code getetag} granted, or a
+   * server error on either read. Reads nothing else; the listing is the
+   * caller's to read.
+   *
+   * @param endpoint the account's endpoint
+   * @param href the object's path
+   * @param collection the object's collection, slash-terminated
+   * @return the token the {@code Depth: 0} read granted, or null
+   */
+  private String singleObjectToken(CalDavEndpoint endpoint, String href, String collection) {
+    String token;
+    try {
+      Map<String, String> present = calDavClient.multigetEtags(endpoint, collection, List.of(href));
+      // Presence under the server's OWN spelling of the path, byte for byte:
+      // BlueMind renders the response href as <REPORT request path> + uid +
+      // ".ics" (CalendarMultigetExecutor.java:117), the very construction the
+      // listing hashes its child token from (DavStore.java:402). A key equal
+      // to the href eXo sends means the Depth:0 request path is that same
+      // string; a key spelled otherwise (a percent-encoded leaf, say) means
+      // the two would hash apart, and the listing is read instead.
+      if (StringUtils.isBlank(present.get(href))) {
+        LOG.debug("The one-href multiget of {} answered no version under that spelling; the collection listing is read instead",
+                  href);
+        return null;
+      }
+      token = calDavClient.readEtag(endpoint, href);
+    } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
+      // Every later step would meet the same refusal, the listing included.
+      throw e;
+    } catch (CalDavException e) {
+      LOG.debug("The single-object read of {} failed ({}); the collection listing is read instead", href, e.getMessage());
+      return null;
+    }
+    if (StringUtils.isBlank(token)) {
+      LOG.debug("The Depth:0 read of {} granted no getetag; the collection listing is read instead", href);
+      return null;
+    }
+    return token;
+  }
+
+  /**
+   * Records, for one collection, whether the {@code Depth: 0} token and the
+   * listing's value name the same version — stated once at INFO, because it
+   * is the answer to the question the whole single-object channel hangs on.
+   * A listing that does not carry the object decides nothing: a race, or a
+   * listing that failed on the server ({@code DavStore.java:406-408}), says
+   * nothing about the channels' agreement, and no verdict is recorded.
+   *
+   * @param key the verdict's key, server and canonical collection
+   * @param collection the collection, for the log line
+   * @param token what the {@code Depth: 0} read granted
+   * @param fromListing what the listing publishes for the same object, may
+   *          be null
+   */
+  private void settle(String key, String collection, String token, String fromListing) {
+    if (fromListing == null) {
+      LOG.debug("The listing of {} does not carry an object the multiget answered; no verdict on the Depth:0 read", collection);
+      return;
+    }
+    boolean agrees = sameVersion(fromListing, token);
+    depthZeroAgreesWithListing.put(key, agrees);
+    LOG.info("On BlueMind collection {} the Depth:0 getetag {} the collection listing's ({} against {}); {}",
+             collection,
+             agrees ? "agrees with" : "differs from",
+             token,
+             fromListing,
+             agrees ? "single-object reads serve this collection from now on" : "the collection listing serves it");
+  }
+
+  /**
    * The version the collection's listing publishes for one href, or null when
    * the listing does not carry the object — the same {@code Depth: 1}
    * PROPFIND the verification pass reads, so the value has the shape the pass
@@ -274,15 +453,26 @@ public class BlueMindImportWriter implements CalendarObjectWriter {
    * @return the listed version, verbatim, or null
    */
   private String listed(CalDavEndpoint endpoint, String href) {
+    return valueAt(calDavClient.listResourceEtags(endpoint, collectionOf(href)), href);
+  }
+
+  /**
+   * The value a server-answered map holds for one href, whatever spelling
+   * the server gave the key — canonical paths compared case-insensitively.
+   *
+   * @param answered object path to version, as the server spelled the paths
+   * @param href the object's path as eXo spells it
+   * @return the first non-blank value at that object, or null
+   */
+  private static String valueAt(Map<String, String> answered, String href) {
     String wanted = CaldavSyncStorage.canonicalHref(href);
-    Map<String, String> listing = calDavClient.listResourceEtags(endpoint, collectionOf(href));
-    return listing.entrySet()
-                  .stream()
-                  .filter(entry -> StringUtils.equalsIgnoreCase(CaldavSyncStorage.canonicalHref(entry.getKey()), wanted))
-                  .map(Map.Entry::getValue)
-                  .filter(StringUtils::isNotBlank)
-                  .findFirst()
-                  .orElse(null);
+    return answered.entrySet()
+                   .stream()
+                   .filter(entry -> StringUtils.equalsIgnoreCase(CaldavSyncStorage.canonicalHref(entry.getKey()), wanted))
+                   .map(Map.Entry::getValue)
+                   .filter(StringUtils::isNotBlank)
+                   .findFirst()
+                   .orElse(null);
   }
 
   /**
