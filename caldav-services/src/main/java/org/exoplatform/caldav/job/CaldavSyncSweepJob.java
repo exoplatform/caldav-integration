@@ -91,10 +91,20 @@ public class CaldavSyncSweepJob {
     // these from the administration screen must see the next run behave
     // differently, not the next restart.
     int batchSize = caldavTuningService.getSweepBatchSize();
-    int swept = caldavSyncService.sweepDueAccounts(caldavTuningService.getSweepStaleMinutes(), batchSize);
-    if (swept > 0) {
-      LOG.info("Swept {} CalDAV account(s) in {} ms", swept, System.currentTimeMillis() - start);
+    try {
+      int swept = caldavSyncService.sweepDueAccounts(caldavTuningService.getSweepStaleMinutes(), batchSize);
+      if (swept > 0) {
+        LOG.info("Swept {} CalDAV account(s) in {} ms", swept, System.currentTimeMillis() - start);
+      }
+    } finally {
+      // In a finally, and that is the whole point of calling it a second
+      // hand-off: sweepDueAccounts reads its due accounts outside any guard,
+      // so a database that will not answer it ends this run - and the
+      // colleagues the drain exists to reach are exactly the ones with no
+      // account for the sweep to visit and no other path to their
+      // subscription. The first hand-off failing must not cost them the
+      // second.
+      caldavShareSubscriptionService.retryOwed(batchSize);
     }
-    caldavShareSubscriptionService.retryOwed(batchSize);
   }
 }
