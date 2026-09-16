@@ -88,22 +88,38 @@ public class CaldavPendingSubscriptionStorage {
   }
 
   /**
-   * Forgets what was owed about one container, because the change landed.
+   * Forgets what was owed about one container, because <em>that</em> change
+   * landed.
    *
    * <p>
    * By the colleague, server and container rather than by the row's own
-   * identifier: the caller that landed a change knows which account and
-   * container it landed on, and looking the row up again is what makes
-   * settling one that was renewed in the meantime remove the renewal too —
-   * correct, since the change that landed is the latest instruction.
+   * identifier, because {@link #owe} reuses the row and an id says nothing
+   * about which instruction it now carries — but <b>only when the row still
+   * asks for the change that landed</b>, which is the whole reason the kind is
+   * a parameter here.
+   *
+   * <p>
+   * <b>What that guard is for.</b> A drain reads its rows once and then spends
+   * up to three round trips on each, outside any lock the share service holds.
+   * A revoke arriving in that window records an UNSUBSCRIBE over the pending
+   * SUBSCRIBE — the same row, by the one-row-per-container rule — and the
+   * drain then lands its now-stale SUBSCRIBE. Deleting by container alone
+   * would strike off the removal nobody has made yet, and the colleague would
+   * keep, for good and without a line to say so, a subscription to a calendar
+   * whose access entry is gone: the dangling subscription this whole feature
+   * exists to prevent, arrived at from the inside. With the guard the removal
+   * survives its predecessor's success and the next drain makes it.
    *
    * @param userIdentityId the sharee
    * @param serverId the server key
    * @param containerUid the container uid
+   * @param kind the change that landed; a row now asking for the other one is
+   *          left alone
    */
   @Transactional
-  public void settled(long userIdentityId, long serverId, String containerUid) {
+  public void settled(long userIdentityId, long serverId, String containerUid, PendingSubscriptionKind kind) {
     pendingSubscriptionDAO.findByUserIdentityIdAndServerIdAndContainerUid(userIdentityId, serverId, containerUid)
+                          .filter(entity -> entity.getKind() == kind)
                           .ifPresent(entity -> pendingSubscriptionDAO.deleteById(entity.getId()));
   }
 
