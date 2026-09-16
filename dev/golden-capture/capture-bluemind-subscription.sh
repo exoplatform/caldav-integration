@@ -256,7 +256,12 @@ cleanup() {
 echo '1/12 POST /api/auth/login as the sharee — authUser.uid and domainUid...'
 LOGIN_URL="$ROOT/api/auth/login?login=$(encode_segment "$LOGIN")&origin=exo-caldav-capture"
 tmp_headers="$(mktemp)"; tmp_body="$(mktemp)"
-status=$(curl -s -X POST -H 'Content-Type: application/json' -H 'Accept: application/json' --data-binary "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$PASSWORD")" -D "$tmp_headers" -o "$tmp_body" -w '%{http_code}' "$LOGIN_URL" || echo 'unreachable')
+# The password is piped, never handed to python3 as an argument: an argv is
+# visible in ps to every local user for the life of the call, and the header
+# above promises it is never passed as one.
+PASSWORD_JSON="$(printf '%s' "$PASSWORD" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+status=$(curl -s -X POST -H 'Content-Type: application/json' -H 'Accept: application/json' --data-binary "$PASSWORD_JSON" -D "$tmp_headers" -o "$tmp_body" -w '%{http_code}' "$LOGIN_URL" || echo 'unreachable')
+unset PASSWORD_JSON
 KEY="$(python3 -c 'import json,sys; b=open(sys.argv[1]).read().strip(); print(json.loads(b).get("authKey","") if b else "")' "$tmp_body" 2>/dev/null || true)"
 if [ -n "$KEY" ]; then KEY_PATTERN="$(escape_pattern "$KEY")"; fi
 write_capture POST "$LOGIN_URL" "$OUT/bluemind-rest-login-sharee.captured.json" \
