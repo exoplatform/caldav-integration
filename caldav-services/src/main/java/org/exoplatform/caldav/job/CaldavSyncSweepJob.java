@@ -22,6 +22,7 @@ import org.springframework.stereotype.Component;
 
 import io.meeds.common.ContainerTransactional;
 
+import org.exoplatform.caldav.service.CaldavShareSubscriptionService;
 import org.exoplatform.caldav.service.CaldavSyncService;
 import org.exoplatform.caldav.service.CaldavTuningService;
 import org.exoplatform.services.log.ExoLogger;
@@ -58,6 +59,9 @@ public class CaldavSyncSweepJob {
   @Autowired
   private CaldavTuningService caldavTuningService;
 
+  @Autowired
+  private CaldavShareSubscriptionService caldavShareSubscriptionService;
+
   /**
    * Synchronises the accounts that have gone longest without one.
    *
@@ -70,6 +74,14 @@ public class CaldavSyncSweepJob {
    * lifecycle around the call. A scheduler thread is exactly the case with
    * nothing bound, which makes the legacy annotation the wrong one on a job by
    * construction and the right one on nothing new at all.
+   *
+   * <p>
+   * <b>Two hand-offs, not one</b>, and the second is not the first's business
+   * (EXO-90277). The account sweep visits users holding an ACTIVE pair; a
+   * colleague who merely received a BlueMind share holds none and would never
+   * be visited, so the subscription changes eXo owes them are drained from
+   * their own table, whatever accounts were due. Still glue: the job hands
+   * both to their services and decides nothing.
    */
   @Scheduled(cron = "${exo.agenda.caldav.sync.sweep.cron:0 */5 * * * ?}")
   @ContainerTransactional
@@ -78,10 +90,11 @@ public class CaldavSyncSweepJob {
     // Read at each run, not captured in a field: an administrator changing
     // these from the administration screen must see the next run behave
     // differently, not the next restart.
-    int swept = caldavSyncService.sweepDueAccounts(caldavTuningService.getSweepStaleMinutes(),
-                                                   caldavTuningService.getSweepBatchSize());
+    int batchSize = caldavTuningService.getSweepBatchSize();
+    int swept = caldavSyncService.sweepDueAccounts(caldavTuningService.getSweepStaleMinutes(), batchSize);
     if (swept > 0) {
       LOG.info("Swept {} CalDAV account(s) in {} ms", swept, System.currentTimeMillis() - start);
     }
+    caldavShareSubscriptionService.retryOwed(batchSize);
   }
 }
