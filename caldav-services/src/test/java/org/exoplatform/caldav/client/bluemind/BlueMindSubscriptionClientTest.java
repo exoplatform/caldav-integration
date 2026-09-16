@@ -135,6 +135,10 @@ public class BlueMindSubscriptionClientTest {
 
   private Level                 previousLevel;
 
+  private Logger                own;
+
+  private Level                 ownPreviousLevel;
+
   /**
    * A client over a mocked transport answering from a queue, the colleague's
    * credentials produced as a Basic header, and every line the session logs
@@ -166,19 +170,23 @@ public class BlueMindSubscriptionClientTest {
     logged = new ListAppender<>();
     logged.start();
     logger.addAppender(logged);
-    Logger own = (Logger) LoggerFactory.getLogger(BlueMindSubscriptionClient.class);
+    own = (Logger) LoggerFactory.getLogger(BlueMindSubscriptionClient.class);
+    ownPreviousLevel = own.getLevel();
     own.setLevel(Level.TRACE);
     own.addAppender(logged);
   }
 
   /**
-   * The logger is left as found.
+   * Both loggers are left as found — level included. A level raised and not
+   * put back outlives the test in the same JVM and quietly changes what every
+   * later test of this class sees.
    */
   @AfterEach
   void restoreLogger() {
     logger.detachAppender(logged);
     logger.setLevel(previousLevel);
-    ((Logger) LoggerFactory.getLogger(BlueMindSubscriptionClient.class)).detachAppender(logged);
+    own.detachAppender(logged);
+    own.setLevel(ownPreviousLevel);
   }
 
   /**
@@ -415,7 +423,9 @@ public class BlueMindSubscriptionClientTest {
 
   /**
    * Credentials the provider does not produce as a login and password are not
-   * a login this API takes: nothing is sent.
+   * a login this API takes: nothing is sent, and the refusal is its own kind,
+   * which is how the caller knows to give the change up rather than retry it
+   * against a provider that will answer the same thing next time.
    *
    * @throws Exception never — the mock declares it
    */
@@ -424,7 +434,6 @@ public class BlueMindSubscriptionClientTest {
     lenient().doReturn(new HttpConnectorCredentials("Bearer eyJhbGciOi", null)).when(credentials).produce(any());
 
     assertThrows(UnsupportedOperationException.class, () -> client.subscribe(endpoint, LOGIN_UID, CONTAINER));
-    assertFalse(client.acceptsCredentials(endpoint));
     assertTrue(sent.isEmpty());
   }
 
@@ -432,8 +441,19 @@ public class BlueMindSubscriptionClientTest {
    * Neither the session key nor the password nor the Basic header ever
    * reaches a log line or an exception message — on an edit that lands, an
    * edit that fails with the key in the body, a fault carrying the password,
-   * a refused subject, and a logout whose transport fails. The capture is
-   * proved live: the logout failure is logged.
+   * a refused subject, a login refusal whose body carries one, and a logout
+   * whose transport fails.
+   *
+   * <p>
+   * <b>Every secret-bearing body here is built with the mapper, and that is
+   * the point of this test rather than a detail of it.</b> Written by hand,
+   * they were not JSON at all — {@link #PASSWORD} carries a quote and a
+   * backslash — so {@code faultCode} threw on the parse and returned before
+   * its own log line, and the whole assertion loop below ran over messages
+   * that had never been near a secret: the test passed against a client that
+   * logged the password, which was proved by making one do so. Valid JSON is
+   * what makes the branch this test exists for actually execute, and the two
+   * assertions at the end are what say it did.
    */
   @Test
   void neitherTheKeyNorThePasswordIsEverLoggedOrThrown() {
@@ -445,12 +465,17 @@ public class BlueMindSubscriptionClientTest {
     client.subscribe(endpoint, LOGIN_UID, CONTAINER);
 
     answer(200, derived("bluemind-rest-login-ok.derived.json"));
-    answer(500, "{\"errorCode\":\"UNKNOWN\",\"errorType\":\"ServerFault\",\"message\":\"" + KEY + " " + PASSWORD + "\"}");
+    answer(500, fault("UNKNOWN", KEY + " " + PASSWORD));
     answer(200, "");
     messages.add(assertThrows(CalDavException.class, () -> client.subscribe(endpoint, LOGIN_UID, CONTAINER)).getMessage());
 
     answer(200, derived("bluemind-rest-login-ok.derived.json"));
-    answer(403, "{\"errorCode\":\"PERMISSION_DENIED\",\"errorType\":\"ServerFault\",\"message\":\"" + PASSWORD + "\"}");
+    answer(500, fault("NOT_FOUND", "container " + PASSWORD + " not found"));
+    answer(200, "");
+    messages.add(assertThrows(CalDavNotFoundException.class, () -> client.subscribe(endpoint, LOGIN_UID, CONTAINER)).getMessage());
+
+    answer(200, derived("bluemind-rest-login-ok.derived.json"));
+    answer(403, fault("PERMISSION_DENIED", PASSWORD));
     answer(200, "");
     messages.add(assertThrows(CalDavForbiddenException.class, () -> client.subscribe(endpoint, LOGIN_UID, CONTAINER)).getMessage());
 
@@ -459,7 +484,7 @@ public class BlueMindSubscriptionClientTest {
     messages.add(assertThrows(BlueMindSubjectMismatchException.class, () -> client.subscribe(endpoint, OTHER_UID, CONTAINER))
                               .getMessage());
 
-    answer(200, "{\"status\":\"Bad\",\"message\":\"" + PASSWORD + "\"}");
+    answer(200, JsonMapper.builder().build().writeValueAsString(Map.of("status", "Bad", "message", PASSWORD)));
     messages.add(assertThrows(CalDavException.class, () -> client.subscribe(endpoint, LOGIN_UID, CONTAINER)).getMessage());
 
     assertFalse(logged.list.isEmpty(), "the capture must see the client's own lines, or this test proves nothing");
@@ -478,6 +503,31 @@ public class BlueMindSubscriptionClientTest {
     }
     String all = logged.list.stream().map(ILoggingEvent::getFormattedMessage).collect(Collectors.joining());
     assertTrue(all.contains("could not be closed"));
+    // The two lines that say the secret-bearing branch really ran: the client
+    // read the faults (it named their codes) and told nobody their text.
+    String own = logged.list.stream()
+                            .filter(event -> event.getLoggerName().equals(BlueMindSubscriptionClient.class.getName()))
+                            .map(ILoggingEvent::getFormattedMessage)
+                            .collect(Collectors.joining("\n"));
+    assertTrue(own.contains("UNKNOWN") && own.contains("NOT_FOUND"),
+               "the client parsed the secret-bearing faults and logged their codes: " + own);
+    assertFalse(own.contains("not found"), "and never a word of BlueMind's own text: " + own);
+  }
+
+  /**
+   * A BlueMind fault body, built by the mapper so that whatever the message
+   * carries the body stays parseable — a hand-written one carrying
+   * {@link #PASSWORD} is not JSON, and an unparseable body never reaches the
+   * code that reads a fault.
+   *
+   * @param code the {@code errorCode}
+   * @param message BlueMind's own text
+   * @return the JSON body
+   */
+  private static String fault(String code, String message) {
+    return JsonMapper.builder()
+                     .build()
+                     .writeValueAsString(Map.of("errorCode", code, "errorType", "ServerFault", "message", message));
   }
 
   /**
@@ -520,11 +570,23 @@ public class BlueMindSubscriptionClientTest {
   private static String bodyOf(HttpRequest request) {
     StringBuilder text = new StringBuilder();
     request.bodyPublisher().orElseThrow().subscribe(new Flow.Subscriber<ByteBuffer>() {
+
+      /**
+       * Asks for the whole body at once: it is a request this test built and
+       * holds in memory, not a stream off a socket.
+       *
+       * @param subscription the publisher's subscription
+       */
       @Override
       public void onSubscribe(Flow.Subscription subscription) {
         subscription.request(Long.MAX_VALUE);
       }
 
+      /**
+       * Appends one buffer of the body as UTF-8.
+       *
+       * @param item the buffer
+       */
       @Override
       public void onNext(ByteBuffer item) {
         byte[] bytes = new byte[item.remaining()];
@@ -532,11 +594,19 @@ public class BlueMindSubscriptionClientTest {
         text.append(new String(bytes, StandardCharsets.UTF_8));
       }
 
+      /**
+       * Fails the test: a body publisher this test built cannot error.
+       *
+       * @param throwable what it reported
+       */
       @Override
       public void onError(Throwable throwable) {
         throw new IllegalStateException(throwable);
       }
 
+      /**
+       * Nothing to do: the body is drained synchronously above.
+       */
       @Override
       public void onComplete() {
         // drained
