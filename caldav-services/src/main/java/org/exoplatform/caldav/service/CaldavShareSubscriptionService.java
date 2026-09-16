@@ -104,7 +104,7 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * {@code maxAttempts} sweep periods after the grant.
  *
  * <p>
- * <b>Four limits, named because each is a decision somebody may want to
+ * <b>Five limits, named because each is a decision somebody may want to
  * revisit rather than an oversight.</b>
  * <ul>
  * <li><b>Only a revoke made from eXo unsubscribes.</b> An owner who removes
@@ -118,8 +118,10 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * <li><b>The grant-time attempt is synchronous, on the owner's thread, inside
  * the share's stripe lock.</b> It is one login, one POST and one logout, each
  * bounded by the REST session's 30-second timeout, so a stalled BlueMind can
- * hold the owner's Share or Unshare — and every other share of that calendar —
- * for up to a minute and a half beyond what the grant itself already costs.
+ * hold the owner's Share or Unshare for up to a minute and a half beyond what
+ * the grant itself already costs — and with it every other share hashing to
+ * the same one of the share service's 64 lock stripes, which is one share in
+ * 64 on that node, of any calendar on any server, not only of this one.
  * It buys immediacy in BlueMind's own webmail and on the colleague's devices;
  * the drain alone would put the calendar in their very next eXo pass anyway.
  * The trade is the PO's and the Architect's, not this class's.</li>
@@ -137,6 +139,16 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * subscriptions — therefore makes every previously abandoned row attemptable
  * again. For a meeting copy that is a harmless re-push; here it can
  * re-subscribe a colleague who unsubscribed by hand.</li>
+ * <li><b>The drain spends the account sweep's batch on sessions, not on
+ * rows.</b> The job hands it {@code exo.agenda.caldav.sync.sweep.batchSize}
+ * (50 by default), and those 50 rows can be 50 distinct colleagues on 50
+ * servers — 50 logins, each up to the session's three 30-second timeouts —
+ * on the scheduler's single thread, against a cron that fires every five
+ * minutes. A backlog on a server that swallows connections therefore delays
+ * this add-on's own account sweep for as many periods as it takes, and it is
+ * the larger of the two costs named here. Self-limiting after
+ * {@code maxAttempts} periods; a bound of its own, rather than the account
+ * sweep's, is the Architect's and Ops' call.</li>
  * </ul>
  */
 @Service
@@ -278,7 +290,7 @@ public class CaldavShareSubscriptionService {
                  share.containerUid(),
                  share.ownerUsername(),
                  share.serverId());
-        caldavPendingSubscriptionStorage.settled(share.shareeIdentityId(), share.serverId(), share.containerUid());
+        caldavPendingSubscriptionStorage.settled(share.shareeIdentityId(), share.serverId(), share.containerUid(), kind);
         return;
       }
       LOG.warn("User {} could not be {} calendar container {} on server {} (shared by {}); recorded, the sweep retries it: {}",
@@ -382,9 +394,13 @@ public class CaldavShareSubscriptionService {
       // Anything eXo's own machinery threw on the way, counted rather than
       // dropped: a row this run left untouched is the same row at the head of
       // the next run, which is a login as this colleague every sweep period
-      // and a batch the rest of the backlog never gets. Counting a row that
-      // already landed in this pass is a no-op - it was deleted - so this is
-      // safe to apply to the whole list.
+      // and a batch the rest of the backlog never gets. Applied to the whole
+      // list, not only the untried tail: a row that landed in this pass was
+      // deleted and counting it is a no-op, while a row already counted in it
+      // is counted twice - two of maxAttempts for one run. Only settle()
+      // itself can bring us here (attemptInSession swallows the rest), so
+      // that is a storage failure already, and spending a second attempt on a
+      // run whose writes are not landing is the cheaper of the two errors.
       return retryAll(rows, String.valueOf(e));
     }
     return landed[0];
@@ -462,7 +478,7 @@ public class CaldavShareSubscriptionService {
   private void settle(PendingSubscription row, Attempt attempt) {
     switch (attempt.outcome()) {
     case LANDED -> {
-      caldavPendingSubscriptionStorage.settled(row.getUserIdentityId(), row.getServerId(), row.getContainerUid());
+      caldavPendingSubscriptionStorage.settled(row.getUserIdentityId(), row.getServerId(), row.getContainerUid(), row.getKind());
       LOG.info("Owed BlueMind {} landed: user {} and calendar container {} on server {}",
                row.getKind(),
                row.getUserIdentityId(),
