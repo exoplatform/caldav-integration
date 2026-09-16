@@ -64,14 +64,38 @@ import org.exoplatform.services.log.Log;
  * <b>What that buys, and what it does not.</b> On BlueMind the listed value
  * of an object never moves, so the emulated {@code If-Match} refuses nothing
  * a client changed — which is exactly what BlueMind's own CalDAV {@code PUT}
- * does with a real {@code If-Match} (the rig note at
- * {@code CaldavMirrorVerificationService#adoptVersion}), and why the engine
- * never relied on it there: the verification pass's content comparison and
- * answer adoption are the guard on this server, through either door. What
- * the listing does answer reliably is <i>existence</i>: an object absent from
- * it is absent, which is what create-only needs. The check and the write are
- * two calls, so a client writing between them is not refused; that is the
- * race the repair path already accepts on every server.
+ * does with a real {@code If-Match}: its DAV server reads only
+ * {@code If-None-Match} ({@code PutProtocol.java:65},
+ * {@code putQuery.setCreate(r.headers().contains("If-None-Match"))}) and no
+ * {@code If-Match} reader exists anywhere under
+ * {@code plugins/net.bluemind.dav.server}. So the engine never relied on it
+ * there: the verification pass's content comparison and answer adoption are
+ * the guard on this server, through either door. What the listing does
+ * answer reliably is <i>existence</i>: an object absent from it is absent,
+ * which is what create-only needs. The check and the write are two calls, so
+ * a client writing between them is not refused; that is the race the repair
+ * path already accepts on every server.
+ *
+ * <p>
+ * <b>A known cost, accepted for now (review round 2, F7 — an Architect
+ * decision).</b> Reading through the listing means one {@code Depth: 1}
+ * ETag-only PROPFIND of the <i>whole</i> collection before each conditional
+ * write and one after each write; on BlueMind the destination is the main
+ * calendar, so every push, answer, exclusion or removal lists the user's
+ * entire calendar twice, and BlueMind logs one INFO line per child on each
+ * listing ({@code GetTag.java:53-54}). The pass already pays one such listing
+ * per collection per cycle; writes are per object and answers fan out per
+ * attendee, so the door is heavier than a CalDAV PUT by two multistatus
+ * documents of N responses. The hypothesis that would remove it: a
+ * {@code Depth: 0} PROPFIND of {@code getetag} on the href itself, which
+ * BlueMind resolves through the same {@code ds.from(path)}
+ * ({@code PropFindProtocol.java:69}) and hashes {@code dr.getPath()}
+ * ({@code GetTag.java:47,56}, {@code SyncTokens.java:42}), so the token
+ * equals the listing's iff the request path string equals
+ * {@code containerPath + uid + ".ics"} as {@code addEvents} builds it
+ * ({@code DavStore.java:402}) — and iff a missing object answers 404 rather
+ * than a node minted from the path. Both need a rig capture of the two
+ * requests on one object before any code; nothing here assumes them.
  *
  * <p>
  * <b>Switching a server onto this door.</b> A row written over CalDAV holds
@@ -358,7 +382,10 @@ public class BlueMindImportWriter implements CalendarObjectWriter {
 
   /**
    * The collection an object's href sits in, slash-terminated as a collection
-   * is addressed — BlueMind ignores the slashless form without answering.
+   * is addressed: the pass lists it the same way, because BlueMind ignores the
+   * slashless spelling without answering or redirecting and the call spent its
+   * whole timeout ({@code CaldavMirrorVerificationService#verify}, the comment
+   * on its {@code listResourceEtags} call).
    *
    * @param href the object's path
    * @return the collection's path
