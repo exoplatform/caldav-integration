@@ -104,7 +104,7 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * {@code maxAttempts} sweep periods after the grant.
  *
  * <p>
- * <b>Five limits, named because each is a decision somebody may want to
+ * <b>Six limits, named because each is a decision somebody may want to
  * revisit rather than an oversight.</b>
  * <ul>
  * <li><b>Only a revoke made from eXo unsubscribes.</b> An owner who removes
@@ -149,6 +149,17 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * the larger of the two costs named here. Self-limiting after
  * {@code maxAttempts} periods; a bound of its own, rather than the account
  * sweep's, is the Architect's and Ops' call.</li>
+ * <li><b>The drain counts attempts by row id, and a renewed row keeps that
+ * id.</b> Settling is kind-aware for exactly that reason, but
+ * {@code refused} and {@code abandoned} are not: if a revoke is recorded
+ * over a pending subscribe while the drain's session is open, the drain's
+ * verdict on the <em>old</em> subscribe is written against the <em>new</em>
+ * removal — a spent budget retires a removal nobody attempted, a counted
+ * refusal costs it one of its five. It needs a genuinely concurrent revoke,
+ * and it cannot leave a dangling subscription (those verdicts mean the
+ * subscribe did not land either), so it is recorded rather than fixed:
+ * making both writes match on KIND as well is an Architect's call on an N1
+ * surface.</li>
  * </ul>
  */
 @Service
@@ -290,7 +301,14 @@ public class CaldavShareSubscriptionService {
                  share.containerUid(),
                  share.ownerUsername(),
                  share.serverId());
-        caldavPendingSubscriptionStorage.settled(share.shareeIdentityId(), share.serverId(), share.containerUid(), kind);
+        // Unconditional, and the kind-guarded overload is deliberately NOT used
+        // here: this instruction was decided in this call, inside the share's
+        // stripe lock and after the read-back, and nothing else writes this
+        // table - so whatever row stands for the container is older than what
+        // just landed. Guarding it would leave a pending SUBSCRIBE alive past a
+        // revoke, and the next drain would re-subscribe the colleague to a
+        // calendar whose access entry is gone.
+        caldavPendingSubscriptionStorage.settled(share.shareeIdentityId(), share.serverId(), share.containerUid());
         return;
       }
       LOG.warn("User {} could not be {} calendar container {} on server {} (shared by {}); recorded, the sweep retries it: {}",
@@ -397,10 +415,12 @@ public class CaldavShareSubscriptionService {
       // and a batch the rest of the backlog never gets. Applied to the whole
       // list, not only the untried tail: a row that landed in this pass was
       // deleted and counting it is a no-op, while a row already counted in it
-      // is counted twice - two of maxAttempts for one run. Only settle()
-      // itself can bring us here (attemptInSession swallows the rest), so
-      // that is a storage failure already, and spending a second attempt on a
-      // run whose writes are not landing is the cheaper of the two errors.
+      // is counted twice - two of maxAttempts for one run. What can bring us
+      // here is settle()'s own writes and the session's machinery (a
+      // credentials provider that did not produce what its channel promised,
+      // a transport that will not take the key); attemptInSession swallows
+      // everything else. On a run failing that way, spending a second attempt
+      // is the cheaper of the two errors.
       return retryAll(rows, String.valueOf(e));
     }
     return landed[0];

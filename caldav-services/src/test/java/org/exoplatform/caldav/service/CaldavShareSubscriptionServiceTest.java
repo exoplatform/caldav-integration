@@ -186,7 +186,7 @@ public class CaldavShareSubscriptionServiceTest {
     verify(calDavClient, never()).endpoint(anyLong(), eq("alice"));
     verify(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
     verify(edits).subscribe(CONTAINER);
-    verify(caldavPendingSubscriptionStorage).settled(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
+    verify(caldavPendingSubscriptionStorage).settled(BOB, SERVER, CONTAINER);
     verify(caldavPendingSubscriptionStorage, never()).owe(anyLong(), anyLong(), anyString(), any());
     assertTrue(infoLines().stream().anyMatch(line -> line.contains("subscribed to") && line.contains("bob")
         && line.contains("alice") && line.contains(CONTAINER) && line.contains("server 1")), infoLines().toString());
@@ -204,7 +204,7 @@ public class CaldavShareSubscriptionServiceTest {
 
     verify(edits).unsubscribe(CONTAINER);
     verify(edits, never()).subscribe(anyString());
-    verify(caldavPendingSubscriptionStorage).settled(BOB, 0L, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE);
+    verify(caldavPendingSubscriptionStorage).settled(BOB, 0L, CONTAINER);
     assertTrue(infoLines().stream().anyMatch(line -> line.contains("unsubscribed from")));
   }
 
@@ -245,6 +245,7 @@ public class CaldavShareSubscriptionServiceTest {
                                                                                          SERVER,
                                                                                          CONTAINER,
                                                                                          PendingSubscriptionKind.SUBSCRIBE);
+    verify(caldavPendingSubscriptionStorage, never()).settled(anyLong(), anyLong(), anyString());
     verify(caldavPendingSubscriptionStorage, never()).settled(anyLong(), anyLong(), anyString(), any());
   }
 
@@ -274,9 +275,9 @@ public class CaldavShareSubscriptionServiceTest {
     assertDoesNotThrow(() -> service.subscribeSharee(share()));
 
     org.mockito.Mockito.doNothing().when(edits).subscribe(CONTAINER);
-    doThrow(new IllegalStateException("db")).when(caldavPendingSubscriptionStorage).settled(anyLong(), anyLong(), anyString(), any());
+    doThrow(new IllegalStateException("db")).when(caldavPendingSubscriptionStorage).settled(anyLong(), anyLong(), anyString());
     assertDoesNotThrow(() -> service.subscribeSharee(share()));
-    verify(caldavPendingSubscriptionStorage).settled(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
+    verify(caldavPendingSubscriptionStorage).settled(BOB, SERVER, CONTAINER);
   }
 
   // ---------------------------------------------------------------- the drain
@@ -481,6 +482,46 @@ public class CaldavShareSubscriptionServiceTest {
     verify(edits).subscribe(OTHER);
     verify(caldavPendingSubscriptionStorage).settled(BOB, SERVER, OTHER, PendingSubscriptionKind.SUBSCRIBE);
     verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), anyInt());
+  }
+
+  /**
+   * <b>The seam where the same call means two different things.</b> The drain
+   * settles with the kind it posted, because the row may have been renewed
+   * while its session was open; the grant and the revoke settle
+   * unconditionally, because they decided the instruction in this very call,
+   * inside the share's stripe lock and after the read-back, and nothing else
+   * writes that table — so whatever row stands for the container is older than
+   * what they just did.
+   *
+   * <p>
+   * Getting that backwards is not a nicety. A grant whose subscribe failed
+   * leaves a pending SUBSCRIBE; the owner then revokes and the unsubscribe
+   * lands; a kind-guarded settle would refuse to delete the SUBSCRIBE, and the
+   * next drain would post it — and BlueMind's subscribe makes no access check,
+   * so it lands. The colleague ends subscribed to a calendar whose access
+   * entry is gone, with no row, no retry and a success line in the log: the
+   * dangling subscription this whole feature exists to prevent, arrived at
+   * through the code that prevents it. So this test pins <em>which overload</em>
+   * each caller uses, which is the only place that distinction is visible.
+   */
+  @Test
+  public void theGrantAndTheRevokeClearWhateverWasOwedWhileTheDrainClearsOnlyWhatItPosted() {
+    service.subscribeSharee(share());
+    service.unsubscribeSharee(share());
+
+    verify(caldavPendingSubscriptionStorage, times(2)).settled(BOB, SERVER, CONTAINER);
+    verify(caldavPendingSubscriptionStorage, never()).settled(anyLong(), anyLong(), anyString(), any());
+
+    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L,
+                                                                                     BOB,
+                                                                                     OTHER,
+                                                                                     PendingSubscriptionKind.UNSUBSCRIBE,
+                                                                                     0)));
+
+    service.retryOwed(50);
+
+    verify(caldavPendingSubscriptionStorage).settled(BOB, SERVER, OTHER, PendingSubscriptionKind.UNSUBSCRIBE);
+    verify(caldavPendingSubscriptionStorage, never()).settled(BOB, SERVER, OTHER);
   }
 
   /**
