@@ -1309,6 +1309,23 @@ public class CaldavCalendarShareService {
    * service records what did not land and never throws, and this seam guards
    * against it anyway, because the share on the server is already made.
    *
+   * <p>
+   * <b>The guard is not belt and braces.</b> This call sits lexically inside
+   * {@link #onServer}, whose whole job is to turn a
+   * {@code CalDavAuthenticationException} into a
+   * {@code CaldavShareException(CREDENTIALS)} and fail the caller — and the
+   * likeliest thing to come out of a subscription attempt is exactly that
+   * exception, raised by the <em>colleague's</em> stale password. Letting it
+   * travel would fail the owner's share over somebody else's credentials.
+   *
+   * <p>
+   * Two things this seam does not do, both deliberate and both stated in
+   * {@link CaldavShareSubscriptionService}'s own comment: it is not reached
+   * when the colleague already holds {@code Read} (the grant returns before
+   * it, so re-clicking Share is not a way to re-drive a subscription that has
+   * spent its budget — revoking and granting again is), and it costs the
+   * owner's request up to three synchronous round trips to BlueMind.
+   *
    * @param target the calendar
    * @param sharee the colleague
    * @param username the owner's login, for the audit line

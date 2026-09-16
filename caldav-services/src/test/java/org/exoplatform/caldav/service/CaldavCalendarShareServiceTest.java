@@ -726,7 +726,15 @@ public class CaldavCalendarShareServiceTest {
   @Test
   public void onBlueMindTheGrantAndTheRevokeStandWhenTheSubscriptionSeamThrows() throws Exception {
     onBlueMind();
-    doThrow(new IllegalStateException("subscription bean broke")).when(caldavShareSubscriptionService).subscribeSharee(any());
+    // A CalDavAuthenticationException on purpose, and not any old failure:
+    // this seam is lexically inside onServer, whose job is to turn exactly
+    // that exception into a CaldavShareException(CREDENTIALS) and fail the
+    // caller's action. The colleague's stale password is the likeliest thing
+    // to come out of here, and routing it through onServer would fail the
+    // OWNER's share over the colleague's credentials - the one thing the
+    // brief says must never happen.
+    doThrow(new CalDavAuthenticationException("the colleague's password is stale")).when(caldavShareSubscriptionService)
+                                                                                   .subscribeSharee(any());
     doThrow(new IllegalStateException("subscription bean broke")).when(caldavShareSubscriptionService).unsubscribeSharee(any());
     when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner(),
                                                                         acl(owner(), expanded(ERIC_UID, "Read")),
