@@ -85,6 +85,12 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
       forgetServerOwners(userIdentityId, caldavUserSetting.getServerId());
       if (previous != null && !Objects.equals(serverKeyOf(previous.getServerId()), serverKeyOf(caldavUserSetting.getServerId()))) {
         forgetServerOwners(userIdentityId, previous.getServerId());
+        // The account moved to another server: the shares it carried to the
+        // previous one are eXo's and stay, but their delivery stamp names a
+        // server this account is no longer on, so it goes — as on a
+        // disconnect (EXO-90357) — and a share is carried again to the
+        // server the account is now on when the owner shares it again
+        forgetDeliveries(userIdentityId, serverKeyOf(previous.getServerId()));
       }
       // The credentials just changed, so the server identity recorded under
       // the previous ones no longer describes this account (EXO-90243). Gone
