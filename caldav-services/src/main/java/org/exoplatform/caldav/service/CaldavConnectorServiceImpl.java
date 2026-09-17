@@ -56,6 +56,8 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
    */
   private CaldavConnectionIdentityService caldavConnectionIdentityService;
 
+  private CaldavServerOwnerService        caldavServerOwnerService;
+
   public CaldavConnectorServiceImpl(CaldavConnectorStorage caldavConnectorStorage) {
     String caldavUrl = System.getProperty("exo.agenda.caldav.connector.url");
     this.caldavConnectorStorage = caldavConnectorStorage;
@@ -65,7 +67,15 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   @Override
   public void createCaldavSetting(CaldavUserSetting caldavUserSetting, long userIdentityId) throws IllegalAccessException {
     if (StringUtils.isNotBlank(caldavUserSetting.getPassword()) && StringUtils.isNotBlank(caldavUserSetting.getUsername())) {
+      CaldavUserSetting previous = caldavConnectorStorage.getCaldavSetting(userIdentityId);
       caldavConnectorStorage.createCaldavSetting(caldavUserSetting, userIdentityId);
+      // New credentials may open another mailbox: what was remembered of the
+      // calendars this account sees, on the server it was on and on the one
+      // it is now on, describes nobody (EXO-90347).
+      forgetServerOwners(userIdentityId, caldavUserSetting.getServerId());
+      if (previous != null && !java.util.Objects.equals(serverKeyOf(previous.getServerId()), serverKeyOf(caldavUserSetting.getServerId()))) {
+        forgetServerOwners(userIdentityId, previous.getServerId());
+      }
       // The credentials just changed, so the server identity recorded under
       // the previous ones no longer describes this account (EXO-90243). Gone
       // before anything else is asked of the server: the destinations step
@@ -300,6 +310,68 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     // reader already ignores: an identity counts only while its account is
     // connected (EXO-90243).
     forgetServerIdentity(userIdentityId);
+    // The account is gone; what was remembered of its calendars' owners has
+    // nothing to describe (EXO-90347).
+    forgetServerOwners(userIdentityId, settings == null ? null : settings.getServerId());
+  }
+
+  /**
+   * Drops what the owner cache remembers of one account, when the engine
+   * that keeps it is resolvable.
+   *
+   * @param userIdentityId the user
+   * @param serverId the declared server the account was on; null for none
+   *          known, which drops the legacy-property entry
+   */
+  private void forgetServerOwners(long userIdentityId, Long serverId) {
+    CaldavServerOwnerService ownerService = getCaldavServerOwnerService();
+    if (ownerService != null) {
+      try {
+        ownerService.evict(userIdentityId, serverKeyOf(serverId));
+      } catch (RuntimeException e) {
+        // Connecting and disconnecting must succeed; a stale entry expires on
+        // its own within the TTL.
+        LOG.warn("The cached calendar owners of user {} could not be dropped", userIdentityId, e);
+      }
+    }
+  }
+
+  /**
+   * The server key an account is cached under: the declared registration,
+   * or zero for the legacy property.
+   *
+   * @param serverId the declared server, may be null
+   * @return the key
+   */
+  private static long serverKeyOf(Long serverId) {
+    return serverId == null ? 0L : serverId;
+  }
+
+  /**
+   * The engine keeping what each account's mailbox sees, resolved lazily as
+   * its siblings are.
+   *
+   * @return the engine, or null when it cannot be resolved
+   */
+  protected CaldavServerOwnerService getCaldavServerOwnerService() {
+    if (caldavServerOwnerService == null) {
+      try {
+        caldavServerOwnerService = ExoContainerContext.getService(CaldavServerOwnerService.class);
+      } catch (Exception | LinkageError e) {
+        LOG.debug("CalDAV server owner engine not resolvable; its cache is left to expire on its own", e);
+      }
+    }
+    return caldavServerOwnerService;
+  }
+
+  /**
+   * The seam the tests use.
+   *
+   * @param caldavServerOwnerService the engine keeping what each account's
+   *          mailbox sees
+   */
+  protected void setCaldavServerOwnerService(CaldavServerOwnerService caldavServerOwnerService) {
+    this.caldavServerOwnerService = caldavServerOwnerService;
   }
 
   /**
