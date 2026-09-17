@@ -43,6 +43,7 @@ import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.agenda.service.AgendaCalendarShareService;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -75,6 +76,9 @@ public class CaldavConnectorServiceImplTest {
 
   @Mock
   private CaldavServerOwnerService       caldavServerOwnerService;
+
+  @Mock
+  private AgendaCalendarShareService     agendaCalendarShareService;
 
   @InjectMocks
   private CaldavConnectorServiceImpl     caldavConnectorService;
@@ -492,6 +496,45 @@ public class CaldavConnectorServiceImplTest {
     InOrder inOrder = inOrder(caldavDeletionService, caldavConnectorStorage);
     inOrder.verify(caldavDeletionService).freezeOnDisconnect(USER_IDENTITY_ID, 7L, "john");
     inOrder.verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+  }
+
+  /**
+   * Disconnecting forgets, on agenda's share records, that this account's
+   * server carried the user's shares (EXO-90357, the owner-disconnects rule):
+   * the shares stay eXo's, the stamp goes, keyed by the channel identifier
+   * the delivery was made under, with or without a login.
+   */
+  @Test
+  public void disconnectingForgetsTheDeliveriesOnThatServer() {
+    caldavConnectorService.setAgendaCalendarShareService(agendaCalendarShareService);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(settingsOnServer(7L));
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
+
+    verify(agendaCalendarShareService).clearDelivery(USER_IDENTITY_ID, "caldav:7");
+    verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+  }
+
+  /**
+   * An account that was never connected has carried nothing: agenda is not
+   * asked. And agenda refusing, or being absent, never stops the
+   * disconnection.
+   */
+  @Test
+  public void disconnectingClearsNoDeliveryWithoutAnAccountAndSurvivesAgendaFailing() {
+    caldavConnectorService.setAgendaCalendarShareService(agendaCalendarShareService);
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
+    verify(agendaCalendarShareService, never()).clearDelivery(anyLong(), anyString());
+
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(settingsOnServer(7L));
+    doThrow(new IllegalStateException("agenda down")).when(agendaCalendarShareService).clearDelivery(anyLong(), anyString());
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
+    verify(caldavConnectorStorage, org.mockito.Mockito.times(2)).deleteCaldavSetting(USER_IDENTITY_ID);
+
+    caldavConnectorService.setAgendaCalendarShareService(null);
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
+    verify(caldavConnectorStorage, org.mockito.Mockito.times(3)).deleteCaldavSetting(USER_IDENTITY_ID);
   }
 
   /**
