@@ -90,6 +90,9 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
   /** The kind agenda's drawer gives a colleague's grant it may record in eXo. */
   static final String              EXO_USER         = "EXO_USER";
 
+  /** A mail address: no markup, one {@code @}. */
+  private static final java.util.regex.Pattern ADDRESS = java.util.regex.Pattern.compile("[^\\s<>&\"'@/]+@[^\\s<>&\"'@/]+");
+
   private static final Log         LOG              = ExoLogger.getLogger(CaldavCalendarShareChannelPlugin.class);
 
   /**
@@ -181,7 +184,9 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
    * The grants the server holds on the calendar's collection that agenda
    * has no record of, read live: a colleague granted from another client,
    * someone outside eXo, everyone, a published link. A colleague agenda
-   * already holds a record for is left out.
+   * already holds a record for is left out. A colleague's plain read grant
+   * carries the collection href as its delivery reference: agenda records it
+   * as an adopted share, silently, the moment the owner lists their shares.
    *
    * <p>
    * Only a colleague's plain read grant can be removed from here, since the
@@ -208,11 +213,27 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
       if (sharee.kind() == ShareeKind.EXO_USERS) {
         for (ShareUser user : sharee.users()) {
           if (!recorded.contains(user.identityId())) {
-            external.add(new ExternalShare(channelId, user.username(), EXO_USER, user.identityId(), user.fullName(), sharee.removable(), readOnly));
+            external.add(new ExternalShare(channelId,
+                                           user.username(),
+                                           EXO_USER,
+                                           user.identityId(),
+                                           user.fullName(),
+                                           sharee.removable(),
+                                           readOnly,
+                                           null,
+                                           readOnly ? server.collection().href() : null));
           }
         }
       } else {
-        external.add(new ExternalShare(channelId, sharee.principal(), sharee.kind().name(), 0, displayNameOf(sharee), false, readOnly));
+        external.add(new ExternalShare(channelId,
+                                       sharee.principal(),
+                                       sharee.kind().name(),
+                                       0,
+                                       displayNameOf(sharee),
+                                       false,
+                                       readOnly,
+                                       emailOf(sharee),
+                                       null));
       }
     }
     return external;
@@ -259,32 +280,6 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
       LOG.debug("Whether calendar {} holds meeting copies could not be told; answered as no", calendarId, e);
       return false;
     }
-  }
-
-  /**
-   * The collection href to record when the owner adopts, as an eXo share, a
-   * read grant the server already holds for a colleague. The server is not
-   * touched.
-   *
-   * @param calendarId the agenda calendar
-   * @param shareeIdentityId the colleague
-   * @param ownerUsername the owner's login
-   * @return the collection href, or null when the server holds no plain
-   *         read grant for that colleague
-   */
-  @Override
-  public String adopt(long calendarId, long shareeIdentityId, String ownerUsername) {
-    ServerShares server = sharesOf(calendarId, ownerUsername);
-    if (server == null) {
-      return null;
-    }
-    boolean granted = server.shares()
-                            .sharees()
-                            .stream()
-                            .filter(sharee -> sharee.kind() == ShareeKind.EXO_USERS && sharee.access() == ShareAccess.READ)
-                            .flatMap(sharee -> sharee.users().stream())
-                            .anyMatch(user -> user.identityId() == shareeIdentityId);
-    return granted ? server.collection().href() : null;
   }
 
   /**
@@ -391,6 +386,32 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
    */
   private static String channelIdOf(long serverId) {
     return CHANNEL_ID + ":" + serverId;
+  }
+
+  /**
+   * The mail address of a sharee that is no eXo user, when the server names
+   * one: a principal whose last segment is an address (Stalwart names its
+   * principals so), else a display name that is one.
+   *
+   * @param sharee the sharee
+   * @return the address, or null
+   */
+  private static String emailOf(CalendarSharee sharee) {
+    if (sharee.kind() != ShareeKind.OUTSIDE_EXO) {
+      return null;
+    }
+    String principal = StringUtils.defaultString(sharee.principal());
+    String last = principal.substring(principal.replaceAll("/+$", "").lastIndexOf('/') + 1).replaceAll("/+$", "");
+    try {
+      last = java.net.URLDecoder.decode(last, java.nio.charset.StandardCharsets.UTF_8);
+    } catch (IllegalArgumentException e) {
+      // Not encoded: taken as is
+    }
+    if (ADDRESS.matcher(last).matches()) {
+      return last;
+    }
+    String name = StringUtils.defaultString(sharee.displayName());
+    return ADDRESS.matcher(name).matches() ? name : null;
   }
 
   /**
