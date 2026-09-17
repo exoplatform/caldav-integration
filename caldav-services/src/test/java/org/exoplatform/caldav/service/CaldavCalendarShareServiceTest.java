@@ -385,7 +385,7 @@ public class CaldavCalendarShareServiceTest {
     verify(calDavClient, never()).readAcl(any(), anyString());
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
     verify(blueMindAclClient, never()).readAcl(any(), anyString());
-    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean());
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
   }
 
   // ---------------------------------------------------------------- BlueMind
@@ -406,8 +406,8 @@ public class CaldavCalendarShareServiceTest {
 
     CalendarShares shares = service.grant(ALICE, "alice", CALENDAR, "bob");
 
-    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
-    verify(calDavClient, never()).postCalendarServerShare(any(), any(), eq("bob@exo.example.com"), anyBoolean());
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false), anyBoolean());
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), eq("bob@exo.example.com"), anyBoolean(), anyBoolean());
     verify(calDavClient, never()).readAcl(any(), anyString());
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
     assertTrue(shares.subscriptionRequired());
@@ -421,27 +421,149 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
-   * BlueMind carries reading, at either level asked for (EXO-90378): its
-   * {@code CS:share} says {@code CS:read} and nothing else, and whether it
-   * honours {@code CS:read-write} is unverified. An edit share is therefore
-   * <b>delivered</b> there at {@link ShareAccess#READ} rather than refused —
-   * the colleague edits in eXo, and the owner's own account carries their
-   * changes to the server — and the answer says which level the server holds,
-   * which is what lets agenda log the difference.
+   * BlueMind carries an edit share as {@code CS:read-write} (EXO-90378), which
+   * its {@code SharingProtocol} stores as the verb {@code Write}: the access
+   * list read back says so, and the sharee is answered
+   * {@link ShareAccess#WRITE} and stays removable.
    *
    * @throws Exception never
    */
   @Test
-  public void onBlueMindAnEditShareIsCarriedAsReadingAndSaysSo() throws Exception {
+  public void onBlueMindAnEditShareIsARequestForReadWrite() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner(), acl(owner(), expanded(ERIC_UID, "Write")));
+
+    CalendarShares shares = service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE);
+
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false), eq(true));
+    assertEquals(ShareAccess.WRITE, shares.sharees().get(0).access());
+    assertTrue(shares.sharees().get(0).removable(), "a share eXo wrote is a share eXo takes back");
+  }
+
+  /**
+   * A view share stays {@code CS:read} (EXO-90378): the boolean the client
+   * takes has no third value, so no level can reach BlueMind's permissive
+   * fallback, which grants <b>write</b> for an access element it does not
+   * recognise.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAViewShareIsARequestForReadAndNothingElse() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner(), acl(owner(), expanded(ERIC_UID, "Read")));
+
+    CalendarShares shares = service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
+
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false), eq(false));
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), eq(true));
+    assertEquals(ShareAccess.READ, shares.sharees().get(0).access());
+  }
+
+  /**
+   * Levelling reconciles on BlueMind too (EXO-90378): a read grant is widened
+   * to a write one and back, and granting the level already held sends
+   * nothing.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindLevellingWidensAndNarrowsAndRepeatsNothing() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Read")),
+                                                                       acl(owner(), expanded(ERIC_UID, "Write")));
+    service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE);
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false), eq(true));
+
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Write")),
+                                                                       acl(owner(), expanded(ERIC_UID, "Read")));
+    service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false), eq(false));
+
+    org.mockito.Mockito.clearInvocations(calDavClient);
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Write")));
+    service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE);
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
+  }
+
+  /**
+   * BlueMind answers 200 even when the share did nothing — an unresolved
+   * {@code CS:href} is logged and skipped, and its handler swallows every
+   * failure — so a 200 is not proof of the level (EXO-90378). A write share
+   * whose read-back says reading only is reported as <b>read</b>, not as a
+   * success and not as a failure: the colleague reads the calendar there and
+   * edits it in eXo, and agenda logs the difference.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAWriteShareThatReadsBackAsReadingIsReportedAsReading() throws Exception {
     onBlueMind();
     when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner(), acl(owner(), expanded(ERIC_UID, "Read")));
 
     CalendarShares shares = service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE);
 
-    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
     assertEquals(ShareAccess.READ,
                  shares.sharees().get(0).access(),
-                 "the level the server actually holds, which the channel reports back to agenda");
+                 "the level the server holds, which the channel reports back to agenda");
+  }
+
+  /**
+   * A write grant eXo wrote is eXo's to take back on BlueMind too, and a verb
+   * eXo does not write — {@code Manage} — is still refused rather than
+   * overwritten: a {@code CS:set} overwrites a subject's verb, so refusing is
+   * what keeps eXo from taking away access the owner granted in BlueMind's own
+   * interface.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAWriteGrantIsRevocableAndAManagerIsNotRewritten() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Write")),
+                                                                       acl(owner()));
+
+    service.revoke(ALICE, "alice", CALENDAR, "bob");
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(true), anyBoolean());
+
+    org.mockito.Mockito.clearInvocations(calDavClient);
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Manage")));
+    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE)).getMessage());
+    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.revoke(ALICE, "alice", CALENDAR, "bob")).getMessage());
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
+  }
+
+  /**
+   * {@code All} expands to a set that <b>contains</b> {@code Write} — plus
+   * {@code Manage} and {@code ReadExtended} — and is not a write share
+   * (EXO-90378): recognising an eXo write grant by "holds Write" alone would
+   * make eXo rewrite and revoke a colleague the owner made a manager of the
+   * container in BlueMind's own interface. The whole set has to be inside the
+   * write closure.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindASubjectHoldingAllIsNotAWriteShare() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "All")));
+
+    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE)).getMessage());
+    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY,
+                 assertThrows(IllegalArgumentException.class,
+                              () -> service.revoke(ALICE, "alice", CALENDAR, "bob")).getMessage());
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
+
+    CalendarShares listed = service.listShares(ALICE, "alice", CALENDAR);
+    CalendarSharee eric = listed.sharees().stream().filter(sharee -> sharee.principal().equals(ERIC_PRINCIPAL + "/")).findFirst().orElseThrow();
+    assertEquals(ShareAccess.MORE, eric.access());
+    assertFalse(eric.removable());
   }
 
   /**
@@ -455,12 +577,12 @@ public class CaldavCalendarShareServiceTest {
   public void onBlueMindAShareTheServerAnsweredButDoesNotHoldIsNotApplied() throws Exception {
     onBlueMind();
     when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner(), owner());
-    when(calDavClient.postCalendarServerShare(any(), any(), anyString(), anyBoolean())).thenReturn(200);
+    when(calDavClient.postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean())).thenReturn(200);
 
     CaldavShareException refused = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
 
     assertEquals(CaldavCalendarShareService.NOT_APPLIED, refused.getCode());
-    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false), anyBoolean());
   }
 
   /**
@@ -475,11 +597,13 @@ public class CaldavCalendarShareServiceTest {
   @Test
   public void onBlueMindAccessBeyondReadingIsNeverRewritten() throws Exception {
     onBlueMind();
-    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Write")),
-                                                                        acl(owner(), expanded(ERIC_UID, "Write")),
+    // Manage, not Write: since EXO-90378 a plain Write is a share eXo itself
+    // writes, and what must never be rewritten is a verb it does not
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Manage")),
+                                                                        acl(owner(), expanded(ERIC_UID, "Manage")),
                                                                         acl(owner(), expanded(ERIC_UID, "Freebusy")),
-                                                                        acl(owner(), expanded(WRITER_UID, "Write")),
-                                                                        acl(owner(), expanded(WRITER_UID, "Write"), expanded(ERIC_UID, "Read")));
+                                                                        acl(owner(), expanded(WRITER_UID, "Manage")),
+                                                                        acl(owner(), expanded(WRITER_UID, "Manage"), expanded(ERIC_UID, "Read")));
 
     IllegalArgumentException grant = assertThrows(IllegalArgumentException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
     IllegalArgumentException revoke = assertThrows(IllegalArgumentException.class, () -> service.revoke(ALICE, "alice", CALENDAR, "bob"));
@@ -488,11 +612,11 @@ public class CaldavCalendarShareServiceTest {
     assertEquals(CaldavCalendarShareService.NOT_READ_ONLY, grant.getMessage());
     assertEquals(CaldavCalendarShareService.NOT_READ_ONLY, revoke.getMessage());
     assertEquals(CaldavCalendarShareService.NOT_READ_ONLY, freeBusy.getMessage());
-    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean());
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
 
     CalendarShares shares = service.grant(ALICE, "alice", CALENDAR, "bob");
 
-    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false), anyBoolean());
     CalendarSharee writer = shares.sharees().stream().filter(sharee -> sharee.principal().equals(WRITER_PRINCIPAL + "/")).findFirst().orElseThrow();
     assertEquals(ShareAccess.MORE, writer.access());
     assertFalse(writer.removable());
@@ -518,7 +642,7 @@ public class CaldavCalendarShareServiceTest {
       IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
       assertEquals(CaldavCalendarShareService.SHAREE_HAS_OTHER_ACCESS, refused.getMessage());
     }
-    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean());
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
   }
 
   /**
@@ -642,8 +766,8 @@ public class CaldavCalendarShareServiceTest {
                  granted.sharees().stream().map(CalendarSharee::kind).toList());
     assertTrue(granted.sharees().get(0).removable());
     assertEquals(List.of(ShareeKind.PUBLISHED_LINK, ShareeKind.PUBLISHED_LINK), revoked.sharees().stream().map(CalendarSharee::kind).toList());
-    verify(calDavClient, org.mockito.Mockito.times(2)).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
-    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(true));
+    verify(calDavClient, org.mockito.Mockito.times(2)).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false), anyBoolean());
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(true), anyBoolean());
     verify(calDavClient, never()).postCalendarServerShare(any(), any(), org.mockito.ArgumentMatchers.contains("x-calendar"), anyBoolean());
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
     assertTrue(warnedBefore.isEmpty(), "the links read back as they were: " + warnedBefore);
@@ -672,7 +796,7 @@ public class CaldavCalendarShareServiceTest {
       CaldavShareException refused = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
       assertEquals(CaldavCalendarShareService.SHAREE_ADDRESS_UNKNOWN, refused.getCode());
     }
-    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean());
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
   }
 
   /**
@@ -698,7 +822,7 @@ public class CaldavCalendarShareServiceTest {
     assertTrue(revoked.sharees().isEmpty());
     assertEquals(CaldavCalendarShareService.NOT_APPLIED, notApplied.getCode());
     assertTrue(nothing.sharees().isEmpty());
-    verify(calDavClient, org.mockito.Mockito.times(2)).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(true));
+    verify(calDavClient, org.mockito.Mockito.times(2)).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(true), anyBoolean());
   }
 
   /**
@@ -721,7 +845,7 @@ public class CaldavCalendarShareServiceTest {
     ArgumentCaptor<CaldavShareSubscriptionService.ShareeSubscription> subscribed =
                                                                                  ArgumentCaptor.forClass(CaldavShareSubscriptionService.ShareeSubscription.class);
     org.mockito.InOrder order = org.mockito.Mockito.inOrder(blueMindAclClient, calDavClient, caldavShareSubscriptionService);
-    order.verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
+    order.verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false), anyBoolean());
     order.verify(blueMindAclClient).readAcl(endpoint, BM_CONTAINER);
     order.verify(caldavShareSubscriptionService).subscribeSharee(subscribed.capture());
     assertEquals(new CaldavShareSubscriptionService.ShareeSubscription("alice", BOB, "bob", ERIC_UID, STALWART, BM_CONTAINER),
@@ -837,7 +961,7 @@ public class CaldavCalendarShareServiceTest {
                  assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode());
     assertEquals(CaldavCalendarShareService.ACL_UNREADABLE,
                  assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob")).getCode());
-    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean());
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
   }
 
   // ---------------------------------------------------------------- who can be a sharee
@@ -1908,7 +2032,7 @@ public class CaldavCalendarShareServiceTest {
     assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
                  assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode(),
                  "a subscriber's refused access-list read");
-    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean());
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
   }
 
   /**
@@ -2004,7 +2128,7 @@ public class CaldavCalendarShareServiceTest {
     service.grant(ALICE, "alice", CALENDAR, "bob");
 
     ArgumentCaptor<CalendarSync> pair = ArgumentCaptor.forClass(CalendarSync.class);
-    verify(calDavClient).postCalendarServerShare(eq(endpoint), pair.capture(), eq(ERIC_ADDRESS), eq(false));
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), pair.capture(), eq(ERIC_ADDRESS), eq(false), anyBoolean());
     assertEquals(SyncOrigin.REMOTE, pair.getValue().getOrigin());
   }
 
