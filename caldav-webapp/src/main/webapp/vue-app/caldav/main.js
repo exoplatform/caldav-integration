@@ -16,7 +16,7 @@
  */
 import './initComponents.js';
 import * as agendaCaldavService from './js/agendaCaldavService.js';
-import {createCaldavConnector, createLegacyCaldavConnector, serverHost} from './caldav-connector/caldavConnector.js';
+import {connectorsBelongOnThisPage, createCaldavConnector, createLegacyCaldavConnector, serverHost} from './caldav-connector/caldavConnector.js';
 
 if (!Vue.prototype.$agendaCaldavService) {
   window.Object.defineProperty(Vue.prototype, '$agendaCaldavService', {
@@ -210,6 +210,11 @@ managedPromise
     // read must leave every button opening its drawer.
     agendaCaldavService.getConnectionRequirements().catch(() => ({}))]))
   .then(([servers, requirements]) => {
+    // Not on a space's agenda (EXO-90383): a connector is the viewer's own
+    // account, and a space's agenda shows the space's calendars alone
+    if (!connectorsBelongOnThisPage()) {
+      return null;
+    }
     const activeServers = (servers || []).filter(server => server.active);
     if (!activeServers.length) {
       extensionRegistry.registerExtension('agenda', 'connectors', createLegacyCaldavConnector(managedMode));
@@ -227,6 +232,7 @@ managedPromise
     });
     return i18nPromise.then(i18n => i18n.mergeLocaleMessage(lang, labels));
   })
-  .catch(() => extensionRegistry.registerExtension('agenda', 'connectors', createLegacyCaldavConnector(managedMode)))
+  .catch(() => connectorsBelongOnThisPage()
+    && extensionRegistry.registerExtension('agenda', 'connectors', createLegacyCaldavConnector(managedMode)))
   .finally(() => document.dispatchEvent(new CustomEvent('agenda-connectors-refresh')));
 
