@@ -41,8 +41,16 @@ describe('the channel label of a CalDAV delivery', () => {
     expect(STALWART.channelLabel(undefined)).toBe('');
   });
 
-  it('claims nothing from the base descriptor, which serves no server of its own', () => {
+  it('claims nothing from the base descriptor for a declared server, which it does not serve', () => {
     expect(caldavConnector.channelLabel('caldav:1')).toBe('');
+  });
+
+  it('names the legacy delivery, stamped caldav:0, by the word CalDAV rather than "CalDAV 0"', () => {
+    // A property-configured account predates server registrations and
+    // carries no host to name; the bare word is the honest label
+    expect(caldavConnector.channelLabel('caldav:0')).toBe('CalDAV');
+    expect(Object.assign({}, caldavConnector, {serverUrl: 'https://legacy.example.org/dav/'}).channelLabel('caldav:0')).toBe('legacy.example.org');
+    expect(STALWART.channelLabel('caldav:0')).toBe('');
   });
 
   it('no longer offers a Share of its own on the calendar menu: agenda owns the share', () => {
