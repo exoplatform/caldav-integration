@@ -128,9 +128,10 @@ public class CaldavCalendarShareChannelPluginTest {
   }
 
   /**
-   * An owner with no account, a calendar that is not on the server and a
-   * server that offers no sharing are none of this channel's business: the
-   * share stays in eXo only, with nothing to retry.
+   * An owner with no account, a calendar that is not on the server, a server
+   * that offers no sharing and a colleague with no account on that server
+   * are none of this channel's business: the share stays in eXo only, the
+   * normal case, not a failure.
    *
    * @throws Exception never
    */
@@ -145,24 +146,29 @@ public class CaldavCalendarShareChannelPluginTest {
     doReturn(new SharedCollection(1L, COLLECTION)).when(shareService).sharedCollectionOf(ALICE, "alice", CALENDAR);
     doThrow(new CaldavShareException(CaldavCalendarShareService.NOT_SUPPORTED)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob");
     assertEquals(ChannelDelivery.Status.NOT_APPLICABLE, plugin.deliver(share(BOB), "alice").getStatus());
+
+    doThrow(new IllegalArgumentException(CaldavCalendarShareService.SHAREE_NOT_CONNECTED)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob");
+    ChannelDelivery exoOnly = plugin.deliver(share(BOB), "alice");
+    assertEquals(ChannelDelivery.Status.NOT_APPLICABLE, exoOnly.getStatus(), "a colleague without an account on the server is the eXo-only case");
+    assertNull(exoOnly.getFailureCode());
   }
 
   /**
-   * Every other refusal is a failure agenda words by its code, in the shape
-   * its bundle knows: a colleague without an account on the server, a server
-   * that cannot be reached, a colleague holding more than reading.
+   * Every other refusal is a genuine failure, named by its code in the shape
+   * agenda logs: a server that cannot be reached, a colleague holding more
+   * than reading, a colleague holding other access given outside eXo.
    *
    * @throws Exception never
    */
   @Test
   public void aRefusalIsAFailureNamedInAgendasShape() throws Exception {
-    doThrow(new IllegalArgumentException(CaldavCalendarShareService.SHAREE_NOT_CONNECTED)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob");
+    doThrow(new CaldavShareException(CaldavCalendarShareService.SERVER_UNAVAILABLE)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob");
     ChannelDelivery delivery = plugin.deliver(share(BOB), "alice");
     assertEquals(ChannelDelivery.Status.FAILED, delivery.getStatus());
-    assertEquals("SHAREE_NOT_CONNECTED", delivery.getFailureCode());
+    assertEquals("SERVER_UNREACHABLE", delivery.getFailureCode());
 
-    doThrow(new CaldavShareException(CaldavCalendarShareService.SERVER_UNAVAILABLE)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob");
-    assertEquals("SERVER_UNREACHABLE", plugin.deliver(share(BOB), "alice").getFailureCode());
+    doThrow(new IllegalArgumentException(CaldavCalendarShareService.SHAREE_HAS_OTHER_ACCESS)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob");
+    assertEquals("SHAREE_HAS_OTHER_ACCESS", plugin.deliver(share(BOB), "alice").getFailureCode());
 
     doThrow(new IllegalArgumentException(CaldavCalendarShareService.NOT_READ_ONLY)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob");
     assertEquals("NOT_READ_ONLY", plugin.deliver(share(BOB), "alice").getFailureCode());
@@ -317,7 +323,7 @@ public class CaldavCalendarShareChannelPluginTest {
    * @return the record
    */
   private static CalendarShare share(long shareeId) {
-    return new CalendarShare(1, CALENDAR, shareeId, ALICE, 1000, CalendarShareSource.EXO, null, null, false, null);
+    return new CalendarShare(1, CALENDAR, shareeId, ALICE, 1000, CalendarShareSource.EXO, null, null, false);
   }
 
   /**
