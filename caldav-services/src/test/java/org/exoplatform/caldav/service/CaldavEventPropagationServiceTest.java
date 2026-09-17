@@ -65,6 +65,8 @@ import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
 import org.exoplatform.agenda.model.EventAttendeeList;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
+import org.exoplatform.agenda.model.Calendar;
+import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
@@ -171,6 +173,10 @@ public class CaldavEventPropagationServiceTest {
 
   @Mock
   private AgendaEventService                    agendaEventService;
+
+  /** Names the owner of the calendar an event lives in (EXO-90378). */
+  @Mock
+  private AgendaCalendarService                 agendaCalendarService;
 
   @Mock
   private AgendaEventAttendeeService            agendaEventAttendeeService;
@@ -958,6 +964,43 @@ public class CaldavEventPropagationServiceTest {
 
     verify(caldavPendingInvitationService).seedMeeting(ALICE, login(ALICE), EVENT);
     verify(caldavPendingInvitationService).seedMeeting(BOB, login(BOB), EVENT);
+  }
+
+  /**
+   * An event a colleague created in somebody else's personal calendar
+   * (EXO-90378) is carried out by that calendar's owner, whether or not they
+   * were invited: the author's browser no longer copies it — it is not their
+   * account's to copy — and without this the owner's own sweep would take
+   * until its next pass.
+   */
+  @Test
+  public void anEventCreatedInAColleaguesCalendarIsCarriedOutByItsOwner() {
+    givenInvited();
+    givenCalendarOwnedBy(user(BOB), OrganizationIdentityProvider.NAME);
+    when(caldavPendingInvitationService.seedMeeting(BOB, login(BOB), EVENT)).thenReturn(true);
+
+    assertEquals(1, service.propagateCreation(EVENT, AUTHOR));
+
+    verify(caldavPendingInvitationService).seedMeeting(BOB, login(BOB), EVENT);
+    verify(caldavPendingInvitationService, never()).seedMeeting(eq(AUTHOR), anyString(), anyLong());
+  }
+
+  /**
+   * A space calendar's owner carries nothing: a space is not an account, and
+   * a space meeting reaches its attendees' mirrors through the invited set.
+   * Neither does the author's own calendar — their browser pushes it, as it
+   * always did.
+   */
+  @Test
+  public void neitherASpacesCalendarNorTheAuthorsOwnAddsACarrier() {
+    givenInvited();
+    givenCalendarOwnedBy(space(CAROL), SpaceIdentityProvider.NAME);
+    assertEquals(0, service.propagateCreation(EVENT, AUTHOR));
+
+    givenCalendarOwnedBy(AUTHOR, OrganizationIdentityProvider.NAME);
+    assertEquals(0, service.propagateCreation(EVENT, AUTHOR));
+
+    verify(caldavPendingInvitationService, never()).seedMeeting(anyLong(), anyString(), anyLong());
   }
 
   /**
@@ -2605,6 +2648,24 @@ public class CaldavEventPropagationServiceTest {
    *
    * @param identityIds the attendee identities, as agenda lists them
    */
+  /**
+   * Declares which identity owns the calendar the event lives in (EXO-90378).
+   *
+   * @param ownerIdentityId the owner
+   * @param providerId whether that owner is a user or a space
+   */
+  private void givenCalendarOwnedBy(long ownerIdentityId, String providerId) {
+    Event event = new Event();
+    event.setId(EVENT);
+    event.setCalendarId(77L);
+    lenient().when(agendaEventService.getEventById(EVENT)).thenReturn(event);
+    Calendar calendar = new Calendar();
+    calendar.setId(77L);
+    calendar.setOwnerId(ownerIdentityId);
+    lenient().when(agendaCalendarService.getCalendarById(77L)).thenReturn(calendar);
+    givenIdentity(ownerIdentityId, providerId);
+  }
+
   private void givenInvited(long... identityIds) {
     List<EventAttendee> attendees = new ArrayList<>();
     for (long identityId : identityIds) {
