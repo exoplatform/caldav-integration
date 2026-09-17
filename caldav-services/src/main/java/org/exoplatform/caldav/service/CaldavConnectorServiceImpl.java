@@ -79,53 +79,103 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     if (StringUtils.isNotBlank(caldavUserSetting.getPassword()) && StringUtils.isNotBlank(caldavUserSetting.getUsername())) {
       CaldavUserSetting previous = caldavConnectorStorage.getCaldavSetting(userIdentityId);
       caldavConnectorStorage.createCaldavSetting(caldavUserSetting, userIdentityId);
-      // New credentials may open another mailbox: what was remembered of the
-      // calendars this account sees, on the server it was on and on the one
-      // it is now on, describes nobody (EXO-90347).
-      forgetServerOwners(userIdentityId, caldavUserSetting.getServerId());
-      if (previous != null && !Objects.equals(serverKeyOf(previous.getServerId()), serverKeyOf(caldavUserSetting.getServerId()))) {
-        forgetServerOwners(userIdentityId, previous.getServerId());
-        // The account moved to another server: the shares it carried to the
-        // previous one are eXo's and stay, but their delivery stamp names a
-        // server this account is no longer on, so it goes — as on a
-        // disconnect (EXO-90357) — and a share is carried again to the
-        // server the account is now on when the owner shares it again
-        forgetDeliveries(userIdentityId, serverKeyOf(previous.getServerId()));
-      }
-      // The credentials just changed, so the server identity recorded under
-      // the previous ones no longer describes this account (EXO-90243). Gone
-      // before anything else is asked of the server: the destinations step
-      // below records the new one from its own discovery, and if that
-      // discovery fails the account is unknown rather than wrongly known.
-      forgetServerIdentity(userIdentityId);
-      // Disconnecting froze the bindings of the calendars eXo pushed out, so
-      // that reconnecting would find its collections again. Reconnecting is
-      // what thaws them: until it does, the account is connected while the
-      // user's own calendars still report themselves as failing.
-      try {
-        CaldavDeletionService deletionService = getCaldavDeletionService();
-        if (deletionService != null) {
-          CaldavUserSetting stored = caldavConnectorStorage.getCaldavSetting(userIdentityId);
-          Long serverId = stored == null ? caldavUserSetting.getServerId() : stored.getServerId();
-          deletionService.thawOnConnect(userIdentityId, serverId == null ? 0L : serverId);
-        }
-      } catch (RuntimeException e) {
-        // Connecting must succeed. A user who has just given valid credentials
-        // and is told it failed, because a stale pause could not be lifted,
-        // is worse off than one whose calendars take a sweep to catch up.
-        LOG.warn("The frozen calendars of user {} could not be resumed on connect", userIdentityId, e);
-      }
-      // Someone who has just entered their credentials is owed their calendars
-      // now, not in a quarter of an hour — and a throttle stamped by a previous
-      // account's run has nothing to say about this one.
-      CaldavSyncService syncService = getCaldavSyncService();
-      if (syncService != null) {
-        syncService.forgetThrottle(userIdentityId);
-        establishDestinations(syncService, userIdentityId);
-      }
+      afterConnect(caldavUserSetting, userIdentityId, previous);
     } else {
       throw new IllegalAccessException("username or password not be null");
     }
+  }
+
+  /**
+   * What every connection owes the user once it is recorded, typed or not.
+   *
+   * @param caldavUserSetting the account just connected
+   * @param userIdentityId identity of the connecting user
+   * @param previous the account as it stood before this connection, read before the
+   *          write, or null when there was none
+   */
+  private void afterConnect(CaldavUserSetting caldavUserSetting, long userIdentityId, CaldavUserSetting previous) {
+    // New credentials may open another mailbox: what was remembered of the
+    // calendars this account sees, on the server it was on and on the one
+    // it is now on, describes nobody (EXO-90347). It holds for a provider-backed
+    // connection too - which account the connector serves can change there as well.
+    forgetServerOwners(userIdentityId, caldavUserSetting.getServerId());
+    if (previous != null && !Objects.equals(serverKeyOf(previous.getServerId()), serverKeyOf(caldavUserSetting.getServerId()))) {
+      forgetServerOwners(userIdentityId, previous.getServerId());
+      // The account moved to another server: the shares it carried to the
+      // previous one are eXo's and stay, but their delivery stamp names a
+      // server this account is no longer on, so it goes - as on a
+      // disconnect (EXO-90357) - and a share is carried again to the
+      // server the account is now on when the owner shares it again
+      forgetDeliveries(userIdentityId, serverKeyOf(previous.getServerId()));
+    }
+    // The credentials just changed, so the server identity recorded under
+    // the previous ones no longer describes this account (EXO-90243). Gone
+    // before anything else is asked of the server: the destinations step
+    // below records the new one from its own discovery, and if that
+    // discovery fails the account is unknown rather than wrongly known.
+    // It holds for a provider-backed connection too - what the account is
+    // authenticated with changed there as well.
+    forgetServerIdentity(userIdentityId);
+    // Disconnecting froze the bindings of the calendars eXo pushed out, so
+    // that reconnecting would find its collections again. Reconnecting is
+    // what thaws them: until it does, the account is connected while the
+    // user's own calendars still report themselves as failing.
+    try {
+      CaldavDeletionService deletionService = getCaldavDeletionService();
+      if (deletionService != null) {
+        CaldavUserSetting stored = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+        Long serverId = stored == null ? caldavUserSetting.getServerId() : stored.getServerId();
+        deletionService.thawOnConnect(userIdentityId, serverId == null ? 0L : serverId);
+      }
+    } catch (RuntimeException e) {
+      // Connecting must succeed. A user who has just given valid credentials
+      // and is told it failed, because a stale pause could not be lifted,
+      // is worse off than one whose calendars take a sweep to catch up.
+      LOG.warn("The frozen calendars of user {} could not be resumed on connect", userIdentityId, e);
+    }
+    // Someone who has just entered their credentials is owed their calendars
+    // now, not in a quarter of an hour — and a throttle stamped by a previous
+    // account's run has nothing to say about this one.
+    CaldavSyncService syncService = getCaldavSyncService();
+    if (syncService != null) {
+      syncService.forgetThrottle(userIdentityId);
+      establishDestinations(syncService, userIdentityId);
+    }
+  }
+
+  /**
+   * Records a connection whose credentials the platform produces, so no password
+   * was ever typed and none is stored.
+   * <p>
+   * The <b>caller has verified</b> that the configured provider needs nothing from
+   * the user - this method is reachable only from the one-click connect path, which
+   * refuses a provider that asks. Getting that wrong would connect an account
+   * nobody proved anything about, which is why the check lives at the entry point
+   * rather than here, where it could only repeat it.
+   * <p>
+   * Everything that follows a typed connection follows this one too: the frozen
+   * bindings thaw, the throttle is forgotten and the destinations are established.
+   * A user connected in a click is owed their calendars exactly as much as one who
+   * typed a password.
+   *
+   * @param caldavUserSetting the account the provider named, with no password
+   * @param userIdentityId identity of the connecting user
+   * @throws IllegalAccessException when no account is named
+   */
+  @Override
+  public void createProviderBackedSetting(CaldavUserSetting caldavUserSetting,
+                                          long userIdentityId) throws IllegalAccessException {
+    if (caldavUserSetting == null || StringUtils.isBlank(caldavUserSetting.getUsername())) {
+      throw new IllegalAccessException("the provider named no account to connect");
+    }
+    // There is no password to keep: the material is produced per request. The
+    // empty string rather than null is what the codec can encode.
+    caldavUserSetting.setPassword("");
+    // Read before the write, like the typed path: it is what says whether this
+    // account was on another server a moment ago.
+    CaldavUserSetting previous = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    caldavConnectorStorage.createCaldavSetting(caldavUserSetting, userIdentityId);
+    afterConnect(caldavUserSetting, userIdentityId, previous);
   }
 
   /**

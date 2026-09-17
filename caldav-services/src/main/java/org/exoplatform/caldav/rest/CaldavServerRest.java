@@ -240,6 +240,27 @@ public class CaldavServerRest {
   }
 
   /**
+   * Whether each declared provider asks its user for anything, keyed by provider
+   * name — what a browser needs to decide whether its connect button opens a form
+   * or connects outright.
+   * <p>
+   * Open to every authenticated user, unlike the provider registry itself, which is
+   * administrators-only: this answers about the connectors offered to the caller,
+   * not about how the instance is configured.
+   *
+   * @return one entry per declared provider name, true when the user must supply
+   *         something
+   */
+  @GetMapping("/connection-requirements")
+  @Secured("users")
+  @Operation(summary = "Tells which declared providers ask the user for credentials", method = "GET",
+      description = "One entry per provider name the registry uses. A provider answering false connects in one click.")
+  @ApiResponses(@ApiResponse(responseCode = "200", description = "Request fulfilled"))
+  public Map<String, Boolean> connectionRequirements() {
+    return caldavServerService.connectionRequirements();
+  }
+
+  /**
    * Lists every declared CalDAV server, active or not — the admin section
    * shows both, and nothing in a row is secret.
    *
