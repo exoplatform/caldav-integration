@@ -343,6 +343,8 @@ public class CaldavCalendarShareService {
 
   private final CaldavShareSubscriptionService  caldavShareSubscriptionService;
 
+  private final CaldavServerOwnerService        caldavServerOwnerService;
+
   /**
    * The servers this node has already reported, at INFO, as offering no
    * sharing. Reported once per server per process, so the reason is visible
@@ -406,6 +408,7 @@ public class CaldavCalendarShareService {
                                     BlueMindAclClient blueMindAclClient,
                                     CaldavPushService caldavPushService,
                                     CaldavShareSubscriptionService caldavShareSubscriptionService,
+                                    CaldavServerOwnerService caldavServerOwnerService,
                                     @Value("${exo.caldav.share.probeMemoSeconds:300}")
                                     long probeMemoSeconds) {
     this(agendaCalendarService,
@@ -417,6 +420,7 @@ public class CaldavCalendarShareService {
          blueMindAclClient,
          caldavPushService,
          caldavShareSubscriptionService,
+         caldavServerOwnerService,
          Duration.ofSeconds(Math.max(0, probeMemoSeconds)),
          System::nanoTime);
   }
@@ -436,10 +440,12 @@ public class CaldavCalendarShareService {
                              BlueMindAclClient blueMindAclClient,
                              CaldavPushService caldavPushService,
                              CaldavShareSubscriptionService caldavShareSubscriptionService,
+                             CaldavServerOwnerService caldavServerOwnerService,
                              Duration probeMemo,
                              LongSupplier nanoTime) {
     this.probeMemo = probeMemo;
     this.nanoTime = nanoTime;
+    this.caldavServerOwnerService = caldavServerOwnerService;
     this.agendaCalendarService = agendaCalendarService;
     this.caldavConnectorStorage = caldavConnectorStorage;
     this.caldavSyncStorage = caldavSyncStorage;
@@ -1495,6 +1501,11 @@ public class CaldavCalendarShareService {
    * @param subscribe true after a grant, false after a revoke
    */
   private void followShareeSubscription(ShareTarget target, Sharee sharee, String username, String shareeUid, boolean subscribe) {
+    // What the sharee's mailbox sees just changed by eXo's own hand, so what
+    // the sweep and the calendar list remember of it is dropped before the
+    // subscription is followed (EXO-90347): the next pass reads it afresh,
+    // and the drain evicts again once a deferred subscription lands.
+    caldavServerOwnerService.evict(sharee.identityId(), target.serverId());
     try {
       ShareeSubscription subscription = new ShareeSubscription(username,
                                                                sharee.identityId(),

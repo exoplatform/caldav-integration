@@ -153,7 +153,7 @@ public class CaldavReadServiceTest {
     lenient().when(caldavOutboundService.ownershipOf(anyLong(), any(), any(), any(), any())).thenCallRealMethod();
     // The server's own word on its calendar owners (EXO-90347) is silent
     // unless a test says otherwise — every server but BlueMind's shape.
-    lenient().when(caldavServerOwnerService.ownersOf(any(), any())).thenReturn(AccountCalendarOwners.silent());
+    lenient().when(caldavServerOwnerService.ownersOf(anyLong(), any(), any())).thenReturn(AccountCalendarOwners.silent());
   }
 
   @Test
@@ -798,7 +798,7 @@ public class CaldavReadServiceTest {
     String perso = "exo-cal-fd3fe75f-58f9-49e5-93d0-85f63b24a807";
     givenBlueMindAccountListing(owned(BM_HOME + perso + "/", "Perso", BM_PRINCIPAL, true, true));
     when(caldavOutboundService.isHeldByThisDeployment(SERVER, perso)).thenReturn(true);
-    when(caldavServerOwnerService.ownersOf(endpoint, BM_PRINCIPAL))
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, BM_PRINCIPAL))
                                                                     .thenReturn(AccountCalendarOwners.of("john-uid",
                                                                                                          Map.of(perso, "eric-uid")));
 
@@ -807,7 +807,7 @@ public class CaldavReadServiceTest {
     assertEquals(1, calendars.size(), "listed, not dropped on its prefix");
     assertTrue(calendars.get(0).isShared());
     assertTrue(calendars.get(0).isReadOnly());
-    verify(caldavServerOwnerService, times(1)).ownersOf(any(), any());
+    verify(caldavServerOwnerService, times(1)).ownersOf(anyLong(), any(), any());
   }
 
   /**
