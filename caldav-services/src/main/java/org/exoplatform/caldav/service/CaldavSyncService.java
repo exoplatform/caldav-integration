@@ -1710,7 +1710,7 @@ public class CaldavSyncService {
     for (CalendarCollection collection : collections) {
       if (isAlreadyOurs(collection, known)) {
         reviveIfMarkedGone(known, collection);
-        retireIfSubscription(userIdentityId, serverId, endpoint, principal, known, collection, owners);
+        retireIfSubscription(userIdentityId, serverId, endpoint, principal, known, collection);
         continue;
       }
       if (!collection.holdsEvents()) {
@@ -1830,16 +1830,13 @@ public class CaldavSyncService {
    * @param principal the account's principal, as the listing named it
    * @param known every pair this user holds on this server
    * @param collection the listed collection, already bound
-   * @param owners the server's word on the account's calendar owners, the
-   *          pass's one witness
    */
   private void retireIfSubscription(long userIdentityId,
                                     long serverId,
                                     CalDavEndpoint endpoint,
                                     String principal,
                                     List<CalendarSync> known,
-                                    CalendarCollection collection,
-                                    AccountCalendarOwners owners) {
+                                    CalendarCollection collection) {
     String href = CaldavSyncStorage.canonicalHref(collection.href());
     CalendarSync binding = known.stream()
                                 .filter(pair -> pair.getOrigin() == SyncOrigin.REMOTE
@@ -1850,7 +1847,13 @@ public class CaldavSyncService {
     if (binding == null) {
       return;
     }
-    CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId, principal, known, collection, owners);
+    // The silent witness, on purpose (EXO-90347): only a subscription the
+    // server's naming reveals is retired, and the naming needs no listing.
+    // A bound REMOTE collection under eXo's naming — a calendar of another
+    // eXo the user adopted — misses both of the deployment's arms and would
+    // otherwise reach the listing on every pass, for an answer that cannot
+    // change what is done here.
+    CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId, principal, known, collection);
     if (ownership.isSubscription()) {
       caldavSubscriptionRetirementService.retire(userIdentityId, endpoint, principal, binding, collection, ownership);
     }
@@ -1920,8 +1923,9 @@ public class CaldavSyncService {
    *          null when the server named none
    * @param collection the collection that is not the user's own
    * @param ownership which witness said so — the server, or this deployment
-   * @param owners the server's word on the account's calendar owners, which
-   *          names the owner when it is the witness that spoke (EXO-90347)
+   * @param owners the server's word on the account's calendar owners, cited
+   *          when it was already heard this pass and names an owner for the
+   *          collection — never read for the line (EXO-90347)
    */
   private void skipShare(long userIdentityId,
                          long serverId,
@@ -1933,12 +1937,12 @@ public class CaldavSyncService {
     String listedOwner = ownerTheListingNamed(collection, owners);
     String why = switch (ownership) {
       case COLLEAGUES_EXO_CALENDAR -> listedOwner == null ? "minted by this deployment for another user; "
-                                                          : "a calendar of another user of this deployment, by the server's own"
-                                                              + " calendar listing, which names entry " + listedOwner
+                                                          : "a calendar of another user of this deployment; the server's own"
+                                                              + " calendar listing names entry " + listedOwner
                                                               + " as its owner; ";
       case SHARED -> listedOwner == null ? ""
-                                         : "shared from outside this deployment, by the server's own calendar listing, which"
-                                             + " names entry " + listedOwner + " as its owner and which no user here holds; ";
+                                         : "shared from outside this deployment; the server's own calendar listing names"
+                                             + " entry " + listedOwner + " as its owner, and no user here holds it; ";
       case SUBSCRIBED_RESOURCE -> "a resource calendar the account subscribed to, by the server's naming; ";
       case SUBSCRIBED_PERSON -> "another person's calendar the account subscribed to, by the server's naming; ";
       default -> "";
@@ -1958,25 +1962,29 @@ public class CaldavSyncService {
   }
 
   /**
-   * The owner the server's own listing named for a collection, when that is
-   * the witness that made it a share (EXO-90347).
+   * The owner the server's own listing names for a collection, when the
+   * listing was already heard this pass (EXO-90347).
    *
    * <p>
-   * Free once the classification has run: the listing is memoised for the
-   * pass, and a collection outside eXo's naming was never asked about, so
-   * it is not asked about here either.
+   * Free, by construction: {@link AccountCalendarOwners#ownerAlreadyHeard}
+   * fetches and refreshes nothing. A share the deployment's own pairs
+   * settled — a colleague's exported calendar — never needed the listing,
+   * and this line must not be what reads it, nor what spends the pass's one
+   * refresh on a collection the listing does not name. A share the listing
+   * itself made is answered from the listing already in hand. A collection
+   * outside eXo's naming was never asked about and is not asked here.
    *
    * @param collection the collection the skip line is about
    * @param owners the pass's witness, may be null
-   * @return the owner's directory entry uid when the listing named another
-   *         entry; null when it did not speak, or the collection is not
-   *         eXo-shaped
+   * @return the owner's directory entry uid when the listing, already heard,
+   *         names another entry; null when it was not heard, does not name
+   *         the collection, or the collection is not eXo-shaped
    */
   private String ownerTheListingNamed(CalendarCollection collection, AccountCalendarOwners owners) {
     if (owners == null || !CaldavOutboundService.isExoCreated(collection.href())) {
       return null;
     }
-    AccountCalendarOwners.Verdict listed = owners.ownerOf(CaldavOutboundService.containerUidOf(collection.href()));
+    AccountCalendarOwners.Verdict listed = owners.ownerAlreadyHeard(CaldavOutboundService.containerUidOf(collection.href()));
     return listed.word() == AccountCalendarOwners.Word.ANOTHERS ? listed.ownerUid() : null;
   }
 
