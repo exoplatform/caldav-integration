@@ -761,10 +761,12 @@ public class CaldavOutboundService {
    * deployment's two arms and before the server's own signals: where it
    * withholds its answer it can only ever replace one that would have been
    * {@code OWN}, and where it names another owner it answers before the DAV
-   * signals — which on BlueMind agree with it, since the subscriber is the
-   * DAV owner there — and tells a colleague's share from an outsider's,
-   * which those signals cannot. A server that is not asked — not BlueMind —
-   * leaves this arm silent and the classification exactly as before.
+   * signals — which on BlueMind cannot contradict it: the subscriber is the
+   * DAV owner there, so those signals call a writable share the account's
+   * own (the defect this arm closes) and a read-only one a share as well —
+   * and tells a colleague's share from an outsider's, which those signals
+   * cannot. A server that is not asked — not BlueMind — leaves this arm
+   * silent and the classification exactly as before.
    *
    * @param serverId the declared server registration, which scopes the
    *          account-wide question
