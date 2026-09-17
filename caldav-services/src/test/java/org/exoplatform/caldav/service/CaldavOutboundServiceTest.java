@@ -1258,6 +1258,32 @@ public class CaldavOutboundServiceTest {
   }
 
   /**
+   * A listing that is withheld does not silence the server's own signals: a
+   * collection under eXo's naming whose DAV owner is another principal, or
+   * whose privileges grant no write, was a share before the listing existed
+   * and stays one when the listing cannot be read or does not name it —
+   * {@code OWNER_UNKNOWN} only ever replaces what would have been the
+   * account's own. Its holder is still not asked of the database.
+   */
+  @Test
+  public void aWithheldListingLeavesAShareTheServersOwnSignalsRevealAsAShare() {
+    String ericsPrincipal = "/dav/principals/__uids__/" + ERIC_UID + "/";
+    CalendarCollection ownedByEric = owned(ROOT_HOME + PERSO + "/", ericsPrincipal, true, true);
+    CalendarCollection readOnly = owned(ROOT_HOME + PERSO + "/", ROOT_PRINCIPAL, true, false);
+
+    assertEquals(CollectionOwnership.SHARED,
+                 service.ownershipOf(SERVER, ROOT_PRINCIPAL, List.of(), ownedByEric, AccountCalendarOwners.unavailable()),
+                 "the DAV owner is another principal: a share, listing or no listing");
+    assertEquals(CollectionOwnership.SHARED,
+                 service.ownershipOf(SERVER, ROOT_PRINCIPAL, List.of(), readOnly, AccountCalendarOwners.of(ROOT_UID, Map.of())),
+                 "the privileges grant no write: a share, whether or not the listing names it");
+    assertEquals(CollectionOwnership.OWNER_UNKNOWN,
+                 service.ownershipOf(SERVER, ROOT_PRINCIPAL, List.of(), owned(ROOT_HOME + PERSO + "/", ROOT_PRINCIPAL, true, true), AccountCalendarOwners.unavailable()),
+                 "only what the server's signals would have called the account's own is withheld");
+    verify(caldavSyncStorage, never()).isCollectionHeldOnServer(anyLong(), anyString());
+  }
+
+  /**
    * A server that is not asked leaves everything as it was: another
    * deployment's collection is the user's own to adopt (EXO-90226), through
    * the four-argument form and the silent witness alike, and the holder
