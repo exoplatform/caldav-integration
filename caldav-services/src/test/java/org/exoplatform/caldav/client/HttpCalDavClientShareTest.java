@@ -90,6 +90,11 @@ import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
  */
 public class HttpCalDavClientShareTest {
 
+
+  /** Apple's CalendarServer namespace, which the sharing elements live in. */
+
+  private static final String CALENDARSERVER_NS = "http://calendarserver.org/ns/";
+
   private static final String   SERVER_URL      = "http://cal.example.com/dav/cal/{username}/";
 
   private static final String   USER            = "alice@stalwart.local";
@@ -421,6 +426,41 @@ public class HttpCalDavClientShareTest {
     }
     assertEquals(shapeOf(parseXml(transcript("bluemind-post-cs-share-set-read.xml"))), shapeOf(parseXml(bodyOf(sent.get(0)))));
     assertEquals(shapeOf(parseXml(transcript("bluemind-post-cs-share-remove.xml"))), shapeOf(parseXml(bodyOf(sent.get(1)))));
+  }
+
+  /**
+   * A "can edit" share is the same {@code POST} with {@code CS:read-write}
+   * (EXO-90378), and a "can view" one is the body above: the element comes
+   * from a boolean and can be nothing else, which is what keeps a level added
+   * later away from BlueMind's permissive fallback — {@code SharingProtocol}
+   * maps <b>anything</b> that is not {@code read} to {@code Verb.Write}.
+   * A remove carries no access element at either level, because
+   * {@code CS:remove} deletes the sharee's entry whatever verb it held.
+   *
+   * @throws Exception when a body is not XML
+   */
+  @Test
+  void anEditShareIsTheSamePostWithReadWrite() throws Exception {
+    answer(200, Map.of(), "");
+    answer(200, Map.of(), "");
+    answer(200, Map.of(), "");
+
+    client.postCalendarServerShare(endpoint, exoPair(), "eric.meyer@bm.example.com", false, true);
+    client.postCalendarServerShare(endpoint, exoPair(), "eric.meyer@bm.example.com", false, false);
+    client.postCalendarServerShare(endpoint, exoPair(), "eric.meyer@bm.example.com", true, true);
+
+    assertEquals(shapeOf(parseXml(transcript("bluemind-post-cs-share-set-read-write.xml"))),
+                 shapeOf(parseXml(bodyOf(sent.get(0)))));
+    assertEquals(shapeOf(parseXml(transcript("bluemind-post-cs-share-set-read.xml"))),
+                 shapeOf(parseXml(bodyOf(sent.get(1)))));
+    assertEquals(shapeOf(parseXml(transcript("bluemind-post-cs-share-remove.xml"))),
+                 shapeOf(parseXml(bodyOf(sent.get(2)))));
+    // Exactly one access element per set body, and never both
+    assertEquals(1, parseXml(bodyOf(sent.get(0))).getElementsByTagNameNS(CALENDARSERVER_NS, "read-write").getLength());
+    assertEquals(0, parseXml(bodyOf(sent.get(0))).getElementsByTagNameNS(CALENDARSERVER_NS, "read").getLength());
+    assertEquals(1, parseXml(bodyOf(sent.get(1))).getElementsByTagNameNS(CALENDARSERVER_NS, "read").getLength());
+    assertEquals(0, parseXml(bodyOf(sent.get(1))).getElementsByTagNameNS(CALENDARSERVER_NS, "read-write").getLength());
+    assertEquals(0, parseXml(bodyOf(sent.get(2))).getElementsByTagNameNS(CALENDARSERVER_NS, "read-write").getLength());
   }
 
   /**
