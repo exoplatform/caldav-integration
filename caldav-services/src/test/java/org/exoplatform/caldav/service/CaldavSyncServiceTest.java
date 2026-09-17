@@ -2033,8 +2033,7 @@ public class CaldavSyncServiceTest {
     assertEquals(1, said.size(), "the skip is said, once");
     String line = said.get(0).getFormattedMessage();
     assertTrue(line.contains(HOME + PERSO + "/"), line);
-    assertTrue(line.contains("by the server's own calendar listing"), line);
-    assertTrue(line.contains("names entry " + ERIC_UID + " as its owner"), line);
+    assertTrue(line.contains("the server's own calendar listing names entry " + ERIC_UID + " as its owner"), line);
     assertTrue(line.contains("another user of this deployment"), line);
   }
 
@@ -2127,6 +2126,72 @@ public class CaldavSyncServiceTest {
     verify(caldavInboundService, atLeastOnce()).syncContents(eq(USER), eq(LOGIN), any(), any(), any(), any(), anyBoolean());
     assertEquals(1, said.size(), "said once across two passes, not once per pass");
     assertTrue(said.get(0).getFormattedMessage().contains(HOME + PERSO + "/"), said.get(0).getFormattedMessage());
+  }
+
+  /**
+   * A witness that must not be heard: a deferred listing whose fetch fails
+   * the test — an {@link AssertionError} is not a {@link RuntimeException},
+   * so the witness does not swallow it.
+   *
+   * @return the witness
+   */
+  private static AccountCalendarOwners neverAsked() {
+    return AccountCalendarOwners.deferred(() -> {
+      throw new AssertionError("the server's listing was consulted for a collection the other witnesses had settled");
+    });
+  }
+
+  /**
+   * A calendar of another eXo the user adopted — bound as a REMOTE pair
+   * under eXo's naming, "Personnel" on the rig — misses both of the
+   * deployment's arms, and the retirement check of an already-bound
+   * collection must not send it to the listing on every pass: the listing
+   * cannot make it a subscription, which is all the retirement asks. The
+   * pass reads through its binding, retires nothing and fetches nothing.
+   */
+  @Test
+  public void aBoundCalendarUnderExosNamingNeverCostsTheListing() throws Exception {
+    String bound = HOME + PERSONNEL + "/";
+    givenServerCalendars(owned(bound, "Personnel", PRINCIPAL, true, true));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(remotePair(bound, "personnel-anchor")));
+    givenUserCalendars(calendarWithAnchor(77L, "personnel-anchor"));
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(neverAsked());
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSubscriptionRetirementService, never()).retire(anyLong(), any(), any(), any(), any(), any());
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+    verify(caldavInboundService, atLeastOnce()).syncContents(eq(USER), eq(LOGIN), any(), any(), any(), any(), anyBoolean());
+  }
+
+  /**
+   * A colleague's exported calendar, shared with the user, is settled by the
+   * deployment's own pairs (EXO-90234) before the listing is heard — and the
+   * line that says it is skipped must not be what reads the listing, nor
+   * what spends the pass's one refresh: it says what was settled, and no
+   * request is made for it.
+   */
+  @Test
+  public void aColleaguesExportedShareIsSkippedWithoutReadingTheListing() throws Exception {
+    givenServerCalendars(owned(HOME + PERSO + "/", "Perso", PRINCIPAL, true, true));
+    givenNoKnownPairs();
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, HOME + PERSO)).thenReturn(true);
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(neverAsked());
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getLevel() == Level.INFO
+                    && recorded.getFormattedMessage().contains("shared with user " + USER))
+                .toList();
+    }
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    assertEquals(1, said.size(), "the skip is said, once");
+    assertTrue(said.get(0).getFormattedMessage().contains("minted by this deployment for another user"), said.get(0).getFormattedMessage());
   }
 
   /**
