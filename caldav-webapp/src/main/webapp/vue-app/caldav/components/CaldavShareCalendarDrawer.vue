@@ -34,17 +34,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <!--
           The calendar is also where eXo writes the copies of the user's eXo
           meetings (their main calendar on a server set to copy there): anyone
-          it is shared with sees those meetings too. Said before sharing and
-          after, and asked again on the share itself.
+          it is shared with sees those meetings too. Said once, on the share
+          itself, rather than in a standing notice (PO decision, 2026-09-17):
+          the notice was read as noise, while the confirmation arrives at the
+          one moment the information changes what the user does.
         -->
-        <v-alert
-          v-if="meetingCopies"
-          type="warning"
-          class="mb-4 caldav-share-meeting-copies"
-          dense
-          outlined>
-          {{ $t('caldav.share.drawer.meetingCopies') }}
-        </v-alert>
         <exo-confirm-dialog
           ref="meetingCopiesConfirm"
           :title="$t('caldav.share.confirm.meetingCopies.title')"
