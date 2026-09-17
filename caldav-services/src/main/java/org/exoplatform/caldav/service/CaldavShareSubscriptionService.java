@@ -229,6 +229,9 @@ public class CaldavShareSubscriptionService {
   @Autowired
   private IdentityManager                          identityManager;
 
+  @Autowired
+  private CaldavServerOwnerService                 caldavServerOwnerService;
+
   /**
    * A share as the owner's grant or revoke knows it, with everything the
    * colleague's subscription needs and the audit line names.
@@ -330,6 +333,9 @@ public class CaldavShareSubscriptionService {
     try {
       Attempt attempt = attempt(kind, share.serverId(), share.shareeUsername(), share.shareeUid(), share.containerUid());
       if (attempt.outcome() == Outcome.LANDED) {
+        // The sharee's mailbox now sees the calendar (or no longer does): what
+        // eXo remembers of its owners is stale (EXO-90347).
+        caldavServerOwnerService.evict(share.shareeIdentityId(), share.serverId());
         LOG.info("CalDAV share followed on BlueMind: user {} (entry {}) {} calendar container {} shared by {} on server {}",
                  share.shareeUsername(),
                  share.shareeUid(),
@@ -459,6 +465,11 @@ public class CaldavShareSubscriptionService {
       // everything else. On a run failing that way, spending a second attempt
       // is the cheaper of the two errors.
       return retryAll(rows, String.valueOf(e));
+    }
+    if (landed[0] > 0) {
+      // The colleague's mailbox sees more, or less, than what eXo remembers
+      // of its owners (EXO-90347).
+      caldavServerOwnerService.evict(userIdentityId, serverId);
     }
     return landed[0];
   }
