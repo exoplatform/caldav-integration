@@ -341,6 +341,8 @@ public class CaldavCalendarShareService {
 
   private final CaldavShareSubscriptionService  caldavShareSubscriptionService;
 
+  private final CaldavServerOwnerService        caldavServerOwnerService;
+
   /**
    * The servers this node has already reported, at INFO, as offering no
    * sharing. Reported once per server per process, so the reason is visible
@@ -370,7 +372,9 @@ public class CaldavCalendarShareService {
                                     IdentityManager identityManager,
                                     BlueMindAclClient blueMindAclClient,
                                     CaldavPushService caldavPushService,
-                                    CaldavShareSubscriptionService caldavShareSubscriptionService) {
+                                    CaldavShareSubscriptionService caldavShareSubscriptionService,
+                                    CaldavServerOwnerService caldavServerOwnerService) {
+    this.caldavServerOwnerService = caldavServerOwnerService;
     this.agendaCalendarService = agendaCalendarService;
     this.caldavConnectorStorage = caldavConnectorStorage;
     this.caldavSyncStorage = caldavSyncStorage;
@@ -1333,6 +1337,11 @@ public class CaldavCalendarShareService {
    * @param subscribe true after a grant, false after a revoke
    */
   private void followShareeSubscription(ShareTarget target, Sharee sharee, String username, String shareeUid, boolean subscribe) {
+    // What the sharee's mailbox sees just changed by eXo's own hand, so what
+    // the sweep and the calendar list remember of it is dropped before the
+    // subscription is followed (EXO-90347): the next pass reads it afresh,
+    // and the drain evicts again once a deferred subscription lands.
+    caldavServerOwnerService.evict(sharee.identityId(), target.serverId());
     try {
       CaldavShareSubscriptionService.ShareeSubscription subscription =
                                                                      new CaldavShareSubscriptionService.ShareeSubscription(username,

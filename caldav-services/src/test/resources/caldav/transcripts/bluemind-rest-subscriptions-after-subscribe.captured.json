@@ -1,0 +1,28 @@
+# CAPTURED live on 2026-09-16 against BlueMind at https://webmail.demo3.livecollab.fr
+# by dev/golden-capture/capture-bluemind-subscription.sh: GET https://webmail.demo3.livecollab.fr/api/users/19d43481671.internal/subscriptions/751E6D1A-7FDB-49B2-B668-B569E9A5A42D?type=calendar
+# The listing after step 3: the shared container with offlineSync and automount as BlueMind stored them.
+# Request headers not recorded; password, Basic credentials and the X-BM-ApiKey session key scrubbed.
+# HTTP status: 200
+HTTP/2 200 
+cache-control: no-cache
+cache-control: no-store
+cache-control: must-revalidate
+content-type: application/json
+date: Wed, 16 Sep 2026 14:19:54 GMT
+pragma: no-cache
+referrer-policy: strict-origin-when-cross-origin
+referrer-policy: strict-origin-when-cross-origin
+server: nginx
+strict-transport-security: max-age=15768000; includeSubDomains;
+x-content-type-options: nosniff
+x-content-type-options: nosniff
+x-frame-options: SAMEORIGIN
+x-frame-options: SAMEORIGIN
+x-frame-options: SAMEORIGIN
+x-robots-tag: noindex
+x-robots-tag: noindex
+x-xss-protection: 1; mode=block
+x-xss-protection: 1; mode=block
+
+
+[{"containerUid":"calendar:Default:751E6D1A-7FDB-49B2-B668-B569E9A5A42D","offlineSync":true,"automount":true,"containerType":"calendar","owner":"751E6D1A-7FDB-49B2-B668-B569E9A5A42D","defaultContainer":true,"name":"FRANCOIS","ownerDisplayName":"FRANCOIS","ownerDirEntryPath":"19d43481671.internal/users/751E6D1A-7FDB-49B2-B668-B569E9A5A42D"},{"containerUid":"exo-cal-8870b834-7d97-4255-b931-cd57069162f5","offlineSync":false,"automount":true,"containerType":"calendar","owner":"751E6D1A-7FDB-49B2-B668-B569E9A5A42D","defaultContainer":false,"name":"Root Root","ownerDisplayName":"FRANCOIS","ownerDirEntryPath":"19d43481671.internal/users/751E6D1A-7FDB-49B2-B668-B569E9A5A42D"},{"containerUid":"exo-cal-7f7b02f9-cd65-4171-9aef-a08ece3b20bd","offlineSync":false,"automount":true,"containerType":"calendar","owner":"751E6D1A-7FDB-49B2-B668-B569E9A5A42D","defaultContainer":false,"name":"test","ownerDisplayName":"FRANCOIS","ownerDirEntryPath":"19d43481671.internal/users/751E6D1A-7FDB-49B2-B668-B569E9A5A42D"},{"containerUid":"exo-cal-1fc5e853-c819-4caf-ad68-fe6fabedf592","offlineSync":false,"automount":true,"containerType":"calendar","owner":"751E6D1A-7FDB-49B2-B668-B569E9A5A42D","defaultContainer":false,"name":"ddddd editd ds edit again","ownerDisplayName":"FRANCOIS","ownerDirEntryPath":"19d43481671.internal/users/751E6D1A-7FDB-49B2-B668-B569E9A5A42D"},{"containerUid":"exo-cal-5c7e51bf-d8c5-47ef-bc00-e976249331bc","offlineSync":false,"automount":true,"containerType":"calendar","owner":"751E6D1A-7FDB-49B2-B668-B569E9A5A42D","defaultContainer":false,"name":"Personnel","ownerDisplayName":"FRANCOIS","ownerDirEntryPath":"19d43481671.internal/users/751E6D1A-7FDB-49B2-B668-B569E9A5A42D"},{"containerUid":"exo-cal-959b5529-ea4c-4ae4-a793-a2c201c3af9f","offlineSync":false,"automount":true,"containerType":"calendar","owner":"751E6D1A-7FDB-49B2-B668-B569E9A5A42D","defaultContainer":false,"name":"CAL2","ownerDisplayName":"FRANCOIS","ownerDirEntryPath":"19d43481671.internal/users/751E6D1A-7FDB-49B2-B668-B569E9A5A42D"},{"containerUid":"calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8","offlineSync":true,"automount":true,"containerType":"calendar","owner":"7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8","defaultContainer":true,"name":"Véhicule de pool 1","ownerDisplayName":"Véhicule de pool 1","ownerDirEntryPath":"19d43481671.internal/resources/7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8"},{"containerUid":"exo-cal-31e29bb7-e97c-4ee3-bc56-9f1673b7c7b0","offlineSync":false,"automount":true,"containerType":"calendar","owner":"751E6D1A-7FDB-49B2-B668-B569E9A5A42D","defaultContainer":false,"name":"eXoCal","ownerDisplayName":"FRANCOIS","ownerDirEntryPath":"19d43481671.internal/users/751E6D1A-7FDB-49B2-B668-B569E9A5A42D"},{"containerUid":"exo-cal-d691e7f4-8aa0-4c67-92ad-4d7c329bf6fb","offlineSync":true,"automount":true,"containerType":"calendar","owner":"4C60FEDD-0562-4903-A524-E95E1CCBCDE0","defaultContainer":false,"name":"testCalEric","ownerDisplayName":"MEYER","ownerDirEntryPath":"19d43481671.internal/users/4C60FEDD-0562-4903-A524-E95E1CCBCDE0"},{"containerUid":"exo-cal-96f6f3c2-08cb-4109-84ba-730ac035a607","offlineSync":true,"automount":true,"containerType":"calendar","owner":"4C60FEDD-0562-4903-A524-E95E1CCBCDE0","defaultContainer":false,"name":"Cal2ShareFromEric","ownerDisplayName":"MEYER","ownerDirEntryPath":"19d43481671.internal/users/4C60FEDD-0562-4903-A524-E95E1CCBCDE0"}]

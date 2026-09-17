@@ -79,6 +79,9 @@ public class CaldavReadService {
   @Autowired
   private CaldavCalendarOwnerService caldavCalendarOwnerService;
 
+  @Autowired
+  private CaldavServerOwnerService   caldavServerOwnerService;
+
   /**
    * The calendars of the connected account, and whether the account could be
    * asked at all.
@@ -114,6 +117,11 @@ public class CaldavReadService {
     // once, and a server's count of unrecorded users is asked once however
     // many colleagues share (EXO-90237, EXO-90243). Per listing on purpose.
     CalendarOwnerMemo owners = new CalendarOwnerMemo();
+    // The server's own word on who owns the account's calendars, at most
+    // once for this listing and only if a collection needs it (EXO-90347) —
+    // the same witness the sweep hears, so what it refuses to adopt is what
+    // this list shows as shared rather than as the user's own.
+    AccountCalendarOwners serverOwners = caldavServerOwnerService.ownersOf(userIdentityId, endpoint, listing.principal());
     for (CalendarCollection collection : collections) {
       if (!collection.holdsEvents()) {
         // The same refusal materialisation makes, for the same reason: a
@@ -130,7 +138,8 @@ public class CaldavReadService {
       CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId(settings),
                                                                         listing.principal(),
                                                                         listing.pairs(),
-                                                                        collection);
+                                                                        collection,
+                                                                        serverOwners);
       if (CaldavOutboundService.isExoCreated(collection.href()) && !ownership.isShared()) {
         // A collection an eXo made, that this user has no binding for and
         // that is nobody else's. Either the user's own eXo calendar, met again
@@ -213,12 +222,14 @@ public class CaldavReadService {
                                                       caldavSyncStorage.getPairs(userIdentityId, serverId(settings)));
     List<String> order = CalendarPalette.inStableOrder(listing.collections().stream().map(CalendarCollection::href).toList());
     CalendarOwnerMemo owners = new CalendarOwnerMemo();
+    AccountCalendarOwners serverOwners = caldavServerOwnerService.ownersOf(userIdentityId, endpoint, listing.principal());
     List<RemoteCalendar> calendars = new ArrayList<>();
     for (CalendarCollection collection : listing.collections()) {
       CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId(settings),
                                                                         listing.principal(),
                                                                         listing.pairs(),
-                                                                        collection);
+                                                                        collection,
+                                                                        serverOwners);
       calendars.add(remoteCalendarOf(userIdentityId, settings, endpoint, listing, collection, ownership, order, owners));
     }
     return new RemoteCalendarsRead(calendars, false);

@@ -46,7 +46,9 @@ import java.time.Instant;
 import java.util.Date;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.CountDownLatch;
@@ -185,6 +187,9 @@ public class CaldavSyncServiceTest {
   private CaldavShareSubscriptionService caldavShareSubscriptionService;
 
   @Mock
+  private CaldavServerOwnerService   caldavServerOwnerService;
+
+  @Mock
   private CalDavEndpoint             endpoint;
 
   @Mock
@@ -229,6 +234,11 @@ public class CaldavSyncServiceTest {
     // did before the classification existed. A mock answering null for an
     // enum would otherwise fail every pass that reaches a listed collection.
     lenient().when(caldavOutboundService.ownershipOf(anyLong(), any(), any(), any())).thenCallRealMethod();
+    lenient().when(caldavOutboundService.ownershipOf(anyLong(), any(), any(), any(), any())).thenCallRealMethod();
+    // The server's own word on its calendar owners (EXO-90347) is silent
+    // unless a test says otherwise: the shape every server but BlueMind has,
+    // and the one under which every earlier pin was written.
+    lenient().when(caldavServerOwnerService.ownersOf(anyLong(), any(), any())).thenReturn(AccountCalendarOwners.silent());
   }
 
   @Test
@@ -1964,6 +1974,251 @@ public class CaldavSyncServiceTest {
     pair.setOrigin(SyncOrigin.EXO);
     pair.setStatus(CalendarSyncStatus.ACTIVE);
     return pair;
+  }
+
+  // ------------------------------------ the server's own word on owners, EXO-90347
+
+  /** root's directory entry uid on the rig; the account these pins list as. */
+  private static final String        ROOT_UID  = "751E6D1A-7FDB-49B2-B668-B569E9A5A42D";
+
+  /** eric's directory entry uid on the rig: the colleague who shared. */
+  private static final String        ERIC_UID  = "4C60FEDD-0562-4903-A524-E95E1CCBCDE0";
+
+  /**
+   * "Perso" (rig calendar 6): made by another eXo in eric's mailbox, adopted
+   * by eric as pair 6 — REMOTE, local anchor {@code e7d74320-…}, so the slug
+   * is not the anchor — then shared with root, and listed by BlueMind under
+   * root's own home with root as owner. The container uid is what survives.
+   */
+  private static final String        PERSO     = "exo-cal-fd3fe75f-58f9-49e5-93d0-85f63b24a807";
+
+  /**
+   * "Personnel" (rig calendar 26): made by another eXo in root's own mailbox,
+   * which the server's listing says is root's — to be adopted, as any
+   * calendar of the account's own is.
+   */
+  private static final String        PERSONNEL = "exo-cal-5c7e51bf-d8c5-47ef-bc00-e976249331bc";
+
+  /**
+   * The defect (EXO-90347), on the rig's own facts: nothing this deployment
+   * exported stands behind the slug, the server lists the collection under
+   * the user's home with the user as owner, and the naming says nothing of
+   * an {@code exo-cal-*} container — so it classified as the user's own and
+   * became calendar 24, a phantom of eric's calendar that root appeared to
+   * own. The server's subscription listing names eric as its owner, and a
+   * user here holds the container, so it is a colleague's calendar: never
+   * materialised, said once, with the owner the listing named.
+   */
+  @Test
+  public void aColleaguesImportedCalendarSharedOnBlueMindIsNeverMaterialisedByTheServersListing() throws Exception {
+    givenServerCalendars(owned(HOME + PERSO + "/", "Perso", PRINCIPAL, true, true));
+    givenNoKnownPairs();
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, HOME + PERSO)).thenReturn(false);
+    when(caldavOutboundService.isHeldByThisDeployment(SERVER, PERSO)).thenReturn(true);
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.of(ROOT_UID,
+                                                                                                    Map.of(PERSO, ERIC_UID)));
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getLevel() == Level.INFO
+                    && recorded.getFormattedMessage().contains("shared with user " + USER))
+                .toList();
+    }
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavSyncStorage, never()).savePair(any());
+    assertEquals(1, said.size(), "the skip is said, once");
+    String line = said.get(0).getFormattedMessage();
+    assertTrue(line.contains(HOME + PERSO + "/"), line);
+    assertTrue(line.contains("the server's own calendar listing names entry " + ERIC_UID + " as its owner"), line);
+    assertTrue(line.contains("another user of this deployment"), line);
+  }
+
+  /**
+   * The same share when nobody here holds the container — shared from
+   * outside this deployment: not adopted either, and the line says so.
+   */
+  @Test
+  public void aCalendarAnotherEntryOwnsThatNobodyHereHoldsIsNeverMaterialisedEither() throws Exception {
+    givenServerCalendars(owned(HOME + PERSO + "/", "Perso", PRINCIPAL, true, true));
+    givenNoKnownPairs();
+    when(caldavOutboundService.isHeldByThisDeployment(SERVER, PERSO)).thenReturn(false);
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.of(ROOT_UID,
+                                                                                                    Map.of(PERSO, ERIC_UID)));
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getLevel() == Level.INFO
+                    && recorded.getFormattedMessage().contains("shared with user " + USER))
+                .toList();
+    }
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    assertEquals(1, said.size());
+    assertTrue(said.get(0).getFormattedMessage().contains("shared from outside this deployment"), said.get(0).getFormattedMessage());
+    assertTrue(said.get(0).getFormattedMessage().contains(ERIC_UID), said.get(0).getFormattedMessage());
+  }
+
+  /**
+   * What is NOT the bug, and must keep working: a calendar found in the
+   * user's own mailbox is theirs to adopt whoever created it — eXo is one
+   * CalDAV client among several — and the server's listing saying so is what
+   * lets it through. "Personnel" on the rig: made by another eXo, owner root.
+   */
+  @Test
+  public void aCalendarTheServersListingSaysIsTheAccountsOwnIsStillAdopted() throws Exception {
+    givenServerCalendars(owned(HOME + PERSONNEL + "/", "Personnel", PRINCIPAL, true, true));
+    givenNoKnownPairs();
+    givenAgendaCreates("adopted-anchor");
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.of(ROOT_UID,
+                                                                                                    Map.of(PERSONNEL, ROOT_UID)));
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
+    verify(caldavSyncStorage).savePair(saved.capture());
+    assertEquals(SyncOrigin.REMOTE, saved.getValue().getOrigin());
+    assertEquals(HOME + PERSONNEL + "/", saved.getValue().getRemoteHref());
+    verify(caldavOutboundService, never()).isHeldByThisDeployment(anyLong(), anyString());
+  }
+
+  /**
+   * Fail closed, for adoption alone: when the listing cannot be read, an
+   * eXo-shaped collection nobody here recognises is neither adopted nor
+   * called a share — it waits for the next pass, and says so once — while
+   * everything else in the same pass goes on exactly as before: a collection
+   * outside eXo's naming is still materialised, and a calendar already bound
+   * is neither dropped nor left unread.
+   */
+  @Test
+  public void aListingThatCannotBeReadAdoptsNothingNewAndLeavesTheRestOfThePassAlone() throws Exception {
+    String bound = HOME + "work/";
+    givenServerCalendars(owned(HOME + PERSO + "/", "Perso", PRINCIPAL, true, true),
+                         owned(HOME + "private/", "Private", PRINCIPAL, true, true),
+                         owned(bound, "Work", PRINCIPAL, true, true));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(remotePair(bound, "work-anchor")));
+    givenUserCalendars(calendarWithAnchor(77L, "work-anchor"));
+    givenAgendaCreates("private-anchor");
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.unavailable());
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getLevel() == Level.INFO
+                    && recorded.getFormattedMessage().contains("could not say whose it is this pass"))
+                .toList();
+    }
+
+    ArgumentCaptor<Calendar> created = ArgumentCaptor.forClass(Calendar.class);
+    verify(agendaCalendarService, times(2)).createCalendar(created.capture(), eq(LOGIN));
+    assertTrue(created.getAllValues().stream().allMatch(calendar -> "Private".equals(calendar.getName())),
+               "only the collection outside eXo's naming is materialised: " + created.getAllValues());
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+    verify(caldavInboundService, atLeastOnce()).syncContents(eq(USER), eq(LOGIN), any(), any(), any(), any(), anyBoolean());
+    assertEquals(1, said.size(), "said once across two passes, not once per pass");
+    assertTrue(said.get(0).getFormattedMessage().contains(HOME + PERSO + "/"), said.get(0).getFormattedMessage());
+  }
+
+  /**
+   * A witness that must not be heard: a deferred listing whose fetch fails
+   * the test — an {@link AssertionError} is not a {@link RuntimeException},
+   * so the witness does not swallow it.
+   *
+   * @return the witness
+   */
+  private static AccountCalendarOwners neverAsked() {
+    return AccountCalendarOwners.deferred(() -> {
+      throw new AssertionError("the server's listing was consulted for a collection the other witnesses had settled");
+    });
+  }
+
+  /**
+   * A calendar of another eXo the user adopted — bound as a REMOTE pair
+   * under eXo's naming, "Personnel" on the rig — misses both of the
+   * deployment's arms, and the retirement check of an already-bound
+   * collection must not send it to the listing on every pass: the listing
+   * cannot make it a subscription, which is all the retirement asks. The
+   * pass reads through its binding, retires nothing and fetches nothing.
+   */
+  @Test
+  public void aBoundCalendarUnderExosNamingNeverCostsTheListing() throws Exception {
+    String bound = HOME + PERSONNEL + "/";
+    givenServerCalendars(owned(bound, "Personnel", PRINCIPAL, true, true));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(remotePair(bound, "personnel-anchor")));
+    givenUserCalendars(calendarWithAnchor(77L, "personnel-anchor"));
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(neverAsked());
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavSubscriptionRetirementService, never()).retire(anyLong(), any(), any(), any(), any(), any());
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavSyncStorage, never()).deletePair(anyLong());
+    verify(caldavInboundService, atLeastOnce()).syncContents(eq(USER), eq(LOGIN), any(), any(), any(), any(), anyBoolean());
+  }
+
+  /**
+   * A colleague's exported calendar, shared with the user, is settled by the
+   * deployment's own pairs (EXO-90234) before the listing is heard — and the
+   * line that says it is skipped must not be what reads the listing, nor
+   * what spends the pass's one refresh: it says what was settled, and no
+   * request is made for it.
+   */
+  @Test
+  public void aColleaguesExportedShareIsSkippedWithoutReadingTheListing() throws Exception {
+    givenServerCalendars(owned(HOME + PERSO + "/", "Perso", PRINCIPAL, true, true));
+    givenNoKnownPairs();
+    when(caldavOutboundService.isMintedByThisDeployment(SERVER, HOME + PERSO)).thenReturn(true);
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(neverAsked());
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getLevel() == Level.INFO
+                    && recorded.getFormattedMessage().contains("shared with user " + USER))
+                .toList();
+    }
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    assertEquals(1, said.size(), "the skip is said, once");
+    assertTrue(said.get(0).getFormattedMessage().contains("minted by this deployment for another user"), said.get(0).getFormattedMessage());
+  }
+
+  /**
+   * One listing per account per pass, however many collections need it —
+   * never one per collection. The witness is fetched on the first question
+   * and kept; three colleagues' shares cost one REST session.
+   */
+  @Test
+  public void theServersListingIsAskedOncePerPassNotPerCollection() throws Exception {
+    String second = "exo-cal-d691e7f4-8aa0-4c67-92ad-4d7c329bf6fb";
+    String third = "exo-cal-96f6f3c2-08cb-4109-84ba-730ac035a607";
+    givenServerCalendars(owned(HOME + PERSO + "/", "Perso", PRINCIPAL, true, true),
+                         owned(HOME + second + "/", "testCalEric", PRINCIPAL, true, true),
+                         owned(HOME + third + "/", "Cal2ShareFromEric", PRINCIPAL, true, true));
+    givenNoKnownPairs();
+    AtomicInteger fetched = new AtomicInteger();
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.deferred(() -> {
+      fetched.incrementAndGet();
+      return AccountCalendarOwners.of(ROOT_UID, Map.of(PERSO, ERIC_UID, second, ERIC_UID, third, ERIC_UID));
+    }));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+    verify(caldavServerOwnerService, times(1)).ownersOf(anyLong(), any(), any());
+    assertEquals(1, fetched.get(), "three collections, one fetch");
+    verify(caldavOutboundService, times(3)).ownershipOf(eq(SERVER), eq(PRINCIPAL), any(), any(), any());
   }
 
   /**

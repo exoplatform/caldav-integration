@@ -34,6 +34,7 @@ import static org.mockito.Mockito.when;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -120,6 +121,9 @@ public class CaldavReadServiceTest {
   @Mock
   private CaldavConnectionIdentityService caldavConnectionIdentityService;
 
+  @Mock
+  private CaldavServerOwnerService   caldavServerOwnerService;
+
   @InjectMocks
   private CaldavReadService          service;
 
@@ -146,6 +150,10 @@ public class CaldavReadServiceTest {
     // (isMintedByThisDeployment), which the tests below stub per case. A mock
     // answering null for an enum would otherwise fail every listing.
     lenient().when(caldavOutboundService.ownershipOf(anyLong(), any(), any(), any())).thenCallRealMethod();
+    lenient().when(caldavOutboundService.ownershipOf(anyLong(), any(), any(), any(), any())).thenCallRealMethod();
+    // The server's own word on its calendar owners (EXO-90347) is silent
+    // unless a test says otherwise — every server but BlueMind's shape.
+    lenient().when(caldavServerOwnerService.ownersOf(anyLong(), any(), any())).thenReturn(AccountCalendarOwners.silent());
   }
 
   @Test
@@ -600,7 +608,7 @@ public class CaldavReadServiceTest {
     assertFalse(read.failed());
     // The read-through serves every unbound collection and asks nobody whose
     // it is: the classification is the list's and the sweep's, not this path's.
-    verify(caldavOutboundService, never()).ownershipOf(anyLong(), any(), any(), any());
+    verify(caldavOutboundService, never()).ownershipOf(anyLong(), any(), any(), any(), any());
   }
 
   // ------------------------------------ who shared it, EXO-90237
@@ -777,6 +785,30 @@ public class CaldavReadServiceTest {
 
   /** The resource's own principal, in the account principal's collection. */
   private static final String        POOL_VEHICLE_PRINCIPAL = "/dav/principals/__uids__/7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8/";
+
+  /**
+   * The list side of EXO-90347: a colleague's calendar, imported elsewhere
+   * and shared on BlueMind, is listed as a share — read-only, under "Shared
+   * with me" — by the server's own listing, rather than dropped as an
+   * eXo-shaped collection the sweep would adopt. The same witness the sweep
+   * hears, asked once for the listing.
+   */
+  @Test
+  public void aColleaguesImportedCalendarSharedOnBlueMindIsListedAsAShareByTheServersListing() {
+    String perso = "exo-cal-fd3fe75f-58f9-49e5-93d0-85f63b24a807";
+    givenBlueMindAccountListing(owned(BM_HOME + perso + "/", "Perso", BM_PRINCIPAL, true, true));
+    when(caldavOutboundService.isHeldByThisDeployment(SERVER, perso)).thenReturn(true);
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, BM_PRINCIPAL))
+                                                                    .thenReturn(AccountCalendarOwners.of("john-uid",
+                                                                                                         Map.of(perso, "eric-uid")));
+
+    List<RemoteCalendar> calendars = service.listCalendars(USER, LOGIN).calendars();
+
+    assertEquals(1, calendars.size(), "listed, not dropped on its prefix");
+    assertTrue(calendars.get(0).isShared());
+    assertTrue(calendars.get(0).isReadOnly());
+    verify(caldavServerOwnerService, times(1)).ownersOf(anyLong(), any(), any());
+  }
 
   /**
    * Connects the account as one of BlueMind's shape, listing these calendars.
@@ -982,7 +1014,7 @@ public class CaldavReadServiceTest {
     givenCalendars(owned("/dav/calendars/alice/exo-meetings/", "eXo Meetings", ALICE, true, false));
 
     assertTrue(service.listCalendars(USER, LOGIN).calendars().isEmpty());
-    verify(caldavOutboundService, never()).ownershipOf(anyLong(), any(), any(), any());
+    verify(caldavOutboundService, never()).ownershipOf(anyLong(), any(), any(), any(), any());
   }
 
   @Test
