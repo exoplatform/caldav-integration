@@ -35,6 +35,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -1120,6 +1121,198 @@ public class CaldavOutboundServiceTest {
   public void anAccountOfAnotherShapeIsNotReadByTheNaming() {
     assertEquals(CollectionOwnership.OWN,
                  service.ownershipOf(SERVER, PRINCIPAL, List.of(), owned("/dav/calendars/john/calendar:room-1/", PRINCIPAL, true, true)));
+  }
+
+  // ------------------------------------ the server's own word on owners, EXO-90347
+
+  /** root's directory entry uid on the rig. */
+  private static final String        ROOT_UID       = "751E6D1A-7FDB-49B2-B668-B569E9A5A42D";
+
+  /** eric's directory entry uid on the rig: the colleague who shared. */
+  private static final String        ERIC_UID       = "4C60FEDD-0562-4903-A524-E95E1CCBCDE0";
+
+  /** root's principal, in BlueMind's spelling. */
+  private static final String        ROOT_PRINCIPAL = "/dav/principals/__uids__/" + ROOT_UID + "/";
+
+  /** root's home, where BlueMind lists every calendar root sees. */
+  private static final String        ROOT_HOME      = "/dav/calendars/__uids__/" + ROOT_UID + "/";
+
+  /**
+   * "Perso": made by another eXo in eric's mailbox, imported by eric (pair 6,
+   * REMOTE, anchor {@code e7d74320-…} — the slug is not the anchor), shared
+   * with root. Listed under root's home with root as DAV owner.
+   */
+  private static final String        PERSO          = "exo-cal-fd3fe75f-58f9-49e5-93d0-85f63b24a807";
+
+  /** "Personnel": made by another eXo in root's own mailbox; owner root. */
+  private static final String        PERSONNEL      = "exo-cal-5c7e51bf-d8c5-47ef-bc00-e976249331bc";
+
+  /**
+   * The captured listing of 2026-09-16, reduced to owners: root's own
+   * calendars carry root's uid, eric's shares carry eric's, the pool vehicle
+   * its own.
+   */
+  private static final Map<String, String> RIG_OWNERS = Map.of("calendar:Default:" + ROOT_UID,
+                                                                ROOT_UID,
+                                                                PERSONNEL,
+                                                                ROOT_UID,
+                                                                "exo-cal-8870b834-7d97-4255-b931-cd57069162f5",
+                                                                ROOT_UID,
+                                                                "calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8",
+                                                                "7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8",
+                                                                PERSO,
+                                                                ERIC_UID,
+                                                                "exo-cal-d691e7f4-8aa0-4c67-92ad-4d7c329bf6fb",
+                                                                ERIC_UID);
+
+  /**
+   * A witness that must not be heard: a deferred listing whose fetch fails
+   * the test — an {@link AssertionError} is not a {@link RuntimeException},
+   * so the witness does not swallow it.
+   *
+   * @return the witness
+   */
+  private static AccountCalendarOwners neverAsked() {
+    return AccountCalendarOwners.deferred(() -> {
+      throw new AssertionError("the server's listing was consulted for a collection the other witnesses had settled");
+    });
+  }
+
+  /**
+   * The defect (EXO-90347): the anchor is nobody's here, the recorded path
+   * is under eric's home rather than root's, and BlueMind lists the share
+   * under root's home with root as owner — three witnesses silent, and the
+   * collection used to classify as root's own and become calendar 24. The
+   * server's own listing names eric as its owner, and a user here holds the
+   * container: a colleague's calendar, a share.
+   */
+  @Test
+  public void aColleaguesImportedCalendarSharedOnBlueMindIsTheColleaguesByTheServersListing() {
+    when(caldavSyncStorage.isExoCalendarOnServer(SERVER, "fd3fe75f-58f9-49e5-93d0-85f63b24a807")).thenReturn(false);
+    when(caldavSyncStorage.isExoCollectionOnServer(SERVER, ROOT_HOME + PERSO)).thenReturn(false);
+    when(caldavSyncStorage.isCollectionHeldOnServer(SERVER, PERSO)).thenReturn(true);
+
+    CollectionOwnership ownership = service.ownershipOf(SERVER,
+                                                        ROOT_PRINCIPAL,
+                                                        List.of(),
+                                                        owned(ROOT_HOME + PERSO + "/", ROOT_PRINCIPAL, true, true),
+                                                        AccountCalendarOwners.of(ROOT_UID, RIG_OWNERS));
+
+    assertEquals(CollectionOwnership.COLLEAGUES_EXO_CALENDAR, ownership);
+    assertTrue(ownership.isShared());
+  }
+
+  /**
+   * The same listing, a container nobody here holds: shared from outside
+   * this deployment, never adopted, and told from a colleague's so the line
+   * and the list can say which.
+   */
+  @Test
+  public void aCalendarAnotherEntryOwnsThatNobodyHereHoldsIsAShare() {
+    when(caldavSyncStorage.isCollectionHeldOnServer(SERVER, PERSO)).thenReturn(false);
+
+    CollectionOwnership ownership = service.ownershipOf(SERVER,
+                                                        ROOT_PRINCIPAL,
+                                                        List.of(),
+                                                        owned(ROOT_HOME + PERSO + "/", ROOT_PRINCIPAL, true, true),
+                                                        AccountCalendarOwners.of(ROOT_UID, RIG_OWNERS));
+
+    assertEquals(CollectionOwnership.SHARED, ownership);
+  }
+
+  /**
+   * Not the bug, and kept: a calendar the server says is the account's own
+   * is adopted however it was created — "Personnel", made by another eXo in
+   * root's own mailbox. The holder question is not even asked.
+   */
+  @Test
+  public void aCalendarTheServersListingSaysIsTheAccountsOwnIsTheirsToAdopt() {
+    assertEquals(CollectionOwnership.OWN,
+                 service.ownershipOf(SERVER,
+                                     ROOT_PRINCIPAL,
+                                     List.of(),
+                                     owned(ROOT_HOME + PERSONNEL + "/", ROOT_PRINCIPAL, true, true),
+                                     AccountCalendarOwners.of(ROOT_UID, RIG_OWNERS)));
+    verify(caldavSyncStorage, never()).isCollectionHeldOnServer(anyLong(), anyString());
+  }
+
+  /**
+   * Fail closed on missing evidence, for adoption alone: a listing that
+   * could not be read, and a collection the listing does not name, both
+   * withhold the answer rather than give one. Not a share — the list does
+   * not show it — and not the user's own — the sweep does not adopt it.
+   */
+  @Test
+  public void aListingThatCannotBeReadOrDoesNotNameTheCollectionAdoptsNothing() {
+    CalendarCollection perso = owned(ROOT_HOME + PERSO + "/", ROOT_PRINCIPAL, true, true);
+
+    CollectionOwnership unavailable = service.ownershipOf(SERVER, ROOT_PRINCIPAL, List.of(), perso, AccountCalendarOwners.unavailable());
+    CollectionOwnership absent = service.ownershipOf(SERVER, ROOT_PRINCIPAL, List.of(), perso, AccountCalendarOwners.of(ROOT_UID, Map.of()));
+
+    assertEquals(CollectionOwnership.OWNER_UNKNOWN, unavailable);
+    assertEquals(CollectionOwnership.OWNER_UNKNOWN, absent);
+    assertFalse(unavailable.isShared());
+    assertFalse(unavailable.isSubscription());
+    assertNull(unavailable.ownerKind());
+    verify(caldavSyncStorage, never()).isCollectionHeldOnServer(anyLong(), anyString());
+  }
+
+  /**
+   * A server that is not asked leaves everything as it was: another
+   * deployment's collection is the user's own to adopt (EXO-90226), through
+   * the four-argument form and the silent witness alike, and the holder
+   * question is never asked of the database.
+   */
+  @Test
+  public void aServerThatIsNotAskedLeavesTheClassificationAsBefore() {
+    when(caldavSyncStorage.isExoCalendarOnServer(SERVER, ANCHOR)).thenReturn(false);
+    when(caldavSyncStorage.isExoCollectionOnServer(SERVER, CaldavSyncStorage.canonicalHref(WANTED))).thenReturn(false);
+
+    assertEquals(CollectionOwnership.OWN, service.ownershipOf(SERVER, PRINCIPAL, List.of(), owned(WANTED, PRINCIPAL, true, true)));
+    assertEquals(CollectionOwnership.OWN,
+                 service.ownershipOf(SERVER, PRINCIPAL, List.of(), owned(WANTED, PRINCIPAL, true, true), AccountCalendarOwners.silent()));
+    assertEquals(CollectionOwnership.OWN,
+                 service.ownershipOf(SERVER, PRINCIPAL, List.of(), owned(WANTED, PRINCIPAL, true, true), null),
+                 "null is read as silent");
+    verify(caldavSyncStorage, never()).isCollectionHeldOnServer(anyLong(), anyString());
+  }
+
+  /**
+   * The listing is heard last among the deployment's questions and only
+   * for a collection wearing eXo's naming: the user's own export, a
+   * colleague's export and a subscription the naming reveals are all
+   * settled before it, and it is not consulted for them.
+   */
+  @Test
+  public void theListingIsHeardOnlyForAnExoShapedCollectionTheOtherWitnessesCouldNotSettle() {
+    CalendarSync exported = exportedPair("fd3fe75f-58f9-49e5-93d0-85f63b24a807", ROOT_HOME + PERSO + "/");
+    assertEquals(CollectionOwnership.OWN_EXO_CALENDAR,
+                 service.ownershipOf(SERVER, ROOT_PRINCIPAL, List.of(exported), owned(ROOT_HOME + PERSO + "/", ROOT_PRINCIPAL, true, true), neverAsked()));
+
+    when(caldavSyncStorage.isExoCalendarOnServer(SERVER, "fd3fe75f-58f9-49e5-93d0-85f63b24a807")).thenReturn(true);
+    assertEquals(CollectionOwnership.COLLEAGUES_EXO_CALENDAR,
+                 service.ownershipOf(SERVER, ROOT_PRINCIPAL, List.of(), owned(ROOT_HOME + PERSO + "/", ROOT_PRINCIPAL, true, true), neverAsked()));
+
+    assertEquals(CollectionOwnership.SUBSCRIBED_PERSON,
+                 service.ownershipOf(SERVER,
+                                     ROOT_PRINCIPAL,
+                                     List.of(),
+                                     owned(ROOT_HOME + "calendar:Default:" + ERIC_UID + "/", ROOT_PRINCIPAL, true, true),
+                                     neverAsked()));
+    assertEquals(CollectionOwnership.OWN,
+                 service.ownershipOf(SERVER, ROOT_PRINCIPAL, List.of(), owned(ROOT_HOME + "private/", ROOT_PRINCIPAL, true, true), neverAsked()),
+                 "a collection outside eXo's naming is decided by the server's DAV signals alone");
+  }
+
+  /**
+   * The container uid the listing is keyed by is the collection's last
+   * segment, in whatever spelling the listing used.
+   */
+  @Test
+  public void theContainerUidIsTheLastSegmentWhateverTheSpelling() {
+    assertEquals(PERSO, CaldavOutboundService.containerUidOf(ROOT_HOME + PERSO + "/"));
+    assertEquals(PERSO, CaldavOutboundService.containerUidOf("https://bm.example.com" + ROOT_HOME + PERSO));
+    assertNull(CaldavOutboundService.containerUidOf(" "));
   }
 
   /**
