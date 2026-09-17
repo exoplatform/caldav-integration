@@ -92,6 +92,9 @@ public class CaldavConnectionIdentityService {
   private static final Log        LOG = ExoLogger.getLogger(CaldavConnectionIdentityService.class);
 
   @Autowired
+  private CaldavServerService      caldavServerService;
+
+  @Autowired
   private CaldavConnectionStorage caldavConnectionStorage;
 
   @Autowired
@@ -291,7 +294,11 @@ public class CaldavConnectionIdentityService {
    */
   private boolean isStillConnectedTo(long userIdentityId, long serverId) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
-    if (settings == null || StringUtils.isBlank(settings.getUsername()) || StringUtils.isBlank(settings.getPassword())) {
+    // One definition for the whole addon - see CaldavServerService.isConnected.
+    // Reading it here as "a username and a password" calls a provider-backed
+    // connection disconnected: there is none to store when the platform produces
+    // the material, and this user's recorded principal would be dropped.
+    if (!caldavServerService.isConnected(settings)) {
       return false;
     }
     long connectedTo = settings.getServerId() == null ? 0L : settings.getServerId();

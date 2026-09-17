@@ -31,6 +31,8 @@ import static org.mockito.Mockito.when;
 import java.sql.SQLIntegrityConstraintViolationException;
 import java.util.List;
 
+import org.junit.jupiter.api.BeforeEach;
+import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -70,8 +72,26 @@ public class CaldavConnectionIdentityServiceTest {
   @Mock
   private CaldavConnectorStorage  caldavConnectorStorage;
 
+  @Mock
+  private CaldavServerService     caldavServerService;
+
   @InjectMocks
   private CaldavConnectionIdentityService service;
+
+  @BeforeEach
+  public void reproduceTheConnectedRuleTheseTestsWereWrittenAgainst() {
+    // The addon's single definition of "connected" now lives in CaldavServerService.
+    // Reproducing here the rule this class was written against - a username and a
+    // password - keeps every assertion measuring what it measured; the
+    // provider-backed shape has its own tests, below and in CaldavServerServiceTest.
+    org.mockito.Mockito.lenient()
+                       .when(caldavServerService.isConnected(org.mockito.ArgumentMatchers.any()))
+                       .thenAnswer(call -> {
+                         CaldavUserSetting account = call.getArgument(0);
+                         return account != null && StringUtils.isNotBlank(account.getUsername())
+                             && StringUtils.isNotBlank(account.getPassword());
+                       });
+  }
 
   // ------------------------------------ the canonical form
 
@@ -343,5 +363,38 @@ public class CaldavConnectionIdentityServiceTest {
     settings.setPassword("secret");
     settings.setServerId(serverId);
     return settings;
+  }
+
+  /**
+   * A connection the platform authenticates stores no password - the material is
+   * produced per request - so reading "connected" as a username <b>and</b> a
+   * password calls it disconnected and drops its recorded principal. The addon has
+   * one definition of connected, in CaldavServerService; this asks it rather than
+   * restating it.
+   */
+  @Test
+  public void keepsThePrincipalOfAProviderBackedAccount() {
+    CaldavUserSetting providerBacked = new CaldavUserSetting();
+    providerBacked.setUsername("eric@bm.example.org");
+    providerBacked.setPassword("");
+    providerBacked.setServerId(5L);
+    when(caldavConnectionStorage.getRecordedPrincipal(42L, 5L)).thenReturn(ALICE_PRINCIPAL);
+    when(caldavConnectorStorage.getCaldavSetting(42L)).thenReturn(providerBacked);
+    when(caldavServerService.isConnected(providerBacked)).thenReturn(true);
+
+    assertEquals(ALICE_PRINCIPAL, service.principalOf(42L, 5L));
+  }
+
+  /** An account the registry does not call connected keeps nothing. */
+  @Test
+  public void dropsThePrincipalOfAnAccountThatIsNotConnected() {
+    CaldavUserSetting halfWritten = new CaldavUserSetting();
+    halfWritten.setUsername("eric@bm.example.org");
+    halfWritten.setServerId(5L);
+    when(caldavConnectionStorage.getRecordedPrincipal(42L, 5L)).thenReturn(ALICE_PRINCIPAL);
+    when(caldavConnectorStorage.getCaldavSetting(42L)).thenReturn(halfWritten);
+    when(caldavServerService.isConnected(halfWritten)).thenReturn(false);
+
+    assertNull(service.principalOf(42L, 5L));
   }
 }
