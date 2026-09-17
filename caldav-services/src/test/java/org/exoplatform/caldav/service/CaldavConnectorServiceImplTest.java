@@ -384,6 +384,36 @@ public class CaldavConnectorServiceImplTest {
   }
 
   /**
+   * An account moving to another server forgets, on agenda's share records,
+   * that the previous server carried its shares (EXO-90357, the same rule
+   * as a disconnect): the stamp of the server it left goes, the server it
+   * is now on has no stamp to clear. Reconnecting to the same server clears
+   * nothing — the grants are still where the stamp says.
+   */
+  @Test
+  public void connectingToAnotherServerForgetsTheDeliveriesOnTheOneLeft() throws Exception {
+    caldavConnectorService.setCaldavSyncService(caldavSyncService);
+    caldavConnectorService.setCaldavServerOwnerService(caldavServerOwnerService);
+    caldavConnectorService.setAgendaCalendarShareService(agendaCalendarShareService);
+    CaldavUserSetting previous = new CaldavUserSetting();
+    previous.setServerId(1L);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(previous);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+    setting.setServerId(2L);
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(agendaCalendarShareService).clearDelivery(USER_IDENTITY_ID, "caldav:1");
+    verify(agendaCalendarShareService, never()).clearDelivery(USER_IDENTITY_ID, "caldav:2");
+
+    setting.setServerId(1L);
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+    verify(agendaCalendarShareService, org.mockito.Mockito.times(1)).clearDelivery(anyLong(), anyString());
+  }
+
+  /**
    * The two evictions above reach the owner engine through a seam the tests
    * set by hand; in production this Kernel component resolves it through
    * the Kernel/Spring bridge, which registers {@code @Service} beans back
