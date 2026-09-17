@@ -219,6 +219,18 @@ public class CaldavInboundServiceTest {
    */
   @BeforeEach
   public void connectAnAccount() {
+    // The addon's single definition of "connected" now lives in CaldavServerService.
+    // Reproducing here the rule these tests were written against - a username and a
+    // password - keeps every assertion in this class measuring exactly what it
+    // measured; the provider-backed shape has its own tests in CaldavServerServiceTest.
+    org.mockito.Mockito.lenient()
+                       .when(caldavServerService.isConnected(org.mockito.ArgumentMatchers.any()))
+                       .thenAnswer(call -> {
+                         org.exoplatform.caldav.model.CaldavUserSetting account = call.getArgument(0);
+                         return account != null
+                             && org.apache.commons.lang3.StringUtils.isNotBlank(account.getUsername())
+                             && org.apache.commons.lang3.StringUtils.isNotBlank(account.getPassword());
+                       });
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     ReflectionTestUtils.setField(service, "sliceDays", 400L);

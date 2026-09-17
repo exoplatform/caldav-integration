@@ -203,8 +203,13 @@ managedPromise.then(managed => {
 let managedMode = null;
 managedPromise
   .then(managed => managedMode = managed)
-  .then(() => agendaCaldavService.getCaldavServers())
-  .then(servers => {
+  .then(() => Promise.all([agendaCaldavService.getCaldavServers(),
+    // Which connectors ask their user for anything. Fetched
+    // beside the registry rather than per connector, and
+    // failing to an empty map: a requirement nobody could
+    // read must leave every button opening its drawer.
+    agendaCaldavService.getConnectionRequirements().catch(() => ({}))]))
+  .then(([servers, requirements]) => {
     const activeServers = (servers || []).filter(server => server.active);
     if (!activeServers.length) {
       extensionRegistry.registerExtension('agenda', 'connectors', createLegacyCaldavConnector(managedMode));
@@ -212,7 +217,8 @@ managedPromise
     }
     const labels = {};
     activeServers.forEach((server, index) => {
-      extensionRegistry.registerExtension('agenda', 'connectors', createCaldavConnector(server, index, managedMode));
+      extensionRegistry.registerExtension('agenda', 'connectors',
+        createCaldavConnector(server, index, managedMode, requirements));
       labels[server.providerName] = server.name;
       // The secondary line of the connect-drawer row: the admin's words when
       // there are some, else the host — always present, and the thing that

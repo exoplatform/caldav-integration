@@ -40,6 +40,47 @@ export const createCaldavSetting = (caldavSettings) => {
  *
  * @returns {Promise<Array>} every declared server
  */
+/**
+ * Whether each declared provider asks the user for anything, keyed by provider
+ * name. A provider answering false connects in one click, with no drawer: the
+ * platform holds what it takes.
+ *
+ * @returns {Promise<Object>} provider name to boolean
+ */
+export const getConnectionRequirements = () => {
+  return fetch('/caldav/rest/servers/connection-requirements', {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
+ * Connects to a registration whose provider asks the user for nothing. The
+ * server probes with the service account's own material and records the
+ * connection only if that passed, so a resolved promise means tested — the same
+ * promise the typed drawer makes.
+ *
+ * @param {Number} serverId the registration to connect to
+ * @returns {Promise<Object>} the probe outcome, `result` being 'ok' on success
+ */
+export const connectThroughProvider = (serverId) => {
+  const query = serverId ? `?serverId=${serverId}` : '';
+  return fetch(`/caldav/rest/connection/connect${query}`, {
+    credentials: 'include',
+    method: 'POST',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
 export const getCaldavServers = () => {
   return fetch('/caldav/rest/servers', {
     credentials: 'include',

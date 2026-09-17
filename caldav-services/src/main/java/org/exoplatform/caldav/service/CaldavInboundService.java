@@ -2276,7 +2276,8 @@ public class CaldavInboundService {
    */
   private CaldavUserSetting settingsFor(long userIdentityId, CalendarSync pair) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
-    if (settings == null || StringUtils.isBlank(settings.getUsername()) || StringUtils.isBlank(settings.getPassword())) {
+    // One definition for the whole addon - see CaldavServerService.isConnected.
+    if (!caldavServerService.isConnected(settings)) {
       return null;
     }
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
