@@ -752,10 +752,16 @@ public class CaldavOutboundService {
    * account's own uid lets it through to adoption, however it was created:
    * eXo is one CalDAV client among several, and a calendar the server says
    * is the account's own is the account's to adopt. A listing that cannot
-   * be had, or that does not name the collection, is
-   * {@link CollectionOwnership#OWNER_UNKNOWN}: nothing is adopted on it,
-   * and the next pass asks again. A server that is not asked — not BlueMind
-   * — leaves this arm silent and the classification exactly as before.
+   * be had, or that does not name the collection, withholds the answer
+   * rather than giving one: the naming and the DAV signals below are still
+   * heard, a collection they call a share is a share, and only one they
+   * would have called the account's own is
+   * {@link CollectionOwnership#OWNER_UNKNOWN} — nothing is adopted on it,
+   * and the next pass asks again. So the listing is heard after the
+   * deployment's two arms and before the server's own signals, and it can
+   * only ever replace an answer that would have been {@code OWN}. A server
+   * that is not asked — not BlueMind — leaves this arm silent and the
+   * classification exactly as before.
    *
    * @param serverId the declared server registration, which scopes the
    *          account-wide question
@@ -816,7 +822,11 @@ public class CaldavOutboundService {
           return isHeldByThisDeployment(serverId, containerUid) ? CollectionOwnership.COLLEAGUES_EXO_CALENDAR
                                                                 : CollectionOwnership.SHARED;
         case UNKNOWN:
-          return CollectionOwnership.OWNER_UNKNOWN;
+          // Withheld, not given: the server's naming and DAV signals still
+          // speak, and a collection they call a share is one. Only what they
+          // would have called the account's own is left unanswered.
+          CollectionOwnership byTheServer = byNamingAndDavSignals(href, principal, collection);
+          return byTheServer == CollectionOwnership.OWN ? CollectionOwnership.OWNER_UNKNOWN : byTheServer;
         case ACCOUNTS_OWN, SILENT:
         default:
           // The account's own, or a server not asked: the naming and the
@@ -824,6 +834,22 @@ public class CaldavOutboundService {
           break;
       }
     }
+    return byNamingAndDavSignals(href, principal, collection);
+  }
+
+  /**
+   * The server's own word on a collection: its naming, then its DAV owner
+   * and privilege signals — the two witnesses heard after the deployment's,
+   * for every collection, as they were before the listing was read.
+   *
+   * @param href the canonical collection path
+   * @param principal the account's own principal; null when the server named
+   *          none, which leaves the owner comparison off
+   * @param collection the listed collection
+   * @return a subscription the naming reveals, a share the DAV signals
+   *         reveal, or {@link CollectionOwnership#OWN}
+   */
+  private static CollectionOwnership byNamingAndDavSignals(String href, String principal, CalendarCollection collection) {
     BlueMindContainerNaming.Subscription subscription = BlueMindContainerNaming.subscriptionOf(href, principal);
     if (subscription != null) {
       return subscription.resource() ? CollectionOwnership.SUBSCRIBED_RESOURCE : CollectionOwnership.SUBSCRIBED_PERSON;
