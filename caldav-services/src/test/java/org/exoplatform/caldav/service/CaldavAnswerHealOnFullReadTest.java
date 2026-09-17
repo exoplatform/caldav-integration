@@ -133,6 +133,9 @@ public class CaldavAnswerHealOnFullReadTest {
   private static final String                 ETAG     = "etag-unmoved";
 
   @Mock
+  private CaldavServerService      caldavServerService;
+
+  @Mock
   private CalDavClient                        calDavClient;
 
   @Mock
@@ -182,6 +185,18 @@ public class CaldavAnswerHealOnFullReadTest {
    */
   @BeforeEach
   public void composeTheTwoHalves() {
+    // The addon's single definition of "connected" now lives in CaldavServerService.
+    // Reproducing here the rule these tests were written against - a username and a
+    // password - keeps every assertion in this class measuring exactly what it
+    // measured; the provider-backed shape has its own tests in CaldavServerServiceTest.
+    org.mockito.Mockito.lenient()
+                       .when(caldavServerService.isConnected(org.mockito.ArgumentMatchers.any()))
+                       .thenAnswer(call -> {
+                         org.exoplatform.caldav.model.CaldavUserSetting account = call.getArgument(0);
+                         return account != null
+                             && org.apache.commons.lang3.StringUtils.isNotBlank(account.getUsername())
+                             && org.apache.commons.lang3.StringUtils.isNotBlank(account.getPassword());
+                       });
     ReflectionTestUtils.setField(service, "caldavAnswerAdoptionService", caldavAnswerAdoptionService);
     ReflectionTestUtils.setField(service, "sliceDays", 400L);
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());

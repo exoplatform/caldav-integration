@@ -18,6 +18,8 @@ package org.exoplatform.caldav.provider;
 
 import org.springframework.stereotype.Component;
 
+import org.apache.commons.lang3.StringUtils;
+
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsChannel;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
@@ -51,6 +53,37 @@ public class CaldavCredentialsResolver {
 
   public CaldavCredentialsResolver(ConnectorCredentialsService connectorCredentialsService) {
     this.connectorCredentialsService = connectorCredentialsService;
+  }
+
+  /**
+   * Whether the configured provider needs anything from the user before this
+   * connector can be used — a password to type today, an authorization to grant
+   * tomorrow.
+   * <p>
+   * The connect button is the one asking: a provider that needs nothing must
+   * connect in a click rather than open a form nobody can fill. Answered here
+   * rather than read from the provider registry, whose REST endpoint is
+   * reserved to administrators — a user is told about their own connector, not
+   * about the instance's configuration.
+   * <p>
+   * An unconfigured registration answers <b>true</b>: every server that predates
+   * the registry carries no provider name and is served by typed credentials, and
+   * a missing configuration must never turn into a silent connection.
+   *
+   * @param providerName provider the registration is configured with, possibly
+   *          blank on a legacy registration
+   * @return true when the user has something to supply
+   * @throws CalDavException when no provider of that name is registered
+   */
+  public boolean requiresUserAction(String providerName) {
+    if (StringUtils.isBlank(providerName)) {
+      return true;
+    }
+    try {
+      return connectorCredentialsService.requiresUserAction(providerName);
+    } catch (ConnectorCredentialsException e) {
+      throw new CalDavException("No credentials provider named " + providerName + " could be asked about user action", e);
+    }
   }
 
   /**

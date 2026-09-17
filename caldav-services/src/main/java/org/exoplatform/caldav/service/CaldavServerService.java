@@ -21,6 +21,7 @@ import java.io.InputStream;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.Date;
+import java.util.stream.Collectors;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -33,6 +34,8 @@ import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
+import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
@@ -258,6 +261,12 @@ public class CaldavServerService {
   // contexts.
   @Autowired(required = false)
   private ConnectorProviderConfigStorage providerConfigStorage;
+
+  // The seam onto the credentials contract. Like the storage above, it needs
+  // ConnectorCredentialsService, a bean of another WAR, so it is undefined in
+  // this addon's own Spring test contexts.
+  @Autowired(required = false)
+  private CaldavCredentialsResolver caldavCredentialsResolver;
 
   @Autowired
   private SettingService           settingService;
@@ -565,6 +574,72 @@ public class CaldavServerService {
    *
    * @return every registration
    */
+  /**
+   * Whether a stored account is a connection at all - <b>the addon's single
+   * definition</b>, which push, inbound, outbound, read, sync, the relay and the
+   * connector service all ask rather than restate.
+   * <p>
+   * It used to be written out in each of them as "a username and a password", and
+   * that reading is wrong for a connection whose material the platform produces:
+   * there is no password to store, so all seven called such an account
+   * disconnected while the screen showed it connected, and nothing ever
+   * synchronised. The rule is: an account is named, <i>and</i> either it carries a
+   * password or its provider produces the material on its behalf.
+   * <p>
+   * A typed account settles on the spot, without reading the registry: this runs
+   * on every sweep.
+   *
+   * @param settings the stored account, possibly null
+   * @return true when the account can actually be used
+   */
+  public boolean isConnected(CaldavUserSetting settings) {
+    if (settings == null || StringUtils.isBlank(settings.getUsername())) {
+      return false;
+    }
+    if (StringUtils.isNotBlank(settings.getPassword())) {
+      return true;
+    }
+    try {
+      CaldavServer server = settings.getServerId() == null ? resolveServer(null)
+                                                           : getServerById(settings.getServerId());
+      return server != null && caldavCredentialsResolver != null
+          && !caldavCredentialsResolver.requiresUserAction(server.getAuthProviderName());
+    } catch (ObjectNotFoundException | CalDavException e) {
+      // A row pointing at a registration that is gone, or a provider nobody can ask
+      // about, is not a connection. Answering false sends the user to reconnect,
+      // which is the one thing that can put this right.
+      LOG.debug("No usable registration behind the account of server {}", settings.getServerId(), e);
+      return false;
+    }
+  }
+
+  /**
+   * Whether each declared provider asks its user for anything, keyed by provider
+   * name.
+   * <p>
+   * This is what a browser needs before showing a connect button: a provider that
+   * needs nothing must connect in a click rather than open a form the user cannot
+   * fill. Only the providers the registry actually names are answered - a user is
+   * entitled to know about the connectors offered to them, not about how the
+   * instance configures its providers, whose registry is administrators-only.
+   * <p>
+   * <b>Silence means ask.</b> A registration naming no provider contributes
+   * nothing, and a seam that is absent answers true: a connector list that cannot
+   * tell must send the user to a form, never connect on its own.
+   *
+   * @return one entry per declared provider name, true when the user must supply
+   *         something
+   */
+  public Map<String, Boolean> connectionRequirements() {
+    return getServers().stream()
+                       .map(CaldavServer::getAuthProviderName)
+                       .filter(StringUtils::isNotBlank)
+                       .distinct()
+                       .collect(Collectors.toMap(name -> name,
+                                                 name -> caldavCredentialsResolver == null
+                                                     || caldavCredentialsResolver.requiresUserAction(name)));
+  }
+
   public List<CaldavServer> getServers() {
     return caldavServerStorage.getServers().stream().map(caldavServerQuirkService::decorate).toList();
   }

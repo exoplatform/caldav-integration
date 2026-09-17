@@ -45,6 +45,7 @@ import org.exoplatform.caldav.model.CaldavRelayRequest;
 import org.exoplatform.caldav.model.CaldavRelayedResponse;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.service.CaldavConnectorService;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
@@ -107,6 +108,12 @@ public class CaldavRelayService {
 
   /** Message code for a probe request missing its credentials. */
   public static final String        PROBE_CREDENTIALS_MESSAGE    = "caldav.probe.credentialsMandatory";
+
+  /** The one-click path refusing a connector that does expect the user to type something. */
+  public static final String        PROVIDER_ASKS_MESSAGE         = "caldav.connect.providerAsksTheUser";
+
+  /** The one-click path refusing a connector whose provider cannot name the account. */
+  public static final String        PROVIDER_NAMES_NOBODY_MESSAGE = "caldav.connect.providerNamesNobody";
 
   /**
    * Response header carrying the relay's own machine-readable outcome code,
@@ -231,6 +238,9 @@ public class CaldavRelayService {
   @Autowired
   private CaldavCredentialsResolver caldavCredentialsResolver;
 
+  @Autowired
+  private CaldavConnectorService    caldavConnectorService;
+
   /**
    * The JDK's own HTTP client, TLS trust from the platform truststore —
    * exactly the transport email-connector's CardDAV client rides. Redirects
@@ -351,12 +361,84 @@ public class CaldavRelayService {
     if (!server.isActive()) {
       throw new IllegalAccessException(SERVER_INACTIVE_MESSAGE);
     }
+    return probe(server, username, basicAuth(username, password));
+  }
+
+  /**
+   * Connects a user to a registration whose provider asks them for nothing, and
+   * records it.
+   * <p>
+   * The verification still happens - with <b>the service account's own material</b>,
+   * which is what this connection will use for every later request. Answering
+   * "connected" without probing would move the failure of a misconfigured technical
+   * account to the first synchronisation, where the user sees an empty calendar and
+   * nobody is told why.
+   * <p>
+   * Nothing is recorded unless the server answered as a calendar: a connection that
+   * is stored and does not work is worse than one that was refused, because only the
+   * first looks fine on screen.
+   *
+   * @param serverId registration to connect to, or null for the legacy one
+   * @param exoLogin the eXo login connecting
+   * @return the probe outcome; the connection is recorded only on {@link CaldavProbeResult#OK}
+   * @throws ObjectNotFoundException when no such registration is declared
+   * @throws IllegalAccessException when the registration is deactivated, or the provider
+   *           named no account
+   */
+  public CaldavProbeResult connectThroughProvider(Long serverId, String exoLogin) throws ObjectNotFoundException,
+                                                                                  IllegalAccessException {
+    CaldavServer server = serverId == null ? caldavServerService.resolveServer(null)
+                                           : caldavServerService.getServerById(serverId);
+    if (server == null) {
+      throw new ObjectNotFoundException("No CalDAV server is declared to connect to");
+    }
+    if (!server.isActive()) {
+      throw new IllegalAccessException(SERVER_INACTIVE_MESSAGE);
+    }
+    // This path exists for the connectors that ask nothing. One that does ask is
+    // refused here rather than connected with no credentials at all.
+    if (caldavCredentialsResolver.requiresUserAction(server.getAuthProviderName())) {
+      throw new IllegalArgumentException(PROVIDER_ASKS_MESSAGE);
+    }
+    String account = caldavCredentialsResolver.targetAccount(server.getId(), server.getAuthProviderName(), exoLogin);
+    if (StringUtils.isBlank(account)) {
+      throw new IllegalArgumentException(PROVIDER_NAMES_NOBODY_MESSAGE);
+    }
+    CaldavProbeResult outcome = probe(server, account, authorization(server, exoLogin));
+    // getResult() carries the classification, getStatus() the raw HTTP code: comparing
+    // OK against the latter is never true, and the connection would silently never be
+    // recorded while the caller was told it succeeded.
+    if (CaldavProbeResult.OK.equals(outcome.getResult())) {
+      CaldavUserSetting setting = new CaldavUserSetting();
+      setting.setUsername(account);
+      setting.setServerId(server.getId());
+      caldavConnectorService.createProviderBackedSetting(setting, getUserIdentityId(exoLogin));
+    }
+    return outcome;
+  }
+
+  /**
+   * One Depth:0 PROPFIND against a declared server, classified.
+   * <p>
+   * The authorization is handed in rather than built here: a typed account sends
+   * Basic credentials, a provider-backed one sends whatever its provider produced,
+   * and everything else about the probe - the request, the timeout, and above all
+   * the reading of the answer - must stay identical between the two. Two probes
+   * classifying the same answer differently is how one connect path ends up
+   * reporting success where the other reports a refusal.
+   *
+   * @param server the declared registration to probe
+   * @param username the account being probed, for the logs
+   * @param authorization the Authorization header value to send
+   * @return the classified outcome
+   */
+  private CaldavProbeResult probe(CaldavServer server, String username, String authorization) {
     URI target = URI.create(server.getServerUrl().replace("{username}", username));
     HttpRequest request = HttpRequest.newBuilder(target)
                                      .method("PROPFIND", BodyPublishers.ofString(PROBE_BODY))
                                      .header("Depth", "0")
                                      .header("Content-Type", "application/xml")
-                                     .header("Authorization", basicAuth(username, password))
+                                     .header("Authorization", authorization)
                                      .timeout(Duration.ofSeconds(intProperty(REQUEST_TIMEOUT_PROPERTY,
                                                                              DEFAULT_REQUEST_TIMEOUT)))
                                      .build();
@@ -413,7 +495,8 @@ public class CaldavRelayService {
    */
   private CaldavUserSetting getConnectedSetting(String username) {
     CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(getUserIdentityId(username));
-    if (StringUtils.isBlank(setting.getUsername()) || StringUtils.isBlank(setting.getPassword())) {
+    // One definition for the whole addon - see CaldavServerService.isConnected.
+    if (!caldavServerService.isConnected(setting)) {
       throw new IllegalStateException(NOT_CONNECTED_MESSAGE);
     }
     return setting;

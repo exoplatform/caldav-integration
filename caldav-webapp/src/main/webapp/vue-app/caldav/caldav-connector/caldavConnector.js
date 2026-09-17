@@ -77,6 +77,21 @@ const caldavConnector = {
    * @returns {Promise<String>} the username of the connected account
    */
   connect() {
+    // A connector whose provider asks for nothing connects in one click: no
+    // drawer, no form. The platform still verifies - with the service account's
+    // own material, server-side - so a resolved promise means tested here just
+    // as it does below, and the connected state that follows is the same one a
+    // typed connection leaves behind.
+    if (this.requiresUserAction === false) {
+      return caldavConnectorService.connectThroughProvider(this.serverId)
+        .then(outcome => {
+          if (!outcome || outcome.result !== 'ok') {
+            return Promise.reject(outcome && outcome.result || 'caldav.error.connection');
+          }
+          return caldavConnectorService.getCaldavSetting();
+        })
+        .then(setting => setting && setting.username || null);
+    }
     return new Promise((resolve, reject) => {
       // The drawer must know WHICH declared server this connector fronts:
       // the URL to probe the typed credentials against, and the registration
@@ -651,14 +666,21 @@ function isUnderAHome(path) {
  * @param {Object} server a declared server {id, providerName, name, description, serverUrl}
  * @param {Number} index position of the server in the declared list, keeps ranks distinct
  * @param {Object} managed the mode in force, {managedForMe, serverName}; absent
+ * @param {Object} requirements whether each provider asks its user for anything,
+ *          keyed by provider name; anything but an explicit false means ask
  *          or false-verdicted leaves the descriptor unmanaged
  * @returns {Object} the connector descriptor to register under agenda/connectors
  */
-export function createCaldavConnector(server, index, managed) {
+export function createCaldavConnector(server, index, managed, requirements) {
   return Object.assign({}, caldavConnector, stampManaged(managed), {
     name: server.providerName,
     description: `${server.providerName}.description`,
     serverId: server.id,
+    // Whether clicking "connect" opens a form or connects outright. Read as an
+    // explicit false and nothing else: a requirement that could not be fetched,
+    // a provider the registry does not name, an older server - every one of them
+    // must send the user to the drawer, never connect them silently.
+    requiresUserAction: !((requirements || {})[server.authProviderName] === false),
     serverUrl: server.serverUrl,
     // The visual identity, in the admin's order of precedence: the uploaded
     // image, else the font icon chosen in admin, else the packaged CalDAV
