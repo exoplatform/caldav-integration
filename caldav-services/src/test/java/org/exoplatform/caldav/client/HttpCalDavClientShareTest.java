@@ -621,6 +621,38 @@ public class HttpCalDavClientShareTest {
   }
 
   /**
+   * An edit grant (EXO-90378) goes on the wire as one {@code DAV:ace} granting
+   * {@code DAV:read} and {@code DAV:write} to one principal — the shape that
+   * tells a grant eXo wrote from a right given through the server's own
+   * interface — and reads back as the same entry.
+   *
+   * @throws Exception when the body cannot be parsed
+   */
+  @Test
+  void anEditGrantWritesReadAndWriteAndReadsBack() throws Exception {
+    AccessControlEntry bob = AccessControlEntry.editGrantTo("/dav/pal/bob%40stalwart.local/");
+    answer(200, Map.of(), "");
+
+    assertTrue(client.writeAcl(endpoint, exoPair(), List.of(bob)).accepted());
+
+    Document body = parseXml(bodyOf(sent.get(0)));
+    assertEquals(1, body.getElementsByTagNameNS("DAV:", "ace").getLength(), "one entry, not one per privilege");
+    assertEquals(1, body.getElementsByTagNameNS("DAV:", "grant").getLength());
+    assertEquals(0, body.getElementsByTagNameNS("DAV:", "deny").getLength());
+    assertEquals(1, body.getElementsByTagNameNS("DAV:", "read").getLength());
+    assertEquals(1, body.getElementsByTagNameNS("DAV:", "write").getLength());
+    assertEquals(0, body.getElementsByTagNameNS("DAV:", "write-acl").getLength(), "nothing beyond writing events");
+
+    String written = bodyOf(sent.get(0));
+    answer(207, Map.of(), aclAnswer(written.substring(written.indexOf("<d:acl")), PRIVILEGES_OWNER));
+    CollectionAcl readBack = client.readAcl(endpoint, COLLECTION);
+
+    assertTrue(readBack.understood(), readBack.reason());
+    assertEquals(List.of(bob), readBack.entries());
+    assertTrue(readBack.entries().get(0).grantsEditOnly(), "and is recognised as an eXo edit grant");
+  }
+
+  /**
    * What is written reads back as the same entries: pseudo-principals, a
    * property principal, an inverted principal, a deny, and a privilege of
    * another namespace all survive the round trip.
