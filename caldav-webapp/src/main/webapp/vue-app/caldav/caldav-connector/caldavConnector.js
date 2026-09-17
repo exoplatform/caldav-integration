@@ -235,6 +235,45 @@ const caldavConnector = {
   },
 
   /**
+   * Whether one of this connector's listed calendars is the server's copy
+   * of a share agenda delivered to this server (EXO-90357), so agenda draws
+   * the share through its eXo row once and leaves the copy out.
+   *
+   * <p>
+   * Only a delivery this connector's server made can be one of its rows.
+   * The channel recorded, at delivery, the collection as the owner's account
+   * spells it; the colleague's listing spells it the same on a server that
+   * lists a share at the owner's path (Stalwart), and under the colleague's
+   * own home on a server that subscribes the colleague to it (BlueMind:
+   * `/dav/calendars/__uids__/<uid>/<container>/`), where the container uid,
+   * the last segment, is what both spellings share — the rule the add-on's
+   * own sync relies on. A path of any other shape is matched whole, since a
+   * last segment alone is a name every account may reuse (`default`).
+   *
+   * @param {Object} calendar a calendar this connector listed
+   * @param {Object} delivery the eXo share, with `deliveredTo` and
+   *          `deliveryRef` as the channel recorded them
+   * @returns {Boolean} true when the calendar is the delivery's server copy
+   */
+  isDeliveryOf(calendar, delivery) {
+    if (!calendar || !delivery || !delivery.deliveryRef) {
+      return false;
+    }
+    if (this.serverId != null && delivery.deliveredTo !== `caldav:${this.serverId}`) {
+      return false;
+    }
+    const listed = comparablePath(calendar.id);
+    const delivered = comparablePath(delivery.deliveryRef);
+    if (!listed || !delivered) {
+      return false;
+    }
+    if (listed === delivered) {
+      return true;
+    }
+    return isUnderAHome(listed) && isUnderAHome(delivered) && lastSegment(listed) === lastSegment(delivered);
+  },
+
+  /**
    * What unlinking this account costs, in the user's language.
    *
    * <p>
@@ -547,6 +586,45 @@ const caldavConnector = {
 };
 
 export default caldavConnector;
+
+/**
+ * A collection path as compared: decoded, without a trailing slash, so two
+ * spellings of one path differing in encoding compare equal.
+ *
+ * @param {String} href a collection href or identifier
+ * @returns {String} the comparable form, empty for none
+ */
+function comparablePath(href) {
+  let path = String(href || '');
+  try {
+    path = decodeURIComponent(path);
+  } catch (e) {
+    // Not encoded: compared as is
+  }
+  return path.replace(/\/+$/, '');
+}
+
+/**
+ * The last segment of a comparable path: on BlueMind the container uid.
+ *
+ * @param {String} path a comparable path
+ * @returns {String} the last segment
+ */
+function lastSegment(path) {
+  return path.substring(path.lastIndexOf('/') + 1);
+}
+
+/**
+ * Whether a comparable path is a calendar home's, as BlueMind spells one:
+ * `/dav/calendars/__uids__/<uid>/<container>`. Only there does the last
+ * segment name a container on its own.
+ *
+ * @param {String} path a comparable path
+ * @returns {Boolean} true for a path under a `__uids__` home
+ */
+function isUnderAHome(path) {
+  return /\/__uids__\/[^/]+\/[^/]+$/.test(path);
+}
 
 
 /**

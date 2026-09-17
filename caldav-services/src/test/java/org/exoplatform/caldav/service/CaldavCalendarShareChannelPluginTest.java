@@ -61,8 +61,8 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * What agenda's share service gets from this add-on's channel (EXO-90357):
  * a grant on the owner's server for a share agenda recorded, with the server
  * and the collection on the answer; "not applicable" when the server has
- * nothing to do with the calendar; a named failure agenda can word and the
- * owner can retry otherwise; the server's own grants agenda has no record
+ * nothing to do with the calendar; a named failure agenda logs and keeps its
+ * record undelivered otherwise; the server's own grants agenda has no record
  * of; and never an exception, since agenda keeps its record whatever this
  * channel says.
  */
