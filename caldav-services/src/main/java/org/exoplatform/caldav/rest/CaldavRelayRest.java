@@ -32,6 +32,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -164,6 +165,38 @@ public class CaldavRelayRest {
     }
     try {
       return caldavRelayService.probeAccount(probe.getServerId(), probe.getUsername(), probe.getPassword());
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+    } catch (IllegalArgumentException e) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * Connects the caller to a registration whose provider asks them for nothing -
+   * the one-click path. Verification still happens, through the provider's own
+   * material, and nothing is recorded unless it passed.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param serverId the registration to connect to, or null for the legacy one
+   * @return the probe outcome; {@code ok} means the connection was recorded
+   */
+  @PostMapping("/connection/connect")
+  @Secured("users")
+  @Operation(summary = "Connects to a CalDAV registration that requires no user action", method = "POST",
+      description = "Probes the server with the material the configured provider produces, and records the connection "
+          + "only when it answered as a calendar. Refuses a provider that expects the user to type credentials.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Probe performed, outcome in the body"),
+      @ApiResponse(responseCode = "400", description = "The provider expects the user to supply something"),
+      @ApiResponse(responseCode = "403", description = "Server deactivated"),
+      @ApiResponse(responseCode = "404", description = "Unknown server registration") })
+  public CaldavProbeResult connect(HttpServletRequest request,
+                                   @RequestParam(name = "serverId", required = false)
+                                   Long serverId) {
+    try {
+      return caldavRelayService.connectThroughProvider(serverId, request.getRemoteUser());
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
