@@ -34,15 +34,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <!--
           The calendar is also where eXo writes the copies of the user's eXo
           meetings (their main calendar on a server set to copy there): anyone
-          it is shared with sees those meetings too. Said once, on the share
-          itself, rather than in a standing notice (PO decision, 2026-09-17):
-          the notice was read as noise, while the confirmation arrives at the
-          one moment the information changes what the user does.
+          it is shared with sees those meetings too. Asked once, on the share
+          itself, by its title alone (PO decision, 2026-09-17): a standing
+          notice and a long explanation were read as noise, while a plain
+          question at the moment of sharing is the one that changes what the
+          user does.
         -->
         <exo-confirm-dialog
           ref="meetingCopiesConfirm"
           :title="$t('caldav.share.confirm.meetingCopies.title')"
-          :message="$t('caldav.share.drawer.meetingCopies')"
           :ok-label="$t('caldav.share.confirm.meetingCopies.ok')"
           :cancel-label="$t('caldav.share.confirm.cancel')"
           @ok="doShare" />
