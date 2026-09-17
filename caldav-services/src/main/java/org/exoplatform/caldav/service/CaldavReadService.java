@@ -121,7 +121,7 @@ public class CaldavReadService {
     // once for this listing and only if a collection needs it (EXO-90347) —
     // the same witness the sweep hears, so what it refuses to adopt is what
     // this list shows as shared rather than as the user's own.
-    AccountCalendarOwners serverOwners = caldavServerOwnerService.ownersOf(endpoint, listing.principal());
+    AccountCalendarOwners serverOwners = caldavServerOwnerService.ownersOf(userIdentityId, endpoint, listing.principal());
     for (CalendarCollection collection : collections) {
       if (!collection.holdsEvents()) {
         // The same refusal materialisation makes, for the same reason: a
@@ -222,7 +222,7 @@ public class CaldavReadService {
                                                       caldavSyncStorage.getPairs(userIdentityId, serverId(settings)));
     List<String> order = CalendarPalette.inStableOrder(listing.collections().stream().map(CalendarCollection::href).toList());
     CalendarOwnerMemo owners = new CalendarOwnerMemo();
-    AccountCalendarOwners serverOwners = caldavServerOwnerService.ownersOf(endpoint, listing.principal());
+    AccountCalendarOwners serverOwners = caldavServerOwnerService.ownersOf(userIdentityId, endpoint, listing.principal());
     List<RemoteCalendar> calendars = new ArrayList<>();
     for (CalendarCollection collection : listing.collections()) {
       CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId(settings),
