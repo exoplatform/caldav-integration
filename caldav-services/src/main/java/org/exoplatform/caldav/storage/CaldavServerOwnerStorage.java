@@ -39,8 +39,12 @@ import org.exoplatform.services.log.Log;
  * and a logout of the user's own BlueMind session. Read only when a pass
  * meets an eXo-shaped collection nobody here recognises, that is still
  * every sweep — every five minutes, on every node — for every account that
- * holds one such calendar, and again each time the user opens their agenda.
- * Owners almost never change, so the answer is kept for
+ * holds one such calendar, again each time the user opens their agenda,
+ * and once more when the hidden-calendars drawer describes a bound
+ * eXo-shaped calendar ({@code CaldavReadService#describeCollections}),
+ * where the listing is what tells a calendar adopted before EXO-90347 —
+ * a colleague's, and kept — from the user's own. Owners almost never
+ * change, so the answer is kept for
  * {@code meeds.cache.caldav.server.owners.ttl} seconds (one hour by
  * default, {@code caldav.properties}) and at most
  * {@code meeds.cache.caldav.server.owners.max} accounts, through the
