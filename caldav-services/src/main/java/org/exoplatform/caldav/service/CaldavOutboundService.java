@@ -758,10 +758,13 @@ public class CaldavOutboundService {
    * would have called the account's own is
    * {@link CollectionOwnership#OWNER_UNKNOWN} — nothing is adopted on it,
    * and the next pass asks again. So the listing is heard after the
-   * deployment's two arms and before the server's own signals, and it can
-   * only ever replace an answer that would have been {@code OWN}. A server
-   * that is not asked — not BlueMind — leaves this arm silent and the
-   * classification exactly as before.
+   * deployment's two arms and before the server's own signals: where it
+   * withholds its answer it can only ever replace one that would have been
+   * {@code OWN}, and where it names another owner it answers before the DAV
+   * signals — which on BlueMind agree with it, since the subscriber is the
+   * DAV owner there — and tells a colleague's share from an outsider's,
+   * which those signals cannot. A server that is not asked — not BlueMind —
+   * leaves this arm silent and the classification exactly as before.
    *
    * @param serverId the declared server registration, which scopes the
    *          account-wide question
