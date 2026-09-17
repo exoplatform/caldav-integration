@@ -62,6 +62,8 @@ import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.manager.IdentityManager;
 
 /**
  * Writes eXo's space events into the user's remote calendar, server-side.
@@ -247,6 +249,14 @@ public class CaldavPushService {
 
   @Autowired
   private CaldavCopyPolicy       caldavCopyPolicy;
+
+  /**
+   * Tells a personal calendar's owner from a space's (EXO-90378): a space
+   * meeting belongs in the mirror, an event of another <b>user's</b> calendar
+   * belongs nowhere on this account.
+   */
+  @Autowired
+  private IdentityManager        identityManager;
 
   /**
    * Where the account-wide ownership question lives. One definition for the
@@ -973,7 +983,47 @@ public class CaldavPushService {
       }
       return writeInto(userIdentityId, username, personal, icsEvent, event.getId(), overwrite);
     }
+    if (isAnotherUsersCalendar(event, userIdentityId)) {
+      // Somebody else's personal calendar, which a colleague holding an edit
+      // share now writes in (EXO-90378). Their browser pushes after every save
+      // exactly as it does for their own events, and the mirror below would
+      // take it: the owner's event would land among the copies of the space
+      // meetings this colleague attends, on this colleague's account.
+      //
+      // Not this account's to copy. The owner's own account carries it — the
+      // propagation rewrites every holder's copy as that holder, and a
+      // creation is pushed as the owner — so the event does reach the server,
+      // once, in the right collection. Null, not an exception: nothing failed.
+      LOG.debug("Event {} lives in calendar {}, which belongs to another user; user {} does not copy it",
+                event.getId(),
+                event.getCalendarId(),
+                userIdentityId);
+      return null;
+    }
     return pushEvent(userIdentityId, username, icsEvent, event.getId(), overwrite);
+  }
+
+  /**
+   * Whether an event lives in the personal calendar of a user <b>other</b>
+   * than the one being pushed for (EXO-90378).
+   *
+   * <p>
+   * The question the mirror must not be asked for. A space calendar's owner is
+   * a space, and a space meeting the user attends is exactly what the mirror
+   * exists for; a personal calendar's owner is a user, and an event of theirs
+   * is theirs to carry out, whoever wrote it in eXo.
+   *
+   * @param event the agenda event being pushed
+   * @param userIdentityId identity of the user being pushed for
+   * @return true when the event's calendar is another user's personal one
+   */
+  private boolean isAnotherUsersCalendar(Event event, long userIdentityId) {
+    Calendar calendar = agendaCalendarService.getCalendarById(event.getCalendarId());
+    if (calendar == null || calendar.getOwnerId() == userIdentityId) {
+      return false;
+    }
+    Identity owner = identityManager.getIdentity(String.valueOf(calendar.getOwnerId()));
+    return owner != null && owner.isUser();
   }
 
   /**
