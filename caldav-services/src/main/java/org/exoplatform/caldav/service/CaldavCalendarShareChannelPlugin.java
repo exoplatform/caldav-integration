@@ -55,14 +55,13 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * <p>
  * Whether a share exists is agenda's record and agenda's ACL. This plugin
  * answers what happened on the server, and agenda keeps the record whatever
- * the answer: a share the server could not take is left standing with a
- * warning the owner can retry; a share the server has nothing to do with —
- * the owner has no account, the calendar is not exported, the server offers
- * no sharing eXo can confirm — is left eXo-only, silently. Every other
- * refusal of the share service is a delivery failure, named by the
- * refusal's own code in the shape agenda's bundle words
- * ({@code SHAREE_NOT_CONNECTED}, {@code NOT_READ_ONLY}, ...), so the owner
- * reads why and can retry once it is fixed.
+ * the answer. A share the server has nothing to do with — the owner has no
+ * account, the calendar is not exported, the server offers no sharing eXo
+ * can confirm, the colleague has no account on that server — is the normal
+ * eXo-only case, answered as not applicable. Every other refusal of the
+ * share service is a genuine delivery failure ({@code NOT_READ_ONLY},
+ * {@code SERVER_UNREACHABLE}, ...): agenda logs it and keeps the record
+ * undelivered; the owner is told nothing.
  *
  * <h2>Channel identifiers</h2>
  *
@@ -97,13 +96,15 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
 
   /**
    * The refusals that say the share is none of this channel's business: the
-   * owner has no account, the calendar is not on the server, or the server
-   * offers no sharing eXo can confirm. A share then stays eXo-only, with no
-   * warning to retry, since nothing the owner does in the drawer changes it.
+   * owner has no account, the calendar is not on the server, the server
+   * offers no sharing eXo can confirm, or the colleague has no account on
+   * that server. A share then stays eXo-only: the normal case for a colleague
+   * who reads their calendars in eXo, not a failure.
    */
   private static final Set<String> NOT_APPLICABLE   = Set.of(CaldavCalendarShareService.NOT_CONNECTED,
                                                              CaldavCalendarShareService.CALENDAR_NOT_ON_SERVER,
-                                                             CaldavCalendarShareService.NOT_SUPPORTED);
+                                                             CaldavCalendarShareService.NOT_SUPPORTED,
+                                                             CaldavCalendarShareService.SHAREE_NOT_CONNECTED);
 
   @Autowired
   private CaldavCalendarShareService caldavCalendarShareService;
@@ -328,10 +329,9 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
   }
 
   /**
-   * A share service code in the shape agenda's bundle words a delivery
-   * failure: {@code caldav.share.shareeNotConnected} is
-   * {@code SHAREE_NOT_CONNECTED}; an unreachable server is
-   * {@link #SERVER_UNREACHABLE}.
+   * A share service code in the shape agenda logs a delivery failure:
+   * {@code caldav.share.notReadOnly} is {@code NOT_READ_ONLY}; an
+   * unreachable server is {@link #SERVER_UNREACHABLE}.
    *
    * @param code the code, may be null
    * @return the failure code, never blank
