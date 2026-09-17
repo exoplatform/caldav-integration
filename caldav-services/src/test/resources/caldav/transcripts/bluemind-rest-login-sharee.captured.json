@@ -1,0 +1,28 @@
+# CAPTURED live on 2026-09-16 against BlueMind at https://webmail.demo3.livecollab.fr
+# by dev/golden-capture/capture-bluemind-subscription.sh: POST https://webmail.demo3.livecollab.fr/api/auth/login?login=anais.francois%40demo3.livecollab.fr&origin=exo-caldav-capture
+# The login answer as the SHAREE: status, authKey (scrubbed), and authUser{uid, domainUid} - the two facts eXo reads from here (LoginResponse.java, AuthUser.java). Replaces the DERIVED bluemind-rest-login-ok.derived.json shape for the sharee.
+# Request headers not recorded; password, Basic credentials and the X-BM-ApiKey session key scrubbed.
+# HTTP status: 200
+HTTP/2 200 
+cache-control: no-cache
+cache-control: no-store
+cache-control: must-revalidate
+content-type: application/json
+date: Wed, 16 Sep 2026 14:19:52 GMT
+pragma: no-cache
+referrer-policy: strict-origin-when-cross-origin
+referrer-policy: strict-origin-when-cross-origin
+server: nginx
+strict-transport-security: max-age=15768000; includeSubDomains;
+x-content-type-options: nosniff
+x-content-type-options: nosniff
+x-frame-options: SAMEORIGIN
+x-frame-options: SAMEORIGIN
+x-frame-options: SAMEORIGIN
+x-robots-tag: noindex
+x-robots-tag: noindex
+x-xss-protection: 1; mode=block
+x-xss-protection: 1; mode=block
+
+
+{"status":"Ok","message":null,"authKey":"<REDACTED-API-KEY>","latd":"anais.francois@19d43481671.internal","authUser":{"uid":"751E6D1A-7FDB-49B2-B668-B569E9A5A42D","domainUid":"19d43481671.internal","displayName":"FRANCOIS","value":{"orgUnitUid":null,"emails":[{"address":"anais.francois@demo3.livecollab.fr","allAliases":false,"isDefault":true},{"address":"anais.francois@19d43481671.internal","allAliases":false,"isDefault":false}],"hidden":false,"archived":false,"system":false,"dataLocation":"bm-master","login":"anais.francois","password":null,"passwordLastChange":null,"passwordMustChange":false,"passwordNeverExpires":false,"contactInfos":{"kind":"individual","source":"bm://19d43481671.internal/users/751E6D1A-7FDB-49B2-B668-B569E9A5A42D","identification":{"formatedName":{"parameters":[],"value":"FRANCOIS"},"name":{"parameters":[],"value":null,"familyNames":"FRANCOIS","givenNames":null,"additionalNames":null,"prefixes":null,"suffixes":null},"nickname":{"parameters":[],"value":null},"photo":false,"photoBinary":null,"birthday":null,"anniversary":null,"gender":{"parameters":[],"value":null,"text":null}},"deliveryAddressing":[],"communications":{"tels":[],"emails":[{"parameters":[{"label":"DEFAULT","value":"true"},{"label":"SYSTEM","value":"false"},{"label":"TYPE","value":"work"}],"value":"anais.francois@demo3.livecollab.fr"}],"impps":[],"langs":[]},"organizational":{"title":null,"role":null,"org":{"company":null,"division":null,"department":null},"member":[]},"explanatory":{"urls":[],"categories":[],"note":null},"security":{"keys":[]},"related":{"spouse":null,"manager":null,"assistant":null}},"routing":"internal","accountType":"FULL","loginCaps":true,"quota":null,"mailboxCopyGuid":null,"properties":{}},"roles":["hasOutlook","mailForwarding","hasTbird","selfChangeMailIdentities","hasMail","selfChangeSettings","hasEAS","selfChangePassword","readDomainFilters","hasCalendar","hasDAV","selfChangeMailboxFilter"],"rolesByOU":{},"settings":{"date":"yyyy-MM-dd","work_hours_start":"0","mail":"true","timezone":"Europe/Paris","password_lifetime":null,"mailbox_max_user_quota":"0","domain_max_users":null,"domain_composer_font_stack":"","mailbox_default_publicfolder_quota":"0","external_url":"webmail.demo3.livecollab.fr","password_sizestrength_capital":"1","password_sizestrength_enabled":"true","mailbox_default_user_quota":"0","mail_participation":"true","mail_forward_unknown_to_relay":"false","cal_set_im_presence":"false","default_event_alert_mode":"Display","default_app":"/webapp/mail/","theme":"light","password_sizestrength_minimumlength":"12","lang":"fr","defaultview":"week","showweekends":"true","im_set_phone_presence":"false","default_allday_event_alert":"25200","working_days":"mon,tue,wed,thu,fri,","show_declined_events":"false","cal_set_phone_presence":"false","timeformat":"HH:mm","ssl_certif_engine":"DISABLED","public_fb":"0","sync_sequence":"0","password_sizestrength_digit":"1","password_sizestrength_lower":"1","work_hours_end":"0","password_sizestrength_punct":"1","date_upd":"m/d/Y","default_event_alert":"900","mailbox_max_publicfolder_quota":"0","domain.setting.calendar.sync.min.delay":"86400000","day_weekstart":"monday"}}}
