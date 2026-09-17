@@ -123,6 +123,9 @@ public class CaldavAnswerPushTest {
   private static final String      CAROL_ADDRESS = "carol@stalwart.local";
 
   @Mock
+  private CaldavServerService      caldavServerService;
+
+  @Mock
   private CalDavClient             calDavClient;
 
   /**
@@ -170,6 +173,18 @@ public class CaldavAnswerPushTest {
   @BeforeEach
   public void connectAnAccountHoldingTheCopy() {
     lenient().when(calendarObjectWriters.writer(any())).thenReturn(new CalDavObjectWriter(calDavClient));
+    // The addon's single definition of "connected" now lives in CaldavServerService.
+    // Reproducing here the rule these tests were written against - a username and a
+    // password - keeps every assertion in this class measuring exactly what it
+    // measured; the provider-backed shape has its own tests in CaldavServerServiceTest.
+    org.mockito.Mockito.lenient()
+                       .when(caldavServerService.isConnected(org.mockito.ArgumentMatchers.any()))
+                       .thenAnswer(call -> {
+                         org.exoplatform.caldav.model.CaldavUserSetting account = call.getArgument(0);
+                         return account != null
+                             && org.apache.commons.lang3.StringUtils.isNotBlank(account.getUsername())
+                             && org.apache.commons.lang3.StringUtils.isNotBlank(account.getPassword());
+                       });
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     // The client is asked with the eXo login: the DAV account below is what
     // the provider derives from it, and the two are deliberately different.

@@ -44,6 +44,7 @@ import org.exoplatform.caldav.entity.CaldavPendingSubscriptionEntity;
 import org.exoplatform.caldav.model.PendingSubscriptionKind;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.service.CaldavConnectionIdentityService;
+import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.caldav.storage.CaldavConnectionStorage;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.mockito.Mockito;
@@ -986,6 +987,11 @@ public class CaldavSyncDAOQueryTest {
     CaldavConnectionIdentityService identities = new CaldavConnectionIdentityService();
     ReflectionTestUtils.setField(identities, "caldavConnectionStorage", storage);
     ReflectionTestUtils.setField(identities, "caldavConnectorStorage", settings);
+    // "Connected" is one definition, in CaldavServerService. This test declares typed
+    // accounts, so the registry answers the rule it was written against.
+    CaldavServerService servers = Mockito.mock(CaldavServerService.class);
+    Mockito.when(servers.isConnected(Mockito.any())).thenReturn(true);
+    ReflectionTestUtils.setField(identities, "caldavServerService", servers);
 
     assertEquals(List.of(ALICE2), identities.otherUsersConnectedAs(ALICE, STALWART, "/dav/pal/alice%40stalwart.local/"));
     assertEquals(List.of(ALICE), identities.otherUsersConnectedAs(ALICE2, STALWART, "/dav/pal/alice%40stalwart.local/"));
