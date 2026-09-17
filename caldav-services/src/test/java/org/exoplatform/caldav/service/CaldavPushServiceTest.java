@@ -2925,4 +2925,22 @@ public class CaldavPushServiceTest {
                    .timeZoneId("Europe/Paris")
                    .build();
   }
+
+  /**
+   * A user with no connected account has <b>no destination</b>, which is what this
+   * endpoint's own contract calls 204 - not a conflict.
+   * <p>
+   * The settings screen reads the destination right after disconnecting (agenda's
+   * {@code resetConnector} calls {@code readMirror}), so the refusal fired on every
+   * single disconnection, for every connector, and the browser console reported a
+   * server error for a situation nobody got wrong. Establishing a destination
+   * without an account is a different matter and stays a conflict - that is the
+   * POST, not this.
+   */
+  @Test
+  public void hasNoDestinationRatherThanAConflictWhenNobodyIsConnected() {
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
+
+    assertNull(service.currentMirror(USER, "john"));
+  }
 }
