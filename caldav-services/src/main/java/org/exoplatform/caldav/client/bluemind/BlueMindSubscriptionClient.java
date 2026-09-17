@@ -18,6 +18,7 @@ package org.exoplatform.caldav.client.bluemind;
 
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -268,6 +269,79 @@ public class BlueMindSubscriptionClient {
     asSharee(shareeEndpoint, shareeUid, edits -> {
       edits.unsubscribe(containerUid);
       return null;
+    });
+  }
+
+  /**
+   * Whose each calendar in an account's view is, read as the account itself
+   * (EXO-90347).
+   *
+   * <p>
+   * {@code GET /api/users/{domainUid}/subscriptions/{uid}?type=calendar}
+   * ({@code IUserSubscription.listSubscriptions}), in a session opened with
+   * the <em>account's</em> stored credentials, addressed to the uid BlueMind
+   * authenticated that session as — never a uid a caller names, so the
+   * listing read is by construction the account's own. The answer is a
+   * JSON array of {@code ContainerSubscriptionDescriptor}, of which two
+   * members are read: {@code containerUid} and {@code owner}; an entry
+   * lacking either is skipped. Captured live on 2026-09-16
+   * ({@code bluemind-rest-subscriptions-after-subscribe.captured.json}): the
+   * account's own calendars carry its uid as owner, a colleague's shared
+   * calendar carries the colleague's, a pool vehicle carries the resource's.
+   *
+   * <p>
+   * The same session rules as every other call here: same server, the
+   * account's credentials from storage, one session per call, closed
+   * afterwards, nothing secret in a message.
+   *
+   * @param accountEndpoint the account's DAV endpoint, minted from the
+   *          registry for the user's eXo login
+   * @return the authenticated uid and the owner of every listed calendar
+   * @throws UnsupportedOperationException when the account's configured
+   *           credentials are not a login and password
+   * @throws CalDavAuthenticationException when BlueMind refuses the login or
+   *           the session
+   * @throws CalDavForbiddenException when BlueMind refuses the listing
+   * @throws CalDavUnreachableException when the server cannot be reached
+   * @throws CalDavException when the login names no uid or no domain, or the
+   *           answer is anything but a JSON array
+   */
+  public BlueMindCalendarOwners ownersOf(CalDavEndpoint accountEndpoint) {
+    return session.call(accountEndpoint, open -> {
+      if (StringUtils.isBlank(open.userUid()) || StringUtils.isBlank(open.domainUid())) {
+        throw new CalDavException("The calendar server named no entry or no domain for the account's session; its calendar"
+            + " owners are not read");
+      }
+      String path = "/api/users/" + BlueMindRestSession.encodeSegment(open.domainUid()) + "/subscriptions/"
+          + BlueMindRestSession.encodeSegment(open.userUid()) + "?type=calendar";
+      URI named = open.named(path);
+      Answer answer = open.get(path);
+      int status = answer.status();
+      if (status == 401) {
+        throw new CalDavAuthenticationException("The calendar server refused the session for GET " + named);
+      }
+      if (status == 403) {
+        throw new CalDavForbiddenException("The calendar server refused GET " + named + " (403); this account may not read"
+            + " its subscriptions");
+      }
+      if (status < 200 || status >= 300) {
+        String code = faultCode(answer, named);
+        throw new CalDavException("The calendar server answered " + status + (code == null ? "" : " (" + code + ")") + " for GET "
+            + named);
+      }
+      JsonNode listing = session.parse(answer.body(), named);
+      if (!listing.isArray()) {
+        throw new CalDavException("The calendar server answered something that is not a subscription list for GET " + named);
+      }
+      Map<String, String> owners = new HashMap<>();
+      for (JsonNode entry : listing) {
+        String containerUid = BlueMindRestSession.textOf(entry, "containerUid");
+        String owner = BlueMindRestSession.textOf(entry, "owner");
+        if (containerUid != null && owner != null) {
+          owners.put(containerUid, owner);
+        }
+      }
+      return new BlueMindCalendarOwners(open.userUid(), owners);
     });
   }
 

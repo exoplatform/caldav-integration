@@ -514,6 +514,120 @@ public class BlueMindSubscriptionClientTest {
     assertFalse(own.contains("not found"), "and never a word of BlueMind's own text: " + own);
   }
 
+  // ------------------------------------ the account's calendar owners, EXO-90347
+
+  /** The uid the CAPTURED sharee login authenticates: root's, FRANCOIS. */
+  private static final String   CAPTURED_UID    = "751E6D1A-7FDB-49B2-B668-B569E9A5A42D";
+
+  /** The domain in the CAPTURED sharee login. */
+  private static final String   CAPTURED_DOMAIN = "19d43481671.internal";
+
+  /** eric's uid, the owner of the two calendars he shared with root. */
+  private static final String   ERIC_UID        = "4C60FEDD-0562-4903-A524-E95E1CCBCDE0";
+
+  /**
+   * The listing read against the CAPTURED answers of 2026-09-16: login as the
+   * account, one GET of
+   * {@code /api/users/<domainUid from the login>/subscriptions/<uid from the
+   * login>?type=calendar} with the key, logout. Ten calendars come back:
+   * root's own carry root's uid, eric's two shares carry eric's, the pool
+   * vehicle its own — and the account uid is the one BlueMind authenticated,
+   * never one a caller named.
+   */
+  @Test
+  void theAccountsCalendarOwnersAreReadInOneSessionOfItsOwn() {
+    answer(200, captured("bluemind-rest-login-sharee.captured.json"));
+    answer(200, captured("bluemind-rest-subscriptions-after-subscribe.captured.json"));
+    answer(200, "");
+
+    BlueMindCalendarOwners owners = client.ownersOf(endpoint);
+
+    assertEquals(CAPTURED_UID, owners.accountUid());
+    assertEquals(10, owners.ownerByContainerUid().size());
+    assertEquals(CAPTURED_UID, owners.ownerByContainerUid().get("calendar:Default:" + CAPTURED_UID));
+    assertEquals(CAPTURED_UID, owners.ownerByContainerUid().get("exo-cal-5c7e51bf-d8c5-47ef-bc00-e976249331bc"), "Personnel: root's own");
+    assertEquals(ERIC_UID, owners.ownerByContainerUid().get("exo-cal-d691e7f4-8aa0-4c67-92ad-4d7c329bf6fb"), "testCalEric: eric's");
+    assertEquals(ERIC_UID, owners.ownerByContainerUid().get("exo-cal-96f6f3c2-08cb-4109-84ba-730ac035a607"), "Cal2ShareFromEric: eric's");
+    assertEquals("7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8",
+                 owners.ownerByContainerUid().get("calendar:7E3AE6F3-98DF-43D9-B071-AAB477AC2CD8"),
+                 "the pool vehicle: the resource's");
+
+    assertEquals(3, sent.size());
+    assertEquals("/api/auth/login", sent.get(0).uri().getPath());
+    HttpRequest listing = sent.get(1);
+    assertEquals("GET", listing.method());
+    assertEquals("https://bm.example.com:8443/api/users/" + CAPTURED_DOMAIN + "/subscriptions/" + CAPTURED_UID + "?type=calendar",
+                 listing.uri().toString());
+    assertEquals("<REDACTED-API-KEY>", listing.headers().firstValue(BlueMindRestSession.API_KEY_HEADER).orElse(null));
+    assertFalse(listing.headers().firstValue("Authorization").isPresent());
+    assertFalse(listing.bodyPublisher().map(publisher -> publisher.contentLength() != 0).orElse(false), "a GET carries no body");
+    assertEquals("/api/auth/logout", sent.get(2).uri().getPath());
+  }
+
+  /**
+   * A refused listing is its own kind, and the session is still closed.
+   */
+  @Test
+  void aRefusedListingIsForbiddenAndTheSessionIsStillClosed() {
+    answer(200, captured("bluemind-rest-login-sharee.captured.json"));
+    answer(403, fault("PERMISSION_DENIED", "no"));
+    answer(200, "");
+
+    assertThrows(CalDavForbiddenException.class, () -> client.ownersOf(endpoint));
+
+    assertEquals(3, sent.size());
+    assertEquals("/api/auth/logout", sent.get(2).uri().getPath());
+  }
+
+  /**
+   * An answer that is not a list — a fault body under a 200, an object —
+   * is refused rather than read as an empty listing, which would say every
+   * calendar is unknown while looking like a success.
+   */
+  @Test
+  void aListingOfAnotherShapeIsRefused() {
+    answer(200, captured("bluemind-rest-login-sharee.captured.json"));
+    answer(200, fault("SERVER_ERROR", "not a list"));
+    answer(200, "");
+
+    assertThrows(CalDavException.class, () -> client.ownersOf(endpoint));
+    assertEquals("/api/auth/logout", sent.get(2).uri().getPath());
+  }
+
+  /**
+   * A login naming no entry reads nothing: the path could not be built
+   * without guessing whose subscriptions to read. Login and logout only.
+   */
+  @Test
+  void aLoginNamingNoEntryReadsNothing() {
+    answer(200, "{\"status\":\"Ok\",\"authKey\":\"" + KEY + "\"}");
+    answer(200, "");
+
+    assertThrows(CalDavException.class, () -> client.ownersOf(endpoint));
+
+    assertEquals(2, sent.size(), "login and logout, no listing");
+    assertEquals("/api/auth/logout", sent.get(1).uri().getPath());
+  }
+
+  /**
+   * A CAPTURED transcript's body: the {@code #} provenance lines, the status
+   * line and the headers dropped, what follows the first blank line kept.
+   *
+   * @param name the file name
+   * @return the body text
+   */
+  private static String captured(String name) {
+    try (InputStream stream = BlueMindSubscriptionClientTest.class.getResourceAsStream("/caldav/transcripts/" + name)) {
+      List<String> lines = new String(stream.readAllBytes(), StandardCharsets.UTF_8).lines()
+                                                                                    .filter(line -> !line.startsWith("#"))
+                                                                                    .toList();
+      int blank = lines.indexOf("");
+      return String.join("\n", lines.subList(blank + 1, lines.size())).trim();
+    } catch (IOException | NullPointerException e) {
+      throw new IllegalStateException("missing fixture " + name, e);
+    }
+  }
+
   /**
    * A BlueMind fault body, built by the mapper so that whatever the message
    * carries the body stays parseable — a hand-written one carrying
