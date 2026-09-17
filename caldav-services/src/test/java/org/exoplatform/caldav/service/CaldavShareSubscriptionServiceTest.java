@@ -136,6 +136,9 @@ public class CaldavShareSubscriptionServiceTest {
   @Mock
   private BlueMindSubscriptions            edits;
 
+  @Mock
+  private CaldavServerOwnerService         caldavServerOwnerService;
+
   @InjectMocks
   private CaldavShareSubscriptionService   service;
 
@@ -197,6 +200,9 @@ public class CaldavShareSubscriptionServiceTest {
     verify(caldavPendingSubscriptionStorage, never()).owe(anyLong(), anyLong(), anyString(), any());
     assertTrue(infoLines().stream().anyMatch(line -> line.contains("subscribed to") && line.contains("bob")
         && line.contains("alice") && line.contains(CONTAINER) && line.contains("server 1")), infoLines().toString());
+    // Bob's mailbox now sees the calendar: what eXo cached of its owners is
+    // dropped (EXO-90347).
+    verify(caldavServerOwnerService).evict(BOB, SERVER);
   }
 
   /**
@@ -235,6 +241,9 @@ public class CaldavShareSubscriptionServiceTest {
 
       assertEquals(1, warnLines().size(), failure + ": " + warnLines());
     }
+    // Nothing landed, so nothing bob's mailbox sees changed: the cache keeps
+    // its entry (EXO-90347).
+    verify(caldavServerOwnerService, never()).evict(anyLong(), anyLong());
     RuntimeException[] atEdit = { new CalDavForbiddenException("403"), new CalDavNotFoundException("gone"),
         new CalDavAuthenticationException("401 mid-session"), new CalDavException("500 other") };
     org.mockito.Mockito.reset(blueMindSubscriptionClient);
@@ -312,6 +321,9 @@ public class CaldavShareSubscriptionServiceTest {
     lenient().doThrow(new CalDavException("500 SQL_ERROR")).when(edits).subscribe("exo-cal-flaky");
 
     int settled = service.retryOwed(50);
+    // One of bob's rows landed in the drain: his cached owner listing is
+    // dropped, once for the session (EXO-90347).
+    verify(caldavServerOwnerService, org.mockito.Mockito.times(1)).evict(BOB, SERVER);
 
     assertEquals(1, settled);
     verify(blueMindSubscriptionClient, times(1)).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
