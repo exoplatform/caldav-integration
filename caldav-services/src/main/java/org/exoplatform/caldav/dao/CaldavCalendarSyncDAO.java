@@ -214,6 +214,36 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
   boolean existsByServerIdAndOriginAndRemoteHref(long serverId, SyncOrigin origin, String remoteHref);
 
   /**
+   * Whether any user of this deployment holds a calendar binding on one
+   * server for a collection whose path ends with one segment.
+   *
+   * <p>
+   * The third arm of the ownership question (EXO-90347), asked with
+   * {@link SyncOrigin#MIRROR} as the origin to leave out, once the server's
+   * own listing has named another owner for an eXo-shaped collection the two
+   * arms above did not recognise. On BlueMind one container is listed under
+   * <em>each</em> subscriber's home — the colleague's pair records it under
+   * hers, the sharee's listing spells it under his — so neither the anchor
+   * (the pair is REMOTE: a calendar she imported, whose slug is not her
+   * anchor) nor the recorded path answers, while the container uid, the last
+   * segment, is the same on both. A binding of any origin but the mirror
+   * ledger and of any status: a colleague who has since deleted her calendar
+   * in eXo still holds a tombstone naming the collection as hers.
+   *
+   * <p>
+   * A {@code LIKE '%/<uid>'} the href column cannot be indexed for, as its
+   * siblings' notes say; asked only after both other arms have missed and
+   * the server has named another owner — a colleague's share, at most once
+   * per such share per pass.
+   *
+   * @param serverId the declared server registration
+   * @param origin the origin to leave out, the mirror ledger's
+   * @param suffix a slash and the container uid, as the canonical path ends
+   * @return true when such a binding exists, whoever holds it
+   */
+  boolean existsByServerIdAndOriginNotAndRemoteHrefEndingWith(long serverId, SyncOrigin origin, String suffix);
+
+  /**
    * The pairs of one origin on one server for one calendar anchor, the one
    * to name first first.
    *
