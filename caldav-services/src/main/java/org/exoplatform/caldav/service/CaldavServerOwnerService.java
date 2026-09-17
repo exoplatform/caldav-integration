@@ -22,7 +22,7 @@ import java.util.function.Supplier;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
 
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.bluemind.BlueMindCalendarOwners;
@@ -89,14 +89,31 @@ import org.exoplatform.services.log.Log;
  * account itself changes hands on connect, disconnect or new credentials;
  * each drops the entry ({@link #evict}) on the node that made the change.
  * The cache is node-local: another node learns of it within the TTL, or
- * sooner through the miss-refresh above.
+ * sooner through the miss-refresh above. Connect and disconnect are made by
+ * {@code CaldavConnectorServiceImpl}, a Kernel component that reaches this
+ * bean through the Kernel/Spring bridge — which exports {@code @Service}
+ * beans and nothing else ({@code KernelContainerLifecyclePlugin}), so this
+ * class is one, as every sibling resolved through that seam is; a plain
+ * {@code @Component} would leave those two evictions silently unwired.
+ *
+ * <p>
+ * <b>The one cost that is per pass.</b> A mismatched entry — the listing
+ * names an entry other than the account's recorded principal — spends the
+ * pass's refresh, and the fresh listing is kept ({@code @CachePut}) whether
+ * or not it is believed. When the mismatch is a stale entry, the refresh
+ * settles it and the next pass is served from the cache. When it is durable
+ * — the REST session and the DAV principal naming two different entries for
+ * one credential set, a case not observed — every pass and every agenda
+ * open spends one REST read and gets the unavailable witness: the cost the
+ * classification had before the cache, said once at warn. Dropping the
+ * entry instead would make each such pass two reads rather than one.
  *
  * <p>
  * The product using the user's stored credentials during their own pass is
  * what every DAV request of that pass already does; nothing here stores,
  * logs or forwards them, and the session is closed by the client.
  */
-@Component
+@Service
 public class CaldavServerOwnerService {
 
   private static final Log         LOG             = ExoLogger.getLogger(CaldavServerOwnerService.class);
