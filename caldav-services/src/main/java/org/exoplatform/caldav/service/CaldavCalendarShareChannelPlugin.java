@@ -379,12 +379,13 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
   }
 
   /**
-   * The channel identifier of a delivery on one server.
+   * The channel identifier of a delivery on one server: what a share record
+   * carries as {@code deliveredTo}, and what a disconnect clears by.
    *
    * @param serverId the server key
    * @return {@code caldav:<serverId>}
    */
-  private static String channelIdOf(long serverId) {
+  public static String channelIdOf(long serverId) {
     return CHANNEL_ID + ":" + serverId;
   }
 
