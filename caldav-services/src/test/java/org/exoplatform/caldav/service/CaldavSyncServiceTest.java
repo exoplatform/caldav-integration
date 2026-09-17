@@ -142,6 +142,9 @@ public class CaldavSyncServiceTest {
   public static final String         RENAMED_BY_THE_SERVER = "/dav/calendars/john/exo-cal-renamed-by-the-server/";
 
   @Mock
+  private CaldavServerService      caldavServerService;
+
+  @Mock
   private CalDavClient               calDavClient;
 
   @Mock
@@ -212,6 +215,18 @@ public class CaldavSyncServiceTest {
 
   @BeforeEach
   public void connectAnAccount() {
+    // The addon's single definition of "connected" now lives in CaldavServerService.
+    // Reproducing here the rule these tests were written against - a username and a
+    // password - keeps every assertion in this class measuring exactly what it
+    // measured; the provider-backed shape has its own tests in CaldavServerServiceTest.
+    org.mockito.Mockito.lenient()
+                       .when(caldavServerService.isConnected(org.mockito.ArgumentMatchers.any()))
+                       .thenAnswer(call -> {
+                         org.exoplatform.caldav.model.CaldavUserSetting account = call.getArgument(0);
+                         return account != null
+                             && org.apache.commons.lang3.StringUtils.isNotBlank(account.getUsername())
+                             && org.apache.commons.lang3.StringUtils.isNotBlank(account.getPassword());
+                       });
     // The engine reads its tuning where it uses it rather than capturing it at
     // bean creation, which is what lets an administrator change it without a
     // restart — so the test stubs the reader, not a field.
