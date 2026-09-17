@@ -1635,7 +1635,7 @@ public class NormalisingServerMirrorTest {
      * @return never
      */
     @Override
-    public int postCalendarServerShare(CalDavEndpoint endpoint, CalendarSync pair, String address, boolean remove) {
+    public int postCalendarServerShare(CalDavEndpoint endpoint, CalendarSync pair, String address, boolean remove, boolean write) {
       throw new UnsupportedOperationException("sharing is not exercised by the mirror tests");
     }
   }
