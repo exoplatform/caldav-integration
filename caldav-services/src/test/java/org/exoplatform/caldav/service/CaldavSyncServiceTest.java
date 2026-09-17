@@ -1932,6 +1932,102 @@ public class CaldavSyncServiceTest {
   }
 
   /**
+   * <b>A colleague's imported calendar, shared on an RFC 3744 server, is
+   * recorded against its owner too</b> (EXO-90331).
+   *
+   * <p>
+   * The gap observed on the rig on 2026-09-17: alice's default calendar is a
+   * REMOTE pair, its collection carries no anchor eXo minted, and the sweep
+   * noted nothing for it — so the row the grant could have written would
+   * have been erased, and the grant wrote none. The listing classifies it
+   * {@code SHARED} (alice as owner, read-only), and whose it is and under
+   * which anchor is asked of the one rule the grant applies too
+   * ({@code CaldavShareObservationService#importedSightingOf}), with the
+   * account's principal and the collection as listed.
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void aColleaguesImportedCalendarSharedOnAnRfcServerIsRecordedAgainstItsOwner() throws Exception {
+    givenServerCalendars(owned(ALICES, "Stalwart Calendar (alice)", ALICE, true, false));
+    givenNoKnownPairs();
+    when(caldavShareObservationService.importedSightingOf(eq(SERVER), eq(USER), eq(PRINCIPAL), any()))
+                                                                                                        .thenReturn(new CaldavShareObservationService.ImportedSighting(ERIC,
+                                                                                                                                                                       "alices-default-anchor"));
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<CalendarCollection> asked = ArgumentCaptor.forClass(CalendarCollection.class);
+    verify(caldavShareObservationService).importedSightingOf(eq(SERVER), eq(USER), eq(PRINCIPAL), asked.capture());
+    assertEquals(ALICES, asked.getValue().href(), "the collection as listed, owner and all");
+    verify(caldavShareObservationService).observed(USER, SERVER, Map.of("alices-default-anchor", ERIC));
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  /**
+   * On BlueMind a colleague's main calendar the account subscribed to is
+   * {@code SUBSCRIBED_PERSON}, and is recorded the same way (EXO-90331); a
+   * resource is never asked for an owner, no eXo user owning one.
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void aColleaguesMainCalendarSubscribedOnBlueMindIsRecordedAgainstItsOwnerAndAResourceIsNot() throws Exception {
+    givenBlueMindAccountListing(owned(CAMILLES_MAIN, "Camille", BM_PRINCIPAL, true, true),
+                                owned(POOL_VEHICLE, "Véhicule de pool 1", BM_PRINCIPAL, true, true));
+    givenNoKnownPairs();
+    when(caldavShareObservationService.importedSightingOf(eq(SERVER), eq(USER), eq(BM_PRINCIPAL), any()))
+                                                                                                           .thenReturn(new CaldavShareObservationService.ImportedSighting(ERIC,
+                                                                                                                                                                          "camilles-anchor"));
+
+    service.syncNow(USER, LOGIN);
+
+    ArgumentCaptor<CalendarCollection> asked = ArgumentCaptor.forClass(CalendarCollection.class);
+    verify(caldavShareObservationService).importedSightingOf(eq(SERVER), eq(USER), eq(BM_PRINCIPAL), asked.capture());
+    assertEquals(CAMILLES_MAIN, asked.getValue().href(), "camille's main calendar is asked, the pool vehicle is not");
+    verify(caldavShareObservationService).observed(USER, SERVER, Map.of("camilles-anchor", ERIC));
+  }
+
+  /**
+   * A shared collection the rule names no owner for — the third party's
+   * calendar two users imported, a login two users share — is not observed,
+   * and the listing still says so, so that no stale mark survives on it.
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void aSharedCollectionNoOwnerCanBeNamedForIsNotObserved() throws Exception {
+    givenServerCalendars(owned(ALICES, "Alice", ALICE, true, false));
+    givenNoKnownPairs();
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavShareObservationService).importedSightingOf(eq(SERVER), eq(USER), eq(PRINCIPAL), any());
+    verify(caldavShareObservationService).observed(USER, SERVER, Map.of());
+  }
+
+  /**
+   * A colleague's <em>imported</em> calendar the user has hidden is still
+   * observed for its owner, through the same rule: the hidden-share branch
+   * resolves a collection exactly as the classified path does.
+   *
+   * @throws Exception never, everything is mocked
+   */
+  @Test
+  public void aColleaguesImportedCalendarTheUserHasHiddenIsStillObservedForItsOwner() throws Exception {
+    givenServerCalendars(owned(ALICES, "Alice", ALICE, true, false));
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(hiddenShare(CaldavSyncStorage.canonicalHref(ALICES))));
+    when(caldavShareObservationService.importedSightingOf(eq(SERVER), eq(USER), eq(PRINCIPAL), any()))
+                                                                                                        .thenReturn(new CaldavShareObservationService.ImportedSighting(ERIC,
+                                                                                                                                                                       "alices-default-anchor"));
+
+    service.syncNow(USER, LOGIN);
+
+    verify(caldavShareObservationService).observed(USER, SERVER, Map.of("alices-default-anchor", ERIC));
+    verify(agendaCalendarService, never()).createCalendar(any(), anyString());
+  }
+
+  /**
    * A calendar the user genuinely holds — their own, bound by an ordinary
    * pair — is not a sighting of somebody else's, and the hidden-share branch
    * must not turn every already-bound collection into one.

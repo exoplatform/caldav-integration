@@ -160,6 +160,135 @@ public final class BlueMindContainerNaming {
   }
 
   /**
+   * The uid of the home a collection is listed under, when the path has
+   * BlueMind's home shape — {@code …/__uids__/<uid>/<container>} — and null
+   * otherwise (EXO-90331).
+   *
+   * <p>
+   * The half of {@link #isBlueMindAccount} that needs no principal: it says
+   * only whose home the server listed the collection in, which for a
+   * subscription is the <em>subscriber's</em>. Read so that the owner's own
+   * path can be rebuilt from the subscriber's listing
+   * ({@link #hrefInHomeOf}), and so that a grant can tell whether the
+   * collection it shares is under a home of this shape at all — a collection
+   * that is not is one an RFC 3744 server lists, whose {@code DAV:owner} is
+   * read instead.
+   *
+   * @param href the collection's path, raw or canonical
+   * @return the home's uid, or null when the collection does not sit
+   *         directly under a {@code __uids__} home
+   */
+  public static String homeUidOf(String href) {
+    String collectionPath = CaldavSyncStorage.canonicalHref(href);
+    if (StringUtils.isBlank(collectionPath) || !collectionPath.contains("/")) {
+      return null;
+    }
+    String home = StringUtils.substringBeforeLast(collectionPath, "/");
+    String homeUid = lastSegmentOf(home);
+    if (StringUtils.isBlank(homeUid) || !UIDS_SEGMENT.equals(lastSegmentOf(StringUtils.substringBeforeLast(home, "/")))) {
+      return null;
+    }
+    return homeUid;
+  }
+
+  /**
+   * The person a container uid names as the calendar's owner, whichever home
+   * it is listed in (EXO-90331).
+   *
+   * <p>
+   * {@link #subscriptionOf} answers the sweep's question — "is this somebody
+   * else's?" — and so compares the uid against the account's own. This
+   * answers the other question the share mark needs, without an account to
+   * compare against: <em>whose</em> is it, by the name alone. Only the two
+   * shapes that carry a person's uid answer, {@code calendar:Default:<uid>}
+   * and {@code calendar:UserCreated:<uid>:<seed>}; a resource's
+   * {@code calendar:<uid>} names no person, and a container BlueMind did not
+   * name — eXo's {@code exo-cal-*}, a bare uuid — names nobody. Read only on
+   * a collection of BlueMind's home shape ({@link #homeUidOf}), for the
+   * reason {@link #isBlueMindAccount} gives.
+   *
+   * @param href the collection's path, raw or canonical
+   * @return the owner's uid as the container spells it, or null when the
+   *         name carries none
+   */
+  public static String ownerUidOf(String href) {
+    if (homeUidOf(href) == null) {
+      return null;
+    }
+    String segment = lastSegmentOf(CaldavSyncStorage.canonicalHref(href));
+    if (!StringUtils.startsWithIgnoreCase(segment, CALENDAR_PREFIX)) {
+      return null;
+    }
+    String container = segment.substring(CALENDAR_PREFIX.length());
+    if (StringUtils.startsWithIgnoreCase(container, DEFAULT_MARKER)) {
+      String ownerUid = container.substring(DEFAULT_MARKER.length());
+      return StringUtils.isBlank(ownerUid) || ownerUid.contains(":") ? null : ownerUid;
+    }
+    if (StringUtils.startsWithIgnoreCase(container, USER_CREATED_MARKER)) {
+      String rest = container.substring(USER_CREATED_MARKER.length());
+      String ownerUid = StringUtils.substringBefore(rest, ":");
+      if (!rest.contains(":") || StringUtils.isBlank(ownerUid) || StringUtils.isBlank(StringUtils.substringAfter(rest, ":"))) {
+        return null;
+      }
+      return ownerUid;
+    }
+    return null;
+  }
+
+  /**
+   * The same container as it is listed under another uid's home (EXO-90331).
+   *
+   * <p>
+   * BlueMind lists one container under every subscriber's home by the same
+   * container uid ({@code DavStore#getCalendarDavResource}), so the owner's
+   * own path is the subscriber's with the home's uid replaced by the owner's
+   * — which is the path the owner's pair records. Built from the listed path
+   * rather than from a constant, so a server mounted under another root keeps
+   * it. The uid is spelled as given: the container spells the owner's uid as
+   * BlueMind minted it, which is how it spells the owner's home too.
+   *
+   * @param href a collection path of BlueMind's home shape, raw or canonical
+   * @param uid the uid of the home to rebuild the path under
+   * @return the canonical path of the container in that home, or null when
+   *         the given path is not of the home shape
+   */
+  public static String hrefInHomeOf(String href, String uid) {
+    if (homeUidOf(href) == null || StringUtils.isBlank(uid)) {
+      return null;
+    }
+    String collectionPath = CaldavSyncStorage.canonicalHref(href);
+    String home = StringUtils.substringBeforeLast(collectionPath, "/");
+    return StringUtils.substringBeforeLast(home, "/") + "/" + uid + "/" + lastSegmentOf(collectionPath);
+  }
+
+  /**
+   * The uid a BlueMind principal path carries, or null for a principal of
+   * another shape (EXO-90331).
+   *
+   * <p>
+   * BlueMind spells every principal {@code …/principals/__uids__/<uid>/}
+   * ({@code CurrentUserPrincipal#fetch}); the uid is what a container's name
+   * is compared against to say whether the user connected as that principal
+   * is the person the container names.
+   *
+   * @param principal the principal path, raw or canonical, may be null
+   * @return its uid, or null when the path is blank or its parent segment is
+   *         not {@code __uids__}
+   */
+  public static String principalUidOf(String principal) {
+    if (StringUtils.isBlank(principal)) {
+      return null;
+    }
+    String principalPath = CalendarCollection.principalPathOf(principal);
+    String uid = lastSegmentOf(principalPath);
+    if (StringUtils.isBlank(uid) || !principalPath.contains("/")
+        || !UIDS_SEGMENT.equals(lastSegmentOf(StringUtils.substringBeforeLast(principalPath, "/")))) {
+      return null;
+    }
+    return uid;
+  }
+
+  /**
    * Whether the account and the collection have BlueMind's shape, which is
    * the only place the rule is known to hold.
    *

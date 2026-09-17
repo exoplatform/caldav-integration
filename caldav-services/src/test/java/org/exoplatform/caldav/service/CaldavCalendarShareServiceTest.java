@@ -1744,21 +1744,23 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
-   * A calendar eXo did not export records no sighting on a grant, and is
-   * removed all the same on a revoke (EXO-90331).
+   * A calendar eXo did not export records the sighting the pass would file
+   * for it, and is removed on a revoke (EXO-90331).
    *
    * <p>
    * An imported collection — alice owns it on the server and eXo only pairs
-   * with it — is shareable, and carries no anchor this deployment minted. Bob's
-   * pass therefore cannot tie it back to a calendar here, and the
-   * reconciliation, which makes a home's stored set equal to what it just
-   * listed, would delete any row the grant wrote within one period: a mark
-   * that appears and vanishes with nothing the user did to explain it. So
-   * nothing is written. The revoke stays unconditional, because a removal can
-   * only take a mark away and never invent one.
+   * with it — is shareable, and carries no anchor this deployment minted; on
+   * the rig (2026-09-17) a share of her default calendar 11 therefore wrote
+   * no row and drew no icon. Bob's pass ties such a collection back through
+   * the rule {@code CaldavShareObservationService#importedSightingOf} sets
+   * out, and this grant asks that rule's other entrance,
+   * {@code observableImportedAnchorOf}, with the canonical path — so the row
+   * it writes is the one bob's reconciliation keeps. Recorded under the
+   * pair's own anchor, the calendar's sync uid, which is what the owner's
+   * panel resolves a mark by.
    */
   @Test
-  public void anImportedCalendarRecordsNoSightingButIsStillForgottenOnRevoke() throws Exception {
+  public void anImportedCalendarRecordsTheSightingThePassWouldFileAndIsForgottenOnRevoke() throws Exception {
     onStalwartImported(STALWART_IMPORTED);
     String href = STALWART_IMPORTED + "/";
     when(calDavClient.readCalendar(endpoint, href)).thenReturn(collection(ALICE_HOME + "default/",
@@ -1770,12 +1772,72 @@ public class CaldavCalendarShareServiceTest {
                                                           CollectionAcl.of(List.of(bobs), Set.of()),
                                                           CollectionAcl.of(List.of(), Set.of()));
     when(calDavClient.writeAcl(eq(endpoint), any(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+    // What the pass would file the collection under, asked through the one
+    // rule both writers share, with the path canonical as the pass reads it.
+    when(caldavShareObservationService.observableImportedAnchorOf(STALWART, ALICE, STALWART_IMPORTED)).thenReturn(ANCHOR);
 
+    service.grant(ALICE, "alice", CALENDAR, "bob");
+    verify(caldavShareObservationService).granted(ALICE, BOB, STALWART, ANCHOR);
+
+    service.revoke(ALICE, "alice", CALENDAR, "bob");
+    verify(caldavShareObservationService).revoked(BOB, STALWART, ANCHOR);
+  }
+
+  /**
+   * An imported calendar the pass would file under nobody's row — or under
+   * an anchor other than the pair's own — records no sighting, and is still
+   * forgotten on revoke (EXO-90331).
+   *
+   * <p>
+   * The rule names one pair per owner per path; an answer that is not the
+   * pair being shared through is a shape the sweep and this grant would
+   * disagree on, so nothing is written rather than a row the next pass
+   * erases. The revoke stays unconditional, because a removal can only take
+   * a mark away and never invent one.
+   */
+  @Test
+  public void anImportedCalendarThePassWouldNotFileUnderItsOwnAnchorRecordsNoSightingButIsStillForgottenOnRevoke() throws Exception {
+    onStalwartImported(STALWART_IMPORTED);
+    String href = STALWART_IMPORTED + "/";
+    when(calDavClient.readCalendar(endpoint, href)).thenReturn(collection(ALICE_HOME + "default/",
+                                                                          "/dav/pal/alice%40stalwart.local/",
+                                                                          true));
+    AccessControlEntry bobs = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, href)).thenReturn(CollectionAcl.of(List.of(), Set.of()),
+                                                          CollectionAcl.of(List.of(bobs), Set.of()),
+                                                          CollectionAcl.of(List.of(), Set.of()),
+                                                          CollectionAcl.of(List.of(bobs), Set.of()),
+                                                          CollectionAcl.of(List.of(bobs), Set.of()),
+                                                          CollectionAcl.of(List.of(), Set.of()));
+    when(calDavClient.writeAcl(eq(endpoint), any(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+    when(caldavShareObservationService.observableImportedAnchorOf(STALWART, ALICE, STALWART_IMPORTED)).thenReturn(null,
+                                                                                                                   "somebody-elses-anchor");
+
+    service.grant(ALICE, "alice", CALENDAR, "bob");
     service.grant(ALICE, "alice", CALENDAR, "bob");
     verify(caldavShareObservationService, never()).granted(anyLong(), anyLong(), anyLong(), anyString());
 
     service.revoke(ALICE, "alice", CALENDAR, "bob");
     verify(caldavShareObservationService).revoked(BOB, STALWART, ANCHOR);
+  }
+
+  /**
+   * On BlueMind an imported default calendar's grant records the sighting
+   * too, through the same entrance (EXO-90331): the mechanism that carried
+   * the share does not decide whether the mark is written, the rule does.
+   */
+  @Test
+  public void onBlueMindAnImportedDefaultCalendarsGrantRecordsTheSighting() throws Exception {
+    String container = "calendar:Default:" + FRANCOIS_UID;
+    String href = "/dav/calendars/__uids__/" + FRANCOIS_UID + "/" + container;
+    onBlueMindImported(href);
+    when(blueMindAclClient.readAcl(endpoint, container)).thenReturn(owner(), acl(owner(), expanded(ERIC_UID, "Read")));
+    when(caldavShareObservationService.observableImportedAnchorOf(STALWART, ALICE, href)).thenReturn(ANCHOR);
+
+    service.grant(ALICE, "alice", CALENDAR, "bob");
+
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
+    verify(caldavShareObservationService).granted(ALICE, BOB, STALWART, ANCHOR);
   }
 
   /**

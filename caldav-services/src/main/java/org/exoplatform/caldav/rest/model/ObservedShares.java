@@ -28,7 +28,10 @@ import java.util.Map;
  * what another eXo user's CalDAV home listed on its own synchronisation pass,
  * which is what also catches a share made in the calendar server's own web
  * client. Two things are therefore absent: a calendar eXo did not export but
- * the user owns on the server, which neither writer can name; and a share made
+ * the user owns on the server whose owner cannot be told from what the
+ * sharee's home lists — on BlueMind a container named by a bare uid rather
+ * than {@code calendar:Default:<uid>}, on any server a collection listed
+ * with no owner, and a login two eXo users share; and a share made
  * outside eXo with somebody who is not an eXo user with a connected account,
  * or made outside eXo less than one synchronisation period ago. Those make a
  * count a floor on a calendar's exposure. It can also overstate, in one

@@ -191,6 +191,40 @@ public class CaldavShareObservationDAOTest {
    * a hypothetical. The unique index stands behind it; what is checked here is
    * that the storage does not rely on the index raising.
    */
+  /**
+   * <b>The row the grant wrote survives the sharee's next reconciliation</b>
+   * when that listing holds the same key, and goes when it does not
+   * (EXO-90331).
+   *
+   * <p>
+   * The failure this exists to catch: a grant recorded under a key the
+   * sharee's pass cannot reproduce is deleted by that pass, and the mark
+   * appears and vanishes. Both writers now compute one key for an imported
+   * calendar (pinned in {@code CaldavShareObservationServiceTest}); this pins
+   * the other half, that the reconciliation keeps — rather than rewrites — a
+   * row it finds under the key its listing carries, and removes it the first
+   * time the listing stops carrying it.
+   */
+  @Test
+  public void aRowTheGrantWroteSurvivesTheShareesReconciliationThatListsItsKey() {
+    CaldavShareObservationStorage storage = storage();
+    storage.record(ERIC, ROOT, SERVER, CAL2);
+    entityManager.flush();
+    entityManager.clear();
+    List<Long> granted = ids();
+
+    assertEquals(0, storage.reconcile(ROOT, SERVER, Map.of(CAL2, ERIC)), "the listing agrees with the grant: nothing changes");
+    entityManager.flush();
+    entityManager.clear();
+    assertEquals(granted, ids(), "the very row the grant wrote, kept rather than rewritten");
+    assertEquals(Map.of(CAL2, 1L), storage.countShareesByAnchor(ERIC, SERVER));
+
+    assertEquals(1, storage.reconcile(ROOT, SERVER, Map.of()), "a listing that no longer holds it removes it");
+    entityManager.flush();
+    entityManager.clear();
+    assertTrue(storage.countShareesByAnchor(ERIC, SERVER).isEmpty());
+  }
+
   @Test
   public void aGrantRepeatedKeepsOneRowAndOneCount() {
     CaldavShareObservationStorage storage = storage();

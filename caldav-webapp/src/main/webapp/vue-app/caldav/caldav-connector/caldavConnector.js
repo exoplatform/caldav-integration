@@ -267,8 +267,12 @@ const caldavConnector = {
    *
    * Two bounds ride with the count, and the tooltip agenda draws is worded for
    * them. The first: a calendar eXo did not export but the user owns on the
-   * server can be shared and is never counted — including when eXo itself made
-   * the share, which is the case a reader is most likely to assume is covered.
+   * server is counted only where its owner can be told from what the sharee's
+   * home lists — the owner's principal as DAV:owner on an RFC 3744 server, the
+   * owner's uid in a calendar:Default: or calendar:UserCreated: container on
+   * BlueMind — so a BlueMind container named by a bare uid, a collection
+   * listed with no owner and a login two users share are never counted, even
+   * when eXo itself made the share.
    * The second: a share made outside eXo, in the calendar server's own web
    * client, is only seen by a colleague's pass, so it needs that colleague to
    * be an eXo user with a connected CalDAV account and it shows up to one

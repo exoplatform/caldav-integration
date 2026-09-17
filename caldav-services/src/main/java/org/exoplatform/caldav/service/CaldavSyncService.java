@@ -1685,7 +1685,7 @@ public class CaldavSyncService {
       if (isAlreadyOurs(collection, known)) {
         reviveIfMarkedGone(known, collection);
         retireIfSubscription(userIdentityId, serverId, endpoint, principal, known, collection);
-        noteHiddenColleaguesExoCalendar(userIdentityId, serverId, known, collection, colleaguesCalendars);
+        noteHiddenColleaguesCalendar(userIdentityId, serverId, principal, known, collection, colleaguesCalendars);
         continue;
       }
       if (!collection.holdsEvents()) {
@@ -1709,7 +1709,7 @@ public class CaldavSyncService {
       }
       if (ownership.isShared()) {
         skipShare(userIdentityId, serverId, principal, collection, ownership);
-        noteColleaguesExoCalendar(userIdentityId, serverId, collection, ownership, colleaguesCalendars);
+        noteColleaguesCalendar(userIdentityId, serverId, principal, collection, ownership, colleaguesCalendars);
         continue;
       }
       materialise(userIdentityId, username, serverId, collection);
@@ -1739,17 +1739,22 @@ public class CaldavSyncService {
 
   /**
    * Notes, for the owner's sake, that this user's home listed a colleague's
-   * eXo calendar (EXO-90331).
+   * calendar (EXO-90331).
    *
    * <p>
-   * The one classification that names a calendar eXo itself holds:
+   * Three classifications can name a calendar eXo itself holds.
    * {@link CollectionOwnership#COLLEAGUES_EXO_CALENDAR} means the slug carries
    * the anchor of a calendar this deployment exported for another of its
    * users, so both ends of the fact — which calendar, and whose — are
-   * resolvable here without asking the server anything. The other shared
-   * kinds are deliberately not noted: {@link CollectionOwnership#SHARED} and
-   * the two subscriptions are somebody's calendar on the server with no eXo
-   * calendar behind it, so there is no owner's row for a mark to land on.
+   * resolvable here without asking the server anything.
+   * {@link CollectionOwnership#SHARED} and
+   * {@link CollectionOwnership#SUBSCRIBED_PERSON} are somebody's calendar on
+   * the server, and that somebody may be an eXo user who <em>imported</em> it
+   * — their default calendar, most often — in which case their own pair for
+   * it is the eXo calendar behind the collection, found by the rule
+   * {@link CaldavShareObservationService#importedSightingOf} sets out. A
+   * {@link CollectionOwnership#SUBSCRIBED_RESOURCE} is not noted: a resource
+   * is never an eXo user, so there is no owner's row for a mark to land on.
    *
    * <p>
    * Which calendar the collection stands for, and whose it is, is
@@ -1758,20 +1763,24 @@ public class CaldavSyncService {
    *
    * @param userIdentityId identity of the user whose home listed it
    * @param serverId the declared server registration
+   * @param principal the account's own {@code current-user-principal}, null
+   *          when the server named none
    * @param collection the listed collection, already classified
    * @param ownership what the classification said about it
    * @param colleaguesCalendars the map being gathered for this listing,
    *          calendar anchor to the owner's identity
    */
-  private void noteColleaguesExoCalendar(long userIdentityId,
-                                         long serverId,
-                                         CalendarCollection collection,
-                                         CollectionOwnership ownership,
-                                         Map<String, Long> colleaguesCalendars) {
-    if (ownership != CollectionOwnership.COLLEAGUES_EXO_CALENDAR) {
+  private void noteColleaguesCalendar(long userIdentityId,
+                                      long serverId,
+                                      String principal,
+                                      CalendarCollection collection,
+                                      CollectionOwnership ownership,
+                                      Map<String, Long> colleaguesCalendars) {
+    if (ownership != CollectionOwnership.COLLEAGUES_EXO_CALENDAR && ownership != CollectionOwnership.SHARED
+        && ownership != CollectionOwnership.SUBSCRIBED_PERSON) {
       return;
     }
-    noteSighting(userIdentityId, serverId, collection, colleaguesCalendars);
+    noteSighting(userIdentityId, serverId, principal, collection, colleaguesCalendars);
   }
 
   /**
@@ -1814,16 +1823,19 @@ public class CaldavSyncService {
    *
    * @param userIdentityId identity of the user whose home listed it
    * @param serverId the declared server registration
+   * @param principal the account's own {@code current-user-principal}, null
+   *          when the server named none
    * @param known every pair this user holds on this server
    * @param collection the listed collection, already bound
    * @param colleaguesCalendars the map being gathered for this listing,
    *          calendar anchor to the owner's identity
    */
-  private void noteHiddenColleaguesExoCalendar(long userIdentityId,
-                                               long serverId,
-                                               List<CalendarSync> known,
-                                               CalendarCollection collection,
-                                               Map<String, Long> colleaguesCalendars) {
+  private void noteHiddenColleaguesCalendar(long userIdentityId,
+                                            long serverId,
+                                            String principal,
+                                            List<CalendarSync> known,
+                                            CalendarCollection collection,
+                                            Map<String, Long> colleaguesCalendars) {
     String href = CaldavSyncStorage.canonicalHref(collection.href());
     boolean hidden = known.stream()
                           .filter(pair -> pair.getStatus() == CalendarSyncStatus.HIDDEN_SHARE)
@@ -1831,7 +1843,7 @@ public class CaldavSyncService {
     if (!hidden) {
       return;
     }
-    noteSighting(userIdentityId, serverId, collection, colleaguesCalendars);
+    noteSighting(userIdentityId, serverId, principal, collection, colleaguesCalendars);
   }
 
   /**
@@ -1839,15 +1851,21 @@ public class CaldavSyncService {
    * the sighting in the listing's map (EXO-90331).
    *
    * <p>
-   * The owner is the user whose EXO pair stands behind the collection, which
+   * Two ways, tried in order. <b>By the anchor the slug carries</b> first:
+   * the owner is the user whose EXO pair stands behind the collection, which
    * is the same question, asked the same two ways, that made the
    * classification say COLLEAGUES_EXO_CALENDAR in the first place
-   * ({@link CaldavOutboundService#exportingUserOf}); a pair that vanished
-   * between the two answers null, and then nothing is noted rather than a
-   * sighting attributed to nobody. That is also what makes this safe to call
-   * from the hidden-share branch, where no classification has been run: a
-   * collection carrying no anchor eXo minted, or one minted by another
-   * deployment, resolves to nobody and is dropped here.
+   * ({@link CaldavOutboundService#exportingUserOf}). <b>By the owner the
+   * listing states</b> second, for a collection the slug names nobody here
+   * for — a calendar the server itself holds, which an eXo user may have
+   * imported and now shares — through the rule
+   * {@link CaldavShareObservationService#importedSightingOf} sets out, whose
+   * answer the grant path is held to as well. A collection that resolves
+   * neither way — carrying no anchor eXo minted and stating no owner this
+   * deployment can name, or one minted by another deployment — is dropped
+   * here, and nothing is noted rather than a sighting attributed to nobody.
+   * That is also what makes this safe to call from the hidden-share branch,
+   * where no classification has been run.
    *
    * <p>
    * The user's own identity is never noted against them — a collection of
@@ -1858,27 +1876,40 @@ public class CaldavSyncService {
    *
    * @param userIdentityId identity of the user whose home listed it
    * @param serverId the declared server registration
+   * @param principal the account's own {@code current-user-principal}, null
+   *          when the server named none
    * @param collection the listed collection
    * @param colleaguesCalendars the map being gathered for this listing,
    *          calendar anchor to the owner's identity
    */
   private void noteSighting(long userIdentityId,
                             long serverId,
+                            String principal,
                             CalendarCollection collection,
                             Map<String, Long> colleaguesCalendars) {
     String href = CaldavSyncStorage.canonicalHref(collection.href());
     String anchor = CaldavOutboundService.anchorOf(href);
-    if (!CaldavShareObservationService.isRecordableAnchor(anchor)) {
-      LOG.debug("Collection {} carries no anchor that can be recorded; whose calendar it is stays unsaid", collection.href());
-      return;
+    if (CaldavShareObservationService.isRecordableAnchor(anchor)) {
+      Long owner = caldavOutboundService.exportingUserOf(serverId, href);
+      if (owner != null) {
+        if (owner == userIdentityId) {
+          LOG.debug("Collection {} is user {}'s own eXo calendar; nothing is noted for it", collection.href(), userIdentityId);
+          return;
+        }
+        colleaguesCalendars.put(anchor, owner);
+        return;
+      }
     }
-    Long owner = caldavOutboundService.exportingUserOf(serverId, href);
-    if (owner == null || owner == userIdentityId) {
-      LOG.debug("Collection {} is a colleague's eXo calendar whose pair names no other user; nothing is noted for it",
+    CaldavShareObservationService.ImportedSighting imported = caldavShareObservationService.importedSightingOf(serverId,
+                                                                                                                 userIdentityId,
+                                                                                                                 principal,
+                                                                                                                 collection);
+    if (imported == null) {
+      LOG.debug("Collection {} names no eXo calendar of another user's, by its slug or by its stated owner; nothing is noted for it",
                 collection.href());
       return;
     }
-    colleaguesCalendars.put(anchor, owner);
+    colleaguesCalendars.put(imported.anchor(), imported.ownerIdentityId());
   }
 
   /**

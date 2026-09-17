@@ -534,8 +534,12 @@ let shareableCalendarsInFlight = null;
  * agenda's left panel, where a per-calendar access-list read could not be.
  *
  * Two bounds travel with the number, and a caller must not read past them: a
- * calendar eXo did not export but the user owns on the server can be shared
- * and is never counted, and a share made outside eXo is only seen by a
+ * calendar eXo did not export but the user owns on the server is counted only
+ * where its owner can be told from what the sharee's home lists (the owner's
+ * principal as DAV:owner on an RFC 3744 server, the owner's uid in a
+ * calendar:Default: or calendar:UserCreated: container on BlueMind), so a
+ * BlueMind container named by a bare uid, a collection listed with no owner
+ * and a login two users share are never counted; and a share made outside eXo is only seen by a
  * colleague's pass — so it needs that colleague to be an eXo user with a
  * connected CalDAV account, and it is not reflected for up to one
  * synchronisation period. So it is a floor on a calendar's exposure; the Share

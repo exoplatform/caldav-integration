@@ -77,13 +77,19 @@ import lombok.NoArgsConstructor;
  * conclude from its silence:
  * <ul>
  * <li>a calendar eXo did not export — a {@code REMOTE} pair, one the user owns
- * on the server and imported — is in no row however it was shared. Its
- * collection carries no anchor this deployment minted, so no pass can tie it
- * back to a calendar here, and the act does not record one either, precisely
- * because the reconciliation would erase it within the period
- * ({@code CaldavCalendarShareService#observableAnchorOf}). On a deployment
- * whose calendars were mostly imported rather than created in eXo this is the
- * common case, not the exotic one;</li>
+ * on the server and imported — is in a row only where its owner can be told
+ * from what the sharee's home lists: the owner's principal as
+ * {@code DAV:owner} on an RFC 3744 server, the owner's uid in a
+ * {@code calendar:Default:} or {@code calendar:UserCreated:} container on
+ * BlueMind ({@code CaldavShareObservationService#importedSightingOf}, the
+ * one rule the act and the listing both apply). Its collection carries no
+ * anchor this deployment minted, so the row is keyed by the owner's own
+ * pair's anchor instead — agenda's sync uid of the imported calendar, which
+ * is what the owner's panel resolves by. A BlueMind container whose name
+ * carries no uid, a collection listed with no owner, and a login two users
+ * share resolve to nobody and stay in no row, the act recording nothing
+ * either, precisely because the reconciliation would erase it within the
+ * period ({@code CaldavCalendarShareService#observableAnchorOf});</li>
  * <li>a share made <em>outside</em> eXo needs a pass to be seen at all, so it
  * needs the sharee to be an eXo user with a connected CalDAV account — nobody
  * else lists a home — and it appears, or goes away, up to one synchronisation
@@ -156,9 +162,11 @@ import lombok.NoArgsConstructor;
  * <p>
  * Keyed by the calendar's <b>anchor</b>, agenda's {@code syncUid}, not by an
  * agenda calendar id: the pair table records the anchor and nothing else, the
- * anchor is what the collection's slug carries, and a calendar id is a number
- * a restore may renumber. The owner's own session resolves anchor to calendar
- * id from their own calendars, which is a local read they already make.
+ * anchor is what the collection's slug carries for a calendar eXo exported
+ * and what the owner's own pair records for one they imported, and a
+ * calendar id is a number a restore may renumber. The owner's own session
+ * resolves anchor to calendar id from their own calendars, which is a local
+ * read they already make.
  *
  * <p>
  * {@code @DynamicUpdate}, carried by convention rather than for an effect that

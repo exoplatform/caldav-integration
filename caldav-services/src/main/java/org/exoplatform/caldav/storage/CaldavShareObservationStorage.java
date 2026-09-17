@@ -35,10 +35,11 @@ import org.exoplatform.caldav.entity.CaldavShareObservationEntity;
  * list (EXO-90331).
  *
  * <p>
- * No business logic: which collections count as a colleague's eXo calendar and
+ * No business logic: which collections count as a colleague's calendar and
  * whose they are is the sweep's classification
- * ({@code CollectionOwnership#COLLEAGUES_EXO_CALENDAR}), and whether a share
- * eXo just made may be recorded at all is
+ * ({@code CollectionOwnership#COLLEAGUES_EXO_CALENDAR}) and the imported-owner
+ * rule ({@code CaldavShareObservationService#importedSightingOf}), and whether
+ * a share eXo just made may be recorded at all is
  * {@code CaldavCalendarShareService#observableAnchorOf}'s. What lives here is
  * the mechanical part, in two shapes that must not be confused: {@link
  * #reconcile} answers "this is everything that home lists now" and may
@@ -47,8 +48,10 @@ import org.exoplatform.caldav.entity.CaldavShareObservationEntity;
  *
  * <p>
  * <b>What the rows cannot say</b>, and what nothing reading this class may
- * conclude from their absence: a calendar eXo did not export is in no row
- * however it was shared, neither writer being able to name it; and a share
+ * conclude from their absence: a calendar eXo did not export is in a row only
+ * where its owner can be told from the sharee's listing, so a BlueMind
+ * container that names no uid, a collection listed with no owner and a login
+ * two users share stay out; and a share
  * made outside eXo needs a pass to be seen, so it needs the sharee to be an
  * eXo user with a connected CalDAV account and it lags by up to one
  * synchronisation period, while a share eXo made is recorded as it is made.

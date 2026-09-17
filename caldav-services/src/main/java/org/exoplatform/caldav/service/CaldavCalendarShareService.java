@@ -843,19 +843,24 @@ public class CaldavCalendarShareService {
    * </ol>
    *
    * <p>
-   * <b>What that leaves uncovered</b>, stated here because this is the only
-   * place the boundary is decided: a {@link SyncOrigin#REMOTE} pair — a
+   * <b>An imported calendar</b> — a {@link SyncOrigin#REMOTE} pair, a
    * calendar the user owns on the server and imported into eXo rather than
-   * exported from it — is shareable ({@link #isShareableImportedPair}) and
-   * gets no mark, from this path or from a pass. It fails the first question:
-   * its collection keeps the server's own slug, or a slug another deployment
-   * minted, so the anchor read back is null or somebody else's. On a
-   * deployment whose calendars were mostly imported rather than created in
-   * eXo, that is most of them. Widening a pass to recognise such a collection
-   * is neither a small change nor a safe one — the only local witness is a
-   * pair recorded at the same path, and two users who both imported one third
-   * party's calendar would make each the other's owner — so it stays a named
-   * gap rather than a guess.
+   * exported from it, shareable by {@link #isShareableImportedPair} — asks
+   * the pass's question through
+   * {@link CaldavShareObservationService#observableImportedAnchorOf}, which
+   * is the grant's entrance to the one rule the pass applies in
+   * {@code importedSightingOf}: its collection carries no anchor eXo minted,
+   * so the pass names the owner from the owner the listing states — the
+   * {@code DAV:owner} on an RFC 3744 server, the container's uid on BlueMind
+   * — and files the row under the owner's own pair's anchor, which is the
+   * calendar's {@code syncUid}. The answer must be this pair's anchor: the
+   * rule names one pair per owner per path, and a pair of this owner's that
+   * is not the one being shared through is a shape the sweep and this grant
+   * would disagree on, so nothing is written. What the rule leaves out —
+   * a BlueMind container whose name carries no uid, a collection listed
+   * with no owner, a login two users share — records nothing here either,
+   * for the reason set out on that method: two users who both imported one
+   * third party's calendar must not each look like its owner.
    *
    * <p>
    * <b>The second question cannot fail on its own today</b>, and is asked all
@@ -876,6 +881,15 @@ public class CaldavCalendarShareService {
    */
   private String observableAnchorOf(ShareTarget target) {
     String href = CaldavSyncStorage.canonicalHref(target.href());
+    if (target.imported()) {
+      String anchor = caldavShareObservationService.observableImportedAnchorOf(target.serverId(), target.userIdentityId(), href);
+      if (anchor == null || !anchor.equals(target.pair().getLocalCalendarSyncUid())) {
+        LOG.debug("Imported calendar {} ({}) is one no pass would file under its own anchor for user {}; the share is not recorded",
+                  target.calendarId(), target.href(), target.userIdentityId());
+        return null;
+      }
+      return anchor;
+    }
     String anchor = CaldavOutboundService.anchorOf(href);
     if (!CaldavShareObservationService.isRecordableAnchor(anchor)
         || !anchor.equals(target.pair().getLocalCalendarSyncUid())) {

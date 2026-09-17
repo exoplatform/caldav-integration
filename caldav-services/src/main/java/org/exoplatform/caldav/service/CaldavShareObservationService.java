@@ -19,6 +19,8 @@ package org.exoplatform.caldav.service;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Predicate;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,10 +28,15 @@ import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
+import org.exoplatform.caldav.client.CalendarCollection;
+import org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming;
 import org.exoplatform.caldav.entity.CaldavShareObservationEntity;
 import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavShareObservationStorage;
+import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -75,15 +82,25 @@ import org.exoplatform.services.log.Log;
  * <b>The bounds of that answer</b>, stated here because this is where a
  * caller decides what to draw from it. Three of them make the count a floor:
  * <ol>
- * <li><b>A calendar eXo did not export carries no mark at all.</b> A calendar
- * the user owns on the server and imported into eXo — a {@code REMOTE} pair —
- * can be shared from the Share drawer, and neither writer records it: its
- * collection carries no anchor this deployment minted, so a colleague's pass
- * cannot tie it back to a calendar here, and the grant path deliberately does
- * not record what a pass would then erase
- * ({@code CaldavCalendarShareService#observableAnchorOf}, where the condition
- * and the reason are set out). On a deployment whose calendars were mostly
- * imported rather than created in eXo, that is most of them.</li>
+ * <li><b>An imported calendar carries a mark only where its owner can be told
+ * from what the sharee's home lists.</b> A calendar the user owns on the
+ * server and imported into eXo — a {@code REMOTE} pair — can be shared from
+ * the Share drawer, and its collection carries no anchor this deployment
+ * minted; both writers then resolve it through {@link #importedSightingOf}
+ * and {@link #observableImportedAnchorOf}, one rule with two entrances, which
+ * names the owner's own imported pair from the collection's path and the
+ * owner the server states for it. That covers the account's default calendar
+ * on an RFC 3744 server, where the collection is listed under the owner's
+ * path with the owner's principal as {@code DAV:owner}, and on BlueMind a
+ * {@code calendar:Default:<uid>} or {@code calendar:UserCreated:<uid>:…}
+ * container, whose name carries the owner's uid. What stays out: a BlueMind
+ * container whose name carries no uid (a bare uuid, an {@code exo-cal-*}
+ * another deployment minted), a collection the server lists with no owner,
+ * and a login two eXo users share — each is a case where the owner is not
+ * knowable locally, and a guess would put the mark on the wrong row. The
+ * server's own owner listing (EXO-90347) is the way to lift the first of
+ * those; until then a grant on such a calendar records nothing rather than
+ * a row the next pass would erase.</li>
  * <li><b>A share made outside eXo is only ever seen by a pass.</b> So it needs
  * the sharee to be a user of this deployment with a connected CalDAV account —
  * nobody else ever lists a home — and it appears, and goes away, up to one
@@ -120,9 +137,292 @@ public class CaldavShareObservationService {
   @Autowired
   private AgendaCalendarService           agendaCalendarService;
 
+  @Autowired
+  private CaldavSyncStorage               caldavSyncStorage;
+
+  @Autowired
+  private CaldavConnectionIdentityService caldavConnectionIdentityService;
+
   /**
-   * Records what one sharee's calendar home listed of their colleagues' eXo
-   * calendars, replacing whatever the last pass recorded for that home.
+   * The pair states under which an imported pair stands for a calendar its
+   * user still holds in eXo, bound to the collection it records — the only
+   * pairs that can be the owner's own (EXO-90331).
+   *
+   * <p>
+   * Left out, each because it stands for nothing on the eXo side: a hidden
+   * share and a retired subscription are the <em>sharee's</em> records of
+   * somebody else's collection ({@code CaldavDeletionService#hideShare},
+   * {@code CaldavSubscriptionRetirementService}); a locally deleted, deleting
+   * or orphaned pair binds a calendar that is gone. On the rig an owner's
+   * {@code LOCALLY_DELETED} pair sits beside the active one at the same path
+   * (pairs 6 and 8), which is why the states are named rather than the row
+   * count relied on.
+   */
+  private static final Set<CalendarSyncStatus> HOLDING_STATES = Set.of(CalendarSyncStatus.ACTIVE,
+                                                                       CalendarSyncStatus.PAUSED,
+                                                                       CalendarSyncStatus.REMOTE_GONE,
+                                                                       CalendarSyncStatus.REMOTE_CREATE_REFUSED);
+
+  /**
+   * An imported calendar's sighting resolved to its owner: the identity whose
+   * row carries the mark, and the anchor the row is filed under (EXO-90331).
+   *
+   * @param ownerIdentityId the eXo user whose imported pair stands behind the
+   *          collection
+   * @param anchor that pair's {@code localCalendarSyncUid}, agenda's sync uid
+   *          of the owner's calendar
+   */
+  public record ImportedSighting(long ownerIdentityId, String anchor) {
+  }
+
+  /**
+   * Whose imported calendar a collection listed in a sharee's home is, and
+   * under which anchor its sighting is filed — the sweep's entrance to the
+   * one rule both writers share (EXO-90331).
+   *
+   * <p>
+   * <b>The key.</b> A row is keyed by the owner's calendar anchor, agenda's
+   * {@code syncUid}, which for an eXo-created calendar the collection's slug
+   * carries. An imported collection carries no such slug, but the owner's
+   * own pair for it does record the anchor — {@code localCalendarSyncUid},
+   * the uid agenda minted when the collection was materialised
+   * ({@code CaldavSyncService#materialise}) — and that is what the owner's
+   * panel resolves a mark by ({@link #shareeCountsByCalendar}). So the
+   * question is only ever: which pair is the owner's. Both writers ask it
+   * through {@link #ownerPairAt}, and that is what makes a row the grant
+   * writes one the sharee's next reconciliation keeps.
+   *
+   * <p>
+   * <b>Whose, by the shape of the path.</b> Two servers, two ways the owner
+   * is stated, and the path says which applies:
+   * <ul>
+   * <li><b>BlueMind</b> lists a subscription under the subscriber's own home
+   * ({@code …/__uids__/<subscriber>/<container>}) and names the subscriber
+   * as {@code DAV:owner}, so the server's owner says nothing; the container
+   * uid does — {@code calendar:Default:<uid>} and
+   * {@code calendar:UserCreated:<uid>:…} carry the owner's directory uid
+   * ({@link BlueMindContainerNaming#ownerUidOf}). The owner's own pair is
+   * then at the same container under the owner's home
+   * ({@link BlueMindContainerNaming#hrefInHomeOf}), and the owner is the one
+   * user of that pair's path whose recorded principal carries that uid.</li>
+   * <li><b>An RFC 3744 server</b> (Stalwart) lists the shared collection
+   * under the <em>owner's</em> path — the very path the owner's pair records
+   * — and names the owner's principal as {@code DAV:owner}. The owner is the
+   * one user with a pair at that path whose recorded principal is that
+   * owner.</li>
+   * </ul>
+   * A path of BlueMind's home shape is read the BlueMind way only, even when
+   * the server also states an owner: on BlueMind that owner is the viewer,
+   * and reading it would name nobody rather than somebody wrong, but the
+   * grant side must apply the same choice, and it cannot see the sharee's
+   * listing to know which arm the sweep would take.
+   *
+   * <p>
+   * <b>Why the recorded principal, and why exactly one.</b> Two users who
+   * each imported the same third party's calendar hold two pairs at one
+   * path; "any pair at this path" would make each look like the owner —
+   * the mistake EXO-90347 corrected for adoption. The owner is instead the
+   * user whose server identity ({@code CaldavConnectionIdentityService}) is
+   * the one the server, or the container's name, states as owner. Two users
+   * on one login (alice and alice2 on the rig) are both that, and then
+   * nobody is named: a mark on the wrong row is worse than none. The viewer
+   * is never the owner of what their own home lists as somebody else's.
+   *
+   * <p>
+   * <b>What resolves to nobody</b>, and is thereby left out of the count: a
+   * BlueMind container whose name carries no uid — a bare uuid, an
+   * {@code exo-cal-*} another deployment minted — because the owner is not
+   * derivable locally; the server's own owner listing (EXO-90347) is what
+   * would settle it, and this method is where that answer would be read. A
+   * collection an RFC server lists with no {@code DAV:owner}. A resource's
+   * calendar, which no eXo user owns.
+   *
+   * <p>
+   * Never throws: a lookup that fails names nobody, and the pass goes on.
+   *
+   * @param serverId the declared server registration
+   * @param viewerIdentityId the eXo user whose home listed the collection
+   * @param viewerPrincipal that account's own {@code current-user-principal},
+   *          may be null when the server named none
+   * @param collection the listed collection
+   * @return the owner and the anchor, or null when no owner can be named
+   */
+  public ImportedSighting importedSightingOf(long serverId,
+                                             long viewerIdentityId,
+                                             String viewerPrincipal,
+                                             CalendarCollection collection) {
+    try {
+      String href = CaldavSyncStorage.canonicalHref(collection.href());
+      CalendarSync pair;
+      if (BlueMindContainerNaming.homeUidOf(href) != null) {
+        String ownerUid = BlueMindContainerNaming.ownerUidOf(href);
+        if (ownerUid == null) {
+          LOG.debug("Collection {} is named by a container uid that carries no owner; whose calendar it is stays unsaid",
+                    collection.href());
+          return null;
+        }
+        pair = ownerPairAt(serverId, BlueMindContainerNaming.hrefInHomeOf(href, ownerUid), namedByBlueMindUid(ownerUid));
+      } else {
+        String owner = collection.ownerIfAnother(viewerPrincipal);
+        if (StringUtils.isBlank(owner)) {
+          LOG.debug("Collection {} is listed with no owner other than the account; whose calendar it is stays unsaid",
+                    collection.href());
+          return null;
+        }
+        pair = ownerPairAt(serverId, href, namedByPrincipal(owner));
+      }
+      if (pair == null || pair.getUserIdentityId() == viewerIdentityId || !isRecordableAnchor(pair.getLocalCalendarSyncUid())) {
+        return null;
+      }
+      return new ImportedSighting(pair.getUserIdentityId(), pair.getLocalCalendarSyncUid());
+    } catch (RuntimeException e) {
+      LOG.debug("Whose imported calendar collection {} is could not be established; nothing is noted for it",
+                collection.href(),
+                e);
+      return null;
+    }
+  }
+
+  /**
+   * The anchor a grant on an imported calendar may be recorded under, or
+   * null when it may not be recorded at all — the grant's entrance to the
+   * rule {@link #importedSightingOf} sets out (EXO-90331).
+   *
+   * <p>
+   * Asks what the sharee's pass would find for this collection, from what
+   * the owner's side knows: the collection's own path, which on both server
+   * shapes is the path the owner's pair records, and the owner's recorded
+   * principal, which is what the pass compares the server's or the
+   * container's owner against. On a path of BlueMind's home shape the
+   * container must carry the owner's uid and sit in that uid's home — the
+   * sharee's pass rebuilds the owner's path from exactly those two — spelled
+   * as the container spells it, since that is the spelling the rebuilt path
+   * carries. On any other path the pass reads {@code DAV:owner}, which
+   * {@code CaldavCalendarShareService#requireImportedOwned} has already
+   * confirmed the server states as the owner's principal. Either way the
+   * pair the rule names must be this owner's, and the caller checks it is
+   * the very pair it shares through.
+   *
+   * <p>
+   * The grant writes nothing on a null, and that is the point: a row filed
+   * under a key the pass cannot reproduce is deleted on the sharee's next
+   * pass, and a mark that appears and vanishes with nothing the user did to
+   * explain it is worse than none. Never throws, for the caller's sake: a
+   * grant the server accepted is not undone because the mark could not be
+   * decided.
+   *
+   * @param serverId the declared server registration
+   * @param ownerIdentityId the eXo user sharing the calendar
+   * @param href the collection's path, in any spelling
+   * @return the anchor of the owner's imported pair the pass would name, or
+   *         null when the pass would name nobody or somebody else
+   */
+  public String observableImportedAnchorOf(long serverId, long ownerIdentityId, String href) {
+    try {
+      String canonical = CaldavSyncStorage.canonicalHref(href);
+      String principal = caldavConnectionIdentityService.principalOf(ownerIdentityId, serverId);
+      if (principal == null) {
+        LOG.debug("User {} has no recorded principal on server {}; a pass could not attribute collection {} to them",
+                  ownerIdentityId, serverId, href);
+        return null;
+      }
+      CalendarSync pair;
+      String homeUid = BlueMindContainerNaming.homeUidOf(canonical);
+      if (homeUid != null) {
+        String ownerUid = BlueMindContainerNaming.ownerUidOf(canonical);
+        if (ownerUid == null || !ownerUid.equals(homeUid) || !ownerUid.equalsIgnoreCase(BlueMindContainerNaming.principalUidOf(principal))) {
+          LOG.debug("Collection {} is not named for user {}'s own uid in their own home; a pass could not attribute it to them",
+                    href, ownerIdentityId);
+          return null;
+        }
+        pair = ownerPairAt(serverId, canonical, namedByBlueMindUid(ownerUid));
+      } else {
+        pair = ownerPairAt(serverId, canonical, namedByPrincipal(principal));
+      }
+      if (pair == null || pair.getUserIdentityId() != ownerIdentityId || !isRecordableAnchor(pair.getLocalCalendarSyncUid())) {
+        LOG.debug("Collection {} is one no pass would attribute to user {} alone; the share is not recorded", href, ownerIdentityId);
+        return null;
+      }
+      return pair.getLocalCalendarSyncUid();
+    } catch (RuntimeException e) {
+      LOG.debug("Whether a pass could attribute collection {} to user {} could not be established; the share is not recorded",
+                href, ownerIdentityId, e);
+      return null;
+    }
+  }
+
+  /**
+   * The one imported pair, of the one user, that stands behind a collection
+   * path and whose user the stated owner names (EXO-90331).
+   *
+   * <p>
+   * The core both entrances share, so the two cannot drift. Reads every
+   * imported pair recorded at the path on this server, keeps the ones in a
+   * state where the pair still binds a calendar the user holds
+   * ({@link #HOLDING_STATES}), and keeps the users among them whose recorded
+   * server identity the owner test accepts. Exactly one user must remain;
+   * that user's first pair — active first, then oldest, as the storage
+   * orders them — is the answer. Two users is a shared login or a path two
+   * accounts genuinely hold, and both are answered with nobody.
+   *
+   * @param serverId the declared server registration
+   * @param ownerHref the canonical path the owner's pair would record
+   * @param namesOwner whether a recorded principal is the stated owner's
+   * @return the owner's pair, or null when no user or more than one qualifies
+   */
+  private CalendarSync ownerPairAt(long serverId, String ownerHref, Predicate<String> namesOwner) {
+    if (StringUtils.isBlank(ownerHref)) {
+      return null;
+    }
+    Map<Long, CalendarSync> byUser = new LinkedHashMap<>();
+    for (CalendarSync candidate : caldavSyncStorage.getImportedPairsOnServer(serverId, ownerHref)) {
+      if (!HOLDING_STATES.contains(candidate.getStatus()) || byUser.containsKey(candidate.getUserIdentityId())) {
+        continue;
+      }
+      String principal = caldavConnectionIdentityService.principalOf(candidate.getUserIdentityId(), serverId);
+      if (principal != null && namesOwner.test(principal)) {
+        byUser.put(candidate.getUserIdentityId(), candidate);
+      }
+    }
+    if (byUser.size() != 1) {
+      if (byUser.size() > 1) {
+        LOG.debug("Collection {} on server {} is held by users {} who are each its stated owner; none is named", ownerHref, serverId,
+                  byUser.keySet());
+      }
+      return null;
+    }
+    return byUser.values().iterator().next();
+  }
+
+  /**
+   * The owner test of an RFC 3744 listing: the recorded principal is the
+   * {@code DAV:owner} the server stated, compared as canonical paths.
+   *
+   * @param owner the stated owner principal, in any spelling
+   * @return the test
+   */
+  private static Predicate<String> namedByPrincipal(String owner) {
+    String canonical = CaldavConnectionIdentityService.canonicalPrincipal(owner);
+    return principal -> canonical != null && canonical.equals(CaldavConnectionIdentityService.canonicalPrincipal(principal));
+  }
+
+  /**
+   * The owner test of a BlueMind container name: the recorded principal
+   * carries the uid the container names, compared without regard to case as
+   * {@code CaldavPushService} compares uids.
+   *
+   * @param ownerUid the uid the container carries
+   * @return the test
+   */
+  private static Predicate<String> namedByBlueMindUid(String ownerUid) {
+    return principal -> ownerUid.equalsIgnoreCase(BlueMindContainerNaming.principalUidOf(principal));
+  }
+
+  /**
+   * Records what one sharee's calendar home listed of their colleagues'
+   * calendars — eXo-created ones, and imported ones whose owner the rule
+   * above could name — replacing whatever the last pass recorded for that
+   * home.
    *
    * <p>
    * Given the <em>whole</em> listing's worth of colleagues' calendars, never
@@ -141,7 +441,7 @@ public class CaldavShareObservationService {
    * @param shareeIdentityId the eXo user whose home was listed
    * @param serverId the declared server registration, zero for an account
    *          attached before registrations existed
-   * @param ownersByAnchor every colleague's eXo calendar the listing held,
+   * @param ownersByAnchor every colleague's calendar the listing held,
    *          calendar anchor to the identity of the eXo user who owns it;
    *          empty when the home listed none
    */

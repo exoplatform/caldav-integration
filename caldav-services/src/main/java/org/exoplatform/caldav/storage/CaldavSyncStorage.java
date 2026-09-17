@@ -422,6 +422,54 @@ public class CaldavSyncStorage {
   }
 
   /**
+   * How many imported pairs one collection path is read for at most, by
+   * {@link #getImportedPairsOnServer}. A collection is held by its owner and,
+   * before EXO-89530 skipped shares, by whoever it was shared with; beyond
+   * this many the caller's question — "exactly one user stands behind it" —
+   * is answered as ambiguous by the rows that are read, and the rest are not
+   * needed to say so.
+   */
+  static final int IMPORTED_PAIRS_PER_COLLECTION = 20;
+
+  /**
+   * Every imported pair, anyone's, recorded on one server at one collection
+   * path — the pairs a calendar the server itself holds may stand behind
+   * (EXO-90331).
+   *
+   * <p>
+   * The {@link SyncOrigin#REMOTE} counterpart of
+   * {@link #getExoCollectionPairOnServer}, and a list rather than one pair,
+   * because the caller's whole question is whether the rows name one user or
+   * several: a calendar the owner imported and a colleague materialised
+   * before shares were skipped are two rows at one path, and only the
+   * caller, which knows each user's server identity, can say which is the
+   * owner. Every status, as the EXO forms read; the ordering is theirs too —
+   * active first, then oldest — so that the pair the caller picks for a user
+   * is the one still bound. Matched on the canonical path, as the href is
+   * stored.
+   *
+   * @param serverId the declared server registration
+   * @param href the collection path, in any spelling
+   * @return the pairs, active first then oldest first, at most
+   *         {@link #IMPORTED_PAIRS_PER_COLLECTION}; empty when none, or when
+   *         the href is blank
+   */
+  public List<CalendarSync> getImportedPairsOnServer(long serverId, String href) {
+    String canonical = canonicalHref(href);
+    if (StringUtils.isBlank(canonical)) {
+      return List.of();
+    }
+    return calendarSyncDAO.findPairsByRemoteHrefPreferring(serverId,
+                                                           SyncOrigin.REMOTE,
+                                                           canonical,
+                                                           CalendarSyncStatus.ACTIVE,
+                                                           PageRequest.of(0, IMPORTED_PAIRS_PER_COLLECTION))
+                          .stream()
+                          .map(this::fromEntity)
+                          .toList();
+  }
+
+  /**
    * The calendar home a collection sits under: its canonical href without the
    * last segment.
    *
