@@ -2022,19 +2022,89 @@ public class CaldavCalendarShareService {
     if (shares == null) {
       return shares;
     }
+    return shares.withMeetingCopies(meetingCopiesOf(target, username));
+  }
+
+  /**
+   * Whether a calendar is where the caller's eXo meeting copies are written:
+   * the destination the push answers, else the one last recorded, else — with
+   * none recorded — assumed so, since a missed warning exposes meetings while
+   * a false one costs a click.
+   *
+   * @param target the calendar
+   * @param username the caller's login
+   * @return true when the calendar holds the meeting copies
+   */
+  private boolean meetingCopiesOf(ShareTarget target, String username) {
     String href = CaldavSyncStorage.canonicalHref(target.href());
-    boolean copies;
     try {
       MirrorTarget mirror = caldavPushService.mirrorDestination(target.userIdentityId(), username);
-      copies = mirror != null && StringUtils.isNotBlank(mirror.href()) && CaldavSyncStorage.canonicalHref(mirror.href()).equals(href);
+      return mirror != null && StringUtils.isNotBlank(mirror.href()) && CaldavSyncStorage.canonicalHref(mirror.href()).equals(href);
     } catch (RuntimeException e) {
       CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(target.userIdentityId());
       String recorded = settings == null ? null : settings.getMirrorCalendarHref();
-      copies = StringUtils.isBlank(recorded) || CaldavSyncStorage.canonicalHref(recorded).equals(href);
+      boolean copies = StringUtils.isBlank(recorded) || CaldavSyncStorage.canonicalHref(recorded).equals(href);
       LOG.debug("Where the meeting copies of user {} go could not be asked; calendar {} is {} by the destination last recorded",
                 target.userIdentityId(), target.calendarId(), copies ? "warned about" : "cleared", e);
+      return copies;
     }
-    return shares.withMeetingCopies(copies);
+  }
+
+  /**
+   * Whether a calendar of the caller's, on their server, is where their eXo
+   * meeting copies are written (EXO-90357): what agenda's Share drawer asks
+   * before sharing it, through this add-on's channel plugin. The server is
+   * not asked: the answer comes from the push's destination and the
+   * account's record, as {@link #listShares} words it.
+   *
+   * @param userIdentityId the caller
+   * @param username the caller's login
+   * @param calendarId the agenda calendar
+   * @return true when the calendar holds the meeting copies; false when it
+   *         does not, or is not on the caller's server at all
+   * @throws ObjectNotFoundException when the calendar does not exist
+   * @throws IllegalAccessException when the caller does not own it
+   */
+  public boolean holdsMeetingCopies(long userIdentityId, String username, long calendarId) throws ObjectNotFoundException,
+                                                                                            IllegalAccessException {
+    try {
+      return meetingCopiesOf(targetOf(userIdentityId, username, calendarId), username);
+    } catch (CaldavShareException | IllegalArgumentException e) {
+      LOG.debug("Calendar {} of user {} is not on their server, so it holds no meeting copies", calendarId, userIdentityId, e);
+      return false;
+    }
+  }
+
+  /**
+   * The collection a calendar of the caller's is bound to on their server,
+   * and that server (EXO-90357): what agenda records on a share this add-on
+   * delivered, so the sharee's own listing of the server's collections can be
+   * told from it.
+   *
+   * @param userIdentityId the caller
+   * @param username the caller's login
+   * @param calendarId the agenda calendar
+   * @return the server and the collection href
+   * @throws ObjectNotFoundException when the calendar does not exist
+   * @throws IllegalAccessException when the caller does not own it
+   * @throws IllegalArgumentException with {@link #CALENDAR_NOT_ON_SERVER} when
+   *           the calendar is bound to no collection eXo can share
+   * @throws CaldavShareException with {@link #NOT_CONNECTED} when the caller
+   *           has no connected account
+   */
+  public SharedCollection sharedCollectionOf(long userIdentityId, String username, long calendarId) throws ObjectNotFoundException,
+                                                                                                    IllegalAccessException {
+    ShareTarget target = targetOf(userIdentityId, username, calendarId);
+    return new SharedCollection(target.serverId(), target.href());
+  }
+
+  /**
+   * A calendar's collection on the caller's server.
+   *
+   * @param serverId the server key
+   * @param href the collection href, with its trailing slash
+   */
+  public record SharedCollection(long serverId, String href) {
   }
 
   /**
