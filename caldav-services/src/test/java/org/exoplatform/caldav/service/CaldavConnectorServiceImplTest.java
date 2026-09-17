@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.inOrder;
@@ -40,6 +41,7 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.stereotype.Service;
 
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
@@ -375,6 +377,22 @@ public class CaldavConnectorServiceImplTest {
 
     verify(caldavServerOwnerService).evict(USER_IDENTITY_ID, 2L);
     verify(caldavServerOwnerService).evict(USER_IDENTITY_ID, 1L);
+  }
+
+  /**
+   * The two evictions above reach the owner engine through a seam the tests
+   * set by hand; in production this Kernel component resolves it through
+   * the Kernel/Spring bridge, which registers {@code @Service} beans back
+   * into the container and nothing else ({@code KernelContainerLifecyclePlugin}:
+   * {@code isServiceBean} is {@code isAnnotationPresent(Service.class)}). A
+   * plain {@code @Component} is never found, the lookup answers null, and
+   * both evictions silently do nothing — which is what this pin guards, the
+   * one thing a container-less test can say about that path (EXO-90347).
+   */
+  @Test
+  public void theOwnerEngineIsAServiceBeanSoTheBridgeExportsItToThisKernelComponent() {
+    assertTrue(CaldavServerOwnerService.class.isAnnotationPresent(Service.class),
+               "CaldavServerOwnerService must carry @Service, or ExoContainerContext.getService never finds it");
   }
 
   /**
