@@ -1712,7 +1712,7 @@ public class CaldavSyncService {
     // The server's own word on who owns the account's calendars, asked at
     // most once for this whole pass and only if a collection below needs it
     // (EXO-90347): one witness for every collection, never one call each.
-    AccountCalendarOwners owners = caldavServerOwnerService.ownersOf(endpoint, principal);
+    AccountCalendarOwners owners = caldavServerOwnerService.ownersOf(userIdentityId, endpoint, principal);
     for (CalendarCollection collection : collections) {
       if (isAlreadyOurs(collection, known)) {
         reviveIfMarkedGone(known, collection);
