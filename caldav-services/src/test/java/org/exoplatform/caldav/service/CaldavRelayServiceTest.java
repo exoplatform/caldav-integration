@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -55,6 +56,7 @@ import org.exoplatform.caldav.model.CaldavRelayRequest;
 import org.exoplatform.caldav.model.CaldavRelayedResponse;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
+import org.exoplatform.caldav.service.CaldavConnectorService;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -122,6 +124,9 @@ public class CaldavRelayServiceTest {
   @Mock
   private CaldavCredentialsResolver caldavCredentialsResolver;
 
+  @Mock
+  private CaldavConnectorService    caldavConnectorService;
+
   @InjectMocks
   private CaldavRelayService     caldavRelayService;
 
@@ -161,6 +166,9 @@ public class CaldavRelayServiceTest {
     setting.setServerId(serverId);
     when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(setting);
     org.mockito.Mockito.lenient().when(caldavCredentialsResolver.authorization(any(), any(), any())).thenReturn(PROVIDED_AUTH);
+    // "Connected" is now one definition, in CaldavServerService. This helper declares
+    // a typed account, so the mock answers the rule these tests were written against.
+    org.mockito.Mockito.lenient().when(caldavServerService.isConnected(any())).thenReturn(true);
   }
 
   /**
@@ -583,5 +591,79 @@ public class CaldavRelayServiceTest {
     HttpResponse response = org.mockito.Mockito.mock(HttpResponse.class);
     when(response.statusCode()).thenReturn(status);
     when(httpClient.send(any(), any())).thenReturn(response);
+  }
+
+  /**
+   * The one-click path end to end: the server is probed with what the <b>provider</b>
+   * produces - never with typed credentials, since there are none - and the connection
+   * is recorded against the account the provider named.
+   */
+  @Test
+  public void connectsInOneClickAndRecordsTheAccountTheProviderNamed() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, USERNAME)).thenReturn(identity);
+    when(identity.getId()).thenReturn(String.valueOf(IDENTITY_ID));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenProbeAnswer(207);
+
+    CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
+
+    assertEquals(CaldavProbeResult.OK, outcome.getResult());
+    ArgumentCaptor<CaldavUserSetting> recorded = ArgumentCaptor.forClass(CaldavUserSetting.class);
+    org.mockito.Mockito.verify(caldavConnectorService).createProviderBackedSetting(recorded.capture(), eq(IDENTITY_ID));
+    assertEquals("eric@bm.example.org", recorded.getValue().getUsername());
+    assertEquals(SERVER_ID, recorded.getValue().getServerId());
+  }
+
+  /**
+   * A refused probe records nothing. A stored connection that does not work is worse
+   * than a refused one: only the first looks right on screen, and the user discovers
+   * it through an empty calendar.
+   */
+  @Test
+  public void recordsNothingWhenTheServerRefusesTheServiceAccount() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenProbeAnswer(401);
+
+    CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
+
+    assertEquals(CaldavProbeResult.CREDENTIALS, outcome.getResult());
+    org.mockito.Mockito.verifyNoInteractions(caldavConnectorService);
+  }
+
+  /**
+   * A connector that does expect typed credentials is refused here, and nothing is
+   * sent: connecting it with no credentials at all would record an account nobody
+   * proved anything about.
+   */
+  @Test
+  public void refusesToConnectAProviderThatAsksTheUser() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(true);
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME));
+
+    // The message matters: without it this assertion passes on a version that
+    // dropped the guard entirely and merely failed later, for another reason.
+    assertEquals(CaldavRelayService.PROVIDER_ASKS_MESSAGE, refusal.getMessage());
+    org.mockito.Mockito.verifyNoInteractions(httpClient);
+    org.mockito.Mockito.verifyNoInteractions(caldavConnectorService);
+  }
+
+  /** A provider that cannot name the account has nothing to connect. */
+  @Test
+  public void refusesToConnectWhenTheProviderNamesNobody() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn(null);
+
+    assertThrows(IllegalArgumentException.class, () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME));
+    org.mockito.Mockito.verifyNoInteractions(httpClient);
   }
 }

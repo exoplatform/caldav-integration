@@ -74,6 +74,7 @@ import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.CollectionAcl;
 import org.exoplatform.caldav.client.DavOptions;
+import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarShares;
 import org.exoplatform.caldav.model.CalendarShares.CalendarSharee;
@@ -215,6 +216,9 @@ public class CaldavCalendarShareServiceTest {
   @Mock
   private CaldavServerOwnerService        caldavServerOwnerService;
 
+  @Mock
+  private CaldavServerService             caldavServerService;
+
   private CaldavCalendarShareService      service;
 
   /**
@@ -223,6 +227,16 @@ public class CaldavCalendarShareServiceTest {
    */
   @BeforeEach
   public void rig() {
+    // The addon's single definition of "connected" now lives in CaldavServerService.
+    // Reproducing here the rule this class was written against keeps every assertion
+    // measuring what it measured; the provider-backed shape has its own test below.
+    org.mockito.Mockito.lenient()
+                       .when(caldavServerService.isConnected(org.mockito.ArgumentMatchers.any()))
+                       .thenAnswer(call -> {
+                         CaldavUserSetting account = call.getArgument(0);
+                         return account != null && StringUtils.isNotBlank(account.getUsername())
+                             && StringUtils.isNotBlank(account.getPassword());
+                       });
     service = new CaldavCalendarShareService(agendaCalendarService,
                                              caldavConnectorStorage,
                                              caldavSyncStorage,
@@ -233,6 +247,7 @@ public class CaldavCalendarShareServiceTest {
                                              caldavPushService,
                                              caldavShareSubscriptionService,
                                              caldavServerOwnerService,
+                                             caldavServerService,
                                              Duration.ZERO,
                                              () -> 0L);
     // A grant or a revoke reads BlueMind's list through one session; the stubs below answer per read, in order, as before.
@@ -1979,6 +1994,7 @@ public class CaldavCalendarShareServiceTest {
                                           caldavPushService,
                                           caldavShareSubscriptionService,
                                           caldavServerOwnerService,
+                                          caldavServerService,
                                           Duration.ofSeconds(300),
                                           clock::get);
   }
@@ -2220,5 +2236,26 @@ public class CaldavCalendarShareServiceTest {
     profile.setAvatarUrl("/avatar/" + login);
     identity.setProfile(profile);
     return identity;
+  }
+
+  /**
+   * A connection the platform authenticates stores no password, so reading
+   * "connected" as a username <b>and</b> a password hides every shareable calendar
+   * of a BlueMind account - the panel comes back empty with nothing to explain it.
+   * The addon has one definition; this service asks it.
+   */
+  @Test
+  public void offersTheCalendarsOfAProviderBackedAccount() throws Exception {
+    CaldavUserSetting providerBacked = new CaldavUserSetting();
+    providerBacked.setUsername("alice@stalwart.local");
+    providerBacked.setPassword("");
+    providerBacked.setServerId(STALWART);
+    when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(providerBacked);
+    when(caldavServerService.isConnected(providerBacked)).thenReturn(true);
+    when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.EXO)).thenReturn(List.of(exoPair()));
+    when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice"))
+        .thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR)));
+
+    assertEquals(List.of(CALENDAR), service.shareableCalendarIds(ALICE, "alice"));
   }
 }

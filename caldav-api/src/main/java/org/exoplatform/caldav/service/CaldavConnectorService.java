@@ -31,6 +31,17 @@ public interface CaldavConnectorService {
   void createCaldavSetting(CaldavUserSetting caldavUserSetting, long userIdentityId) throws IllegalAccessException;
 
   /**
+   * Records a connection whose credentials the platform produces: no password was
+   * typed and none is stored. The caller has verified that the configured provider
+   * asks the user for nothing.
+   *
+   * @param caldavUserSetting the account the provider named, with no password
+   * @param userIdentityId identity of the connecting user
+   * @throws IllegalAccessException when no account is named
+   */
+  void createProviderBackedSetting(CaldavUserSetting caldavUserSetting, long userIdentityId) throws IllegalAccessException;
+
+  /**
    * Retrieves caldav user setting by its technical user identity identifier.
    *
    * @param userIdentityId User identity getting the caldav user setting
