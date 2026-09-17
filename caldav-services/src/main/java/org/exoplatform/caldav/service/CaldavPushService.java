@@ -1795,7 +1795,15 @@ public class CaldavPushService {
    *         has none — neither the one recorded nor one at the derived path
    */
   public MirrorTarget currentMirror(long userIdentityId, String username) {
-    CaldavUserSetting settings = connectedSettings(userIdentityId);
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    // Nobody connected has no destination, which is what this endpoint's contract
+    // calls 204. Refusing instead made every disconnection - agenda reads the
+    // destination straight after resetting the connector - report a server error for
+    // a situation nobody got wrong. Establishing one without an account remains a
+    // conflict; that is the POST, not this.
+    if (!connected(settings)) {
+      return null;
+    }
     boolean recorded = StringUtils.isNotBlank(settings.getMirrorCalendarHref());
     try {
       return lookUpMirror(userIdentityId, username, settings);
