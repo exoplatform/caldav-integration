@@ -204,10 +204,11 @@ public class CaldavCalendarShareChannelPluginTest {
 
   /**
    * The server's grants agenda has no record of: a colleague granted from
-   * another client is listed as a colleague agenda may record, by login, and
-   * removable when the server lets eXo remove it; a colleague agenda already
-   * recorded is left out; someone outside eXo, everyone and a published link
-   * are listed as they are, never removable from here.
+   * another client is listed by login with the collection agenda records the
+   * adopted share with, removable when the server lets eXo remove it; a
+   * colleague agenda already recorded is left out; someone outside eXo (with
+   * the address their principal names), everyone and a published link are
+   * listed as they are, never removable from here.
    *
    * @throws Exception never
    */
@@ -215,7 +216,7 @@ public class CaldavCalendarShareChannelPluginTest {
   public void theServersOwnGrantsAreListedApartFromAgendasRecords() throws Exception {
     CalendarSharee bob = new CalendarSharee("/dav/pal/bob", ShareeKind.EXO_USERS, List.of(new ShareUser(BOB, "bob", "Bob Builder", null)), null, ShareAccess.READ, true);
     CalendarSharee carol = new CalendarSharee("/dav/pal/carol", ShareeKind.EXO_USERS, List.of(new ShareUser(CAROL, "carol", "Carol", null)), null, ShareAccess.MORE, false);
-    CalendarSharee outside = new CalendarSharee("/dav/pal/x", ShareeKind.OUTSIDE_EXO, List.of(), "x@y.org", ShareAccess.READ, false);
+    CalendarSharee outside = new CalendarSharee("/dav/pal/x%40y.org", ShareeKind.OUTSIDE_EXO, List.of(), "Xavier", ShareAccess.MORE, false);
     CalendarSharee everyone = new CalendarSharee("{DAV:}all", ShareeKind.EVERYONE, List.of(), null, ShareAccess.READ, false);
     CalendarSharee link = new CalendarSharee("published-link:PRIVATE", ShareeKind.PUBLISHED_LINK, List.of(), null, ShareAccess.READ, false, PublishedLinkMode.PRIVATE);
     when(shareService.listShares(ALICE, "alice", CALENDAR)).thenReturn(new CalendarShares(CALENDAR, List.of(bob, carol, outside, everyone, link)));
@@ -231,9 +232,14 @@ public class CaldavCalendarShareChannelPluginTest {
     assertEquals("Bob Builder", bobRow.getDisplayName());
     assertTrue(bobRow.isRemovable());
     assertTrue(bobRow.isReadOnly());
+    assertEquals(COLLECTION, bobRow.getDeliveryRef(), "what agenda records the adopted share with");
+    assertNull(bobRow.getEmail());
     assertEquals("OUTSIDE_EXO", external.get(1).getKind());
-    assertEquals("x@y.org", external.get(1).getDisplayName());
+    assertEquals("Xavier", external.get(1).getDisplayName());
+    assertEquals("x@y.org", external.get(1).getEmail(), "the address the principal names, decoded");
+    assertFalse(external.get(1).isReadOnly());
     assertFalse(external.get(1).isRemovable());
+    assertNull(external.get(1).getDeliveryRef());
     assertEquals("EVERYONE", external.get(2).getKind());
     assertEquals("{DAV:}all", external.get(2).getDisplayName());
     assertEquals("PUBLISHED_LINK", external.get(3).getKind());
@@ -254,26 +260,6 @@ public class CaldavCalendarShareChannelPluginTest {
 
     doThrow(new CaldavShareException(CaldavCalendarShareService.NOT_CONNECTED)).when(shareService).sharedCollectionOf(ALICE, "alice", CALENDAR);
     assertEquals(List.of(), plugin.listExternalShares(CALENDAR, "alice", List.of()));
-    assertNull(plugin.adopt(CALENDAR, BOB, "alice"));
-  }
-
-  /**
-   * Adopting names the collection for a colleague the server grants plain
-   * reading to, and nothing for one it does not — or grants more than
-   * reading, which an eXo share never gives. The server is not touched.
-   *
-   * @throws Exception never
-   */
-  @Test
-  public void adoptingNamesTheCollectionOfAReadGrantOnly() throws Exception {
-    CalendarSharee bob = new CalendarSharee("/dav/pal/bob", ShareeKind.EXO_USERS, List.of(new ShareUser(BOB, "bob", "Bob", null)), null, ShareAccess.READ, true);
-    CalendarSharee carol = new CalendarSharee("/dav/pal/carol", ShareeKind.EXO_USERS, List.of(new ShareUser(CAROL, "carol", "Carol", null)), null, ShareAccess.MORE, false);
-    when(shareService.listShares(ALICE, "alice", CALENDAR)).thenReturn(new CalendarShares(CALENDAR, List.of(bob, carol)));
-
-    assertEquals(COLLECTION, plugin.adopt(CALENDAR, BOB, "alice"));
-    assertNull(plugin.adopt(CALENDAR, CAROL, "alice"));
-    assertNull(plugin.adopt(CALENDAR, 77L, "alice"));
-    verify(shareService, never()).grant(anyLong(), anyString(), anyLong(), anyString());
   }
 
   /**
