@@ -238,7 +238,7 @@ public class CaldavSyncServiceTest {
     // The server's own word on its calendar owners (EXO-90347) is silent
     // unless a test says otherwise: the shape every server but BlueMind has,
     // and the one under which every earlier pin was written.
-    lenient().when(caldavServerOwnerService.ownersOf(any(), any())).thenReturn(AccountCalendarOwners.silent());
+    lenient().when(caldavServerOwnerService.ownersOf(anyLong(), any(), any())).thenReturn(AccountCalendarOwners.silent());
   }
 
   @Test
@@ -2015,7 +2015,7 @@ public class CaldavSyncServiceTest {
     givenNoKnownPairs();
     when(caldavOutboundService.isMintedByThisDeployment(SERVER, HOME + PERSO)).thenReturn(false);
     when(caldavOutboundService.isHeldByThisDeployment(SERVER, PERSO)).thenReturn(true);
-    when(caldavServerOwnerService.ownersOf(endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.of(ROOT_UID,
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.of(ROOT_UID,
                                                                                                     Map.of(PERSO, ERIC_UID)));
 
     List<ILoggingEvent> said;
@@ -2047,7 +2047,7 @@ public class CaldavSyncServiceTest {
     givenServerCalendars(owned(HOME + PERSO + "/", "Perso", PRINCIPAL, true, true));
     givenNoKnownPairs();
     when(caldavOutboundService.isHeldByThisDeployment(SERVER, PERSO)).thenReturn(false);
-    when(caldavServerOwnerService.ownersOf(endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.of(ROOT_UID,
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.of(ROOT_UID,
                                                                                                     Map.of(PERSO, ERIC_UID)));
 
     List<ILoggingEvent> said;
@@ -2077,7 +2077,7 @@ public class CaldavSyncServiceTest {
     givenServerCalendars(owned(HOME + PERSONNEL + "/", "Personnel", PRINCIPAL, true, true));
     givenNoKnownPairs();
     givenAgendaCreates("adopted-anchor");
-    when(caldavServerOwnerService.ownersOf(endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.of(ROOT_UID,
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.of(ROOT_UID,
                                                                                                     Map.of(PERSONNEL, ROOT_UID)));
 
     service.syncNow(USER, LOGIN);
@@ -2106,7 +2106,7 @@ public class CaldavSyncServiceTest {
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(remotePair(bound, "work-anchor")));
     givenUserCalendars(calendarWithAnchor(77L, "work-anchor"));
     givenAgendaCreates("private-anchor");
-    when(caldavServerOwnerService.ownersOf(endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.unavailable());
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.unavailable());
 
     List<ILoggingEvent> said;
     try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
@@ -2143,7 +2143,7 @@ public class CaldavSyncServiceTest {
                          owned(HOME + third + "/", "Cal2ShareFromEric", PRINCIPAL, true, true));
     givenNoKnownPairs();
     AtomicInteger fetched = new AtomicInteger();
-    when(caldavServerOwnerService.ownersOf(endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.deferred(() -> {
+    when(caldavServerOwnerService.ownersOf(USER, endpoint, PRINCIPAL)).thenReturn(AccountCalendarOwners.deferred(() -> {
       fetched.incrementAndGet();
       return AccountCalendarOwners.of(ROOT_UID, Map.of(PERSO, ERIC_UID, second, ERIC_UID, third, ERIC_UID));
     }));
@@ -2151,7 +2151,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     verify(agendaCalendarService, never()).createCalendar(any(), anyString());
-    verify(caldavServerOwnerService, times(1)).ownersOf(any(), any());
+    verify(caldavServerOwnerService, times(1)).ownersOf(anyLong(), any(), any());
     assertEquals(1, fetched.get(), "three collections, one fetch");
     verify(caldavOutboundService, times(3)).ownershipOf(eq(SERVER), eq(PRINCIPAL), any(), any(), any());
   }

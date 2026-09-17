@@ -57,7 +57,20 @@ import org.apache.commons.lang3.StringUtils;
  * the naming before this witness is heard. So the listing is fetched the
  * first time a question reaches it and kept for the rest of the pass —
  * one fetch per account per pass at most, none when nothing asks — which is
- * the bound the sweep is held to.
+ * the bound the sweep is held to. Across passes the fetch is served from
+ * {@code CaldavServerOwnerStorage}'s cache, so most first questions cost no
+ * request either.
+ *
+ * <p>
+ * <b>One refresh per pass, for a calendar the listing does not name.</b> A
+ * cached listing predates every share made since it was written, and a new
+ * share met as "not in the listing" would sit unclassified — neither
+ * adopted nor listed as shared — until the entry expired. So a deferred
+ * witness may carry a second supplier: heard once per pass, the first time
+ * a question about a calendar the <em>present</em> listing does not name
+ * comes in, and never for a listing that could not be had at all (a
+ * failed fetch is one attempt per pass, as before the cache). A refresh
+ * that yields nothing keeps the listing already in hand.
  *
  * <p>
  * Services-local like {@link CollectionOwnership}: an answer held for the
@@ -94,10 +107,10 @@ public final class AccountCalendarOwners {
   }
 
   /** The one witness for a server that is not asked. */
-  private static final AccountCalendarOwners SILENT_OWNERS      = new AccountCalendarOwners(Word.SILENT, null, null, null);
+  private static final AccountCalendarOwners SILENT_OWNERS      = new AccountCalendarOwners(Word.SILENT, null, null, null, null);
 
   /** The one witness for a server that was asked and could not answer. */
-  private static final AccountCalendarOwners UNAVAILABLE_OWNERS = new AccountCalendarOwners(Word.UNKNOWN, null, null, null);
+  private static final AccountCalendarOwners UNAVAILABLE_OWNERS = new AccountCalendarOwners(Word.UNKNOWN, null, null, null, null);
 
   /** The word every question gets, for a witness that has no listing. */
   private final Word                         blanket;
@@ -111,8 +124,17 @@ public final class AccountCalendarOwners {
   /** The fetch a deferred witness runs on its first question; else null. */
   private final Supplier<AccountCalendarOwners> deferred;
 
+  /**
+   * The one refresh a deferred witness may run for a calendar its listing
+   * does not name; null when it has none, or is not deferred.
+   */
+  private final Supplier<AccountCalendarOwners> refresh;
+
   /** What the fetch produced, once it has run. */
   private AccountCalendarOwners                 resolved;
+
+  /** Whether the refresh has been heard: once per witness, whatever it said. */
+  private boolean                               refreshed;
 
   /**
    * A witness in one of its shapes.
@@ -123,15 +145,19 @@ public final class AccountCalendarOwners {
    * @param ownerByContainerUid the listing, keyed by container uid
    * @param deferred the fetch to run on the first question, for a deferred
    *          witness; null otherwise
+   * @param refresh the fetch to run once for a calendar the listing does not
+   *          name; null for none
    */
   private AccountCalendarOwners(Word blanket,
                                 String accountUid,
                                 Map<String, String> ownerByContainerUid,
-                                Supplier<AccountCalendarOwners> deferred) {
+                                Supplier<AccountCalendarOwners> deferred,
+                                Supplier<AccountCalendarOwners> refresh) {
     this.blanket = blanket;
     this.accountUid = accountUid;
     this.ownerByContainerUid = ownerByContainerUid == null ? null : Map.copyOf(ownerByContainerUid);
     this.deferred = deferred;
+    this.refresh = refresh;
   }
 
   /**
@@ -168,7 +194,7 @@ public final class AccountCalendarOwners {
     if (StringUtils.isBlank(accountUid) || ownerByContainerUid == null) {
       return UNAVAILABLE_OWNERS;
     }
-    return new AccountCalendarOwners(null, accountUid, ownerByContainerUid, null);
+    return new AccountCalendarOwners(null, accountUid, ownerByContainerUid, null, null);
   }
 
   /**
@@ -182,10 +208,30 @@ public final class AccountCalendarOwners {
    * caught and said what it wanted to say.
    *
    * @param fetch how to get the listing
-   * @return the deferred witness
+   * @return the deferred witness, with no refresh
    */
   public static AccountCalendarOwners deferred(Supplier<AccountCalendarOwners> fetch) {
-    return new AccountCalendarOwners(null, null, null, fetch);
+    return deferred(fetch, null);
+  }
+
+  /**
+   * A listing fetched on the first question, kept for every later one, and
+   * read again at most once for a calendar it does not name.
+   *
+   * <p>
+   * The refresh runs the first time a question about an absent calendar
+   * reaches a listing that is <em>present</em> — never when the fetch
+   * failed, since a failure is one attempt per pass — and whatever it
+   * answers it is not run again in this witness's life. A refresh that
+   * answers null, or throws, leaves the listing in hand as it was.
+   *
+   * @param fetch how to get the listing
+   * @param refresh how to read it again, fresh from the server; null for no
+   *          refresh
+   * @return the deferred witness
+   */
+  public static AccountCalendarOwners deferred(Supplier<AccountCalendarOwners> fetch, Supplier<AccountCalendarOwners> refresh) {
+    return new AccountCalendarOwners(null, null, null, fetch, refresh);
   }
 
   /**
@@ -197,15 +243,57 @@ public final class AccountCalendarOwners {
    */
   public Verdict ownerOf(String containerUid) {
     AccountCalendarOwners listing = resolve();
-    if (listing.blanket != null) {
-      return new Verdict(listing.blanket, null);
+    Verdict verdict = listing.verdictOn(containerUid);
+    if (verdict.word() == Word.UNKNOWN && listing.blanket == null && StringUtils.isNotBlank(containerUid)) {
+      // Present, and silent about this calendar: the one case a refresh can
+      // change, and the one case it is spent on.
+      AccountCalendarOwners fresher = refreshOnce();
+      if (fresher != null) {
+        verdict = fresher.verdictOn(containerUid);
+      }
     }
-    String owner = StringUtils.isBlank(containerUid) ? null : listing.ownerByContainerUid.get(containerUid);
+    return verdict;
+  }
+
+  /**
+   * This listing's word on one calendar, with no refresh.
+   *
+   * @param containerUid the calendar's container uid
+   * @return the verdict
+   */
+  private Verdict verdictOn(String containerUid) {
+    if (blanket != null) {
+      return new Verdict(blanket, null);
+    }
+    String owner = StringUtils.isBlank(containerUid) ? null : ownerByContainerUid.get(containerUid);
     if (StringUtils.isBlank(owner)) {
       return new Verdict(Word.UNKNOWN, null);
     }
-    return StringUtils.equalsIgnoreCase(owner, listing.accountUid) ? new Verdict(Word.ACCOUNTS_OWN, null)
-                                                                   : new Verdict(Word.ANOTHERS, owner);
+    return StringUtils.equalsIgnoreCase(owner, accountUid) ? new Verdict(Word.ACCOUNTS_OWN, null) : new Verdict(Word.ANOTHERS, owner);
+  }
+
+  /**
+   * Hears the refresh, the first time and never again; a fresh listing
+   * replaces the one in hand.
+   *
+   * @return the fresh listing, or null when there is no refresh, it was
+   *         already heard, or it answered nothing
+   */
+  private synchronized AccountCalendarOwners refreshOnce() {
+    if (refresh == null || refreshed) {
+      return null;
+    }
+    refreshed = true;
+    try {
+      AccountCalendarOwners fresher = refresh.get();
+      if (fresher == null) {
+        return null;
+      }
+      resolved = fresher.resolve();
+      return resolved;
+    } catch (RuntimeException e) {
+      return null;
+    }
   }
 
 
