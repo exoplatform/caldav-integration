@@ -16,6 +16,8 @@
  */
 package org.exoplatform.caldav.service;
 
+import java.util.Objects;
+
 import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -73,7 +75,7 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
       // calendars this account sees, on the server it was on and on the one
       // it is now on, describes nobody (EXO-90347).
       forgetServerOwners(userIdentityId, caldavUserSetting.getServerId());
-      if (previous != null && !java.util.Objects.equals(serverKeyOf(previous.getServerId()), serverKeyOf(caldavUserSetting.getServerId()))) {
+      if (previous != null && !Objects.equals(serverKeyOf(previous.getServerId()), serverKeyOf(caldavUserSetting.getServerId()))) {
         forgetServerOwners(userIdentityId, previous.getServerId());
       }
       // The credentials just changed, so the server identity recorded under
