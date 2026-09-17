@@ -609,6 +609,46 @@ public class CaldavSyncDAOQueryTest {
   }
 
   /**
+   * The third arm (EXO-90347), on the engine: a colleague's calendar
+   * <em>imported</em> — REMOTE, a tombstone since she deleted it in eXo,
+   * recorded under her own home — is found by the container uid the sharee's
+   * listing spells under his home, and by nothing the other two arms read.
+   * The mirror ledger is left out, another server is not asked, and the
+   * suffix is a suffix: a row whose container merely contains the uid, and
+   * a row one wildcard away from it, do not answer — the derived query
+   * escapes what it is given.
+   */
+  @Test
+  public void aColleaguesImportedCalendarIsFoundByItsContainerUidUnderAnyHome() {
+    String container = "exo-cal-fd3fe75f-58f9-49e5-93d0-85f63b24a807";
+    String erics = "/dav/calendars/__uids__/4C60FEDD-0562-4903-A524-E95E1CCBCDE0/" + container;
+    persistPair(USER_SIX, SHARED_SERVER, SyncOrigin.REMOTE, erics, CalendarSyncStatus.LOCALLY_DELETED);
+    persistPair(USER_ONE, 99L, SyncOrigin.REMOTE, "/dav/calendars/__uids__/other/" + container);
+    persistPair(USER_ONE, SHARED_SERVER, SyncOrigin.MIRROR, "/dav/calendars/__uids__/other/exo-cal-mirror-only");
+    persistPair(USER_ONE, SHARED_SERVER, SyncOrigin.REMOTE, "/dav/calendars/__uids__/other/exo-cal-ab_d-suffix");
+    persistPair(USER_ONE, SHARED_SERVER, SyncOrigin.REMOTE, "/dav/calendars/__uids__/other/exo-cal-abXd");
+
+    assertFalse(calendarSyncDAO.existsByServerIdAndOriginAndLocalCalendarSyncUid(SHARED_SERVER,
+                                                                                SyncOrigin.EXO,
+                                                                                "fd3fe75f-58f9-49e5-93d0-85f63b24a807"),
+                "the slug is not her anchor: the first arm misses");
+    assertFalse(calendarSyncDAO.existsByServerIdAndOriginAndRemoteHref(SHARED_SERVER,
+                                                                      SyncOrigin.EXO,
+                                                                      "/dav/calendars/__uids__/751E6D1A-7FDB-49B2-B668-B569E9A5A42D/" + container),
+                "the sharee's spelling is under his home, and the pair is not an export: the second arm misses");
+    assertTrue(calendarSyncDAO.existsByServerIdAndOriginNotAndRemoteHrefEndingWith(SHARED_SERVER, SyncOrigin.MIRROR, "/" + container),
+               "the container uid answers, whatever home the pair recorded and whatever its status");
+    assertFalse(calendarSyncDAO.existsByServerIdAndOriginNotAndRemoteHrefEndingWith(SHARED_SERVER, SyncOrigin.MIRROR, "/exo-cal-mirror-only"),
+                "the mirror ledger binds no calendar");
+    assertFalse(calendarSyncDAO.existsByServerIdAndOriginNotAndRemoteHrefEndingWith(77L, SyncOrigin.MIRROR, "/" + container),
+                "another server is not asked");
+    assertFalse(calendarSyncDAO.existsByServerIdAndOriginNotAndRemoteHrefEndingWith(SHARED_SERVER, SyncOrigin.MIRROR, "/exo-cal-ab_d"),
+                "a suffix, not a substring: the row ending in -suffix does not answer");
+    assertFalse(calendarSyncDAO.existsByServerIdAndOriginNotAndRemoteHrefEndingWith(SHARED_SERVER, SyncOrigin.MIRROR, "/exo-cal-abXd".replace('X', '_')),
+                "the underscore is escaped, not a wildcard: exo-cal-abXd does not answer exo-cal-ab_d");
+  }
+
+  /**
    * The user behind an exported calendar is named by its anchor, and named
    * the same way on every listing: the active pair first, then the oldest.
    */
