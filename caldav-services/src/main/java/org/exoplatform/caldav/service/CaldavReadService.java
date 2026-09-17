@@ -62,6 +62,9 @@ public class CaldavReadService {
   private static final Log       LOG = ExoLogger.getLogger(CaldavReadService.class);
 
   @Autowired
+  private CaldavServerService      caldavServerService;
+
+  @Autowired
   private CalDavClient           calDavClient;
 
   @Autowired
@@ -597,8 +600,11 @@ public class CaldavReadService {
    * @return true when it carries credentials
    */
   private boolean connected(CaldavUserSetting settings) {
-    return settings != null && StringUtils.isNotBlank(settings.getUsername())
-        && StringUtils.isNotBlank(settings.getPassword());
+    // One definition for the whole addon - see CaldavServerService.isConnected. It
+    // used to read "a username and a password" here, which calls a provider-backed
+    // connection disconnected: there is no password to store when the platform
+    // produces the material.
+    return caldavServerService.isConnected(settings);
   }
 
   /**
