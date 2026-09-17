@@ -24,7 +24,6 @@ import CaldavPendingCopiesSection from './components/CaldavPendingCopiesSection.
 import CaldavCalendarStatesDrawer from './components/CaldavCalendarStatesDrawer.vue';
 import CaldavDeviceSetupSection from './components/CaldavDeviceSetupSection.vue';
 import CaldavDeviceSetupDrawer from './components/CaldavDeviceSetupDrawer.vue';
-import CaldavShareCalendarDrawer from './components/CaldavShareCalendarDrawer.vue';
 import CaldavAdminServersSection from './components/admin/CaldavAdminServersSection.vue';
 import CaldavAdminSyncDrawer from './components/admin/CaldavAdminSyncDrawer.vue';
 import CaldavAdminManagedModeDrawer from './components/admin/CaldavAdminManagedModeDrawer.vue';
@@ -47,7 +46,6 @@ const components = {
   'caldav-calendar-states-drawer': CaldavCalendarStatesDrawer,
   'caldav-device-setup-section': CaldavDeviceSetupSection,
   'caldav-device-setup-drawer': CaldavDeviceSetupDrawer,
-  'caldav-share-calendar-drawer': CaldavShareCalendarDrawer,
   'caldav-admin-servers-section': CaldavAdminServersSection,
   'caldav-admin-sync-drawer': CaldavAdminSyncDrawer,
   'caldav-admin-managed-mode-drawer': CaldavAdminManagedModeDrawer,

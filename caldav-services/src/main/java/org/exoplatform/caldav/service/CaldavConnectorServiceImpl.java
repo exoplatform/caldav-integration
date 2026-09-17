@@ -19,6 +19,7 @@ package org.exoplatform.caldav.service;
 import java.util.Objects;
 
 import org.apache.commons.lang3.StringUtils;
+import org.exoplatform.agenda.service.AgendaCalendarShareService;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -46,6 +47,13 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
    * above: this class is a kernel component and the engine is a Spring bean.
    */
   private CaldavSyncService      caldavSyncService;
+
+  /**
+   * Agenda's calendar share service (EXO-90357), resolved lazily for the same
+   * reason: a Spring bean of another add-on, asked on disconnect to forget
+   * that this account's server carried the user's shares.
+   */
+  private AgendaCalendarShareService agendaCalendarShareService;
 
   /**
    * The deletion engine, resolved lazily for the same reason as the two above.
@@ -77,6 +85,12 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
       forgetServerOwners(userIdentityId, caldavUserSetting.getServerId());
       if (previous != null && !Objects.equals(serverKeyOf(previous.getServerId()), serverKeyOf(caldavUserSetting.getServerId()))) {
         forgetServerOwners(userIdentityId, previous.getServerId());
+        // The account moved to another server: the shares it carried to the
+        // previous one are eXo's and stay, but their delivery stamp names a
+        // server this account is no longer on, so it goes — as on a
+        // disconnect (EXO-90357) — and a share is carried again to the
+        // server the account is now on when the owner shares it again
+        forgetDeliveries(userIdentityId, serverKeyOf(previous.getServerId()));
       }
       // The credentials just changed, so the server identity recorded under
       // the previous ones no longer describes this account (EXO-90243). Gone
@@ -230,6 +244,55 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   }
 
   /**
+   * Clears, on agenda's share records, the delivery stamp of every share this
+   * account carried to one server. Glue only: agenda owns the records and the
+   * rule. Nothing here may fail a disconnection — a stamp left behind costs a
+   * share its next delivery, a user left connected costs more.
+   *
+   * @param userIdentityId the owner disconnecting
+   * @param serverId the declared server the account was on, 0 for none
+   */
+  private void forgetDeliveries(long userIdentityId, long serverId) {
+    try {
+      AgendaCalendarShareService shareService = getAgendaCalendarShareService();
+      if (shareService != null) {
+        shareService.clearDelivery(userIdentityId, CaldavCalendarShareChannelPlugin.channelIdOf(serverId));
+      }
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("The calendar share deliveries of user {} on server {} could not be cleared on disconnect", userIdentityId, serverId, e);
+    }
+  }
+
+  /**
+   * Agenda's calendar share service, resolved through the bridge on first
+   * use: a Spring {@code @Service} of the agenda add-on, reached from this
+   * Kernel component as the other engines are. Null when it cannot be
+   * resolved, and a disconnection then clears no delivery stamp.
+   *
+   * @return the service, or null when the bridge cannot provide it
+   */
+  protected AgendaCalendarShareService getAgendaCalendarShareService() {
+    if (agendaCalendarShareService == null) {
+      try {
+        agendaCalendarShareService = ExoContainerContext.getService(AgendaCalendarShareService.class);
+      } catch (Exception | LinkageError e) {
+        LOG.debug("Agenda's calendar share service not resolvable; disconnecting clears no delivery", e);
+      }
+    }
+    return agendaCalendarShareService;
+  }
+
+  /**
+   * Hands agenda's calendar share service to tests, which have no container
+   * to resolve it from.
+   *
+   * @param agendaCalendarShareService the service to use
+   */
+  protected void setAgendaCalendarShareService(AgendaCalendarShareService agendaCalendarShareService) {
+    this.agendaCalendarShareService = agendaCalendarShareService;
+  }
+
+  /**
    * The deletion engine, resolved through the bridge on first use.
    *
    * <p>
@@ -290,6 +353,13 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   @Override
   public void deleteCaldavSetting(long userIdentityId, String username) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (settings != null) {
+      // The calendar shares this account carried to its server are eXo's
+      // and stay; only the delivery stamp goes, so that a share is carried
+      // again to whatever server the user connects next (EXO-90357). The
+      // grants on the server are left as the server's truth.
+      forgetDeliveries(userIdentityId, serverKeyOf(settings.getServerId()));
+    }
     if (settings != null && StringUtils.isNotBlank(username)) {
       // Before the settings go, while the account can still be identified.
       // Without the login there is no ACL to delete a calendar under, so the
