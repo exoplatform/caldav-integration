@@ -223,15 +223,23 @@ const caldavConnector = {
    * server made — `caldav:<serverId>` — and nothing for any other channel,
    * so agenda asks the next connector or words the id itself.
    *
+   * A legacy, property-configured connector fronts no declared server: its
+   * deliveries are stamped `caldav:0` (an account predating registrations),
+   * and it answers its host when it knows one, else the bare word "CalDAV"
+   * — never "CalDAV 0".
+   *
    * @param {String} channelId the channel a share was delivered to
    * @returns {String} the host, or an empty string when the channel is not
    *          this connector's server
    */
   channelLabel(channelId) {
-    if (!channelId || this.serverId == null || channelId !== `caldav:${this.serverId}`) {
+    if (!channelId) {
       return '';
     }
-    return serverHost(this.serverUrl) || '';
+    if (this.serverId == null) {
+      return channelId === 'caldav:0' ? (serverHost(this.serverUrl) || 'CalDAV') : '';
+    }
+    return channelId === `caldav:${this.serverId}` ? (serverHost(this.serverUrl) || '') : '';
   },
 
   /**
