@@ -345,6 +345,8 @@ public class CaldavCalendarShareService {
 
   private final CaldavServerOwnerService        caldavServerOwnerService;
 
+  private final CaldavServerService        caldavServerService;
+
   /**
    * The servers this node has already reported, at INFO, as offering no
    * sharing. Reported once per server per process, so the reason is visible
@@ -409,6 +411,7 @@ public class CaldavCalendarShareService {
                                     CaldavPushService caldavPushService,
                                     CaldavShareSubscriptionService caldavShareSubscriptionService,
                                     CaldavServerOwnerService caldavServerOwnerService,
+                                    CaldavServerService caldavServerService,
                                     @Value("${exo.caldav.share.probeMemoSeconds:300}")
                                     long probeMemoSeconds) {
     this(agendaCalendarService,
@@ -421,6 +424,7 @@ public class CaldavCalendarShareService {
          caldavPushService,
          caldavShareSubscriptionService,
          caldavServerOwnerService,
+         caldavServerService,
          Duration.ofSeconds(Math.max(0, probeMemoSeconds)),
          System::nanoTime);
   }
@@ -441,11 +445,13 @@ public class CaldavCalendarShareService {
                              CaldavPushService caldavPushService,
                              CaldavShareSubscriptionService caldavShareSubscriptionService,
                              CaldavServerOwnerService caldavServerOwnerService,
+                             CaldavServerService caldavServerService,
                              Duration probeMemo,
                              LongSupplier nanoTime) {
     this.probeMemo = probeMemo;
     this.nanoTime = nanoTime;
     this.caldavServerOwnerService = caldavServerOwnerService;
+    this.caldavServerService = caldavServerService;
     this.agendaCalendarService = agendaCalendarService;
     this.caldavConnectorStorage = caldavConnectorStorage;
     this.caldavSyncStorage = caldavSyncStorage;
@@ -2152,9 +2158,12 @@ public class CaldavCalendarShareService {
    * @param settings the stored account
    * @return true when it carries credentials
    */
-  private static boolean connected(CaldavUserSetting settings) {
-    return settings != null && StringUtils.isNotBlank(settings.getUsername())
-        && StringUtils.isNotBlank(settings.getPassword());
+  private boolean connected(CaldavUserSetting settings) {
+    // One definition for the whole addon - see CaldavServerService.isConnected.
+    // Reading it here as "a username and a password" hides every shareable calendar
+    // of a provider-backed account: there is no password to store when the platform
+    // produces the material, and the panel comes back empty with nothing to explain.
+    return caldavServerService.isConnected(settings);
   }
 
   /**
