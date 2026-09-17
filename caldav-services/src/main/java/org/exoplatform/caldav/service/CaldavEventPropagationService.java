@@ -38,6 +38,8 @@ import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
 import org.exoplatform.agenda.model.EventAttendeeList;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
+import org.exoplatform.agenda.model.Calendar;
+import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.caldav.ics.IcsText;
 import org.exoplatform.caldav.model.CalendarSync;
@@ -258,6 +260,13 @@ public class CaldavEventPropagationService {
 
   @Autowired
   private AgendaEventService                                   agendaEventService;
+
+  /**
+   * Names the owner of the calendar an event lives in (EXO-90378): the one
+   * account that carries out an event a colleague created in it.
+   */
+  @Autowired
+  private AgendaCalendarService                                agendaCalendarService;
 
   @Autowired
   private AgendaEventAttendeeService                           agendaEventAttendeeService;
@@ -488,6 +497,16 @@ public class CaldavEventPropagationService {
     }
     Set<Long> invited = invitedUsers(eventId);
     invited.remove(authorIdentityId);
+    // An event a colleague created in somebody else's personal calendar
+    // (EXO-90378) is carried out by that calendar's owner, whether or not they
+    // were invited: the author's browser no longer copies it — it is not their
+    // account's to copy — and the owner's own sweep would take until the next
+    // pass. The owner is added to the set the ordinary loop writes for, so the
+    // one seeding path stays the one seeding path.
+    long ownerToCarry = ownerCarryingCreation(eventId, authorIdentityId);
+    if (ownerToCarry > 0) {
+      invited.add(ownerToCarry);
+    }
     if (invited.isEmpty()) {
       LOG.debug("Event {} was created with nobody this add-on has to copy it to; nothing is written", eventId);
       return 0;
@@ -507,6 +526,41 @@ public class CaldavEventPropagationService {
              written,
              invited.size());
     return written;
+  }
+
+  /**
+   * The owner of the personal calendar an event was created in, when that
+   * owner is not its author (EXO-90378) — the one account that must carry the
+   * creation out, and 0 when nobody must.
+   *
+   * <p>
+   * A space calendar answers 0: its owner is a space, and a space meeting
+   * reaches its attendees' mirrors through the invited set above. A calendar
+   * the author owns answers 0 too: their own browser pushes it, as it always
+   * did.
+   *
+   * @param eventId the agenda event just created
+   * @param authorIdentityId whoever created it
+   * @return the owner's identity identifier, or 0
+   */
+  private long ownerCarryingCreation(long eventId, long authorIdentityId) {
+    try {
+      Event event = agendaEventService.getEventById(eventId);
+      if (event == null) {
+        return 0;
+      }
+      Calendar calendar = agendaCalendarService.getCalendarById(event.getCalendarId());
+      if (calendar == null || calendar.isDeleted() || calendar.getOwnerId() == authorIdentityId) {
+        return 0;
+      }
+      Identity owner = identityManager.getIdentity(String.valueOf(calendar.getOwnerId()));
+      return owner != null && owner.isUser() ? calendar.getOwnerId() : 0;
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("The owner of the calendar of the new event {} could not be read; only the invited users are written to",
+               eventId,
+               e);
+      return 0;
+    }
   }
 
   /**
