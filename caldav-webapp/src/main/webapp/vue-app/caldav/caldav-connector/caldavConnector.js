@@ -218,50 +218,20 @@ const caldavConnector = {
   },
 
   /**
-   * What this connector adds to the menu of the user's own calendars in
-   * agenda's left panel (EXO-90253): "Share", on each calendar the platform
-   * says can be shared from eXo — owned, exported to the connected account or
-   * imported from it and owned there, on
-   * a server where every grant is confirmed. Agenda asks connectors declaring this
-   * and `runCalendarAction`, and draws the labels as given.
+   * What agenda's Share drawer calls a share this add-on carried to the
+   * server (EXO-90357): the server's host, for a delivery this connector's
+   * server made — `caldav:<serverId>` — and nothing for any other channel,
+   * so agenda asks the next connector or words the id itself.
    *
-   * Never rejects: a connector that cannot answer adds nothing.
-   *
-   * @returns {Promise<Object>} {calendarId: [{id, label, icon}]}, empty when
-   *          no calendar can be shared
+   * @param {String} channelId the channel a share was delivered to
+   * @returns {String} the host, or an empty string when the channel is not
+   *          this connector's server
    */
-  calendarActions() {
-    return Promise.all([caldavConnectorService.getShareableCalendars(), labels()])
-      .then(([calendarIds, bundle]) => {
-        // The key itself when the bundle could not be read, like every other
-        // label of this add-on: an English word would pass for a translation.
-        const label = bundle && bundle['caldav.share.menu'] || 'caldav.share.menu';
-        const actions = {};
-        (calendarIds || []).forEach(calendarId => {
-          actions[calendarId] = [{id: 'caldavShareCalendar', label, icon: 'fa-share-alt'}];
-        });
-        return actions;
-      })
-      .catch(() => ({}));
-  },
-
-  /**
-   * Runs an action `calendarActions` offered. "Share" opens the share drawer
-   * of this add-on, which lives in a Vue app of its own: the request crosses
-   * as a document event, the one signal that reaches it from agenda's app.
-   *
-   * @param {String} actionId the id of the action offered
-   * @param {Object} calendar the agenda calendar, {id, name}
-   * @returns {Promise<Boolean>} true when the action was this connector's
-   */
-  runCalendarAction(actionId, calendar) {
-    if (actionId !== 'caldavShareCalendar' || !calendar || !calendar.id) {
-      return Promise.resolve(false);
+  channelLabel(channelId) {
+    if (!channelId || this.serverId == null || channelId !== `caldav:${this.serverId}`) {
+      return '';
     }
-    document.dispatchEvent(new CustomEvent('open-caldav-share-calendar-drawer', {
-      detail: {id: calendar.id, name: calendar.name || calendar.title || ''},
-    }));
-    return Promise.resolve(true);
+    return serverHost(this.serverUrl) || '';
   },
 
   /**
