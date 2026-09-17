@@ -265,6 +265,19 @@ public class CaldavCalendarShareService {
    */
   private static final Set<String> BLUEMIND_READ_CLOSURE  = Set.of("Read", "Freebusy", "Invitation", "Visible");
 
+  /** The BlueMind verb a {@code CS:read-write} share stores (EXO-90378). */
+  private static final String      BLUEMIND_WRITE         = "Write";
+
+  /**
+   * What one stored {@code Write} lists as (EXO-90378). BlueMind's
+   * {@code Verb.java} declares {@code Write(Read)} above
+   * {@code Read(Freebusy, Visible)} and {@code Freebusy(Invitation)}, and its
+   * REST access list is expanded; a subject holding nothing outside this set
+   * holds no more than reading and writing the calendar's events — not
+   * {@code Manage}, not {@code All}, not {@code ReadExtended}.
+   */
+  private static final Set<String> BLUEMIND_WRITE_CLOSURE = Set.of("Write", "Read", "Freebusy", "Invitation", "Visible");
+
   /** A BlueMind user principal: the segment is the directory entry uid. */
   private static final Pattern     BLUEMIND_PRINCIPAL     = Pattern.compile("/dav/principals/__uids__/([^/]+)");
 
@@ -588,13 +601,17 @@ public class CaldavCalendarShareService {
    * than rewritten, because writing it back would widen it.
    *
    * <p>
-   * <b>BlueMind grants reading at either level</b> and says so: its
-   * {@code CS:share} carries {@code CS:read} and nothing else, and whether it
-   * honours {@code CS:read-write} is unverified. An edit share is therefore
-   * delivered there at {@link ShareAccess#READ} — the colleague still edits in
-   * eXo, and the owner's own account carries their changes to the server — and
-   * the answer says which level the server actually holds, so agenda logs the
-   * difference instead of failing the share.
+   * <b>BlueMind carries both levels</b> (EXO-90378): {@code CS:read} for
+   * {@link ShareAccess#READ}, {@code CS:read-write} for
+   * {@link ShareAccess#WRITE}, which its {@code SharingProtocol} stores as the
+   * verb {@code Write}. Established from BlueMind's published source —
+   * {@code bluemind-public/bluemind},
+   * {@code plugins/net.bluemind.dav.server/.../proto/sharing/}, {@code release/5.7}
+   * at {@code 130d1376}, byte-identical on 4.9 through master — not from a
+   * live probe. A {@code 200} from it is not proof of anything, so the level
+   * is read back from the container's access list; a read-back that says less
+   * than was asked for is reported as the level the server <b>holds</b>, never
+   * as the one requested.
    *
    * @param userIdentityId identity identifier of the caller
    * @param username the caller, who must own the calendar
@@ -623,9 +640,7 @@ public class CaldavCalendarShareService {
         throw new IllegalArgumentException(SAME_PRINCIPAL);
       }
       if (mechanism == SharingMechanism.BLUEMIND_SHARE) {
-        // BlueMind carries reading only, at either level (EXO-90378): the
-        // answer names READ and the caller decides what to make of it
-        return blueMindGrant(target, sharee, username, ownerPrincipal);
+        return blueMindGrant(target, sharee, username, ownerPrincipal, wanted);
       }
       Lock lock = lockOf(target);
       lock.lock();
@@ -1320,7 +1335,11 @@ public class CaldavCalendarShareService {
    * @param ownerPrincipal the owner's canonical principal
    * @return the sharees as read back
    */
-  private CalendarShares blueMindGrant(ShareTarget target, Sharee sharee, String username, String ownerPrincipal) {
+  private CalendarShares blueMindGrant(ShareTarget target,
+                                       Sharee sharee,
+                                       String username,
+                                       String ownerPrincipal,
+                                       ShareAccess wanted) {
     String shareeUid = blueMindUidOf(sharee.principal());
     if (shareeUid == null) {
       throw new IllegalArgumentException(SHAREE_NOT_CONNECTED);
@@ -1331,34 +1350,44 @@ public class CaldavCalendarShareService {
       List<BlueMindAce> before = blueMindAclOf(target);
       requireBlueMindManager(target, before);
       Set<String> theirs = blueMindVerbsOf(before, shareeUid);
-      if (!BLUEMIND_READ_CLOSURE.containsAll(theirs)) {
-        throw new IllegalArgumentException(NOT_READ_ONLY);
+      boolean write = wanted == ShareAccess.WRITE;
+      if (!theirs.isEmpty() && !isExoShapedBlueMind(theirs)) {
+        // Something eXo did not write — Manage, All, ReadExtended, or free/busy
+        // alone. A CS:set overwrites the subject's verb, so rewriting one of
+        // these would take away access the owner granted in BlueMind's own
+        // interface; refused rather than rewritten, as revoke refuses it.
+        throw new IllegalArgumentException(BLUEMIND_READ_CLOSURE.containsAll(theirs) ? SHAREE_HAS_OTHER_ACCESS
+                                                                                     : NOT_READ_ONLY);
       }
-      if (theirs.contains(BLUEMIND_READ)) {
-        LOG.debug("Calendar {} is already readable by {}; nothing is sent", target.calendarId(), sharee.principal());
+      if (write ? isPlainBlueMindWrite(theirs) : isPlainBlueMindRead(theirs)) {
+        LOG.debug("Calendar {} already grants {} to {}; nothing is sent", target.calendarId(), wanted, sharee.principal());
         return blueMindSharesOf(target, before, ownerPrincipal);
       }
-      if (!theirs.isEmpty()) {
-        throw new IllegalArgumentException(SHAREE_HAS_OTHER_ACCESS);
-      }
-      postBlueMindShare(target, blueMindAddressOf(target, sharee), false);
+      postBlueMindShare(target, blueMindAddressOf(target, sharee), false, write);
       List<BlueMindAce> after = blueMindAclOf(target);
-      if (!blueMindVerbsOf(after, shareeUid).contains(BLUEMIND_READ)) {
+      Set<String> now = blueMindVerbsOf(after, shareeUid);
+      if (!now.contains(BLUEMIND_READ)) {
         LOG.warn("The server answered the share of calendar {} ({}) with {}, but its access list read back gives entry {} no read"
             + " access; reported as not applied", target.calendarId(), target.href(), sharee.principal(), shareeUid);
         throw new CaldavShareException(NOT_APPLIED);
       }
+      if (write && !now.contains(BLUEMIND_WRITE)) {
+        // BlueMind answers 200 even when the share did nothing — an unresolved
+        // CS:href is logged and skipped, and its handler swallows every failure
+        // — so a 200 is not proof of the level (EXO-90378). The read-back is,
+        // and it says reading: reported as the level the server holds rather
+        // than as the level asked for. Not a failure: the colleague reads the
+        // calendar on the server and edits it in eXo, and agenda logs the
+        // difference. blueMindSharesOf answers READ from the same verbs.
+        LOG.warn("The server answered the write share of calendar {} ({}) with {}, but its access list read back gives entry {}"
+            + " reading only; reported as read access", target.calendarId(), target.href(), sharee.principal(), shareeUid);
+      }
       warnOnChangedBlueMindEntries(target, before, after, shareeUid);
       followShareeSubscription(target, sharee, username, shareeUid, true);
-      // Read, and only read, whatever level was asked for (EXO-90378): eXo
-      // posts CS:share with CS:read, and whether BlueMind honours
-      // CS:read-write — and stores the verb Write for it — is unverified. The
-      // caller reads ShareAccess.READ off the answer and reports the
-      // difference; the colleague edits in eXo all the same, and the owner's
-      // own account carries their changes to this server.
-      LOG.info("CalDAV share granted: user {} gave {} read access to calendar {} ({}) as BlueMind entry {} on server {}",
+      LOG.info("CalDAV share granted: user {} gave {} {} access to calendar {} ({}) as BlueMind entry {} on server {}",
                username,
                sharee.username(),
+               write ? "read and write" : "read",
                target.calendarId(),
                target.href(),
                shareeUid,
@@ -1402,7 +1431,7 @@ public class CaldavCalendarShareService {
         LOG.debug("Calendar {} gives {} nothing; nothing is sent", target.calendarId(), sharee.principal());
         return blueMindSharesOf(target, before, ownerPrincipal);
       }
-      if (!isPlainBlueMindRead(theirs)) {
+      if (!isExoShapedBlueMind(theirs)) {
         throw new IllegalArgumentException(NOT_READ_ONLY);
       }
       postBlueMindShare(target, blueMindAddressOf(target, sharee), true);
@@ -1547,8 +1576,21 @@ public class CaldavCalendarShareService {
    * @param remove whether to stop sharing
    */
   private void postBlueMindShare(ShareTarget target, String address, boolean remove) {
+    postBlueMindShare(target, address, remove, false);
+  }
+
+  /**
+   * Posts one {@code CS:share} at one of the two levels eXo writes
+   * (EXO-90378).
+   *
+   * @param target the calendar
+   * @param address the sharee's mail address
+   * @param remove true to stop sharing
+   * @param write true for {@code CS:read-write}, false for {@code CS:read}
+   */
+  private void postBlueMindShare(ShareTarget target, String address, boolean remove, boolean write) {
     try {
-      calDavClient.postCalendarServerShare(target.endpoint(), target.pair(), address, remove);
+      calDavClient.postCalendarServerShare(target.endpoint(), target.pair(), address, remove, write);
     } catch (CalDavForbiddenException e) {
       throw new CaldavShareException(SERVER_REFUSED, List.of(), List.of(), e);
     }
@@ -1605,18 +1647,24 @@ public class CaldavCalendarShareService {
     }
     List<CalendarSharee> sharees = new ArrayList<>();
     verbsBySubject.forEach((subject, verbs) -> {
-      boolean more = !BLUEMIND_READ_CLOSURE.containsAll(verbs);
-      if (!more && !verbs.contains(BLUEMIND_READ)) {
+      // Three answers since EXO-90378: a plain read is READ, a plain write is
+      // WRITE — both shapes eXo writes — and anything else was given outside
+      // eXo and is MORE
+      boolean read = isPlainBlueMindRead(verbs);
+      boolean writeGrant = isPlainBlueMindWrite(verbs);
+      boolean more = !read && !writeGrant;
+      if (more && BLUEMIND_READ_CLOSURE.containsAll(verbs)) {
+        // Free/busy alone, or nothing: access below viewing, not a sharee
         return;
       }
       String canonical = "/dav/principals/__uids__/" + subject;
       String href = AccessControlEntry.principalHrefOf(canonical);
-      ShareAccess access = more ? ShareAccess.MORE : ShareAccess.READ;
+      ShareAccess access = more ? ShareAccess.MORE : (writeGrant ? ShareAccess.WRITE : ShareAccess.READ);
       List<ShareUser> users = usersConnectedAs(target, canonical);
       if (users.isEmpty()) {
         sharees.add(new CalendarSharee(href, ShareeKind.OUTSIDE_EXO, List.of(), nameOf(target, href, canonical), access, false));
       } else {
-        sharees.add(new CalendarSharee(href, ShareeKind.EXO_USERS, users, null, access, isPlainBlueMindRead(verbs)));
+        sharees.add(new CalendarSharee(href, ShareeKind.EXO_USERS, users, null, access, access != ShareAccess.MORE));
       }
     });
     verbsByLinkMode.forEach((mode, verbs) -> sharees.add(new CalendarSharee(PUBLISHED_LINK_KEY + (mode == PublishedLinkMode.PUBLIC ? "public" : "private"),
@@ -1664,6 +1712,35 @@ public class CaldavCalendarShareService {
    */
   private static boolean isPlainBlueMindRead(Set<String> verbs) {
     return verbs.contains(BLUEMIND_READ) && BLUEMIND_READ_CLOSURE.containsAll(verbs);
+  }
+
+  /**
+   * Whether a BlueMind subject holds exactly what an eXo "can edit" share
+   * grants there (EXO-90378): {@code Write} and the verbs it expands to, and
+   * nothing outside them.
+   *
+   * @param verbs the subject's expanded verbs
+   * @return true for a plain write grant
+   */
+  private static boolean isPlainBlueMindWrite(Set<String> verbs) {
+    return verbs.contains(BLUEMIND_WRITE) && BLUEMIND_WRITE_CLOSURE.containsAll(verbs);
+  }
+
+  /**
+   * Whether a BlueMind subject holds a grant of a shape eXo itself writes
+   * (EXO-90378) — a plain read or a plain write — and which eXo may therefore
+   * widen, narrow or take back.
+   * <p>
+   * Anything else was given outside eXo: {@code Manage}, {@code All},
+   * {@code ReadExtended}, or free/busy alone. eXo never rewrites those, which
+   * is what keeps a {@code CS:set} — which overwrites a subject's verb — from
+   * taking away access the owner granted in BlueMind's own interface.
+   *
+   * @param verbs the subject's expanded verbs
+   * @return true for a grant eXo could have written
+   */
+  private static boolean isExoShapedBlueMind(Set<String> verbs) {
+    return isPlainBlueMindRead(verbs) || isPlainBlueMindWrite(verbs);
   }
 
   /**

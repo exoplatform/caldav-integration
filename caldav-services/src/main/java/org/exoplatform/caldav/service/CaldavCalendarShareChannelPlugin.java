@@ -187,9 +187,15 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
    * the grant handed back (EXO-90378), or null when it is the level the record
    * asked for — which is the ordinary case and needs no answer.
    * <p>
-   * This is what makes BlueMind's limit visible without failing the share: its
-   * {@code CS:share} carries reading only, so an edit share comes back as
-   * {@code READ} here, agenda logs the difference and the eXo level stands.
+   * This is what keeps a server's answer from being taken on trust. Both
+   * servers carry both levels (EXO-90378) — Stalwart through RFC 3744
+   * {@code ACL}, BlueMind through {@code CS:read-write}, which its
+   * {@code SharingProtocol} stores as the verb {@code Write} — but BlueMind
+   * answers {@code 200} even when the share did nothing, so the level is read
+   * back from the container's access list. A read-back that says less than was
+   * asked for comes through here as the narrower level, agenda logs the
+   * difference, and the eXo level stands: the colleague edits in eXo whatever
+   * the server holds.
    *
    * @param carried the shares the collection holds, as the grant read them back
    * @param shareeUsername the colleague
