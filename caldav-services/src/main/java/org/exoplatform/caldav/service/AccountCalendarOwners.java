@@ -52,9 +52,12 @@ import org.apache.commons.lang3.StringUtils;
  *
  * <p>
  * <b>Deferred, and memoised.</b> The listing costs a REST login, a GET and a
- * logout, while most passes never need it: every collection a pass
- * classifies is settled by the user's own pairs, the deployment's pairs or
- * the naming before this witness is heard. So the listing is fetched the
+ * logout, while most passes never need it: a collection outside eXo's
+ * naming never reaches this witness, and one inside it is settled by the
+ * user's own pairs or the deployment's pairs before this witness is heard.
+ * The sweep's skip line and its retirement of a bound subscription never
+ * fetch either: the one reads what was {@linkplain #ownerAlreadyHeard
+ * already heard}, the other hears the silent witness. So the listing is fetched the
  * first time a question reaches it and kept for the rest of the pass —
  * one fetch per account per pass at most, none when nothing asks — which is
  * the bound the sweep is held to. Across passes the fetch is served from
@@ -256,6 +259,27 @@ public final class AccountCalendarOwners {
   }
 
   /**
+   * The word already heard on one calendar, fetching and refreshing nothing:
+   * what a line written after the classification may cite without costing
+   * the account a request.
+   *
+   * <p>
+   * A deferred witness whose fetch has not run answers {@link Word#UNKNOWN}
+   * for every calendar — the listing was never needed, so nothing is known
+   * of it — and one that has run answers from the listing it holds, the
+   * fresh one when the refresh replaced it. The sweep's skip line asks this
+   * for a share the deployment's own pairs settled: the listing may never
+   * have been read for it, and the line must not be the reason it is.
+   *
+   * @param containerUid the calendar's container uid
+   * @return the verdict, never null
+   */
+  public synchronized Verdict ownerAlreadyHeard(String containerUid) {
+    AccountCalendarOwners listing = deferred == null ? this : resolved;
+    return listing == null ? new Verdict(Word.UNKNOWN, null) : listing.verdictOn(containerUid);
+  }
+
+  /**
    * This listing's word on one calendar, with no refresh.
    *
    * @param containerUid the calendar's container uid
@@ -295,7 +319,6 @@ public final class AccountCalendarOwners {
       return null;
     }
   }
-
 
   /**
    * The listing behind this witness, fetched now if it was deferred.
