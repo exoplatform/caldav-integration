@@ -566,6 +566,53 @@ public class CaldavCalendarShareService {
                               String username,
                               long calendarId,
                               String shareeUsername) throws ObjectNotFoundException, IllegalAccessException {
+    return grant(userIdentityId, username, calendarId, shareeUsername, ShareAccess.READ);
+  }
+
+  /**
+   * Gives one colleague access to a calendar of the caller's, at the level
+   * asked for (EXO-90378).
+   *
+   * <p>
+   * <b>Reconciling, not only granting.</b> {@link ShareAccess#WRITE} over an
+   * existing read grant widens it, {@link ShareAccess#READ} over an edit grant
+   * narrows it, and either over a grant that already matches writes nothing —
+   * so agenda can call this whenever a record's level changes and get the
+   * server into that state, whatever it was in.
+   *
+   * <p>
+   * The refusal ladder is unchanged in shape, only in what it calls an eXo
+   * grant: a sharee's own modifiable entry that is neither read-only nor
+   * edit-only — a right given outside eXo, which on Stalwart reads back as a
+   * bare {@code DAV:write} — is still refused ({@link #NOT_READ_ONLY}) rather
+   * than rewritten, because writing it back would widen it.
+   *
+   * <p>
+   * <b>BlueMind grants reading at either level</b> and says so: its
+   * {@code CS:share} carries {@code CS:read} and nothing else, and whether it
+   * honours {@code CS:read-write} is unverified. An edit share is therefore
+   * delivered there at {@link ShareAccess#READ} — the colleague still edits in
+   * eXo, and the owner's own account carries their changes to the server — and
+   * the answer says which level the server actually holds, so agenda logs the
+   * difference instead of failing the share.
+   *
+   * @param userIdentityId identity identifier of the caller
+   * @param username the caller, who must own the calendar
+   * @param calendarId technical identifier of the calendar
+   * @param shareeUsername the colleague
+   * @param access the level to grant, {@link ShareAccess#READ} or
+   *          {@link ShareAccess#WRITE}; never {@link ShareAccess#MORE}, which
+   *          names a grant eXo does not write
+   * @return the shares the collection holds once the list has been read back
+   * @throws ObjectNotFoundException when there is no such calendar
+   * @throws IllegalAccessException when the caller does not own it
+   */
+  public CalendarShares grant(long userIdentityId, // NOSONAR
+                              String username,
+                              long calendarId,
+                              String shareeUsername,
+                              ShareAccess access) throws ObjectNotFoundException, IllegalAccessException {
+    ShareAccess wanted = access == ShareAccess.WRITE ? ShareAccess.WRITE : ShareAccess.READ;
     ShareTarget target = targetOf(userIdentityId, username, calendarId);
     Sharee sharee = shareeOf(target, shareeUsername);
     return withMeetingCopies(target, username, onServer(() -> {
@@ -576,38 +623,48 @@ public class CaldavCalendarShareService {
         throw new IllegalArgumentException(SAME_PRINCIPAL);
       }
       if (mechanism == SharingMechanism.BLUEMIND_SHARE) {
+        // BlueMind carries reading only, at either level (EXO-90378): the
+        // answer names READ and the caller decides what to make of it
         return blueMindGrant(target, sharee, username, ownerPrincipal);
       }
       Lock lock = lockOf(target);
       lock.lock();
       try {
         CollectionAcl before = usableAcl(target);
-        if (before.entries().stream().anyMatch(entry -> entry.appliesTo(sharee.principal()) && entry.grantsRead())) {
-          LOG.debug("Calendar {} is already readable by {}; nothing is written", calendarId, sharee.principal());
+        List<AccessControlEntry> theirs = modifiableEntriesOf(before).stream()
+                                                                     .filter(entry -> entry.appliesTo(sharee.principal()))
+                                                                     .toList();
+        if (alreadyAt(before, sharee.principal(), wanted)) {
+          LOG.debug("Calendar {} already grants {} to {}; nothing is written", calendarId, wanted, sharee.principal());
           return sharesOf(target, before, ownerPrincipal);
         }
         // The sharee's own entries are written back too, beside the new grant,
-        // and on Stalwart an entry holding more than read — a JMAP "may delete"
-        // right reads back as DAV:write with no read — comes back as full
-        // write. Sharing is read-only: it never widens what the colleague
-        // already holds, so such an entry is refused as revoke refuses it.
-        if (modifiableEntriesOf(before).stream()
-                                       .anyMatch(entry -> entry.appliesTo(sharee.principal()) && !entry.grantsReadOnly())) {
+        // and on Stalwart an entry holding rights given outside eXo — a JMAP
+        // "may delete" right reads back as DAV:write with no read — comes back
+        // as full write. eXo never widens what a colleague already holds by
+        // accident: an entry of a shape eXo does not write is refused, as
+        // revoke refuses it. An entry eXo did write, at either level, is
+        // replaced by the one the caller asked for.
+        if (theirs.stream().anyMatch(entry -> !entry.grantsExoShape())) {
           throw new IllegalArgumentException(NOT_READ_ONLY);
         }
         List<AccessControlEntry> entries = new ArrayList<>(preservableEntriesOf(target, before, sharee.principal()));
-        entries.add(AccessControlEntry.readGrantTo(AccessControlEntry.principalHrefOf(sharee.principal())));
+        entries.removeAll(theirs);
+        String shareeHref = AccessControlEntry.principalHrefOf(sharee.principal());
+        entries.add(wanted == ShareAccess.WRITE ? AccessControlEntry.editGrantTo(shareeHref)
+                                                : AccessControlEntry.readGrantTo(shareeHref));
         write(target, entries);
         CollectionAcl after = readBack(target);
-        if (after.entries().stream().noneMatch(entry -> entry.appliesTo(sharee.principal()) && entry.grantsRead())) {
-          LOG.warn("The server accepted read access to calendar {} ({}) for {}, but the access list read back does not"
-              + " hold it; reported as not applied", calendarId, target.href(), sharee.principal());
+        if (!alreadyAt(after, sharee.principal(), wanted)) {
+          LOG.warn("The server accepted {} access to calendar {} ({}) for {}, but the access list read back does not"
+              + " hold it; reported as not applied", wanted, calendarId, target.href(), sharee.principal());
           throw new CaldavShareException(NOT_APPLIED);
         }
         warnOnLostEntries(target, before, after, sharee.principal());
-        LOG.info("CalDAV share granted: user {} gave {} read access to calendar {} ({}) as principal {} on server {}",
+        LOG.info("CalDAV share granted: user {} gave {} {} access to calendar {} ({}) as principal {} on server {}",
                  username,
                  sharee.username(),
+                 wanted,
                  calendarId,
                  target.href(),
                  sharee.principal(),
@@ -620,12 +677,40 @@ public class CaldavCalendarShareService {
   }
 
   /**
-   * Takes read access to a calendar of the caller's away from one colleague.
+   * Whether a list already grants a principal exactly the level asked for, and
+   * nothing that would have to be narrowed (EXO-90378).
    *
    * <p>
-   * Removes that colleague's read-only grants and nothing else; a grant that
-   * gives them more — made outside eXo — is not eXo's to take back, and the
-   * whole request is refused rather than half applied. Idempotent: a
+   * Asked before a write and again after it, so the same rule decides "nothing
+   * to do" and "the server really applied it". A read request is satisfied by a
+   * read-only grant alone: a principal holding an edit grant is <b>not</b> at
+   * READ, and the write that follows narrows them, which is what a downgrade
+   * must do.
+   *
+   * @param acl the list as the server holds it
+   * @param principal the sharee's canonical principal
+   * @param wanted the level asked for
+   * @return true when the list already says exactly that
+   */
+  private static boolean alreadyAt(CollectionAcl acl, String principal, ShareAccess wanted) {
+    List<AccessControlEntry> theirs = acl.entries().stream().filter(entry -> entry.appliesTo(principal) && !entry.deny()).toList();
+    if (theirs.isEmpty()) {
+      return false;
+    }
+    return wanted == ShareAccess.WRITE ? theirs.stream().anyMatch(AccessControlEntry::grantsEditOnly)
+                                                && theirs.stream().allMatch(AccessControlEntry::grantsExoShape)
+                                       : theirs.stream().allMatch(AccessControlEntry::grantsReadOnly);
+  }
+
+  /**
+   * Takes access to a calendar of the caller's away from one colleague,
+   * whichever level eXo granted it at.
+   *
+   * <p>
+   * Removes that colleague's eXo-shaped grants — a read grant, or an edit
+   * grant (EXO-90378) — and nothing else; a grant of any other shape was made
+   * outside eXo, is not eXo's to take back, and the whole request is refused
+   * rather than half applied. Idempotent: a
    * colleague with no grant is left alone and nothing is written.
    *
    * @param userIdentityId the caller
@@ -665,7 +750,11 @@ public class CaldavCalendarShareService {
           LOG.debug("Calendar {} grants nothing to {}; nothing is written", calendarId, sharee.principal());
           return sharesOf(target, before, ownerPrincipal);
         }
-        if (grants.stream().anyMatch(entry -> !entry.isModifiable() || !entry.grantsReadOnly())) {
+        // Both shapes eXo writes are eXo's to take back (EXO-90378): a read
+        // grant and an edit grant. Anything else was given outside eXo and is
+        // not eXo's to remove — the whole request is refused rather than half
+        // applied.
+        if (grants.stream().anyMatch(entry -> !entry.isModifiable() || !entry.grantsExoShape())) {
           throw new IllegalArgumentException(NOT_READ_ONLY);
         }
         List<AccessControlEntry> entries = preservableEntriesOf(target, before, sharee.principal()).stream()
@@ -972,12 +1061,21 @@ public class CaldavCalendarShareService {
    * come back with different rights.
    *
    * <p>
-   * Only a plain read-only grant — {@code DAV:read},
+   * Only a grant of a shape eXo itself writes is written back for somebody
+   * else: a plain read-only grant — {@code DAV:read},
    * {@code read-current-user-privilege-set}, {@code CALDAV:read-free-busy} —
-   * is written back for somebody else: those never widen. Anything more (a
-   * write privilege, access-control privileges, a scheduling or vendor
-   * privilege), a deny and an inverted entry stop the write before a request
-   * is built. See the class documentation for why a list read over DAV cannot
+   * or, since EXO-90378, an edit grant, {@code DAV:read} <b>and</b>
+   * {@code DAV:write} and nothing beyond those read-ish extras. Neither
+   * widens: each is exactly what eXo asked the server for in the first place,
+   * so carrying it back returns the colleague to the rights the owner gave
+   * them. Without that second shape, the first edit share on a collection
+   * would stop every later grant and revoke on it.
+   * <p>
+   * Anything else — access-control privileges, a scheduling or vendor
+   * privilege, and above all a bare {@code DAV:write}, which is how a right
+   * given through Stalwart's JMAP reads back — a deny and an inverted entry
+   * stop the write before a request is built. Requiring {@code DAV:read}
+   * beside the write is what keeps that last case out. See the class documentation for why a list read over DAV cannot
    * be trusted to carry more back, and what narrowing remains.
    *
    * @param target the calendar being shared
@@ -991,11 +1089,11 @@ public class CaldavCalendarShareService {
     List<AccessControlEntry> modifiable = modifiableEntriesOf(acl);
     long unsafe = modifiable.stream()
                             .filter(entry -> !entry.appliesTo(changedPrincipal))
-                            .filter(entry -> !entry.grantsReadOnly())
+                            .filter(entry -> !entry.grantsExoShape())
                             .count();
     if (unsafe > 0) {
-      LOG.info("Calendar {} ({}) gives {} other access entries more than read access; its list is not written back, since"
-          + " the server could return those rights changed", target.calendarId(), target.href(), unsafe);
+      LOG.info("Calendar {} ({}) gives {} other access entries a shape eXo does not write; its list is not written back,"
+          + " since the server could return those rights changed", target.calendarId(), target.href(), unsafe);
       throw new CaldavShareException(FOREIGN_ACCESS_NOT_PRESERVED);
     }
     return modifiable;
@@ -1104,7 +1202,18 @@ public class CaldavCalendarShareService {
                                   String key,
                                   AccessControlEntry.AcePrincipal principal,
                                   List<AccessControlEntry> entries) {
-    ShareAccess access = entries.stream().allMatch(AccessControlEntry::grantsReadOnly) ? ShareAccess.READ : ShareAccess.MORE;
+    // Three answers since EXO-90378, asked narrowest first: a set of plain
+    // read grants is READ; a set eXo could have written that holds an edit
+    // grant is WRITE; anything else was given outside eXo and is MORE.
+    ShareAccess access;
+    if (entries.stream().allMatch(AccessControlEntry::grantsReadOnly)) {
+      access = ShareAccess.READ;
+    } else if (entries.stream().allMatch(AccessControlEntry::grantsExoShape)
+        && entries.stream().anyMatch(AccessControlEntry::grantsEditOnly)) {
+      access = ShareAccess.WRITE;
+    } else {
+      access = ShareAccess.MORE;
+    }
     if (principal.kind() != AccessControlEntry.AcePrincipal.Kind.HREF) {
       return new CalendarSharee(key, ShareeKind.EVERYONE, List.of(), null, access, false);
     }
@@ -1112,7 +1221,10 @@ public class CaldavCalendarShareService {
     if (users.isEmpty()) {
       return new CalendarSharee(principal.href(), ShareeKind.OUTSIDE_EXO, List.of(), nameOf(target, principal.href(), key), access, false);
     }
-    boolean removable = access == ShareAccess.READ && entries.stream().allMatch(AccessControlEntry::isModifiable);
+    // Removable at either level eXo grants: a share eXo wrote is a share eXo
+    // takes back. Only a grant of a shape eXo does not write stays the
+    // server's to undo.
+    boolean removable = access != ShareAccess.MORE && entries.stream().allMatch(AccessControlEntry::isModifiable);
     return new CalendarSharee(principal.href(), ShareeKind.EXO_USERS, users, null, access, removable);
   }
 
@@ -1238,6 +1350,12 @@ public class CaldavCalendarShareService {
       }
       warnOnChangedBlueMindEntries(target, before, after, shareeUid);
       followShareeSubscription(target, sharee, username, shareeUid, true);
+      // Read, and only read, whatever level was asked for (EXO-90378): eXo
+      // posts CS:share with CS:read, and whether BlueMind honours
+      // CS:read-write — and stores the verb Write for it — is unverified. The
+      // caller reads ShareAccess.READ off the answer and reports the
+      // difference; the colleague edits in eXo all the same, and the owner's
+      // own account carries their changes to this server.
       LOG.info("CalDAV share granted: user {} gave {} read access to calendar {} ({}) as BlueMind entry {} on server {}",
                username,
                sharee.username(),

@@ -415,6 +415,30 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
+   * BlueMind carries reading, at either level asked for (EXO-90378): its
+   * {@code CS:share} says {@code CS:read} and nothing else, and whether it
+   * honours {@code CS:read-write} is unverified. An edit share is therefore
+   * <b>delivered</b> there at {@link ShareAccess#READ} rather than refused —
+   * the colleague edits in eXo, and the owner's own account carries their
+   * changes to the server — and the answer says which level the server holds,
+   * which is what lets agenda log the difference.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAnEditShareIsCarriedAsReadingAndSaysSo() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner(), acl(owner(), expanded(ERIC_UID, "Read")));
+
+    CalendarShares shares = service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE);
+
+    verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
+    assertEquals(ShareAccess.READ,
+                 shares.sharees().get(0).access(),
+                 "the level the server actually holds, which the channel reports back to agenda");
+  }
+
+  /**
    * BlueMind answers 200 to a share it did not apply — an address its
    * directory does not match, a failure it swallowed. A grant the access list
    * read back does not hold is not applied.
@@ -897,6 +921,101 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
+   * A "can edit" share (EXO-90378) writes one entry granting {@code DAV:read}
+   * and {@code DAV:write}, keeps everybody else's, and reads back as
+   * {@link ShareAccess#WRITE} — removable, because eXo wrote it.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anEditGrantWritesReadAndWriteAndReadsBackAsWrite() throws Exception {
+    AccessControlEntry carols = AccessControlEntry.readGrantTo("/dav/pal/carol%40stalwart.local/");
+    AccessControlEntry bobsEdit = AccessControlEntry.editGrantTo("/dav/pal/bob%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(carols), Set.of()),
+                                                                CollectionAcl.of(List.of(carols, bobsEdit), Set.of()));
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<AccessControlEntry>> written = ArgumentCaptor.forClass(List.class);
+    when(calDavClient.writeAcl(eq(endpoint), any(), written.capture())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    CalendarShares shares = service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE);
+
+    assertEquals(List.of(carols, bobsEdit), written.getValue());
+    assertEquals(Set.of("{DAV:}read", "{DAV:}write"),
+                 written.getValue().get(1).privileges(),
+                 "read is written beside write, which is what tells an eXo edit grant from a JMAP right");
+    CalendarSharee bob = shares.sharees().stream().filter(sharee -> "bob".equals(sharee.users().get(0).username())).findFirst().orElseThrow();
+    assertEquals(ShareAccess.WRITE, bob.access());
+    assertTrue(bob.removable(), "a share eXo wrote is a share eXo takes back");
+  }
+
+  /**
+   * Levelling reconciles in both directions (EXO-90378): a read grant is
+   * widened to an edit grant, and an edit grant is narrowed back to a read
+   * grant — one entry each time, never two.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void levellingWidensAReadGrantAndNarrowsAnEditGrant() throws Exception {
+    AccessControlEntry bobsRead = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    AccessControlEntry bobsEdit = AccessControlEntry.editGrantTo("/dav/pal/bob%40stalwart.local/");
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<AccessControlEntry>> written = ArgumentCaptor.forClass(List.class);
+    when(calDavClient.writeAcl(eq(endpoint), any(), written.capture())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(bobsRead), Set.of()),
+                                                                CollectionAcl.of(List.of(bobsEdit), Set.of()));
+    service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE);
+    assertEquals(List.of(bobsEdit), written.getValue(), "the read grant is replaced, not added to");
+
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(bobsEdit), Set.of()),
+                                                                CollectionAcl.of(List.of(bobsRead), Set.of()));
+    service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
+    assertEquals(List.of(bobsRead), written.getValue(), "and a downgrade narrows it back");
+  }
+
+  /**
+   * Granting the level a colleague already holds writes nothing, at either
+   * level (EXO-90378).
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void grantingTheLevelAlreadyHeldWritesNothing() throws Exception {
+    when(calDavClient.readAcl(endpoint, COLLECTION))
+                                                    .thenReturn(CollectionAcl.of(List.of(AccessControlEntry.editGrantTo("/dav/pal/bob%40stalwart.local/")),
+                                                                                 Set.of()));
+
+    service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE);
+
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+  }
+
+  /**
+   * An edit grant eXo wrote for <b>another</b> colleague does not stop a later
+   * grant or revoke (EXO-90378): it is a shape eXo writes, so carrying it back
+   * returns that colleague exactly the rights the owner gave them. Without
+   * this, the first edit share on a collection would freeze every later change
+   * to its access list.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anotherPrincipalsEditGrantDoesNotStopTheWrite() throws Exception {
+    AccessControlEntry carolsEdit = AccessControlEntry.editGrantTo("/dav/pal/carol%40stalwart.local/");
+    AccessControlEntry bobs = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(carolsEdit), Set.of()),
+                                                                CollectionAcl.of(List.of(carolsEdit, bobs), Set.of()));
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<AccessControlEntry>> written = ArgumentCaptor.forClass(List.class);
+    when(calDavClient.writeAcl(eq(endpoint), any(), written.capture())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    service.grant(ALICE, "alice", CALENDAR, "bob");
+
+    assertEquals(List.of(carolsEdit, bobs), written.getValue(), "carol's edit grant is carried back unchanged");
+  }
+
+  /**
    * Carol was given more than read access outside eXo — what Stalwart shows as
    * {@code DAV:write} for a JMAP "may delete" grant, which written back becomes
    * full write. Sharing with bob, or stopping, must not rewrite her access: the
@@ -1090,19 +1209,51 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
-   * A grant giving bob more than read — made outside eXo — is not eXo's to
-   * take away: the revoke is refused and nothing is written.
+   * A grant of a shape eXo does not write — made outside eXo — is not eXo's
+   * to take away: the revoke is refused and nothing is written. The two
+   * shapes that matter are a bare {@code DAV:write}, which is how a right
+   * given through Stalwart's JMAP reads back, and a privilege beyond writing
+   * events.
    */
   @Test
-  public void aRevokeOfMoreThanReadIsRefused() {
-    AccessControlEntry bobWrites = new AccessControlEntry(AcePrincipal.href("/dav/pal/bob%40stalwart.local/"), false, false,
-                                                          Set.of("{DAV:}read", "{DAV:}write"), false, null);
-    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(bobWrites), Set.of()));
+  public void aRevokeOfAGrantExoDoesNotWriteIsRefused() {
+    AccessControlEntry jmapRight = new AccessControlEntry(AcePrincipal.href("/dav/pal/bob%40stalwart.local/"), false, false,
+                                                          Set.of("{DAV:}write"), false, null);
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(jmapRight), Set.of()));
 
     IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> service.revoke(ALICE, "alice", CALENDAR, "bob"));
 
     assertEquals(CaldavCalendarShareService.NOT_READ_ONLY, refused.getMessage());
+
+    AccessControlEntry manages = new AccessControlEntry(AcePrincipal.href("/dav/pal/bob%40stalwart.local/"), false, false,
+                                                        Set.of("{DAV:}read", "{DAV:}write", "{DAV:}write-acl"), false, null);
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(manages), Set.of()));
+
+    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY,
+                 assertThrows(IllegalArgumentException.class, () -> service.revoke(ALICE, "alice", CALENDAR, "bob")).getMessage());
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+  }
+
+  /**
+   * An edit grant eXo itself wrote (EXO-90378) <b>is</b> eXo's to take back:
+   * revoking removes it as it removes a read grant, and leaves everybody
+   * else's entries alone.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aRevokeRemovesAnEditGrantExoWrote() throws Exception {
+    AccessControlEntry carols = AccessControlEntry.readGrantTo("/dav/pal/carol%40stalwart.local/");
+    AccessControlEntry bobsEdit = AccessControlEntry.editGrantTo("/dav/pal/bob%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(bobsEdit, carols), Set.of()),
+                                                                CollectionAcl.of(List.of(carols), Set.of()));
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<AccessControlEntry>> written = ArgumentCaptor.forClass(List.class);
+    when(calDavClient.writeAcl(eq(endpoint), any(), written.capture())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    service.revoke(ALICE, "alice", CALENDAR, "bob");
+
+    assertEquals(List.of(carols), written.getValue());
   }
 
   /**
@@ -1146,8 +1297,11 @@ public class CaldavCalendarShareServiceTest {
     AccessControlEntry outsiders = AccessControlEntry.readGrantTo("/dav/pal/zoe%40partner.example/");
     AccessControlEntry everyone = new AccessControlEntry(AcePrincipal.of(AcePrincipal.Kind.AUTHENTICATED), false, false,
                                                          Set.of("{DAV:}read"), false, null);
+    // A shape eXo does not write — managing the collection's own access —
+    // which is what MORE means since EXO-90378; a plain {read, write} is an
+    // edit share, and is answered WRITE by the test below
     AccessControlEntry carolWrites = new AccessControlEntry(AcePrincipal.href("/dav/pal/carol%40stalwart.local/"), false, false,
-                                                            Set.of("{DAV:}read", "{DAV:}write"), false, null);
+                                                            Set.of("{DAV:}read", "{DAV:}write", "{DAV:}write-acl"), false, null);
     AccessControlEntry denied = new AccessControlEntry(AcePrincipal.href("/dav/pal/mallory/"), false, true,
                                                        Set.of("{DAV:}read"), false, null);
     when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(ownersOwn, bobs, outsiders, everyone, carolWrites, denied),

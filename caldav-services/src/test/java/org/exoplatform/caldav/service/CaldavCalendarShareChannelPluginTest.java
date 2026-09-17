@@ -39,6 +39,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
+import org.exoplatform.agenda.constant.CalendarShareLevel;
 import org.exoplatform.agenda.constant.CalendarShareSource;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.CalendarShare;
@@ -117,7 +118,7 @@ public class CaldavCalendarShareChannelPluginTest {
    */
   @Test
   public void aGrantTheServerTookIsDeliveredWithItsServerAndCollection() throws Exception {
-    when(shareService.grant(ALICE, "alice", CALENDAR, "bob")).thenReturn(new CalendarShares(CALENDAR, List.of()));
+    when(shareService.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ)).thenReturn(new CalendarShares(CALENDAR, List.of()));
 
     ChannelDelivery delivery = plugin.deliver(share(BOB), "alice");
 
@@ -125,6 +126,45 @@ public class CaldavCalendarShareChannelPluginTest {
     assertEquals("caldav:1", delivery.getChannelId());
     assertEquals(COLLECTION, delivery.getDeliveryRef());
     assertEquals("caldav", plugin.id(), "the bare id, which agenda matches by prefix");
+  }
+
+  /**
+   * An edit share is granted as write on the server (EXO-90378), and the
+   * delivery says nothing about a level the server carried as asked.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anEditShareIsGrantedAsWriteOnTheServer() throws Exception {
+    when(shareService.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE))
+                                                                                .thenReturn(new CalendarShares(CALENDAR,
+                                                                                                               List.of(sharee(ShareAccess.WRITE))));
+
+    ChannelDelivery delivery = plugin.deliver(share(BOB, CalendarShareLevel.EDIT), "alice");
+
+    assertEquals(ChannelDelivery.Status.DELIVERED, delivery.getStatus());
+    assertNull(delivery.getDeliveredLevel(), "the server carried the level asked for, so there is nothing to report");
+    verify(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE);
+  }
+
+  /**
+   * A server that carries reading only — BlueMind, until its write grant is
+   * proved — delivers the share all the same and says which level it holds,
+   * so agenda logs the difference instead of failing the share (EXO-90378).
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aServerThatOnlyCarriesReadingSaysSoAndStillDelivers() throws Exception {
+    when(shareService.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE))
+                                                                                .thenReturn(new CalendarShares(CALENDAR,
+                                                                                                               List.of(sharee(ShareAccess.READ))));
+
+    ChannelDelivery delivery = plugin.deliver(share(BOB, CalendarShareLevel.EDIT), "alice");
+
+    assertEquals(ChannelDelivery.Status.DELIVERED, delivery.getStatus(), "a narrower grant is not a failure");
+    assertEquals(CalendarShareLevel.VIEW, delivery.getDeliveredLevel());
+    assertEquals(COLLECTION, delivery.getDeliveryRef());
   }
 
   /**
@@ -144,10 +184,10 @@ public class CaldavCalendarShareChannelPluginTest {
     assertEquals(ChannelDelivery.Status.NOT_APPLICABLE, plugin.deliver(share(BOB), "alice").getStatus());
 
     doReturn(new SharedCollection(1L, COLLECTION)).when(shareService).sharedCollectionOf(ALICE, "alice", CALENDAR);
-    doThrow(new CaldavShareException(CaldavCalendarShareService.NOT_SUPPORTED)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob");
+    doThrow(new CaldavShareException(CaldavCalendarShareService.NOT_SUPPORTED)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
     assertEquals(ChannelDelivery.Status.NOT_APPLICABLE, plugin.deliver(share(BOB), "alice").getStatus());
 
-    doThrow(new IllegalArgumentException(CaldavCalendarShareService.SHAREE_NOT_CONNECTED)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob");
+    doThrow(new IllegalArgumentException(CaldavCalendarShareService.SHAREE_NOT_CONNECTED)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
     ChannelDelivery exoOnly = plugin.deliver(share(BOB), "alice");
     assertEquals(ChannelDelivery.Status.NOT_APPLICABLE, exoOnly.getStatus(), "a colleague without an account on the server is the eXo-only case");
     assertNull(exoOnly.getFailureCode());
@@ -162,15 +202,15 @@ public class CaldavCalendarShareChannelPluginTest {
    */
   @Test
   public void aRefusalIsAFailureNamedInAgendasShape() throws Exception {
-    doThrow(new CaldavShareException(CaldavCalendarShareService.SERVER_UNAVAILABLE)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob");
+    doThrow(new CaldavShareException(CaldavCalendarShareService.SERVER_UNAVAILABLE)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
     ChannelDelivery delivery = plugin.deliver(share(BOB), "alice");
     assertEquals(ChannelDelivery.Status.FAILED, delivery.getStatus());
     assertEquals("SERVER_UNREACHABLE", delivery.getFailureCode());
 
-    doThrow(new IllegalArgumentException(CaldavCalendarShareService.SHAREE_HAS_OTHER_ACCESS)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob");
+    doThrow(new IllegalArgumentException(CaldavCalendarShareService.SHAREE_HAS_OTHER_ACCESS)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
     assertEquals("SHAREE_HAS_OTHER_ACCESS", plugin.deliver(share(BOB), "alice").getFailureCode());
 
-    doThrow(new IllegalArgumentException(CaldavCalendarShareService.NOT_READ_ONLY)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob");
+    doThrow(new IllegalArgumentException(CaldavCalendarShareService.NOT_READ_ONLY)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
     assertEquals("NOT_READ_ONLY", plugin.deliver(share(BOB), "alice").getFailureCode());
 
     assertEquals("FOREIGN_ACCESS_NOT_PRESERVED", CaldavCalendarShareChannelPlugin.codeOf(CaldavCalendarShareService.FOREIGN_ACCESS_NOT_PRESERVED));
@@ -323,7 +363,33 @@ public class CaldavCalendarShareChannelPluginTest {
    * @return the record
    */
   private static CalendarShare share(long shareeId) {
-    return new CalendarShare(1, CALENDAR, shareeId, ALICE, 1000, CalendarShareSource.EXO, null, null, false);
+    return share(shareeId, CalendarShareLevel.VIEW);
+  }
+
+  /**
+   * Alice's share of calendar 12 with a colleague, at a level (EXO-90378).
+   *
+   * @param shareeId the colleague
+   * @param level what the colleague may do with the calendar
+   * @return the record
+   */
+  private static CalendarShare share(long shareeId, CalendarShareLevel level) {
+    return new CalendarShare(1, CALENDAR, shareeId, level, ALICE, 1000, CalendarShareSource.EXO, null, null, false);
+  }
+
+  /**
+   * Bob as the server's list names him, at one access level.
+   *
+   * @param access what his entries grant
+   * @return the sharee
+   */
+  private static CalendarSharee sharee(ShareAccess access) {
+    return new CalendarSharee("/dav/pal/bob%40stalwart.local/",
+                              ShareeKind.EXO_USERS,
+                              List.of(new ShareUser(BOB, "bob", "Bob Test", null)),
+                              null,
+                              access,
+                              true);
   }
 
   /**
