@@ -604,6 +604,49 @@ public class CaldavOutboundService {
   }
 
   /**
+   * Whether a user of this deployment, anyone, holds a calendar for the
+   * container a collection stands for — under whatever home the server
+   * listed it to them (EXO-90347).
+   *
+   * <p>
+   * The third arm of the deployment's word, for what
+   * {@link #isMintedByThisDeployment} cannot see: a calendar a colleague
+   * <em>imported</em> rather than exported. Her pair is REMOTE, its slug is
+   * not her anchor, and its recorded path is under her home while the
+   * listing spells the same container under the sharee's — so neither the
+   * anchor nor the path answers, and the container uid, the last segment,
+   * is what both spellings share. Asked only once the server's own listing
+   * has named another owner for the collection, to tell a colleague's
+   * calendar (held here, {@link CollectionOwnership#COLLEAGUES_EXO_CALENDAR})
+   * from one shared from outside this deployment
+   * ({@link CollectionOwnership#SHARED}); either way the collection is not
+   * adopted, so the answer names the more useful fact rather than deciding
+   * the adoption.
+   *
+   * @param serverId the declared server registration
+   * @param containerUid the collection's last path segment
+   * @return true when a calendar binding of any user here records that
+   *         container
+   */
+  public boolean isHeldByThisDeployment(long serverId, String containerUid) {
+    return caldavSyncStorage.isCollectionHeldOnServer(serverId, containerUid);
+  }
+
+  /**
+   * The container uid a collection is named by: its last path segment.
+   *
+   * @param href the collection path, canonical or not
+   * @return the last segment, or null for a blank path
+   */
+  public static String containerUidOf(String href) {
+    String canonical = CaldavSyncStorage.canonicalHref(href);
+    if (StringUtils.isBlank(canonical)) {
+      return null;
+    }
+    return StringUtils.defaultIfBlank(StringUtils.substringAfterLast(canonical, "/"), canonical);
+  }
+
+  /**
    * Which user of this deployment exported the calendar a collection stands
    * for — the <em>who</em> form of {@link #isMintedByThisDeployment}.
    *
@@ -693,6 +736,27 @@ public class CaldavOutboundService {
    * subscribed colleague's main calendar were materialised as the user's own
    * calendars (rig calendar 16, acceptance calendar 33).
    *
+   * <p>
+   * <b>The server's own listing</b> is heard last among the deployment's
+   * questions, and only for a prefixed collection the other three could not
+   * settle (EXO-90347). Everything above reads what eXo <em>exported</em>;
+   * what none of it can see is a calendar a colleague <em>imported</em> —
+   * made by eXo's naming elsewhere, adopted by her as a REMOTE pair whose
+   * slug is not her anchor — and then shared. On BlueMind that share is
+   * listed under the sharee's own home with the sharee as owner, so it
+   * classified as the sharee's own and was adopted (rig calendar 24). The
+   * one place BlueMind says whose it is, is its subscription listing
+   * ({@link AccountCalendarOwners}): an owner other than the account's own
+   * makes it a share — a colleague's when a user here holds the container
+   * ({@link #isHeldByThisDeployment}), somebody else's otherwise — and the
+   * account's own uid lets it through to adoption, however it was created:
+   * eXo is one CalDAV client among several, and a calendar the server says
+   * is the account's own is the account's to adopt. A listing that cannot
+   * be had, or that does not name the collection, is
+   * {@link CollectionOwnership#OWNER_UNKNOWN}: nothing is adopted on it,
+   * and the next pass asks again. A server that is not asked — not BlueMind
+   * — leaves this arm silent and the classification exactly as before.
+   *
    * @param serverId the declared server registration, which scopes the
    *          account-wide question
    * @param principal the account's own {@code current-user-principal}, as
@@ -707,6 +771,31 @@ public class CaldavOutboundService {
                                          String principal,
                                          List<CalendarSync> usersPairs,
                                          CalendarCollection collection) {
+    return ownershipOf(serverId, principal, usersPairs, collection, AccountCalendarOwners.silent());
+  }
+
+  /**
+   * Whose a listed collection is, with the server's own word on its owners
+   * heard — the form the sweep and the calendar list ask (EXO-90347).
+   *
+   * @param serverId the declared server registration, which scopes the
+   *          account-wide question
+   * @param principal the account's own {@code current-user-principal}, as
+   *          the discovery walk answered it; null when the server named none
+   * @param usersPairs every pair this user holds on this server, whatever
+   *          its origin or state
+   * @param collection the listed collection
+   * @param owners what the server says about who owns the account's
+   *          calendars, asked once per pass; the silent witness for a server
+   *          that is not asked, and read as silent when null
+   * @return whose it is
+   * @see #ownershipOf(long, String, List, CalendarCollection)
+   */
+  public CollectionOwnership ownershipOf(long serverId,
+                                         String principal,
+                                         List<CalendarSync> usersPairs,
+                                         CalendarCollection collection,
+                                         AccountCalendarOwners owners) {
     String href = CaldavSyncStorage.canonicalHref(collection.href());
     String anchor = anchorOf(href);
     if (anchor != null) {
@@ -719,6 +808,20 @@ public class CaldavOutboundService {
       }
       if (isMintedByThisDeployment(serverId, href)) {
         return CollectionOwnership.COLLEAGUES_EXO_CALENDAR;
+      }
+      String containerUid = containerUidOf(href);
+      AccountCalendarOwners.Verdict verdict = (owners == null ? AccountCalendarOwners.silent() : owners).ownerOf(containerUid);
+      switch (verdict.word()) {
+        case ANOTHERS:
+          return isHeldByThisDeployment(serverId, containerUid) ? CollectionOwnership.COLLEAGUES_EXO_CALENDAR
+                                                                : CollectionOwnership.SHARED;
+        case UNKNOWN:
+          return CollectionOwnership.OWNER_UNKNOWN;
+        case ACCOUNTS_OWN, SILENT:
+        default:
+          // The account's own, or a server not asked: the naming and the
+          // server's DAV signals decide, as they did before this arm existed.
+          break;
       }
     }
     BlueMindContainerNaming.Subscription subscription = BlueMindContainerNaming.subscriptionOf(href, principal);

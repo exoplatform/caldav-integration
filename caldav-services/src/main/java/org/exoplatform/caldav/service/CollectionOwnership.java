@@ -127,7 +127,21 @@ public enum CollectionOwnership {
    * is not the account's (EXO-90275). Treated exactly as {@link #SHARED}, and
    * told apart from a person's so the list can draw it as a resource.
    */
-  SUBSCRIBED_RESOURCE;
+  SUBSCRIBED_RESOURCE,
+
+  /**
+   * A collection wearing eXo's slug that nobody here recognises, on a server
+   * whose own word about its owner could not be had this pass (EXO-90347):
+   * the listing {@link AccountCalendarOwners} stands for failed, or does not
+   * name the collection. Not a share, and not the user's own either — an
+   * answer withheld rather than given. The sweep adopts nothing on it, and
+   * asks again next pass; the calendar list drops it as it drops any
+   * eXo-shaped collection that is not a share. The fourth witness exists
+   * because adopting on missing evidence is exactly the defect: a colleague's
+   * calendar imported from elsewhere and shared came back as the user's own
+   * (rig calendar 24), with nothing over CalDAV to say whose it was.
+   */
+  OWNER_UNKNOWN;
 
   /**
    * Whether the collection is somebody else's, whichever witness said so.
