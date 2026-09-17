@@ -203,11 +203,24 @@ public class NormalisingServerMirrorTest {
    */
   @BeforeEach
   public void connectAnAccountOnANormalisingServer() {
+    // The addon's single definition of "connected" now lives in CaldavServerService.
+    // Reproducing here the rule these tests were written against - a username and a
+    // password - keeps every assertion in this class measuring exactly what it
+    // measured; the provider-backed shape has its own tests in CaldavServerServiceTest.
+    org.mockito.Mockito.lenient()
+                       .when(caldavServerService.isConnected(org.mockito.ArgumentMatchers.any()))
+                       .thenAnswer(call -> {
+                         org.exoplatform.caldav.model.CaldavUserSetting account = call.getArgument(0);
+                         return account != null
+                             && org.apache.commons.lang3.StringUtils.isNotBlank(account.getUsername())
+                             && org.apache.commons.lang3.StringUtils.isNotBlank(account.getPassword());
+                       });
     server = new FakeCalDavServer(Normalisation.RESERIALISE);
     push = new CaldavPushService();
     verification = new CaldavMirrorVerificationService();
     inject(push);
     inject(verification);
+    ReflectionTestUtils.setField(push, "caldavServerService", caldavServerService);
     ReflectionTestUtils.setField(push, "icsWriter", icsWriter);
     ReflectionTestUtils.setField(push, "icsMerger", icsMerger);
     ReflectionTestUtils.setField(push, "agendaEventService", agendaEventService);

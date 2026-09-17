@@ -66,6 +66,9 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
+import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
+import org.springframework.test.util.ReflectionTestUtils;
+import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkEffect;
@@ -148,6 +151,13 @@ public class CaldavServerServiceTest {
 
   @Mock
   private ConnectorProviderConfigStorage providerConfigStorage;
+
+  /**
+   * The seam onto the credentials contract. Optional in production - it lives in
+   * another WAR - so it is mocked here rather than assumed present.
+   */
+  @Mock
+  private CaldavCredentialsResolver caldavCredentialsResolver;
 
   /**
    * The address check, REAL rather than mocked, so these tests keep measuring
@@ -1642,5 +1652,137 @@ public class CaldavServerServiceTest {
     verify(caldavServerStorage, never()).updateServer(any());
     verify(providerConfigStorage, never()).store(any(), any());
     verify(providerConfigStorage, never()).delete(any());
+  }
+
+  /**
+   * What a browser needs to decide whether clicking "connect" opens a form or
+   * connects outright: one answer per provider the registry actually names.
+   * <p>
+   * Only the declared providers, never the registry of providers: an end user is
+   * entitled to know about the connectors offered to them, not about how the
+   * instance is configured.
+   */
+  @Test
+  public void tellsWhichDeclaredProvidersAskTheUserForSomething() {
+    CaldavServer typed = server(1L, "personal");
+    CaldavServer silent = server(2L, "bluemind-sudo");
+    when(caldavServerStorage.getServers()).thenReturn(List.of(typed, silent));
+    when(caldavServerQuirkService.decorate(any())).thenAnswer(call -> call.getArgument(0));
+    when(caldavCredentialsResolver.requiresUserAction("personal")).thenReturn(true);
+    when(caldavCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+
+    Map<String, Boolean> requirements = caldavServerService.connectionRequirements();
+
+    assertEquals(Boolean.TRUE, requirements.get("personal"));
+    assertEquals(Boolean.FALSE, requirements.get("bluemind-sudo"));
+  }
+
+  /**
+   * A registration that names no provider - every row predating the registry -
+   * contributes nothing, and the browser falls back to asking, which is what
+   * those connectors have always done.
+   */
+  @Test
+  public void saysNothingAboutARegistrationNamingNoProvider() {
+    CaldavServer legacy = server(3L, null);
+    when(caldavServerStorage.getServers()).thenReturn(List.of(legacy));
+    when(caldavServerQuirkService.decorate(any())).thenAnswer(call -> call.getArgument(0));
+
+    assertTrue(caldavServerService.connectionRequirements().isEmpty());
+    verifyNoInteractions(caldavCredentialsResolver);
+  }
+
+  /**
+   * The seam is a bean of another WAR and may simply be absent. A connector list
+   * that cannot say is a connector list that asks - never one that connects
+   * silently.
+   */
+  @Test
+  public void asksTheUserWhenTheCredentialsSeamIsAbsent() {
+    CaldavServer silent = server(2L, "bluemind-sudo");
+    when(caldavServerStorage.getServers()).thenReturn(List.of(silent));
+    when(caldavServerQuirkService.decorate(any())).thenAnswer(call -> call.getArgument(0));
+    ReflectionTestUtils.setField(caldavServerService, "caldavCredentialsResolver", null);
+
+    assertEquals(Boolean.TRUE, caldavServerService.connectionRequirements().get("bluemind-sudo"));
+  }
+
+  private CaldavServer server(long id, String providerName) {
+    CaldavServer server = new CaldavServer();
+    server.setId(id);
+    server.setActive(true);
+    server.setAuthProviderName(providerName);
+    return server;
+  }
+
+  /**
+   * <b>One definition of "connected", for the whole addon.</b> It used to be written
+   * out seven times - push, inbound, outbound, read, sync, relay and the connector
+   * service - each reading "a username and a password". A connection whose material
+   * the platform produces has no password to store, so every one of those seven
+   * called it disconnected while the screen said otherwise: the account showed as
+   * connected and nothing ever synchronised. Found at run, on a 409 from
+   * /push/mirror, which was the only visible corner of it.
+   */
+  @Test
+  public void countsATypedAccountAsConnectedWithoutAskingTheRegistry() {
+    CaldavUserSetting typed = new CaldavUserSetting();
+    typed.setUsername("john");
+    typed.setPassword("secret");
+    typed.setServerId(7L);
+
+    assertTrue(caldavServerService.isConnected(typed));
+
+    // The hot paths run this on every sweep: a typed account must settle it on the
+    // spot, with no registry read and no provider lookup.
+    verifyNoInteractions(caldavServerStorage);
+    verifyNoInteractions(caldavCredentialsResolver);
+  }
+
+  /**
+   * No password, but a provider that produces the material: connected. This is the
+   * whole point of the one-click connectors.
+   */
+  @Test
+  public void countsAProviderBackedAccountAsConnected() throws Exception {
+    when(caldavServerStorage.getServerById(7L)).thenReturn(server(7L, "bluemind-sudo"));
+    when(caldavServerQuirkService.decorate(any())).thenAnswer(call -> call.getArgument(0));
+    when(caldavCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
+
+    assertTrue(caldavServerService.isConnected(providerBacked(7L)));
+  }
+
+  /**
+   * No password and a provider that does expect one: not connected. A row like that
+   * is a half-written account, not a connection.
+   */
+  @Test
+  public void refusesAnAccountWithNoPasswordWhoseProviderExpectsOne() throws Exception {
+    when(caldavServerStorage.getServerById(7L)).thenReturn(server(7L, "personal"));
+    when(caldavServerQuirkService.decorate(any())).thenAnswer(call -> call.getArgument(0));
+    when(caldavCredentialsResolver.requiresUserAction("personal")).thenReturn(true);
+
+    assertFalse(caldavServerService.isConnected(providerBacked(7L)));
+  }
+
+  /** Nothing to go on is not a connection: no row, no username, no registry entry. */
+  @Test
+  public void refusesWhatItCannotCallAConnection() throws Exception {
+    assertFalse(caldavServerService.isConnected(null));
+    CaldavUserSetting nameless = new CaldavUserSetting();
+    nameless.setPassword("secret");
+    assertFalse(caldavServerService.isConnected(nameless));
+    // The registration is gone: the storage answers nothing, and the service turns
+    // that into its own refusal.
+    when(caldavServerStorage.getServerById(7L)).thenReturn(null);
+    assertFalse(caldavServerService.isConnected(providerBacked(7L)));
+  }
+
+  private CaldavUserSetting providerBacked(long serverId) {
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("eric@bm.example.org");
+    setting.setPassword("");
+    setting.setServerId(serverId);
+    return setting;
   }
 }

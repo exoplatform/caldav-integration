@@ -2628,7 +2628,11 @@ public class CaldavPushService {
    * @return true when both halves of the credential are there
    */
   private boolean connected(CaldavUserSetting settings) {
-    return settings != null && StringUtils.isNotBlank(settings.getUsername()) && StringUtils.isNotBlank(settings.getPassword());
+    // One definition for the whole addon - see CaldavServerService.isConnected. It
+    // used to read "a username and a password" here, which calls a provider-backed
+    // connection disconnected: there is no password to store when the platform
+    // produces the material.
+    return caldavServerService.isConnected(settings);
   }
 
   /**
