@@ -356,6 +356,32 @@ public class CaldavSyncStorage {
   }
 
   /**
+   * Whether a user of this deployment, anyone, holds a calendar binding on
+   * one server for a collection of one container uid, under whatever home
+   * the server listed it to them (EXO-90347).
+   *
+   * <p>
+   * The third arm of the ownership question, for the shape the other two
+   * cannot see: a colleague <em>imported</em> a calendar eXo's naming made
+   * elsewhere — a REMOTE pair, its slug not her anchor — and shared it, and
+   * BlueMind lists the one container under each subscriber's own home. The
+   * container uid, the collection's last segment, is what both spellings
+   * share. Every user, every status, every origin but the mirror ledger,
+   * which binds no calendar.
+   *
+   * @param serverId the declared server registration
+   * @param containerUid the collection's last path segment
+   * @return true when such a binding exists; false for a blank uid, which
+   *         names no collection
+   */
+  public boolean isCollectionHeldOnServer(long serverId, String containerUid) {
+    if (StringUtils.isBlank(containerUid)) {
+      return false;
+    }
+    return calendarSyncDAO.existsByServerIdAndOriginNotAndRemoteHrefEndingWith(serverId, SyncOrigin.MIRROR, "/" + containerUid);
+  }
+
+  /**
    * The pair through which a calendar of this deployment, anyone's, is
    * exported to one server under one anchor — the <em>who</em> form of
    * {@link #isExoCalendarOnServer}.

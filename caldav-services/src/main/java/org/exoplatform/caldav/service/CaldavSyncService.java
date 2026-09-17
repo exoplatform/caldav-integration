@@ -284,6 +284,15 @@ public class CaldavSyncService {
   private final Set<String>               sharesSaid          = ConcurrentHashMap.newKeySet();
 
   /**
+   * The collections already said, at info, to be waiting on the server's
+   * word about their owner — keyed as {@link #sharesSaid} is, and for the
+   * same reason: a listing that cannot be read comes back every pass, and
+   * the line exists to explain a calendar that does not appear, not to
+   * repeat it every five minutes (EXO-90347).
+   */
+  private final Set<String>               ownerUnknownSaid    = ConcurrentHashMap.newKeySet();
+
+  /**
    * The pass running for a user, so two page loads a second apart do not run
    * two syncs against the same account at once — and so a caller who was
    * promised the sync had run can wait for the one that is actually doing it.
@@ -350,6 +359,9 @@ public class CaldavSyncService {
 
   @Autowired
   private CaldavShareSubscriptionService caldavShareSubscriptionService;
+
+  @Autowired
+  private CaldavServerOwnerService    caldavServerOwnerService;
 
   /**
    * Synchronises the accounts that have gone longest without one.
@@ -1691,10 +1703,14 @@ public class CaldavSyncService {
     List<CalendarSync> known = forgetRevokedShares(userIdentityId,
                                                    caldavSyncStorage.getPairs(userIdentityId, serverId),
                                                    collections);
+    // The server's own word on who owns the account's calendars, asked at
+    // most once for this whole pass and only if a collection below needs it
+    // (EXO-90347): one witness for every collection, never one call each.
+    AccountCalendarOwners owners = caldavServerOwnerService.ownersOf(endpoint, principal);
     for (CalendarCollection collection : collections) {
       if (isAlreadyOurs(collection, known)) {
         reviveIfMarkedGone(known, collection);
-        retireIfSubscription(userIdentityId, serverId, endpoint, principal, known, collection);
+        retireIfSubscription(userIdentityId, serverId, endpoint, principal, known, collection, owners);
         continue;
       }
       if (!collection.holdsEvents()) {
@@ -1705,7 +1721,7 @@ public class CaldavSyncService {
         LOG.debug("Collection {} declares no VEVENT support and is not a calendar to materialise", collection.href());
         continue;
       }
-      CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId, principal, known, collection);
+      CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId, principal, known, collection, owners);
       if (ownership == CollectionOwnership.OWN_EXO_CALENDAR) {
         // The user's own eXo calendar, listed under a path none of their
         // pairs record — BlueMind republishes eXo's collections under another
@@ -1717,7 +1733,11 @@ public class CaldavSyncService {
         continue;
       }
       if (ownership.isShared()) {
-        skipShare(userIdentityId, serverId, principal, collection, ownership);
+        skipShare(userIdentityId, serverId, principal, collection, ownership, owners);
+        continue;
+      }
+      if (ownership == CollectionOwnership.OWNER_UNKNOWN) {
+        leaveUntilOwnerKnown(userIdentityId, serverId, collection);
         continue;
       }
       materialise(userIdentityId, username, serverId, collection);
@@ -1810,13 +1830,16 @@ public class CaldavSyncService {
    * @param principal the account's principal, as the listing named it
    * @param known every pair this user holds on this server
    * @param collection the listed collection, already bound
+   * @param owners the server's word on the account's calendar owners, the
+   *          pass's one witness
    */
   private void retireIfSubscription(long userIdentityId,
                                     long serverId,
                                     CalDavEndpoint endpoint,
                                     String principal,
                                     List<CalendarSync> known,
-                                    CalendarCollection collection) {
+                                    CalendarCollection collection,
+                                    AccountCalendarOwners owners) {
     String href = CaldavSyncStorage.canonicalHref(collection.href());
     CalendarSync binding = known.stream()
                                 .filter(pair -> pair.getOrigin() == SyncOrigin.REMOTE
@@ -1827,7 +1850,7 @@ public class CaldavSyncService {
     if (binding == null) {
       return;
     }
-    CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId, principal, known, collection);
+    CollectionOwnership ownership = caldavOutboundService.ownershipOf(serverId, principal, known, collection, owners);
     if (ownership.isSubscription()) {
       caldavSubscriptionRetirementService.retire(userIdentityId, endpoint, principal, binding, collection, ownership);
     }
@@ -1897,15 +1920,25 @@ public class CaldavSyncService {
    *          null when the server named none
    * @param collection the collection that is not the user's own
    * @param ownership which witness said so — the server, or this deployment
+   * @param owners the server's word on the account's calendar owners, which
+   *          names the owner when it is the witness that spoke (EXO-90347)
    */
   private void skipShare(long userIdentityId,
                          long serverId,
                          String principal,
                          CalendarCollection collection,
-                         CollectionOwnership ownership) {
+                         CollectionOwnership ownership,
+                         AccountCalendarOwners owners) {
     String key = userIdentityId + ":" + serverId + ":" + CaldavSyncStorage.canonicalHref(collection.href());
+    String listedOwner = ownerTheListingNamed(collection, owners);
     String why = switch (ownership) {
-      case COLLEAGUES_EXO_CALENDAR -> "minted by this deployment for another user; ";
+      case COLLEAGUES_EXO_CALENDAR -> listedOwner == null ? "minted by this deployment for another user; "
+                                                          : "a calendar of another user of this deployment, by the server's own"
+                                                              + " calendar listing, which names entry " + listedOwner
+                                                              + " as its owner; ";
+      case SHARED -> listedOwner == null ? ""
+                                         : "shared from outside this deployment, by the server's own calendar listing, which"
+                                             + " names entry " + listedOwner + " as its owner and which no user here holds; ";
       case SUBSCRIBED_RESOURCE -> "a resource calendar the account subscribed to, by the server's naming; ";
       case SUBSCRIBED_PERSON -> "another person's calendar the account subscribed to, by the server's naming; ";
       default -> "";
@@ -1921,6 +1954,63 @@ public class CaldavSyncService {
                StringUtils.defaultIfBlank(principal, "not stated"));
     } else {
       LOG.debug("Collection {} is still shared with user {} ({}) and is still not materialised", collection.href(), userIdentityId, why);
+    }
+  }
+
+  /**
+   * The owner the server's own listing named for a collection, when that is
+   * the witness that made it a share (EXO-90347).
+   *
+   * <p>
+   * Free once the classification has run: the listing is memoised for the
+   * pass, and a collection outside eXo's naming was never asked about, so
+   * it is not asked about here either.
+   *
+   * @param collection the collection the skip line is about
+   * @param owners the pass's witness, may be null
+   * @return the owner's directory entry uid when the listing named another
+   *         entry; null when it did not speak, or the collection is not
+   *         eXo-shaped
+   */
+  private String ownerTheListingNamed(CalendarCollection collection, AccountCalendarOwners owners) {
+    if (owners == null || !CaldavOutboundService.isExoCreated(collection.href())) {
+      return null;
+    }
+    AccountCalendarOwners.Verdict listed = owners.ownerOf(CaldavOutboundService.containerUidOf(collection.href()));
+    return listed.word() == AccountCalendarOwners.Word.ANOTHERS ? listed.ownerUid() : null;
+  }
+
+  /**
+   * Leaves an eXo-shaped collection nobody here recognises where it is,
+   * because the server's word on its owner could not be had this pass
+   * (EXO-90347) — and says so once.
+   *
+   * <p>
+   * The fail-closed half of the fix. The collection is either the account's
+   * own, made by another eXo and to be adopted, or a colleague's, imported
+   * elsewhere and shared, and over CalDAV the two look the same on
+   * BlueMind; the subscription listing is what tells them apart, and this
+   * pass could not read it, or read it and found the collection missing. To
+   * adopt on that would be to recreate the defect. Nothing is recorded, so
+   * the next pass classifies it afresh; a calendar the user is waiting for
+   * appears one pass late, and a calendar they must never own never appears
+   * as theirs. Said once per collection per process at info, as a share's
+   * skip is, and at debug after that.
+   *
+   * @param userIdentityId identity of the user whose home listed it
+   * @param serverId the declared server registration
+   * @param collection the collection left alone
+   */
+  private void leaveUntilOwnerKnown(long userIdentityId, long serverId, CalendarCollection collection) {
+    String key = userIdentityId + ":" + serverId + ":" + CaldavSyncStorage.canonicalHref(collection.href());
+    if (ownerUnknownSaid.add(key)) {
+      LOG.info("Collection {} in the home of user {} wears eXo's own naming and no calendar of this deployment stands behind"
+          + " it, and the server's own listing of the account's calendar owners could not say whose it is this pass; it is"
+          + " neither adopted as their calendar nor listed as a share until it can",
+               collection.href(),
+               userIdentityId);
+    } else {
+      LOG.debug("Collection {} in the home of user {} still waits on the server's word about its owner", collection.href(), userIdentityId);
     }
   }
 
