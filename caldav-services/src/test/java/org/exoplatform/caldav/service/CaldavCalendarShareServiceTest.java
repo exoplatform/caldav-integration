@@ -209,6 +209,9 @@ public class CaldavCalendarShareServiceTest {
   @Mock
   private CaldavShareSubscriptionService  caldavShareSubscriptionService;
 
+  @Mock
+  private CaldavServerOwnerService        caldavServerOwnerService;
+
   private CaldavCalendarShareService      service;
 
   /**
@@ -226,6 +229,7 @@ public class CaldavCalendarShareServiceTest {
                                              blueMindAclClient,
                                              caldavPushService,
                                              caldavShareSubscriptionService,
+                                             caldavServerOwnerService,
                                              Duration.ZERO,
                                              () -> 0L);
     lenient().when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(calendar(CALENDAR, ALICE, ANCHOR));
@@ -690,6 +694,11 @@ public class CaldavCalendarShareServiceTest {
     when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Read")));
     service.grant(ALICE, "alice", CALENDAR, "bob");
     verify(caldavShareSubscriptionService, org.mockito.Mockito.times(1)).subscribeSharee(any());
+    // What bob's mailbox sees changed by eXo's hand: his cached owner listing
+    // is dropped with the one grant that was applied and followed — not on
+    // the refused one, nor on the one that found him already reading
+    // (EXO-90347).
+    verify(caldavServerOwnerService, org.mockito.Mockito.times(1)).evict(BOB, STALWART);
   }
 
   /**
@@ -710,6 +719,10 @@ public class CaldavCalendarShareServiceTest {
     service.revoke(ALICE, "alice", CALENDAR, "bob");
     assertThrows(CaldavShareException.class, () -> service.revoke(ALICE, "alice", CALENDAR, "bob"));
     service.revoke(ALICE, "alice", CALENDAR, "bob");
+    // The one revoke that was applied and followed drops bob's cached owner
+    // listing too; the refused one, and the one with nothing left to revoke,
+    // do not (EXO-90347).
+    verify(caldavServerOwnerService, org.mockito.Mockito.times(1)).evict(BOB, STALWART);
 
     verify(caldavShareSubscriptionService, org.mockito.Mockito.times(1))
                                                                         .unsubscribeSharee(new CaldavShareSubscriptionService.ShareeSubscription("alice",
@@ -1936,6 +1949,7 @@ public class CaldavCalendarShareServiceTest {
                                           blueMindAclClient,
                                           caldavPushService,
                                           caldavShareSubscriptionService,
+                                          caldavServerOwnerService,
                                           Duration.ofSeconds(300),
                                           clock::get);
   }
