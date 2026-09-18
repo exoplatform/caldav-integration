@@ -2376,13 +2376,17 @@ public class CaldavCalendarShareService {
    */
   private boolean meetingCopiesOf(ShareTarget target, String username, boolean fromRecord) {
     String href = CaldavSyncStorage.canonicalHref(target.href());
-    if (fromRecord) {
-      Set<String> recorded = recordedDestinationsOf(target);
-      if (!recorded.isEmpty()) {
-        return recorded.contains(href);
-      }
-    }
     try {
+      // Inside the guard, and that placement is the whole of it: reading the
+      // record is two storage calls, and a failure of either has to land where
+      // a failed lookup lands - on the answer that warns - rather than escape
+      // to a caller that reads an exception as "no copies here".
+      if (fromRecord) {
+        Set<String> recorded = recordedDestinationsOf(target);
+        if (!recorded.isEmpty()) {
+          return recorded.contains(href);
+        }
+      }
       MirrorTarget mirror = caldavPushService.mirrorDestination(target.userIdentityId(), username);
       return mirror != null && StringUtils.isNotBlank(mirror.href()) && CaldavSyncStorage.canonicalHref(mirror.href()).equals(href);
     } catch (RuntimeException e) {
@@ -2403,12 +2407,37 @@ public class CaldavCalendarShareService {
    * directions and a missed warning is the expensive error. The account's
    * {@code mirrorCalendarHref} is where the push last <i>resolved</i> the
    * destination, written by {@code CaldavPushService.ensureMirror} on every
-   * pass and on every connection. The {@link SyncOrigin#MIRROR} pair's
-   * {@code remoteHref} is where the copies actually <i>are</i>, written by the
-   * push when it first writes one and moved by
+   * push pass and on every connection the server answers. The
+   * {@link SyncOrigin#MIRROR} pair's {@code remoteHref} is where the copies
+   * actually <i>are</i>, written by {@code CaldavPushService.mirrorPair} when
+   * the push next writes a copy, and moved by
    * {@code CaldavMirrorRelocationService.repoint} before a single copy is
-   * relocated. Between a relocation starting and the account's record catching
-   * up, the two name different collections and both of them hold copies.
+   * relocated.
+   *
+   * <p>
+   * <b>The account record leads and the pair follows</b> — that direction, and
+   * not the other way round. Three callers resolve the destination and record
+   * it on the account <i>alone</i>, with no pair write:
+   * {@code CaldavSyncService.establishDestinations} on connect,
+   * {@code CaldavPushRest}'s destination endpoint, and
+   * {@code CaldavMirrorRelocationService.destinationOf} (which runs
+   * {@code ensureMirror} <i>before</i> {@code repoint}, so the account href is
+   * the first of the two to move, never the last). In the window that opens
+   * there — an adopted collection, a dedicated calendar the user deleted and
+   * the push recreated, a destination picked from the front end — the account
+   * names where the copies are <i>going</i> and the pair still names where they
+   * <i>are</i>. Both are warned about, and it is the pair, not the account,
+   * that carries the collection holding the copies.
+   *
+   * <p>
+   * <b>What this does not cover, and never did.</b> A relocation that is under
+   * way is not this union's business at all: {@code relocationOwed} is true for
+   * the whole of it (the applied stamp is written only once the round has
+   * completed), so this answers nothing and the server decides — and the server
+   * names the collection the copies are moving <i>into</i>. Copies not yet
+   * moved out of the collection they are leaving, and any copy a completed
+   * round left behind, are warned about by neither. That is unchanged from
+   * before EXO-90398, where the same question was always put to the server.
    *
    * <p>
    * <b>What makes the record trustworthy is that it cannot silently outlive its
@@ -2472,15 +2501,36 @@ public class CaldavCalendarShareService {
    * naming it.
    *
    * <p>
-   * Over-answering "yes" is the cheap direction, and this deliberately does: a
-   * change to any copy-governing setting costs the drawer one resolution per
-   * opening until the pass that applies it has run, which is what the account
-   * paid on every opening before this task.
+   * <b>Answering "yes" does not mean warning</b>, and the distinction matters:
+   * it means the record is set aside and the <i>server</i> decides, which is
+   * exactly what every opening cost before this task. So this is cheap to
+   * over-answer — a change to any copy-governing setting costs the drawer one
+   * resolution per opening until the pass that applies it has run — but it buys
+   * no safety of its own. During a destination change the server names the
+   * collection the copies are moving <i>into</i>, so a copy still sitting in
+   * the one they are leaving is not warned about either way; closing that would
+   * mean letting the union answer and narrowing this to {@code mirrorTarget}
+   * alone, which is a scope decision and not this task's.
    *
    * <p>
    * A registration that cannot be resolved, or one no administrator has ever
    * changed a copy setting on, owes nothing — the upgrade-neutral state
    * EXO-89759 designed the stamp around.
+   *
+   * <p>
+   * <b>An account with no mirror pair never clears the stamp, and "until the
+   * pass has run" does not apply to it.</b> The pair is created only when the
+   * push writes its first copy ({@code CaldavPushService.mirrorPair}), while
+   * {@code CaldavMirrorVerificationService.verify} returns on
+   * {@code mirrors.isEmpty()} before it can apply a stamp — and that call is
+   * the only writer of {@code copySettingsApplied} there is. So a user who has
+   * never had a meeting copied, on a registration an administrator has saved a
+   * copy-affecting change to at least once (the answer-links switch, an
+   * excusal list, the write channel, the auth provider, any key of the provider
+   * config — not only the destination), goes on paying the resolution on every
+   * opening until their first copy is pushed. This is the cost that account
+   * paid on every opening before this task, and the exclusion the count claimed
+   * for this one has to be read against.
    *
    * @param target the calendar, carrying the caller's account
    * @param mirrors the caller's mirror pairs on this server
