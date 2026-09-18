@@ -29,7 +29,7 @@ class BlueMindLoginTest {
    */
   @Test
   void itsTextNamesTheUserAndNeverTheKey() {
-    String text = String.valueOf(new BlueMindLogin("bm-session-secret-key", "9F3C1A20", "bm.example.com"));
+    String text = String.valueOf(new BlueMindLogin("https://bm.example.com", "bm-session-secret-key", "9F3C1A20", "bm.example.com"));
 
     assertFalse(text.contains("bm-session-secret-key"), text);
     assertTrue(text.contains("9F3C1A20") && text.contains("bm.example.com"), text);
