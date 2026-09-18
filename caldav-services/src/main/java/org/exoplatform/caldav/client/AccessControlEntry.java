@@ -89,15 +89,38 @@ public record AccessControlEntry(AcePrincipal principal,
 
   /**
    * The privileges an edit share may hold when it is read back (EXO-90378):
-   * the read-only set plus {@code DAV:write}. The grant eXo <b>writes</b> is
-   * narrower still — {@code DAV:read} and {@code DAV:write}, see
-   * {@link #editGrantTo(String)} — but a server reports the read-ish
-   * privileges it aggregates beside them, exactly as it does for a read share.
+   * the read-only set, {@code DAV:write}, and <b>the members
+   * {@code DAV:write} aggregates</b> (RFC 3744 §3.12) — write-properties,
+   * write-content, bind and unbind.
+   * <p>
+   * The grant eXo <b>writes</b> is narrower than this: {@code DAV:read} and
+   * {@code DAV:write} and nothing else, see {@link #editGrantTo(String)}. A
+   * server is free to report the aggregate's members beside it, exactly as it
+   * reports the read-ish privileges beside {@code DAV:read}, and Stalwart
+   * does: it stores our {@code DAV:write} as its own
+   * {@code Modify, Delete, AddItems, ModifyItems, RemoveItems} and reports
+   * those back as {@code DAV:write} <b>plus</b> {@code DAV:write-properties}
+   * (from {@code Modify}) and {@code DAV:write-content} (from
+   * {@code ModifyItems}) — {@code crates/dav/src/common/acl.rs},
+   * {@code validate_and_map_aces} and {@code current_user_privilege_set},
+   * stalwartlabs/stalwart v0.16.0.
+   * <p>
+   * Leaving those two out is what made a grant that <b>had</b> landed read
+   * back as unrecognised, and eXo report a share it had really made as not
+   * applied. Nothing here widens what an edit share means: every member is
+   * part of {@code DAV:write} itself, so a principal holding this set holds
+   * neither more nor less than writing the calendar's events.
+   * {@code DAV:write-acl}, {@code DAV:read-acl}, {@code DAV:all},
+   * {@code DAV:unlock}, scheduling and vendor privileges stay outside it.
    */
   public static final Set<String> EDIT_PRIVILEGES           = Set.of(READ,
                                                                      WRITE,
                                                                      clark(DAV_NS, "read-current-user-privilege-set"),
-                                                                     clark(CALDAV_NS, "read-free-busy"));
+                                                                     clark(CALDAV_NS, "read-free-busy"),
+                                                                     clark(DAV_NS, "write-properties"),
+                                                                     clark(DAV_NS, "write-content"),
+                                                                     clark(DAV_NS, "bind"),
+                                                                     clark(DAV_NS, "unbind"));
 
   /**
    * The characters left as they are when a principal path is spelled into an
@@ -176,7 +199,9 @@ public record AccessControlEntry(AcePrincipal principal,
    * what separates a grant eXo itself wrote from the one shape it must keep
    * refusing: a bare {@code DAV:write}, which is how Stalwart reports a right
    * given through JMAP, is <b>not</b> edit-only here, so writing the list back
-   * still stops rather than widening that right to full write.
+   * still stops rather than widening that right to full write. The aggregate
+   * itself is required, not merely its members, so a partial grant — content
+   * but not bind, say — is not mistaken for the whole.
    *
    * @return true when every privilege is an edit-share one and both read and
    *         write are among them
