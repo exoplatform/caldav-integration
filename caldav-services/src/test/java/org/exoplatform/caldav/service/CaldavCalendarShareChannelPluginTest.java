@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -44,6 +45,7 @@ import org.exoplatform.agenda.constant.CalendarShareSource;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.CalendarShare;
 import org.exoplatform.agenda.model.ChannelDelivery;
+import org.exoplatform.agenda.model.ChannelShares;
 import org.exoplatform.agenda.model.ExternalShare;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.caldav.model.CalendarShares;
@@ -52,6 +54,7 @@ import org.exoplatform.caldav.model.CalendarShares.PublishedLinkMode;
 import org.exoplatform.caldav.model.CalendarShares.ShareAccess;
 import org.exoplatform.caldav.model.CalendarShares.ShareUser;
 import org.exoplatform.caldav.model.CalendarShares.ShareeKind;
+import org.exoplatform.caldav.service.CaldavCalendarShareService.ServerShares;
 import org.exoplatform.caldav.service.CaldavCalendarShareService.SharedCollection;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -265,7 +268,14 @@ public class CaldavCalendarShareChannelPluginTest {
     CalendarSharee outside = new CalendarSharee("/dav/pal/x%40y.org", ShareeKind.OUTSIDE_EXO, List.of(), "Xavier", ShareAccess.MORE, false);
     CalendarSharee everyone = new CalendarSharee("{DAV:}all", ShareeKind.EVERYONE, List.of(), null, ShareAccess.READ, false);
     CalendarSharee link = new CalendarSharee("published-link:PRIVATE", ShareeKind.PUBLISHED_LINK, List.of(), null, ShareAccess.READ, false, PublishedLinkMode.PRIVATE);
-    when(shareService.listShares(ALICE, "alice", CALENDAR)).thenReturn(new CalendarShares(CALENDAR, List.of(bob, carol, outside, everyone, link)));
+    when(shareService.serverShares(ALICE, "alice", CALENDAR))
+                                                            .thenReturn(new ServerShares(new SharedCollection(1L, COLLECTION),
+                                                                                         new CalendarShares(CALENDAR,
+                                                                                                            List.of(bob,
+                                                                                                                    carol,
+                                                                                                                    outside,
+                                                                                                                    everyone,
+                                                                                                                    link))));
 
     List<ExternalShare> external = plugin.listExternalShares(CALENDAR, "alice", List.of(CAROL));
 
@@ -301,11 +311,61 @@ public class CaldavCalendarShareChannelPluginTest {
    */
   @Test
   public void aListThatCannotBeReadIsEmpty() throws Exception {
-    when(shareService.listShares(ALICE, "alice", CALENDAR)).thenThrow(new CaldavShareException(CaldavCalendarShareService.SERVER_UNAVAILABLE));
+    when(shareService.serverShares(ALICE, "alice", CALENDAR)).thenThrow(new CaldavShareException(CaldavCalendarShareService.SERVER_UNAVAILABLE));
     assertEquals(List.of(), plugin.listExternalShares(CALENDAR, "alice", List.of()));
 
-    doThrow(new CaldavShareException(CaldavCalendarShareService.NOT_CONNECTED)).when(shareService).sharedCollectionOf(ALICE, "alice", CALENDAR);
+    doThrow(new CaldavShareException(CaldavCalendarShareService.NOT_CONNECTED)).when(shareService).serverShares(ALICE, "alice", CALENDAR);
     assertEquals(List.of(), plugin.listExternalShares(CALENDAR, "alice", List.of()));
+  }
+
+  /**
+   * What agenda's drawer asks (EXO-90385): the grants the server holds and the
+   * meeting-copies warning, from <b>one</b> call to the share service. The
+   * flag is the one the listing already carried, not a second question — asked
+   * separately it walked the owner's calendar home again.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void oneCallAnswersBothTheGrantsAndTheMeetingCopiesWarning() throws Exception {
+    CalendarSharee bob = new CalendarSharee("/dav/pal/bob",
+                                            ShareeKind.EXO_USERS,
+                                            List.of(new ShareUser(BOB, "bob", "Bob Builder", null)),
+                                            null,
+                                            ShareAccess.READ,
+                                            true);
+    when(shareService.serverShares(ALICE, "alice", CALENDAR))
+                                                            .thenReturn(new ServerShares(new SharedCollection(1L, COLLECTION),
+                                                                                         new CalendarShares(CALENDAR,
+                                                                                                            List.of(bob),
+                                                                                                            false,
+                                                                                                            true)));
+
+    ChannelShares answer = plugin.listShares(CALENDAR, "alice", List.of());
+
+    assertEquals(1, answer.shares().size());
+    assertEquals(BOB, answer.shares().get(0).getShareeIdentityId());
+    assertTrue(answer.meetingCopies(), "the flag the listing already carried");
+    verify(shareService, times(1)).serverShares(ALICE, "alice", CALENDAR);
+    verify(shareService, never()).holdsMeetingCopies(anyLong(), anyString(), anyLong());
+  }
+
+  /**
+   * A list that cannot be read still owes the owner the warning, and asks for
+   * it on its own — the one case where the second call survives EXO-90385: a
+   * server that would not answer must not silently turn the warning off.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anUnreadableListStillAnswersTheMeetingCopiesWarning() throws Exception {
+    when(shareService.serverShares(ALICE, "alice", CALENDAR)).thenThrow(new CaldavShareException(CaldavCalendarShareService.SERVER_UNAVAILABLE));
+    when(shareService.holdsMeetingCopies(ALICE, "alice", CALENDAR)).thenReturn(true);
+
+    ChannelShares answer = plugin.listShares(CALENDAR, "alice", List.of());
+
+    assertEquals(List.of(), answer.shares());
+    assertTrue(answer.meetingCopies());
   }
 
   /**
