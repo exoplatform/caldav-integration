@@ -312,8 +312,13 @@ public class BlueMindSubscriptionClient {
         throw new CalDavException("The calendar server named no entry or no domain for the account's session; its calendar"
             + " owners are not read");
       }
+      // Read once, before the request, and answered from that one reading: a
+      // call that meets a refused session opens another one mid-flight
+      // (EXO-90397), so asking the session again afterwards could name an
+      // entry other than the one whose subscriptions were actually asked for.
+      String entryUid = open.userUid();
       String path = "/api/users/" + BlueMindRestSession.encodeSegment(open.domainUid()) + "/subscriptions/"
-          + BlueMindRestSession.encodeSegment(open.userUid()) + "?type=calendar";
+          + BlueMindRestSession.encodeSegment(entryUid) + "?type=calendar";
       URI named = open.named(path);
       Answer answer = open.get(path);
       int status = answer.status();
@@ -341,7 +346,7 @@ public class BlueMindSubscriptionClient {
           owners.put(containerUid, owner);
         }
       }
-      return new BlueMindCalendarOwners(open.userUid(), owners);
+      return new BlueMindCalendarOwners(entryUid, owners);
     });
   }
 
