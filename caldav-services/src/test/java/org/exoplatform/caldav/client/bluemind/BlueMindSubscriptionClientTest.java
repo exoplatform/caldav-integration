@@ -125,6 +125,9 @@ public class BlueMindSubscriptionClientTest {
 
   private ConnectorCredentialsService credentials;
 
+  /** Kept so that a test can build a client over a POOLED session too. */
+  private HttpClient            transport;
+
   private BlueMindSubscriptionClient client;
 
   private CalDavEndpoint        endpoint;
@@ -149,7 +152,7 @@ public class BlueMindSubscriptionClientTest {
   @BeforeEach
   @SuppressWarnings("unchecked")
   void setUp() throws Exception {
-    HttpClient transport = mock(HttpClient.class);
+    transport = mock(HttpClient.class);
     when(transport.send(any(HttpRequest.class), any())).thenAnswer(invocation -> {
       sent.add(invocation.getArgument(0));
       Object next = answers.removeFirst();
@@ -642,6 +645,61 @@ public class BlueMindSubscriptionClientTest {
     return JsonMapper.builder()
                      .build()
                      .writeValueAsString(Map.of("errorCode", code, "errorType", "ServerFault", "message", message));
+  }
+
+  /**
+   * <b>Over a session that is kept, and swapped under the call.</b> The other
+   * fixtures of this class drive an unpooled session — one login, one call,
+   * one logout — which is what an un-keyable endpoint still does but no
+   * longer what production does for this client (EXO-90397; review round 1
+   * asked for the pooled path to be covered too).
+   *
+   * <p>
+   * The sharp case is the one reuse created: the listing is asked for under
+   * the uid the session names, the kept session turns out to be refused, and
+   * the call opens another one — which BlueMind may authenticate as a
+   * different entry. The answer must then be reported under the uid the
+   * request actually carried, not under whoever the second session turned out
+   * to be: a listing labelled with an entry it was not read for is a wrong
+   * answer that looks like a right one.
+   */
+  @Test
+  void aListingReadAcrossAReLoginIsReportedUnderTheEntryItWasAskedFor() {
+    BlueMindSessionCache sessions = new BlueMindSessionCache(300, 10, System::currentTimeMillis);
+    BlueMindSubscriptionClient pooled =
+                                      new BlueMindSubscriptionClient(new BlueMindRestSession(transport,
+                                                                                             new CaldavCredentialsResolver(credentials),
+                                                                                             sessions));
+    // A first call warms the store, so the second one reuses its session.
+    answer(200, login(KEY, LOGIN_UID));
+    answer(200, "[]");
+    // The second call: the kept session is refused, another is opened — and
+    // BlueMind authenticates it as somebody else entirely.
+    answer(401, "");
+    answer(200, login("bm-session-second", OTHER_UID));
+    answer(200, "[]");
+
+    pooled.ownersOf(endpoint);
+    BlueMindCalendarOwners owners = pooled.ownersOf(endpoint);
+
+    assertEquals(LOGIN_UID, owners.accountUid(),
+                 "the listing is reported under the entry its request named, not under the session that answered it");
+    HttpRequest resent = sent.get(sent.size() - 1);
+    assertTrue(resent.uri().toString().contains("/subscriptions/" + LOGIN_UID + "?type=calendar"),
+               "and that is the entry the resent request asked for: " + resent.uri());
+    assertFalse(resent.uri().toString().contains(OTHER_UID), "the re-login never re-aims the request");
+  }
+
+  /**
+   * A login answer naming an entry.
+   *
+   * @param key the session key it hands out
+   * @param uid the directory entry uid it authenticates
+   * @return the JSON body
+   */
+  private static String login(String key, String uid) {
+    return "{\"status\":\"Ok\",\"authKey\":\"" + key + "\",\"authUser\":{\"uid\":\"" + uid + "\",\"domainUid\":\"" + DOMAIN
+        + "\"}}";
   }
 
   /**
