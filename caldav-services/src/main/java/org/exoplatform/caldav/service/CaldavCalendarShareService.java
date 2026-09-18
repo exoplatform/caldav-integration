@@ -2350,10 +2350,10 @@ public class CaldavCalendarShareService {
    * <p>
    * <b>On a read, from eXo's own record</b> (EXO-90398). Opening the Share
    * drawer used to ask {@link CaldavPushService#mirrorDestination}, which walks
-   * the account's principal, its calendar home and that home's listing — four
-   * PROPFINDs on a server writing into a dedicated calendar, eight on one
-   * writing into the account's own default, on a path whose whole cost is the
-   * number of sequential asks. The record answers the same question without any
+   * the account's principal, its calendar home and that home's listing — three
+   * PROPFINDs on a server writing into a dedicated calendar, six or seven on
+   * one writing into the account's own default, on a path whose whole cost is
+   * the number of sequential asks. The record answers the same question without any
    * of them: what {@link #recordedDestinationsOf} reads is written by the very
    * passes that move the copies.
    *
