@@ -86,6 +86,25 @@ public class CaldavConnectorStorageTest {
   }
 
   /**
+   * Forgetting the destination removes that one key and touches nothing else:
+   * the account stays connected (EXO-90398).
+   */
+  @Test
+  public void shouldForgetOnlyTheMirrorCalendarHref() {
+    caldavConnectorStorage.forgetMirrorCalendarHref(USER_IDENTITY_ID);
+
+    verify(settingService).remove(Context.USER.id(String.valueOf(USER_IDENTITY_ID)),
+                                  CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                  CaldavConnectorUtils.CALDAV_MIRROR_CALENDAR_KEY);
+    verify(settingService, never()).remove(any(),
+                                           eq(CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE),
+                                           eq(CaldavConnectorUtils.CALDAV_USERNAME_KEY));
+    verify(settingService, never()).remove(any(),
+                                           eq(CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE),
+                                           eq(CaldavConnectorUtils.CALDAV_PASSWORD_KEY));
+  }
+
+  /**
    * A stored href is read back onto the setting.
    */
   @Test

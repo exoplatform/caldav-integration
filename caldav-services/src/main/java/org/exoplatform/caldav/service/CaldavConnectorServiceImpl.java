@@ -127,6 +127,11 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     // It holds for a provider-backed connection too - what the account is
     // authenticated with changed there as well.
     forgetServerIdentity(userIdentityId);
+    // And so does the collection the copies were last written into, when the
+    // account this connection names is not the one the record was written for
+    // (EXO-90398). Gone before the destinations step below, which records this
+    // account's own.
+    forgetMirrorDestination(userIdentityId, caldavUserSetting, previous);
     // Disconnecting froze the bindings of the calendars eXo pushed out, so
     // that reconnecting would find its collections again. Reconnecting is
     // what thaws them: until it does, the account is connected while the
@@ -575,6 +580,46 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     if (identityService != null) {
       identityService.forgetPrincipal(userIdentityId);
     }
+  }
+
+  /**
+   * Forgets where the copies of a user were last written, when this connection
+   * names an account the record was not written for (EXO-90398).
+   *
+   * <p>
+   * <b>Only when the account changed</b>, and that condition is the whole of
+   * it. Disconnecting already takes the record with the rest of the settings,
+   * so the ordinary disconnect-then-reconnect needs nothing here; what this
+   * covers is a connection written <i>over</i> a live one — another mailbox on
+   * the same server, or the same login moved to another registration — where
+   * the record survives and names a collection this account may not even see.
+   * Clearing it for a re-connection of the <i>same</i> account would be a loss
+   * rather than an invalidation: {@code CaldavPushService.ensureMirror} reads
+   * it to recognise a destination it adopted rather than created, and a server
+   * that cannot be reached on this connection would leave the account with no
+   * record at all.
+   *
+   * <p>
+   * The record is re-established a few lines later by the destinations step,
+   * in this same request, so nothing reads the absence for long — and a reader
+   * that does asks the server rather than concluding there are no copies.
+   *
+   * @param userIdentityId identity of the connecting user
+   * @param connected the account just connected
+   * @param previous the account as it stood before this connection, or null
+   *          when there was none
+   */
+  private void forgetMirrorDestination(long userIdentityId, CaldavUserSetting connected, CaldavUserSetting previous) {
+    if (previous == null || StringUtils.isBlank(previous.getMirrorCalendarHref())) {
+      return;
+    }
+    boolean sameAccount = StringUtils.equals(previous.getUsername(), connected.getUsername())
+        && serverKeyOf(previous.getServerId()) == serverKeyOf(connected.getServerId());
+    if (sameAccount) {
+      return;
+    }
+    LOG.info("User {} connected another CalDAV account; where their copies were last written is forgotten", userIdentityId);
+    caldavConnectorStorage.forgetMirrorCalendarHref(userIdentityId);
   }
 
   /**
