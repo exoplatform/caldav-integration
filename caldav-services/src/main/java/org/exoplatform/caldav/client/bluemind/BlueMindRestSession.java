@@ -221,11 +221,14 @@ public class BlueMindRestSession {
    *
    * <p>
    * <b>Logout.</b> A session nothing keeps is logged out when the job ends,
-   * as before. A kept one is not: it is closed when eXo drops it on purpose
-   * ({@link #forget}), and otherwise expires on BlueMind's own clock when the
-   * entry expires here first — the same fallback a failed logout has always
-   * relied on. A session refused by BlueMind is already closed on its side
-   * and is dropped without one.
+   * as before — and <i>nothing keeps it</i> covers three cases, not one: the
+   * endpoint that cannot be keyed at all, the store that had no room for
+   * another account ({@code maxAccounts}), and the session another thread's
+   * took the place of. A kept one is not closed: it is closed when eXo drops
+   * it on purpose ({@link #forget}), and otherwise expires on BlueMind's own
+   * clock when the entry expires here first — the same fallback a failed
+   * logout has always relied on. A session refused by BlueMind is already
+   * closed on its side and is dropped without one.
    *
    * @param <T> what the job produces
    * @param endpoint the account's DAV endpoint, minted from the registry
@@ -241,23 +244,34 @@ public class BlueMindRestSession {
     String root = apiRootOf(endpoint);
     Key key = keyOf(endpoint);
     if (key == null) {
-      Login login = mint(root, endpoint);
+      // Nothing can keep it, so this call closes it — the one rule below,
+      // reached by the one endpoint that never has an entry at all.
+      Session own = new Session(root, endpoint, null, mint(root, endpoint), false, true);
       try {
-        return job.apply(new Session(root, endpoint, null, login, false));
+        return job.apply(own);
       } finally {
-        logout(root, login.key());
+        own.closeIfMine();
       }
     }
     Login held = sessions.held(key);
     if (held != null && !root.equals(held.apiRoot())) {
       // Minted for another address: the declared server moved under it. It is
-      // not sent anywhere, and the entry goes rather than being believed.
-      sessions.forget(key.serverId(), key.exoLogin());
+      // not sent anywhere, and the entry goes rather than being believed. It
+      // is closed at the address it was opened at, which is the only one that
+      // knows it.
+      if (sessions.drop(key, held)) {
+        logout(held.apiRoot(), held.key());
+      }
       held = null;
     }
     boolean reused = held != null;
-    Login login = reused ? held : acquire(key, root, endpoint);
-    return job.apply(new Session(root, endpoint, key, login, reused));
+    Acquired acquired = reused ? new Acquired(held, false) : acquire(key, root, endpoint);
+    Session session = new Session(root, endpoint, key, acquired.login(), reused, acquired.mine());
+    try {
+      return job.apply(session);
+    } finally {
+      session.closeIfMine();
+    }
   }
 
   /**
@@ -322,28 +336,50 @@ public class BlueMindRestSession {
   }
 
   /**
+   * A session to use, and whether closing it is this call's business.
+   *
+   * @param login the session
+   * @param mine true when this call opened it and nothing kept it, so that
+   *          nobody else will ever present it and the job's end is the only
+   *          moment it can be closed at
+   */
+  private record Acquired(Login login, boolean mine) {
+  }
+
+  /**
    * Opens a session for an account and keeps it — unless another thread kept
    * one first, in which case that one is used and the redundant session is
    * closed at once rather than left open on the server.
    *
+   * <p>
+   * The store may also decline to keep it, having no room left
+   * ({@code exo.agenda.caldav.bluemind.session.maxAccounts}). That session is
+   * used for this call and closed when it ends, exactly as every call did
+   * before EXO-90397: a session nothing will reuse must not be left open on
+   * the server until BlueMind expires it, and past the bound there would be
+   * one of those per call.
+   *
    * @param key the account
    * @param root the REST root
    * @param endpoint the account's endpoint
-   * @return the session to use
+   * @return the session to use, and who closes it
    */
-  private Login acquire(Key key, String root, CalDavEndpoint endpoint) {
+  private Acquired acquire(Key key, String root, CalDavEndpoint endpoint) {
     Login fresh = mint(root, endpoint);
     Login winner = sessions.keep(key, fresh);
     if (winner == null) {
-      return fresh;
+      return new Acquired(fresh, !sessions.holds(key, fresh));
     }
     if (root.equals(winner.apiRoot())) {
       logout(root, fresh.key());
-      return winner;
+      return new Acquired(winner, false);
     }
-    // The entry that won names another address, so it is the one that goes.
+    // The entry that won names another address, so it is the one that goes —
+    // and it is closed at the address it was opened at, the only one that
+    // knows it, rather than left open there for nothing.
     sessions.replace(key, fresh);
-    return fresh;
+    logout(winner.apiRoot(), winner.key());
+    return new Acquired(fresh, !sessions.holds(key, fresh));
   }
 
   /**
@@ -618,6 +654,12 @@ public class BlueMindRestSession {
     /** Whether this call has already spent its one re-login. */
     private boolean              renewed;
 
+    /**
+     * Whether this call opened the session it now holds and nothing kept it,
+     * so that closing it is this call's business and nobody else's.
+     */
+    private boolean              mine;
+
     private Login                login;
 
     /**
@@ -628,13 +670,35 @@ public class BlueMindRestSession {
      * @param key the account this session is kept for, or null
      * @param login the key and the authenticated user
      * @param reused whether the session came from the store
+     * @param mine whether this call opened it and nothing kept it
      */
-    private Session(String root, CalDavEndpoint endpoint, Key key, Login login, boolean reused) {
+    private Session(String root, CalDavEndpoint endpoint, Key key, Login login, boolean reused, boolean mine) {
       this.root = root;
       this.endpoint = endpoint;
       this.key = key;
       this.login = login;
       this.reused = reused;
+      this.mine = mine;
+    }
+
+    /**
+     * Closes the session when this call is the only one that ever held it:
+     * the store had no room for it, or another thread's session took its
+     * place. A session the store keeps is left open for the next caller, and
+     * a session BlueMind refused is already closed on its side.
+     *
+     * <p>
+     * This is what makes the {@code call} Javadoc's "a session nothing keeps
+     * is logged out when the job ends" true of the keyed path too, and not
+     * only of the endpoint that cannot be keyed at all: past
+     * {@code maxAccounts} every call opens a session nothing will reuse, and
+     * leaving each of those open until BlueMind expires it would leak one
+     * server-side session per call (EXO-90397, review round 1).
+     */
+    private void closeIfMine() {
+      if (mine) {
+        logout(root, login.key());
+      }
     }
 
     /**
@@ -736,10 +800,16 @@ public class BlueMindRestSession {
       if (answer.status() == 401 && key != null && reused && !renewed) {
         renewed = true;
         // Refused means closed on the server's side: the entry goes without a
-        // logout, and the key it held is never sent again.
-        sessions.forget(key.serverId(), key.exoLogin());
+        // logout, and the key it held is never sent again. Only this account's
+        // entry, and only while it is still the one that was refused: another
+        // thread that has already put a fresh session there is not chased out
+        // of it, and the accounts this user's credentials address elsewhere on
+        // this server were not refused and are not dropped.
+        sessions.drop(key, login);
         LOG.debug("The REST session kept for {} was refused; another is opened for this call", key);
-        login = acquire(key, root, endpoint);
+        Acquired again = acquire(key, root, endpoint);
+        login = again.login();
+        mine = again.mine();
         answer = send(request(method, path, body, contentType), named(path));
       }
       checkGateway(answer.status(), method, named(path));
