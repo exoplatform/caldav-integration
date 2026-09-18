@@ -106,7 +106,7 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * copies go. That ask was the expensive one: {@link #theMirrorWalkTheDrawerNoLongerMakes}
  * wires the real {@code CaldavPushService} and counts what it asked the client,
  * which on a server writing into the account's own default calendar is four
- * client calls and <b>eight PROPFINDs</b> ({@code HttpCalDavClient}:
+ * client calls and <b>seven PROPFINDs</b> ({@code HttpCalDavClient}:
  * {@code discoverCalendarHome} is two, {@code discoverDefaultCalendar} three,
  * and {@code discoverPrincipal} inside the tie-break one more, beside the home
  * listing). The record is read instead, and the same test pins that an account
@@ -434,24 +434,63 @@ public class CaldavShareDrawerRoundTripsTest {
   }
 
   /**
-   * <b>The relocation is followed, not waited for.</b>
-   * {@code CaldavMirrorRelocationService.repoint} moves the mirror pair onto
-   * the new collection before a single copy is moved, and the account's own
-   * record still names the old one. Both hold copies in that window, and both
-   * are warned about.
+   * <b>The pair is what names the collection the copies are actually in, and
+   * it is warned about.</b> The account's record moves first and alone — it is
+   * written by {@code ensureMirror} on connect
+   * ({@code CaldavSyncService.establishDestinations}), by the destination
+   * endpoint, and by {@code CaldavMirrorRelocationService.destinationOf}
+   * <i>before</i> {@code repoint} — so after a re-resolution that found another
+   * collection, the account names where the copies are going and the mirror
+   * pair still names where they are, until the push next writes a copy. The
+   * union warns about both; here the calendar being shared is the one the
+   * <i>pair</i> names, and the account's record names another.
+   *
+   * <p>
+   * The stamps are equal, so {@code relocationOwed} is false and the record is
+   * believed — that is the state this pins, and it is why the answer costs no
+   * ask. A genuine relocation is the other state: the stamp is behind for the
+   * whole of it, and the server, not the record, is asked.
    */
   @Test
-  public void theCollectionTheCopiesAreBeingMovedIntoIsWarnedAbout() {
+  public void theCollectionTheCopiesAreStillInIsWarnedAbout() {
     Date changed = new Date();
     lenient().when(caldavServerService.resolveServer(STALWART)).thenReturn(registration(changed));
-    CalendarSync repointed = mirrorPair(COLLECTION);
-    repointed.setCopySettingsApplied(changed);
-    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.MIRROR)).thenReturn(List.of(repointed));
+    CalendarSync whereTheCopiesAre = mirrorPair(COLLECTION);
+    whereTheCopiesAre.setCopySettingsApplied(changed);
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.MIRROR))
+             .thenReturn(List.of(whereTheCopiesAre));
 
     ChannelShares answer = plugin.listShares(CALENDAR, "alice", List.of());
 
-    assertTrue(answer.meetingCopies(), "the pair says the copies are on their way into this calendar");
+    assertTrue(answer.meetingCopies(), "the pair says the copies are in this calendar, though the account names another");
     assertEquals(ONE_OPENING, asks(), "and no ask was needed to know it");
+  }
+
+  /**
+   * <b>A record that cannot be read warns; it never answers "no copies here".</b>
+   * Reading the record is two storage calls of its own, and either can fail
+   * where the old code had none to fail — so both sit inside the same guard the
+   * server lookup sits in. Left outside it, a database hiccup would reach
+   * {@code CaldavCalendarShareChannelPlugin.holdsMeetingCopies}, whose
+   * {@code catch (RuntimeException …)} answers <b>false</b> at DEBUG: the owner
+   * shares a calendar that does hold their meeting copies and is told nothing,
+   * which is the one outcome this whole task is built to avoid. Here the record
+   * read throws, the server cannot answer either, and nothing recorded is left
+   * to clear the calendar — so the warning is shown.
+   */
+  @Test
+  public void aRecordThatCannotBeReadStillWarns() {
+    CaldavUserSetting unrecorded = connected();
+    unrecorded.setMirrorCalendarHref(null);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(unrecorded);
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.MIRROR))
+             .thenThrow(new IllegalStateException("the database said no"));
+
+    ChannelShares answer = plugin.listShares(CALENDAR, "alice", List.of());
+
+    assertTrue(answer.meetingCopies(), "a record that could not be read warns rather than clears the calendar");
+    assertTrue(plugin.holdsMeetingCopies(CALENDAR, "alice"),
+               "and the separate question agenda asks is not answered 'no' by the same failure");
   }
 
   /**
@@ -509,7 +548,7 @@ public class CaldavShareDrawerRoundTripsTest {
    * The push service is wired for real here — only the CalDAV client is a mock
    * — so what {@code mirrorDestination} costs is counted rather than asserted:
    * on an account whose registration writes into its own default calendar, four
-   * client calls, which {@code HttpCalDavClient} turns into eight PROPFINDs
+   * client calls, which {@code HttpCalDavClient} turns into seven PROPFINDs
    * ({@code discoverCalendarHome} two, the home listing one,
    * {@code discoverDefaultCalendar} three, the tie-break's
    * {@code discoverPrincipal} one more, and the principal hop inside the home
