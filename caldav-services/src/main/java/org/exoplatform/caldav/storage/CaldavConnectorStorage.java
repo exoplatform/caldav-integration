@@ -97,6 +97,19 @@ public class CaldavConnectorStorage {
    * disconnected.
    *
    * <p>
+   * <b>The account's half of the record, and deliberately only that half.</b>
+   * The Share drawer reads a union of this href and the mirror pair's
+   * {@code remoteHref}, and the pair — keyed on the user and the server — is
+   * left where it is. On a connection naming another <i>server</i> that costs
+   * nothing: the pairs of the server just left are not read for the one the
+   * account is now on. On another mailbox of the <i>same</i> server the pair
+   * survives and keeps naming the collection the previous account's copies went
+   * into, so the drawer warns about a calendar the new account may not even
+   * see. That is the cheap direction — a warning too many, not one too few —
+   * and the push repoints the pair on its next write, which is why nothing
+   * removes it here.
+   *
+   * <p>
    * Never on its own: the connection re-establishes the destination in the
    * same request, so the record is absent only for as long as that takes, and
    * an absent record is asked of the server rather than read as "no copies
