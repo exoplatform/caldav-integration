@@ -82,7 +82,11 @@ import org.exoplatform.caldav.client.bluemind.BlueMindRestSession.Login;
  * {@code exo.agenda.caldav.bluemind.session.ttlSeconds} seconds and there are
  * at most {@code exo.agenda.caldav.bluemind.session.maxAccounts} of them;
  * beyond that the session is used but not kept, so the map cannot grow with
- * the user base of an instance nobody sized it for.
+ * the user base of an instance nobody sized it for. A session this store
+ * declines to keep is closed by the call that opened it — {@link #holds} is
+ * how that call finds out — because nobody will ever present it again and a
+ * node above the bound would otherwise leave one live session on BlueMind per
+ * call.
  */
 @Component
 public class BlueMindSessionCache {
@@ -220,6 +224,28 @@ public class BlueMindSessionCache {
   }
 
   /**
+   * Whether a session is, at this instant, the entry kept for an account.
+   *
+   * <p>
+   * What {@link #keep} cannot say on its own: it answers null both when the
+   * session became the entry and when {@link #bound} took it straight back
+   * out for want of room, and those are opposite answers to the only question
+   * its caller has — whether anyone else will ever use this session, or
+   * whether it must be closed when the job ends. Asked after the fact rather
+   * than reported by {@code keep} so that it also covers the session another
+   * thread has replaced in the meantime: in both cases nothing keeps it and
+   * its opener is the one that closes it.
+   *
+   * @param key the account
+   * @param session the session
+   * @return true when that very session is the entry
+   */
+  boolean holds(Key key, Login session) {
+    Entry entry = entries.get(key);
+    return entry != null && entry.login().equals(session);
+  }
+
+  /**
    * Makes a session the account's entry whatever was there.
    *
    * @param key the account
@@ -231,6 +257,31 @@ public class BlueMindSessionCache {
     }
     entries.put(key, new Entry(session, clock.getAsLong() + ttlMillis));
     bound(key);
+  }
+
+  /**
+   * Drops one account's entry, and only while it still holds the session the
+   * caller is complaining about.
+   *
+   * <p>
+   * The narrow counterpart of {@link #forget}, for the two places where a
+   * <i>session</i> turned out to be unusable rather than an <i>account</i>
+   * having changed: a key BlueMind refused, and one minted at an address the
+   * declared server has since left. Narrow in both directions, and both
+   * matter. It leaves the sibling entries alone — the same eXo user's
+   * credentials may address another account on that server, and that session
+   * was not refused — and it leaves alone a fresh session another thread has
+   * already put there, so that concurrent callers meeting one stale key do
+   * not each evict the replacement the last one had just opened.
+   *
+   * @param key the account
+   * @param session the session the caller holds and believes unusable
+   * @return true when that entry was the one dropped, so that the caller
+   *         knows whether it is the one that closes the session
+   */
+  boolean drop(Key key, Login session) {
+    Entry entry = entries.get(key);
+    return entry != null && entry.login().equals(session) && entries.remove(key, entry);
   }
 
   /**

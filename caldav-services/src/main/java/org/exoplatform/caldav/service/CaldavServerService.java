@@ -1019,6 +1019,10 @@ public class CaldavServerService {
       throw new ObjectNotFoundException("CalDAV server with id " + serverId + " doesn't exist");
     }
     saveAgendaRemoteProvider(updatedServer);
+    // A third writer of the registration row, and the invariant the two
+    // Javadoc blocks above state is unconditional: a registration that is
+    // written drops the sessions opened under it (EXO-90397, review round 1).
+    forgetBlueMindSessions();
     return caldavServerQuirkService.decorate(updatedServer);
   }
 
