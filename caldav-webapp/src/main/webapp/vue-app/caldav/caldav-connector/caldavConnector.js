@@ -1,4 +1,5 @@
 import * as caldavConnectorService from '../js/agendaCaldavService.js';
+import {DEFAULT_SERVER_ICON, DEFAULT_SERVER_IMAGE} from '../js/serverIconIdentity.js';
 /**
  * What deleting each calendar would do, kept from the moment agenda asks until
  * the deletion it precedes. Not a cache of remote state: it holds one answer
@@ -9,7 +10,17 @@ const deletionPlans = new Map();
 const caldavConnector = {
   name: 'agenda.caldavCalendar',
   description: 'agenda.caldavCalendar.description',
-  avatar: '/caldav/skin/image/caldav.png',
+  // The identity a server falls back to: a calendar glyph drawn like the
+  // agenda's own icons, not the CalDAV product logo. What the marker on an
+  // event has to say is "this is a calendar entry read from an account", and
+  // a protocol name says nothing to a user who never chose a protocol.
+  icon: DEFAULT_SERVER_ICON,
+  // Kept for a consumer that renders a bare <img> and knows nothing of `icon`
+  // — the generic connectors table, which CalDAV's multiInstance rows do not
+  // appear in, and anything outside this add-on. Every surface that resolves
+  // the configured identity (agenda-connector-avatar, caldav-server-icon)
+  // reads `imageUrl`/`icon` and never reaches this.
+  avatar: DEFAULT_SERVER_IMAGE,
   isOauth: false,
   canConnect: true,
   canPush: true,
@@ -605,13 +616,13 @@ export function createCaldavConnector(server, index, managed) {
     serverId: server.id,
     serverUrl: server.serverUrl,
     // The visual identity, in the admin's order of precedence: the uploaded
-    // image, else the font icon chosen in admin, else the packaged CalDAV
-    // default. `avatar` stays an image URL for every consumer that renders
-    // an <img> (toolbar badge, timeline); `icon`+`imageUrl` let the connect
-    // drawer render the font icon when that is what the admin configured, so
-    // the drawer and the admin list show the same identity.
+    // image, else the font icon chosen in admin, else the packaged calendar
+    // glyph. `icon` is now always filled — the default IS a font icon — so a
+    // surface resolving the identity renders the uploaded image when there is
+    // one (`imageUrl` wins over `icon`) and the glyph otherwise. `avatar`
+    // stays an image URL for a consumer that knows neither field.
     avatar: server.imageUrl || caldavConnector.avatar,
-    icon: server.icon || null,
+    icon: server.icon || caldavConnector.icon,
     imageUrl: server.imageUrl || null,
     rank: caldavConnector.rank + (index || 0),
   });

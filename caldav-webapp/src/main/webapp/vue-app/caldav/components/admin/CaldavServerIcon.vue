@@ -32,12 +32,12 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       v-else
       :size="iconSize"
       :class="iconClass">
-      {{ icon }}
+      {{ iconName }}
     </v-icon>
   </v-avatar>
 </template>
 <script>
-import {resolveServerImage} from '../../js/serverIconIdentity.js';
+import {resolveServerIcon, resolveServerImage} from '../../js/serverIconIdentity.js';
 
 export default {
   props: {
@@ -60,15 +60,24 @@ export default {
   },
   computed: {
     /**
-     * The image identifying the server, resolved by the shared rule:
-     * uploaded image, else — when no font icon was chosen either — the
-     * packaged CalDAV default. Null exactly when the font icon renders,
+     * The image identifying the server, resolved by the shared rule: the
+     * uploaded image and nothing else. Null exactly when a font icon renders,
      * so this preview always shows the identity the other surfaces show.
      *
      * @returns {String} the image URL to render, or null to render the font icon
      */
     imageSrc() {
-      return resolveServerImage(this.imageUrl, this.icon);
+      return resolveServerImage(this.imageUrl);
+    },
+    /**
+     * The glyph to render when no image identifies the server: the one the
+     * administrator chose, else the packaged calendar default — the same
+     * fallback the agenda surfaces draw, resolved by the same rule.
+     *
+     * @returns {String} the font icon to render
+     */
+    iconName() {
+      return resolveServerIcon(this.icon);
     },
   },
 };
