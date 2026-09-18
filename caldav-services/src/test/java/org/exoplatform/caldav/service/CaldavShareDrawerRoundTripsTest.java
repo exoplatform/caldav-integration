@@ -551,15 +551,15 @@ public class CaldavShareDrawerRoundTripsTest {
 
   /**
    * The same walk on the commoner destination — a calendar of eXo's own — for
-   * the record: three client calls, which {@code HttpCalDavClient} turns into
-   * <b>four PROPFINDs</b> (the principal and the calendar home, then the home
+   * the record: two client calls, which {@code HttpCalDavClient} turns into
+   * <b>three PROPFINDs</b> (the principal and the calendar home, then the home
    * listing). This is the floor of what the drawer used to pay for its
    * warning; the main-calendar account above is the ceiling.
    *
    * @throws Exception when the push service's collaborators cannot be set
    */
   @Test
-  public void theDedicatedCalendarWalkIsThreeClientCalls() throws Exception {
+  public void theDedicatedCalendarWalkIsTwoClientCalls() throws Exception {
     CaldavPushService push = realPushService();
     lenient().when(caldavServerService.resolveServer(STALWART)).thenReturn(registration(null));
     service = shareServiceWith(push);
