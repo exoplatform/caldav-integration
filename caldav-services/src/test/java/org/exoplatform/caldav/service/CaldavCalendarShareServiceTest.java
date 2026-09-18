@@ -1081,6 +1081,83 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
+   * The grant Stalwart really stores, read back the way Stalwart really
+   * reports it (EXO-90378 — the defect the PO hit on the rig).
+   *
+   * <p>
+   * eXo writes {@code {DAV:read, DAV:write}}. Stalwart v0.16 stores that as
+   * its own {@code Read, ReadItems, Modify, Delete, AddItems, ModifyItems,
+   * RemoveItems} and reports it back through {@code current_user_privilege_set}
+   * as {@code DAV:read} + {@code DAV:read-current-user-privilege-set} (from
+   * Read/ReadItems), {@code DAV:write} (from Delete/RemoveItems),
+   * {@code DAV:write-properties} (from Modify) and {@code DAV:write-content}
+   * (from ModifyItems) — {@code crates/dav/src/common/acl.rs},
+   * stalwartlabs/stalwart v0.16.0.
+   *
+   * <p>
+   * The grant had landed; eXo did not recognise its own entry coming back and
+   * reported the share as not applied, leaving the record undelivered. The
+   * read-back must accept the aggregate's members beside the aggregate.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anEditGrantIsRecognisedInStalwartsOwnReadBackShape() throws Exception {
+    AccessControlEntry asStalwartReportsIt =
+                                           new AccessControlEntry(AcePrincipal.href("/dav/pal/bob%40stalwart.local/"),
+                                                                  false,
+                                                                  false,
+                                                                  Set.of("{DAV:}read",
+                                                                         "{DAV:}read-current-user-privilege-set",
+                                                                         "{DAV:}write",
+                                                                         "{DAV:}write-properties",
+                                                                         "{DAV:}write-content"),
+                                                                  false,
+                                                                  null);
+    assertTrue(asStalwartReportsIt.grantsEditOnly(), "the entry eXo wrote, as Stalwart reports it");
+    assertTrue(asStalwartReportsIt.grantsExoShape());
+    assertFalse(asStalwartReportsIt.grantsReadOnly(), "and it is not a read share");
+
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(), Set.of()),
+                                                                CollectionAcl.of(List.of(asStalwartReportsIt), Set.of()));
+    when(calDavClient.writeAcl(eq(endpoint), any(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    CalendarShares shares = service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE);
+
+    CalendarSharee bob = shares.sharees().stream().filter(sharee -> !sharee.users().isEmpty()).findFirst().orElseThrow();
+    assertEquals(ShareAccess.WRITE, bob.access(), "the level the server holds, not a refusal");
+    assertTrue(bob.removable(), "and eXo may take back what it wrote");
+  }
+
+  /**
+   * Accepting the aggregate's members widens nothing (EXO-90378): a bare
+   * {@code DAV:write} with no read — a right given through Stalwart's JMAP —
+   * is still not an eXo grant, a partial write is not the whole, and anything
+   * outside {@code DAV:write} still stops the write.
+   */
+  @Test
+  public void theMembersOfWriteDoNotWidenWhatAnExoGrantIs() {
+    AcePrincipal who = AcePrincipal.href("/dav/pal/carol%40stalwart.local/");
+    AccessControlEntry jmapRight = new AccessControlEntry(who, false, false, Set.of("{DAV:}write"), false, null);
+    assertFalse(jmapRight.grantsEditOnly(), "a JMAP right reads back as a bare write and is still not ours");
+    assertFalse(jmapRight.grantsExoShape());
+
+    AccessControlEntry membersOnly = new AccessControlEntry(who, false, false,
+                                                            Set.of("{DAV:}read", "{DAV:}write-content", "{DAV:}bind"),
+                                                            false, null);
+    assertFalse(membersOnly.grantsEditOnly(), "the members without the aggregate are not the whole of DAV:write");
+
+    AccessControlEntry manages = new AccessControlEntry(who, false, false,
+                                                        Set.of("{DAV:}read", "{DAV:}write", "{DAV:}write-acl"),
+                                                        false, null);
+    assertFalse(manages.grantsEditOnly(), "managing the access list is outside an edit share");
+    assertFalse(manages.grantsExoShape());
+
+    AccessControlEntry all = new AccessControlEntry(who, false, false, Set.of("{DAV:}all"), false, null);
+    assertFalse(all.grantsExoShape());
+  }
+
+  /**
    * Levelling reconciles in both directions (EXO-90378): a read grant is
    * widened to an edit grant, and an edit grant is narrowed back to a read
    * grant — one entry each time, never two.
