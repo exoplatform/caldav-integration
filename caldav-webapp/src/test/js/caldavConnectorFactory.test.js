@@ -15,6 +15,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 import caldavConnector, {createCaldavConnector, createLegacyCaldavConnector, serverHost} from '../../main/webapp/vue-app/caldav/caldav-connector/caldavConnector.js';
+import {DEFAULT_SERVER_ICON} from '../../main/webapp/vue-app/caldav/js/serverIconIdentity.js';
 
 /**
  * The contract agenda's left panel holds every connector to. My Calendars
@@ -111,11 +112,12 @@ describe('createCaldavConnector', () => {
 
   /**
    * Visual identity precedence, as the admin configured it: an uploaded
-   * image wins, else the chosen font icon, else the packaged default avatar.
-   * `avatar` must stay an image URL in every case — several agenda spots
-   * render it straight into an img tag.
+   * image wins, else the chosen font icon, else the packaged default — which
+   * since EXO-90393 is a calendar GLYPH, not the CalDAV product logo. `avatar`
+   * must stay an image URL in every case, for a consumer that renders it
+   * straight into an img tag and knows nothing of `icon`.
    */
-  it('resolves the visual identity image over icon over default', () => {
+  it('resolves the visual identity image over icon over the default glyph', () => {
     const withImage = createCaldavConnector(Object.assign({}, declaredServer, {
       imageUrl: '/caldav/rest/servers/6/image?v=1',
     }), 1);
@@ -128,8 +130,42 @@ describe('createCaldavConnector', () => {
     expect(withIcon.avatar).toBe(caldavConnector.avatar);
 
     const bare = createCaldavConnector(seedServer, 0);
-    expect(bare.icon).toBeNull();
+    expect(bare.icon).toBe(DEFAULT_SERVER_ICON);
+    expect(bare.imageUrl).toBeNull();
     expect(bare.avatar).toBe(caldavConnector.avatar);
+  });
+
+  /**
+   * EXO-90393. The marker a user meets on a live-read event — on the mobile
+   * list row and in the event details header — when the administrator
+   * configured no identity of their own: a calendar icon of the agenda's own
+   * family, not the packaged "CalDAV" logo, which named a protocol the user
+   * never chose.
+   *
+   * <p>Pinned on the packaged descriptor AND on the legacy fallback: the
+   * fallback is what an instance whose registry answers nothing registers, and
+   * it is exactly the case where nobody configured anything.
+   */
+  it('defaults to a calendar glyph on every descriptor, the packaged one and the legacy fallback', () => {
+    expect(DEFAULT_SERVER_ICON).toBe('fas fa-calendar-alt');
+    expect(caldavConnector.icon).toBe(DEFAULT_SERVER_ICON);
+    expect(createLegacyCaldavConnector().icon).toBe(DEFAULT_SERVER_ICON);
+  });
+
+  /**
+   * EXO-90393, the other half: an administrator's own choice still wins over
+   * the new default, in the same order as before. An uploaded image beats the
+   * glyph — `imageUrl` is what the shared avatar checks first — and a chosen
+   * font icon replaces it.
+   */
+  it('lets an administrator override the default glyph, image first then icon', () => {
+    const withImage = createCaldavConnector(Object.assign({}, seedServer, {
+      imageUrl: '/caldav/rest/servers/5/image?v=3',
+    }), 0);
+    expect(withImage.imageUrl).toBe('/caldav/rest/servers/5/image?v=3');
+    expect(withImage.icon).toBe(DEFAULT_SERVER_ICON);
+
+    expect(createCaldavConnector(declaredServer, 1).icon).toBe('fa-server');
   });
 
   /**

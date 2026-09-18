@@ -392,8 +392,9 @@ export default {
      * Creates or updates the drawer's server, then refreshes the table and
      * tells the agenda apps that the connectors changed. A server whose
      * administrator chose neither a font icon nor an image is saved with
-     * none: its identity stays the packaged CalDAV image everywhere, and
-     * a plain rename can never silently swap it for a generic glyph.
+     * none: its identity is then the packaged calendar glyph everywhere, as
+     * `serverIconIdentity.js` resolves it, and a plain rename can never
+     * silently persist a glyph the administrator never picked.
      *
      * @returns {Promise} resolves once saved and announced
      */
