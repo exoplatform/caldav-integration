@@ -194,11 +194,11 @@ const QUIRKS = {
  * not.
  *
  * No preset fills an icon. The only icon a preset could fill is a generic font
- * glyph, and `serverIconIdentity.js` already settled that a generic glyph is a
- * worse identity than the packaged CalDAV image. What a user would actually
- * recognise is the vendor's own logo, which is an image an administrator
- * uploads. The field is carried here so that a preset shipping a packaged logo
- * one day sets it and nothing else has to change.
+ * glyph, and `serverIconIdentity.js` already ships one for every server that
+ * names none — a preset repeating it would add nothing. What a user would
+ * actually recognise is the vendor's own logo, which is an image an
+ * administrator uploads. The field is carried here so that a preset shipping a
+ * packaged logo one day sets it and nothing else has to change.
  */
 export const SERVER_PRESETS = [
   {
