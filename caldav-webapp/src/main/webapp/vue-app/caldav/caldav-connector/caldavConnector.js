@@ -733,6 +733,25 @@ export function createLegacyCaldavConnector(managed) {
 }
 
 /**
+ * Whether the CalDAV connectors belong on the page being rendered (EXO-90383).
+ *
+ * <p>A connector describes the calendar account of the person looking at the
+ * page — their plug in the agenda toolbar, their remote events, their "Connect
+ * your personal agenda". A space's agenda is the space's calendars, not the
+ * viewer's: the plug there connects an account that has nothing to do with the
+ * space, and the events it would bring are the viewer's own. Agenda reads every
+ * one of those affordances off the descriptors this module registers, so the
+ * page they do not belong on is the page they are not registered on — the rule
+ * that hides a connect affordance under managed mode, applied to the place
+ * rather than to the deployment.</p>
+ *
+ * @returns {Boolean} true on the personal agenda, false inside a space
+ */
+export function connectorsBelongOnThisPage() {
+  return !(window.eXo && eXo.env && eXo.env.portal && eXo.env.portal.spaceId);
+}
+
+/**
  * The host a declared server points at, for the connect drawer's secondary
  * line when the administrator typed no description: with several CalDAV
  * servers sharing one icon, the host is the one piece of always-present data
