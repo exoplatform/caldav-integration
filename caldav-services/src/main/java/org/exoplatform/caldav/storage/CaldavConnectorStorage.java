@@ -83,6 +83,47 @@ public class CaldavConnectorStorage {
   }
 
   /**
+   * Forgets the href of the mirror calendar of a user, leaving the rest of
+   * their account alone (EXO-90398).
+   *
+   * <p>
+   * What a connection naming another account, or another server, calls: the
+   * collection recorded under the previous credentials is not this account's,
+   * and a reader of the record — the Share drawer, which warns when the
+   * calendar being shared is where the copies go — would otherwise be reading
+   * somebody else's destination. The same reasoning
+   * {@link #deleteCaldavSetting} states for a disconnection, applied to the
+   * one case that is not one: re-connecting over an account that was never
+   * disconnected.
+   *
+   * <p>
+   * <b>The account's half of the record, and deliberately only that half.</b>
+   * The Share drawer reads a union of this href and the mirror pair's
+   * {@code remoteHref}, and the pair — keyed on the user and the server — is
+   * left where it is. On a connection naming another <i>server</i> that costs
+   * nothing: the pairs of the server just left are not read for the one the
+   * account is now on. On another mailbox of the <i>same</i> server the pair
+   * survives and keeps naming the collection the previous account's copies went
+   * into, so the drawer warns about a calendar the new account may not even
+   * see. That is the cheap direction — a warning too many, not one too few —
+   * and the push repoints the pair on its next write, which is why nothing
+   * removes it here.
+   *
+   * <p>
+   * Never on its own: the connection re-establishes the destination in the
+   * same request, so the record is absent only for as long as that takes, and
+   * an absent record is asked of the server rather than read as "no copies
+   * here".
+   *
+   * @param userIdentityId technical identity identifier of the user
+   */
+  public void forgetMirrorCalendarHref(long userIdentityId) {
+    this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
+                               CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                               CaldavConnectorUtils.CALDAV_MIRROR_CALENDAR_KEY);
+  }
+
+  /**
    * Retrieves the CalDAV settings of a user: the credentials of the connected
    * account and, when one has been established, the href of the mirror
    * calendar.
