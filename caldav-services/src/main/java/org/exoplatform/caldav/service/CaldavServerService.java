@@ -268,6 +268,16 @@ public class CaldavServerService {
   @Autowired(required = false)
   private CaldavCredentialsResolver caldavCredentialsResolver;
 
+  /**
+   * The BlueMind REST sessions kept per account (EXO-90397). A session is
+   * opened under a registration's address and provider, so a registration
+   * that is edited or deleted invalidates every one of them. Guarded as the
+   * two above are: it resolves through the credentials contract, a bean of
+   * another WAR, so it is undefined in this addon's own Spring test contexts.
+   */
+  @Autowired(required = false)
+  private BlueMindSessionService   blueMindSessionService;
+
   @Autowired
   private SettingService           settingService;
 
@@ -955,6 +965,7 @@ public class CaldavServerService {
     discardConfigOfProviderBeingLeft(stored, server);
     storeProviderConfig(updatedServer, server.getProviderConfig());
     saveAgendaRemoteProvider(updatedServer);
+    forgetBlueMindSessions();
     return caldavServerQuirkService.decorate(updatedServer);
   }
 
@@ -1064,6 +1075,37 @@ public class CaldavServerService {
     }
     caldavServerStorage.deleteServer(serverId);
     caldavServerQuirkService.forget(serverId);
+    forgetBlueMindSessions();
+  }
+
+  /**
+   * Drops every kept BlueMind REST session, because a registration was
+   * written or removed under them (EXO-90397).
+   *
+   * <p>
+   * All of them rather than that registration's: a session is keyed by the
+   * account it acts as, not by the registration it was opened under, so
+   * "this row's sessions" is not a question the store can answer without
+   * keeping a second index of it. An administrator's write is rare and the
+   * cost is bounded — one login per account that is actually used again —
+   * while a session opened under a registration that has since changed its
+   * address, its provider or its existence is one nothing should send
+   * anywhere.
+   *
+   * <p>
+   * Never fails the write: an administrator saving a server must not be told
+   * it failed because a session could not be dropped, and a session left
+   * behind expires within the entry's lifetime.
+   */
+  private void forgetBlueMindSessions() {
+    if (blueMindSessionService == null) {
+      return;
+    }
+    try {
+      blueMindSessionService.forgetAll();
+    } catch (RuntimeException e) {
+      LOG.warn("The kept BlueMind sessions could not be dropped after a server registration was written", e);
+    }
   }
 
   /**
