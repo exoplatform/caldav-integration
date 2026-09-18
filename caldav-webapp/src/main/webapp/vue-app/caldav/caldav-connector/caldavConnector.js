@@ -393,14 +393,30 @@ const caldavConnector = {
       .catch(() => ({}));
   },
 
-  // The family's answer when no registration states otherwise — the legacy
-  // connector, which fronts no declared server and whose copies have always
-  // gone to a dedicated calendar. A descriptor built for a declared server
-  // overrides this from that server's `mirrorTarget` (see
+  // The family's answer when no registration is in hand. A descriptor built
+  // for a declared server overrides it from that server's `mirrorTarget` (see
   // createCaldavConnector): the flag is what every surface offering the
   // creation step reads, so on a server writing into the account's own default
   // calendar it must be false or the step is offered for an act the push
   // refuses to perform.
+  //
+  // It survives onto the LEGACY descriptor, and that descriptor does front a
+  // registration — the seed row, whose provider name it carries verbatim
+  // (`agenda.caldavCalendar`, CaldavServerService.CALDAV_PROVIDER_NAME). An
+  // account connected through it stores no serverId, and the push resolves it
+  // to that same row (`resolveServer(null)` → `getServerByProviderName`), so
+  // the destination governing those copies is the seed row's, not a default.
+  // What the legacy descriptor lacks is not a registration but a READING of
+  // one: it is registered on the branch where `GET /caldav/rest/servers` could
+  // not be read at all, which is exactly why deriving the flag there is not
+  // an option. So this is a fail-open default, chosen the way the rest of the
+  // resolution chain chooses: the shipped seed is DEDICATED_CALENDAR, and
+  // hiding the step from a server that genuinely needs a dedicated calendar
+  // strands the copies, while offering it where it is inert costs a drawer.
+  // The corner that remains — a seed row an administrator set to
+  // MAIN_CALENDAR, connected during an outage of that one endpoint — is the
+  // original defect in miniature, and closing it means asking the server for
+  // the resolved destination rather than guessing better here.
   canCreateCalendar: true,
   /**
    * Creates, on the connected CalDAV server, the dedicated calendar that will
