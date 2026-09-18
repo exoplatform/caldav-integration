@@ -76,8 +76,8 @@ import org.exoplatform.social.core.manager.IdentityManager;
  *
  * <p>
  * Every call this add-on makes that a server has to answer: the CalDAV client
- * (minus {@link CalDavClient#endpoint}, which mints an endpoint locally from
- * the registration and talks to nobody), BlueMind's REST client, and the
+ * (minus {@link CalDavClient#endpoint}, which mints an endpoint from the
+ * registration without asking the calendar server), BlueMind's REST client, and the
  * push's {@code mirrorDestination}. That last one counts as <b>one ask and
  * three round trips</b>: it walks {@code discoverPrincipal}, the principal's
  * {@code calendar-home-set} and a listing of that home, and more when the
@@ -95,6 +95,20 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * {@code readDisplayName} per sharee who is no eXo user. It is <b>3</b> now:
  * the principal comes from eXo's record of the connection on the read path,
  * and the flag travels with the shares instead of being derived again.
+ *
+ * <h2>Where this test stops</h2>
+ *
+ * <p>
+ * The count here is taken at the channel plugin, not at the endpoint: it says
+ * what one {@code listShares} costs the server. The claim that one
+ * {@code GET /calendars/{id}/shares} costs no more than that rests on two
+ * companion tests, in agenda — {@code AgendaCalendarShareRestTest}
+ * {@code theListingCarriesExoAndExternalSharesApart}, which pins the endpoint
+ * to a single {@code getChannelShares} and to neither of the two calls it
+ * replaced, and {@code AgendaCalendarShareServiceTest}
+ * {@code theDrawersAskIsOneCallPerChannel}, which pins that to one ask per
+ * channel. Read as an end-to-end measurement on its own, this file would be
+ * claiming more than it checks.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)

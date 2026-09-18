@@ -1056,6 +1056,52 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
+   * <b>An owner's own entry is never adopted as a share</b> (EXO-90385 review
+   * round 1). This is what actually stops a stale recorded principal from
+   * reaching a write, and it is worth pinning because the obvious candidate
+   * does not: agenda's {@code SHAREE_IS_OWNER} guard cannot fire here, since
+   * {@code usersConnectedAs} strips the caller before agenda ever sees the
+   * list.
+   *
+   * <p>
+   * What stops it is the grouping. The owner of a collection necessarily holds
+   * {@code write-acl} — the same right {@code usableAcl} looks for before it
+   * will read the list at all — and neither {@code READ_ONLY_PRIVILEGES} nor
+   * {@code EDIT_PRIVILEGES} admits it. So the entry groups to
+   * {@link ShareAccess#MORE}: not a shape eXo writes, therefore not adoptable
+   * and not removable, therefore no eXo share row and no ACL write.
+   *
+   * <p>
+   * The record here is deliberately stale — it names bob, so alice's own entry
+   * survives the filter, which is the worst a one-pass cross-node race can
+   * produce — and a second eXo user really is on alice's login (EXO-90190), so
+   * the sharee names somebody and the {@code OUTSIDE_EXO} escape does not hide
+   * the case.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anOwnersOwnEntryIsNeverAdoptedAsAShare() throws Exception {
+    when(caldavConnectionIdentityService.principalOf(ALICE, STALWART)).thenReturn(BOB_PRINCIPAL);
+    when(caldavConnectionIdentityService.usersConnectedAs(STALWART, ALICE_PRINCIPAL)).thenReturn(List.of(ALICE, ALICE2));
+    AccessControlEntry owns = new AccessControlEntry(AcePrincipal.href(ALICE_PRINCIPAL),
+                                                     false,
+                                                     false,
+                                                     Set.of("{DAV:}read", "{DAV:}write", "{DAV:}write-acl"),
+                                                     false,
+                                                     null);
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(owns), Set.of()));
+
+    CalendarShares shares = service.listShares(ALICE, "alice", CALENDAR);
+
+    CalendarSharee own = shares.sharees().stream().filter(sharee -> !sharee.users().isEmpty()).findFirst().orElseThrow();
+    assertEquals(List.of("alice2"), own.users().stream().map(ShareUser::username).toList(), "the caller is stripped, not the entry");
+    assertEquals(ShareAccess.MORE, own.access(), "an owner's own rights are not a shape eXo writes");
+    assertFalse(own.removable(), "and MORE is never eXo's to take back");
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+  }
+
+  /**
    * <b>A stale record cannot make a sharee look like the owner, nor the owner
    * look like a sharee.</b> A grant and a revoke ask the server who the caller
    * is and compare against that, whatever the record says — this is the ACL
