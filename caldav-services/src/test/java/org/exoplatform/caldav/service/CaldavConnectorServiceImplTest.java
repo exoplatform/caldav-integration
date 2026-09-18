@@ -80,6 +80,9 @@ public class CaldavConnectorServiceImplTest {
   @Mock
   private AgendaCalendarShareService     agendaCalendarShareService;
 
+  @Mock
+  private BlueMindSessionService         blueMindSessionService;
+
   @InjectMocks
   private CaldavConnectorServiceImpl     caldavConnectorService;
 
@@ -444,6 +447,78 @@ public class CaldavConnectorServiceImplTest {
 
     verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
     verify(caldavServerOwnerService).evict(USER_IDENTITY_ID, 2L);
+  }
+
+  /**
+   * Connecting drops the BlueMind REST session the account held, on the
+   * server it is now on and on the one it was on (EXO-90397). The session
+   * authenticates the mailbox the previous credentials named; the new ones
+   * may name another, and a session is not a stale answer but an identity.
+   */
+  @Test
+  public void connectingDropsTheKeptBlueMindSessionOnBothServers() throws Exception {
+    caldavConnectorService.setCaldavSyncService(caldavSyncService);
+    caldavConnectorService.setBlueMindSessionService(blueMindSessionService);
+    CaldavUserSetting previous = new CaldavUserSetting();
+    previous.setServerId(1L);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(previous);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+    setting.setServerId(2L);
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(blueMindSessionService).forget(USER_IDENTITY_ID, 2L);
+    verify(blueMindSessionService).forget(USER_IDENTITY_ID, 1L);
+  }
+
+  /**
+   * Disconnecting drops and closes the account's BlueMind session, rather
+   * than leaving it open on the server until it expires (EXO-90397).
+   */
+  @Test
+  public void disconnectingDropsTheKeptBlueMindSession() {
+    caldavConnectorService.setBlueMindSessionService(blueMindSessionService);
+    CaldavUserSetting connected = new CaldavUserSetting();
+    connected.setServerId(2L);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(connected);
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
+
+    verify(blueMindSessionService).forget(USER_IDENTITY_ID, 2L);
+  }
+
+  /**
+   * A session engine that throws does not fail the connection or the
+   * disconnection: a session left behind expires on BlueMind's own clock,
+   * while a user told their disconnection failed is left connected to an
+   * account they no longer want.
+   */
+  @Test
+  public void aSessionThatCannotBeDroppedDoesNotFailTheDisconnection() {
+    caldavConnectorService.setBlueMindSessionService(blueMindSessionService);
+    CaldavUserSetting connected = new CaldavUserSetting();
+    connected.setServerId(2L);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(connected);
+    doThrow(new IllegalStateException("down")).when(blueMindSessionService).forget(USER_IDENTITY_ID, 2L);
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
+
+    verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+  }
+
+  /**
+   * The eviction above reaches the session engine through a seam the tests
+   * set by hand; in production this Kernel component resolves it through the
+   * Kernel/Spring bridge, which registers {@code @Service} beans back into
+   * the container and nothing else. A plain {@code @Component} would never
+   * be found and every eviction would silently do nothing (EXO-90397).
+   */
+  @Test
+  public void theSessionEngineIsAServiceBeanSoTheBridgeExportsItToThisKernelComponent() {
+    assertTrue(BlueMindSessionService.class.isAnnotationPresent(Service.class),
+               "BlueMindSessionService must carry @Service, or ExoContainerContext.getService never finds it");
   }
 
   /**
