@@ -24,6 +24,7 @@ import static org.mockito.Mockito.mockingDetails;
 
 import java.time.Duration;
 import java.lang.reflect.Field;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -48,6 +49,8 @@ import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CollectionAcl;
 import org.exoplatform.caldav.client.DavOptions;
 import org.exoplatform.caldav.client.bluemind.BlueMindAclClient;
+import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.CalendarShares;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
@@ -93,9 +96,22 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * {@code discoverPrincipal}, and {@code mirrorDestination} <em>twice</em> —
  * once for the listing's own warning flag, once more because agenda asked
  * {@code holdsMeetingCopies} as a separate question. Plus one
- * {@code readDisplayName} per sharee who is no eXo user. It is <b>3</b> now:
- * the principal comes from eXo's record of the connection on the read path,
- * and the flag travels with the shares instead of being derived again.
+ * {@code readDisplayName} per sharee who is no eXo user. EXO-90385 made it
+ * <b>3</b>: the principal comes from eXo's record of the connection on the
+ * read path, and the flag travels with the shares instead of being derived
+ * again.
+ *
+ * <p>
+ * It is <b>2</b> since EXO-90398 — {@code capabilities} and {@code readAcl} —
+ * because the one remaining ask is answered from eXo's own record of where the
+ * copies go. That ask was the expensive one: {@link #theMirrorWalkTheDrawerNoLongerMakes}
+ * wires the real {@code CaldavPushService} and counts what it asked the client,
+ * which on a server writing into the account's own default calendar is four
+ * client calls and <b>eight PROPFINDs</b> ({@code HttpCalDavClient}:
+ * {@code discoverCalendarHome} is two, {@code discoverDefaultCalendar} three,
+ * and {@code discoverPrincipal} inside the tie-break one more, beside the home
+ * listing). The record is read instead, and the same test pins that an account
+ * with nothing recorded still walks it.
  *
  * <h2>Where this test stops</h2>
  *
@@ -133,10 +149,15 @@ public class CaldavShareDrawerRoundTripsTest {
 
   private static final String  STRANGER_PRINCIPAL = "/dav/pal/stranger@stalwart.local";
 
+  private static final String  HOME              = "/dav/cal/alice%40stalwart.local";
+
   private static final String  STALWART_DAV      = "1, 2, 3, access-control, calendar-access, addressbook";
 
-  /** What one opening of the drawer asks the server for, after EXO-90385. */
-  private static final Map<String, Integer> ONE_OPENING = Map.of("capabilities", 1, "readAcl", 1, "mirrorDestination", 1);
+  /** What one opening of the drawer asks the server for, after EXO-90398. */
+  private static final Map<String, Integer> ONE_OPENING = Map.of("capabilities", 1, "readAcl", 1);
+
+  /** Where alice's meeting copies go, as eXo recorded it. */
+  private static final String  MIRROR            = "/dav/cal/alice%40stalwart.local/exo-meetings/";
 
   @Mock
   private AgendaCalendarService             agendaCalendarService;
@@ -224,20 +245,57 @@ public class CaldavShareDrawerRoundTripsTest {
     lenient().when(caldavConnectionIdentityService.usersConnectedAs(STALWART, BOB_PRINCIPAL)).thenReturn(List.of(BOB));
     lenient().when(identityManager.getIdentity(BOB)).thenReturn(user(BOB, "bob", "Bob Test"));
     lenient().when(caldavPushService.mirrorDestination(ALICE, "alice"))
-             .thenReturn(new MirrorTarget("/dav/cal/alice@stalwart.local/exo-meetings/", false, "eXo meetings"));
+             .thenReturn(new MirrorTarget(MIRROR, false, "eXo meetings"));
+    // What EXO-90398 reads instead: the destination recorded on the account and
+    // the mirror pair, whose applied stamp is not behind its registration's
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.MIRROR)).thenReturn(List.of(mirrorPair(MIRROR)));
+    lenient().when(caldavServerService.resolveServer(STALWART)).thenReturn(registration(null));
+  }
+
+  /**
+   * Alice's mirror pair: the ledger of the collection her copies were written
+   * into.
+   *
+   * @param href the collection the copies are in
+   * @return the pair
+   */
+  private static CalendarSync mirrorPair(String href) {
+    CalendarSync pair = new CalendarSync();
+    pair.setId(7L);
+    pair.setUserIdentityId(ALICE);
+    pair.setServerId(STALWART);
+    pair.setRemoteHref(href);
+    pair.setOrigin(SyncOrigin.MIRROR);
+    pair.setStatus(CalendarSyncStatus.ACTIVE);
+    return pair;
+  }
+
+  /**
+   * Alice's server registration.
+   *
+   * @param copySettingsUpdated when an administrator last changed a setting
+   *          governing the copies, or null when none ever was
+   * @return the registration
+   */
+  private static CaldavServer registration(Date copySettingsUpdated) {
+    CaldavServer server = new CaldavServer();
+    server.setId(STALWART);
+    server.setCopySettingsUpdated(copySettingsUpdated);
+    return server;
   }
 
   /**
    * <b>The count.</b> One opening of the drawer — what agenda's
    * {@code GET /calendars/{id}/shares} asks this channel, through
    * {@code AgendaCalendarShareServiceImpl#getChannelShares} — asks the server
-   * three times: what the collection advertises, its access list, and where
-   * the meeting copies go. Not four, and not five as it did before
-   * EXO-90385: the caller's principal is no longer discovered on this path,
-   * and the meeting-copies flag is no longer derived a second time.
+   * twice: what the collection advertises and its access list. Not three as it
+   * did after EXO-90385, and not five as it did before: the caller's principal
+   * is no longer discovered on this path, the meeting-copies flag is no longer
+   * derived a second time, and since EXO-90398 it is answered from eXo's own
+   * record rather than from a walk of the account.
    */
   @Test
-  public void oneOpeningOfTheDrawerAsksTheServerThreeTimes() {
+  public void oneOpeningOfTheDrawerAsksTheServerTwice() {
     ChannelShares answer = plugin.listShares(CALENDAR, "alice", List.of());
 
     assertEquals(ONE_OPENING, asks(), "what one opening of the Share drawer costs the server");
@@ -267,7 +325,8 @@ public class CaldavShareDrawerRoundTripsTest {
   /**
    * The name of a sharee no eXo user is connected as is the one call that
    * grows with the list, and it is unchanged: one {@code readDisplayName} for
-   * that row and none for bob, whom eXo can name itself.
+   * that row and none for bob, whom eXo can name itself. It is the only ask
+   * left that grows with anything.
    */
   @Test
   public void onlyAShareeOutsideExoCostsARowOfItsOwn() {
@@ -281,19 +340,19 @@ public class CaldavShareDrawerRoundTripsTest {
 
     assertEquals(2, answer.shares().size());
     assertEquals(1, countOf(calDavClient, "readDisplayName"), "one name asked, for the sharee eXo cannot name");
-    assertEquals(4, asks().values().stream().mapToInt(Integer::intValue).sum(), "the three asks plus that one name");
+    assertEquals(3, asks().values().stream().mapToInt(Integer::intValue).sum(), "the two asks plus that one name");
   }
 
   /**
    * A server whose access list cannot be read still owes the owner the
-   * warning: the list is empty and the meeting-copies flag is asked on its
+   * warning: the list is empty and the meeting-copies flag is answered on its
    * own, as it was before EXO-90385. A missed warning exposes the owner's
    * meetings; a false one costs a click.
    */
   @Test
   public void anUnreadableListStillAnswersTheMeetingCopiesWarning() {
     lenient().when(calDavClient.readAcl(endpoint, COLLECTION)).thenThrow(new CalDavException("down"));
-    lenient().when(caldavPushService.mirrorDestination(ALICE, "alice")).thenReturn(new MirrorTarget(COLLECTION, false, "Alice"));
+    recordedDestinationIs(COLLECTION);
 
     ChannelShares answer = plugin.listShares(CALENDAR, "alice", List.of());
 
@@ -302,12 +361,139 @@ public class CaldavShareDrawerRoundTripsTest {
   }
 
   /**
+   * <b>The warning still appears on a calendar that does hold the copies.</b>
+   * Read from the record, with no ask of its own: the calendar being shared is
+   * the one the account's record names.
+   */
+  @Test
+  public void aCalendarThatHoldsTheCopiesIsStillWarnedAbout() {
+    recordedDestinationIs(COLLECTION);
+
+    ChannelShares answer = plugin.listShares(CALENDAR, "alice", List.of());
+
+    assertTrue(answer.meetingCopies(), "this calendar is where the copies go");
+    assertEquals(ONE_OPENING, asks(), "and the record answered it without an ask of its own");
+  }
+
+  /**
+   * <b>An absent record asks the server.</b> Nothing recorded on the account
+   * and no mirror pair is not "no copies here": the destination is resolved as
+   * it was before EXO-90398, and the answer is the server's.
+   */
+  @Test
+  public void nothingRecordedStillAsksTheServer() {
+    CaldavUserSetting settings = connected();
+    settings.setMirrorCalendarHref(null);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(settings);
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.MIRROR)).thenReturn(List.of());
+    lenient().when(caldavPushService.mirrorDestination(ALICE, "alice")).thenReturn(new MirrorTarget(COLLECTION, false, "Alice"));
+
+    ChannelShares answer = plugin.listShares(CALENDAR, "alice", List.of());
+
+    assertTrue(answer.meetingCopies(), "the server said so");
+    assertEquals(Map.of("capabilities", 1, "readAcl", 1, "mirrorDestination", 1),
+                 asks(),
+                 "an account with nothing recorded is asked of the server, as before");
+  }
+
+  /**
+   * <b>An administrator re-pointing the copies is not waited out.</b> The
+   * registration carries a copy-settings stamp the account's mirror pair has
+   * not applied, so the record may be about to move and the server is asked —
+   * in the very request after the administrator's save, not after the next
+   * sweep.
+   */
+  @Test
+  public void aCopySettingChangeSendsTheDrawerBackToTheServer() {
+    Date changed = new Date();
+    lenient().when(caldavServerService.resolveServer(STALWART)).thenReturn(registration(changed));
+    CalendarSync stale = mirrorPair(MIRROR);
+    stale.setCopySettingsApplied(new Date(changed.getTime() - 60000L));
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.MIRROR)).thenReturn(List.of(stale));
+    lenient().when(caldavPushService.mirrorDestination(ALICE, "alice")).thenReturn(new MirrorTarget(COLLECTION, false, "Alice"));
+
+    ChannelShares answer = plugin.listShares(CALENDAR, "alice", List.of());
+
+    assertTrue(answer.meetingCopies(), "the server, not the record, decided");
+    assertEquals(1, countOf(caldavPushService, "mirrorDestination"), "the record was not believed");
+  }
+
+  /**
+   * And the stamp stops being a reason once the pass has applied it: a pair
+   * whose applied stamp matches the registration's is a pair whose destination
+   * is settled, and the record answers again.
+   */
+  @Test
+  public void anAppliedCopySettingLetsTheRecordAnswerAgain() {
+    Date changed = new Date();
+    lenient().when(caldavServerService.resolveServer(STALWART)).thenReturn(registration(changed));
+    CalendarSync applied = mirrorPair(MIRROR);
+    applied.setCopySettingsApplied(changed);
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.MIRROR)).thenReturn(List.of(applied));
+
+    plugin.listShares(CALENDAR, "alice", List.of());
+
+    assertEquals(ONE_OPENING, asks(), "nothing is owed, so nothing is asked");
+  }
+
+  /**
+   * <b>The relocation is followed, not waited for.</b>
+   * {@code CaldavMirrorRelocationService.repoint} moves the mirror pair onto
+   * the new collection before a single copy is moved, and the account's own
+   * record still names the old one. Both hold copies in that window, and both
+   * are warned about.
+   */
+  @Test
+  public void theCollectionTheCopiesAreBeingMovedIntoIsWarnedAbout() {
+    Date changed = new Date();
+    lenient().when(caldavServerService.resolveServer(STALWART)).thenReturn(registration(changed));
+    CalendarSync repointed = mirrorPair(COLLECTION);
+    repointed.setCopySettingsApplied(changed);
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.MIRROR)).thenReturn(List.of(repointed));
+
+    ChannelShares answer = plugin.listShares(CALENDAR, "alice", List.of());
+
+    assertTrue(answer.meetingCopies(), "the pair says the copies are on their way into this calendar");
+    assertEquals(ONE_OPENING, asks(), "and no ask was needed to know it");
+  }
+
+  /**
+   * <b>A path that writes an ACL never reads the record.</b> A grant has just
+   * changed who may read the collection and reports what the server holds, so
+   * where the copies go is asked of the server however fresh eXo's record is.
+   *
+   * @throws Exception when the grant is refused
+   */
+  @Test
+  public void aGrantStillAsksTheServerWhereTheCopiesGo() throws Exception {
+    lenient().when(caldavConnectionIdentityService.principalOf(BOB, STALWART)).thenReturn(BOB_PRINCIPAL);
+    lenient().when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, "bob"))
+             .thenReturn(user(BOB, "bob", "Bob Test"));
+
+    service.grant(ALICE, "alice", CALENDAR, "bob", CalendarShares.ShareAccess.READ);
+
+    assertEquals(1, countOf(caldavPushService, "mirrorDestination"), "a write path asks the server");
+  }
+
+  /**
+   * Makes eXo's record say the copies go into the calendar being shared.
+   *
+   * @param href the collection the record is to name
+   */
+  private void recordedDestinationIs(String href) {
+    CaldavUserSetting settings = connected();
+    settings.setMirrorCalendarHref(href);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(settings);
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.MIRROR)).thenReturn(List.of(mirrorPair(href)));
+  }
+
+  /**
    * The default of the SPI method — what a channel written before EXO-90385
    * gets — still makes the two calls it stands for, and answers the same
-   * thing. It is what the override is measured against: the destination of the
-   * meeting copies is walked twice there and once here, which is the second of
-   * the two asks EXO-90385 removed (the first being the caller's principal,
-   * pinned in {@code CaldavCalendarShareServiceTest}).
+   * thing. What it costs the server is now the same as the override's, because
+   * the second question it asks is the one EXO-90398 answers from eXo's own
+   * record: it is the resolution of the calendar, not the server conversation,
+   * that it duplicates.
    */
   @Test
   public void theSpiDefaultStillMakesTheTwoCallsItStandsFor() {
@@ -317,9 +503,144 @@ public class CaldavShareDrawerRoundTripsTest {
 
     assertEquals(1, answer.shares().size());
     assertFalse(answer.meetingCopies());
-    assertEquals(Map.of("capabilities", 1, "readAcl", 1, "mirrorDestination", 2),
+    assertEquals(ONE_OPENING, asks(), "the second question costs the server nothing now");
+    assertEquals(2, countOf(caldavSyncStorage, "getPairByLocalCalendar"), "it still resolves the calendar twice");
+  }
+
+  /**
+   * <b>The walk the drawer no longer makes, counted against the real thing.</b>
+   * The push service is wired for real here — only the CalDAV client is a mock
+   * — so what {@code mirrorDestination} costs is counted rather than asserted:
+   * on an account whose registration writes into its own default calendar, four
+   * client calls, which {@code HttpCalDavClient} turns into eight PROPFINDs
+   * ({@code discoverCalendarHome} two, the home listing one,
+   * {@code discoverDefaultCalendar} three, the tie-break's
+   * {@code discoverPrincipal} one more, and the principal hop inside the home
+   * discovery already counted).
+   *
+   * <p>
+   * With a record, the drawer makes none of them. Without one, it makes all of
+   * them — which is what stops an absent record being read as "no copies here".
+   *
+   * @throws Exception when the push service's collaborators cannot be set
+   */
+  @Test
+  public void theMirrorWalkTheDrawerNoLongerMakes() throws Exception {
+    CaldavPushService push = realPushService();
+    service = shareServiceWith(push);
+    set(plugin, "caldavCalendarShareService", service);
+
+    plugin.listShares(CALENDAR, "alice", List.of());
+    assertEquals(ONE_OPENING, asks(), "the record answers, and the account is not walked at all");
+
+    CaldavUserSetting unrecorded = connected();
+    unrecorded.setMirrorCalendarHref(null);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(unrecorded);
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.MIRROR)).thenReturn(List.of());
+
+    plugin.listShares(CALENDAR, "alice", List.of());
+    assertEquals(Map.of("capabilities", 2,
+                        "readAcl", 2,
+                        "discoverCalendarHome", 1,
+                        "listCalendars", 1,
+                        "discoverDefaultCalendar", 1,
+                        "discoverPrincipal", 1),
                  asks(),
-                 "where the meeting copies go, asked twice — what the override spares");
+                 "with nothing recorded, the account is walked exactly as it was before EXO-90398");
+  }
+
+  /**
+   * The same walk on the commoner destination — a calendar of eXo's own — for
+   * the record: three client calls, which {@code HttpCalDavClient} turns into
+   * <b>four PROPFINDs</b> (the principal and the calendar home, then the home
+   * listing). This is the floor of what the drawer used to pay for its
+   * warning; the main-calendar account above is the ceiling.
+   *
+   * @throws Exception when the push service's collaborators cannot be set
+   */
+  @Test
+  public void theDedicatedCalendarWalkIsThreeClientCalls() throws Exception {
+    CaldavPushService push = realPushService();
+    lenient().when(caldavServerService.resolveServer(STALWART)).thenReturn(registration(null));
+    service = shareServiceWith(push);
+    set(plugin, "caldavCalendarShareService", service);
+    CaldavUserSetting unrecorded = connected();
+    unrecorded.setMirrorCalendarHref(null);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(unrecorded);
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.MIRROR)).thenReturn(List.of());
+
+    plugin.listShares(CALENDAR, "alice", List.of());
+
+    assertEquals(Map.of("capabilities", 1, "readAcl", 1, "discoverCalendarHome", 1, "listCalendars", 1),
+                 asks(),
+                 "the dedicated-calendar destination costs the home walk and the listing");
+  }
+
+  /**
+   * The push service as the container builds it, with only the CalDAV client
+   * and the two stores it needs for a mirror lookup.
+   *
+   * @return a real push service
+   * @throws Exception when a field cannot be set
+   */
+  private CaldavPushService realPushService() throws Exception {
+    CaldavPushService push = new CaldavPushService();
+    set(push, "calDavClient", calDavClient);
+    set(push, "caldavConnectorStorage", caldavConnectorStorage);
+    set(push, "caldavServerService", caldavServerService);
+    lenient().when(caldavServerService.resolveServer(STALWART))
+             .thenReturn(mainCalendarRegistration());
+    lenient().when(calDavClient.discoverCalendarHome(endpoint)).thenReturn(HOME);
+    lenient().when(calDavClient.listCalendars(endpoint, HOME))
+             .thenReturn(List.of(collection(HOME + "/calendar:Default:alice/", "Calendar"),
+                                 collection(HOME + "/calendar:alice/", "Team room")));
+    lenient().when(calDavClient.discoverDefaultCalendar(endpoint)).thenReturn(HOME + "/calendar");
+    return push;
+  }
+
+  /**
+   * The share service under test, wired with a given push service.
+   *
+   * @param push the push service to use
+   * @return the service
+   */
+  private CaldavCalendarShareService shareServiceWith(CaldavPushService push) {
+    return new CaldavCalendarShareService(agendaCalendarService,
+                                          caldavConnectorStorage,
+                                          caldavSyncStorage,
+                                          calDavClient,
+                                          caldavConnectionIdentityService,
+                                          identityManager,
+                                          blueMindAclClient,
+                                          push,
+                                          caldavShareSubscriptionService,
+                                          caldavServerOwnerService,
+                                          caldavServerService,
+                                          Duration.ZERO,
+                                          () -> 0L);
+  }
+
+  /**
+   * A registration writing the copies into the account's own default calendar
+   * — the destination whose resolution costs the most.
+   *
+   * @return the registration
+   */
+  private static CaldavServer mainCalendarRegistration() {
+    CaldavServer server = registration(null);
+    server.setMirrorTarget(org.exoplatform.caldav.model.MirrorTargetKind.MAIN_CALENDAR);
+    return server;
+  }
+
+  /**
+   * A collection as the server lists it.
+   *
+   * @param href its path
+   * @param name its display name
+   * @return the collection
+   */
+  private static org.exoplatform.caldav.client.CalendarCollection collection(String href, String name) {
+    return new org.exoplatform.caldav.client.CalendarCollection(href, name, null, null, null, true, Set.of(), null, false);
   }
 
   /**
@@ -454,6 +775,7 @@ public class CaldavShareDrawerRoundTripsTest {
     settings.setUsername("alice@stalwart.local");
     settings.setPassword("secret");
     settings.setServerId(STALWART);
+    settings.setMirrorCalendarHref(MIRROR);
     return settings;
   }
 
