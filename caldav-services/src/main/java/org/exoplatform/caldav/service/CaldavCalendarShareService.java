@@ -1059,11 +1059,34 @@ public class CaldavCalendarShareService {
    * definition of connected ({@code CaldavConnectionIdentityService#principalOf}
    * through {@code isStillConnectedTo}, {@code CaldavServerService#isConnected},
    * EXO-90358). So it names the account these credentials open or it names
-   * nothing, in which case the server is asked exactly as before. The one
-   * residual the record's own documentation names,
-   * a pass running on another node writing the previous principal back for one
-   * more pass, was already reachable here: {@link #ownerPrincipal} falls back
-   * to the same row whenever the server does not answer.
+   * nothing, in which case the server is asked exactly as before.
+   *
+   * <p>
+   * <b>What this widens, stated plainly.</b> The row was already reachable
+   * here — {@link #ownerPrincipal} falls back to it whenever the server does
+   * not answer — but it was an AND-gated fallback, and it is now the first
+   * source. So the window in which a stale row is believed goes from "the
+   * server was silent <em>and</em> the row is stale" to "the row is stale",
+   * for one sync pass. The residual that fills that window is the one the
+   * record's own documentation names: a pass running on another node writing
+   * the previous principal back until the next discovery.
+   *
+   * <p>
+   * <b>What a stale row can and cannot do.</b> It cannot move an ACL
+   * decision. Here the principal only <em>filters</em> — it drops the caller's
+   * own entry from a list — and the listing cannot become a write: an entry
+   * belonging to the collection's owner necessarily carries {@code write-acl}
+   * (or {@code DAV:all}), which neither {@code READ_ONLY_PRIVILEGES} nor
+   * {@code EDIT_PRIVILEGES} admits, so it groups to {@link ShareAccess#MORE},
+   * is never adoptable and is never removable. That grouping — not any check
+   * in agenda — is the single thing standing between this read path and an
+   * eXo share row, and {@code anOwnersOwnEntryIsNeverAdoptedAsAShare} pins it.
+   * The worst a stale row yields is cosmetic and lasts one pass: the caller's
+   * own account listed once as access held outside eXo, or one real sharee's
+   * row hidden. No shipped server writes the owner's entry in the {@code href}
+   * form the comparison would catch in the first place — Stalwart emits no
+   * owner entry, and RFC 3744's canonical one is the {@code DAV:property}
+   * form, discarded before the comparison.
    *
    * @param target the calendar being read
    * @return the canonical principal, or null when neither the record nor the
