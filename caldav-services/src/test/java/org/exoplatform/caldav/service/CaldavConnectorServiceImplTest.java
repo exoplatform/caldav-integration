@@ -322,6 +322,82 @@ public class CaldavConnectorServiceImplTest {
     verify(caldavDeletionService).thawOnConnect(USER_IDENTITY_ID, 9L);
   }
 
+  /**
+   * <b>Connecting another account forgets where the copies went</b>
+   * (EXO-90398). The record survives a connection written over a live one — no
+   * disconnection took it away — and the Share drawer reads it to say whether
+   * the calendar being shared holds the user's meeting copies. Left alone, it
+   * would answer for the mailbox they just left.
+   *
+   * @throws Exception when the connection is refused
+   */
+  @Test
+  public void connectingAnotherAccountForgetsWhereTheCopiesWent() throws Exception {
+    CaldavUserSetting previous = new CaldavUserSetting();
+    previous.setUsername("john@old.local");
+    previous.setPassword("secret");
+    previous.setMirrorCalendarHref("/dav/cal/john%40old.local/exo-meetings/");
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(previous);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john@new.local");
+    setting.setPassword("secret");
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(caldavConnectorStorage).forgetMirrorCalendarHref(USER_IDENTITY_ID);
+  }
+
+  /**
+   * And moving the same login to another registration is the same event: the
+   * collection recorded on the server they left is not on the one they are now
+   * on (EXO-90398).
+   *
+   * @throws Exception when the connection is refused
+   */
+  @Test
+  public void movingAnAccountToAnotherServerForgetsWhereTheCopiesWent() throws Exception {
+    CaldavUserSetting previous = new CaldavUserSetting();
+    previous.setUsername("john");
+    previous.setPassword("secret");
+    previous.setServerId(1L);
+    previous.setMirrorCalendarHref("/dav/cal/john/exo-meetings/");
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(previous);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+    setting.setServerId(2L);
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(caldavConnectorStorage).forgetMirrorCalendarHref(USER_IDENTITY_ID);
+  }
+
+  /**
+   * <b>Re-connecting the same account keeps it.</b> The record is not a cache
+   * to be dropped on principle: {@code CaldavPushService.ensureMirror} reads it
+   * to recognise a destination it adopted rather than created, and a connection
+   * the server refuses would leave that account with nothing recorded at all.
+   *
+   * @throws Exception when the connection is refused
+   */
+  @Test
+  public void reconnectingTheSameAccountKeepsWhereTheCopiesGo() throws Exception {
+    CaldavUserSetting previous = new CaldavUserSetting();
+    previous.setUsername("john");
+    previous.setPassword("old");
+    previous.setServerId(1L);
+    previous.setMirrorCalendarHref("/dav/cal/john/exo-meetings/");
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(previous);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("new");
+    setting.setServerId(1L);
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(caldavConnectorStorage, never()).forgetMirrorCalendarHref(anyLong());
+  }
+
   @Test
   public void shouldStoreCompleteCredentials() throws Exception {
     CaldavUserSetting setting = new CaldavUserSetting();
