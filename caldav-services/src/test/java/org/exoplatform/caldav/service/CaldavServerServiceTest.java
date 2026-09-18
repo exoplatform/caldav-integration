@@ -478,6 +478,25 @@ public class CaldavServerServiceTest {
   }
 
   /**
+   * And so does the activation switch, which is a third writer of the same
+   * row (review round 1). The invariant the field and the helper both state
+   * is unconditional — a registration that is written drops the sessions
+   * opened under it — and taking a server out of service is exactly the
+   * moment not to keep talking to it on a session minted while it was in.
+   */
+  @Test
+  public void flippingTheActivationSwitchDropsEveryKeptBlueMindSession() {
+    withUser(ADMIN_USER, true);
+    CaldavServer server = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    assertDoesNotThrow(() -> caldavServerService.setServerActive(7, false, ADMIN_USER));
+
+    verify(blueMindSessionService).forgetAll();
+  }
+
+  /**
    * And a registration refused writes nothing and drops nothing: the row is
    * still what every kept session was opened under.
    */

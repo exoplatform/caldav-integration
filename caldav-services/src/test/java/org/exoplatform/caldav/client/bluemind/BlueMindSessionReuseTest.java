@@ -261,10 +261,46 @@ public class BlueMindSessionReuseTest {
     for (int i = 0; i <= MAX_ACCOUNTS; i++) {
       answer(200, loginOk(ROOT_KEY + i, ROOT_UID));
       answer(200, "[]");
+    }
+    // The account past the bound is used and not kept, so its session is
+    // closed when its call ends. Queued last because it is the last request
+    // the run makes: a logout that never went would leave this answer behind.
+    answer(200, "");
+
+    for (int i = 0; i <= MAX_ACCOUNTS; i++) {
       client.readAcl(TestEndpoints.endpoint(SERVER + i, BASE, "personal", "root"), CONTAINER);
     }
 
     assertEquals(MAX_ACCOUNTS, sessions.size());
+    assertTrue(answers.isEmpty(), "the queued logout was sent, so no answer is left over");
+  }
+
+  /**
+   * <b>And the session past the bound is closed, not leaked.</b> Nothing will
+   * ever present it again — the store had no room to keep it — so leaving it
+   * open would put one live session on BlueMind per call, for as long as the
+   * node stays above the bound, until BlueMind's own clock expires each one.
+   * That is what every call did before EXO-90397 and what the {@code call}
+   * Javadoc says still happens whenever nothing keeps a session (review
+   * round 1).
+   */
+  @Test
+  void aSessionTheStoreHadNoRoomForIsClosedWhenItsCallEnds() {
+    for (int i = 0; i <= MAX_ACCOUNTS; i++) {
+      answer(200, loginOk(ROOT_KEY + i, ROOT_UID));
+      answer(200, "[]");
+    }
+    answer(200, "");
+
+    for (int i = 0; i <= MAX_ACCOUNTS; i++) {
+      client.readAcl(TestEndpoints.endpoint(SERVER + i, BASE, "personal", "root"), CONTAINER);
+    }
+
+    assertEquals(1, countOf("/api/auth/logout"), "the one account the bound turned away closes its own session");
+    HttpRequest closed = sent.get(sent.size() - 1);
+    assertEquals("/api/auth/logout", closed.uri().getPath(), "and it closes it when its call ends, not before");
+    assertEquals(ROOT_KEY + MAX_ACCOUNTS, keyOf(closed), "the session closed is that account's own");
+    assertEquals(MAX_ACCOUNTS, sessions.size(), "and the accounts already kept are left alone");
   }
 
   /**
@@ -329,21 +365,31 @@ public class BlueMindSessionReuseTest {
    * changed under the account: the kept session was opened at the old host,
    * so it is dropped rather than presented at the new one, and nothing that
    * leaves for the new host carries the old host's key.
+   *
+   * <p>
+   * And the session it dropped is closed at the host that minted it, which is
+   * the only one that knows it — the address change is eXo's doing, so the
+   * session is eXo's to close rather than one more left open on a server
+   * nobody will ask again (review round 1).
    */
   @Test
   void aKeptSessionIsNeverPresentedAtAnotherAddress() {
     answer(200, loginOk(ROOT_KEY, ROOT_UID));
     answer(200, "[]");
+    answer(200, "");
     answer(200, loginOk(SECOND_KEY, ROOT_UID));
     answer(200, "[]");
 
     client.readAcl(rootHere, CONTAINER);
     client.readAcl(rootMoved, CONTAINER);
 
-    assertEquals(4, sent.size());
+    assertEquals(5, sent.size());
     assertEquals(2, countOf("/api/auth/login"), "the new address is logged in to on its own");
-    assertEquals("bm2.example.com", sent.get(2).uri().getHost());
-    assertEquals(SECOND_KEY, keyOf(sent.get(3)));
+    assertEquals(1, countOf("/api/auth/logout"), "the session left behind at the old address is closed");
+    assertEquals("bm.example.com", sent.get(2).uri().getHost(), "closed where it was opened, not where the server moved to");
+    assertEquals(ROOT_KEY, keyOf(sent.get(2)));
+    assertEquals("bm2.example.com", sent.get(3).uri().getHost());
+    assertEquals(SECOND_KEY, keyOf(sent.get(4)));
     for (HttpRequest request : sent) {
       assertFalse("bm2.example.com".equals(request.uri().getHost()) && ROOT_KEY.equals(keyOf(request)),
                   "the key minted at bm.example.com never travels to bm2.example.com");
