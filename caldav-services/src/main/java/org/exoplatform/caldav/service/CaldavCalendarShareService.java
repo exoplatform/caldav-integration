@@ -18,8 +18,10 @@ package org.exoplatform.caldav.service;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -52,6 +54,7 @@ import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.CollectionAcl;
 import org.exoplatform.caldav.client.DavOptions;
 import org.exoplatform.caldav.client.SharingMechanism;
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarShares;
 import org.exoplatform.caldav.model.CalendarShares.CalendarSharee;
@@ -588,7 +591,7 @@ public class CaldavCalendarShareService {
    * @return the sharees, with the meeting-copies flag
    */
   private CalendarShares sharesOn(ShareTarget target, String username) {
-    return withMeetingCopies(target, username, onServer(() -> {
+    return withMeetingCopies(target, username, true, onServer(() -> {
       SharingMechanism mechanism = requireOffered(target);
       requireImportedOwned(target, mechanism);
       if (mechanism == SharingMechanism.BLUEMIND_SHARE) {
@@ -680,7 +683,7 @@ public class CaldavCalendarShareService {
     ShareAccess wanted = access == ShareAccess.WRITE ? ShareAccess.WRITE : ShareAccess.READ;
     ShareTarget target = targetOf(userIdentityId, username, calendarId);
     Sharee sharee = shareeOf(target, shareeUsername);
-    return withMeetingCopies(target, username, onServer(() -> {
+    return withMeetingCopies(target, username, false, onServer(() -> {
       SharingMechanism mechanism = requireOffered(target);
       requireImportedOwned(target, mechanism);
       String ownerPrincipal = requiredOwnerPrincipal(target);
@@ -794,7 +797,7 @@ public class CaldavCalendarShareService {
                                String shareeUsername) throws ObjectNotFoundException, IllegalAccessException {
     ShareTarget target = targetOf(userIdentityId, username, calendarId);
     Sharee sharee = shareeOf(target, shareeUsername);
-    return withMeetingCopies(target, username, onServer(() -> {
+    return withMeetingCopies(target, username, false, onServer(() -> {
       SharingMechanism mechanism = requireOffered(target);
       requireImportedOwned(target, mechanism);
       String ownerPrincipal = ownerPrincipal(target);
@@ -942,7 +945,7 @@ public class CaldavCalendarShareService {
       throw new IllegalArgumentException(CALENDAR_NOT_ON_SERVER);
     }
     CalDavEndpoint endpoint = onServer(() -> calDavClient.endpoint(settings.getServerId(), username));
-    return new ShareTarget(userIdentityId, calendarId, serverId, pair, collectionOf(pair), endpoint);
+    return new ShareTarget(userIdentityId, calendarId, serverId, pair, collectionOf(pair), endpoint, settings);
   }
 
   /**
@@ -2146,51 +2149,73 @@ public class CaldavCalendarShareService {
 
   /**
    * Says whether the shared calendar is also where eXo writes the copies of the
-   * user's eXo meetings, asked through the push's own resolution
-   * ({@link CaldavPushService#mirrorDestination}, the lookup
-   * resolution {@code currentMirror} and {@code ensureMirror} use), so that the drawer's warning
-   * never disagrees with where the copies go. Asked for every calendar: the
-   * copies usually land in an imported main calendar, but the push can also
-   * adopt an existing calendar, an eXo-created one included, when it cannot
-   * create its dedicated one.
+   * user's eXo meetings, so that the drawer's warning never disagrees with
+   * where the copies go. Asked for every calendar: the copies usually land in
+   * an imported main calendar, but the push can also adopt an existing
+   * calendar, an eXo-created one included, when it cannot create its dedicated
+   * one.
    *
    * <p>
    * A lookup that fails warns rather than stays silent, since a missed warning
-   * exposes meetings while a false one costs a click. The destination the
-   * push last recorded decides when there is one
-   * ({@code CaldavUserSetting.getMirrorCalendarHref}, saved by
-   * {@code ensureMirror}). With none recorded, the warning is shown.
+   * exposes meetings while a false one costs a click.
    *
    * @param target the calendar
    * @param username the caller's login
+   * @param fromRecord whether eXo's own record of the destination may answer —
+   *          true on a read, false on a path that writes an ACL
    * @param shares the shares as read
    * @return the shares with the flag
    */
-  private CalendarShares withMeetingCopies(ShareTarget target, String username, CalendarShares shares) {
+  private CalendarShares withMeetingCopies(ShareTarget target, String username, boolean fromRecord, CalendarShares shares) {
     if (shares == null) {
       return shares;
     }
-    return shares.withMeetingCopies(meetingCopiesOf(target, username));
+    return shares.withMeetingCopies(meetingCopiesOf(target, username, fromRecord));
   }
 
   /**
-   * Whether a calendar is where the caller's eXo meeting copies are written:
-   * the destination the push answers, else the one last recorded, else — with
-   * none recorded — assumed so, since a missed warning exposes meetings while
-   * a false one costs a click.
+   * Whether a calendar is where the caller's eXo meeting copies are written.
+   *
+   * <p>
+   * <b>On a read, from eXo's own record</b> (EXO-90398). Opening the Share
+   * drawer used to ask {@link CaldavPushService#mirrorDestination}, which walks
+   * the account's principal, its calendar home and that home's listing — four
+   * PROPFINDs on a server writing into a dedicated calendar, eight on one
+   * writing into the account's own default, on a path whose whole cost is the
+   * number of sequential asks. The record answers the same question without any
+   * of them: what {@link #recordedDestinationsOf} reads is written by the very
+   * passes that move the copies.
+   *
+   * <p>
+   * <b>On a grant or a revoke, always from the server.</b> A path that has just
+   * changed who may read a collection reports what the server holds, not what
+   * eXo remembers — and it has already paid for a conversation, so one more
+   * resolution is not the cost this task is about.
+   *
+   * <p>
+   * <b>Nothing recorded is never read as "no copies here."</b> An account with
+   * no usable record — none written yet, or one the copy settings may have
+   * moved under — is asked of the server exactly as before, and a lookup that
+   * fails falls back to the record and, failing that, warns.
    *
    * @param target the calendar
    * @param username the caller's login
+   * @param fromRecord whether eXo's own record of the destination may answer
    * @return true when the calendar holds the meeting copies
    */
-  private boolean meetingCopiesOf(ShareTarget target, String username) {
+  private boolean meetingCopiesOf(ShareTarget target, String username, boolean fromRecord) {
     String href = CaldavSyncStorage.canonicalHref(target.href());
+    if (fromRecord) {
+      Set<String> recorded = recordedDestinationsOf(target);
+      if (!recorded.isEmpty()) {
+        return recorded.contains(href);
+      }
+    }
     try {
       MirrorTarget mirror = caldavPushService.mirrorDestination(target.userIdentityId(), username);
       return mirror != null && StringUtils.isNotBlank(mirror.href()) && CaldavSyncStorage.canonicalHref(mirror.href()).equals(href);
     } catch (RuntimeException e) {
-      CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(target.userIdentityId());
-      String recorded = settings == null ? null : settings.getMirrorCalendarHref();
+      String recorded = target.settings() == null ? null : target.settings().getMirrorCalendarHref();
       boolean copies = StringUtils.isBlank(recorded) || CaldavSyncStorage.canonicalHref(recorded).equals(href);
       LOG.debug("Where the meeting copies of user {} go could not be asked; calendar {} is {} by the destination last recorded",
                 target.userIdentityId(), target.calendarId(), copies ? "warned about" : "cleared", e);
@@ -2199,11 +2224,120 @@ public class CaldavCalendarShareService {
   }
 
   /**
+   * Where eXo's own record says the caller's meeting copies go, or an empty set
+   * when nothing recorded may answer for them (EXO-90398).
+   *
+   * <p>
+   * <b>Two records, and the union of them</b>, because they fail in different
+   * directions and a missed warning is the expensive error. The account's
+   * {@code mirrorCalendarHref} is where the push last <i>resolved</i> the
+   * destination, written by {@code CaldavPushService.ensureMirror} on every
+   * pass and on every connection. The {@link SyncOrigin#MIRROR} pair's
+   * {@code remoteHref} is where the copies actually <i>are</i>, written by the
+   * push when it first writes one and moved by
+   * {@code CaldavMirrorRelocationService.repoint} before a single copy is
+   * relocated. Between a relocation starting and the account's record catching
+   * up, the two name different collections and both of them hold copies.
+   *
+   * <p>
+   * <b>What makes the record trustworthy is that it cannot silently outlive its
+   * settings.</b> A registration carries the stamp of the last administrator
+   * change that governs the copies ({@code copySettingsUpdated}, EXO-89759) and
+   * each mirror pair carries the stamp it has already applied
+   * ({@code copySettingsApplied}); a pair behind its registration is a pair
+   * whose destination may be about to move, and this answers nothing for it, so
+   * the server is asked as before. The stamp moves in the administrator's own
+   * write, not on a later pass, so the drawer opened a second after that save
+   * is already asking the server.
+   *
+   * <p>
+   * <b>An account with no mirror pair at all</b> has never had a copy written
+   * on this server, so no calendar of theirs can hold one — unless a copy
+   * setting has changed at some point, in which case nothing here can tell
+   * whether the recorded href predates it, and the server is asked.
+   *
+   * @param target the calendar, carrying the caller's account
+   * @return the canonical hrefs the record says hold the copies, empty when the
+   *         record may not answer
+   */
+  private Set<String> recordedDestinationsOf(ShareTarget target) {
+    List<CalendarSync> mirrors = caldavSyncStorage.getPairsByOrigin(target.userIdentityId(),
+                                                                    target.serverId(),
+                                                                    SyncOrigin.MIRROR);
+    if (relocationOwed(target, mirrors)) {
+      return Set.of();
+    }
+    Set<String> destinations = new LinkedHashSet<>();
+    addDestination(destinations, target.settings() == null ? null : target.settings().getMirrorCalendarHref());
+    mirrors.forEach(mirror -> addDestination(destinations, mirror.getRemoteHref()));
+    return destinations;
+  }
+
+  /**
+   * Adds a href to the recorded destinations, canonically, skipping a blank
+   * one.
+   *
+   * @param destinations the set being built
+   * @param href the href to add, may be null or blank
+   */
+  private static void addDestination(Set<String> destinations, String href) {
+    String canonical = CaldavSyncStorage.canonicalHref(href);
+    if (StringUtils.isNotBlank(canonical)) {
+      destinations.add(canonical);
+    }
+  }
+
+  /**
+   * Whether this account's copies may be about to move, so that nothing eXo
+   * recorded about their destination may be believed.
+   *
+   * <p>
+   * The same comparison the verification pass makes to decide it owes a
+   * relocation round ({@code CaldavMirrorVerificationService.settingsRoundOwed}):
+   * a registration stamp later than what the pair has applied. Read here rather
+   * than re-derived from the setting itself, because the stamp covers every
+   * change that governs the copies and the destination is one of them —
+   * {@code CopySettingsFingerprint} includes {@code mirrorTarget} without
+   * naming it.
+   *
+   * <p>
+   * Over-answering "yes" is the cheap direction, and this deliberately does: a
+   * change to any copy-governing setting costs the drawer one resolution per
+   * opening until the pass that applies it has run, which is what the account
+   * paid on every opening before this task.
+   *
+   * <p>
+   * A registration that cannot be resolved, or one no administrator has ever
+   * changed a copy setting on, owes nothing — the upgrade-neutral state
+   * EXO-89759 designed the stamp around.
+   *
+   * @param target the calendar, carrying the caller's account
+   * @param mirrors the caller's mirror pairs on this server
+   * @return true when the record may not be believed
+   */
+  private boolean relocationOwed(ShareTarget target, List<CalendarSync> mirrors) {
+    CaldavServer server = caldavServerService.resolveServer(target.settings() == null ? null
+                                                                                      : target.settings().getServerId());
+    Date changed = server == null ? null : server.getCopySettingsUpdated();
+    if (changed == null) {
+      return false;
+    }
+    if (mirrors.isEmpty()) {
+      // No pair carries an applied stamp, so nothing says whether the recorded
+      // href was resolved before or after that change.
+      return true;
+    }
+    return mirrors.stream()
+                  .anyMatch(mirror -> mirror.getCopySettingsApplied() == null
+                      || mirror.getCopySettingsApplied().before(changed));
+  }
+
+  /**
    * Whether a calendar of the caller's, on their server, is where their eXo
    * meeting copies are written (EXO-90357): what agenda's Share drawer asks
-   * before sharing it, through this add-on's channel plugin. The server is
-   * not asked: the answer comes from the push's destination and the
-   * account's record, as {@link #listShares} words it.
+   * before sharing it, through this add-on's channel plugin. A read, so eXo's
+   * own record of the destination answers when it may
+   * ({@link #meetingCopiesOf}), and the server is asked only when it may not.
    *
    * @param userIdentityId the caller
    * @param username the caller's login
@@ -2216,7 +2350,7 @@ public class CaldavCalendarShareService {
   public boolean holdsMeetingCopies(long userIdentityId, String username, long calendarId) throws ObjectNotFoundException,
                                                                                             IllegalAccessException {
     try {
-      return meetingCopiesOf(targetOf(userIdentityId, username, calendarId), username);
+      return meetingCopiesOf(targetOf(userIdentityId, username, calendarId), username, true);
     } catch (CaldavShareException | IllegalArgumentException e) {
       LOG.debug("Calendar {} of user {} is not on their server, so it holds no meeting copies", calendarId, userIdentityId, e);
       return false;
@@ -2308,13 +2442,17 @@ public class CaldavCalendarShareService {
    * @param pair the pair binding it
    * @param href its collection
    * @param endpoint the owner's endpoint
+   * @param settings the owner's connected account, read once by
+   *          {@code targetOf} and carried so that the meeting-copies flag
+   *          costs no second read of it (EXO-90398)
    */
   private record ShareTarget(long userIdentityId,
                              long calendarId,
                              long serverId,
                              CalendarSync pair,
                              String href,
-                             CalDavEndpoint endpoint) {
+                             CalDavEndpoint endpoint,
+                             CaldavUserSetting settings) {
 
     /**
      * Whether the calendar is an imported one, whose ownership on the server
