@@ -263,7 +263,7 @@ public class CaldavCalendarShareService {
    * {@code Freebusy(Invitation)}; a subject holding nothing outside this set
    * holds no more than reading.
    */
-  private static final Set<String> BLUEMIND_READ_CLOSURE  = Set.of("Read", "Freebusy", "Invitation", "Visible");
+  private static final Set<String> BLUEMIND_READ_CLOSURE  = Set.of(BLUEMIND_READ, "Freebusy", "Invitation", "Visible");
 
   /** The BlueMind verb a {@code CS:read-write} share stores (EXO-90378). */
   private static final String      BLUEMIND_WRITE         = "Write";
@@ -276,7 +276,7 @@ public class CaldavCalendarShareService {
    * holds no more than reading and writing the calendar's events — not
    * {@code Manage}, not {@code All}, not {@code ReadExtended}.
    */
-  private static final Set<String> BLUEMIND_WRITE_CLOSURE = Set.of("Write", "Read", "Freebusy", "Invitation", "Visible");
+  private static final Set<String> BLUEMIND_WRITE_CLOSURE = Set.of(BLUEMIND_WRITE, BLUEMIND_READ, "Freebusy", "Invitation", "Visible");
 
   /** A BlueMind user principal: the segment is the directory entry uid. */
   private static final Pattern     BLUEMIND_PRINCIPAL     = Pattern.compile("/dav/principals/__uids__/([^/]+)");
