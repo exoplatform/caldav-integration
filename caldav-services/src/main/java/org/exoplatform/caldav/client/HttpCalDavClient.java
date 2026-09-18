@@ -2192,13 +2192,22 @@ public class HttpCalDavClient implements CalDavClient {
    * @return the 2xx status
    */
   @Override
-  public int postCalendarServerShare(CalDavEndpoint endpoint, CalendarSync pair, String address, boolean remove) {
+  public int postCalendarServerShare(CalDavEndpoint endpoint,
+                                     CalendarSync pair,
+                                     String address,
+                                     boolean remove,
+                                     boolean write) {
     String href = shareTarget(pair);
     if (address == null || !MAIL_ADDRESS_PATTERN.matcher(address).matches()) {
       throw new IllegalArgumentException("Not a mail address a share can name");
     }
     String sharee = "<D:href>mailto:" + escape(address) + "</D:href>";
-    String change = remove ? "<CS:remove>" + sharee + "</CS:remove>" : "<CS:set>" + sharee + "<CS:read/></CS:set>";
+    // One of two elements, written from a boolean and never from a name: a
+    // BlueMind handler that does not recognise the access element, or finds
+    // none, grants WRITE (EXO-90378, see CalDavClient's contract), so the only
+    // safe shape is one this method can enumerate.
+    String access = write ? "<CS:read-write/>" : "<CS:read/>";
+    String change = remove ? "<CS:remove>" + sharee + "</CS:remove>" : "<CS:set>" + sharee + access + "</CS:set>";
     String body = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<CS:share xmlns:D=\"DAV:\" xmlns:CS=\"" + CALENDARSERVER_NS + "\">"
         + change + "</CS:share>";
     HttpRequest request = request(endpoint, href, "POST", body).build();

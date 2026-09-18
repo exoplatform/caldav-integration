@@ -90,6 +90,11 @@ import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
  */
 public class HttpCalDavClientShareTest {
 
+
+  /** Apple's CalendarServer namespace, which the sharing elements live in. */
+
+  private static final String CALENDARSERVER_NS = "http://calendarserver.org/ns/";
+
   private static final String   SERVER_URL      = "http://cal.example.com/dav/cal/{username}/";
 
   private static final String   USER            = "alice@stalwart.local";
@@ -424,6 +429,41 @@ public class HttpCalDavClientShareTest {
   }
 
   /**
+   * A "can edit" share is the same {@code POST} with {@code CS:read-write}
+   * (EXO-90378), and a "can view" one is the body above: the element comes
+   * from a boolean and can be nothing else, which is what keeps a level added
+   * later away from BlueMind's permissive fallback — {@code SharingProtocol}
+   * maps <b>anything</b> that is not {@code read} to {@code Verb.Write}.
+   * A remove carries no access element at either level, because
+   * {@code CS:remove} deletes the sharee's entry whatever verb it held.
+   *
+   * @throws Exception when a body is not XML
+   */
+  @Test
+  void anEditShareIsTheSamePostWithReadWrite() throws Exception {
+    answer(200, Map.of(), "");
+    answer(200, Map.of(), "");
+    answer(200, Map.of(), "");
+
+    client.postCalendarServerShare(endpoint, exoPair(), "eric.meyer@bm.example.com", false, true);
+    client.postCalendarServerShare(endpoint, exoPair(), "eric.meyer@bm.example.com", false, false);
+    client.postCalendarServerShare(endpoint, exoPair(), "eric.meyer@bm.example.com", true, true);
+
+    assertEquals(shapeOf(parseXml(transcript("bluemind-post-cs-share-set-read-write.xml"))),
+                 shapeOf(parseXml(bodyOf(sent.get(0)))));
+    assertEquals(shapeOf(parseXml(transcript("bluemind-post-cs-share-set-read.xml"))),
+                 shapeOf(parseXml(bodyOf(sent.get(1)))));
+    assertEquals(shapeOf(parseXml(transcript("bluemind-post-cs-share-remove.xml"))),
+                 shapeOf(parseXml(bodyOf(sent.get(2)))));
+    // Exactly one access element per set body, and never both
+    assertEquals(1, parseXml(bodyOf(sent.get(0))).getElementsByTagNameNS(CALENDARSERVER_NS, "read-write").getLength());
+    assertEquals(0, parseXml(bodyOf(sent.get(0))).getElementsByTagNameNS(CALENDARSERVER_NS, "read").getLength());
+    assertEquals(1, parseXml(bodyOf(sent.get(1))).getElementsByTagNameNS(CALENDARSERVER_NS, "read").getLength());
+    assertEquals(0, parseXml(bodyOf(sent.get(1))).getElementsByTagNameNS(CALENDARSERVER_NS, "read-write").getLength());
+    assertEquals(0, parseXml(bodyOf(sent.get(2))).getElementsByTagNameNS(CALENDARSERVER_NS, "read-write").getLength());
+  }
+
+  /**
    * Nothing but a mail address is ever named, and nothing but a shareable
    * collection is ever addressed: markup smuggled in an address, a value
    * without {@code @}, a hidden share and the meetings mirror are refused
@@ -618,6 +658,38 @@ public class HttpCalDavClientShareTest {
     assertEquals("/dav/pal/bob%40stalwart.local/", hrefs.item(1).getTextContent(), "Stalwart's own spelling of a principal");
     assertEquals(2, body.getElementsByTagNameNS("DAV:", "read").getLength());
     assertEquals(0, body.getElementsByTagNameNS("DAV:", "protected").getLength());
+  }
+
+  /**
+   * An edit grant (EXO-90378) goes on the wire as one {@code DAV:ace} granting
+   * {@code DAV:read} and {@code DAV:write} to one principal — the shape that
+   * tells a grant eXo wrote from a right given through the server's own
+   * interface — and reads back as the same entry.
+   *
+   * @throws Exception when the body cannot be parsed
+   */
+  @Test
+  void anEditGrantWritesReadAndWriteAndReadsBack() throws Exception {
+    AccessControlEntry bob = AccessControlEntry.editGrantTo("/dav/pal/bob%40stalwart.local/");
+    answer(200, Map.of(), "");
+
+    assertTrue(client.writeAcl(endpoint, exoPair(), List.of(bob)).accepted());
+
+    Document body = parseXml(bodyOf(sent.get(0)));
+    assertEquals(1, body.getElementsByTagNameNS("DAV:", "ace").getLength(), "one entry, not one per privilege");
+    assertEquals(1, body.getElementsByTagNameNS("DAV:", "grant").getLength());
+    assertEquals(0, body.getElementsByTagNameNS("DAV:", "deny").getLength());
+    assertEquals(1, body.getElementsByTagNameNS("DAV:", "read").getLength());
+    assertEquals(1, body.getElementsByTagNameNS("DAV:", "write").getLength());
+    assertEquals(0, body.getElementsByTagNameNS("DAV:", "write-acl").getLength(), "nothing beyond writing events");
+
+    String written = bodyOf(sent.get(0));
+    answer(207, Map.of(), aclAnswer(written.substring(written.indexOf("<d:acl")), PRIVILEGES_OWNER));
+    CollectionAcl readBack = client.readAcl(endpoint, COLLECTION);
+
+    assertTrue(readBack.understood(), readBack.reason());
+    assertEquals(List.of(bob), readBack.entries());
+    assertTrue(readBack.entries().get(0).grantsEditOnly(), "and is recognised as an eXo edit grant");
   }
 
   /**

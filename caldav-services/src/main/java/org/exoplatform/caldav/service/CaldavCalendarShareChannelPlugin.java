@@ -25,6 +25,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.agenda.constant.CalendarShareLevel;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.CalendarShare;
 import org.exoplatform.agenda.model.ChannelDelivery;
@@ -143,8 +144,16 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
       long ownerId = ownerOf(share.getCalendarId());
       String shareeUsername = usernameOf(share.getShareeIdentityId());
       SharedCollection collection = caldavCalendarShareService.sharedCollectionOf(ownerId, ownerUsername, share.getCalendarId());
-      caldavCalendarShareService.grant(ownerId, ownerUsername, share.getCalendarId(), shareeUsername);
-      return ChannelDelivery.delivered(channelIdOf(collection.serverId()), collection.href());
+      // The record's level is what the server must end up holding (EXO-90378);
+      // grant reconciles to it, widening or narrowing whatever was there
+      CalendarShares carried = caldavCalendarShareService.grant(ownerId,
+                                                                ownerUsername,
+                                                                share.getCalendarId(),
+                                                                shareeUsername,
+                                                                accessOf(share.getLevel()));
+      return ChannelDelivery.delivered(channelIdOf(collection.serverId()),
+                                       collection.href(),
+                                       carriedLevel(carried, shareeUsername, share.getLevel()));
     } catch (CaldavShareException | IllegalArgumentException e) {
       return outcomeOf(e, share);
     } catch (ObjectNotFoundException | IllegalAccessException e) {
@@ -162,6 +171,53 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
    * @param ownerUsername the owner's login
    * @return true when the grant is gone
    */
+  /**
+   * The server-side level an eXo share level asks for (EXO-90378).
+   *
+   * @param level the record's level, never null
+   * @return {@link ShareAccess#WRITE} for an edit share, {@link ShareAccess#READ}
+   *         otherwise
+   */
+  private static ShareAccess accessOf(CalendarShareLevel level) {
+    return level == CalendarShareLevel.EDIT ? ShareAccess.WRITE : ShareAccess.READ;
+  }
+
+  /**
+   * The level the server ends up holding for a colleague, read off the list
+   * the grant handed back (EXO-90378), or null when it is the level the record
+   * asked for — which is the ordinary case and needs no answer.
+   * <p>
+   * This is what keeps a server's answer from being taken on trust. Both
+   * servers carry both levels (EXO-90378) — Stalwart through RFC 3744
+   * {@code ACL}, BlueMind through {@code CS:read-write}, which its
+   * {@code SharingProtocol} stores as the verb {@code Write} — but BlueMind
+   * answers {@code 200} even when the share did nothing, so the level is read
+   * back from the container's access list. A read-back that says less than was
+   * asked for comes through here as the narrower level, agenda logs the
+   * difference, and the eXo level stands: the colleague edits in eXo whatever
+   * the server holds.
+   *
+   * @param carried the shares the collection holds, as the grant read them back
+   * @param shareeUsername the colleague
+   * @param wanted the level the record carries
+   * @return the level the server holds, or null when it matches
+   */
+  private static CalendarShareLevel carriedLevel(CalendarShares carried, String shareeUsername, CalendarShareLevel wanted) {
+    if (carried == null || carried.sharees() == null) {
+      return null;
+    }
+    CalendarShareLevel held = carried.sharees()
+                                     .stream()
+                                     .filter(sharee -> sharee.users() != null
+                                         && sharee.users().stream().anyMatch(user -> StringUtils.equals(user.username(),
+                                                                                                        shareeUsername)))
+                                     .map(sharee -> sharee.access() == ShareAccess.WRITE ? CalendarShareLevel.EDIT
+                                                                                         : CalendarShareLevel.VIEW)
+                                     .findFirst()
+                                     .orElse(null);
+    return held == null || held == wanted ? null : held;
+  }
+
   @Override
   public boolean withdraw(CalendarShare share, String ownerUsername) {
     if (share == null || StringUtils.isBlank(ownerUsername)) {
@@ -211,6 +267,12 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
     List<ExternalShare> external = new ArrayList<>();
     for (CalendarSharee sharee : server.shares().sharees()) {
       boolean readOnly = sharee.access() == ShareAccess.READ;
+      // What the grant amounts to in agenda's vocabulary (EXO-90378): a grant
+      // of a shape eXo writes carries a delivery reference, which is what lets
+      // agenda adopt it as a record at that level; anything else is MORE and
+      // carries none, so it stays listed as access held outside eXo
+      String access = accessNameOf(sharee.access());
+      boolean adoptable = sharee.access() != ShareAccess.MORE;
       if (sharee.kind() == ShareeKind.EXO_USERS) {
         for (ShareUser user : sharee.users()) {
           if (!recorded.contains(user.identityId())) {
@@ -221,8 +283,9 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
                                            user.fullName(),
                                            sharee.removable(),
                                            readOnly,
+                                           access,
                                            null,
-                                           readOnly ? server.collection().href() : null));
+                                           adoptable ? server.collection().href() : null));
           }
         }
       } else {
@@ -233,6 +296,7 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
                                        displayNameOf(sharee),
                                        false,
                                        readOnly,
+                                       access,
                                        emailOf(sharee),
                                        null));
       }
@@ -314,6 +378,21 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
    * @param share the record, for the log
    * @return the outcome
    */
+  /**
+   * How agenda names a server-side access level (EXO-90378): {@code VIEW},
+   * {@code EDIT}, or {@code MORE} for a grant eXo does not write and therefore
+   * never adopts.
+   *
+   * @param access the level the list read back, may be null
+   * @return the name agenda reads
+   */
+  private static String accessNameOf(ShareAccess access) {
+    if (access == ShareAccess.READ) {
+      return CalendarShareLevel.VIEW.name();
+    }
+    return access == ShareAccess.WRITE ? CalendarShareLevel.EDIT.name() : "MORE";
+  }
+
   private static ChannelDelivery outcomeOf(RuntimeException refusal, CalendarShare share) {
     String code = refusal instanceof CaldavShareException failure ? failure.getCode() : refusal.getMessage();
     if (code != null && NOT_APPLICABLE.contains(code)) {

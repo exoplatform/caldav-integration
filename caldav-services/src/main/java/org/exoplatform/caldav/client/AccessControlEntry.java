@@ -65,8 +65,16 @@ public record AccessControlEntry(AcePrincipal principal,
   /** The namespace of CalDAV's elements. */
   public static final String      CALDAV_NS                 = "urn:ietf:params:xml:ns:caldav";
 
-  /** {@code DAV:read}, the one privilege eXo grants. */
+  /** {@code DAV:read}, the privilege a "can view" share grants. */
   public static final String      READ                      = clark(DAV_NS, "read");
+
+  /**
+   * {@code DAV:write}, the privilege a "can edit" share adds (EXO-90378).
+   * RFC 3744 §3.12 aggregates {@code write-properties}, {@code write-content},
+   * {@code bind} and {@code unbind} under it — changing an event, adding one
+   * and removing one, which is exactly what an edit share is for.
+   */
+  public static final String      WRITE                     = clark(DAV_NS, "write");
 
   /**
    * The privileges that let a principal see a calendar and nothing more: what
@@ -78,6 +86,41 @@ public record AccessControlEntry(AcePrincipal principal,
   public static final Set<String> READ_ONLY_PRIVILEGES      = Set.of(READ,
                                                                      clark(DAV_NS, "read-current-user-privilege-set"),
                                                                      clark(CALDAV_NS, "read-free-busy"));
+
+  /**
+   * The privileges an edit share may hold when it is read back (EXO-90378):
+   * the read-only set, {@code DAV:write}, and <b>the members
+   * {@code DAV:write} aggregates</b> (RFC 3744 §3.12) — write-properties,
+   * write-content, bind and unbind.
+   * <p>
+   * The grant eXo <b>writes</b> is narrower than this: {@code DAV:read} and
+   * {@code DAV:write} and nothing else, see {@link #editGrantTo(String)}. A
+   * server is free to report the aggregate's members beside it, exactly as it
+   * reports the read-ish privileges beside {@code DAV:read}, and Stalwart
+   * does: it stores our {@code DAV:write} as its own
+   * {@code Modify, Delete, AddItems, ModifyItems, RemoveItems} and reports
+   * those back as {@code DAV:write} <b>plus</b> {@code DAV:write-properties}
+   * (from {@code Modify}) and {@code DAV:write-content} (from
+   * {@code ModifyItems}) — {@code crates/dav/src/common/acl.rs},
+   * {@code validate_and_map_aces} and {@code current_user_privilege_set},
+   * stalwartlabs/stalwart v0.16.0.
+   * <p>
+   * Leaving those two out is what made a grant that <b>had</b> landed read
+   * back as unrecognised, and eXo report a share it had really made as not
+   * applied. Nothing here widens what an edit share means: every member is
+   * part of {@code DAV:write} itself, so a principal holding this set holds
+   * neither more nor less than writing the calendar's events.
+   * {@code DAV:write-acl}, {@code DAV:read-acl}, {@code DAV:all},
+   * {@code DAV:unlock}, scheduling and vendor privileges stay outside it.
+   */
+  public static final Set<String> EDIT_PRIVILEGES           = Set.of(READ,
+                                                                     WRITE,
+                                                                     clark(DAV_NS, "read-current-user-privilege-set"),
+                                                                     clark(CALDAV_NS, "read-free-busy"),
+                                                                     clark(DAV_NS, "write-properties"),
+                                                                     clark(DAV_NS, "write-content"),
+                                                                     clark(DAV_NS, "bind"),
+                                                                     clark(DAV_NS, "unbind"));
 
   /**
    * The characters left as they are when a principal path is spelled into an
@@ -96,6 +139,24 @@ public record AccessControlEntry(AcePrincipal principal,
    */
   public static AccessControlEntry readGrantTo(String principalHref) {
     return new AccessControlEntry(AcePrincipal.href(principalHref), false, false, Set.of(READ), false, null);
+  }
+
+  /**
+   * The entry eXo writes to share a calendar for editing (EXO-90378): grant
+   * {@code DAV:read} and {@code DAV:write} to one principal, nothing else.
+   * <p>
+   * {@code DAV:read} is written even though a colleague who may write must be
+   * able to read: it is what makes the entry <b>recognisable</b>. A grant
+   * carrying {@code DAV:write} and no read is what Stalwart reports for a
+   * right given through JMAP — "may delete", "may write all" — and eXo never
+   * writes that shape, so it can keep refusing to carry one back
+   * ({@link #grantsEditOnly()} demands both).
+   *
+   * @param principalHref the principal's server-absolute href
+   * @return the entry
+   */
+  public static AccessControlEntry editGrantTo(String principalHref) {
+    return new AccessControlEntry(AcePrincipal.href(principalHref), false, false, Set.of(READ, WRITE), false, null);
   }
 
   /**
@@ -127,6 +188,38 @@ public record AccessControlEntry(AcePrincipal principal,
    */
   public boolean grantsReadOnly() {
     return !deny && !inverted && READ_ONLY_PRIVILEGES.containsAll(privileges);
+  }
+
+  /**
+   * Whether this entry is a plain grant carrying exactly what an eXo edit
+   * share grants (EXO-90378): reading and writing the calendar, and nothing
+   * beyond {@link #EDIT_PRIVILEGES}.
+   * <p>
+   * <b>Both {@code DAV:read} and {@code DAV:write} are required.</b> That is
+   * what separates a grant eXo itself wrote from the one shape it must keep
+   * refusing: a bare {@code DAV:write}, which is how Stalwart reports a right
+   * given through JMAP, is <b>not</b> edit-only here, so writing the list back
+   * still stops rather than widening that right to full write. The aggregate
+   * itself is required, not merely its members, so a partial grant — content
+   * but not bind, say — is not mistaken for the whole.
+   *
+   * @return true when every privilege is an edit-share one and both read and
+   *         write are among them
+   */
+  public boolean grantsEditOnly() {
+    return !deny && !inverted && privileges.contains(READ) && privileges.contains(WRITE)
+        && EDIT_PRIVILEGES.containsAll(privileges);
+  }
+
+  /**
+   * Whether this entry is of a shape eXo itself writes — a read-only grant or
+   * an edit grant (EXO-90378) — and may therefore be carried back unchanged in
+   * an {@code ACL} request without widening anybody's rights.
+   *
+   * @return true for a grant eXo could have written
+   */
+  public boolean grantsExoShape() {
+    return grantsReadOnly() || grantsEditOnly();
   }
 
   /**

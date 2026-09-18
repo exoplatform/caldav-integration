@@ -140,9 +140,17 @@ public record CalendarShares(long calendarId, List<CalendarSharee> sharees, bool
 
   /** What a principal's entries grant. */
   public enum ShareAccess {
-    /** Seeing the calendar and nothing more: what eXo grants. */
+    /** Seeing the calendar and nothing more. */
     READ,
-    /** Something beyond seeing it — writing, managing its access — granted outside eXo. */
+    /**
+     * Seeing the calendar and writing its events, and nothing more
+     * (EXO-90378): exactly what eXo's own "can edit" grant carries. A grant
+     * carrying write without read is not this — it is {@link #MORE} — because
+     * that is the shape a right given outside eXo reads back as, and eXo never
+     * writes it.
+     */
+    WRITE,
+    /** Something beyond the two above — managing its access, a vendor privilege — granted outside eXo. */
     MORE
   }
 
