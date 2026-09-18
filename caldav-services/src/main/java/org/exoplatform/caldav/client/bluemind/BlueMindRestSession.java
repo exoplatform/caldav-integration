@@ -42,6 +42,7 @@ import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
+import org.exoplatform.caldav.client.bluemind.BlueMindSessionCache.Key;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -66,20 +67,24 @@ import org.exoplatform.services.log.Log;
  * password are the ones the configured credentials provider produces for the
  * account's DAV requests, taken from its Basic header; a provider producing
  * anything else is not a login this API accepts.</li>
- * <li><b>A session for one job.</b> {@code POST /api/auth/login?login=…} with
- * the password as a JSON string under exactly
- * {@code Content-Type: application/json} — what BlueMind's own client proxy
- * sends ({@code ClientProxyGenerator.java}, {@code ByMimeTypeCodec.encode});
- * BlueMind picks the body codec by the exact {@code Content-Type} value
- * ({@code DefaultBodyParameterCodecs.java}), so a {@code text/plain} carrying
- * a charset parameter would be read as JSON, refused with a 500 and logged by
- * BlueMind with the password in it — answers a {@code LoginResponse} whose
- * {@code authKey} travels in the {@code X-BM-ApiKey} header
+ * <li><b>A session, reused for a short while.</b>
+ * {@code POST /api/auth/login?login=…} with the password as a JSON string
+ * under exactly {@code Content-Type: application/json} — what BlueMind's own
+ * client proxy sends ({@code ClientProxyGenerator.java},
+ * {@code ByMimeTypeCodec.encode}); BlueMind picks the body codec by the exact
+ * {@code Content-Type} value ({@code DefaultBodyParameterCodecs.java}), so a
+ * {@code text/plain} carrying a charset parameter would be read as JSON,
+ * refused with a 500 and logged by BlueMind with the password in it — answers
+ * a {@code LoginResponse} whose {@code authKey} travels in the
+ * {@code X-BM-ApiKey} header
  * ({@code parent/core/net.bluemind.core.rest/.../base/RestRootHandler.java}
- * reads it, {@code BasicClientProxy.java} sends it); the key is used for the
- * calls and {@code POST /api/auth/logout} is always sent after them. The key
- * and the password are never logged, never stored, and never part of an
- * exception message.</li>
+ * reads it, {@code BasicClientProxy.java} sends it). Since EXO-90397 that key
+ * is kept for a few minutes, in <b>this node's own memory</b> and nowhere
+ * else ({@link BlueMindSessionCache}), so the next read costs one request
+ * rather than three; the rules that follow from it are on {@link #call}. The
+ * key and the password are never logged, never written to the database,
+ * never handed to a caller — {@link Session} exposes who the session is, not
+ * what authenticates it — and never part of an exception message.</li>
  * <li><b>Bounded answers.</b> Every body is read up to a fixed size and
  * refused beyond it: nothing this add-on reads from this API is large.</li>
  * </ul>
@@ -111,6 +116,8 @@ public class BlueMindRestSession {
 
   private final CaldavCredentialsResolver caldavCredentialsResolver;
 
+  private final BlueMindSessionCache    sessions;
+
   private final JsonMapper                mapper  = JsonMapper.builder().build();
 
   /**
@@ -127,25 +134,43 @@ public class BlueMindRestSession {
    *
    * @param caldavCredentialsResolver the seam producing the account's
    *          credentials
+   * @param sessions the short-lived sessions kept per account
    */
   @Autowired
-  public BlueMindRestSession(CaldavCredentialsResolver caldavCredentialsResolver) {
+  public BlueMindRestSession(CaldavCredentialsResolver caldavCredentialsResolver, BlueMindSessionCache sessions) {
     this(HttpClient.newBuilder()
                    .connectTimeout(Duration.ofSeconds(10))
                    .followRedirects(HttpClient.Redirect.NEVER)
                    .build(),
-         caldavCredentialsResolver);
+         caldavCredentialsResolver,
+         sessions);
   }
 
   /**
-   * The seam the tests use.
+   * The seam the protocol tests use: a session over a handed-in transport
+   * that keeps nothing, so each call opens and closes its own session — the
+   * shape a call takes when the endpoint cannot be keyed.
    *
    * @param httpClient the transport
    * @param caldavCredentialsResolver the credentials seam
    */
   BlueMindRestSession(HttpClient httpClient, CaldavCredentialsResolver caldavCredentialsResolver) {
+    this(httpClient, caldavCredentialsResolver, BlueMindSessionCache.unpooled());
+  }
+
+  /**
+   * The seam the reuse tests use: a session over a handed-in transport and a
+   * handed-in store.
+   *
+   * @param httpClient the transport
+   * @param caldavCredentialsResolver the credentials seam
+   * @param sessions the sessions kept per account
+   */
+  BlueMindRestSession(HttpClient httpClient, CaldavCredentialsResolver caldavCredentialsResolver,
+                      BlueMindSessionCache sessions) {
     this.httpClient = httpClient;
     this.caldavCredentialsResolver = caldavCredentialsResolver;
+    this.sessions = sessions;
   }
 
   /**
@@ -164,8 +189,46 @@ public class BlueMindRestSession {
   }
 
   /**
-   * Runs one job inside a REST session opened as the account: log in, hand
-   * the open session to the job, log out whatever the job did.
+   * Runs one job inside a REST session opened as the account: the session
+   * kept for that account when there is one, a fresh login otherwise.
+   *
+   * <p>
+   * <b>What is reused, and for whom.</b> The session is looked up by the
+   * account it acts as — the declared server, the eXo login the credentials
+   * are produced for, and the account those credentials address on that
+   * server ({@link BlueMindSessionCache.Key}) — so no session ever serves an
+   * account other than the one it was minted for. An endpoint minted from a
+   * DAV account name rather than for an eXo user carries no login to key on,
+   * and neither does one whose provider cannot name the account it would
+   * address: such a call opens its own session and closes it, as every call
+   * did before EXO-90397.
+   *
+   * <p>
+   * <b>Never to another address.</b> The kept session records the REST root
+   * it was opened at; an endpoint that now resolves elsewhere — an
+   * administrator changed the declared server's URL — does not reuse it. The
+   * key is a credential of one host and is never sent to another.
+   *
+   * <p>
+   * <b>An expired or refused session re-logs in once.</b> BlueMind expires a
+   * session on its own clock, and this add-on does not measure it (EXO-89647
+   * is where that measurement lands), so the kept entry's lifetime is set
+   * well below any plausible server-side one and the refusal is handled
+   * rather than predicted: a 401 on a reused session drops the entry, opens
+   * another and sends the request again — once per call, tracked on the
+   * session itself, so a server refusing everything costs one extra login and
+   * never a loop.
+   *
+   * <p>
+   * <b>Logout.</b> A session nothing keeps is logged out when the job ends,
+   * as before — and <i>nothing keeps it</i> covers three cases, not one: the
+   * endpoint that cannot be keyed at all, the store that had no room for
+   * another account ({@code maxAccounts}), and the session another thread's
+   * took the place of. A kept one is not closed: it is closed when eXo drops
+   * it on purpose ({@link #forget}), and otherwise expires on BlueMind's own
+   * clock when the entry expires here first — the same fallback a failed
+   * logout has always relied on. A session refused by BlueMind is already
+   * closed on its side and is dropped without one.
    *
    * @param <T> what the job produces
    * @param endpoint the account's DAV endpoint, minted from the registry
@@ -179,13 +242,157 @@ public class BlueMindRestSession {
    */
   public <T> T call(CalDavEndpoint endpoint, Function<Session, T> job) {
     String root = apiRootOf(endpoint);
-    String[] account = accountOf(endpoint);
-    Login login = login(root, account[0], account[1]);
-    try {
-      return job.apply(new Session(root, login));
-    } finally {
-      logout(root, login.key());
+    Key key = keyOf(endpoint);
+    if (key == null) {
+      // Nothing can keep it, so this call closes it — the one rule below,
+      // reached by the one endpoint that never has an entry at all.
+      Session own = new Session(root, endpoint, null, mint(root, endpoint), false, true);
+      try {
+        return job.apply(own);
+      } finally {
+        own.closeIfMine();
+      }
     }
+    Login held = sessions.held(key);
+    if (held != null && !root.equals(held.apiRoot())) {
+      // Minted for another address: the declared server moved under it. It is
+      // not sent anywhere, and the entry goes rather than being believed. It
+      // is closed at the address it was opened at, which is the only one that
+      // knows it.
+      if (sessions.drop(key, held)) {
+        logout(held.apiRoot(), held.key());
+      }
+      held = null;
+    }
+    boolean reused = held != null;
+    Acquired acquired = reused ? new Acquired(held, false) : acquire(key, root, endpoint);
+    Session session = new Session(root, endpoint, key, acquired.login(), reused, acquired.mine());
+    try {
+      return job.apply(session);
+    } finally {
+      session.closeIfMine();
+    }
+  }
+
+  /**
+   * Drops the session kept for one account and closes it, because eXo itself
+   * changed what that account is: new credentials, a reconnection, a
+   * disconnection.
+   *
+   * <p>
+   * The logout is best-effort and never fails the caller: a session that
+   * could not be closed expires on BlueMind's own clock.
+   *
+   * @param serverId the declared server registration, zero for the legacy
+   *          deployment property
+   * @param exoLogin the eXo login whose session goes
+   */
+  public void forget(long serverId, String exoLogin) {
+    if (StringUtils.isBlank(exoLogin)) {
+      return;
+    }
+    for (Login dropped : sessions.forget(serverId, exoLogin)) {
+      logout(dropped.apiRoot(), dropped.key());
+    }
+  }
+
+  /**
+   * Drops every kept session, because the declared servers changed under
+   * them. The sessions are not closed — the entries carrying them are gone —
+   * so they expire on BlueMind's own clock.
+   */
+  public void forgetAll() {
+    sessions.forgetAll();
+  }
+
+  /**
+   * The account a session is kept for, or null when this endpoint cannot be
+   * keyed and must therefore open and close its own session.
+   *
+   * @param endpoint the account's endpoint
+   * @return the key, or null
+   */
+  private Key keyOf(CalDavEndpoint endpoint) {
+    if (!sessions.keeps() || StringUtils.isBlank(endpoint.getExoLogin())) {
+      return null;
+    }
+    String actsAs;
+    try {
+      actsAs = caldavCredentialsResolver.targetAccount(endpoint.getServerId(),
+                                                       endpoint.getAuthProviderName(),
+                                                       endpoint.getExoLogin());
+    } catch (RuntimeException e) {
+      // A provider that cannot say which account it would address cannot have
+      // its session kept: the third field of the key is what says the session
+      // is this mailbox's and no other. The call still goes through, opening
+      // and closing its own session as it did before EXO-90397.
+      LOG.debug("The configured provider could not name the account it addresses for {}; its session is not kept", endpoint, e);
+      return null;
+    }
+    if (StringUtils.isBlank(actsAs)) {
+      return null;
+    }
+    return new Key(endpoint.getServerId() == null ? 0L : endpoint.getServerId(), endpoint.getExoLogin(), actsAs);
+  }
+
+  /**
+   * A session to use, and whether closing it is this call's business.
+   *
+   * @param login the session
+   * @param mine true when this call opened it and nothing kept it, so that
+   *          nobody else will ever present it and the job's end is the only
+   *          moment it can be closed at
+   */
+  private record Acquired(Login login, boolean mine) {
+  }
+
+  /**
+   * Opens a session for an account and keeps it — unless another thread kept
+   * one first, in which case that one is used and the redundant session is
+   * closed at once rather than left open on the server.
+   *
+   * <p>
+   * The store may also decline to keep it, having no room left
+   * ({@code exo.agenda.caldav.bluemind.session.maxAccounts}). That session is
+   * used for this call and closed when it ends, exactly as every call did
+   * before EXO-90397: a session nothing will reuse must not be left open on
+   * the server until BlueMind expires it, and past the bound there would be
+   * one of those per call.
+   *
+   * @param key the account
+   * @param root the REST root
+   * @param endpoint the account's endpoint
+   * @return the session to use, and who closes it
+   */
+  private Acquired acquire(Key key, String root, CalDavEndpoint endpoint) {
+    Login fresh = mint(root, endpoint);
+    Login winner = sessions.keep(key, fresh);
+    if (winner == null) {
+      return new Acquired(fresh, !sessions.holds(key, fresh));
+    }
+    if (root.equals(winner.apiRoot())) {
+      logout(root, fresh.key());
+      return new Acquired(winner, false);
+    }
+    // The entry that won names another address, so it is the one that goes —
+    // and it is closed at the address it was opened at, the only one that
+    // knows it, rather than left open there for nothing.
+    sessions.replace(key, fresh);
+    logout(winner.apiRoot(), winner.key());
+    return new Acquired(fresh, !sessions.holds(key, fresh));
+  }
+
+  /**
+   * Opens a session as the account: its configured credentials, then the
+   * login.
+   *
+   * @param root the REST root
+   * @param endpoint the account's endpoint
+   * @return the session
+   */
+  private Login mint(String root, CalDavEndpoint endpoint) {
+    String[] account = accountOf(endpoint);
+    return login(root, account[0], account[1]);
   }
 
   /**
@@ -296,9 +503,17 @@ public class BlueMindRestSession {
   }
 
   /**
-   * What a login answered and a session carries: the key, and who BlueMind
-   * says the session belongs to.
+   * What a login answered and a session carries: the address it answered at,
+   * the key, and who BlueMind says the session belongs to.
    *
+   * <p>
+   * Package-private rather than private because it is what
+   * {@link BlueMindSessionCache} keeps. Its {@code toString} is overridden
+   * so that the key cannot reach a log line or an exception message through a
+   * record's generated one — the rule the whole class is written under.
+   *
+   * @param apiRoot the REST root this session was opened at, which is the
+   *          only address its key may ever be sent to
    * @param key the session key, sent in {@link #API_KEY_HEADER}
    * @param userUid the directory entry uid of the authenticated user
    *          ({@code LoginResponse.authUser.uid}), or null when the answer
@@ -307,7 +522,17 @@ public class BlueMindRestSession {
    *          ({@code LoginResponse.authUser.domainUid}), or null when the
    *          answer named none
    */
-  private record Login(String key, String userUid, String domainUid) {
+  record Login(String apiRoot, String key, String userUid, String domainUid) {
+
+    /**
+     * Names the session without ever naming its key — safe in logs.
+     *
+     * @return the session described by its address and its authenticated user
+     */
+    @Override
+    public String toString() {
+      return "BlueMindSession[apiRoot=" + apiRoot + ", userUid=" + userUid + "]";
+    }
   }
 
   /**
@@ -356,7 +581,7 @@ public class BlueMindRestSession {
           + ") for POST " + named);
     }
     JsonNode authUser = response.get("authUser");
-    return new Login(key, textOf(authUser, "uid"), textOf(authUser, "domainUid"));
+    return new Login(root, key, textOf(authUser, "uid"), textOf(authUser, "domainUid"));
   }
 
   /**
@@ -416,19 +641,64 @@ public class BlueMindRestSession {
    */
   public final class Session {
 
-    private final String root;
+    private final String         root;
 
-    private final Login  login;
+    private final CalDavEndpoint endpoint;
+
+    /** The account this session is kept for, or null when none keeps it. */
+    private final Key            key;
+
+    /** Whether the session came from the store rather than from a login. */
+    private final boolean        reused;
+
+    /** Whether this call has already spent its one re-login. */
+    private boolean              renewed;
+
+    /**
+     * Whether this call opened the session it now holds and nothing kept it,
+     * so that closing it is this call's business and nobody else's.
+     */
+    private boolean              mine;
+
+    private Login                login;
 
     /**
      * An open session.
      *
      * @param root the REST root
+     * @param endpoint the account's endpoint, which a re-login is made from
+     * @param key the account this session is kept for, or null
      * @param login the key and the authenticated user
+     * @param reused whether the session came from the store
+     * @param mine whether this call opened it and nothing kept it
      */
-    private Session(String root, Login login) {
+    private Session(String root, CalDavEndpoint endpoint, Key key, Login login, boolean reused, boolean mine) {
       this.root = root;
+      this.endpoint = endpoint;
+      this.key = key;
       this.login = login;
+      this.reused = reused;
+      this.mine = mine;
+    }
+
+    /**
+     * Closes the session when this call is the only one that ever held it:
+     * the store had no room for it, or another thread's session took its
+     * place. A session the store keeps is left open for the next caller, and
+     * a session BlueMind refused is already closed on its side.
+     *
+     * <p>
+     * This is what makes the {@code call} Javadoc's "a session nothing keeps
+     * is logged out when the job ends" true of the keyed path too, and not
+     * only of the endpoint that cannot be keyed at all: past
+     * {@code maxAccounts} every call opens a session nothing will reuse, and
+     * leaving each of those open until BlueMind expires it would leak one
+     * server-side session per call (EXO-90397, review round 1).
+     */
+    private void closeIfMine() {
+      if (mine) {
+        logout(root, login.key());
+      }
     }
 
     /**
@@ -508,7 +778,16 @@ public class BlueMindRestSession {
     }
 
     /**
-     * One call of the session, the key on it.
+     * One call of the session, the key on it — and, when a kept session is
+     * refused, the same call again on a session opened afresh.
+     *
+     * <p>
+     * The retry is what makes reuse safe without knowing how long BlueMind
+     * keeps a session: a 401 is the server saying this key is no longer one,
+     * which cannot be told from an expiry and does not need to be. It is
+     * spent at most once per call, and only on a session that came from the
+     * store — a session this very call opened and that is refused is a
+     * refusal to report, not a staleness to repair.
      *
      * @param method the HTTP method
      * @param path the path under the root
@@ -517,8 +796,37 @@ public class BlueMindRestSession {
      * @return the answer
      */
     private Answer exchange(String method, String path, String body, String contentType) {
-      URI uri = URI.create(root + path);
-      HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
+      Answer answer = send(request(method, path, body, contentType), named(path));
+      if (answer.status() == 401 && key != null && reused && !renewed) {
+        renewed = true;
+        // Refused means closed on the server's side: the entry goes without a
+        // logout, and the key it held is never sent again. Only this account's
+        // entry, and only while it is still the one that was refused: another
+        // thread that has already put a fresh session there is not chased out
+        // of it, and the accounts this user's credentials address elsewhere on
+        // this server were not refused and are not dropped.
+        sessions.drop(key, login);
+        LOG.debug("The REST session kept for {} was refused; another is opened for this call", key);
+        Acquired again = acquire(key, root, endpoint);
+        login = again.login();
+        mine = again.mine();
+        answer = send(request(method, path, body, contentType), named(path));
+      }
+      checkGateway(answer.status(), method, named(path));
+      return answer;
+    }
+
+    /**
+     * The request of one call, carrying the session's current key.
+     *
+     * @param method the HTTP method
+     * @param path the path under the root
+     * @param body the body, or null for none
+     * @param contentType the body's media type, or null with no body
+     * @return the request to send
+     */
+    private HttpRequest request(String method, String path, String body, String contentType) {
+      HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(root + path))
                                                .timeout(REQUEST_TIMEOUT)
                                                .header(API_KEY_HEADER, login.key())
                                                .header("Accept", JSON_MEDIA_TYPE);
@@ -527,9 +835,7 @@ public class BlueMindRestSession {
       } else {
         builder.header("Content-Type", contentType).method(method, BodyPublishers.ofString(body, StandardCharsets.UTF_8));
       }
-      Answer answer = send(builder.build(), named(path));
-      checkGateway(answer.status(), method, named(path));
-      return answer;
+      return builder.build();
     }
   }
 }

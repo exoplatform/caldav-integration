@@ -160,6 +160,13 @@ public class CaldavServerServiceTest {
   private CaldavCredentialsResolver caldavCredentialsResolver;
 
   /**
+   * The BlueMind sessions kept per account (EXO-90397). Optional in
+   * production for the same reason as the resolver above.
+   */
+  @Mock
+  private BlueMindSessionService   blueMindSessionService;
+
+  /**
    * The address check, REAL rather than mocked, so these tests keep measuring
    * what the registry actually refuses (EXO-89774). Its name resolution is a
    * table, not the machine's resolver: {@code dav.example.org} answers a public
@@ -442,6 +449,86 @@ public class CaldavServerServiceTest {
     CaldavServer result = assertDoesNotThrow(() -> caldavServerService.updateServer(renamed, ADMIN_USER));
 
     assertEquals("Internal renamed", result.getName());
+    verify(caldavServerStorage).updateServer(renamed);
+  }
+
+  /**
+   * A registration written drops every kept BlueMind session (EXO-90397): a
+   * session was opened under that row's address and provider, and the row no
+   * longer says what it said when it was.
+   *
+   * <p>
+   * All of them, not that row's: a session is keyed by the account it acts
+   * as rather than by the registration it was opened under. An
+   * administrator's write is rare, and the cost is one login per account
+   * that is used again.
+   */
+  @Test
+  public void aWrittenRegistrationDropsEveryKeptBlueMindSession() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Internal", null, "https://10.1.2.3/dav/", true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    CaldavServer renamed = server(7, null, "Internal renamed", null, "https://10.1.2.3/dav/", true);
+    when(caldavServerStorage.updateServer(renamed)).thenReturn(renamed);
+    when(caldavServerQuirkService.decorate(renamed)).thenReturn(renamed);
+
+    assertDoesNotThrow(() -> caldavServerService.updateServer(renamed, ADMIN_USER));
+
+    verify(blueMindSessionService).forgetAll();
+  }
+
+  /**
+   * And so does the activation switch, which is a third writer of the same
+   * row (review round 1). The invariant the field and the helper both state
+   * is unconditional — a registration that is written drops the sessions
+   * opened under it — and taking a server out of service is exactly the
+   * moment not to keep talking to it on a session minted while it was in.
+   */
+  @Test
+  public void flippingTheActivationSwitchDropsEveryKeptBlueMindSession() {
+    withUser(ADMIN_USER, true);
+    CaldavServer server = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    assertDoesNotThrow(() -> caldavServerService.setServerActive(7, false, ADMIN_USER));
+
+    verify(blueMindSessionService).forgetAll();
+  }
+
+  /**
+   * And a registration refused writes nothing and drops nothing: the row is
+   * still what every kept session was opened under.
+   */
+  @Test
+  public void aRefusedRegistrationDropsNoSession() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Internal", null, "https://10.1.2.3/dav/", true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    CaldavServer moved = server(7, null, "Internal", null, "https://nowhere.invalid/dav/", true);
+
+    assertThrows(IllegalArgumentException.class, () -> caldavServerService.updateServer(moved, ADMIN_USER));
+
+    verify(blueMindSessionService, never()).forgetAll();
+  }
+
+  /**
+   * A store that cannot be reached does not fail an administrator's save: a
+   * session left behind expires within the entry's lifetime, while a refused
+   * save is a screen that will not close.
+   */
+  @Test
+  public void aSessionStoreThatThrowsDoesNotFailTheSave() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Internal", null, "https://10.1.2.3/dav/", true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    CaldavServer renamed = server(7, null, "Internal renamed", null, "https://10.1.2.3/dav/", true);
+    when(caldavServerStorage.updateServer(renamed)).thenReturn(renamed);
+    when(caldavServerQuirkService.decorate(renamed)).thenReturn(renamed);
+    doThrow(new IllegalStateException("down")).when(blueMindSessionService).forgetAll();
+
+    assertDoesNotThrow(() -> caldavServerService.updateServer(renamed, ADMIN_USER));
+
     verify(caldavServerStorage).updateServer(renamed);
   }
 
