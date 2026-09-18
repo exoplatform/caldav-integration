@@ -1012,6 +1012,144 @@ public class CaldavCalendarShareServiceTest {
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
   }
 
+  // ------------------------------------------------- whose principal, and asked of whom (EXO-90385)
+
+  /**
+   * <b>The read path does not ask the server who the caller is.</b> Listing
+   * the sharees uses the principal eXo recorded for alice's connection, which
+   * is written by every pass of her account and removed the moment the account
+   * is connected again or disconnected — so it names these credentials or
+   * nothing. It costs one remote round trip per opening of the drawer, and
+   * here it decides one thing only: that alice's own entry is not a sharee.
+   */
+  @Test
+  public void listingTheShareesUsesTheRecordedPrincipalAndDoesNotAskTheServer() throws Exception {
+    AccessControlEntry hers = AccessControlEntry.readGrantTo("/dav/pal/alice%40stalwart.local/");
+    AccessControlEntry bobs = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(hers, bobs), Set.of()));
+
+    CalendarShares shares = service.listShares(ALICE, "alice", CALENDAR);
+
+    assertEquals(1, shares.sharees().size(), "alice's own entry is not a sharee");
+    assertEquals(ShareeKind.EXO_USERS, shares.sharees().get(0).kind());
+    assertEquals(List.of("bob"), shares.sharees().get(0).users().stream().map(ShareUser::username).toList());
+    verify(calDavClient, never()).discoverPrincipal(any());
+  }
+
+  /**
+   * With nothing recorded — the account was just connected again, and no pass
+   * has run since — the read path asks the server, exactly as it always did.
+   * The fallback is the whole reason the reversal is safe: the record is
+   * either right or absent.
+   */
+  @Test
+  public void listingAsksTheServerWhenNoPrincipalIsRecorded() throws Exception {
+    when(caldavConnectionIdentityService.principalOf(ALICE, STALWART)).thenReturn(null);
+    AccessControlEntry hers = AccessControlEntry.readGrantTo("/dav/pal/alice%40stalwart.local/");
+    AccessControlEntry bobs = AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/");
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(hers, bobs), Set.of()));
+
+    CalendarShares shares = service.listShares(ALICE, "alice", CALENDAR);
+
+    assertEquals(List.of("bob"), shares.sharees().get(0).users().stream().map(ShareUser::username).toList());
+    verify(calDavClient, org.mockito.Mockito.times(1)).discoverPrincipal(endpoint);
+  }
+
+  /**
+   * <b>An owner's own entry is never adopted as a share</b> (EXO-90385 review
+   * round 1). This is what actually stops a stale recorded principal from
+   * reaching a write, and it is worth pinning because the obvious candidate
+   * does not: agenda's {@code SHAREE_IS_OWNER} guard cannot fire here, since
+   * {@code usersConnectedAs} strips the caller before agenda ever sees the
+   * list.
+   *
+   * <p>
+   * What stops it is the grouping. The owner of a collection necessarily holds
+   * {@code write-acl} — the same right {@code usableAcl} looks for before it
+   * will read the list at all — and neither {@code READ_ONLY_PRIVILEGES} nor
+   * {@code EDIT_PRIVILEGES} admits it. So the entry groups to
+   * {@link ShareAccess#MORE}: not a shape eXo writes, therefore not adoptable
+   * and not removable, therefore no eXo share row and no ACL write.
+   *
+   * <p>
+   * The record here is deliberately stale — it names bob, so alice's own entry
+   * survives the filter, which is the worst a one-pass cross-node race can
+   * produce — and a second eXo user really is on alice's login (EXO-90190), so
+   * the sharee names somebody and the {@code OUTSIDE_EXO} escape does not hide
+   * the case.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anOwnersOwnEntryIsNeverAdoptedAsAShare() throws Exception {
+    when(caldavConnectionIdentityService.principalOf(ALICE, STALWART)).thenReturn(BOB_PRINCIPAL);
+    when(caldavConnectionIdentityService.usersConnectedAs(STALWART, ALICE_PRINCIPAL)).thenReturn(List.of(ALICE, ALICE2));
+    AccessControlEntry owns = new AccessControlEntry(AcePrincipal.href(ALICE_PRINCIPAL),
+                                                     false,
+                                                     false,
+                                                     Set.of("{DAV:}read", "{DAV:}write", "{DAV:}write-acl"),
+                                                     false,
+                                                     null);
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(owns), Set.of()));
+
+    CalendarShares shares = service.listShares(ALICE, "alice", CALENDAR);
+
+    CalendarSharee own = shares.sharees().stream().filter(sharee -> !sharee.users().isEmpty()).findFirst().orElseThrow();
+    assertEquals(List.of("alice2"), own.users().stream().map(ShareUser::username).toList(), "the caller is stripped, not the entry");
+    assertEquals(ShareAccess.MORE, own.access(), "an owner's own rights are not a shape eXo writes");
+    assertFalse(own.removable(), "and MORE is never eXo's to take back");
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+  }
+
+  /**
+   * <b>A stale record cannot make a sharee look like the owner, nor the owner
+   * look like a sharee.</b> A grant and a revoke ask the server who the caller
+   * is and compare against that, whatever the record says — this is the ACL
+   * comparison that tells a colleague on the caller's own login (EXO-90190)
+   * from a colleague on another, and it is the one place a wrong principal
+   * would grant or refuse the wrong thing.
+   *
+   * <p>
+   * Here the record is bob's principal, which is what a record left behind by
+   * a login alice no longer uses would look like at its worst. The server says
+   * alice is alice: bob is granted, not refused as "sharing with yourself".
+   * And alice2, who really is on alice's login, is still refused.
+   */
+  @Test
+  public void aGrantAsksTheServerWhoTheCallerIsWhateverIsRecorded() throws Exception {
+    // Never read, and that is the pin: the write path asks the server
+    lenient().when(caldavConnectionIdentityService.principalOf(ALICE, STALWART)).thenReturn(BOB_PRINCIPAL);
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(), Set.of()),
+                                                                CollectionAcl.of(List.of(AccessControlEntry.readGrantTo("/dav/pal/bob%40stalwart.local/")),
+                                                                                 Set.of()));
+    when(calDavClient.writeAcl(eq(endpoint), any(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
+
+    CalendarShares granted = service.grant(ALICE, "alice", CALENDAR, "bob");
+
+    assertEquals(1, granted.sharees().size(), "bob is a sharee, not mistaken for alice herself");
+    verify(calDavClient, org.mockito.Mockito.atLeastOnce()).discoverPrincipal(endpoint);
+    assertEquals(CaldavCalendarShareService.SAME_PRINCIPAL,
+                 assertThrows(IllegalArgumentException.class, () -> service.grant(ALICE, "alice", CALENDAR, "alice2")).getMessage(),
+                 "alice2, who is on alice's own login as the server names it, is still refused");
+  }
+
+  /**
+   * The revoke asks the server who the caller is too: the same comparison, on
+   * the other half of the ACL-writing path.
+   */
+  @Test
+  public void aRevokeAsksTheServerWhoTheCallerIsWhateverIsRecorded() throws Exception {
+    // Never read, and that is the pin: the write path asks the server
+    lenient().when(caldavConnectionIdentityService.principalOf(ALICE, STALWART)).thenReturn(BOB_PRINCIPAL);
+    when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(), Set.of()));
+
+    CalendarShares after = service.revoke(ALICE, "alice", CALENDAR, "bob");
+
+    assertEquals(List.of(), after.sharees(), "bob held nothing; nothing is written");
+    verify(calDavClient, org.mockito.Mockito.atLeastOnce()).discoverPrincipal(endpoint);
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+  }
+
   // ---------------------------------------------------------------- the grant
 
   /**
