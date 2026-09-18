@@ -29,6 +29,7 @@ import org.exoplatform.agenda.constant.CalendarShareLevel;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.CalendarShare;
 import org.exoplatform.agenda.model.ChannelDelivery;
+import org.exoplatform.agenda.model.ChannelShares;
 import org.exoplatform.agenda.model.ExternalShare;
 import org.exoplatform.agenda.plugin.CalendarShareChannelPlugin;
 import org.exoplatform.agenda.service.AgendaCalendarService;
@@ -37,6 +38,7 @@ import org.exoplatform.caldav.model.CalendarShares.CalendarSharee;
 import org.exoplatform.caldav.model.CalendarShares.ShareAccess;
 import org.exoplatform.caldav.model.CalendarShares.ShareUser;
 import org.exoplatform.caldav.model.CalendarShares.ShareeKind;
+import org.exoplatform.caldav.service.CaldavCalendarShareService.ServerShares;
 import org.exoplatform.caldav.service.CaldavCalendarShareService.SharedCollection;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.services.log.ExoLogger;
@@ -259,9 +261,50 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
   @Override
   public List<ExternalShare> listExternalShares(long calendarId, String ownerUsername, List<Long> recordedShareeIds) {
     ServerShares server = sharesOf(calendarId, ownerUsername);
+    return server == null ? List.of() : externalSharesOf(server, recordedShareeIds);
+  }
+
+  /**
+   * Both of agenda's questions from one read of the server (EXO-90385): the
+   * grants it holds that agenda has no record of, and whether this calendar is
+   * where eXo writes the owner's meeting copies.
+   *
+   * <p>
+   * The flag is not asked for: {@link CaldavCalendarShareService#serverShares}
+   * already carries it on the shares it answers, because the same resolution
+   * of the calendar produces it. Asked on its own — as agenda did before this
+   * method existed — it cost the owner's request a second walk of their
+   * calendar home, which on a remote server is seconds.
+   *
+   * <p>
+   * When the server's list cannot be read the flag is still owed, and is asked
+   * on its own, as it was before: an unreadable access list must not silently
+   * turn the warning off, since a missed warning exposes the owner's meetings
+   * while a false one costs a click.
+   *
+   * @param calendarId the agenda calendar
+   * @param ownerUsername the owner's login
+   * @param recordedShareeIds the colleagues agenda already holds a record for
+   * @return the external shares and the meeting-copies flag
+   */
+  @Override
+  public ChannelShares listShares(long calendarId, String ownerUsername, List<Long> recordedShareeIds) {
+    ServerShares server = sharesOf(calendarId, ownerUsername);
     if (server == null) {
-      return List.of();
+      return new ChannelShares(List.of(), holdsMeetingCopies(calendarId, ownerUsername));
     }
+    return new ChannelShares(externalSharesOf(server, recordedShareeIds), server.shares().meetingCopies());
+  }
+
+  /**
+   * The grants of a list already read that agenda has no record of, as agenda
+   * words them.
+   *
+   * @param server the collection and the shares as the server listed them
+   * @param recordedShareeIds the colleagues agenda already holds a record for
+   * @return the external shares
+   */
+  private List<ExternalShare> externalSharesOf(ServerShares server, List<Long> recordedShareeIds) {
     String channelId = channelIdOf(server.collection().serverId());
     List<Long> recorded = recordedShareeIds == null ? List.of() : recordedShareeIds;
     List<ExternalShare> external = new ArrayList<>();
@@ -352,6 +395,12 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
    * from, or null whenever it cannot be read: the drawer then lists no
    * external share rather than failing.
    *
+   * <p>
+   * One call, so the calendar, the account and the pair are resolved once
+   * (EXO-90385): this used to ask {@code sharedCollectionOf} and then
+   * {@code listShares}, which resolved the same three things twice for an
+   * answer only the second of them needed a server for.
+   *
    * @param calendarId the agenda calendar
    * @param ownerUsername the owner's login
    * @return the collection and the shares, or null
@@ -361,9 +410,7 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
       return null;
     }
     try {
-      long ownerId = ownerOf(calendarId);
-      SharedCollection collection = caldavCalendarShareService.sharedCollectionOf(ownerId, ownerUsername, calendarId);
-      return new ServerShares(collection, caldavCalendarShareService.listShares(ownerId, ownerUsername, calendarId));
+      return caldavCalendarShareService.serverShares(ownerOf(calendarId), ownerUsername, calendarId);
     } catch (CaldavShareException | IllegalArgumentException | ObjectNotFoundException | IllegalAccessException e) {
       LOG.debug("The server's shares of calendar {} could not be read: {}", calendarId, e.getMessage());
       return null;
@@ -509,15 +556,6 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
       return StringUtils.capitalize(sharee.publishedLink().name().toLowerCase(Locale.ROOT));
     }
     return StringUtils.defaultIfBlank(sharee.principal(), sharee.kind().name());
-  }
-
-  /**
-   * A server's access list, with the collection it belongs to.
-   *
-   * @param collection the server and the collection
-   * @param shares the shares as read
-   */
-  private record ServerShares(SharedCollection collection, CalendarShares shares) {
   }
 
 }

@@ -692,16 +692,64 @@ public class CaldavCalendarShareService {
    */
   public CalendarShares listShares(long userIdentityId, String username, long calendarId) throws ObjectNotFoundException,
                                                                                             IllegalAccessException {
+    return sharesOn(targetOf(userIdentityId, username, calendarId), username);
+  }
+
+  /**
+   * Who a calendar of the caller's is shared with, <b>and</b> the collection
+   * those shares live on, from one resolution of the calendar (EXO-90385).
+   *
+   * <p>
+   * What agenda's channel asks when the owner opens the Share drawer. Before
+   * it existed the channel asked {@link #sharedCollectionOf} and
+   * {@link #listShares}, each resolving the calendar, its account and its pair
+   * again; the collection is a by-product of that resolution, so answering
+   * both together costs nothing and spares the second one.
+   *
+   * @param userIdentityId the caller
+   * @param username the caller's login
+   * @param calendarId the agenda calendar
+   * @return the collection and the shares, the shares carrying the
+   *         meeting-copies flag
+   * @throws ObjectNotFoundException when the calendar does not exist
+   * @throws IllegalAccessException when the caller does not own it
+   * @throws IllegalArgumentException when it is bound to no collection eXo can share
+   * @throws CaldavShareException when the account, the server or its answer
+   *           stops the read
+   */
+  public ServerShares serverShares(long userIdentityId, String username, long calendarId) throws ObjectNotFoundException,
+                                                                                            IllegalAccessException {
     ShareTarget target = targetOf(userIdentityId, username, calendarId);
+    return new ServerShares(new SharedCollection(target.serverId(), target.href()), sharesOn(target, username));
+  }
+
+  /**
+   * The shares of a calendar already resolved, read from the server now.
+   *
+   * <p>
+   * The caller's own principal comes from eXo's record of their connection
+   * rather than from a fresh discovery (EXO-90385): here it only decides which
+   * access entry is the owner's own and is therefore not a sharee, and the
+   * record is written by the discovery of the account's own pass and forgotten
+   * the moment the account is connected again or disconnected — so it names
+   * these credentials or nothing. A grant and a revoke, where the same
+   * principal decides whether a colleague is the owner themselves, keep asking
+   * the server.
+   *
+   * @param target the calendar, already checked
+   * @param username the caller's login
+   * @return the sharees, with the meeting-copies flag
+   */
+  private CalendarShares sharesOn(ShareTarget target, String username) {
     return withMeetingCopies(target, username, onServer(() -> {
       SharingMechanism mechanism = requireOffered(target);
       requireImportedOwned(target, mechanism);
       if (mechanism == SharingMechanism.BLUEMIND_SHARE) {
         List<BlueMindAce> aces = blueMindAclOf(target);
         requireBlueMindManager(target, aces);
-        return blueMindSharesOf(target, aces, ownerPrincipal(target));
+        return blueMindSharesOf(target, aces, recordedOwnerPrincipal(target));
       }
-      return sharesOf(target, usableAcl(target), ownerPrincipal(target));
+      return sharesOf(target, usableAcl(target), recordedOwnerPrincipal(target));
     }));
   }
 
@@ -1142,6 +1190,53 @@ public class CaldavCalendarShareService {
       discovered = null;
     }
     return discovered != null ? discovered : caldavConnectionIdentityService.principalOf(target.userIdentityId(), target.serverId());
+  }
+
+  /**
+   * The caller's principal for a read: the one eXo recorded for their
+   * connection, asking the server only when nothing is recorded — the reverse
+   * of {@link #ownerPrincipal}, and only here (EXO-90385).
+   *
+   * <p>
+   * <b>Why the reverse is safe on a read and not on a write.</b> On the read
+   * path this principal decides one thing: which access entry belongs to the
+   * caller themselves and is therefore not shown as a sharee. On the write
+   * path {@link #requiredOwnerPrincipal} decides whether the colleague being
+   * granted <em>is</em> the caller, under another eXo login on the same
+   * server — an ACL comparison, which keeps asking the server, whatever this
+   * method would have answered.
+   *
+   * <p>
+   * <b>What the record is, and what forgets it.</b> Not a cache of this
+   * class's making: the row is written by the discovery every pass of the
+   * account makes ({@code CaldavOutboundService#bindPersonalCalendars} through
+   * {@code CaldavConnectionIdentityService#recordPrincipal}), and removed
+   * outright when the account is connected again — the credentials just
+   * changed — and when it is disconnected
+   * ({@code CaldavConnectorServiceImpl}). It is believed only while the
+   * account is still connected to that same server, under the add-on's single
+   * definition of connected ({@code CaldavConnectionIdentityService#principalOf}
+   * through {@code isStillConnectedTo}, {@code CaldavServerService#isConnected},
+   * EXO-90358). So it names the account these credentials open or it names
+   * nothing, in which case the server is asked exactly as before. The one
+   * residual the record's own documentation names,
+   * a pass running on another node writing the previous principal back for one
+   * more pass, was already reachable here: {@link #ownerPrincipal} falls back
+   * to the same row whenever the server does not answer.
+   *
+   * @param target the calendar being read
+   * @return the canonical principal, or null when neither the record nor the
+   *         server says
+   */
+  private String recordedOwnerPrincipal(ShareTarget target) {
+    String recorded = caldavConnectionIdentityService.principalOf(target.userIdentityId(), target.serverId());
+    if (recorded != null) {
+      return recorded;
+    }
+    LOG.debug("No principal is recorded for user {} on server {}; the server is asked who they are",
+              target.userIdentityId(),
+              target.serverId());
+    return ownerPrincipal(target);
   }
 
   /**
@@ -2306,6 +2401,16 @@ public class CaldavCalendarShareService {
    * @param href the collection href, with its trailing slash
    */
   public record SharedCollection(long serverId, String href) {
+  }
+
+  /**
+   * A calendar's collection on the caller's server and the shares read from
+   * it, both from one resolution of the calendar (EXO-90385).
+   *
+   * @param collection the server and the collection href
+   * @param shares the sharees, carrying the meeting-copies flag
+   */
+  public record ServerShares(SharedCollection collection, CalendarShares shares) {
   }
 
   /**
