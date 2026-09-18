@@ -92,6 +92,16 @@ describe('Whether a CalDAV descriptor can create a calendar', () => {
    * the registry reads it back as the dedicated calendar
    * (`MirrorTargetKind.of`). The flag must agree with the push rather than
    * with the spelling.
+   *
+   * <p><b>Unreachable through this endpoint, and pinned anyway.</b>
+   * `CaldavServerStorage.fromEntity` already resolves the stored string
+   * through `MirrorTargetKind.of` before the DTO is built, so what
+   * `createCaldavConnector` receives is a canonical enum name and never a
+   * withdrawn one. This is a guard on `mirrorTargetOf`'s contract — the same
+   * function the admin drawer reads its own unsaved form state through, where
+   * these values very much do arrive — held here so that a future caller
+   * handing the descriptor an unnormalised registration cannot quietly flip
+   * the flag.</p>
    */
   it('can, on a value the drawer no longer offers, exactly as the registry reads it', () => {
     expect(descriptorFor('USER_CHOICE').canCreateCalendar).toBe(true);
@@ -99,22 +109,45 @@ describe('Whether a CalDAV descriptor can create a calendar', () => {
   });
 
   /**
-   * The value travels as a string, and a hand-written row or an older client
-   * may not have spelled it the way the enum does. It is read the way
-   * `mirrorTargetOf` reads it everywhere else, not by an identity test of its
-   * own.
+   * The destination is read the way `mirrorTargetOf` reads it everywhere else,
+   * not by an identity test of its own — which is what this pin is for: an
+   * identity test passes every other pin in this file and fails only here.
+   *
+   * <p>Like the one above, the shape is unreachable from
+   * `GET /caldav/rest/servers` today (`CaldavServerStorage.fromEntity`
+   * normalises through `MirrorTargetKind.of` first, and
+   * `CaldavServerWireShapeTest` pins that the canonical name is what travels).
+   * The tolerance is real where the value has not been through the storage —
+   * the admin drawer's form state — and the point of pinning it on the
+   * descriptor is that the two must not drift apart.</p>
    */
   it('reads the destination the way the rest of the add-on reads it', () => {
     expect(descriptorFor('  main_calendar  ').canCreateCalendar).toBe(false);
   });
 
   /**
-   * The fallback registered when the registry answers nothing — an empty
-   * registry, or a REST call that failed. It fronts no declared server, so it
-   * has no destination to read: its account predates registrations and its
-   * copies have always gone to a dedicated calendar.
+   * The fallback registered when the registry could not be read — a REST call
+   * that failed, or a registry with no active row.
+   *
+   * <p><b>It does front a registration</b>, contrary to what this pin first
+   * said: the descriptor carries the seed row's provider name verbatim
+   * (`agenda.caldavCalendar`, `CaldavServerService.CALDAV_PROVIDER_NAME`), an
+   * account connected through it stores no `serverId`, and the push resolves
+   * that account back to the same row (`resolveServer(null)` →
+   * `getServerByProviderName`), so the seed row's `mirrorTarget` is what
+   * governs its copies. What the branch lacks is not a registration but a
+   * reading of one — which is why the flag cannot be derived here, and why it
+   * fails OPEN.</p>
+   *
+   * <p>That leaves one corner the delivery does not close: a seed row an
+   * administrator set to `MAIN_CALENDAR`, connected during an outage of
+   * `GET /caldav/rest/servers`. The shipped seed is `DEDICATED_CALENDAR` and
+   * the `MAIN_CALENDAR` seed (BlueMind) is stored under
+   * `agenda.caldavCalendar.<id>`, so it is never the row this path resolves.
+   * Flipping this default to false would be the unsafe direction — it strands
+   * the copies of every deployment whose seed row really is dedicated.</p>
    */
-  it('can, on the legacy descriptor, which fronts no registration', () => {
+  it('can, on the legacy descriptor, whose registration could not be read', () => {
     expect(createLegacyCaldavConnector(null).canCreateCalendar).toBe(true);
     expect(createLegacyCaldavConnector({managedForMe: true, serverName: 'Bluemind'}).canCreateCalendar).toBe(true);
   });
