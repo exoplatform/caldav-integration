@@ -312,10 +312,13 @@ public class CaldavSyncService {
    * print anyway, since the operator reading a fresh log has not been told.
    *
    * <p>
-   * An entry exists only while the server is unreachable and is dropped the
-   * moment it answers, so an account disconnected mid-outage leaves one entry
-   * behind — a long, an instant and a count — that its next successful pass
-   * clears.
+   * An entry exists only while the server is unreachable: it is dropped when
+   * the server answers, when it answers by refusing the password, and when
+   * the account is connected afresh ({@link #forgetThrottle(long)}) — the
+   * last of those being what keeps a reconnection from inheriting the former
+   * server's outage. An account disconnected mid-outage and never reconnected
+   * is the one case that leaves an entry behind: a long, an instant and a
+   * count, per account, for the life of the process.
    *
    * @see #noteUnreachable(long, CaldavUserSetting, CalDavUnreachableException)
    */
@@ -901,10 +904,10 @@ public class CaldavSyncService {
       // Said in full every time, unlike the sweep's twin (EXO-90446): this
       // fires once per connection somebody asked for, not every five minutes
       // on a timer, so there is no repetition to suppress and the line is the
-      // answer to an action a user is waiting on. The stack trace goes for the
-      // reason it goes there: the frames of an HTTP client that timed out name
-      // no code anybody will change, while the message carries the URI and
-      // what came back.
+      // answer to an action a user is waiting on. The stack trace is dropped
+      // for the same reason as in noteUnreachable: the frames of an HTTP
+      // client that timed out name no code anybody will change, while the
+      // message carries the URI and what came back.
       LOG.warn("CalDAV server {} could not be reached for user {} on connect; nothing else was asked of it: {}",
                serverIdOf(settings),
                userIdentityId,
@@ -990,6 +993,24 @@ public class CaldavSyncService {
    * Silent for the overwhelming majority of passes, which follow no outage at
    * all (EXO-90446).
    *
+   * <p>
+   * <b>Called where a whole pass has succeeded, and not at the first step that
+   * got an answer</b> — which would read better and behave worse. A pass that
+   * reaches the server at its first step and stops being able to at a later
+   * one would then say "answering again" and "could not be reached" on every
+   * single pass, which is the noise this exists to end, in a new shape. Ending
+   * the spell only where nothing in the pass failed makes the suppression
+   * hold whatever the server does.
+   *
+   * <p>
+   * What it costs, said plainly: a pass that reached the server and then
+   * failed for some other reason leaves the spell standing, so a later
+   * recovery line can name a count and a start that are older than the outage
+   * an operator remembers. The count is honest about what it counts — passes
+   * that met an unreachable server — and such a pass writes its own warning,
+   * with its stack trace, every time; so nobody is reading this line for a
+   * failure nothing else reports.
+   *
    * @param userIdentityId identity of the user whose pass got its answers
    * @param settings their account, for the server the line names
    */
@@ -1036,7 +1057,8 @@ public class CaldavSyncService {
   }
 
   /**
-   * Forgets when this user last synchronised.
+   * Forgets when this user last synchronised, and what was said about the
+   * server they were synchronising with.
    *
    * <p>
    * What connecting an account calls. Someone who has just entered their
@@ -1044,10 +1066,21 @@ public class CaldavSyncService {
    * and a throttle stamped by the previous account's run has nothing to say
    * about the new one.
    *
+   * <p>
+   * The outage this user's <i>previous</i> server was in has nothing to say
+   * about the new one either, and keeping it is worse than losing it: the
+   * first pass that succeeds would announce that a server is answering again
+   * naming the account's current server and the former one's outage, dated to
+   * it. A recovery notice exists to be trusted, so it is not printed for a
+   * server that was never seen to be down. Same rule, and the same reason, as
+   * the identities and destinations the connect path forgets beside this call
+   * (EXO-90446).
+   *
    * @param userIdentityId identity of the user
    */
   public void forgetThrottle(long userIdentityId) {
     lastSync.remove(userIdentityId);
+    unreachable.remove(userIdentityId);
   }
 
   /**
