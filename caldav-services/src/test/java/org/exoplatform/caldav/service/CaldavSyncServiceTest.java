@@ -2854,6 +2854,37 @@ public class CaldavSyncServiceTest {
   }
 
   /**
+   * EXO-90446. A recovery notice exists to be trusted, so it is not printed
+   * for a server that was never seen to be down: connecting an account —
+   * which is where {@link CaldavSyncService#forgetThrottle(long)} is called
+   * from, beside the identities and destinations the connect path forgets —
+   * ends the spell the <i>previous</i> server was in. Without this, a user
+   * who reconnects to another server is told that one is answering again,
+   * dated to an outage it never had.
+   */
+  @Test
+  public void aReconnectionDoesNotInheritTheFormerServersOutage() {
+    givenServerCalendars();
+    givenNoKnownPairs();
+    doThrow(new CalDavUnreachableException("the gateway answered 502")).doReturn(List.of())
+                                                                      .when(caldavOutboundService)
+                                                                      .bindPersonalCalendars(USER, LOGIN);
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      service.forgetThrottle(USER);
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getFormattedMessage().contains("is answering again"))
+                .toList();
+    }
+
+    assertTrue(said.isEmpty(), "nothing came back that had been seen to go: " + said);
+  }
+
+  /**
    * A collection the account no longer lists stops receiving events.
    */
   @Test
