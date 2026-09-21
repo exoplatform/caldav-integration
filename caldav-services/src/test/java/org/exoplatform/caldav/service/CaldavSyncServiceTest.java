@@ -48,6 +48,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.net.UnknownHostException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import java.util.concurrent.AbstractExecutorService;
@@ -60,6 +61,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import java.util.ArrayList;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.doAnswer;
 import org.junit.jupiter.api.AfterEach;
@@ -2819,7 +2821,43 @@ public class CaldavSyncServiceTest {
     assertNull(said.get(0).getThrowableProxy(), "the stack trace is what 152 of these printed");
     assertTrue(said.get(0).getFormattedMessage().contains("the gateway answered 502"), said.get(0).getFormattedMessage());
     assertEquals(Level.DEBUG, said.get(1).getLevel(), said.get(1).getFormattedMessage());
-    assertNull(said.get(1).getThrowableProxy(), "nor does the repeat carry one");
+    // The repeat does carry one, and that is the point of putting it at debug:
+    // the frames are paid for only by the operator who turned them on.
+    assertNotNull(said.get(1).getThrowableProxy(), "the diagnosis stays obtainable, at the level nobody runs");
+  }
+
+  /**
+   * EXO-90446. The two things that raise {@link CalDavUnreachableException}
+   * are not equally talkative: a gateway status says it all in its own
+   * message, while the transport giving up names only the URI and leaves
+   * <i>which</i> failure it was — a wrong DNS entry, a firewall, an expired
+   * certificate — in the cause it wraps. So no level may be left unable to
+   * answer "why": the warning names the cause in the line, and the debug
+   * repeat carries the throwable itself.
+   */
+  @Test
+  public void theCauseOfAnUnreachableServerIsNamedAtEveryLevel() {
+    doThrow(new CalDavUnreachableException("The calendar server could not be reached at https://dav.example.com/",
+                                           new UnknownHostException("dav.example.com"))).when(caldavOutboundService)
+                                                                                        .bindPersonalCalendars(USER, LOGIN);
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getFormattedMessage().contains("CalDAV server " + SERVER))
+                .toList();
+    }
+
+    assertEquals(2, said.size(), "one line per pass: " + said);
+    assertEquals(Level.WARN, said.get(0).getLevel());
+    assertTrue(said.get(0).getFormattedMessage().contains("UnknownHostException: dav.example.com"),
+               said.get(0).getFormattedMessage());
+    assertNull(said.get(0).getThrowableProxy(), "named, not traced");
+    assertEquals(Level.DEBUG, said.get(1).getLevel());
+    assertNotNull(said.get(1).getThrowableProxy(), "traced, where the frames cost nobody anything");
   }
 
   /**
@@ -2849,7 +2887,9 @@ public class CaldavSyncServiceTest {
     }
 
     assertEquals(1, said.size(), "the recovery is said once: " + said);
-    assertEquals(Level.WARN, said.get(0).getLevel());
+    // Info, not warning: a server coming back is neither unhandled nor
+    // unknown (backend-spring.md §5).
+    assertEquals(Level.INFO, said.get(0).getLevel());
     assertTrue(said.get(0).getFormattedMessage().contains("after 1 pass that it did not"), said.get(0).getFormattedMessage());
   }
 
