@@ -300,6 +300,38 @@ public class CaldavSyncService {
   private final Set<String>               ownerUnknownSaid    = ConcurrentHashMap.newKeySet();
 
   /**
+   * How long an account's server has been failing to answer, and for how many
+   * passes — the difference between a server that has just gone and one that
+   * went this morning (EXO-90446).
+   *
+   * <p>
+   * In memory, and deliberately so, for the same reason as the throttle above
+   * and the opposite one from a collection's failure count: this holds nothing
+   * about the account, only about what has already been said about it. Losing
+   * it across a restart costs one warning line — which is the right line to
+   * print anyway, since the operator reading a fresh log has not been told.
+   *
+   * <p>
+   * An entry exists only while the server is unreachable and is dropped the
+   * moment it answers, so an account disconnected mid-outage leaves one entry
+   * behind — a long, an instant and a count — that its next successful pass
+   * clears.
+   *
+   * @see #noteUnreachable(long, CaldavUserSetting, CalDavUnreachableException)
+   */
+  private final Map<Long, UnreachableSpell> unreachable       = new ConcurrentHashMap<>();
+
+  /**
+   * One uninterrupted run of passes that could not reach an account's server.
+   *
+   * @param since when the first of them failed, so the recovery line can say
+   *          how long the outage lasted rather than merely that it ended
+   * @param passes how many passes have met it, the first included
+   */
+  private record UnreachableSpell(Instant since, int passes) {
+  }
+
+  /**
    * The pass running for a user, so two page loads a second apart do not run
    * two syncs against the same account at once — and so a caller who was
    * promised the sync had run can wait for the one that is actually doing it.
@@ -866,10 +898,17 @@ public class CaldavSyncService {
                e);
       return false;
     } catch (CalDavUnreachableException e) {
-      LOG.warn("CalDAV server {} could not be reached for user {} on connect; nothing else was asked of it",
+      // Said in full every time, unlike the sweep's twin (EXO-90446): this
+      // fires once per connection somebody asked for, not every five minutes
+      // on a timer, so there is no repetition to suppress and the line is the
+      // answer to an action a user is waiting on. The stack trace goes for the
+      // reason it goes there: the frames of an HTTP client that timed out name
+      // no code anybody will change, while the message carries the URI and
+      // what came back.
+      LOG.warn("CalDAV server {} could not be reached for user {} on connect; nothing else was asked of it: {}",
                serverIdOf(settings),
                userIdentityId,
-               e);
+               e.getMessage());
       return false;
     } catch (Exception | LinkageError e) {
       LOG.warn("The personal calendars of user {} could not be bound on connect; the first sweep binds them", userIdentityId, e);
@@ -886,6 +925,84 @@ public class CaldavSyncService {
    */
   private long serverIdOf(CaldavUserSetting settings) {
     return settings == null || settings.getServerId() == null ? 0L : settings.getServerId();
+  }
+
+  /**
+   * Records that this account's server did not answer, and says so the once.
+   *
+   * <p>
+   * <b>What this is for.</b> A server that is down is down for every pass, and
+   * the sweep runs every five minutes for as long as it takes: one demo server
+   * answering 502 to a PROPFIND wrote 152 stack traces between two restarts,
+   * about 576 a day, all of them the same thirty lines of the scheduler's own
+   * frames ending in the sentence the first line already carried (EXO-90446).
+   * A remote integration being unreachable is nearer normal flow than an
+   * incident — {@code backend-spring.md} §5 keeps {@code warn} for the
+   * unhandled and the unknown — so what is worth a warning is the
+   * <i>transition</i>: this server was answering and has stopped. Every pass
+   * after it says the same thing at debug, where an operator chasing exactly
+   * this can turn it on and see it.
+   *
+   * <p>
+   * The exception is not attached, and its message is: the stack trace of an
+   * HTTP client that timed out names no code anybody will change, while the
+   * message carries the URI and what came back.
+   *
+   * <p>
+   * Nothing here backs off, and that is the design, not an omission: the
+   * comment at the call site is explicit that an unreachable server is not
+   * paused, because nobody has to act for one to come back and the next pass
+   * is what finds out. A pass already stops at its first step (EXO-89806), so
+   * the cost of an outage is one request per account per sweep — noisy in the
+   * log, which this fixes, and not a burst that a server could ban a source
+   * address for.
+   *
+   * @param userIdentityId identity of the user whose pass met the silence
+   * @param settings their account, for the server the line names
+   * @param e what the client threw, for the sentence it carries
+   */
+  private void noteUnreachable(long userIdentityId, CaldavUserSetting settings, CalDavUnreachableException e) {
+    UnreachableSpell spell = unreachable.compute(userIdentityId,
+                                                 (id, running) -> running == null ? new UnreachableSpell(Instant.now(), 1)
+                                                                                  : new UnreachableSpell(running.since(),
+                                                                                                         running.passes() + 1));
+    if (spell.passes() == 1) {
+      LOG.warn("CalDAV server {} could not be reached for user {}; this pass asked it nothing more, and the passes after it"
+          + " say so at debug until it answers again: {}", serverIdOf(settings), userIdentityId, e.getMessage());
+    } else {
+      LOG.debug("CalDAV server {} is still not answering for user {} ({} passes since {}); this pass asked it nothing more: {}",
+                serverIdOf(settings),
+                userIdentityId,
+                spell.passes(),
+                spell.since(),
+                e.getMessage());
+    }
+  }
+
+  /**
+   * Says that an account's server is answering again, when it was not.
+   *
+   * <p>
+   * The other half of {@link #noteUnreachable(long, CaldavUserSetting,
+   * CalDavUnreachableException)}, and the reason its warning can be a single
+   * line: an operator who was told an outage began is owed the line that says
+   * it ended, and nobody has to read a log continuously to reconstruct it.
+   * Silent for the overwhelming majority of passes, which follow no outage at
+   * all (EXO-90446).
+   *
+   * @param userIdentityId identity of the user whose pass got its answers
+   * @param settings their account, for the server the line names
+   */
+  private void noteReachable(long userIdentityId, CaldavUserSetting settings) {
+    UnreachableSpell spell = unreachable.remove(userIdentityId);
+    if (spell != null) {
+      LOG.warn("CalDAV server {} is answering again for user {}, after {} {} that it did not, since {}",
+               serverIdOf(settings),
+               userIdentityId,
+               spell.passes(),
+               spell.passes() == 1 ? "pass" : "passes",
+               spell.since());
+    }
   }
 
   /**
@@ -991,6 +1108,7 @@ public class CaldavSyncService {
       importRemoteEvents(userIdentityId, username, settings, collections);
       runOutboundPhasesUnlessAlreadyRunning(userIdentityId, username, outboundPhases);
       lastSync.put(userIdentityId, Instant.now());
+      noteReachable(userIdentityId, settings);
     } catch (CalDavAuthenticationException e) {
       // Immediately, and before anything else is tried: a stale password
       // retried on every page load is a login attempt every few minutes
@@ -999,6 +1117,12 @@ public class CaldavSyncService {
       LOG.warn("The CalDAV account of user {} refused its stored credentials; synchronisation is paused",
                userIdentityId,
                e);
+      // The server answered — it refused the password rather than being
+      // absent — so a spell of unreachability is over. Forgotten rather than
+      // announced as a recovery: the line above is the one that matters here,
+      // and it is followed by a pause nobody should read as "and it came
+      // back".
+      unreachable.remove(userIdentityId);
       pauseAll(userIdentityId, settings);
     } catch (CalDavUnreachableException e) {
       // Named apart from the failure below, and stopping the pass here rather
@@ -1008,10 +1132,7 @@ public class CaldavSyncService {
       // address earns a persistent ban (EXO-89806). Not paused, unlike a
       // credential refusal — nobody has to do anything for a server to come
       // back, and the next pass is the one that finds out.
-      LOG.warn("CalDAV server {} could not be reached for user {}; this pass asked it nothing more",
-               serverIdOf(settings),
-               userIdentityId,
-               e);
+      noteUnreachable(userIdentityId, settings, e);
     } catch (RuntimeException e) {
       // A sync that fails is not an error the caller can act on — the page it
       // was triggered from has its own events to show. It is logged and the
