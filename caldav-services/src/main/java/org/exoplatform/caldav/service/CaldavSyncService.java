@@ -904,14 +904,18 @@ public class CaldavSyncService {
       // Said in full every time, unlike the sweep's twin (EXO-90446): this
       // fires once per connection somebody asked for, not every five minutes
       // on a timer, so there is no repetition to suppress and the line is the
-      // answer to an action a user is waiting on. The stack trace is dropped
-      // for the same reason as in noteUnreachable: the frames of an HTTP
-      // client that timed out name no code anybody will change, while the
-      // message carries the URI and what came back.
-      LOG.warn("CalDAV server {} could not be reached for user {} on connect; nothing else was asked of it: {}",
+      // answer to an action a user is waiting on — and there is no steady
+      // state here to put the diagnosis in, the way noteUnreachable puts it at
+      // debug. So this one keeps its stack trace, and gains the cause named in
+      // the line itself: somebody is being told their account would not
+      // connect, and "which failure" is the whole of what support will be
+      // asked.
+      LOG.warn("CalDAV server {} could not be reached for user {} on connect; nothing else was asked of it: {}{}",
                serverIdOf(settings),
                userIdentityId,
-               e.getMessage());
+               e.getMessage(),
+               because(e),
+               e);
       return false;
     } catch (Exception | LinkageError e) {
       LOG.warn("The personal calendars of user {} could not be bound on connect; the first sweep binds them", userIdentityId, e);
@@ -971,15 +975,56 @@ public class CaldavSyncService {
                                                                                                          running.passes() + 1));
     if (spell.passes() == 1) {
       LOG.warn("CalDAV server {} could not be reached for user {}; this pass asked it nothing more, and the passes after it"
-          + " say so at debug until it answers again: {}", serverIdOf(settings), userIdentityId, e.getMessage());
+          + " say so at debug until it answers again: {}{}",
+               serverIdOf(settings),
+               userIdentityId,
+               e.getMessage(),
+               because(e));
     } else {
+      // With the throwable, where the warning above deliberately goes without
+      // it. This line is written once per pass to a level nobody runs in
+      // production, so the thirty frames it may cost are paid only by the
+      // operator who asked for them — and they are what the transport
+      // failures leave behind that neither message can carry.
       LOG.debug("CalDAV server {} is still not answering for user {} ({} passes since {}); this pass asked it nothing more: {}",
                 serverIdOf(settings),
                 userIdentityId,
                 spell.passes(),
                 spell.since(),
-                e.getMessage());
+                e.getMessage(),
+                e);
     }
+  }
+
+  /**
+   * The transport failure under an unreachable server, named the way one log
+   * line can name it.
+   *
+   * <p>
+   * <b>Why a line needs this at all.</b> The two things that raise
+   * {@link CalDavUnreachableException} are not equally talkative. A gateway
+   * status is self-describing — {@code HttpCalDavClient.refusal} builds "The
+   * calendar server answered 502 for PROPFIND &lt;uri&gt;" and wraps nothing —
+   * but the transport giving up is not: the message names the URI, and
+   * <i>which</i> failure it was lives only in the cause the same class wraps
+   * an {@code IOException} in. An {@code UnknownHostException} is a wrong DNS
+   * entry, a {@code ConnectException} a firewall, an
+   * {@code SSLHandshakeException} an expired certificate — three different
+   * jobs for three different people, and the exception composes none of them
+   * into its own message. Dropping the trace without this left an operator
+   * able to see that a server was unreachable and never why, at any level
+   * (EXO-90446).
+   *
+   * @param e the exception a pass met
+   * @return the cause named in parentheses, or an empty string when there is
+   *         none to name — a gateway status says it all by itself
+   */
+  private static String because(Throwable e) {
+    Throwable cause = e.getCause();
+    if (cause == null) {
+      return "";
+    }
+    return " (" + cause.getClass().getSimpleName() + ": " + cause.getMessage() + ")";
   }
 
   /**
@@ -1017,7 +1062,11 @@ public class CaldavSyncService {
   private void noteReachable(long userIdentityId, CaldavUserSetting settings) {
     UnreachableSpell spell = unreachable.remove(userIdentityId);
     if (spell != null) {
-      LOG.warn("CalDAV server {} is answering again for user {}, after {} {} that it did not, since {}",
+      // At info, not warning: a server coming back is neither unhandled nor
+      // unknown, which is what backend-spring.md §5 keeps warning for, and
+      // the sweep already says its own end-of-run line at info
+      // (CaldavSyncSweepJob).
+      LOG.info("CalDAV server {} is answering again for user {}, after {} {} that it did not, since {}",
                serverIdOf(settings),
                userIdentityId,
                spell.passes(),
