@@ -2788,6 +2788,72 @@ public class CaldavSyncServiceTest {
   }
 
   /**
+   * EXO-90446. A server that is down is down for every pass, and the sweep
+   * runs every five minutes: one demo server answering 502 wrote 152 of these
+   * between two restarts. The transition is the event worth a warning; the
+   * passes after it repeat it at debug, where somebody chasing exactly this
+   * can turn it on.
+   *
+   * <p>
+   * The absence of the stack trace is asserted and not incidental: it is the
+   * whole of the reported defect — thirty lines of the scheduler's own frames,
+   * ending in the sentence the first line already carried.
+   */
+  @Test
+  public void anUnreachableServerIsSaidOnceAndThenAtDebug() {
+    doThrow(new CalDavUnreachableException("the gateway answered 502")).when(caldavOutboundService)
+                                                                      .bindPersonalCalendars(USER, LOGIN);
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getFormattedMessage().contains("CalDAV server " + SERVER))
+                .toList();
+    }
+
+    assertEquals(2, said.size(), "one line per pass: " + said);
+    assertEquals(Level.WARN, said.get(0).getLevel(), said.get(0).getFormattedMessage());
+    assertNull(said.get(0).getThrowableProxy(), "the stack trace is what 152 of these printed");
+    assertTrue(said.get(0).getFormattedMessage().contains("the gateway answered 502"), said.get(0).getFormattedMessage());
+    assertEquals(Level.DEBUG, said.get(1).getLevel(), said.get(1).getFormattedMessage());
+    assertNull(said.get(1).getThrowableProxy(), "nor does the repeat carry one");
+  }
+
+  /**
+   * EXO-90446. The other half of saying it once: an operator told that an
+   * outage began is owed the line that says it ended, and a pass that follows
+   * no outage says nothing at all.
+   */
+  @Test
+  public void aServerThatAnswersAgainIsSaidToBeBack() {
+    givenServerCalendars();
+    givenNoKnownPairs();
+    doThrow(new CalDavUnreachableException("the gateway answered 502")).doReturn(List.of())
+                                                                      .when(caldavOutboundService)
+                                                                      .bindPersonalCalendars(USER, LOGIN);
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncNow(USER, LOGIN);
+      service.syncNow(USER, LOGIN);
+      // And a third pass, which follows no outage, to pin that the recovery
+      // line is said once and not on every pass thereafter.
+      service.syncNow(USER, LOGIN);
+      said = log.events()
+                .stream()
+                .filter(recorded -> recorded.getFormattedMessage().contains("is answering again"))
+                .toList();
+    }
+
+    assertEquals(1, said.size(), "the recovery is said once: " + said);
+    assertEquals(Level.WARN, said.get(0).getLevel());
+    assertTrue(said.get(0).getFormattedMessage().contains("after 1 pass that it did not"), said.get(0).getFormattedMessage());
+  }
+
+  /**
    * A collection the account no longer lists stops receiving events.
    */
   @Test
