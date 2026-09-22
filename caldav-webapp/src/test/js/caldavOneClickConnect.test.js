@@ -54,7 +54,7 @@ describe('one-click connect', () => {
     mockConnectThroughProvider.mockResolvedValue({result: 'ok', status: 207});
     mockGetCaldavSetting.mockResolvedValue({username: 'eric@bm.example.org'});
 
-    const connector = createCaldavConnector(server, 0, false, {'bluemind-sudo': false});
+    const connector = createCaldavConnector(server, 0, {'bluemind-sudo': false});
 
     expect(connector.requiresUserAction).toBe(false);
     await expect(connector.connect()).resolves.toBe('eric@bm.example.org');
@@ -66,7 +66,7 @@ describe('one-click connect', () => {
   it('rejects with the server verdict rather than reporting a connection', async () => {
     mockConnectThroughProvider.mockResolvedValue({result: 'caldav.error.credentials', status: 401});
 
-    const connector = createCaldavConnector(server, 0, false, {'bluemind-sudo': false});
+    const connector = createCaldavConnector(server, 0, {'bluemind-sudo': false});
 
     await expect(connector.connect()).rejects.toBe('caldav.error.credentials');
     expect(mockGetCaldavSetting).not.toHaveBeenCalled();
@@ -75,13 +75,13 @@ describe('one-click connect', () => {
   it('opens the drawer whenever nobody said the provider asks for nothing', () => {
     // A provider declaring it asks, an unnamed provider, requirements that could
     // not be fetched: three ways to know nothing, one behaviour.
-    expect(createCaldavConnector(server, 0, false, {'bluemind-sudo': true}).requiresUserAction).toBe(true);
-    expect(createCaldavConnector(server, 0, false, {}).requiresUserAction).toBe(true);
-    expect(createCaldavConnector(server, 0, false, null).requiresUserAction).toBe(true);
-    expect(createCaldavConnector({...server, authProviderName: null}, 0, false, {'bluemind-sudo': false})
+    expect(createCaldavConnector(server, 0, {'bluemind-sudo': true}).requiresUserAction).toBe(true);
+    expect(createCaldavConnector(server, 0, {}).requiresUserAction).toBe(true);
+    expect(createCaldavConnector(server, 0, null).requiresUserAction).toBe(true);
+    expect(createCaldavConnector({...server, authProviderName: null}, 0, {'bluemind-sudo': false})
       .requiresUserAction).toBe(true);
 
-    createCaldavConnector(server, 0, false, {}).connect();
+    createCaldavConnector(server, 0, {}).connect();
 
     expect(mockConnectThroughProvider).not.toHaveBeenCalled();
     expect(document.dispatchEvent).toHaveBeenCalled();
@@ -94,7 +94,7 @@ describe('one-click connect', () => {
    * connect, in one click, a connector nobody configured a provider for.
    */
   it('opens the drawer for the legacy connector, which carries no flag', () => {
-    const legacy = createLegacyCaldavConnector(false);
+    const legacy = createLegacyCaldavConnector();
 
     expect(legacy.requiresUserAction).toBeUndefined();
 
