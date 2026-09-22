@@ -25,13 +25,16 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,51 +46,48 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.exoplatform.caldav.model.CaldavManagedMode;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
-import org.exoplatform.commons.api.settings.SettingService;
-import org.exoplatform.commons.api.settings.SettingValue;
-import org.exoplatform.commons.api.settings.data.Context;
-import org.exoplatform.portal.config.UserACL;
-import org.exoplatform.services.security.Identity;
+import org.exoplatform.services.connector.credentials.managed.ManagedConnectorService;
 
 /**
- * Managed mode is one key in one global setting, and everything this class has
- * to protect follows from that.
+ * The decision lives in commons-exo; what this class owes it is the CalDAV
+ * knowledge it lacks, and what these tests pin is exactly that seam.
  *
  * <p>
- * What is pinned: absence means off — there is no second flag that can
- * disagree with the id; the choice cannot land on a server nobody can reach;
- * the verdict handed to a browser is asked <b>per viewer</b>, which is the
- * seam group exclusions plug into; and the two registry writes that would
- * strand the mode are refused with the code the admin screens render.
+ * Pinned: the kind every call carries is {@code caldav}; the per-viewer
+ * verdict is asked of commons-exo per user, never derived from the global
+ * designation; a row that is unknown or deactivated is refused here before
+ * commons-exo is asked anything; the provider handed to commons-exo is the one
+ * the row is configured with; exclusions are written before the designation;
+ * off clears both; and the registry guard still refuses the writes that would
+ * strand the mode.
  */
 @ExtendWith(MockitoExtension.class)
 public class CaldavManagedModeServiceTest {
 
-  private static final String       USER = "mary";
+  private static final String      KIND = "caldav";
+
+  private static final String      USER = "mary";
+
+  private static final String      ADMIN = "root";
 
   @Mock
-  private SettingService            settingService;
+  private ManagedConnectorService  managedConnectorService;
 
   @Mock
-  private CaldavServerStorage       caldavServerStorage;
-
-  @Mock
-  private UserACL                   userAcl;
-
-  @Mock
-  private Identity                  identity;
+  private CaldavServerStorage      caldavServerStorage;
 
   @InjectMocks
-  private CaldavManagedModeService  caldavManagedModeService;
+  private CaldavManagedModeService caldavManagedModeService;
 
   @BeforeEach
-  public void nothingIsStoredByDefault() {
-    lenient().when(settingService.get(any(), any(), any())).thenReturn(null);
-    lenient().when(userAcl.getUserIdentity(anyString())).thenReturn(identity);
+  public void nothingIsDesignatedByDefault() {
+    lenient().when(managedConnectorService.designationOf(KIND)).thenReturn(null);
+    lenient().when(managedConnectorService.exclusionsOf(KIND)).thenReturn(List.of());
+    lenient().when(managedConnectorService.designatedConnectorFor(eq(KIND), anyString())).thenReturn(null);
   }
 
   /**
-   * A registration that exists and is active.
+   * A registration configured with a provider.
    *
    * @param id the row's identifier
    * @param active whether users may connect to it
@@ -98,150 +98,131 @@ public class CaldavManagedModeServiceTest {
     server.setId(id);
     server.setName("Bluemind");
     server.setActive(active);
+    server.setAuthProviderName("bluemind-sudo");
     return server;
   }
 
   /**
-   * Says the setting holds this value.
+   * Says commons-exo holds this designation for the caldav kind, applying to
+   * everybody.
    *
-   * @param stored what the setting holds
+   * @param serverId the designated registration
    */
-  private void stored(String stored) {
-    doReturn(SettingValue.create(stored)).when(settingService)
-                                         .get(eq(Context.GLOBAL),
-                                              eq(CaldavManagedModeService.MANAGED_SCOPE),
-                                              eq(CaldavManagedModeService.MANAGED_SERVER_KEY));
+  private void designated(long serverId) {
+    lenient().when(managedConnectorService.designationOf(KIND)).thenReturn(serverId);
+    lenient().when(managedConnectorService.designatedConnectorFor(eq(KIND), anyString())).thenReturn(serverId);
   }
 
-  /**
-   * Nothing stored is the whole definition of "off". There is deliberately no
-   * enabled flag beside the id: a second key is a second answer, and the state
-   * it makes reachable — on, with no server — cannot be rendered honestly.
-   */
+  /** Nothing designated is the whole definition of "off", for everybody. */
   @Test
-  public void anAbsentKeyIsManagedModeOff() {
+  public void noDesignationIsManagedModeOff() {
     assertNull(caldavManagedModeService.getManagedServerId());
-    assertFalse(caldavManagedModeService.isManagedFor(identity));
+    assertFalse(caldavManagedModeService.isManagedFor(USER));
 
     CaldavManagedMode mode = caldavManagedModeService.getManagedMode(USER);
 
     assertNull(mode.serverId());
     assertNull(mode.serverName());
+    assertEquals(List.of(), mode.excludedGroups());
     assertFalse(mode.managedForMe());
   }
 
   /**
-   * A stored id is managed mode on, and the payload names the server rather
-   * than making every screen turn an id into a word of its own.
+   * A designation is managed mode on, and the payload names the server and
+   * lists the exclusions rather than making every screen fetch them.
    */
   @Test
-  public void aStoredIdIsManagedModeOnAndNamesTheServer() {
-    stored("7");
+  public void aDesignationIsManagedModeOnAndNamesTheServer() {
+    designated(7);
+    when(managedConnectorService.exclusionsOf(KIND)).thenReturn(List.of("/externals"));
     when(caldavServerStorage.getServerById(7)).thenReturn(server(7, true));
 
     CaldavManagedMode mode = caldavManagedModeService.getManagedMode(USER);
 
     assertEquals(7L, mode.serverId());
     assertEquals("Bluemind", mode.serverName());
+    assertEquals(List.of("/externals"), mode.excludedGroups());
     assertTrue(mode.managedForMe());
   }
 
   /**
-   * The verdict is asked of the identity, and it is the only thing a browser
-   * acts on.
-   *
-   * <p>
-   * Today it cannot differ from the global answer, which is exactly why this
-   * has to be pinned now: the method is the single place group exclusions will
-   * land, and a caller that read {@code serverId != null} instead would keep
-   * working today and hide the connect button from the very users an exclusion
+   * <b>The verdict is per viewer, and it is commons-exo's.</b> A designation
+   * exists, and this user is excluded from it: the instance's choice is shown,
+   * and it does not apply to them. A caller reading {@code serverId != null}
+   * instead would hide the connect button from the very users an exclusion
    * exists to let connect.
    */
   @Test
-  public void theVerdictIsAskedPerViewer() {
-    stored("7");
+  public void anExcludedUserSeesTheChoiceAndIsNotGovernedByIt() {
+    designated(7);
+    when(managedConnectorService.designatedConnectorFor(KIND, USER)).thenReturn(null);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, true));
 
-    assertTrue(caldavManagedModeService.isManagedFor(identity));
-    assertTrue(caldavManagedModeService.isManagedFor(USER));
+    assertFalse(caldavManagedModeService.isManagedFor(USER));
+
+    CaldavManagedMode mode = caldavManagedModeService.getManagedMode(USER);
+
+    assertEquals(7L, mode.serverId());
+    assertFalse(mode.managedForMe());
   }
 
   /**
    * Nobody is managed on nobody's behalf: an anonymous caller has no account
-   * to govern, and answering true would hide affordances from a page with no
-   * user behind it.
+   * to govern — and commons-exo, which refuses a blank user as a programming
+   * error, is not even asked. Managed mode is deliberately ON here: the point
+   * is that the refusal comes from having no user, not from having no
+   * designation.
    */
   @Test
   public void anAnonymousCallerIsNeverManaged() {
-    // Leniently: managed mode is deliberately ON here — the point is that the
-    // refusal comes from having no user, not from having no setting — and the
-    // setting is never reached, because it must not be.
-    lenient().doReturn(SettingValue.create("7"))
-             .when(settingService)
-             .get(eq(Context.GLOBAL),
-                  eq(CaldavManagedModeService.MANAGED_SCOPE),
-                  eq(CaldavManagedModeService.MANAGED_SERVER_KEY));
+    designated(7);
 
-    assertFalse(caldavManagedModeService.isManagedFor((Identity) null));
     assertFalse(caldavManagedModeService.isManagedFor(""));
-    assertFalse(caldavManagedModeService.isManagedFor((String) null));
+    assertFalse(caldavManagedModeService.isManagedFor(null));
+    verify(managedConnectorService, never()).designatedConnectorFor(anyString(), any());
   }
 
   /**
-   * Something that is not a number in the setting reads as off.
-   *
-   * <p>
-   * The alternative — treating an unreadable value as "managed" — hides every
-   * user's connect button while naming no server at all, which is the one
-   * state this screen has no way out of.
+   * Saving hands commons-exo everything in one call - the row's provider (the
+   * eligibility criterion it enforces), the exclusions and the caller - under
+   * the caldav kind. One call, so that a refusal there writes nothing here.
    */
   @Test
-  public void anUnreadableValueReadsAsOff() {
-    stored("later");
-
-    assertNull(caldavManagedModeService.getManagedServerId());
-    assertFalse(caldavManagedModeService.isManagedFor(identity));
-  }
-
-  /**
-   * An empty value is not a choice either — and nothing writes one, because
-   * switching off REMOVES the key.
-   */
-  @Test
-  public void anEmptyValueReadsAsOff() {
-    stored("");
-
-    assertNull(caldavManagedModeService.getManagedServerId());
-  }
-
-  /**
-   * The choice is stored as the one key, under the global context.
-   */
-  @Test
-  public void savingStoresTheChosenServer() {
+  public void savingDesignatesTheRowWithItsProviderExclusionsAndCaller() throws Exception {
     when(caldavServerStorage.getServerById(7)).thenReturn(server(7, true));
 
-    caldavManagedModeService.saveManagedServer(7);
+    caldavManagedModeService.saveManagedServer(7, List.of("/externals"), ADMIN);
 
-    verify(settingService).set(eq(Context.GLOBAL),
-                               eq(CaldavManagedModeService.MANAGED_SCOPE),
-                               eq(CaldavManagedModeService.MANAGED_SERVER_KEY),
-                               any());
+    verify(managedConnectorService).designate(KIND, 7, "bluemind-sudo", List.of("/externals"), ADMIN);
+  }
+
+  /** A caller commons-exo refuses is refused here, untouched. */
+  @Test
+  public void aNonAdministratorIsRefusedByCommons() throws Exception {
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, true));
+    doThrow(new IllegalAccessException("managedConnector.administrator.required")).when(managedConnectorService)
+                                                                                 .designate(eq(KIND), anyLong(), any(), any(), eq(USER));
+    doThrow(new IllegalAccessException("managedConnector.administrator.required")).when(managedConnectorService)
+                                                                                 .clearDesignation(KIND, USER);
+
+    assertThrows(IllegalAccessException.class, () -> caldavManagedModeService.saveManagedServer(7, List.of(), USER));
+    assertThrows(IllegalAccessException.class, () -> caldavManagedModeService.clearManagedServer(USER));
   }
 
   /**
-   * A deactivated server is refused. It is precisely the row nobody can
-   * connect to: pointing the whole instance at it would take every user's
-   * connect affordance away in exchange for a server that answers nothing.
+   * A deactivated server is refused here, before commons-exo is asked
+   * anything. It is precisely the row nobody can connect to, and only this
+   * add-on can recognise it.
    */
   @Test
-  public void aDeactivatedServerIsRefused() {
+  public void aDeactivatedServerIsRefusedBeforeAnythingIsWritten() throws Exception {
     when(caldavServerStorage.getServerById(7)).thenReturn(server(7, false));
 
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                    () -> caldavManagedModeService.saveManagedServer(7));
+                                                    () -> caldavManagedModeService.saveManagedServer(7, List.of(), ADMIN));
 
     assertEquals("caldav.managed.serverNotEligible", refusal.getMessage());
-    verify(settingService, never()).set(any(), any(), any(), any());
+    verify(managedConnectorService, never()).designate(anyString(), anyLong(), any(), any(), anyString());
   }
 
   /**
@@ -249,29 +230,61 @@ public class CaldavManagedModeServiceTest {
    * left open while another administrator deleted it.
    */
   @Test
-  public void anUnknownServerIsRefused() {
+  public void anUnknownServerIsRefusedBeforeAnythingIsWritten() throws Exception {
     when(caldavServerStorage.getServerById(9)).thenReturn(null);
 
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                    () -> caldavManagedModeService.saveManagedServer(9));
+                                                    () -> caldavManagedModeService.saveManagedServer(9, List.of(), ADMIN));
 
     assertEquals("caldav.managed.serverNotEligible", refusal.getMessage());
-    verify(settingService, never()).set(any(), any(), any(), any());
+    verify(managedConnectorService, never()).designate(anyString(), anyLong(), any(), any(), anyString());
   }
 
   /**
-   * Switching off REMOVES the key rather than emptying it. Absence is the
-   * whole definition of off, and a stored empty string would be a second way
-   * to say the same thing — the sort that survives a refactoring of the first.
+   * A provider that asks the user for something is commons-exo's refusal, and
+   * it comes through untouched: the screen renders that code, not a CalDAV
+   * paraphrase of it.
    */
   @Test
-  public void switchingOffRemovesTheKey() {
-    caldavManagedModeService.clearManagedServer();
+  public void aProviderThatAsksTheUserIsRefusedWithTheCommonsCode() throws Exception {
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, true));
+    doThrow(new IllegalArgumentException("managedConnector.provider.asksTheUser")).when(managedConnectorService)
+                                                                                .designate(KIND, 7, "bluemind-sudo", List.of(), ADMIN);
 
-    verify(settingService).remove(eq(Context.GLOBAL),
-                                  eq(CaldavManagedModeService.MANAGED_SCOPE),
-                                  eq(CaldavManagedModeService.MANAGED_SERVER_KEY));
-    verify(settingService, never()).set(any(), any(), any(), any());
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavManagedModeService.saveManagedServer(7, List.of(), ADMIN));
+
+    assertEquals("managedConnector.provider.asksTheUser", refusal.getMessage());
+  }
+
+  /** Off is commons-exo's clear, with the caller: designation and exclusions go together there. */
+  @Test
+  public void switchingOffClearsThroughCommons() throws Exception {
+    caldavManagedModeService.clearManagedServer(ADMIN);
+
+    verify(managedConnectorService).clearDesignation(KIND, ADMIN);
+    verify(managedConnectorService, never()).designate(anyString(), anyLong(), any(), any(), anyString());
+  }
+
+  /**
+   * The managed row may not move to a provider that asks the user: designating
+   * it refused exactly that, and an edit must not be the way around. Any other
+   * row changes provider freely, and commons-exo is not even asked.
+   */
+  @Test
+  public void theManagedRowMayNotMoveToAProviderThatAsksTheUser() {
+    designated(700);
+    doThrow(new IllegalArgumentException("managedConnector.provider.asksTheUser")).when(managedConnectorService)
+                                                                                .requireEligible("personal");
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavManagedModeService.checkProviderChangeAllowed(700, "personal"));
+
+    assertEquals("caldav.managed.providerNotEligible", refusal.getMessage());
+    assertDoesNotThrow(() -> caldavManagedModeService.checkProviderChangeAllowed(700, "bluemind-sudo"));
+    // Another row: commons-exo is not even asked about its provider.
+    assertDoesNotThrow(() -> caldavManagedModeService.checkProviderChangeAllowed(800, "anything"));
+    verify(managedConnectorService, never()).requireEligible("anything");
   }
 
   /**
@@ -280,13 +293,14 @@ public class CaldavManagedModeServiceTest {
    */
   @Test
   public void theManagedRowRefusesRegistryWritesAndOtherRowsDoNot() {
-    stored("7");
+    // Ids above the Long cache (-128..127): a boxed == would still pass at 7.
+    designated(700);
 
     IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
-                                                    () -> caldavManagedModeService.checkServerNotManaged(7));
+                                                    () -> caldavManagedModeService.checkServerNotManaged(700));
 
     assertEquals("caldav.managed.serverInUse", refusal.getMessage());
-    assertDoesNotThrow(() -> caldavManagedModeService.checkServerNotManaged(8));
+    assertDoesNotThrow(() -> caldavManagedModeService.checkServerNotManaged(800));
   }
 
   /**
@@ -295,18 +309,18 @@ public class CaldavManagedModeServiceTest {
    */
   @Test
   public void nothingIsProtectedWhenManagedModeIsOff() {
-    assertDoesNotThrow(() -> caldavManagedModeService.checkServerNotManaged(7));
+    assertDoesNotThrow(() -> caldavManagedModeService.checkServerNotManaged(700));
   }
 
   /**
-   * A row deleted out from under the setting leaves the name empty rather than
-   * failing. The registry refuses that deletion, so this is the belt to that
-   * braces — and a screen showing a blank name is recoverable, a 500 on the
-   * page that holds the off switch is not.
+   * A row deleted out from under the designation leaves the name empty rather
+   * than failing. The registry refuses that deletion, so this is the belt to
+   * that braces — and a screen showing a blank name is recoverable, a 500 on
+   * the page that holds the off switch is not.
    */
   @Test
   public void aVanishedManagedRowStillAnswers() {
-    stored("7");
+    designated(7);
     when(caldavServerStorage.getServerById(7)).thenReturn(null);
 
     CaldavManagedMode mode = caldavManagedModeService.getManagedMode(USER);

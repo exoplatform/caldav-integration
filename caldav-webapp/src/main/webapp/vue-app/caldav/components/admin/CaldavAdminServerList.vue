@@ -108,7 +108,7 @@ export default {
      * @returns {void}
      */
     activateItem(item) {
-      this.$agendaCaldavService.setCaldavServerStatus(item.id, item.active)
+      return this.$agendaCaldavService.setCaldavServerStatus(item.id, item.active)
         .then(() => {
           this.$root.$emit('refresh-caldav-servers-list');
           document.dispatchEvent(new CustomEvent('agenda-connectors-refresh'));
@@ -116,7 +116,12 @@ export default {
           this.$root.$emit('alert-message', this.$t(`${successAlertMessage}`), 'success');
         })
         .catch(error => {
-          item.active = !item.active;
+          // The switch moved before the platform answered; a refusal puts it
+          // back - and the message is about what was ATTEMPTED, read before the
+          // switch goes back, or a refused deactivation would be reported as a
+          // failed activation.
+          const attempted = item.active;
+          item.active = !attempted;
           // A refusal that names a rule says it, rather than "could not be
           // deactivated": deactivating the server managed mode points the
           // whole instance at is refused with a message code that tells the
@@ -126,7 +131,7 @@ export default {
             this.$root.$emit('alert-message', this.$t(code), 'error');
             return;
           }
-          const errorAlertMessage = item.active && 'caldav.admin.servers.activate.error' || 'caldav.admin.servers.deactivate.error';
+          const errorAlertMessage = attempted && 'caldav.admin.servers.activate.error' || 'caldav.admin.servers.deactivate.error';
           this.$root.$emit('alert-message', this.$t(`${errorAlertMessage}`), 'error');
         });
     },

@@ -64,18 +64,15 @@ const caldavConnector = {
   // day. Testing the name is not an option either — createCaldavConnector
   // overrides it with the declared server's providerName.
   isCaldav: true,
-  // Whether the instance chose this user's CalDAV server for them. Declared
-  // false here so the property EXISTS on every descriptor shape rather than
-  // being undefined on some of them: agenda reads it to decide whether to
-  // offer connecting and disconnecting at all, and `undefined` and `false`
-  // read alike right up to the day somebody writes `!== false`.
-  //
-  // The value is per viewer, not per server: it answers "is this user's CalDAV
-  // account the instance's to decide", which is the same answer for every
-  // CalDAV row on the page. Which server was chosen travels beside it, in
-  // managedServerName, because the settings row names it.
+  // Whether managed mode takes connecting and disconnecting away from this
+  // user. It never does (EXO-89652): managed mode designates the connector a
+  // user is ATTACHED to automatically when they log in, and its group
+  // exclusions say who is not attached - neither removes anyone's choice. A
+  // user, excluded or not, may disconnect and connect the server they want.
+  // Agenda still reads this flag (`connector.managed === true` hides its
+  // affordances), so it stays declared, false, on every descriptor shape,
+  // rather than becoming `undefined` on some of them.
   managed: false,
-  managedServerName: null,
   /**
    * Opens the settings drawer and resolves once the CalDAV server itself has
    * accepted the account. The drawer verifies the credentials against the
@@ -693,22 +690,14 @@ function isUnderAHome(path) {
  * agenda's enabled-check and connected-provider binding key on — so every
  * declared server becomes a full connector with zero agenda backend change.
  *
- * The managed verdict is stamped onto EVERY CalDAV descriptor, not only onto
- * the chosen server's: managed mode governs the CalDAV family as a whole, and
- * the affordances agenda hides — connect, disconnect — are the family's, not
- * one row's. A user offered to connect a different CalDAV server would be
- * offered exactly the act the mode exists to take away.
- *
  * @param {Object} server a declared server {id, providerName, name, description, serverUrl, mirrorTarget}
  * @param {Number} index position of the server in the declared list, keeps ranks distinct
- * @param {Object} managed the mode in force, {managedForMe, serverName}; absent
  * @param {Object} requirements whether each provider asks its user for anything,
  *          keyed by provider name; anything but an explicit false means ask
- *          or false-verdicted leaves the descriptor unmanaged
  * @returns {Object} the connector descriptor to register under agenda/connectors
  */
-export function createCaldavConnector(server, index, managed, requirements) {
-  return Object.assign({}, caldavConnector, stampManaged(managed), {
+export function createCaldavConnector(server, index, requirements) {
+  return Object.assign({}, caldavConnector, {
     name: server.providerName,
     description: `${server.providerName}.description`,
     serverId: server.id,
@@ -752,40 +741,15 @@ export function createCaldavConnector(server, index, managed, requirements) {
 }
 
 /**
- * The managed half of a descriptor, from what the platform answered.
+ * The legacy fallback descriptor, registered when the registry answers nothing
+ * — an empty registry, or a REST call that failed. A copy rather than the
+ * singleton itself, so nothing mutates the object every other descriptor is
+ * built from.
  *
- * `managedForMe` is what is read and nothing else: the payload also carries
- * which server the INSTANCE chose, which is the same for everybody and is
- * therefore not an answer about this viewer. Group exclusions are what will
- * make the two disagree, and a descriptor stamped from the global half would
- * then hide the connect button from the very users the exclusion exists to
- * let connect.
- *
- * @param {Object} managed the mode as the platform answered it for this viewer
- * @returns {Object} the properties to stamp onto a descriptor
- */
-export function stampManaged(managed) {
-  if (!managed || !managed.managedForMe) {
-    return {managed: false, managedServerName: null};
-  }
-  return {managed: true, managedServerName: managed.serverName || null};
-}
-
-/**
- * The legacy fallback descriptor, carrying the managed verdict.
- *
- * The fallback is registered when the registry answers nothing — an empty
- * registry, or a REST call that failed — and it has to be stamped too: an
- * instance can be managed and still fail to list its servers, and the
- * unstamped singleton would hand that user back every affordance the mode took
- * away. A copy rather than the singleton itself, so nothing mutates the object
- * every other descriptor is built from.
- *
- * @param {Object} managed the mode in force, {managedForMe, serverName}
  * @returns {Object} the fallback descriptor to register
  */
-export function createLegacyCaldavConnector(managed) {
-  return Object.assign({}, caldavConnector, stampManaged(managed));
+export function createLegacyCaldavConnector() {
+  return Object.assign({}, caldavConnector);
 }
 
 /**
@@ -797,9 +761,7 @@ export function createLegacyCaldavConnector(managed) {
  * viewer's: the plug there connects an account that has nothing to do with the
  * space, and the events it would bring are the viewer's own. Agenda reads every
  * one of those affordances off the descriptors this module registers, so the
- * page they do not belong on is the page they are not registered on — the rule
- * that hides a connect affordance under managed mode, applied to the place
- * rather than to the deployment.</p>
+ * page they do not belong on is the page they are not registered on.</p>
  *
  * @returns {Boolean} true on the personal agenda, false inside a space
  */
