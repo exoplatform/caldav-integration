@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -40,11 +41,13 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.CaldavManagedMode;
+import org.exoplatform.caldav.rest.model.CaldavManagedModeRequest;
 import org.exoplatform.caldav.service.CaldavManagedModeService;
 import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.caldav.service.CaldavTuningService;
@@ -410,6 +413,25 @@ public class CaldavServerRestTest {
 
 
   /**
+   * EXO-89652. A refusal's code reaches the browser in the body: Boot's default
+   * error body drops the reason on this platform, and a drawer that cannot read
+   * the code says "could not be saved" for every rule.
+   */
+  @Test
+  public void aRefusalCarriesItsCodeInTheBody() {
+    ResponseEntity<Map<String, Object>> answer =
+        caldavServerRest.onRefusal(new ResponseStatusException(HttpStatus.BAD_REQUEST, "caldav.managed.serverInUse"));
+
+    assertEquals(HttpStatus.BAD_REQUEST, answer.getStatusCode());
+    assertEquals(400, answer.getBody().get("status"));
+    assertEquals("caldav.managed.serverInUse", answer.getBody().get("message"));
+
+    ResponseEntity<Map<String, Object>> bare = caldavServerRest.onRefusal(new ResponseStatusException(HttpStatus.FORBIDDEN));
+    assertEquals(HttpStatus.FORBIDDEN, bare.getStatusCode());
+    assertFalse(bare.getBody().containsKey("message"));
+  }
+
+  /**
    * The managed-mode read hands back exactly what the service decided,
    * per viewer.
    *
@@ -422,25 +444,57 @@ public class CaldavServerRestTest {
   @Test
   public void theManagedReadIsAnsweredPerViewer() {
     when(request.getRemoteUser()).thenReturn("mary");
-    CaldavManagedMode mode = new CaldavManagedMode(7L, "Bluemind", true);
+    CaldavManagedMode mode = new CaldavManagedMode(7L, "Bluemind", List.of(), true);
     when(caldavManagedModeService.getManagedMode("mary")).thenReturn(mode);
 
     assertEquals(mode, caldavServerRest.getManagedMode(request));
   }
 
   /**
-   * Turning managed mode on answers with what is now in force, not with what
-   * was asked for.
+   * Turning managed mode on hands the service the server and the exclusions
+   * from one body, and answers with what is now in force, not with what was
+   * asked for.
    */
   @Test
-  public void turningManagedModeOnAnswersWithWhatIsNowInForce() {
+  public void turningManagedModeOnAnswersWithWhatIsNowInForce() throws Exception {
     when(request.getRemoteUser()).thenReturn("root");
-    CaldavManagedMode stored = new CaldavManagedMode(7L, "Bluemind", true);
+    CaldavManagedMode stored = new CaldavManagedMode(7L, "Bluemind", List.of("/externals"), true);
     when(caldavManagedModeService.getManagedMode("root")).thenReturn(stored);
 
-    assertEquals(stored, caldavServerRest.saveManagedMode(request, 7));
+    assertEquals(stored,
+                 caldavServerRest.saveManagedMode(request, new CaldavManagedModeRequest(7L, List.of("/externals"))));
 
-    verify(caldavManagedModeService).saveManagedServer(7);
+    verify(caldavManagedModeService).saveManagedServer(7, List.of("/externals"), "root");
+  }
+
+  /** Exclusions left out of the body are none, not null, by the time the service sees them. */
+  @Test
+  public void absentExclusionsReachTheServiceAsNone() throws Exception {
+    when(request.getRemoteUser()).thenReturn("root");
+    when(caldavManagedModeService.getManagedMode("root")).thenReturn(new CaldavManagedMode(7L, "Bluemind", List.of(), true));
+
+    caldavServerRest.saveManagedMode(request, new CaldavManagedModeRequest(7L, null));
+
+    verify(caldavManagedModeService).saveManagedServer(7, List.of(), "root");
+  }
+
+  /**
+   * A body naming no server is a 400 with its own code, before the service is
+   * asked anything: there is no eligibility to check on nothing.
+   */
+  @Test
+  public void aBodyNamingNoServerIsFourHundredWithItsCode() throws Exception {
+    ResponseStatusException noBody = assertThrows(ResponseStatusException.class,
+                                                  () -> caldavServerRest.saveManagedMode(request, null));
+    ResponseStatusException noServer = assertThrows(ResponseStatusException.class,
+                                                    () -> caldavServerRest.saveManagedMode(request,
+                                                                                           new CaldavManagedModeRequest(null,
+                                                                                                                        List.of())));
+
+    assertEquals(HttpStatus.BAD_REQUEST, noBody.getStatusCode());
+    assertEquals("caldav.managed.serverRequired", noBody.getReason());
+    assertEquals("caldav.managed.serverRequired", noServer.getReason());
+    verify(caldavManagedModeService, never()).saveManagedServer(anyLong(), any(), any());
   }
 
   /**
@@ -449,12 +503,13 @@ public class CaldavServerRestTest {
    * back without a word.
    */
   @Test
-  public void anIneligibleServerIsFourHundredWithItsCode() {
+  public void anIneligibleServerIsFourHundredWithItsCode() throws Exception {
     doThrow(new IllegalArgumentException("caldav.managed.serverNotEligible")).when(caldavManagedModeService)
-                                                                            .saveManagedServer(9);
+                                                                            .saveManagedServer(9, List.of(), null);
 
     ResponseStatusException refused = assertThrows(ResponseStatusException.class,
-                                                   () -> caldavServerRest.saveManagedMode(request, 9));
+                                                   () -> caldavServerRest.saveManagedMode(request,
+                                                                                          new CaldavManagedModeRequest(9L, List.of())));
 
     assertEquals(HttpStatus.BAD_REQUEST, refused.getStatusCode());
     assertEquals("caldav.managed.serverNotEligible", refused.getReason());
@@ -465,14 +520,32 @@ public class CaldavServerRestTest {
    * stands, which names no server.
    */
   @Test
-  public void turningManagedModeOffClearsTheChoice() {
+  public void turningManagedModeOffClearsTheChoice() throws Exception {
     when(request.getRemoteUser()).thenReturn("root");
-    CaldavManagedMode off = new CaldavManagedMode(null, null, false);
+    CaldavManagedMode off = new CaldavManagedMode(null, null, List.of(), false);
     when(caldavManagedModeService.getManagedMode("root")).thenReturn(off);
 
     assertEquals(off, caldavServerRest.clearManagedMode(request));
 
-    verify(caldavManagedModeService).clearManagedServer();
+    verify(caldavManagedModeService).clearManagedServer("root");
+  }
+
+  /** A caller the service refuses is a 403, on both writes, like every sibling write here. */
+  @Test
+  public void managedWritesByANonAdministratorAreForbidden() throws Exception {
+    when(request.getRemoteUser()).thenReturn("mary");
+    doThrow(new IllegalAccessException("managedConnector.administrator.required")).when(caldavManagedModeService)
+                                                                                 .saveManagedServer(7, List.of(), "mary");
+    doThrow(new IllegalAccessException("managedConnector.administrator.required")).when(caldavManagedModeService)
+                                                                                 .clearManagedServer("mary");
+
+    ResponseStatusException saving = assertThrows(ResponseStatusException.class,
+                                                  () -> caldavServerRest.saveManagedMode(request, new CaldavManagedModeRequest(7L, List.of())));
+    ResponseStatusException clearing = assertThrows(ResponseStatusException.class,
+                                                    () -> caldavServerRest.clearManagedMode(request));
+
+    assertEquals(HttpStatus.FORBIDDEN, saving.getStatusCode());
+    assertEquals(HttpStatus.FORBIDDEN, clearing.getStatusCode());
   }
 
   /**
