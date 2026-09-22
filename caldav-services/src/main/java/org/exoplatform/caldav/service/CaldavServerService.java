@@ -981,6 +981,21 @@ public class CaldavServerService {
     if (!StringUtils.equals(stored.getServerUrl(), server.getServerUrl())) {
       caldavServerUrlValidator.validate(server.getServerUrl());
     }
+    if (stored != null) {
+      // The managed row may not move to a provider that asks each user for
+      // something: designating it refused exactly that, and an edit must not be
+      // the way around the refusal. Judged on the effective provider - a blank
+      // one in the payload keeps the stored provider.
+      caldavManagedModeService.checkProviderChangeAllowed(stored.getId(),
+                                                          StringUtils.defaultIfBlank(server.getAuthProviderName(),
+                                                                                     stored.getAuthProviderName()));
+      // Nor may it be deactivated through the edit: the payload carries `active`
+      // and the storage writes it, so a PUT with active=false would do what the
+      // status toggle refuses. Same rule, same code.
+      if (!server.isActive()) {
+        caldavManagedModeService.checkServerNotManaged(stored.getId());
+      }
+    }
     checkWriteChannel(server, stored);
     // A body that states no channel keeps the stored one, and says so before the stamp is
     // taken: fingerprinted as null, it would move the stamp and send every mirror of the
@@ -1025,10 +1040,9 @@ public class CaldavServerService {
     checkCanEdit(username);
     CaldavServer server = getServerById(serverId);
     if (!active) {
-      // Deactivating the managed server would leave every user of the instance
-      // without a connect affordance — managed mode took it away — and with a
-      // server that no longer answers. The mode goes off first, one click
-      // above in the same screen.
+      // Deactivating the managed server would leave the users managed mode
+      // attaches to it on a server that no longer answers. The mode goes off
+      // first, one click above in the same screen.
       caldavManagedModeService.checkServerNotManaged(serverId);
     }
     if (active) {
