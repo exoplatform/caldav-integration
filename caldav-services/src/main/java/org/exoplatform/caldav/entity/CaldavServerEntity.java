@@ -202,6 +202,6 @@ public class CaldavServerEntity {
    * migration's column default. Declared LAST, after the quirk columns, for the
    * positional-constructor reason they explain above.
    */
-  @Column(name = "AUTH_PROVIDER_NAME")
+  @Column(name = "AUTH_PROVIDER_NAME", nullable = false)
   private String  authProviderName = PersonalCredentialsProvider.NAME;
 }

@@ -26,6 +26,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -45,6 +47,7 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -52,6 +55,8 @@ import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.service.CaldavServerService;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
+import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
@@ -170,6 +175,51 @@ public class HttpCalDavClientTest {
 
     assertEquals("/dav/", endpoint.getBasePath());
     verifyNoInteractions(connectorCredentialsService, transport);
+  }
+
+  /**
+   * The legacy fallback the server service keeps forever - a registry answering
+   * nothing, the URL from the property: its credentials are the user's own, so the
+   * provider name defaults to Personal exactly as the entity initialiser and the
+   * migration backfill do. Mutation-verified: with the default back to null, the
+   * context the provider is asked with carries a null name and the endpoint too.
+   */
+  @Test
+  void aLegacyDeploymentWithNoRegistryRowAuthenticatesAsPersonal() throws Exception {
+    when(caldavServerService.resolveServer(null)).thenReturn(null);
+    when(connectorCredentialsService.resolveTargetIdentity(any())).thenReturn(USER);
+    ArgumentCaptor<ConnectorCredentialsContext> context = ArgumentCaptor.forClass(ConnectorCredentialsContext.class);
+    System.setProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY, SERVER_URL);
+    try {
+      CalDavEndpoint endpoint = client.endpoint(null, USER);
+
+      assertEquals(PersonalCredentialsProvider.NAME, endpoint.getAuthProviderName());
+      verify(connectorCredentialsService).resolveTargetIdentity(context.capture());
+      assertEquals(PersonalCredentialsProvider.NAME, context.getValue().getConnectorCredentialsProviderName());
+    } finally {
+      System.clearProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY);
+    }
+  }
+
+  /**
+   * A refusal by the calendar server is told to the provider once, through the
+   * endpoint's own context, so a caching provider forgets the refused material;
+   * Personal has nothing to forget. Mutation-verified: with the {@code invalidate}
+   * call removed from {@code checkAuthStatus}, the verification fails.
+   */
+  @Test
+  void rejectedCredentialsAreInvalidatedOnceWithTheProvider() throws Exception {
+    givenStatusAnswers(401, "");
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+    ArgumentCaptor<ConnectorCredentialsContext> context = ArgumentCaptor.forClass(ConnectorCredentialsContext.class);
+
+    assertThrows(CalDavAuthenticationException.class,
+                 () -> client.deleteCollection(endpoint, exoPair("cal-1", BASE_PATH + "exo-cal-cal-1")));
+
+    verify(connectorCredentialsService, times(1)).invalidate(context.capture());
+    assertEquals(1L, context.getValue().getConnectorId());
+    assertEquals("personal", context.getValue().getConnectorCredentialsProviderName());
+    assertEquals(USER, context.getValue().getUsername());
   }
 
   @Test

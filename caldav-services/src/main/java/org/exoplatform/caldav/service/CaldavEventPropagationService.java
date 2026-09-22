@@ -355,7 +355,11 @@ public class CaldavEventPropagationService {
     }
     int written = 0;
     for (Long userIdentityId : invited) {
-      if (seedOne(userIdentityId, CaldavConnectorUtils.loginOf(identityManager, userIdentityId), eventId)) {
+      String login = resolvableLogin(userIdentityId);
+      if (login == null) {
+        continue;
+      }
+      if (seedOne(userIdentityId, login, eventId)) {
         written++;
       }
     }
@@ -415,6 +419,24 @@ public class CaldavEventPropagationService {
       LOG.debug("Identity {} could not be read; it is not offered a copy of the new meeting", identityId, e);
       return false;
     }
+  }
+
+  /**
+   * The eXo login an identity resolves to, or null when it cannot be resolved -
+   * which every fan-out treats as "leave this account for the next run", as
+   * {@link CaldavConnectorUtils#loginOf} says, never as a push failure: with a null
+   * login the endpoint would fail on the DAV account or the provider, an error
+   * about the wrong thing, logged at WARN for what is a skip.
+   *
+   * @param userIdentityId identity of the holder
+   * @return the login, or null
+   */
+  private String resolvableLogin(long userIdentityId) {
+    String login = CaldavConnectorUtils.loginOf(identityManager, userIdentityId);
+    if (login == null) {
+      LOG.debug("Identity {} has no resolvable login; its calendar copy is left for the next run", userIdentityId);
+    }
+    return login;
   }
 
   /**
@@ -528,7 +550,11 @@ public class CaldavEventPropagationService {
     }
     int carried = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
-      if (rewriteOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), eventId, holder.getValue().getId())) {
+      String login = resolvableLogin(holder.getKey());
+      if (login == null) {
+        continue;
+      }
+      if (rewriteOne(holder.getKey(), login, eventId, holder.getValue().getId())) {
         carried++;
       }
     }
@@ -608,7 +634,11 @@ public class CaldavEventPropagationService {
     int removed = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
       ObjectSync mapping = holder.getValue();
-      if (removeOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref())) {
+      String login = resolvableLogin(holder.getKey());
+      if (login == null) {
+        continue;
+      }
+      if (removeOne(holder.getKey(), login, mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref())) {
         // At INFO and one line per copy, deliberately: this is the line an
         // administrator watching the first sweep after the deploy is looking
         // for, and a per-pass total would tell them how many without telling
@@ -715,7 +745,11 @@ public class CaldavEventPropagationService {
     int removed = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
       ObjectSync mapping = holder.getValue();
-      if (removeOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref())) {
+      String login = resolvableLogin(holder.getKey());
+      if (login == null) {
+        continue;
+      }
+      if (removeOne(holder.getKey(), login, mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref())) {
         removed++;
       }
     }
@@ -880,7 +914,11 @@ public class CaldavEventPropagationService {
     }
     int carried = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
-      if (answerOne(holder.getKey(), CaldavConnectorUtils.loginOf(identityManager, holder.getKey()), holder.getValue(), addresses, eventId, answererIdentityId, response)) {
+      String login = resolvableLogin(holder.getKey());
+      if (login == null) {
+        continue;
+      }
+      if (answerOne(holder.getKey(), login, holder.getValue(), addresses, eventId, answererIdentityId, response)) {
         carried++;
       }
     }
@@ -1322,9 +1360,13 @@ public class CaldavEventPropagationService {
     if (owed.isEmpty()) {
       return 0;
     }
+    String login = resolvableLogin(userIdentityId);
+    if (login == null) {
+      return 0;
+    }
     int landed = 0;
     for (PendingPush pending : owed) {
-      if (settleOwed(userIdentityId, CaldavConnectorUtils.loginOf(identityManager, userIdentityId), pending)) {
+      if (settleOwed(userIdentityId, login, pending)) {
         landed++;
       }
     }

@@ -58,6 +58,7 @@ import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
+import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
 import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -261,7 +262,11 @@ public class HttpCalDavClient implements CalDavClient {
   @Override
   public CalDavEndpoint endpoint(Long serverId, String exoLogin) {
     CaldavServer server = caldavServerService.resolveServer(serverId);
-    String authProviderName = server == null ? null : server.getAuthProviderName();
+    // A registry that answers nothing is the legacy property fallback the server
+    // service keeps forever: its credentials are the user's own, as the entity
+    // initialiser and the migration backfill already say. A null here would reach
+    // the resolution service as a map key and fail every request of the fallback.
+    String authProviderName = server == null ? PersonalCredentialsProvider.NAME : server.getAuthProviderName();
     String url = declaredUrl(server == null ? null : server.getServerUrl());
     // Only a templated URL needs an account to name, and only then is the
     // provider worth asking: a server whose path is fixed gets the rest of its
@@ -494,7 +499,7 @@ public class HttpCalDavClient implements CalDavClient {
         || (response.status() == 403 && Strings.CS.contains(response.body(), "valid-sync-token"))) {
       return SyncCollectionResult.invalidToken();
     }
-    checkReadStatus(response, request);
+    checkReadStatus(response, request, endpoint);
     Element multistatus = parse(response.body(), request.uri());
     List<CalendarObject> changed = new ArrayList<>();
     List<String> deleted = new ArrayList<>();
@@ -529,7 +534,7 @@ public class HttpCalDavClient implements CalDavClient {
                                   "PROPFIND",
                                   PROPFIND_CAPABILITIES).header(DEPTH_HEADER, "0").build();
     DavResponse response = exchange(request);
-    checkReadStatus(response, request);
+    checkReadStatus(response, request, endpoint);
     Element multistatus = parse(response.body(), request.uri());
     Element first = firstResponse(multistatus);
     boolean multigetAdvertised = false;
@@ -584,7 +589,7 @@ public class HttpCalDavClient implements CalDavClient {
                request.uri());
       return null;
     }
-    checkAuthStatus(status, true, request);
+    checkAuthStatus(status, true, request, endpoint);
     if (status != 200) {
       throw refusal(response.status(), request);
     }
@@ -636,7 +641,7 @@ public class HttpCalDavClient implements CalDavClient {
     HttpRequest request = builder.build();
     DavResponse response = exchange(request);
     int status = response.status();
-    checkAuthStatus(status, false, request);
+    checkAuthStatus(status, false, request, endpoint);
     // 200/204 deleted; 404/410 already gone — absent is absent, a fact the
     // caller consumes, and what makes a retried delete idempotent; 412 the
     // precondition protecting somebody else's change.
@@ -676,7 +681,7 @@ public class HttpCalDavClient implements CalDavClient {
     // 401/407 only: a 403 on this write verb IS the refusal — BlueMind
     // refuses MKCALENDAR outright with credentials that are perfectly fine,
     // and classifying that as an auth failure would pause the account.
-    checkAuthStatus(response.status(), false, request);
+    checkAuthStatus(response.status(), false, request, endpoint);
     return new MkCalendarResult(response.status(), failedPropstatStatuses(response.body(), request.uri()));
   }
 
@@ -691,7 +696,7 @@ public class HttpCalDavClient implements CalDavClient {
     DavResponse response = exchange(request);
     // 401/407 only, for the same reason as MKCALENDAR: on a write verb a 403
     // is the server declining the change, with credentials that are fine.
-    checkAuthStatus(response.status(), false, request);
+    checkAuthStatus(response.status(), false, request, endpoint);
     return new PropPatchResult(response.status(), failedPropstatStatuses(response.body(), request.uri()));
   }
 
@@ -727,7 +732,7 @@ public class HttpCalDavClient implements CalDavClient {
     HttpRequest request = builder.build();
     DavResponse response = exchange(request);
     int status = response.status();
-    checkAuthStatus(status, false, request);
+    checkAuthStatus(status, false, request, endpoint);
     // 201 is the created object, 204 and 200 are how some servers
     // acknowledge instead. 412 is the precondition refused — an answer the
     // caller must be able to tell apart from an error, because under
@@ -847,7 +852,7 @@ public class HttpCalDavClient implements CalDavClient {
   private Element propfind(CalDavEndpoint endpoint, String href, String body, String depth) {
     HttpRequest request = request(endpoint, href, "PROPFIND", body).header(DEPTH_HEADER, depth).build();
     DavResponse response = exchange(request);
-    checkReadStatus(response, request);
+    checkReadStatus(response, request, endpoint);
     return parse(response.body(), request.uri());
   }
 
@@ -863,7 +868,7 @@ public class HttpCalDavClient implements CalDavClient {
   private Element report(CalDavEndpoint endpoint, String href, String body, String depth) {
     HttpRequest request = request(endpoint, href, "REPORT", body).header(DEPTH_HEADER, depth).build();
     DavResponse response = exchange(request);
-    checkReadStatus(response, request);
+    checkReadStatus(response, request, endpoint);
     return parse(response.body(), request.uri());
   }
 
@@ -969,9 +974,9 @@ public class HttpCalDavClient implements CalDavClient {
    * @param response the exchanged response
    * @param request the request it answers, for the error message
    */
-  private void checkReadStatus(DavResponse response, HttpRequest request) {
+  private void checkReadStatus(DavResponse response, HttpRequest request, CalDavEndpoint endpoint) {
     int status = response.status();
-    checkAuthStatus(status, true, request);
+    checkAuthStatus(status, true, request, endpoint);
     if (status != 207 && status != 200) {
       throw refusal(status, request);
     }
@@ -983,12 +988,18 @@ public class HttpCalDavClient implements CalDavClient {
    * it for refused Basic auth — on a write verb a 403 legitimately means
    * "this resource may not be written" and must stay a plain refusal.
    *
+   * A refusal also tells the provider its material was refused, exactly once
+   * per refusal and never in a retry loop, as the contract asks: Personal
+   * has nothing to forget, a caching provider does.
+   *
    * @param status the answered status
    * @param readVerb whether the request was PROPFIND, REPORT or GET
    * @param request the request, for the error message
+   * @param endpoint whose credentials were refused
    */
-  private void checkAuthStatus(int status, boolean readVerb, HttpRequest request) {
+  private void checkAuthStatus(int status, boolean readVerb, HttpRequest request, CalDavEndpoint endpoint) {
     if (status == 401 || status == 407 || (readVerb && status == 403)) {
+      caldavCredentialsResolver.invalidate(endpoint.getServerId(), endpoint.getAuthProviderName(), endpoint.getExoLogin());
       throw new CalDavAuthenticationException(String.format("The calendar server refused the credentials (%s) for %s %s",
                                                             status,
                                                             request.method(),
@@ -1453,7 +1464,7 @@ public class HttpCalDavClient implements CalDavClient {
                                      .build();
     DavResponse response = exchange(request);
     int status = response.status();
-    checkAuthStatus(status, false, request);
+    checkAuthStatus(status, false, request, endpoint);
     // 200/204 deleted; 404/410 already gone — absent is absent, which is what
     // makes a repeated deletion idempotent rather than an error to explain.
     if (status != 200 && status != 204 && status != 404 && status != 410) {

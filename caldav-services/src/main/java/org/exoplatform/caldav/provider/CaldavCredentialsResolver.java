@@ -79,11 +79,17 @@ public class CaldavCredentialsResolver {
    * provider produced it — Basic today, whatever a future provider answers
    * tomorrow. Never assembled here.
    * <p>
-   * Callers resolve it per request rather than once per endpoint: material can
-   * expire between two requests of one operation, and a scheme whose header
-   * depends on the method and the URI could not be served by a value frozen
-   * earlier. Providers cache their own production, so the repetition costs a
-   * lookup.
+   * Callers resolve it per request rather than once per endpoint, deliberately:
+   * material can expire between two requests of one operation, and a scheme
+   * whose header depends on the method and the URI could not be served by a
+   * value frozen earlier. The cost is the provider's: Personal caches nothing
+   * and rebuilds from the stored setting on every call - four setting reads
+   * and a decode per request today - which is accepted for the one provider
+   * whose material never expires, and is what a caching provider removes.
+   * <p>
+   * Material the provider hands back already expired is never sent: it is
+   * invalidated and produced once more, and only once - a provider answering
+   * expired material twice is its own defect and surfaces as the failure below.
    * <p>
    * A failure here is deliberately a plain {@link CalDavException} and never a
    * {@link org.exoplatform.caldav.client.CalDavAuthenticationException}: the
@@ -103,13 +109,38 @@ public class CaldavCredentialsResolver {
    *           credentials for the account
    */
   public String authorization(Long serverId, String providerName, String exoLogin) {
+    ConnectorCredentialsContext context = context(serverId, providerName, exoLogin);
+    HttpConnectorCredentials material = produce(context, providerName);
+    if (material.isExpired()) {
+      connectorCredentialsService.invalidate(context);
+      material = produce(context, providerName);
+    }
+    return material.getAuthorizationHeaderValue();
+  }
+
+  /**
+   * Tells the configured provider that the material it produced for this account
+   * was refused by the calendar server, so a caching provider forgets it. Called
+   * exactly once per refusal by the two places that see one - the client and
+   * the relay - and never in a retry loop, as the contract asks. Personal has
+   * nothing to forget and answers nothing.
+   *
+   * @param serverId registration the account references, or null for the
+   *          legacy property
+   * @param providerName provider the registration is configured with
+   * @param exoLogin the eXo login the refused material was produced for
+   */
+  public void invalidate(Long serverId, String providerName, String exoLogin) {
+    connectorCredentialsService.invalidate(context(serverId, providerName, exoLogin));
+  }
+
+  private HttpConnectorCredentials produce(ConnectorCredentialsContext context, String providerName) {
     try {
       // The cast holds because the resolution service refuses a provider that
       // does not declare the requested channel, and an HTTP-declaring provider
       // answers HTTP material. A failure here is a provider breaking its own
       // contract, which is why it is not caught into something friendlier.
-      return ((HttpConnectorCredentials) connectorCredentialsService.produce(context(serverId, providerName,
-                                                                                    exoLogin))).getAuthorizationHeaderValue();
+      return (HttpConnectorCredentials) connectorCredentialsService.produce(context);
     } catch (ConnectorCredentialsException e) {
       throw new CalDavException("The credentials provider " + providerName
           + " could not produce credentials for this CalDAV account", e);
