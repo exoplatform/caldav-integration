@@ -94,14 +94,56 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     <caldav-admin-server-list :servers="servers" />
     <caldav-admin-server-drawer />
     <caldav-admin-sync-drawer @saved="tuning = $event" />
-    <caldav-admin-managed-mode-drawer
+    <!--
+      The drawer is the platform's, shared with the mail connector: this section
+      hands it the declared servers as candidates, the eligibility answers, and
+      its own save. What is CalDAV here is the icon a row is drawn with and the
+      way out of the empty state, so both come in through slots.
+    -->
+    <managed-connector-drawer
+      ref="managedDrawer"
+      :candidates="managedCandidates"
+      :connection-requirements="connectionRequirements"
+      :save="saveManagedMode"
       @saved="managedApplied"
-      @cancelled="managedCancelled" />
+      @cancelled="managedCancelled">
+      <template #icon="{candidate}">
+        <caldav-server-icon
+          :image-url="candidate.imageUrl"
+          :icon="candidate.icon"
+          icon-size="24" />
+      </template>
+      <template #empty-action>
+        <v-btn
+          :aria-label="$t('caldav.admin.servers.add')"
+          class="btn btn-primary"
+          @click="addServerFromManagedDrawer">
+          <v-icon size="18">fa-plus</v-icon>
+          <span class="text-none ms-2">{{ $t('caldav.admin.servers.add') }}</span>
+        </v-btn>
+      </template>
+    </managed-connector-drawer>
+    <!--
+      Off is not an ordinary flip either: it is an instance-wide change, so the
+      switch asks before it commits - and says what happens today: users choose
+      again, the accounts already connected keep syncing. What becomes of the
+      users managed mode attached is EXO-89654's, and its wording will change
+      when that lands.
+    -->
+    <confirm-dialog
+      ref="managedOffConfirm"
+      :title="$t('caldav.admin.managed.off.confirm.title')"
+      :message="$t('caldav.admin.managed.off.confirm.message', {0: managed && managed.serverName || ''})"
+      :ok-label="$t('caldav.admin.managed.off.confirm.ok')"
+      :cancel-label="$t('caldav.admin.managed.off.confirm.cancel')"
+      @ok="clearManagedMode"
+      @closed="managedOffDeclined" />
   </div>
 </template>
 
 <script>
 import * as caldavConnectorService from '../../js/agendaCaldavService.js';
+import {serverHost} from '../../caldav-connector/caldavConnector.js';
 
 export default {
   props: {
@@ -120,10 +162,22 @@ export default {
     tuning: null,
     /**
      * What the instance decided about who chooses the CalDAV server —
-     * {serverId, serverName, managedForMe}. Null until it has been read, so
-     * the row can tell "not read yet" from "off".
+     * {serverId, serverName, excludedGroups, managedForMe}. Null until it has
+     * been read, so the row can tell "not read yet" from "off".
      */
     managed: null,
+    /**
+     * Provider name to whether that provider asks the user for anything. What
+     * decides which declared servers the drawer offers: only one whose
+     * provider asks nothing can be designated for everybody.
+     */
+    connectionRequirements: {},
+    /**
+     * Whether the off confirmation was accepted during this opening. The
+     * dialog's `closed` fires after OK and after Cancel alike, and only one
+     * of them must leave the switch off.
+     */
+    managedOffConfirmed: false,
     /**
      * The switch's own state, which is deliberately NOT derived from
      * `managed`. Flipping it on is a request to choose a server, not the
@@ -162,6 +216,10 @@ export default {
      */
     managedSummary() {
       if (this.managed && this.managed.serverId) {
+        const excluded = this.managed.excludedGroups && this.managed.excludedGroups.length || 0;
+        if (excluded) {
+          return this.$t('caldav.admin.managed.onExcept', {0: this.managed.serverName || '', 1: excluded});
+        }
         return this.$t('caldav.admin.managed.on', {0: this.managed.serverName || ''});
       }
       if (!this.activeServers.length) {
@@ -177,12 +235,31 @@ export default {
     activeServers() {
       return (this.servers || []).filter(server => server.active);
     },
+    /**
+     * The declared servers as the shared drawer reads them. The provider name
+     * travels under the drawer's own key: it is what the drawer matches against
+     * the requirements to keep only the rows that ask their users for nothing.
+     *
+     * @returns {Array} one candidate per declared server
+     */
+    managedCandidates() {
+      return (this.servers || []).map(server => ({
+        id: server.id,
+        name: server.name,
+        subtitle: server.description || serverHost(server.serverUrl),
+        active: !!server.active,
+        providerName: server.authProviderName,
+        imageUrl: server.imageUrl,
+        icon: server.icon,
+      }));
+    },
   },
   created() {
     this.$root.$on('refresh-caldav-servers-list', this.refreshServers);
     this.refreshServers();
     this.retrieveTuning();
     this.retrieveManagedMode();
+    this.retrieveConnectionRequirements();
   },
   methods: {
     /**
@@ -210,6 +287,20 @@ export default {
         .catch(() => this.servers = []);
     },
     /**
+     * Reads which providers ask their users for anything.
+     *
+     * A failure leaves the map empty, and an empty map makes every server
+     * ineligible: the drawer then says none can be designated, which is the
+     * conservative reading when the platform could not say otherwise.
+     *
+     * @returns {Promise} resolves once the answers have been read or given up on
+     */
+    retrieveConnectionRequirements() {
+      return caldavConnectorService.getConnectionRequirements()
+        .then(requirements => this.connectionRequirements = requirements || {})
+        .catch(error => console.error('cannot read the CalDAV connection requirements', error));
+    },
+    /**
      * Reads whether the instance chooses the server for its users, and which.
      *
      * A failure leaves the row saying "off" rather than inventing a state: the
@@ -228,26 +319,37 @@ export default {
     },
     /**
      * Reacts to the switch, which does two quite different things depending on
-     * which way it went.
+     * which way it went — and commits neither by itself.
      *
-     * On is a REQUEST, not a commit: it opens the drawer and stores nothing.
-     * There is no honest way to turn managed mode on without naming a server,
-     * and the switch cannot name one. Off is a commit, immediately and with no
-     * confirmation dialog: it gives an affordance back rather than taking one
-     * away, and nothing is severed by it — the accounts already connected go
-     * on synchronising exactly as they did.
+     * On is a request to choose a server: it opens the drawer and stores
+     * nothing, because there is no honest way to turn managed mode on without
+     * naming a server, and the switch cannot name one. Off is a request too:
+     * an instance-wide change, so the switch asks first. Either
+     * way the switch runs ahead of the setting until the administrator
+     * answers, and goes back if they decline.
      *
      * @param {Boolean} on the position the switch was moved to
-     * @returns {Promise} resolves once the drawer is open, or the mode cleared
+     * @returns {void}
      */
     flipManagedMode(on) {
       if (on) {
         this.openManagedDrawer();
-        return Promise.resolve();
+        return;
       }
+      this.managedOffConfirmed = false;
+      this.$refs.managedOffConfirm.open();
+    },
+    /**
+     * Switches managed mode off, once confirmed.
+     *
+     * @returns {Promise} resolves once the mode is cleared
+     */
+    clearManagedMode() {
+      this.managedOffConfirmed = true;
       return caldavConnectorService.clearManagedMode()
         .then(managed => {
           this.managed = managed || null;
+          this.managedOn = false;
           this.$root.$emit('alert-message', this.$t('caldav.admin.managed.cleared'), 'success');
         })
         .catch(error => {
@@ -257,15 +359,55 @@ export default {
         });
     },
     /**
-     * Opens the drawer on the rows this section already read and the mode in
-     * force, so the choice is made against exactly what is on screen.
+     * Puts the switch back on when the off confirmation closed without OK.
+     *
+     * @returns {void}
+     */
+    managedOffDeclined() {
+      if (!this.managedOffConfirmed) {
+        this.managedCancelled();
+      }
+    },
+    /**
+     * Stores the choice the drawer collected, through this add-on's own
+     * endpoint — the drawer is shared and knows no URL. The snackbar is this
+     * section's too: the drawer does not know what a CalDAV server is called.
+     *
+     * @param {Number} serverId the chosen registration
+     * @param {Array<String>} excludedGroups the eXo group ids the choice must not reach
+     * @returns {Promise<Object>} the mode now in force
+     */
+    saveManagedMode(serverId, excludedGroups) {
+      return caldavConnectorService.saveManagedMode(serverId, excludedGroups)
+        .then(managed => {
+          const named = this.$t('caldav.admin.managed.saved', {0: managed && managed.serverName || ''});
+          this.$root.$emit('alert-message', named, 'success');
+          return managed;
+        });
+    },
+    /**
+     * Opens the declaration form from the drawer's empty state. The drawer
+     * closes on the way: the two are drawers on the same side, and leaving one
+     * under the other would put the administrator back in front of a list
+     * that was empty when they left it.
+     *
+     * @returns {void}
+     */
+    addServerFromManagedDrawer() {
+      this.$refs.managedDrawer.close();
+      this.$root.$emit('open-caldav-server-drawer');
+    },
+    /**
+     * Opens the drawer on the mode in force, so the choice is made against
+     * exactly what is stored.
      *
      * @returns {void}
      */
     openManagedDrawer() {
-      this.$root.$emit('open-caldav-managed-mode-drawer', {
-        servers: this.servers,
-        managed: this.managed,
+      const managed = this.managed || {};
+      this.$refs.managedDrawer.open({
+        connectorId: managed.serverId,
+        excludedGroups: managed.excludedGroups || [],
       });
     },
     /**

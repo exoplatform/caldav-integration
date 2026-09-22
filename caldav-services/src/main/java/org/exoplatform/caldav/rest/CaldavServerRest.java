@@ -17,6 +17,7 @@
 package org.exoplatform.caldav.rest;
 
 import java.io.InputStream;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -27,6 +28,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -42,6 +44,7 @@ import org.exoplatform.caldav.model.CaldavManagedMode;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.model.CaldavSyncTuning;
+import org.exoplatform.caldav.rest.model.CaldavManagedModeRequest;
 import org.exoplatform.caldav.service.CaldavManagedModeService;
 import org.exoplatform.caldav.service.CaldavMirrorReportService;
 import org.exoplatform.caldav.service.CaldavServerService;
@@ -70,6 +73,9 @@ import jakarta.servlet.http.HttpServletRequest;
 @RequestMapping("/servers")
 @Tag(name = "/caldav/rest/servers", description = "Manages the registry of CalDAV servers users may connect to")
 public class CaldavServerRest {
+
+  /** What a managed-mode save naming no server is refused with. */
+  private static final String SERVER_REQUIRED = "caldav.managed.serverRequired";
 
   @Autowired
   private CaldavServerService caldavServerService;
@@ -134,20 +140,18 @@ public class CaldavServerRest {
 
   /**
    * Whether this deployment chooses the CalDAV server on its users' behalf,
-   * and — for the caller specifically — whether that choice applies to them.
-   *
+   * which one, and which groups it does not reach.
    * <p>
-   * Readable by every authenticated user because every authenticated user acts
-   * on it: this is what the browser reads before deciding whether to offer
-   * connecting an account at all. The {@code managedForMe} half is computed
-   * per viewer in the service, so that the group exclusions planned next
-   * change one service method and not one front-end component per screen.
+   * Administrators only: the exclusions and the server's name are the
+   * administration screen's facts. The per-viewer {@code managedForMe} is
+   * kept in the payload for the login-time attachment (EXO-89653); no user
+   * page reads this today.
    *
    * @param request the HTTP request, carrying the authenticated user
    * @return the mode as it stands for the caller
    */
   @GetMapping("/managed")
-  @Secured("users")
+  @Secured("administrators")
   @Operation(summary = "Reads the CalDAV managed mode", method = "GET",
       description = "Says which declared server the instance synchronises everybody with, and whether the calling "
           + "user is governed by that choice. Nothing is named when managed mode is off.")
@@ -157,33 +161,41 @@ public class CaldavServerRest {
   }
 
   /**
-   * Records the server the instance synchronises everybody with.
+   * Records the server the instance synchronises everybody with, and the
+   * groups that choice does not reach.
    *
    * <p>
-   * Switching managed mode on takes the connect and disconnect affordances
-   * away from every user, so the row has to be one they could actually have
-   * connected to: an unknown or deactivated registration is refused with the
-   * message code the drawer renders.
+   * Switching managed mode on attaches a whole population, so the row has to
+   * be one they could actually be attached to: an unknown or deactivated
+   * registration, or one whose provider asks the user for something, is
+   * refused with the message code the drawer renders.
    *
    * @param request the HTTP request, carrying the authenticated user
-   * @param serverId technical identifier of the registration to manage with
+   * @param body the registration to manage with and the excluded groups
    * @return the mode now in force, as it stands for the calling administrator
    */
   @PutMapping("/managed")
   @Secured("administrators")
   @Operation(summary = "Records the CalDAV managed mode", method = "PUT",
-      description = "Points the whole instance at one declared server. The registration must exist and be active: "
-          + "managed mode removes every user's connect affordance, so it must not name a server nobody can reach.")
+      description = "Points the whole instance at one declared server, minus the excluded groups. The registration "
+          + "must exist, be active and be configured with a provider that asks the user for nothing: managed mode "
+          + "attaches every other user to it as they log in.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden") })
   public CaldavManagedMode saveManagedMode(HttpServletRequest request,
-                                           @Parameter(description = "Technical identifier of the registration", required = true)
-                                           @RequestParam("serverId")
-                                           long serverId) {
+                                           @RequestBody
+                                           CaldavManagedModeRequest body) {
+    if (body == null || body.serverId() == null) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, SERVER_REQUIRED);
+    }
     try {
-      caldavManagedModeService.saveManagedServer(serverId);
+      caldavManagedModeService.saveManagedServer(body.serverId(),
+                                                 body.excludedGroups() == null ? List.of() : body.excludedGroups(),
+                                                 request.getRemoteUser());
       return caldavManagedModeService.getManagedMode(request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
@@ -208,7 +220,11 @@ public class CaldavServerRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "403", description = "Forbidden") })
   public CaldavManagedMode clearManagedMode(HttpServletRequest request) {
-    caldavManagedModeService.clearManagedServer();
+    try {
+      caldavManagedModeService.clearManagedServer(request.getRemoteUser());
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    }
     return caldavManagedModeService.getManagedMode(request.getRemoteUser());
   }
 
@@ -499,5 +515,29 @@ public class CaldavServerRest {
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     }
+  }
+
+  /**
+   * Puts a refusal's message code in the body the browser reads.
+   * <p>
+   * The controller methods refuse with {@code ResponseStatusException(status,
+   * code)}, and Spring Boot's default error body does not carry the reason on
+   * this platform - the browser received {@code {"status":400,"error":"Bad
+   * Request"}} and nothing else, so the drawers fell back to "could not be
+   * saved" for every rule (EXO-89652). The same shape {@code CaldavShareRest}
+   * answers its own failures with: the status, and the code under
+   * {@code message}, which is what the JS services read.
+   *
+   * @param refusal the refusal a controller method threw
+   * @return the same status, with the code in the body
+   */
+  @ExceptionHandler(ResponseStatusException.class)
+  public ResponseEntity<Map<String, Object>> onRefusal(ResponseStatusException refusal) {
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("status", refusal.getStatusCode().value());
+    if (refusal.getReason() != null) {
+      body.put("message", refusal.getReason());
+    }
+    return ResponseEntity.status(refusal.getStatusCode()).body(body);
   }
 }
