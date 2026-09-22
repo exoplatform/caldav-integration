@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -37,6 +38,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -50,6 +52,7 @@ import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.MkCalendarResult;
+import org.exoplatform.caldav.client.PropPatchResult;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
@@ -108,6 +111,11 @@ public class CaldavOutboundServiceTest {
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     lenient().when(calDavClient.discoverCalendarHome(any(), anyString(), anyString())).thenReturn(HOME);
     lenient().when(caldavSyncStorage.savePair(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    // The stand-in server takes every rename and, unless a test says
+    // otherwise, cannot be read back — the pessimistic default, so that no
+    // test passes on a read-back it did not arrange.
+    lenient().when(calDavClient.setDisplayName(any(), anyString(), anyString(), anyString(), anyString()))
+             .thenReturn(new PropPatchResult(207, List.of()));
   }
 
   @Test
@@ -419,6 +427,107 @@ public class CaldavOutboundServiceTest {
   }
 
   @Test
+  public void aCalendarRenamedInExoRenamesItsCollectionAndTheNameIsReadBack() {
+    // Samuel's report on EXO-89528: renamed in eXo, still the old name on
+    // BlueMind. The name was written once, inside MKCALENDAR, and nothing
+    // ever wrote it again — a sweep found the collection by path, re-recorded
+    // the pair and left the name alone.
+    givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work, renamed"));
+    givenServerCalendars(List.of(collection(WANTED, "Work")));
+    when(calDavClient.readCalendar(any(), eq(WANTED), anyString(), anyString())).thenReturn(collection(WANTED,
+                                                                                                       "Work, renamed"));
+
+    List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
+
+    InOrder wire = inOrder(calDavClient);
+    wire.verify(calDavClient).setDisplayName(any(), eq(WANTED), eq("Work, renamed"), anyString(), anyString());
+    // The status is never the proof: the name is read back after the write.
+    wire.verify(calDavClient).readCalendar(any(), eq(WANTED), anyString(), anyString());
+    assertEquals(CalendarSyncStatus.ACTIVE, pairs.get(0).getStatus());
+    assertEquals(WANTED, pairs.get(0).getRemoteHref(), "the name is data; the path stays the identity");
+  }
+
+  @Test
+  public void aCollectionAlreadyUnderTheCalendarsNameIsLeftAlone() {
+    // The common case, every sweep, for every calendar nobody renamed: the
+    // listing already carries the name, so it costs no request at all.
+    givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
+    givenServerCalendars(List.of(collection(WANTED, "Work")));
+
+    service.bindPersonalCalendars(USER, LOGIN);
+
+    verify(calDavClient, never()).setDisplayName(any(), anyString(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).readCalendar(any(), anyString(), anyString(), anyString());
+  }
+
+  @Test
+  public void aBindingRecoveredByPathAfterAReconnectGetsTheCalendarsCurrentName() {
+    // The second half of the report: deleting and re-adding the account did
+    // not help either. The binding is recovered by path, which is right —
+    // and finds the same collection under the same stale name, which the
+    // recovery must now put right rather than inherit.
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, ANCHOR)).thenReturn(null);
+    givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work, renamed"));
+    givenServerCalendars(List.of(collection(WANTED, "Work")));
+    when(calDavClient.readCalendar(any(), eq(WANTED), anyString(), anyString())).thenReturn(collection(WANTED,
+                                                                                                       "Work, renamed"));
+
+    List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
+
+    verify(calDavClient).setDisplayName(any(), eq(WANTED), eq("Work, renamed"), anyString(), anyString());
+    verify(calDavClient, never()).mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString());
+    assertEquals(CalendarSyncStatus.ACTIVE, pairs.get(0).getStatus());
+  }
+
+  @Test
+  public void aRenameTheServerAcceptedButDidNotApplyLeavesTheBindingStanding() {
+    // A 207 with a granting propstat over a name that did not change — the
+    // MKCALENDAR lesson applied to the rename. The read-back tells the
+    // administrator; the binding is untouched, because the name is data and
+    // an unrenamed calendar that syncs beats a renamed one that does not.
+    givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work, renamed"));
+    givenServerCalendars(List.of(collection(WANTED, "Work")));
+    when(calDavClient.readCalendar(any(), eq(WANTED), anyString(), anyString())).thenReturn(collection(WANTED, "Work"));
+
+    List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
+
+    verify(calDavClient).readCalendar(any(), eq(WANTED), anyString(), anyString());
+    assertEquals(CalendarSyncStatus.ACTIVE, pairs.get(0).getStatus());
+    assertEquals(WANTED, pairs.get(0).getRemoteHref());
+  }
+
+  @Test
+  public void aRenameTheServerWillNotTakeIsNotAnError() {
+    givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work, renamed"));
+    givenServerCalendars(List.of(collection(WANTED, "Work")));
+    when(calDavClient.setDisplayName(any(), eq(WANTED), anyString(), anyString(), anyString()))
+                                                                                             .thenThrow(new CalDavException("403"));
+
+    List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
+
+    assertEquals(CalendarSyncStatus.ACTIVE, pairs.get(0).getStatus());
+    verify(calDavClient, never()).readCalendar(any(), anyString(), anyString(), anyString());
+  }
+
+  @Test
+  public void aCollectionCreatedWithoutItsNameIsNamedOnTheSpot() {
+    // MKCALENDAR carried the name; the listing that confirms the creation
+    // says the server kept something else. What the server holds is what
+    // counts, so the same reconciliation runs on a collection just created.
+    givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"));
+    givenServerCalendars(List.of(), List.of(collection(WANTED, "Untitled")));
+    when(calDavClient.mkCalendar(any(), anyString(), anyString(), any(), anyString(), anyString()))
+                                                                                                  .thenReturn(new MkCalendarResult(201,
+                                                                                                                                   List.of()));
+    when(calDavClient.readCalendar(any(), eq(WANTED), anyString(), anyString())).thenReturn(collection(WANTED, "Work"));
+
+    List<CalendarSync> pairs = service.bindPersonalCalendars(USER, LOGIN);
+
+    verify(calDavClient).setDisplayName(any(), eq(WANTED), eq("Work"), anyString(), anyString());
+    assertEquals(CalendarSyncStatus.ACTIVE, pairs.get(0).getStatus());
+  }
+
+  @Test
   public void severalPersonalCalendarsEachGetTheirOwn() {
     givenPersonalCalendars(calendar(1L, USER, ANCHOR, "Work"), calendar(2L, USER, "second-uid", "Private"));
     givenServerCalendars(List.of(),
@@ -476,7 +585,18 @@ public class CaldavOutboundServiceTest {
    * @return the collection
    */
   private CalendarCollection collection(String href) {
-    return new CalendarCollection(href, "listed", null, null, null, true);
+    return collection(href, "listed");
+  }
+
+  /**
+   * A listed collection, as the server names it.
+   *
+   * @param href its path
+   * @param displayName what the server says it is called
+   * @return the collection
+   */
+  private CalendarCollection collection(String href, String displayName) {
+    return new CalendarCollection(href, displayName, null, null, null, true);
   }
 
   /**

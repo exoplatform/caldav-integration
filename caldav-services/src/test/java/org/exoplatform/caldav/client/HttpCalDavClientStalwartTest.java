@@ -233,6 +233,16 @@ public class HttpCalDavClientStalwartTest {
     assertTrue(calendars.stream().anyMatch(calendar -> calendar.href().equals(collectionHref)),
                "presence in a fresh listing is the only statement of success MKCALENDAR gets credit for");
 
+    // The rename, held to the same discipline (EXO-89528): the grammar of the
+    // PROPPATCH is validated by the real server, and the name it then reports
+    // — not the 207 — is what the rename gets credit for.
+    String renamed = "eXo client IT renamed " + runId;
+    PropPatchResult rename = client.setDisplayName(endpoint, collectionHref, renamed, USER, PASSWORD);
+    assertTrue(rename.accepted(), "the rig takes a displayname PROPPATCH: " + rename);
+    CalendarCollection readBack = client.readCalendar(endpoint, collectionHref, USER, PASSWORD);
+    assertNotNull(readBack);
+    assertEquals(renamed, readBack.displayName(), "read back, the collection carries the new name");
+
     int deleteStatus = client.deleteObject(endpoint, collectionHref, null, USER, PASSWORD);
     assertTrue(deleteStatus == 200 || deleteStatus == 204, "the run cleans its own collection up");
   }

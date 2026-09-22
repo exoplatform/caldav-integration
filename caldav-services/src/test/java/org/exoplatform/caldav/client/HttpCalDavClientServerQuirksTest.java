@@ -232,6 +232,67 @@ public class HttpCalDavClientServerQuirksTest {
   }
 
   @Test
+  void aRenameIsAProppatchOfTheDisplayNameAlone() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), proppatchAnswer(200));
+
+    PropPatchResult result = client.setDisplayName(endpoint, BLUEMIND_HOME + "exo-cal-1/", "Team & <co>", USER, PASSWORD);
+
+    assertTrue(result.accepted());
+    assertFalse(result.refused());
+    HttpRequest request = sent.get(0);
+    assertEquals("PROPPATCH", request.method());
+    String body = bodyOf(request);
+    assertTrue(body.contains("<d:propertyupdate xmlns:d=\"DAV:\">"), body);
+    assertTrue(body.contains("<d:set><d:prop><d:displayname>Team &amp; &lt;co&gt;</d:displayname></d:prop></d:set>"),
+               "the name is escaped, so a calendar called after an ampersand does not become malformed XML: " + body);
+    assertFalse(body.contains("supported-calendar-component-set"),
+                "a rename touches the name and nothing else — the collection's kind is not re-declared");
+  }
+
+  @Test
+  void aProppatch207WithAFailingPropstatIsNotAccepted() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), proppatchAnswer(403));
+
+    PropPatchResult result = client.setDisplayName(endpoint, BLUEMIND_HOME + "exo-cal-1/", "Work", USER, PASSWORD);
+
+    assertFalse(result.accepted(), "207 is a 2xx that can carry a refusal; the propstat is what says no");
+    assertEquals(List.of(403), result.failedPropstatStatuses());
+  }
+
+  @Test
+  void aRenameRefusedWith403IsAnAnswerNotACredentialFailure() throws Exception {
+    givenAnswer(403, Map.of(), "");
+
+    PropPatchResult result = client.setDisplayName(endpoint, BLUEMIND_HOME + "exo-cal-1/", "Work", USER, PASSWORD);
+
+    assertTrue(result.refused(), "the caller logs and lives with it; pausing the account over a rename would be absurd");
+    assertFalse(result.accepted());
+  }
+
+  @Test
+  void aRenameWith401IsACredentialRefusal() throws Exception {
+    givenAnswer(401, Map.of(), "");
+
+    assertThrows(CalDavAuthenticationException.class,
+                 () -> client.setDisplayName(endpoint, BLUEMIND_HOME + "exo-cal-1/", "Work", USER, PASSWORD));
+  }
+
+  /**
+   * A PROPPATCH answer in the shape both rigs give (Stalwart verified live
+   * 2026-09-04: 207, one propstat, the property echoed empty).
+   *
+   * @param propstatStatus the status the one propstat carries
+   * @return the multistatus body
+   */
+  private String proppatchAnswer(int propstatStatus) {
+    return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <D:multistatus xmlns:D="DAV:"><D:response><D:href>%sexo-cal-1/</D:href>
+        <D:propstat><D:prop><D:displayname/></D:prop><D:status>HTTP/1.1 %s</D:status></D:propstat>
+        </D:response></D:multistatus>""".formatted(BLUEMIND_HOME, propstatStatus == 200 ? "200 OK" : propstatStatus + " Forbidden");
+  }
+
+  @Test
   void blueMindsDavRootedHrefsAreKeptServerAbsolute() throws Exception {
     // BlueMind advertises hrefs rooted at /dav/ whatever path the registered
     // URL carries: the client must keep them addressable as answered, and

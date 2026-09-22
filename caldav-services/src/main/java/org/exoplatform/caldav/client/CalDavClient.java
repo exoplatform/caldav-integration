@@ -418,6 +418,35 @@ public interface CalDavClient {
                               String password);
 
   /**
+   * Asks the server to change the display name of an existing collection —
+   * a PROPPATCH of {@code DAV:displayname}, the one property eXo propagates
+   * after creation. The name travels as data and never as identity: the
+   * collection stays where its path put it, and only what the user reads in
+   * their own client changes.
+   *
+   * <p>
+   * As with {@link #mkCalendar}, the answer is a claim. The one statement of
+   * success a caller may trust is the name read back from the collection
+   * afterwards, through {@link #readCalendar}; see {@link PropPatchResult}.
+   *
+   * @param endpoint the declared server
+   * @param href the collection's server-absolute path
+   * @param displayName the name to set
+   * @param username the account to authenticate as
+   * @param password that account's password
+   * @return the raw outcome, refusals included — a server declining PROPPATCH
+   *         gives an answer the caller logs and lives with, not an error
+   * @throws CalDavAuthenticationException when the credentials are refused
+   *           (401/407 — a 403 here is the refusal, not an auth failure)
+   * @throws CalDavException when the server cannot be reached
+   */
+  PropPatchResult setDisplayName(CalDavEndpoint endpoint,
+                                 String href,
+                                 String displayName,
+                                 String username,
+                                 String password);
+
+  /**
    * Removes a whole collection, and everything in it.
    *
    * <p>
