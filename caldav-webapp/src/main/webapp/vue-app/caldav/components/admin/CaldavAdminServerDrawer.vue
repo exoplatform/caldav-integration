@@ -637,14 +637,15 @@ export default {
         document.dispatchEvent(new CustomEvent('agenda-connectors-refresh'));
         this.close();
       } catch (e) {
-        // A refused configuration comes back as a message code the provider's
-        // own bundle translates, and a refused registration as one of this
-        // add-on's own (caldav.server.*). Showing the generic "error" instead
+        // A refusal comes back as a message code some bundle translates - the
+        // provider's (a configuration field), or this add-on's (a refused
+        // registration, caldav.server.*, or the managed row that may not move to
+        // a provider that asks the user). Showing the generic "error" instead
         // would tell the administrator nothing about a form they can correct.
         // A code this bundle does not carry keeps the generic message rather
         // than showing its key.
         if (e && e.messageCode && (e.messageCode.startsWith('connector.credentials.')
-            || e.messageCode.startsWith('caldav.server.') && this.$t(e.messageCode) !== e.messageCode)) {
+            || this.$t(e.messageCode) !== e.messageCode)) {
           this.$root.$emit('alert-message', this.$t(e.messageCode), 'error');
         } else if (isNew) {
           this.$root.$emit('alert-message', this.$t('caldav.admin.servers.drawer.add.error'), 'error');
