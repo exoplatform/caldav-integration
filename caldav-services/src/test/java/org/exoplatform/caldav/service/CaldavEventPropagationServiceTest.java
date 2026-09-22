@@ -559,6 +559,33 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
+   * A holder whose identity resolves to no login is left for the next run, as the
+   * sync sweep already does - not written to, and not counted as a failure: with a
+   * null login the push would fail on the DAV account or on the provider, an error
+   * about the wrong thing, logged at WARN for what is a skip. Pinned on the rewrite
+   * leg, whose holders come straight from the mapping rows and meet the login
+   * resolution first; the creation leg filters invitees through their identity
+   * before it gets there, so a guard removed there is not observable from here.
+   * Mutation-verified: with the guard removed at the rewrite loop,
+   * {@code pushAgendaEvent} is asked for BOB with a null login.
+   */
+  @Test
+  public void aHolderWhoseLoginCannotBeResolvedIsLeftForTheNextRun() {
+    givenTheEventIs(EventStatus.CONFIRMED);
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    when(identityManager.getIdentity(String.valueOf(BOB))).thenReturn(null);
+    when(caldavPushService.pushAgendaEvent(ALICE, login(ALICE), EVENT)).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPushService).pushAgendaEvent(ALICE, login(ALICE), EVENT);
+    verify(caldavPushService, never()).pushAgendaEvent(eq(BOB), any(), anyLong());
+  }
+
+  /**
    * Whoever confirmed the poll is skipped, for the reason a creation's author
    * is: their own browser pushes their copy on save, and both writers minting
    * the same iCalendar UID means the second one to record its mapping row dies

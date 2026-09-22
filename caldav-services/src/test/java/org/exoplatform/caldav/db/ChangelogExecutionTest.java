@@ -93,6 +93,9 @@ public class ChangelogExecutionTest {
   /** The per-server destination EXO-89760 appends. */
   private static final String MIRROR_TARGET_COLUMN = "MIRROR_TARGET";
 
+  /** The per-server credentials provider EXO-89657 appends. */
+  private static final String AUTH_PROVIDER_COLUMN = "AUTH_PROVIDER_NAME";
+
   /** The index the platform builds its EntityManager from. */
   private static final String ENTITY_INDEX        = "jpa-entities.idx";
 
@@ -310,6 +313,29 @@ public class ChangelogExecutionTest {
       }
     }
     assertEquals(0, nullableFlag("CALDAV_SERVER", MIRROR_TARGET_COLUMN), "and the column must be NOT NULL");
+  }
+
+  /**
+   * The credentials-provider column, same promise as the two above: a server
+   * declared before it existed authenticates as it always did, with the user's own
+   * credentials. A DEFAULT lost in an edit would leave every upgraded row with no
+   * provider at all, which no Java test can see.
+   *
+   * @throws Exception when a changeset cannot be applied or the row not written
+   */
+  @Test
+  public void aServerRowDefaultsToThePersonalProvider() throws Exception {
+    update();
+
+    try (Statement statement = connection.createStatement()) {
+      statement.executeUpdate("INSERT INTO CALDAV_SERVER (ID, PROVIDER_NAME, NAME, SERVER_URL, ACTIVE) "
+          + "VALUES (4, 'agenda.caldavCalendar.4', 'Legacy', 'https://legacy.example.invalid/dav/', TRUE)");
+      try (ResultSet rows = statement.executeQuery("SELECT " + AUTH_PROVIDER_COLUMN + " FROM CALDAV_SERVER WHERE ID = 4")) {
+        assertTrue(rows.next(), "the row must have been written");
+        assertEquals("personal", rows.getString(1), "a row that says nothing about its provider authenticates as the user");
+      }
+    }
+    assertEquals(0, nullableFlag("CALDAV_SERVER", AUTH_PROVIDER_COLUMN), "and the column must be NOT NULL");
   }
 
   /**

@@ -138,6 +138,14 @@ public class EventResponseSavedListener extends Listener<EventAttendee, EventAtt
       // conversation state, so it resolves the login the credentials provider
       // needs rather than receiving one.
       String username = CaldavConnectorUtils.loginOf(getIdentityManager(), answer.getIdentityId());
+      if (username == null) {
+        // Unresolvable login (or no identity manager yet): left for the verification
+        // pass, as every other fan-out does - not a push failure to warn about.
+        LOG.debug("The answer of identity {} to event {} is left for the verification pass: no resolvable login",
+                  answer.getIdentityId(),
+                  answer.getEventId());
+        return;
+      }
       pushService.pushAnswer(answer.getIdentityId(), username, answer.getEventId(), answer.getResponse().name());
     } catch (Exception | LinkageError e) {
       // The answer is recorded in eXo and that must stand whatever the

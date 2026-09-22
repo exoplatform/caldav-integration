@@ -49,12 +49,16 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * empty, silently, since a missing source produces no credentials rather than an
  * error.
  * <p>
- * Two guards, for two different absences. {@code @ConditionalOnClass} keeps this
- * bean undefined when the credentials module is not on the classpath at all -
- * evaluated from bytecode metadata, so the class is never loaded and no
- * {@code NoClassDefFoundError} is risked. {@code @Autowired(required = false)}
- * plus the null check below cover the case where the class is there but the bean
- * is not, which is exactly this addon's own Spring test context.
+ * Two guards, both for this addon's own Spring test contexts rather than for a
+ * platform without the credentials module: that module is a {@code provided}
+ * prerequisite of this WAR - {@link CaldavCredentialsResolver} requires its
+ * {@code ConnectorCredentialsService} bean outright, and the client and the relay
+ * require the resolver - so the WAR does not start without it, and the addon's
+ * install notes must say so. {@code @ConditionalOnClass} is kept as a
+ * belt-and-braces guard, evaluated from bytecode metadata so the class is never
+ * loaded; {@code @Autowired(required = false)} plus the null check below cover the
+ * case where the class is there but the provider bean is not, which is exactly what
+ * a context built from this addon's beans alone looks like.
  */
 @Component
 @ConditionalOnClass(PersonalCredentialsSource.class)
@@ -97,7 +101,12 @@ public class CaldavPersonalCredentialsSource implements PersonalCredentialsSourc
       return null;
     }
     CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(Long.parseLong(identity.getId()));
-    if (StringUtils.isBlank(setting.getUsername())) {
+    // Both halves or nothing, like every other "is this account connected" predicate
+    // of this addon: half a credential is not a credential. The only writer stores
+    // both halves and a changed codec key stops startup rather than yielding a null
+    // secret, so no caller reaches the second condition today - it aligns this
+    // source with its siblings against a future writer.
+    if (StringUtils.isBlank(setting.getUsername()) || StringUtils.isBlank(setting.getPassword())) {
       return null;
     }
     return new RawCredentials(setting.getUsername(), setting.getPassword());

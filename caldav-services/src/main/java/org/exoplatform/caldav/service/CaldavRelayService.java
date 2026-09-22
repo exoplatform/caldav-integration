@@ -298,7 +298,7 @@ public class CaldavRelayService {
                                                relayRequest.getHeaders(),
                                                relayRequest.getBody(),
                                                authorization(server, relayRequest.getUsername()));
-    return execute(request, upstreamBase, relayRequest.getRelayPrefix());
+    return execute(request, upstreamBase, relayRequest.getRelayPrefix(), server, relayRequest.getUsername());
   }
 
   /**
@@ -530,7 +530,7 @@ public class CaldavRelayService {
    * @param relayPrefix the relay prefix hrefs are rewritten onto
    * @return the response to hand the browser
    */
-  private CaldavRelayedResponse execute(HttpRequest request, URI upstreamBase, String relayPrefix) {
+  private CaldavRelayedResponse execute(HttpRequest request, URI upstreamBase, String relayPrefix, CaldavServer server, String username) {
     try {
       HttpResponse<InputStream> response = httpClient.send(request, BodyHandlers.ofInputStream());
       byte[] body = readBounded(response.body());
@@ -540,6 +540,9 @@ public class CaldavRelayService {
       }
       int status = response.statusCode();
       if (status == 401 || status == 407) {
+        // The provider's material was refused: told once, so a caching provider
+        // forgets it (Personal has nothing to forget); never retried from here.
+        caldavCredentialsResolver.invalidate(server.getId(), server.getAuthProviderName(), username);
         // The STORED CalDAV credentials are refused: never let this travel
         // as a 401, which the platform and the browser both read as "the eXo
         // user is unauthenticated" (and, with WWW-Authenticate, as an

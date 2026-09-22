@@ -50,6 +50,7 @@ import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.agenda.service.AgendaCalendarService;
+import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
@@ -403,12 +404,11 @@ public class CaldavSyncService {
    * @return the login, or null when it cannot be resolved
    */
   private String loginOf(long userIdentityId) {
-    Identity identity = identityManager.getIdentity(String.valueOf(userIdentityId));
-    if (identity == null || StringUtils.isBlank(identity.getRemoteId())) {
+    String login = CaldavConnectorUtils.loginOf(identityManager, userIdentityId);
+    if (login == null) {
       LOG.debug("Identity {} has no resolvable login; its account is left for the next run", userIdentityId);
-      return null;
     }
-    return identity.getRemoteId();
+    return login;
   }
 
   /**

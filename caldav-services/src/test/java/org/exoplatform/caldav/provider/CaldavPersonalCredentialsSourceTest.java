@@ -72,6 +72,23 @@ public class CaldavPersonalCredentialsSourceTest {
   }
 
   /**
+   * Half a credential is not a credential, as every other connected-predicate of this
+   * addon already says. Guards a path no caller reaches today: the only writer stores
+   * both halves and a changed codec key stops startup rather than yielding a null
+   * secret - so this is an alignment against a future writer, not a fix.
+   */
+  @Test
+  public void testAUsernameWithoutASecretIsNoCredential() {
+    Identity identity = new Identity("7");
+    when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, TEST_USER)).thenReturn(identity);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("alice@example.com");
+    when(caldavConnectorStorage.getCaldavSetting(7L)).thenReturn(setting);
+
+    assertNull(caldavPersonalCredentialsSource.getCredentials(TEST_USER));
+  }
+
+  /**
    * The whole point of the {@code @PostConstruct}: this source pushes itself to
    * the provider, because the provider's own context is built before this one and
    * could not have collected it.
