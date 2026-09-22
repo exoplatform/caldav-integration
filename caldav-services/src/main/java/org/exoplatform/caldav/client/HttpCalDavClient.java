@@ -1637,7 +1637,7 @@ public class HttpCalDavClient implements CalDavClient {
                                      .build();
     DavResponse response = exchange(request);
     int status = response.status();
-    checkAuthStatus(status, true, request);
+    checkAuthStatus(status, true, request, endpoint);
     if (status != 200 && status != 204) {
       throw refusal(status, request);
     }
@@ -1646,7 +1646,7 @@ public class HttpCalDavClient implements CalDavClient {
     if (DavOptions.of(davHeaders, List.of()).davTokens().isEmpty()) {
       HttpRequest propfind = request(endpoint, href, PROPFIND_METHOD, PROPFIND_RESOURCETYPE).header(DEPTH_HEADER, "0").build();
       DavResponse answer = exchange(propfind);
-      checkReadStatus(answer, propfind);
+      checkReadStatus(answer, propfind, endpoint);
       davHeaders = answer.response().headers().allValues("dav");
     }
     return DavOptions.of(davHeaders, allowHeaders);
@@ -1726,7 +1726,7 @@ public class HttpCalDavClient implements CalDavClient {
     HttpRequest request = request(endpoint, href, "ACL", aclBody(entries)).build();
     DavResponse response = exchange(request);
     int status = response.status();
-    checkAuthStatus(status, false, request);
+    checkAuthStatus(status, false, request, endpoint);
     if (status == 502 || status == 503 || status == 504) {
       throw refusal(status, request);
     }
@@ -2148,7 +2148,7 @@ public class HttpCalDavClient implements CalDavClient {
     HttpRequest request = request(endpoint, href, "POST", body).build();
     DavResponse response = exchange(request);
     int status = response.status();
-    checkAuthStatus(status, false, request);
+    checkAuthStatus(status, false, request, endpoint);
     if (status < 200 || status >= 300) {
       throw refusal(status, request);
     }
