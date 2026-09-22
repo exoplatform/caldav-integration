@@ -35,6 +35,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
@@ -614,6 +615,65 @@ public class CaldavServerServiceTest {
     assertThrows(ObjectNotFoundException.class, () -> caldavServerService.updateServer(server, ADMIN_USER));
 
     verifyNoInteractions(agendaRemoteEventService);
+  }
+
+  /**
+   * EXO-89652. Editing the managed row asks the managed-mode guard about the
+   * provider it would end up with - the effective one, since a blank provider
+   * in the payload keeps the stored one - and a refusal leaves the row
+   * unwritten. Any other row changes provider freely.
+   */
+  @Test
+  public void shouldRefuseMovingTheManagedRowToAnIneligibleProvider() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, "agenda.caldavCalendar.7", "BlueMind", null, SERVER_URL, true);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    doThrow(new IllegalArgumentException("caldav.managed.providerNotEligible")).when(caldavManagedModeService)
+                                                                              .checkProviderChangeAllowed(7, "personal");
+
+    CaldavServer toPersonal = server(7, "agenda.caldavCalendar.7", "BlueMind", null, SERVER_URL, true);
+    toPersonal.setAuthProviderName("personal");
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.updateServer(toPersonal, ADMIN_USER));
+    assertEquals("caldav.managed.providerNotEligible", refusal.getMessage());
+    verify(caldavServerStorage, never()).updateServer(any());
+
+    CaldavServer renamedOnly = server(7, "agenda.caldavCalendar.7", "BlueMind 2", null, SERVER_URL, true);
+    renamedOnly.setAuthProviderName(null);
+    assertDoesNotThrow(() -> caldavServerService.updateServer(renamedOnly, ADMIN_USER));
+    verify(caldavManagedModeService).checkProviderChangeAllowed(7, "bluemind-sudo");
+  }
+
+  /**
+   * EXO-89652 (review round 2). Editing the managed row with {@code active=false}
+   * is refused like the status toggle refuses it — the payload carries the flag
+   * and the storage writes it, so the edit must not be the way around the
+   * guard. An edit that keeps the row active asks nothing of that guard.
+   */
+  @Test
+  public void shouldRefuseDeactivatingTheManagedRowThroughAnEdit() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, "agenda.caldavCalendar.7", "BlueMind", null, SERVER_URL, true);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    doThrow(new IllegalArgumentException("caldav.managed.serverInUse")).when(caldavManagedModeService)
+                                                                       .checkServerNotManaged(7);
+
+    CaldavServer deactivated = server(7, "agenda.caldavCalendar.7", "BlueMind", null, SERVER_URL, false);
+    deactivated.setAuthProviderName("bluemind-sudo");
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.updateServer(deactivated, ADMIN_USER));
+    assertEquals("caldav.managed.serverInUse", refusal.getMessage());
+    verify(caldavServerStorage, never()).updateServer(any());
+
+    clearInvocations(caldavManagedModeService);
+    CaldavServer stillActive = server(7, "agenda.caldavCalendar.7", "BlueMind 2", null, SERVER_URL, true);
+    stillActive.setAuthProviderName("bluemind-sudo");
+    assertDoesNotThrow(() -> caldavServerService.updateServer(stillActive, ADMIN_USER));
+    verify(caldavManagedModeService, never()).checkServerNotManaged(anyLong());
   }
 
   /**
