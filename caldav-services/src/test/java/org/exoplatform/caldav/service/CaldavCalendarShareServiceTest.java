@@ -1212,6 +1212,43 @@ public class CaldavCalendarShareServiceTest {
   }
 
   /**
+   * An unknown failure — an NPE in the ownership code, say — still answers no
+   * calendar, since the menu must never fail; but an empty answer hides Share
+   * on every calendar, so it is reported at WARN once per server, not left to
+   * DEBUG. An expected refusal (the server unreachable) stays at DEBUG.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anUnknownFailureOfTheShareableListIsReportedAtWarnOncePerServer() throws Exception {
+    Logger logger = (Logger) LoggerFactory.getLogger(CaldavCalendarShareService.class);
+    Level previous = logger.getLevel();
+    ListAppender<ILoggingEvent> logged = new ListAppender<>();
+    logged.start();
+    logger.addAppender(logged);
+    logger.setLevel(Level.DEBUG);
+    try {
+      when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.EXO)).thenReturn(List.of(exoPair()));
+      // Expected first, on a server nothing has been reported for yet: DEBUG only.
+      when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR)));
+      doThrow(new CalDavUnreachableException("down")).when(calDavClient).capabilities(endpoint, COLLECTION);
+      assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"));
+      assertTrue(logged.list.stream().noneMatch(event -> event.getLevel() == Level.WARN), String.valueOf(logged.list));
+
+      when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenThrow(new NullPointerException("owner"));
+      assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"));
+      assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"));
+
+      List<ILoggingEvent> warnings = logged.list.stream().filter(event -> event.getLevel() == Level.WARN).toList();
+      assertEquals(1, warnings.size(), String.valueOf(logged.list));
+      assertTrue(warnings.get(0).getFormattedMessage().contains("calendar server " + STALWART), warnings.get(0).getFormattedMessage());
+    } finally {
+      logger.detachAppender(logged);
+      logger.setLevel(previous);
+    }
+  }
+
+  /**
    * A server whose collection advertises no sharing mechanism — a BlueMind
    * collection whose PROPFIND answer carries no {@code DAV} header either
    * (stripped by a proxy, say) — is reported at INFO the first

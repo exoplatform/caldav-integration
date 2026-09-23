@@ -350,6 +350,13 @@ public class CaldavCalendarShareService {
   private final Set<Long>                       serversNotOffering = ConcurrentHashMap.newKeySet();
 
   /**
+   * The servers this node has already reported, at WARN, as failing the
+   * shareable-calendars question for an unknown reason — bounded by the
+   * number of declared servers, like {@link #serversNotOffering}.
+   */
+  private final Set<Long>                       serversFailingShareable = ConcurrentHashMap.newKeySet();
+
+  /**
    * What each server's collections advertised, remembered for
    * {@link #probeMemo}: agenda asks {@link #shareableCalendarIds} on every
    * refresh of its panel and on every open of a calendar's menu, and each miss
@@ -477,12 +484,13 @@ public class CaldavCalendarShareService {
    * @return the agenda ids of the shareable calendars, possibly empty
    */
   public List<Long> shareableCalendarIds(long userIdentityId, String username) {
+    long serverId = 0;
     try {
       CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
       if (!connected(settings)) {
         return List.of();
       }
-      long serverId = serverIdOf(settings);
+      serverId = serverIdOf(settings);
       Map<String, CalendarSync> pairs = new LinkedHashMap<>();
       caldavSyncStorage.getPairsByOrigin(userIdentityId, serverId, SyncOrigin.EXO)
                        .stream()
@@ -541,8 +549,20 @@ public class CaldavCalendarShareService {
                       })
                       .map(Calendar::getId)
                       .toList();
-    } catch (Exception e) { // NOSONAR this answer must never fail, whatever agenda or the server throws
+    } catch (CalDavException | CaldavShareException | IllegalAccessException e) {
+      // Expected refusals: the account, the server or agenda said no.
       LOG.debug("Which calendars user {} can share could not be established; none is offered", userIdentityId, e);
+      return List.of();
+    } catch (RuntimeException e) { // NOSONAR this answer must never fail, whatever throws
+      // Unknown: an empty answer hides Share on every calendar of this user,
+      // so it is reported, once per server per process, rather than left to
+      // DEBUG, where nobody would see Share switched off.
+      if (serversFailingShareable.add(serverId)) {
+        LOG.warn("Which calendars can be shared on calendar server {} could not be established (user {}); Share is not offered."
+            + " Reported once per server until restart", serverId, userIdentityId, e);
+      } else {
+        LOG.debug("Which calendars user {} can share could not be established; none is offered", userIdentityId, e);
+      }
       return List.of();
     }
   }
