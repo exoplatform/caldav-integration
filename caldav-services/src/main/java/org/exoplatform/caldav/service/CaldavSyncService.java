@@ -281,8 +281,14 @@ public class CaldavSyncService {
    * process rather than once per pass: the same colleague's calendar comes
    * back in every listing, and a line per pass would say the same thing every
    * five minutes for as long as the share lasts.
+   * <p>
+   * Bounded, unlike its siblings keyed by server or row id: the collection
+   * part of the key is the server's, and a server that republishes a
+   * collection at a new path makes a new key every time. At
+   * {@link SaidOnce#MAX_KEYS} keys it starts over, so the worst a churning
+   * server costs is each share said once more at info — never memory.
    */
-  private final Set<String>               sharesSaid          = ConcurrentHashMap.newKeySet();
+  private final SaidOnce                  sharesSaid          = new SaidOnce();
 
   /**
    * The pass running for a user, so two page loads a second apart do not run
@@ -1889,7 +1895,7 @@ public class CaldavSyncService {
     };
     why += StringUtils.isNotBlank(collection.owner()) ? "owned by " + collection.owner() : "owner not stated";
     why += collection.privilegesAnswered() ? (collection.writable() ? ", writable" : ", read-only") : ", privileges not stated";
-    if (sharesSaid.add(key)) {
+    if (sharesSaid.first(key)) {
       LOG.info("Collection {} is shared with user {} ({}; the account's principal is {}) and is not materialised as their"
           + " own calendar; it stays a read-only remote calendar and its events are served from the server",
                collection.href(),
@@ -2200,5 +2206,34 @@ public class CaldavSyncService {
   private boolean connected(CaldavUserSetting settings) {
     return settings != null && StringUtils.isNotBlank(settings.getUsername())
         && StringUtils.isNotBlank(settings.getPassword());
+  }
+
+  /**
+   * A set of keys already said once, bounded: at {@link #MAX_KEYS} it is
+   * cleared and starts over. Package-private for its test.
+   */
+  static final class SaidOnce {
+
+    /** The most keys held before starting over. */
+    static final int                MAX_KEYS = 10_000;
+
+    private final Set<String>       said     = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Whether this key is said for the first time since the last start-over.
+     *
+     * @param key the key
+     * @return true the first time
+     */
+    boolean first(String key) {
+      if (said.size() >= MAX_KEYS && !said.contains(key)) {
+        said.clear();
+      }
+      return said.add(key);
+    }
+
+    int size() {
+      return said.size();
+    }
   }
 }
