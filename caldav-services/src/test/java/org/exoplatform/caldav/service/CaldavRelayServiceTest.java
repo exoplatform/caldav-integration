@@ -51,6 +51,9 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.agenda.model.RemoteProvider;
+import org.exoplatform.agenda.service.AgendaRemoteEventService;
+import org.exoplatform.agenda.service.AgendaUserSettingsService;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavRelayRequest;
 import org.exoplatform.caldav.model.CaldavRelayedResponse;
@@ -127,6 +130,12 @@ public class CaldavRelayServiceTest {
   @Mock
   private CaldavConnectorService    caldavConnectorService;
 
+  @Mock
+  private AgendaUserSettingsService agendaUserSettingsService;
+
+  @Mock
+  private AgendaRemoteEventService  agendaRemoteEventService;
+
   @InjectMocks
   private CaldavRelayService     caldavRelayService;
 
@@ -137,6 +146,12 @@ public class CaldavRelayServiceTest {
   @AfterEach
   public void restoreProperties() {
     System.clearProperty("exo.agenda.caldav.relay.maxBodyBytes");
+  }
+
+  /** Agenda's own switch for the server's connector, as its connector settings hold it. */
+  private void givenAgendaConnector(boolean enabled) {
+    when(agendaRemoteEventService.getRemoteProviders())
+                                 .thenReturn(List.of(new RemoteProvider(0, "agenda.caldavCalendar." + SERVER_ID, null, null, enabled, false)));
   }
 
   /**
@@ -606,15 +621,43 @@ public class CaldavRelayServiceTest {
     when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
     when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
     when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
     givenProbeAnswer(207);
 
     CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
 
     assertEquals(CaldavProbeResult.OK, outcome.getResult());
     ArgumentCaptor<CaldavUserSetting> recorded = ArgumentCaptor.forClass(CaldavUserSetting.class);
-    org.mockito.Mockito.verify(caldavConnectorService).createProviderBackedSetting(recorded.capture(), eq(IDENTITY_ID));
+    // Agenda's record too, under the connector's name: without it "My calendars"
+    // shows the account as not connected, whatever caldav stored (EXO-89653).
+    // And agenda first: it is the write that can still refuse, and a refusal
+    // after caldav's write would leave a half-connected account.
+    org.mockito.InOrder writes = org.mockito.Mockito.inOrder(agendaUserSettingsService, caldavConnectorService);
+    writes.verify(agendaUserSettingsService)
+          .saveUserConnector("agenda.caldavCalendar." + SERVER_ID, "eric@bm.example.org", IDENTITY_ID);
+    writes.verify(caldavConnectorService).createProviderBackedSetting(recorded.capture(), eq(IDENTITY_ID));
     assertEquals("eric@bm.example.org", recorded.getValue().getUsername());
     assertEquals(SERVER_ID, recorded.getValue().getServerId());
+  }
+
+  /**
+   * Agenda's connector settings can switch the connector off on their own. The
+   * one-click connect then refuses before probing or writing anything: a refusal
+   * from agenda after caldav's setting was stored would leave a half-connected
+   * account that the login-time attachment's rule 1 never retries.
+   */
+  @Test
+  public void refusesToConnectWhenAgendaHasSwitchedTheConnectorOff() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    givenAgendaConnector(false);
+
+    IllegalAccessException refusal = assertThrows(IllegalAccessException.class,
+                                                  () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME));
+
+    assertEquals(CaldavRelayService.PROVIDER_DISABLED_MESSAGE, refusal.getMessage());
+    org.mockito.Mockito.verifyNoInteractions(httpClient, caldavConnectorService, agendaUserSettingsService);
   }
 
   /**
@@ -628,12 +671,13 @@ public class CaldavRelayServiceTest {
     when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
     when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
     when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
     givenProbeAnswer(401);
 
     CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
 
     assertEquals(CaldavProbeResult.CREDENTIALS, outcome.getResult());
-    org.mockito.Mockito.verifyNoInteractions(caldavConnectorService);
+    org.mockito.Mockito.verifyNoInteractions(caldavConnectorService, agendaUserSettingsService);
   }
 
   /**

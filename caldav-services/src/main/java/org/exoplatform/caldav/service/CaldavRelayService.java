@@ -29,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -39,6 +40,9 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.agenda.model.RemoteProvider;
+import org.exoplatform.agenda.service.AgendaRemoteEventService;
+import org.exoplatform.agenda.service.AgendaUserSettingsService;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavRelayRequest;
@@ -114,6 +118,9 @@ public class CaldavRelayService {
 
   /** The one-click path refusing a connector whose provider cannot name the account. */
   public static final String        PROVIDER_NAMES_NOBODY_MESSAGE = "caldav.connect.providerNamesNobody";
+
+  /** The one-click path refusing a server whose connector agenda has switched off. */
+  public static final String        PROVIDER_DISABLED_MESSAGE     = "caldav.relay.providerDisabled";
 
   /**
    * Response header carrying the relay's own machine-readable outcome code,
@@ -240,6 +247,12 @@ public class CaldavRelayService {
 
   @Autowired
   private CaldavConnectorService    caldavConnectorService;
+
+  @Autowired
+  private AgendaUserSettingsService agendaUserSettingsService;
+
+  @Autowired
+  private AgendaRemoteEventService  agendaRemoteEventService;
 
   /**
    * The JDK's own HTTP client, TLS trust from the platform truststore —
@@ -382,8 +395,8 @@ public class CaldavRelayService {
    * @param exoLogin the eXo login connecting
    * @return the probe outcome; the connection is recorded only on {@link CaldavProbeResult#OK}
    * @throws ObjectNotFoundException when no such registration is declared
-   * @throws IllegalAccessException when the registration is deactivated, or the provider
-   *           named no account
+   * @throws IllegalAccessException when the registration is deactivated, when agenda has
+   *           switched its connector off, or when the provider named no account
    */
   public CaldavProbeResult connectThroughProvider(Long serverId, String exoLogin) throws ObjectNotFoundException,
                                                                                   IllegalAccessException {
@@ -404,6 +417,15 @@ public class CaldavRelayService {
     if (StringUtils.isBlank(account)) {
       throw new IllegalArgumentException(PROVIDER_NAMES_NOBODY_MESSAGE);
     }
+    // Agenda keeps its own switch for this connector, in its connector settings,
+    // and an administrator can turn it off without touching this registry. Read
+    // before anything is probed or written: agenda's record of the connection
+    // refuses when it is off, and a refusal after caldav's setting was stored
+    // would leave a half-connected account that the login-time attachment's
+    // rule 1 then hides for good (EXO-89653 review).
+    if (!agendaRemoteProviderEnabled(server.getProviderName())) {
+      throw new IllegalAccessException(PROVIDER_DISABLED_MESSAGE);
+    }
     CaldavProbeResult outcome = probe(server, account, authorization(server, exoLogin));
     // getResult() carries the classification, getStatus() the raw HTTP code: comparing
     // OK against the latter is never true, and the connection would silently never be
@@ -412,9 +434,32 @@ public class CaldavRelayService {
       CaldavUserSetting setting = new CaldavUserSetting();
       setting.setUsername(account);
       setting.setServerId(server.getId());
-      caldavConnectorService.createProviderBackedSetting(setting, getUserIdentityId(exoLogin));
+      long identityId = getUserIdentityId(exoLogin);
+      // Agenda's own record of the connection: what "My calendars" reads to show
+      // the connector as connected, and what the typed path leaves to the front.
+      // Written here so a connection nobody clicked - the login-time attachment
+      // of EXO-89653 - shows exactly as a clicked one; the front's own write on
+      // the one-click path repeats the same values. Agenda first: it is the
+      // write that can still refuse, and it refuses before storing anything,
+      // while caldav's can no longer refuse once the account is named.
+      agendaUserSettingsService.saveUserConnector(server.getProviderName(), account, identityId);
+      caldavConnectorService.createProviderBackedSetting(setting, identityId);
     }
     return outcome;
+  }
+
+  /**
+   * Whether agenda still lists this server's connector as enabled. The registry
+   * sets that flag from the server's own {@code active} when it saves the server;
+   * agenda's connector settings can change it afterwards on their own.
+   *
+   * @param providerName the connector name the server is registered under in agenda
+   * @return true when agenda knows the connector and has it enabled
+   */
+  private boolean agendaRemoteProviderEnabled(String providerName) {
+    List<RemoteProvider> providers = agendaRemoteEventService.getRemoteProviders();
+    return providers != null
+           && providers.stream().anyMatch(provider -> StringUtils.equals(provider.getName(), providerName) && provider.isEnabled());
   }
 
   /**
@@ -475,7 +520,12 @@ public class CaldavRelayService {
       // One line, at warning: this is the only request a refused connection
       // makes, and until now it made none. An administrator whose users cannot
       // connect had nothing whatsoever to read (EXO-89806).
-      LOG.warn("CalDAV server {} could not be reached while verifying the account {}", server.getId(), username, e);
+      // WARN on purpose: an unreachable server is something an administrator
+      // must act on (EXO-89806). One line, no stack - since EXO-89653 this also
+      // runs at every login of every unattached managed user during an outage,
+      // and the stack adds nothing to that line; it is a debug line away.
+      LOG.warn("CalDAV server {} could not be reached while verifying the account {}: {}", server.getId(), username, e.getMessage());
+      LOG.debug("CalDAV server {} unreachable while verifying the account {}", server.getId(), username, e);
       return new CaldavProbeResult(CaldavProbeResult.CONNECTION, null);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
