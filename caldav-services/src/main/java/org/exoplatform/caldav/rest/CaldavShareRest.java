@@ -146,7 +146,9 @@ public class CaldavShareRest {
           + "the change, and a grant it does not hold is reported as not applied. On a server using RFC 3744 ACLs, "
           + "sharing with a colleague who can already read it changes nothing and succeeds. On BlueMind only a "
           + "colleague holding plain view access does; one holding more is refused (caldav.share.notReadOnly), and one "
-          + "holding only other access given outside eXo too (caldav.share.shareeHasOtherAccess).")
+          + "holding only other access given outside eXo too (caldav.share.shareeHasOtherAccess). The grant names the "
+          + "colleague's server login, not the person: every eXo user connected to this server under that same login "
+          + "can then read the calendar, and the answer lists each of them under that sharee.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Shared; the sharees as read back"),
       @ApiResponse(responseCode = "400", description = "No colleague named, unknown, the user themself, not connected to "
           + "this server, on the user's own login, already holding more than view access given outside eXo "
@@ -215,7 +217,8 @@ public class CaldavShareRest {
   @Operation(summary = "Lists the colleagues a calendar of the user's can be shared with",
       description = "eXo users connected to the same CalDAV server under another login, by full name. The server is asked "
           + "what the collection advertises (an OPTIONS, and a PROPFIND where the OPTIONS names no DAV classes) to confirm it offers sharing; the colleagues are read from eXo's own record of each connection, and "
-          + "the server is asked who the user is only when that is not recorded yet.")
+          + "the server is asked who the user is only when that is not recorded yet. Listed per eXo user: two users "
+          + "connected under one server login are two candidates, and sharing with either shares with both.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The candidates, possibly none"),
       @ApiResponse(responseCode = "400", description = "A calendar bound to no collection eXo can share (created by eXo, or imported and active; never the meetings mirror)"),
       @ApiResponse(responseCode = "403", description = "Not the user's calendar"),
