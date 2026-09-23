@@ -159,6 +159,30 @@ public class BlueMindAclClientTest {
   }
 
   /**
+   * A grant reads the list before and after its change: both reads travel in
+   * one session — one login, two reads under the same key, one logout — not a
+   * login per read (EXO-90190 review, round 1).
+   */
+  @Test
+  void oneSessionServesEveryReadOfAServiceCallWithOneLoginAndOneLogout() {
+    answer(200, derived("bluemind-rest-login-ok.derived.json"));
+    answer(200, derived("bluemind-rest-acl-shared-with-eric.derived.json"));
+    answer(200, derived("bluemind-rest-acl-shared-with-eric.derived.json"));
+    answer(200, "");
+
+    try (BlueMindAclClient.Session session = client.open(endpoint)) {
+      assertEquals(17, session.readAcl(CONTAINER).size());
+      assertEquals(17, session.readAcl(CONTAINER).size());
+    }
+
+    assertEquals(List.of("/api/auth/login", "/api/containers/_manage/" + CONTAINER + "/_acl",
+                         "/api/containers/_manage/" + CONTAINER + "/_acl", "/api/auth/logout"),
+                 sent.stream().map(request -> request.uri().getPath()).toList());
+    assertTrue(sent.subList(1, 4).stream().allMatch(request -> KEY.equals(request.headers().firstValue(BlueMindAclClient.API_KEY_HEADER).orElse(null))));
+    assertTrue(answers.isEmpty(), "nothing else was sent");
+  }
+
+  /**
    * Three requests, in order, all to the declared server: the login with the
    * owner's login in the query and the password as a JSON string body under
    * exactly {@code application/json} — no Authorization header; the read with the session key in
