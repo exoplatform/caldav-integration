@@ -182,6 +182,28 @@ public class ChangelogExecutionTest {
     assertEquals(List.of("SERVER_ID", "PRINCIPAL"),
                  indexColumns(CONNECTION_TABLE, "IDX_CALDAV_CONNECTION_PRINCIPAL"),
                  "and the connection identities with the index their lookup needs");
+    assertEquals(List.of("SERVER_ID", "ORIGIN", "LOCAL_CALENDAR_SYNC_UID"),
+                 indexColumns("CALDAV_CALENDAR_SYNC", "IDX_CALDAV_CALENDAR_SYNC_ORIGIN"),
+                 "and the pairs with the index the deployment-wide ownership question needs");
+  }
+
+  /**
+   * The deployment-wide ownership index (1.0.0-48) exists with its columns in
+   * lookup order, and its rollback removes it without touching the table.
+   *
+   * @throws Exception when a changeset cannot be applied or rolled back
+   */
+  @Test
+  public void theOwnershipIndexLeadsWithTheServerAndRollsBackAlone() throws Exception {
+    update();
+    assertEquals(List.of("SERVER_ID", "ORIGIN", "LOCAL_CALENDAR_SYNC_UID"),
+                 indexColumns("CALDAV_CALENDAR_SYNC", "IDX_CALDAV_CALENDAR_SYNC_ORIGIN"));
+
+    rollbackCount(1);
+
+    assertTrue(indexColumns("CALDAV_CALENDAR_SYNC", "IDX_CALDAV_CALENDAR_SYNC_ORIGIN").isEmpty(),
+               "rolling 1.0.0-48 back must drop the index");
+    assertTrue(tableExists("CALDAV_CALENDAR_SYNC"), "and leave the table");
   }
 
   /**
@@ -474,6 +496,16 @@ public class ChangelogExecutionTest {
    */
   private void update() throws Exception {
     liquibase().update(new Contexts(), new LabelExpression());
+  }
+
+  /**
+   * Rolls back the given number of the most recently applied changesets.
+   *
+   * @param count how many
+   * @throws Exception when a rollback fails
+   */
+  private void rollbackCount(int count) throws Exception {
+    liquibase().rollback(count, new Contexts(), new LabelExpression());
   }
 
   /**

@@ -161,24 +161,14 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
    * path instead, for the shape where the slug is the part that changed.
    *
    * <p>
-   * What it costs: <b>no index serves this query</b>. The table's two indexes
-   * are {@code UQ_CALDAV_CALENDAR_SYNC_LOCAL (USER_IDENTITY_ID, SERVER_ID,
-   * LOCAL_CALENDAR_SYNC_UID)} and {@code IDX_CALDAV_CALENDAR_SYNC_STATUS
-   * (STATUS, LAST_SYNC_END)}; neither leads with the server, and {@code
-   * ORIGIN} is in no index at all. With the leading column unconstrained the
-   * unique index cannot be entered as a range, so the engine walks every row
-   * of the table, or scans the whole index and looks each candidate up for
-   * its origin — O(table) either way. Kept off the common path by its
-   * callers: the sweep tries the user's own pairs in memory before asking,
-   * and the question is never asked for a collection outside the outbound
-   * prefix, so only a prefixed collection this user does not hold costs a
-   * walk. Since EXO-90234 the calendar list asks the same way on each
-   * listing, through the same classification — per colleague's share, not
-   * per collection, since the user's own pairs still answer first — so a
-   * deployment with many shares per user is where the index below stops
-   * being optional. An index on {@code (SERVER_ID, ORIGIN,
-   * LOCAL_CALENDAR_SYNC_UID)} would serve it as a point lookup; adding one
-   * is a changeset, and so a separate decision.
+   * What it costs: a point lookup on {@code IDX_CALDAV_CALENDAR_SYNC_ORIGIN
+   * (SERVER_ID, ORIGIN, LOCAL_CALENDAR_SYNC_UID)}, changeset 1.0.0-48 —
+   * covering, one row (EXPLAIN on MySQL 8.0.37, recorded in the changeset).
+   * Before that index it walked the table: neither the unique index nor the
+   * status one leads with the server. It matters because the calendar list
+   * asks it on every listing since EXO-90234, per colleague's share — the
+   * user's own pairs still answer first, in memory — and the sweep asks it
+   * for a prefixed collection this user does not hold.
    *
    * @param serverId the declared server registration
    * @param origin which side created the collection
@@ -205,14 +195,16 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
    *
    * <p>
    * The href is compared as stored, which is canonical (the storage
-   * canonicalises on save); the caller canonicalises what it asks with. No
-   * index can serve this one either, and none could be added: the href
-   * column is too long to index on MySQL under utf8mb4, which is why the
-   * unique constraint is carried by the anchor (changeset 1.0.0-5). So this
-   * is a walk of the table, asked only after the anchor arm has missed —
-   * once per pass for a prefixed collection this deployment holds no anchor
-   * for, and, since EXO-90234, once per calendar listing for the same
-   * collection, the list classifying it the way the sweep does.
+   * canonicalises on save); the caller canonicalises what it asks with. The
+   * href itself cannot be indexed — the column is too long for MySQL under
+   * utf8mb4, which is why the unique constraint is carried by the anchor
+   * (changeset 1.0.0-5) — but {@code IDX_CALDAV_CALENDAR_SYNC_ORIGIN}'s
+   * {@code (SERVER_ID, ORIGIN)} prefix bounds it to one server's pairs of
+   * one origin (1.0.0-48). On a single-server deployment that is still most
+   * of the table, so it stays behind the anchor arm: asked only after that
+   * one has missed — once per pass for a prefixed collection this deployment
+   * holds no anchor for, and, since EXO-90234, once per calendar listing for
+   * the same collection.
    *
    * @param serverId the declared server registration
    * @param origin which side created the collection
@@ -231,7 +223,7 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
    * {@link SyncOrigin#EXO} once a listed collection is known to be a
    * colleague's eXo calendar and the calendar list wants to say whose
    * (EXO-90237): the pair's user is the owner. Same predicate, same span —
-   * every user, every status — and the same cost, a walk no index serves
+   * every user, every status — and the same index, 1.0.0-48, serving it
    * (see the sibling's note); asked once per colleague's share per listing,
    * after the existence question has already said there is one to find.
    *
