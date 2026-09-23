@@ -56,6 +56,22 @@
       <description>Pushes a newly created calendar to the user's CalDAV server without waiting for the throttled sync</description>
     </component-plugin>
   </external-component-plugins>
+  <!-- Managed mode (EXO-89653): a user who logs in without a CalDAV
+       configuration, and outside the excluded populations, is attached to the
+       server the instance designated - in the background, through the
+       one-click connect. The event fires at login, and again when the platform
+       registers a still-active session anew (the registry caches expire an hour
+       after registration by default); not while another registered session of
+       the same user exists on this node. -->
+  <external-component-plugins>
+    <target-component>org.exoplatform.services.listener.ListenerService</target-component>
+    <component-plugin>
+      <name>exo.core.security.ConversationRegistry.register</name>
+      <set-method>addListener</set-method>
+      <type>org.exoplatform.caldav.listener.CaldavManagedLoginListener</type>
+      <description>Attaches the user who just logged in to the managed CalDAV server, when managed mode applies to them</description>
+    </component-plugin>
+  </external-component-plugins>
   <!-- A rename is the edit that shows: the collection eXo created for a
        personal calendar reads under the calendar's name, and until EXO-89528
        that name was written once, inside MKCALENDAR, and never again. -->

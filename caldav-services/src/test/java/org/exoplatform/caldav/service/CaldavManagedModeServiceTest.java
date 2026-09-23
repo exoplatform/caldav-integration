@@ -167,6 +167,23 @@ public class CaldavManagedModeServiceTest {
   }
 
   /**
+   * The login-time read: the designated id when the choice applies to this
+   * user, null otherwise - commons-exo's verdict passed through, the kind
+   * fixed. An anonymous caller gets null without commons-exo being asked.
+   */
+  @Test
+  public void namesTheServerToAttachAUserToAtLogin() {
+    designated(700);
+    when(managedConnectorService.designatedConnectorFor(KIND, USER)).thenReturn(700L);
+    when(managedConnectorService.designatedConnectorFor(KIND, "excluded")).thenReturn(null);
+
+    assertEquals(700L, caldavManagedModeService.designatedServerFor(USER));
+    assertNull(caldavManagedModeService.designatedServerFor("excluded"));
+    assertNull(caldavManagedModeService.designatedServerFor(" "));
+    verify(managedConnectorService, never()).designatedConnectorFor(KIND, " ");
+  }
+
+  /**
    * Nobody is managed on nobody's behalf: an anonymous caller has no account
    * to govern — and commons-exo, which refuses a blank user as a programming
    * error, is not even asked. Managed mode is deliberately ON here: the point
