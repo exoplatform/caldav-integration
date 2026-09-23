@@ -765,4 +765,32 @@
     </createIndex>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-48">
+    <comment>
+      The deployment-wide ownership question (EXO-90226): does any user of this
+      deployment hold a pair of this origin on this server for this calendar
+      anchor, or at this collection path. The sweep asks it for a prefixed
+      collection the user does not hold, and since EXO-90234 the calendar list
+      asks it once per colleague's share on every listing - both walked the
+      table, no index leading with SERVER_ID. The anchor arm is served as a
+      point lookup; the href arm, whose REMOTE_HREF is too long to index under
+      utf8mb4 (see 1.0.0-5), is served by the same index's (SERVER_ID, ORIGIN)
+      prefix, which bounds it to one server's pairs of one origin instead of the
+      whole table. Measured on MySQL 8.0.37 over 200 000 pairs on 5 servers:
+      the anchor arm went from a full scan (type ALL, 198 397 rows) to a
+      covering point lookup (ref, 1 row, Using index); the href arm from the
+      same full scan to one server's pairs of one origin (ref, 50 772 rows) -
+      on a single-server deployment that is still most of the table, which is
+      why the href arm stays behind the anchor arm in the callers. Equality
+      only, so no direction is declared - no query sorts on it. key_len 181
+      bytes on MySQL, where NVARCHAR is utf8mb3 (see 1.0.0-45). Own changeset,
+      no modifySql, automatic rollback.
+    </comment>
+    <createIndex tableName="CALDAV_CALENDAR_SYNC" indexName="IDX_CALDAV_CALENDAR_SYNC_ORIGIN">
+      <column name="SERVER_ID"/>
+      <column name="ORIGIN"/>
+      <column name="LOCAL_CALENDAR_SYNC_UID"/>
+    </createIndex>
+  </changeSet>
+
 </databaseChangeLog>
