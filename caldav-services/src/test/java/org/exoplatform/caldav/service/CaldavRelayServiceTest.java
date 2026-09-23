@@ -350,6 +350,9 @@ public class CaldavRelayServiceTest {
     assertEquals(403, response.getStatus());
     assertEquals("caldav.error.credentials", response.getHeaders().get(CaldavRelayService.RELAY_CODE_HEADER));
     assertFalse(response.getHeaders().containsKey("www-authenticate"));
+    // The provider is told once that its material was refused, so a caching one
+    // forgets it; the client's half of this is pinned in HttpCalDavClientTest.
+    org.mockito.Mockito.verify(caldavCredentialsResolver, org.mockito.Mockito.times(1)).invalidate(SERVER_ID, PROVIDER, USERNAME);
   }
 
   /**
