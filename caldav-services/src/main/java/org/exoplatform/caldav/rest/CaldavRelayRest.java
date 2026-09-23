@@ -190,7 +190,7 @@ public class CaldavRelayRest {
           + "only when it answered as a calendar. Refuses a provider that expects the user to type credentials.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Probe performed, outcome in the body"),
       @ApiResponse(responseCode = "400", description = "The provider expects the user to supply something"),
-      @ApiResponse(responseCode = "403", description = "Server deactivated"),
+      @ApiResponse(responseCode = "403", description = "Server deactivated, or its connector switched off in agenda"),
       @ApiResponse(responseCode = "404", description = "Unknown server registration") })
   public CaldavProbeResult connect(HttpServletRequest request,
                                    @RequestParam(name = "serverId", required = false)
