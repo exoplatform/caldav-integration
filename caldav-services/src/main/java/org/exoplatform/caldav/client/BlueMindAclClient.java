@@ -83,7 +83,11 @@ import org.exoplatform.services.log.Log;
  * reads it, {@code BasicClientProxy.java} sends it); the key is used for the
  * read and {@code POST /api/auth/logout} is always sent after it. The key and
  * the password are never logged, never stored, and never part of an
- * exception message.</li>
+ * exception message. A grant or a revoke, which reads the list before and
+ * after its change, holds one such {@link Session} for both reads
+ * ({@link #open}) rather than authenticating once per read: half the logins
+ * per action, and half the replays of the password against a server whose
+ * account lock-out policy eXo does not know.</li>
  * </ul>
  */
 @Component
@@ -165,13 +169,55 @@ public class BlueMindAclClient {
    * @throws CalDavException when the answer is anything else
    */
   public List<BlueMindAce> readAcl(CalDavEndpoint endpoint, String containerUid) {
-    if (StringUtils.isBlank(containerUid)) {
-      throw new IllegalArgumentException("A container uid is required");
+    try (Session session = open(endpoint)) {
+      return session.readAcl(containerUid);
     }
+  }
+
+  /**
+   * Opens a REST session as the owner, for as many reads as one service call
+   * needs; {@link Session#close()} logs it out. The exceptions are those of
+   * {@link #readAcl(CalDavEndpoint, String)} for the login half.
+   *
+   * @param endpoint the owner's DAV endpoint, minted from the registry
+   * @return the session, to close
+   */
+  public Session open(CalDavEndpoint endpoint) {
     String root = apiRootOf(endpoint);
     String[] account = accountOf(endpoint);
-    String key = login(root, account[0], account[1]);
-    try {
+    return new Session(root, login(root, account[0], account[1]));
+  }
+
+  /**
+   * One authenticated conversation with BlueMind's REST API. Not a
+   * {@code record}: the key must not be printed.
+   */
+  public class Session implements AutoCloseable {
+
+    private final String root;
+
+    private final String key;
+
+    Session(String root, String key) {
+      this.root = root;
+      this.key = key;
+    }
+
+    /**
+     * A container's access list, read in this session.
+     *
+     * @param containerUid the container uid
+     * @return the entries, in the order BlueMind lists them
+     * @throws CalDavAuthenticationException when BlueMind no longer accepts the
+     *           session
+     * @throws CalDavForbiddenException when the account may not read the list
+     * @throws CalDavUnreachableException when the server cannot be reached
+     * @throws CalDavException when the answer is anything else
+     */
+    public List<BlueMindAce> readAcl(String containerUid) {
+      if (StringUtils.isBlank(containerUid)) {
+        throw new IllegalArgumentException("A container uid is required");
+      }
       URI uri = URI.create(root + "/api/containers/_manage/" + encodeSegment(containerUid) + "/_acl");
       HttpRequest request = HttpRequest.newBuilder(uri)
                                        .timeout(REQUEST_TIMEOUT)
@@ -191,8 +237,19 @@ public class BlueMindAclClient {
         throw new CalDavException("The calendar server answered " + answer.status() + " for GET " + uri);
       }
       return acesOf(answer.body(), uri);
-    } finally {
+    }
+
+    /**
+     * Logs the session out; a failure is only noted.
+     */
+    @Override
+    public void close() {
       logout(root, key);
+    }
+
+    @Override
+    public String toString() {
+      return "BlueMind session on " + root;
     }
   }
 

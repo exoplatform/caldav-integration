@@ -33,13 +33,16 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -200,6 +203,9 @@ public class CaldavCalendarShareServiceTest {
   private BlueMindAclClient               blueMindAclClient;
 
   @Mock
+  private BlueMindAclClient.Session       blueMindSession;
+
+  @Mock
   private CaldavPushService               caldavPushService;
 
   private CaldavCalendarShareService      service;
@@ -217,7 +223,13 @@ public class CaldavCalendarShareServiceTest {
                                              caldavConnectionIdentityService,
                                              identityManager,
                                              blueMindAclClient,
-                                             caldavPushService);
+                                             caldavPushService,
+                                             Duration.ZERO,
+                                             () -> 0L);
+    // A grant or a revoke reads BlueMind's list through one session; the stubs below answer per read, in order, as before.
+    lenient().when(blueMindAclClient.open(endpoint)).thenReturn(blueMindSession);
+    lenient().when(blueMindSession.readAcl(anyString()))
+             .thenAnswer(invocation -> blueMindAclClient.readAcl(endpoint, invocation.getArgument(0)));
     lenient().when(agendaCalendarService.getCalendarById(CALENDAR)).thenReturn(calendar(CALENDAR, ALICE, ANCHOR));
     lenient().when(caldavConnectorStorage.getCaldavSetting(ALICE)).thenReturn(connectedTo(STALWART));
     lenient().when(caldavSyncStorage.getPairByLocalCalendar(ALICE, STALWART, ANCHOR)).thenReturn(exoPair());
@@ -713,9 +725,11 @@ public class CaldavCalendarShareServiceTest {
     when(caldavConnectionIdentityService.principalOf(ALICE, STALWART)).thenReturn(null);
 
     CaldavShareException granted = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "alice2"));
+    CaldavShareException revoked = assertThrows(CaldavShareException.class, () -> service.revoke(ALICE, "alice", CALENDAR, "alice2"));
     CaldavShareException offered = assertThrows(CaldavShareException.class, () -> service.candidates(ALICE, "alice", CALENDAR, null));
 
     assertEquals(CaldavCalendarShareService.OWNER_UNKNOWN, granted.getCode());
+    assertEquals(CaldavCalendarShareService.OWNER_UNKNOWN, revoked.getCode());
     assertEquals(CaldavCalendarShareService.OWNER_UNKNOWN, offered.getCode());
     verify(calDavClient, never()).readAcl(any(), anyString());
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
@@ -1237,6 +1251,177 @@ public class CaldavCalendarShareServiceTest {
     }
   }
 
+  // ---------------------------------------------------------------- one rule for both verbs
+
+  /**
+   * The guard grant applies — a colleague recorded under the owner's own
+   * principal is refused, not compared — holds for revoke too: alice2, on
+   * alice's login, cannot be "revoked" either, which would strip the owner's
+   * own entries. Nothing is read from the server before the refusal, on
+   * either mechanism.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void revokeRefusesAColleagueOnTheOwnersOwnPrincipalAsGrantDoes() throws Exception {
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> service.revoke(ALICE, "alice", CALENDAR, "alice2"));
+    assertEquals(CaldavCalendarShareService.SAME_PRINCIPAL, refused.getMessage());
+    verify(calDavClient, never()).readAcl(any(), anyString());
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+
+    onBlueMind();
+    when(caldavConnectionIdentityService.principalOf(ALICE2, STALWART)).thenReturn(FRANCOIS_PRINCIPAL);
+    IllegalArgumentException refusedOnBlueMind = assertThrows(IllegalArgumentException.class,
+                                                              () -> service.revoke(ALICE, "alice", CALENDAR, "alice2"));
+    assertEquals(CaldavCalendarShareService.SAME_PRINCIPAL, refusedOnBlueMind.getMessage());
+    verify(blueMindAclClient, never()).open(any());
+    verify(blueMindAclClient, never()).readAcl(any(), anyString());
+  }
+
+  // ---------------------------------------------------------------- one BlueMind session per action
+
+  /**
+   * A grant on BlueMind reads the list, posts the share and reads the list
+   * back in one REST session: one login, both reads, one logout — not a login
+   * per read. The revoke does the same.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindAGrantAndARevokeAuthenticateOnceForTheirReadAndReadBack() throws Exception {
+    onBlueMind();
+    when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(owner(),
+                                                                        acl(owner(), expanded(ERIC_UID, "Read")),
+                                                                        acl(owner(), expanded(ERIC_UID, "Read")),
+                                                                        owner());
+
+    service.grant(ALICE, "alice", CALENDAR, "bob");
+    verify(blueMindAclClient, times(1)).open(endpoint);
+    verify(blueMindSession, times(2)).readAcl(BM_CONTAINER);
+    verify(blueMindSession, times(1)).close();
+
+    service.revoke(ALICE, "alice", CALENDAR, "bob");
+    verify(blueMindAclClient, times(2)).open(endpoint);
+    verify(blueMindSession, times(4)).readAcl(BM_CONTAINER);
+    verify(blueMindSession, times(2)).close();
+  }
+
+  /**
+   * When BlueMind answers the share and the list read back does not hold the
+   * grant, the entries of others that moved meanwhile are still reported: the
+   * not-applied case is exactly where a third party's entries are most likely
+   * to have changed, and a warning raised after the refusal would never be
+   * logged.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void onBlueMindEntriesOfOthersThatMovedAreReportedEvenWhenTheGrantIsNotApplied() throws Exception {
+    Logger logger = (Logger) LoggerFactory.getLogger(CaldavCalendarShareService.class);
+    Level previous = logger.getLevel();
+    ListAppender<ILoggingEvent> logged = new ListAppender<>();
+    logged.start();
+    logger.addAppender(logged);
+    logger.setLevel(Level.DEBUG);
+    try {
+      onBlueMind();
+      when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(WRITER_UID, "Write")), owner());
+
+      CaldavShareException notApplied = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
+
+      assertEquals(CaldavCalendarShareService.NOT_APPLIED, notApplied.getCode());
+      assertTrue(logged.list.stream()
+                            .anyMatch(event -> event.getLevel() == Level.WARN
+                                && event.getFormattedMessage().contains("differ after the change eXo asked for")),
+                 String.valueOf(logged.list));
+    } finally {
+      logger.detachAppender(logged);
+      logger.setLevel(previous);
+    }
+  }
+
+  // ---------------------------------------------------------------- the menu's probe is remembered
+
+  /**
+   * Agenda asks which calendars are shareable on every refresh of its panel
+   * and every open of a calendar's menu. The server's answer stands for the
+   * memo: a second ask within it probes nothing, one after it probes again.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void theServersAnswerIsRememberedBetweenTwoOpensOfTheMenu() throws Exception {
+    AtomicLong clock = new AtomicLong();
+    CaldavCalendarShareService memoised = memoised(clock);
+    when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.EXO)).thenReturn(List.of(exoPair()));
+    when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR)));
+
+    assertEquals(List.of(CALENDAR), memoised.shareableCalendarIds(ALICE, "alice"));
+    assertEquals(List.of(CALENDAR), memoised.shareableCalendarIds(ALICE, "alice"));
+    verify(calDavClient, times(1)).capabilities(endpoint, COLLECTION);
+
+    clock.addAndGet(Duration.ofSeconds(301).toNanos());
+    assertEquals(List.of(CALENDAR), memoised.shareableCalendarIds(ALICE, "alice"));
+    verify(calDavClient, times(2)).capabilities(endpoint, COLLECTION);
+  }
+
+  /**
+   * A server that offers no sharing is remembered as such for the memo — the
+   * steady state that was re-probed on every open — while a probe that failed
+   * is not an answer and is asked again at once.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aServerOfferingNoSharingIsRememberedAndAFailedProbeIsNot() throws Exception {
+    CaldavCalendarShareService memoised = memoised(new AtomicLong());
+    when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.EXO)).thenReturn(List.of(exoPair()));
+    when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR)));
+    when(calDavClient.capabilities(endpoint, COLLECTION)).thenThrow(new CalDavException("gone"))
+                                                          .thenThrow(new CalDavException("gone"))
+                                                          .thenReturn(DavOptions.of(List.of(), List.of()));
+
+    assertEquals(List.of(), memoised.shareableCalendarIds(ALICE, "alice"), "failed");
+    assertEquals(List.of(), memoised.shareableCalendarIds(ALICE, "alice"), "failed again: not remembered");
+    verify(calDavClient, times(2)).capabilities(endpoint, COLLECTION);
+
+    assertEquals(List.of(), memoised.shareableCalendarIds(ALICE, "alice"), "not offered");
+    assertEquals(List.of(), memoised.shareableCalendarIds(ALICE, "alice"), "not offered: remembered");
+    verify(calDavClient, times(3)).capabilities(endpoint, COLLECTION);
+  }
+
+  /**
+   * Which imported collections alice owns is remembered for the set of
+   * imported calendars it was computed for: opening the menu twice lists her
+   * calendar home once, importing another calendar lists it again at once.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void theOwnedImportedAnswerIsRememberedUntilAnotherCalendarIsImported() throws Exception {
+    CaldavCalendarShareService memoised = memoised(new AtomicLong());
+    CalendarSync pair = onStalwartImported(STALWART_IMPORTED);
+    CalendarCollection listed = collection(ALICE_HOME + "default/", "/dav/pal/alice%40stalwart.local/", true);
+    // Lenient, as in anImportedCalendarAliceOwnsOnStalwartIsShared: the listing reads the eXo-created pairs first.
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.REMOTE)).thenReturn(List.of(pair));
+    when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR)));
+    when(calDavClient.listCalendars(endpoint, ALICE_HOME)).thenReturn(List.of(listed));
+
+    assertEquals(List.of(CALENDAR), memoised.shareableCalendarIds(ALICE, "alice"));
+    assertEquals(List.of(CALENDAR), memoised.shareableCalendarIds(ALICE, "alice"));
+    verify(calDavClient, times(1)).listCalendars(endpoint, ALICE_HOME);
+
+    CalendarSync second = importedPair("/dav/cal/alice@stalwart.local/second");
+    second.setLocalCalendarSyncUid("second");
+    lenient().when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.REMOTE)).thenReturn(List.of(pair, second));
+    when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR),
+                                                                                                  calendar(15L, ALICE, "second")));
+
+    assertEquals(List.of(CALENDAR), memoised.shareableCalendarIds(ALICE, "alice"));
+    verify(calDavClient, times(2)).listCalendars(endpoint, ALICE_HOME);
+  }
+
   // ---------------------------------------------------------------- imported calendars
 
   /**
@@ -1617,6 +1802,25 @@ public class CaldavCalendarShareServiceTest {
    * @param login the sharee login
    * @return the message code
    */
+  /**
+   * The service with the production memo (300 s) over a clock the test moves.
+   *
+   * @param clock nanoseconds, moved by the test
+   * @return the service
+   */
+  private CaldavCalendarShareService memoised(AtomicLong clock) {
+    return new CaldavCalendarShareService(agendaCalendarService,
+                                          caldavConnectorStorage,
+                                          caldavSyncStorage,
+                                          calDavClient,
+                                          caldavConnectionIdentityService,
+                                          identityManager,
+                                          blueMindAclClient,
+                                          caldavPushService,
+                                          Duration.ofSeconds(300),
+                                          clock::get);
+  }
+
   private String refusal(String login) {
     return assertThrows(IllegalArgumentException.class, () -> service.grant(ALICE, "alice", CALENDAR, login)).getMessage();
   }

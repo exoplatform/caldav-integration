@@ -24,15 +24,18 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.time.Duration;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.model.Calendar;
@@ -347,6 +350,32 @@ public class CaldavCalendarShareService {
   private final Set<Long>                       serversNotOffering = ConcurrentHashMap.newKeySet();
 
   /**
+   * What each server's collections advertised, remembered for
+   * {@link #probeMemo}: agenda asks {@link #shareableCalendarIds} on every
+   * refresh of its panel and on every open of a calendar's menu, and each miss
+   * was one external HTTP conversation per declared server — an
+   * {@code OPTIONS}, a depth-0 {@code PROPFIND} on BlueMind, and a home
+   * listing for an account holding imported calendars. A mechanism, offered
+   * or not, is a property of the server that changes on a reinstall, not
+   * between two clicks; a failed probe is not remembered, so a server that
+   * was down is asked again at once.
+   */
+  private final Map<Long, Remembered<SharingMechanism>>      mechanismByServer  = new ConcurrentHashMap<>();
+
+  /**
+   * Which imported collections a user owns on a server, remembered for
+   * {@link #probeMemo} under the set of imported hrefs it was computed for,
+   * so importing another calendar asks again at once while a menu opened
+   * twice does not.
+   */
+  private final Map<ImportedKey, Remembered<Set<String>>>    ownedImportedByUser = new ConcurrentHashMap<>();
+
+  /** How long a probe's answer stands; zero asks the server every time. */
+  private final Duration                        probeMemo;
+
+  private final LongSupplier                    nanoTime;
+
+  /**
    * @param agendaCalendarService where the calendar and its owner are read
    * @param caldavConnectorStorage the caller's connected account
    * @param caldavSyncStorage the pair binding the calendar to its collection
@@ -364,7 +393,39 @@ public class CaldavCalendarShareService {
                                     CaldavConnectionIdentityService caldavConnectionIdentityService,
                                     IdentityManager identityManager,
                                     BlueMindAclClient blueMindAclClient,
-                                    CaldavPushService caldavPushService) {
+                                    CaldavPushService caldavPushService,
+                                    @Value("${exo.caldav.share.probeMemoSeconds:300}")
+                                    long probeMemoSeconds) {
+    this(agendaCalendarService,
+         caldavConnectorStorage,
+         caldavSyncStorage,
+         calDavClient,
+         caldavConnectionIdentityService,
+         identityManager,
+         blueMindAclClient,
+         caldavPushService,
+         Duration.ofSeconds(Math.max(0, probeMemoSeconds)),
+         System::nanoTime);
+  }
+
+  /**
+   * The seam the tests use: the memo's length and its clock.
+   *
+   * @param probeMemo how long a probe's answer stands; zero asks every time
+   * @param nanoTime the clock the memo ages by
+   */
+  CaldavCalendarShareService(AgendaCalendarService agendaCalendarService, // NOSONAR the production constructor delegates here
+                             CaldavConnectorStorage caldavConnectorStorage,
+                             CaldavSyncStorage caldavSyncStorage,
+                             CalDavClient calDavClient,
+                             CaldavConnectionIdentityService caldavConnectionIdentityService,
+                             IdentityManager identityManager,
+                             BlueMindAclClient blueMindAclClient,
+                             CaldavPushService caldavPushService,
+                             Duration probeMemo,
+                             LongSupplier nanoTime) {
+    this.probeMemo = probeMemo;
+    this.nanoTime = nanoTime;
     this.agendaCalendarService = agendaCalendarService;
     this.caldavConnectorStorage = caldavConnectorStorage;
     this.caldavSyncStorage = caldavSyncStorage;
@@ -399,6 +460,17 @@ public class CaldavCalendarShareService {
    * from a credential refusal) and an unreachable server end the listing at once,
    * since asking again would only add failed requests. Every share operation
    * asks its own collection again.
+   *
+   * <p>
+   * The server's answer — the mechanism it offers, and which imported
+   * collections the caller owns — stands for
+   * {@code exo.caldav.share.probeMemoSeconds} (300 by default; 0 asks every
+   * time), since agenda asks on every refresh of its panel and every open of a
+   * calendar's menu. What is read from eXo's own storage — the account, the
+   * pairs, the calendars — is read every time, so a calendar exported or
+   * imported a moment ago appears at once; only a server reconfigured to
+   * offer sharing, or an imported collection whose ownership changed on the
+   * server, waits out the memo. A failed probe is never remembered.
    *
    * @param userIdentityId the caller
    * @param username the caller's login
@@ -436,36 +508,12 @@ public class CaldavCalendarShareService {
         return List.of();
       }
       CalDavEndpoint endpoint = calDavClient.endpoint(settings.getServerId(), username);
-      // Probe a collection eXo created first: it is the user's own and exists as long as its pair is active,
-      // while an imported one may be a subscription that went away. A collection that fails on its own (gone, or an error
-      // status other than 401, 403, 407 and a gateway status) tries the next calendar, so one dead collection does not hide Share everywhere. Refused credentials
-      // and an unreachable server are properties of the account and the server, known after one attempt: asking
-      // again would only add failed requests, which a server may answer with a silent ban (CalDavUnreachableException).
-      List<CalendarSync> probes = calendars.stream()
-                                           .map(calendar -> pairs.get(calendar.getSyncUid()))
-                                           .sorted(Comparator.comparingInt(pair -> pair.getOrigin() == SyncOrigin.EXO ? 0 : 1))
-                                           .limit(MAX_CAPABILITY_PROBES)
-                                           .toList();
-      CalendarSync probe = null;
-      DavOptions capabilities = null;
-      CalDavException failure = null;
-      for (CalendarSync candidate : probes) {
-        try {
-          capabilities = calDavClient.capabilities(endpoint, collectionOf(candidate));
-          probe = candidate;
-          break;
-        } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
-          throw e;
-        } catch (CalDavException e) {
-          failure = e;
-        }
+      SharingMechanism mechanism = remembered(mechanismByServer, serverId);
+      if (mechanism == null) {
+        mechanism = probeMechanism(serverId, endpoint, calendars, pairs);
+        remember(mechanismByServer, serverId, mechanism);
       }
-      if (probe == null) {
-        throw failure;
-      }
-      SharingMechanism mechanism = SharingMechanism.of(capabilities, collectionOf(probe));
       if (!mechanism.isOffered()) {
-        noteNotOffered(serverId, collectionOf(probe), capabilities, mechanism);
         return List.of();
       }
       if (mechanism == SharingMechanism.BLUEMIND_SHARE && !blueMindAclClient.acceptsCredentials(endpoint)) {
@@ -474,25 +522,104 @@ public class CaldavCalendarShareService {
                   serverId);
         return List.of();
       }
-      Set<String> ownedImported = ownedImportedHrefs(userIdentityId,
-                                                     serverId,
-                                                     endpoint,
-                                                     mechanism,
-                                                     calendars.stream()
-                                                              .map(calendar -> pairs.get(calendar.getSyncUid()))
-                                                              .filter(pair -> pair.getOrigin() == SyncOrigin.REMOTE)
-                                                              .toList());
+      List<CalendarSync> imported = calendars.stream()
+                                             .map(calendar -> pairs.get(calendar.getSyncUid()))
+                                             .filter(pair -> pair.getOrigin() == SyncOrigin.REMOTE)
+                                             .toList();
+      ImportedKey importedKey = ImportedKey.of(userIdentityId, serverId, imported);
+      Set<String> ownedImported = remembered(ownedImportedByUser, importedKey);
+      if (ownedImported == null) {
+        ownedImported = ownedImportedHrefs(userIdentityId, serverId, endpoint, mechanism, imported);
+        remember(ownedImportedByUser, importedKey, ownedImported);
+      }
+      Set<String> owned = ownedImported;
       return calendars.stream()
                       .filter(calendar -> {
                         CalendarSync pair = pairs.get(calendar.getSyncUid());
                         return pair.getOrigin() == SyncOrigin.EXO
-                            || ownedImported.contains(CaldavSyncStorage.canonicalHref(pair.getRemoteHref()));
+                            || owned.contains(CaldavSyncStorage.canonicalHref(pair.getRemoteHref()));
                       })
                       .map(Calendar::getId)
                       .toList();
     } catch (Exception e) { // NOSONAR this answer must never fail, whatever agenda or the server throws
       LOG.debug("Which calendars user {} can share could not be established; none is offered", userIdentityId, e);
       return List.of();
+    }
+  }
+
+  /**
+   * Asks the server what one of the caller's collections advertises, and
+   * selects the mechanism. Throws whatever stopped every probe, so that a
+   * failure is not remembered as an answer.
+   *
+   * @param serverId the server registration
+   * @param endpoint the caller's endpoint
+   * @param calendars the caller's shareable-looking calendars
+   * @param pairs their pairs, by sync uid
+   * @return the mechanism, {@link SharingMechanism#isOffered() offered} or not
+   */
+  private SharingMechanism probeMechanism(long serverId,
+                                          CalDavEndpoint endpoint,
+                                          List<Calendar> calendars,
+                                          Map<String, CalendarSync> pairs) {
+    // Probe a collection eXo created first: it is the user's own and exists as long as its pair is active,
+    // while an imported one may be a subscription that went away. A collection that fails on its own (gone, or an error
+    // status other than 401, 403, 407 and a gateway status) tries the next calendar, so one dead collection does not hide Share everywhere. Refused credentials
+    // and an unreachable server are properties of the account and the server, known after one attempt: asking
+    // again would only add failed requests, which a server may answer with a silent ban (CalDavUnreachableException).
+    List<CalendarSync> probes = calendars.stream()
+                                         .map(calendar -> pairs.get(calendar.getSyncUid()))
+                                         .sorted(Comparator.comparingInt(pair -> pair.getOrigin() == SyncOrigin.EXO ? 0 : 1))
+                                         .limit(MAX_CAPABILITY_PROBES)
+                                         .toList();
+    CalendarSync probe = null;
+    DavOptions capabilities = null;
+    CalDavException failure = null;
+    for (CalendarSync candidate : probes) {
+      try {
+        capabilities = calDavClient.capabilities(endpoint, collectionOf(candidate));
+        probe = candidate;
+        break;
+      } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
+        throw e;
+      } catch (CalDavException e) {
+        failure = e;
+      }
+    }
+    if (probe == null) {
+      throw failure;
+    }
+    SharingMechanism mechanism = SharingMechanism.of(capabilities, collectionOf(probe));
+    if (!mechanism.isOffered()) {
+      noteNotOffered(serverId, collectionOf(probe), capabilities, mechanism);
+    }
+    return mechanism;
+  }
+
+  /**
+   * A remembered answer still standing, or null.
+   */
+  private <K, V> V remembered(Map<K, Remembered<V>> memo, K key) {
+    if (probeMemo.isZero()) {
+      return null;
+    }
+    Remembered<V> entry = memo.get(key);
+    if (entry == null) {
+      return null;
+    }
+    if (nanoTime.getAsLong() - entry.at() > probeMemo.toNanos()) {
+      memo.remove(key, entry);
+      return null;
+    }
+    return entry.value();
+  }
+
+  /**
+   * Remembers an answer for {@link #probeMemo}; nothing when the memo is off.
+   */
+  private <K, V> void remember(Map<K, Remembered<V>> memo, K key, V value) {
+    if (!probeMemo.isZero()) {
+      memo.put(key, new Remembered<>(value, nanoTime.getAsLong()));
     }
   }
 
@@ -556,10 +683,7 @@ public class CaldavCalendarShareService {
     return withMeetingCopies(target, username, onServer(() -> {
       SharingMechanism mechanism = requireOffered(target);
       requireImportedOwned(target, mechanism);
-      String ownerPrincipal = requiredOwnerPrincipal(target);
-      if (sharee.principal().equals(ownerPrincipal)) {
-        throw new IllegalArgumentException(SAME_PRINCIPAL);
-      }
+      String ownerPrincipal = ownerPrincipalDistinctFrom(target, sharee);
       if (mechanism == SharingMechanism.BLUEMIND_SHARE) {
         return blueMindGrant(target, sharee, username, ownerPrincipal);
       }
@@ -584,12 +708,12 @@ public class CaldavCalendarShareService {
         entries.add(AccessControlEntry.readGrantTo(AccessControlEntry.principalHrefOf(sharee.principal())));
         write(target, entries);
         CollectionAcl after = readBack(target);
+        warnOnLostEntries(target, before, after, sharee.principal());
         if (after.entries().stream().noneMatch(entry -> entry.appliesTo(sharee.principal()) && entry.grantsRead())) {
           LOG.warn("The server accepted read access to calendar {} ({}) for {}, but the access list read back does not"
               + " hold it; reported as not applied", calendarId, target.href(), sharee.principal());
           throw new CaldavShareException(NOT_APPLIED);
         }
-        warnOnLostEntries(target, before, after, sharee.principal());
         LOG.info("CalDAV share granted: user {} gave {} read access to calendar {} ({}) as principal {} on server {}",
                  username,
                  sharee.username(),
@@ -634,7 +758,7 @@ public class CaldavCalendarShareService {
     return withMeetingCopies(target, username, onServer(() -> {
       SharingMechanism mechanism = requireOffered(target);
       requireImportedOwned(target, mechanism);
-      String ownerPrincipal = ownerPrincipal(target);
+      String ownerPrincipal = ownerPrincipalDistinctFrom(target, sharee);
       if (mechanism == SharingMechanism.BLUEMIND_SHARE) {
         return blueMindRevoke(target, sharee, username, ownerPrincipal);
       }
@@ -658,12 +782,12 @@ public class CaldavCalendarShareService {
                                                                                                  .toList();
         write(target, entries);
         CollectionAcl after = readBack(target);
+        warnOnLostEntries(target, before, after, sharee.principal());
         if (after.entries().stream().anyMatch(entry -> entry.appliesTo(sharee.principal()) && entry.grantsRead())) {
           LOG.warn("The server accepted removing read access to calendar {} ({}) from {}, but the access list read back"
               + " still grants it; reported as not applied", calendarId, target.href(), sharee.principal());
           throw new CaldavShareException(NOT_APPLIED);
         }
-        warnOnLostEntries(target, before, after, sharee.principal());
         LOG.info("CalDAV share revoked: user {} took read access to calendar {} ({}) away from {} as principal {} on server {}",
                  username,
                  calendarId,
@@ -682,6 +806,15 @@ public class CaldavCalendarShareService {
    * The colleagues a calendar of the caller's can be shared with: eXo users
    * connected to the same server registration, with a recorded principal that
    * is not the caller's own.
+   *
+   * <p>
+   * Listed per eXo user, while a grant names a <em>principal</em>: two eXo
+   * users connected under one DAV login are two candidates, and granting to
+   * either gives both access — the server knows the login, not the person.
+   * {@link #listShares} then names every user the grant reached
+   * ({@link CalendarSharee#users()}). Whether the picker should say so before
+   * the grant, by grouping candidates per principal, is a product decision
+   * this method leaves open.
    *
    * <p>
    * The server is asked what the collection advertises, the capability check the listing,
@@ -882,6 +1015,14 @@ public class CaldavCalendarShareService {
    * @return the canonical principal, never null
    * @throws CaldavShareException with {@link #OWNER_UNKNOWN} when nobody names it
    */
+  private String ownerPrincipalDistinctFrom(ShareTarget target, Sharee sharee) {
+    String ownerPrincipal = requiredOwnerPrincipal(target);
+    if (sharee.principal().equals(ownerPrincipal)) {
+      throw new IllegalArgumentException(SAME_PRINCIPAL);
+    }
+    return ownerPrincipal;
+  }
+
   private String requiredOwnerPrincipal(ShareTarget target) {
     String principal = ownerPrincipal(target);
     if (principal == null) {
@@ -1200,8 +1341,8 @@ public class CaldavCalendarShareService {
     }
     Lock lock = lockOf(target);
     lock.lock();
-    try {
-      List<BlueMindAce> before = blueMindAclOf(target);
+    try (BlueMindAclClient.Session session = blueMindSessionOf(target)) {
+      List<BlueMindAce> before = blueMindAclOf(target, session);
       requireBlueMindManager(target, before);
       Set<String> theirs = blueMindVerbsOf(before, shareeUid);
       if (!BLUEMIND_READ_CLOSURE.containsAll(theirs)) {
@@ -1215,13 +1356,13 @@ public class CaldavCalendarShareService {
         throw new IllegalArgumentException(SHAREE_HAS_OTHER_ACCESS);
       }
       postBlueMindShare(target, blueMindAddressOf(target, sharee), false);
-      List<BlueMindAce> after = blueMindAclOf(target);
+      List<BlueMindAce> after = blueMindAclOf(target, session);
+      warnOnChangedBlueMindEntries(target, before, after, shareeUid);
       if (!blueMindVerbsOf(after, shareeUid).contains(BLUEMIND_READ)) {
         LOG.warn("The server answered the share of calendar {} ({}) with {}, but its access list read back gives entry {} no read"
             + " access; reported as not applied", target.calendarId(), target.href(), sharee.principal(), shareeUid);
         throw new CaldavShareException(NOT_APPLIED);
       }
-      warnOnChangedBlueMindEntries(target, before, after, shareeUid);
       LOG.info("CalDAV share granted: user {} gave {} read access to calendar {} ({}) as BlueMind entry {} on server {}",
                username,
                sharee.username(),
@@ -1260,8 +1401,8 @@ public class CaldavCalendarShareService {
     }
     Lock lock = lockOf(target);
     lock.lock();
-    try {
-      List<BlueMindAce> before = blueMindAclOf(target);
+    try (BlueMindAclClient.Session session = blueMindSessionOf(target)) {
+      List<BlueMindAce> before = blueMindAclOf(target, session);
       requireBlueMindManager(target, before);
       Set<String> theirs = blueMindVerbsOf(before, shareeUid);
       if (theirs.isEmpty()) {
@@ -1272,13 +1413,13 @@ public class CaldavCalendarShareService {
         throw new IllegalArgumentException(NOT_READ_ONLY);
       }
       postBlueMindShare(target, blueMindAddressOf(target, sharee), true);
-      List<BlueMindAce> after = blueMindAclOf(target);
+      List<BlueMindAce> after = blueMindAclOf(target, session);
+      warnOnChangedBlueMindEntries(target, before, after, shareeUid);
       if (!blueMindVerbsOf(after, shareeUid).isEmpty()) {
         LOG.warn("The server answered removing {} from calendar {} ({}), but its access list read back still names entry {};"
             + " reported as not applied", sharee.principal(), target.calendarId(), target.href(), shareeUid);
         throw new CaldavShareException(NOT_APPLIED);
       }
-      warnOnChangedBlueMindEntries(target, before, after, shareeUid);
       LOG.info("CalDAV share revoked: user {} took read access to calendar {} ({}) away from {} as BlueMind entry {} on server {}",
                username,
                target.calendarId(),
@@ -1300,8 +1441,36 @@ public class CaldavCalendarShareService {
    * @return the entries
    */
   private List<BlueMindAce> blueMindAclOf(ShareTarget target) {
+    return blueMindAclOf(target, () -> blueMindAclClient.readAcl(target.endpoint(), containerUidOf(target)));
+  }
+
+  /**
+   * The list read through a session already open, so that a grant or a revoke
+   * — a read, the change, the read-back — authenticates to BlueMind's REST
+   * API once, not once per read.
+   *
+   * @param target the calendar
+   * @param session the open session
+   * @return the entries
+   */
+  private List<BlueMindAce> blueMindAclOf(ShareTarget target, BlueMindAclClient.Session session) {
+    return blueMindAclOf(target, () -> session.readAcl(containerUidOf(target)));
+  }
+
+  /**
+   * One REST session on the calendar's server, as its owner. Opening it fails
+   * as a read does, with the same codes.
+   *
+   * @param target the calendar
+   * @return the session, to close
+   */
+  private BlueMindAclClient.Session blueMindSessionOf(ShareTarget target) {
+    return blueMindAclOf(target, () -> blueMindAclClient.open(target.endpoint()));
+  }
+
+  private <T> T blueMindAclOf(ShareTarget target, Supplier<T> read) {
     try {
-      return blueMindAclClient.readAcl(target.endpoint(), containerUidOf(target));
+      return read.get();
     } catch (UnsupportedOperationException e) {
       LOG.debug("The credentials of user {} are not a login BlueMind's REST API accepts; sharing is not offered",
                 target.userIdentityId());
@@ -1862,6 +2031,26 @@ public class CaldavCalendarShareService {
    * @param username the login
    * @param principal the canonical principal recorded on the calendar's server
    */
+  /**
+   * An answer and when it was given, for {@link #probeMemo}.
+   */
+  private record Remembered<V>(V value, long at) {
+  }
+
+  /**
+   * What a user's owned-imported answer was computed for: the user, the
+   * server, and the imported collections it covered.
+   */
+  private record ImportedKey(long userIdentityId, long serverId, Set<String> hrefs) {
+    static ImportedKey of(long userIdentityId, long serverId, List<CalendarSync> imported) {
+      return new ImportedKey(userIdentityId,
+                             serverId,
+                             imported.stream()
+                                     .map(pair -> CaldavSyncStorage.canonicalHref(pair.getRemoteHref()))
+                                     .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+    }
+  }
+
   private record Sharee(long identityId, String username, String principal) {
   }
 }
