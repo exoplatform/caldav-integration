@@ -54,7 +54,7 @@ import org.exoplatform.caldav.service.CaldavSyncServiceTest;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 
 /**
- * Executes the two hand-written JPQL queries in this package against a real
+ * Executes the hand-written JPQL queries in this package against a real
  * engine, over a schema this test builds by applying the module's own Liquibase
  * changelog.
  * <p>

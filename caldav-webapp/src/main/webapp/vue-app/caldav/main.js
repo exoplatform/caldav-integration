@@ -94,6 +94,9 @@ document.addEventListener('open-caldav-share-calendar-drawer', event => {
           i18n,
         }, element, 'CalDAV Share Calendar Drawer');
         if (!app) {
+          // Removed, so the retry the outer catch allows does not append a
+          // second element with the same id.
+          element.remove();
           throw new Error('the share drawer could not be mounted');
         }
         return app;
