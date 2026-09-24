@@ -145,6 +145,9 @@ public class CaldavServerService {
 
   private static final String      SERVER_URL_MANDATORY_MESSAGE  = "caldav.server.urlMandatory";
 
+  /** A save that moves a registration to a credentials provider nothing registers. */
+  static final String              AUTH_PROVIDER_UNKNOWN_MESSAGE = "caldav.server.authProviderUnknown";
+
   private static final Log         LOG                           = ExoLogger.getLogger(CaldavServerService.class);
 
   @Autowired
@@ -176,6 +179,11 @@ public class CaldavServerService {
   // contexts.
   @Autowired(required = false)
   private ConnectorProviderConfigStorage providerConfigStorage;
+
+  // required = false for the same reason: the resolver needs the credentials service of
+  // another WAR.
+  @Autowired(required = false)
+  private CaldavCredentialsResolver      caldavCredentialsResolver;
 
   @Autowired
   private SettingService           settingService;
@@ -411,11 +419,21 @@ public class CaldavServerService {
    * fields nothing holds. A save that keeps the provider and carries nothing - a rename,
    * an icon - writes no configuration and is not checked.
    *
+   * <p>
+   * A provider the save moves to must be registered: a name nothing registers has no
+   * descriptor, so its configuration would pass as one that asks for nothing, and the
+   * registration would then authenticate as nobody.
+   *
    * @param server the registration as posted
    * @param stored the registration as stored, null on a creation
-   * @throws IllegalArgumentException carrying the storage's message code on a refusal
+   * @throws IllegalArgumentException carrying the storage's message code on a refusal,
+   *           or {@value #AUTH_PROVIDER_UNKNOWN_MESSAGE} for a provider nothing registers
    */
   private void validateProviderConfig(CaldavServer server, CaldavServer stored) {
+    if (isProviderChange(stored, server) && caldavCredentialsResolver != null
+        && !caldavCredentialsResolver.knowsProvider(server.getAuthProviderName())) {
+      throw new IllegalArgumentException(AUTH_PROVIDER_UNKNOWN_MESSAGE);
+    }
     if (providerConfigStorage == null
         || (MapUtils.isEmpty(server.getProviderConfig()) && !isProviderChange(stored, server))) {
       return;
@@ -572,7 +590,10 @@ public class CaldavServerService {
     // (see setServerActive), so a row cannot be parked and switched on later.
     validateWithoutAddress(server);
     CaldavServer stored = server.getId() > 0 ? caldavServerStorage.getServerById(server.getId()) : null;
-    if (stored == null || !StringUtils.equals(stored.getServerUrl(), server.getServerUrl())) {
+    if (stored == null) {
+      throw new ObjectNotFoundException("CalDAV server with id " + server.getId() + " doesn't exist");
+    }
+    if (!StringUtils.equals(stored.getServerUrl(), server.getServerUrl())) {
       caldavServerUrlValidator.validate(server.getServerUrl());
     }
     stampCopySettings(server);
