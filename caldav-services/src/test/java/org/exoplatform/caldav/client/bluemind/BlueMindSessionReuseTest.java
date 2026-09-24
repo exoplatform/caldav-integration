@@ -430,18 +430,21 @@ public class BlueMindSessionReuseTest {
   }
 
   /**
-   * <b>A refused login tells the provider, once.</b> The account's first login
-   * is refused, so the material the provider produced is invalidated and the
-   * refusal is the caller's. Nothing is kept for the account.
+   * <b>A refused login tells the provider, once per refused material.</b> The
+   * account's first login is refused, so the material the provider produced is
+   * invalidated and the login tried once more on fresh material. That one is
+   * refused too, invalidated too, and the refusal is the caller's. Nothing is
+   * kept for the account.
    */
   @Test
-  void aRefusedFirstLoginInvalidatesTheMaterialOnce() {
+  void aRefusedFirstLoginInvalidatesEachRefusedMaterialOnce() {
+    answer(401, "");
     answer(401, "");
 
     assertThrows(CalDavAuthenticationException.class, () -> client.readAcl(rootHere, CONTAINER));
 
-    verify(credentials, times(1)).invalidate(any());
-    assertEquals(1, countOf("/api/auth/login"));
+    verify(credentials, times(2)).invalidate(any());
+    assertEquals(2, countOf("/api/auth/login"));
   }
 
   /**
@@ -467,20 +470,23 @@ public class BlueMindSessionReuseTest {
   /**
    * <b>A renewal whose login is refused does tell the provider.</b> The kept
    * key is refused, and the login that would renew it is refused too: that
-   * second refusal is about the material, so it is invalidated, once.
+   * refusal is about the material, so it is invalidated, and the login is tried
+   * once more on fresh material. That one is refused too and invalidated too,
+   * once per refused material, and the refusal is the caller's.
    */
   @Test
-  void aRenewalWhoseLoginIsRefusedInvalidatesTheMaterialOnce() {
+  void aRenewalWhoseLoginIsRefusedInvalidatesEachRefusedMaterialOnce() {
     answer(200, loginOk(ROOT_KEY, ROOT_UID));
     answer(200, "[]");
+    answer(401, "");
     answer(401, "");
     answer(401, "");
 
     client.readAcl(rootHere, CONTAINER);
     assertThrows(CalDavAuthenticationException.class, () -> client.readAcl(rootHere, CONTAINER));
 
-    verify(credentials, times(1)).invalidate(any());
-    assertEquals(2, countOf("/api/auth/login"));
+    verify(credentials, times(2)).invalidate(any());
+    assertEquals(3, countOf("/api/auth/login"));
   }
 
   /**
@@ -739,5 +745,43 @@ public class BlueMindSessionReuseTest {
     lenient().when(response.body()).thenReturn(new ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8)));
     lenient().when(response.headers()).thenReturn(HttpHeaders.of(Map.of(), (a, b) -> true));
     answers.add(response);
+  }
+
+  /**
+   * EXO-89649. A login refused on material a refreshable provider produced - under
+   * bluemind-sudo a kept session BlueMind has since dropped - is tried once more on
+   * fresh material; a second refusal would be the answer.
+   */
+  @Test
+  void logsInOnceMoreOnFreshMaterialWhenTheProvidersMaterialIsRefused() throws Exception {
+    answer(401, "");
+    answer(200, loginOk(ROOT_KEY, ROOT_UID));
+    answer(200, "[]");
+
+    client.readAcl(rootHere, CONTAINER);
+
+    assertEquals(2, countOf("/api/auth/login"), "one refused login, one on fresh material");
+    // Told once, between the refused material and the fresh one.
+    org.mockito.InOrder order = org.mockito.Mockito.inOrder(credentials);
+    order.verify(credentials).produce(any());
+    order.verify(credentials).invalidate(any());
+    order.verify(credentials).produce(any());
+  }
+
+  /**
+   * A provider carrying what the user typed is never retried on the login -
+   * one login, the refusal propagates. The refusal is still told, once: such a
+   * provider keeps nothing, so nothing changes, and every refused login is told
+   * the same way.
+   */
+  @Test
+  void neverLogsInAgainForAProviderThatCannotRefreshItsMaterial() throws Exception {
+    org.mockito.Mockito.lenient().when(credentials.requiresUserAction("personal")).thenReturn(true);
+    answer(401, "");
+
+    assertThrows(CalDavAuthenticationException.class, () -> client.readAcl(rootHere, CONTAINER));
+
+    assertEquals(1, countOf("/api/auth/login"));
+    org.mockito.Mockito.verify(credentials, org.mockito.Mockito.times(1)).invalidate(any());
   }
 }
