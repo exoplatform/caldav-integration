@@ -112,7 +112,7 @@ import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
  * {@code dev/golden-capture/capture-bluemind-object-etags.sh}, on object
  * {@code 51.ics} of the main calendar {@code calendar:Default:751E6D1A-…}
  * and on a probe href that does not exist: the import door's two ETag
- * channels (EXO-90307, review F7). They replaced the DERIVED fixtures of
+ * channels (EXO-90307). They replaced the DERIVED fixtures of
  * the same names, and every shape those fixtures predicted from BlueMind's
  * source was observed: the raw {@code bmdav_<lnum>_0} on each of the 343
  * children, the same token at Depth:0 for the same href, the quoted base64
@@ -681,7 +681,7 @@ public class HttpCalDavClientServerQuirksTest {
 
   /**
    * <b>The listing shape the BlueMind import door compares against
-   * (EXO-90307, review F1/F4).</b> BlueMind publishes {@code getetag} on a
+   * (EXO-90307).</b> BlueMind publishes {@code getetag} on a
    * child {@code .ics} as the raw token {@code bmdav_<lnum>_0}
    * ({@code GetTag.java:46-56}: "unsupported ressource type", timestamp 0),
    * unquoted and constant for the object's life, and on the container itself
@@ -783,7 +783,7 @@ public class HttpCalDavClientServerQuirksTest {
   }
 
   /**
-   * <b>The presence read of the import door (EXO-90307, review F7).</b> A
+   * <b>The presence read of the import door (EXO-90307).</b> A
    * one-href {@code calendar-multiget} asking {@code getetag} only: BlueMind
    * answers one response per item its store returned
    * ({@code CalendarMultigetExecutor.java:82,114-130}), under the REPORT

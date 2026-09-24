@@ -764,9 +764,18 @@ public class CaldavPushService {
       return;
     }
     try {
-      writerFor(endpoint).deleteObject(endpoint,
-                                       leftBehind.getRemoteHref(),
-                                       leftBehind.getEtag());
+      int status = writerFor(endpoint).deleteObject(endpoint,
+                                                    leftBehind.getRemoteHref(),
+                                                    leftBehind.getEtag());
+      if (status == PutResult.PRECONDITION_FAILED) {
+        // The copy is not the version recorded: it stays, and so does its
+        // mapping, for the verification pass to settle. Clearing the mapping
+        // here would leave a copy nothing in eXo points at.
+        LOG.info("The copy user {} left at {} when moving the event changed since it was recorded; it stays, and so does its mapping",
+                 userIdentityId,
+                 leftBehind.getRemoteHref());
+        return;
+      }
     } catch (RuntimeException e) {
       LOG.warn("The copy user {} left at {} when moving the event could not be removed; it stays, and so does its mapping",
                userIdentityId,
@@ -1050,14 +1059,21 @@ public class CaldavPushService {
       return;
     }
     CalDavEndpoint endpoint = endpointOf(settings, username);
+    int status;
     try {
-      writerFor(endpoint).deleteObject(endpoint,
-                                       known.getRemoteHref(),
-                                       known.getEtag());
+      status = writerFor(endpoint).deleteObject(endpoint,
+                                                known.getRemoteHref(),
+                                                known.getEtag());
     } catch (CalDavAuthenticationException e) {
       throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
     } catch (CalDavException e) {
       throw notWritten(e, "The calendar object could not be removed", known.getRemoteHref());
+    }
+    if (status == PutResult.PRECONDITION_FAILED) {
+      // Refused because the copy is not the version recorded: the mapping is
+      // kept, so the removal stays owed rather than leaving a copy nothing in
+      // eXo points at.
+      throw new CaldavPushException(CONFLICT, "The calendar object at " + known.getRemoteHref() + " changed since it was read");
     }
     caldavSyncStorage.saveObject(cleared(known));
   }
@@ -1103,9 +1119,12 @@ public class CaldavPushService {
       String rewritten = icsMerger.excludeOccurrence(existing.calendarData(), occurrence);
       if (rewritten == null) {
         // Nothing left in the object: the last instance was the one excluded.
-        writerFor(endpoint).deleteObject(endpoint,
-                                         known.getRemoteHref(),
-                                         known.getEtag());
+        int status = writerFor(endpoint).deleteObject(endpoint,
+                                                      known.getRemoteHref(),
+                                                      known.getEtag());
+        if (status == PutResult.PRECONDITION_FAILED) {
+          throw new CaldavPushException(CONFLICT, "The series at " + known.getRemoteHref() + " changed since it was read");
+        }
         caldavSyncStorage.saveObject(cleared(known));
         return;
       }
