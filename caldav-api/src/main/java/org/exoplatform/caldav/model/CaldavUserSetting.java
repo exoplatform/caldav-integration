@@ -19,6 +19,7 @@ package org.exoplatform.caldav.model;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import lombok.ToString;
 
 @Data
 @AllArgsConstructor
@@ -27,6 +28,12 @@ public class CaldavUserSetting {
 
   private String  username;
 
+  /**
+   * The user's own CalDAV password, in the clear once read or typed. Left out of
+   * {@code toString()}, which would otherwise print it into any log line or
+   * exception message the setting reaches (EXO-89650).
+   */
+  @ToString.Exclude
   private String  password;
 
   private String  caldavUrl;
