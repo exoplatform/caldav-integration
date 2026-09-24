@@ -273,16 +273,18 @@ public class CaldavServer {
    * {@link #answerLinksInCopy} records: the model is built positionally
    * through its all-args constructor, so appending keeps every existing
    * argument on its own field, and the next field appended goes after this
-   * one. The initialiser is what makes the default a real one: a row built
-   * through the no-args constructor resolves to CalDAV, the door every
-   * deployment already used.
+   * one.
    *
    * <p>
-   * <b>Null means "not stated" on the way IN</b>, exactly as
-   * {@link #mirrorTarget}: a save from a drawer that does not know the field
-   * arrives here as null and the storage leaves the stored value alone. Only
-   * an explicit value changes the row — which is what makes the flag a
-   * rollback an administrator can perform, and nothing else can undo.
+   * <b>Null means "not stated" on the way IN</b>: a save whose body does not
+   * carry the field arrives here as null and the storage leaves the stored
+   * value alone. Only an explicit value changes the row — which is what makes
+   * the flag a rollback an administrator can perform, and nothing else can
+   * undo. Hence no initialiser: Jackson builds a request body through the
+   * no-args constructor, and a default here would turn every body without the
+   * key into an explicit CalDAV. On the way OUT the field always holds a
+   * value, read from the column through {@link WriteChannel#of}, and a
+   * declaration that states none keeps the column's own default, CalDAV.
    */
-  private WriteChannel writeChannel = WriteChannel.CALDAV;
+  private WriteChannel writeChannel;
 }

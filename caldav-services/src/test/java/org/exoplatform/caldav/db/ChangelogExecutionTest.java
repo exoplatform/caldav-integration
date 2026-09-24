@@ -96,6 +96,9 @@ public class ChangelogExecutionTest {
   /** The per-server credentials provider EXO-89657 appends. */
   private static final String AUTH_PROVIDER_COLUMN = "AUTH_PROVIDER_NAME";
 
+  /** The door a server's copies are written through (EXO-90307). */
+  private static final String WRITE_CHANNEL_COLUMN = "WRITE_CHANNEL";
+
   /** Who each connected user is on their server, the table EXO-90243 adds. */
   private static final String CONNECTION_TABLE    = "CALDAV_CONNECTION";
 
@@ -426,6 +429,30 @@ public class ChangelogExecutionTest {
       }
     }
     assertEquals(0, nullableFlag("CALDAV_SERVER", AUTH_PROVIDER_COLUMN), "and the column must be NOT NULL");
+  }
+
+  /**
+   * The write-channel column, same promise: a server declared before it
+   * existed keeps writing its copies over CalDAV, the door every deployment
+   * already used. A DEFAULT lost in an edit would fail the ALTER on a populated
+   * table or leave every upgraded row with no channel, which no Java test can
+   * see.
+   *
+   * @throws Exception when a changeset cannot be applied or the row not written
+   */
+  @Test
+  public void aServerRowDefaultsToTheCalDavWriteChannel() throws Exception {
+    update();
+
+    try (Statement statement = connection.createStatement()) {
+      statement.executeUpdate("INSERT INTO CALDAV_SERVER (ID, PROVIDER_NAME, NAME, SERVER_URL, ACTIVE) "
+          + "VALUES (5, 'agenda.caldavCalendar.5', 'Legacy', 'https://legacy.example.invalid/dav/', TRUE)");
+      try (ResultSet rows = statement.executeQuery("SELECT " + WRITE_CHANNEL_COLUMN + " FROM CALDAV_SERVER WHERE ID = 5")) {
+        assertTrue(rows.next(), "the row must have been written");
+        assertEquals("CALDAV", rows.getString(1), "a row that says nothing about its channel writes over CalDAV");
+      }
+    }
+    assertEquals(0, nullableFlag("CALDAV_SERVER", WRITE_CHANNEL_COLUMN), "and the column must be NOT NULL");
   }
 
   /**

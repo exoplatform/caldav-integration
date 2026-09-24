@@ -54,7 +54,7 @@ into `caldav-services/src/test/resources/caldav/transcripts/`: the Depth:1
 object's href, a one-href `calendar-multiget` (getetag only), and the same
 Depth:0 + multiget on a **non-existent** href. All probes are reads; the
 missing-object probes address an href that does not exist and create
-nothing. Together they settle the two halves of the review-F7 hypothesis the
+nothing. Together they settle the two halves of the hypothesis the
 import door verifies live (`BlueMindImportWriter`): whether the Depth:0 token
 equals the listing's for the same object (the spelling hypothesis), and
 whether a Depth:0 on a missing object answers 404 or a node minted from the

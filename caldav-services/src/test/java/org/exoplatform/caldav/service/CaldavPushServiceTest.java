@@ -1422,6 +1422,23 @@ public class CaldavPushServiceTest {
   }
 
   /**
+   * A removal refused with 412 is a conflict, and the mapping keeps what the
+   * remote side owns: cleared, it would leave the copy on the server with
+   * nothing in eXo pointing at it, and the removal would no longer be owed.
+   */
+  @Test
+  public void aRemovalRefusedBecauseTheCopyChangedKeepsTheRemoteIdentity() {
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    when(caldavSyncStorage.getObjectByUid(1L, "evt-1")).thenReturn(mapped("\"etag-1\""));
+    when(calDavClient.deleteObject(any(), anyString(), any())).thenReturn(PutResult.PRECONDITION_FAILED);
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.deleteEvent(USER, "john", "evt-1"));
+
+    assertEquals(CaldavPushService.CONFLICT, failure.getCode());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  /**
    * A mapping that holds no href points at nothing, so there is nothing to
    * remove. Deriving one from the UID and deleting that instead would remove
    * whatever else happens to sit at the conventional filename.
@@ -1848,6 +1865,24 @@ public class CaldavPushServiceTest {
     service.excludeOccurrence(USER, "john", "series-uid", Instant.parse("2026-09-15T07:00:00Z"));
 
     verify(calDavClient).deleteObject(any(), anyString(), any());
+  }
+
+  @Test
+  public void anEmptiedSeriesWhoseRemovalIsRefusedSurfacesAsAConflict() {
+    // The removal after the last occurrence is excluded is conditional too, and
+    // a 412 there keeps the mapping, as the rewrite's own 412 does.
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("series-uid"))).thenReturn(mapped("\"etag-1\""));
+    when(calDavClient.fetchObject(any(), anyString())).thenReturn(new CalendarObject("/h", "\"etag-1\"", "BEGIN:VCALENDAR"));
+    when(icsMerger.excludeOccurrence(anyString(), any())).thenReturn(null);
+    when(calDavClient.deleteObject(any(), anyString(), any())).thenReturn(PutResult.PRECONDITION_FAILED);
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class,
+                                               () -> service.excludeOccurrence(USER, "john", "series-uid",
+                                                                               Instant.parse("2026-09-15T07:00:00Z")));
+
+    assertEquals(CaldavPushService.CONFLICT, failure.getCode());
+    verify(caldavSyncStorage, never()).saveObject(any());
   }
 
   @Test
@@ -2441,6 +2476,42 @@ public class CaldavPushServiceTest {
                                      eq("/dav/calendars/john/exo-cal-old-anchor/uid-original.ics"),
                                      eq("\"etag-old\""));
     verify(caldavSyncStorage).deleteObject(7778L);
+  }
+
+  /**
+   * A copy left behind that is not the version recorded is refused with 412, and
+   * it keeps its mapping: dropping the row would leave a copy in the user's
+   * calendar that nothing in eXo points at. The import door answers 412 exactly
+   * this way once, for a row last written over CalDAV.
+   */
+  @Test
+  public void aCopyLeftBehindThatChangedKeepsItsMapping() throws Exception {
+    givenAnAgendaEvent(112L, 0L);
+    givenPersonalCalendar(9L, "cal-anchor");
+    CalendarSync destination = boundPersonalPair();
+    destination.setId(6001L);
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(destination);
+    when(agendaRemoteEventService.findRemoteEvent(112L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-minted-anew"));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("uid-minted-anew"))).thenReturn(null);
+    CalendarSync origin = boundPersonalPair();
+    origin.setId(6002L);
+    origin.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(destination, origin));
+    ObjectSync stray = mapped("\"etag-old\"");
+    stray.setId(7778L);
+    stray.setCalendarSyncId(6002L);
+    stray.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor/uid-original.ics");
+    when(caldavSyncStorage.getObjectByEvent(6002L, 112L)).thenReturn(stray);
+    when(calDavClient.putObject(any(), anyString(), anyString()))
+        .thenReturn(new PutResult(201, "\"etag-new\"", null));
+    when(calDavClient.deleteObject(any(), anyString(), any())).thenReturn(PutResult.PRECONDITION_FAILED);
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, "john", 112L);
+
+    verify(calDavClient).deleteObject(any(), eq("/dav/calendars/john/exo-cal-old-anchor/uid-original.ics"), eq("\"etag-old\""));
+    verify(caldavSyncStorage, never()).deleteObject(7778L);
   }
 
   @Test

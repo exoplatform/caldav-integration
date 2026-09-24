@@ -305,7 +305,7 @@ public interface CalDavClient {
    * Asks, in one calendar-multiget REPORT, which of the given objects the
    * server holds and under which version — the presence question the
    * BlueMind import door asks about one object before and after each write
-   * (EXO-90307, review F7), asked without the calendar data a
+   * (EXO-90307), asked without the calendar data a
    * {@link #multiget} would make the server render.
    *
    * <p>
@@ -338,8 +338,7 @@ public interface CalDavClient {
    * Reads one object's version in a {@code Depth: 0} PROPFIND of
    * {@code getetag} on its own href — the single-object read of the listing
    * channel, the one whose value the verification pass adopts into the row
-   * when the server publishes the same value at both depths (EXO-90307,
-   * review F7).
+   * when the server publishes the same value at both depths (EXO-90307).
    *
    * <p>
    * What this read does not answer is existence: BlueMind's DAV router

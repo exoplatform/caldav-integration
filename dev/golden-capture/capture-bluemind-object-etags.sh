@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# THROWAWAY CAPTURE SCRIPT — EXO-90307 (review F7, the ETag channels of the
-# BlueMind import door).
+# THROWAWAY CAPTURE SCRIPT — EXO-90307 (the ETag channels of the BlueMind
+# import door).
 #
 # Records, on ONE existing object of the main calendar, the transcripts that
 # settle how BlueMind's DAV server answers the three reads the import door
