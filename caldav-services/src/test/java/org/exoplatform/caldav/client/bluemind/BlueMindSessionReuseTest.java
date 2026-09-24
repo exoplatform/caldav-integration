@@ -116,6 +116,8 @@ public class BlueMindSessionReuseTest {
 
   private BlueMindSessionCache        sessions;
 
+  private ConnectorCredentialsService credentials;
+
   private long                        now         = 1_700_000_000_000L;
 
   /**
@@ -162,7 +164,7 @@ public class BlueMindSessionReuseTest {
       }
       return next;
     });
-    ConnectorCredentialsService credentials = mock(ConnectorCredentialsService.class);
+    credentials = mock(ConnectorCredentialsService.class);
     lenient().doAnswer(invocation -> {
       ConnectorCredentialsContext context = invocation.getArgument(0);
       return new HttpConnectorCredentials(basic(bluemindLoginOf(context.getUsername())), null);
@@ -679,5 +681,41 @@ public class BlueMindSessionReuseTest {
     lenient().when(response.body()).thenReturn(new ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8)));
     lenient().when(response.headers()).thenReturn(HttpHeaders.of(Map.of(), (a, b) -> true));
     answers.add(response);
+  }
+
+  /**
+   * EXO-89649. A login refused on material a refreshable provider produced - under
+   * bluemind-sudo a kept session BlueMind has since dropped - is tried once more on
+   * fresh material; a second refusal would be the answer.
+   */
+  @Test
+  void logsInOnceMoreOnFreshMaterialWhenTheProvidersMaterialIsRefused() throws Exception {
+    answer(401, "");
+    answer(200, loginOk(ROOT_KEY, ROOT_UID));
+    answer(200, "[]");
+
+    client.readAcl(rootHere, CONTAINER);
+
+    assertEquals(2, countOf("/api/auth/login"), "one refused login, one on fresh material");
+    // Told once, between the refused material and the fresh one.
+    org.mockito.InOrder order = org.mockito.Mockito.inOrder(credentials);
+    order.verify(credentials).produce(any());
+    order.verify(credentials).invalidate(any());
+    order.verify(credentials).produce(any());
+  }
+
+  /**
+   * A provider carrying what the user typed is never retried on the login -
+   * one login, the refusal propagates, nothing invalidated.
+   */
+  @Test
+  void neverLogsInAgainForAProviderThatCannotRefreshItsMaterial() throws Exception {
+    org.mockito.Mockito.lenient().when(credentials.requiresUserAction("personal")).thenReturn(true);
+    answer(401, "");
+
+    assertThrows(CalDavAuthenticationException.class, () -> client.readAcl(rootHere, CONTAINER));
+
+    assertEquals(1, countOf("/api/auth/login"));
+    org.mockito.Mockito.verify(credentials, org.mockito.Mockito.never()).invalidate(any());
   }
 }
