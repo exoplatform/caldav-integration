@@ -328,13 +328,24 @@ public class CaldavServerStorage {
    * inbound pass, and nothing a drawer sends must be able to overwrite it. The
    * provider-config endpoint reads the same way, for the same reason.
    *
+   * <p>
+   * <b>Aged on read.</b> The list is rewritten only when a foreign copy is seen,
+   * so a deployment that stopped writing here would otherwise stay on it for
+   * ever: what has not been seen within the retention is left out of the answer,
+   * whatever the row still holds.
+   *
    * @param serverId technical identifier of the registration
+   * @param today the current epoch day
+   * @param retentionDays how long an unseen deployment stays on the list
    * @return the deployments seen writing here, empty when none has been or the
    *         row is gone, never null
    */
-  public List<ForeignWriter> getForeignWriters(long serverId) {
+  public List<ForeignWriter> getForeignWriters(long serverId, long today, long retentionDays) {
     return caldavServerDAO.findById(serverId)
-                          .map(entity -> foreignWriters(entity.getForeignWriters()))
+                          .map(entity -> foreignWriters(ForeignWriterSummary.record(ForeignWriterSummary.parse(entity.getForeignWriters()),
+                                                                                    null,
+                                                                                    today,
+                                                                                    retentionDays)))
                           .orElseGet(List::of);
   }
 
@@ -352,19 +363,18 @@ public class CaldavServerStorage {
    * lie; the start of it is the one an administrator reading a date cannot be
    * misled by.
    *
-   * @param summary the stored value, may be null
+   * @param writers the deployments and the epoch day each was last seen
    * @return the deployments, most recently seen first, never null
    */
-  private List<ForeignWriter> foreignWriters(String summary) {
-    return ForeignWriterSummary.parse(summary)
-                               .entrySet()
-                               .stream()
-                               .map(entry -> new ForeignWriter(entry.getKey(),
-                                                               LocalDate.ofEpochDay(entry.getValue())
-                                                                        .atStartOfDay(ZoneOffset.UTC)
-                                                                        .toInstant()
-                                                                        .toEpochMilli()))
-                               .toList();
+  private List<ForeignWriter> foreignWriters(Map<String, Long> writers) {
+    return writers.entrySet()
+                  .stream()
+                  .map(entry -> new ForeignWriter(entry.getKey(),
+                                                  LocalDate.ofEpochDay(entry.getValue())
+                                                           .atStartOfDay(ZoneOffset.UTC)
+                                                           .toInstant()
+                                                           .toEpochMilli()))
+                  .toList();
   }
 
   /**
@@ -376,7 +386,10 @@ public class CaldavServerStorage {
    * {@link #mergeObservedQuirks} does, and with the same accepted race: two
    * passes landing together can lose one of two observations, and nothing is
    * decided from the exact contents — the list answers "is another deployment
-   * writing here", and a deployment that wrote once writes again.
+   * writing here", and a deployment that wrote once writes again. The race
+   * stays inside this column: the entity is updated dynamically, so the
+   * statement carries this column alone and cannot revert an administrator's
+   * concurrent save.
    *
    * <p>
    * <b>Writes only when the result differs.</b> A deployment seen twice on the
