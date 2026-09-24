@@ -14,35 +14,51 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-import {resolveServerImage, DEFAULT_SERVER_IMAGE} from '../../main/webapp/vue-app/caldav/js/serverIconIdentity.js';
+import {resolveServerIcon, resolveServerImage, DEFAULT_SERVER_ICON, DEFAULT_SERVER_IMAGE} from '../../main/webapp/vue-app/caldav/js/serverIconIdentity.js';
 
 /**
  * The identity rule every surface shares: uploaded image, else the
- * admin-chosen font icon, else the packaged CalDAV image. The admin drawer
- * preview once broke ranks by showing a fa-calendar-alt placeholder for a
- * server that had nothing persisted, while the list and the connect drawer
- * showed the packaged image for the same server — two identities on one
- * screen. These tests pin the single rule that prevents that divergence.
+ * admin-chosen font icon, else — since EXO-90393 — a packaged calendar glyph.
+ * The admin drawer preview once broke ranks by showing a placeholder glyph for
+ * a server that had nothing persisted while the list and the connect drawer
+ * showed the packaged CalDAV image for the same server: two identities on one
+ * screen. The default has moved, the single rule has not — these tests pin it
+ * in its two halves, one answering "which image", the other "which glyph".
  */
 describe('resolveServerImage', () => {
 
   it('renders the uploaded image when one exists, even when a font icon is also set', () => {
-    expect(resolveServerImage('/rest/images/42', 'fa-calendar-check')).toBe('/rest/images/42');
-    expect(resolveServerImage('/rest/images/42', null)).toBe('/rest/images/42');
+    expect(resolveServerImage('/rest/images/42')).toBe('/rest/images/42');
   });
 
-  it('renders the font icon (null image) when an icon is chosen and no image uploaded', () => {
-    expect(resolveServerImage(null, 'fa-calendar-check')).toBeNull();
-    expect(resolveServerImage('', 'fa-calendar-check')).toBeNull();
+  it('renders a font icon (null image) whenever nothing was uploaded', () => {
+    expect(resolveServerImage(null)).toBeNull();
+    expect(resolveServerImage('')).toBeNull();
+    expect(resolveServerImage(undefined)).toBeNull();
   });
 
-  it('falls back to the packaged CalDAV image when nothing is configured — never a placeholder glyph', () => {
-    expect(resolveServerImage(null, null)).toBe(DEFAULT_SERVER_IMAGE);
-    expect(resolveServerImage('', '')).toBe(DEFAULT_SERVER_IMAGE);
-    expect(resolveServerImage(undefined, undefined)).toBe(DEFAULT_SERVER_IMAGE);
+  it('no longer falls back to the packaged CalDAV image, which named a protocol rather than a calendar', () => {
+    expect(resolveServerImage(null)).not.toBe(DEFAULT_SERVER_IMAGE);
+  });
+});
+
+describe('resolveServerIcon', () => {
+
+  it('renders the glyph the administrator chose', () => {
+    expect(resolveServerIcon('fa-server')).toBe('fa-server');
   });
 
-  it('keeps the packaged default at the path the connector descriptor ships as avatar', () => {
+  it('falls back to the packaged calendar glyph when the administrator chose none', () => {
+    expect(resolveServerIcon(null)).toBe(DEFAULT_SERVER_ICON);
+    expect(resolveServerIcon('')).toBe(DEFAULT_SERVER_ICON);
+    expect(resolveServerIcon(undefined)).toBe(DEFAULT_SERVER_ICON);
+  });
+
+  it('keeps the default on the agenda\'s own calendar icon, the one AgendaSwitchView draws', () => {
+    expect(DEFAULT_SERVER_ICON).toBe('fas fa-calendar-alt');
+  });
+
+  it('keeps the packaged CalDAV image shipped, for an administrator who deliberately picks it', () => {
     expect(DEFAULT_SERVER_IMAGE).toBe('/caldav/skin/image/caldav.png');
   });
 });
