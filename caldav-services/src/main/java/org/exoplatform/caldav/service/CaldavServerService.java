@@ -30,12 +30,9 @@ import org.springframework.stereotype.Service;
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.model.CaldavServer;
-import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.model.MirrorTargetKind;
+import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
-import org.exoplatform.services.connector.credentials.ConnectorProviderConfigStorage;
-import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
-import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.caldav.utils.CopySettingsFingerprint;
 import org.exoplatform.commons.api.settings.SettingService;
@@ -50,6 +47,9 @@ import org.exoplatform.container.PortalContainer;
 import org.exoplatform.container.RootContainer.PortalContainerPostCreateTask;
 import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.portal.config.UserACL;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorProviderConfigStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.services.security.Identity;
@@ -373,19 +373,6 @@ public class CaldavServerService {
   }
 
   /**
-   * Declares a new CalDAV server. The provider name is derived from the row
-   * id ({@code agenda.caldavCalendar.<id>}), then the matching agenda remote
-   * provider is upserted under that name — which is all agenda needs: its
-   * existing enabled-check and connected-provider binding key on the name.
-   *
-   * @param server registration to create (id and provider name ignored)
-   * @param username user declaring the server
-   * @return the created registration
-   * @throws IllegalAccessException when the user is not a platform administrator
-   * @throws IllegalArgumentException when the registration, its name or its
-   *           URL is missing
-   */
-  /**
    * The provider configuration of a registration, as an administration screen may see
    * it: every field except the secret ones, which are never read back on this path.
    *
@@ -395,11 +382,16 @@ public class CaldavServerService {
    * @return the stored values without any secret, empty when nothing is stored or when
    *         the storage is not deployed
    * @throws IllegalAccessException when the user is not a platform administrator
+   * @throws ObjectNotFoundException when no registration carries that id
    */
-  public Map<String, String> getProviderConfig(long serverId, String username) throws IllegalAccessException {
+  public Map<String, String> getProviderConfig(long serverId, String username) throws IllegalAccessException,
+                                                                                ObjectNotFoundException {
     checkCanEdit(username);
     CaldavServer stored = caldavServerStorage.getServerById(serverId);
-    if (providerConfigStorage == null || stored == null || StringUtils.isBlank(stored.getAuthProviderName())) {
+    if (stored == null) {
+      throw new ObjectNotFoundException("CalDAV server with id " + serverId + " doesn't exist");
+    }
+    if (providerConfigStorage == null || StringUtils.isBlank(stored.getAuthProviderName())) {
       return Map.of();
     }
     return providerConfigStorage.readWithoutSecrets(providerConfigContext(serverId, stored.getAuthProviderName()));
@@ -413,20 +405,41 @@ public class CaldavServerService {
    * leave a registration declared with nothing configured, which an administrator
    * answers by declaring a second one.
    *
+   * <p>
+   * A save that names a provider the registration is not on yet is checked even when it
+   * carries no configuration: the row would otherwise move to a provider whose required
+   * fields nothing holds. A save that keeps the provider and carries nothing - a rename,
+   * an icon - writes no configuration and is not checked.
+   *
    * @param server the registration as posted
+   * @param stored the registration as stored, null on a creation
    * @throws IllegalArgumentException carrying the storage's message code on a refusal
    */
-  private void validateProviderConfig(CaldavServer server) {
-    if (providerConfigStorage == null || MapUtils.isEmpty(server.getProviderConfig())) {
+  private void validateProviderConfig(CaldavServer server, CaldavServer stored) {
+    if (providerConfigStorage == null
+        || (MapUtils.isEmpty(server.getProviderConfig()) && !isProviderChange(stored, server))) {
       return;
     }
     try {
       providerConfigStorage.validate(providerConfigContext(server.getId(), server.getAuthProviderName()),
-                                     server.getProviderConfig());
+                                     MapUtils.emptyIfNull(server.getProviderConfig()));
     } catch (ConnectorCredentialsException e) {
       logProviderConfigRefusal(server, e);
       throw new IllegalArgumentException(e.getMessage(), e);
     }
+  }
+
+  /**
+   * Whether the save moves the registration to another provider. A blank posted provider
+   * keeps the stored one, as the storage does.
+   *
+   * @param stored the registration as stored, null on a creation
+   * @param server the registration as posted
+   * @return true when the posted provider is named and is not the stored one
+   */
+  private boolean isProviderChange(CaldavServer stored, CaldavServer server) {
+    return StringUtils.isNotBlank(server.getAuthProviderName())
+        && (stored == null || !StringUtils.equals(stored.getAuthProviderName(), server.getAuthProviderName()));
   }
 
   /**
@@ -506,10 +519,23 @@ public class CaldavServerService {
                                            CaldavCredentialsResolver.CONNECTOR_KIND);
   }
 
+  /**
+   * Declares a new CalDAV server. The provider name is derived from the row
+   * id ({@code agenda.caldavCalendar.<id>}), then the matching agenda remote
+   * provider is upserted under that name — which is all agenda needs: its
+   * existing enabled-check and connected-provider binding key on the name.
+   *
+   * @param server registration to create (id and provider name ignored)
+   * @param username user declaring the server
+   * @return the created registration
+   * @throws IllegalAccessException when the user is not a platform administrator
+   * @throws IllegalArgumentException when the registration, its name or its
+   *           URL is missing
+   */
   public CaldavServer createServer(CaldavServer server, String username) throws IllegalAccessException {
     checkCanEdit(username);
     validate(server);
-    validateProviderConfig(server);
+    validateProviderConfig(server, null);
     CaldavServer createdServer = caldavServerStorage.createServer(server, CALDAV_PROVIDER_NAME);
     storeProviderConfig(createdServer, server.getProviderConfig());
     saveAgendaRemoteProvider(createdServer);
@@ -554,7 +580,7 @@ public class CaldavServerService {
     // registration and its configuration are two writes, and a refusal on the second
     // would otherwise leave the row on a provider whose configuration was never
     // stored - an authentication nothing can perform, that no screen shows as broken.
-    validateProviderConfig(server);
+    validateProviderConfig(server, stored);
     CaldavServer updatedServer = caldavServerStorage.updateServer(server);
     if (updatedServer == null) {
       throw new ObjectNotFoundException("CalDAV server with id " + server.getId() + " doesn't exist");
