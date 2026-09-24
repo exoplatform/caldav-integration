@@ -26,6 +26,8 @@ import org.exoplatform.services.connector.credentials.ConnectorCredentialsContex
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
 import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
 
 /**
  * The CalDAV side of the shared credentials contract: the one place that knows
@@ -42,6 +44,8 @@ import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
  */
 @Component
 public class CaldavCredentialsResolver {
+
+  private static final Log LOG = ExoLogger.getLogger(CaldavCredentialsResolver.class);
 
   /**
    * The kind this connector is known by platform-wide, which is how a provider
@@ -151,22 +155,6 @@ public class CaldavCredentialsResolver {
     return material.getAuthorizationHeaderValue();
   }
 
-  /**
-   * Tells the configured provider that the material it produced for this account
-   * was refused by the calendar server, so a caching provider forgets it. Called
-   * exactly once per refusal by the two places that see one - the client and
-   * the relay - and never in a retry loop, as the contract asks. Personal has
-   * nothing to forget and answers nothing.
-   *
-   * @param serverId registration the account references, or null for the
-   *          legacy property
-   * @param providerName provider the registration is configured with
-   * @param exoLogin the eXo login the refused material was produced for
-   */
-  public void invalidate(Long serverId, String providerName, String exoLogin) {
-    connectorCredentialsService.invalidate(context(serverId, providerName, exoLogin));
-  }
-
   private HttpConnectorCredentials produce(ConnectorCredentialsContext context, String providerName) {
     try {
       // The cast holds because the resolution service refuses a provider that
@@ -177,6 +165,46 @@ public class CaldavCredentialsResolver {
     } catch (ConnectorCredentialsException e) {
       throw new CalDavException("The credentials provider " + providerName
           + " could not produce credentials for this CalDAV account", e);
+    }
+  }
+
+  /**
+   * Whether a refused credential is worth one more attempt after invalidating it: only
+   * for a provider that produces its material itself (no user action), whose
+   * invalidation can yield something new. A provider carrying what the user typed would
+   * hand the same password back, and the second refusal would count against the user's
+   * account in the server's lockout policy. Never throws: an unknown provider is not
+   * retried.
+   *
+   * @param providerName the registration's provider
+   * @return true when a retry on fresh material makes sense
+   */
+  public boolean retriesAfterRefusal(String providerName) {
+    try {
+      return !requiresUserAction(providerName);
+    } catch (RuntimeException e) {
+      return false;
+    }
+  }
+
+  /**
+   * Tells the provider that material it produced for this account was refused by the
+   * CalDAV server, so a caching provider forgets it and the next production does not
+   * hand it out again. Called once per refused material by the two places that see
+   * one - the client and the relay: before the one retry on fresh material
+   * (EXO-89649), and again when that material is refused too, never in a loop. A
+   * provider that keeps nothing (Personal) does nothing. Never throws: an
+   * invalidation that cannot be delivered leaves the entry to expire.
+   *
+   * @param serverId the declared registration, or null for the legacy one
+   * @param providerName the registration's provider
+   * @param exoLogin the eXo login the material was produced for
+   */
+  public void invalidate(Long serverId, String providerName, String exoLogin) {
+    try {
+      connectorCredentialsService.invalidate(context(serverId, providerName, exoLogin));
+    } catch (RuntimeException e) {
+      LOG.debug("Nothing invalidated for user {} on provider {}", exoLogin, providerName, e);
     }
   }
 

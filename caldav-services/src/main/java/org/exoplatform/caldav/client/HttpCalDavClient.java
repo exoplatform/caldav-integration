@@ -583,7 +583,7 @@ public class HttpCalDavClient implements CalDavClient {
   @Override
   public String readEtag(CalDavEndpoint endpoint, String href) {
     HttpRequest request = request(endpoint, href, PROPFIND_METHOD, PROPFIND_ETAGS).header(DEPTH_HEADER, "0").build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     int status = response.status();
     if (status == 404 || status == 410) {
       // No such object, said the way a server that checks says it. Reported
@@ -641,7 +641,7 @@ public class HttpCalDavClient implements CalDavClient {
           <d:prop><d:getetag/></d:prop>
         </d:sync-collection>""".formatted(escape(StringUtils.defaultString(syncToken)));
     HttpRequest request = request(endpoint, collectionHref, "REPORT", body).header(DEPTH_HEADER, "0").build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     // Token invalidation is the routine tier-1 downgrade, answered before the
     // generic status policy so a 403 carrying the valid-sync-token
     // precondition is never misread as a credential refusal.
@@ -683,7 +683,7 @@ public class HttpCalDavClient implements CalDavClient {
                                   collectionHref,
                                   PROPFIND_METHOD,
                                   PROPFIND_CAPABILITIES).header(DEPTH_HEADER, "0").build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     checkReadStatus(response, request, endpoint);
     Element multistatus = parse(response.body(), request.uri());
     Element first = firstResponse(multistatus);
@@ -719,7 +719,7 @@ public class HttpCalDavClient implements CalDavClient {
                                      .header(AUTHORIZATION_HEADER, authorization(endpoint))
                                      .GET()
                                      .build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     int status = response.status();
     if (status == 404 || status == 410) {
       // The object is gone, which for a conflict re-read is a fact to
@@ -789,7 +789,7 @@ public class HttpCalDavClient implements CalDavClient {
       LOG.debug("CalDAV DELETE sent without a precondition");
     }
     HttpRequest request = builder.build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     int status = response.status();
     checkAuthStatus(status, false, request, endpoint);
     // 200/204 deleted; 404/410 already gone — absent is absent, a fact the
@@ -827,7 +827,7 @@ public class HttpCalDavClient implements CalDavClient {
           <d:set><d:prop>%s</d:prop></d:set>
         </c:mkcalendar>""".formatted(props);
     HttpRequest request = request(endpoint, href, "MKCALENDAR", body).build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     // 401/407 only: a 403 on this write verb IS the refusal — BlueMind
     // refuses MKCALENDAR outright with credentials that are perfectly fine,
     // and classifying that as an auth failure would pause the account.
@@ -843,7 +843,7 @@ public class HttpCalDavClient implements CalDavClient {
           <d:set><d:prop><d:displayname>%s</d:displayname></d:prop></d:set>
         </d:propertyupdate>""".formatted(escape(displayName));
     HttpRequest request = request(endpoint, href, "PROPPATCH", body).build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     // 401/407 only, for the same reason as MKCALENDAR: on a write verb a 403
     // is the server declining the change, with credentials that are fine.
     checkAuthStatus(response.status(), false, request, endpoint);
@@ -880,7 +880,7 @@ public class HttpCalDavClient implements CalDavClient {
       builder.header(preconditionHeader, preconditionValue);
     }
     HttpRequest request = builder.build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     int status = response.status();
     checkAuthStatus(status, false, request, endpoint);
     // 201 is the created object, 204 and 200 are how some servers
@@ -1054,7 +1054,7 @@ public class HttpCalDavClient implements CalDavClient {
    */
   private Element propfind(CalDavEndpoint endpoint, String href, String body, String depth) {
     HttpRequest request = request(endpoint, href, PROPFIND_METHOD, body).header(DEPTH_HEADER, depth).build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     checkReadStatus(response, request, endpoint);
     return parse(response.body(), request.uri());
   }
@@ -1070,7 +1070,7 @@ public class HttpCalDavClient implements CalDavClient {
    */
   private Element report(CalDavEndpoint endpoint, String href, String body, String depth) {
     HttpRequest request = request(endpoint, href, "REPORT", body).header(DEPTH_HEADER, depth).build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     checkReadStatus(response, request, endpoint);
     return parse(response.body(), request.uri());
   }
@@ -1122,6 +1122,35 @@ public class HttpCalDavClient implements CalDavClient {
     }
     URI base = endpoint.getBaseUri();
     return uri(base.getScheme() + "://" + base.getRawAuthority() + path);
+  }
+
+  /**
+   * Sends a request, and once more with fresh material when the server answers
+   * 401 to material the account's provider produced (EXO-89649): material can go
+   * stale between being produced and being used - a BlueMind session kept by the
+   * provider and dropped by a BlueMind restart. The provider is told once, the
+   * request goes out once more with a freshly produced header, and whatever the
+   * server then answers is the answer: never a loop. Only a 401 counts - a 407 is
+   * a proxy and a 403 is a refusal the verb policies already classify - and an
+   * unreachable server proves nothing about the material. The request bodies of
+   * this client are strings or empty, so the copy replays the same body.
+   *
+   * @param request the request to send, carrying the provider's header
+   * @param endpoint the account the request addresses
+   * @return the response, from the retry when there was one
+   */
+  private DavResponse exchange(HttpRequest request, CalDavEndpoint endpoint) {
+    DavResponse response = exchange(request);
+    if (response.status() != 401 || request.headers().firstValue(AUTHORIZATION_HEADER).isEmpty()
+        || !caldavCredentialsResolver.retriesAfterRefusal(endpoint.getAuthProviderName())) {
+      return response;
+    }
+    LOG.debug("The calendar server refused the credentials of user {}; retrying once with fresh ones", endpoint.getExoLogin());
+    caldavCredentialsResolver.invalidate(endpoint.getServerId(), endpoint.getAuthProviderName(), endpoint.getExoLogin());
+    HttpRequest retry = HttpRequest.newBuilder(request, (name, value) -> !AUTHORIZATION_HEADER.equalsIgnoreCase(name))
+                                   .header(AUTHORIZATION_HEADER, authorization(endpoint))
+                                   .build();
+    return exchange(retry);
   }
 
   /**
@@ -1702,7 +1731,7 @@ public class HttpCalDavClient implements CalDavClient {
                                      .header(AUTHORIZATION_HEADER, authorization(endpoint))
                                      .method("OPTIONS", BodyPublishers.noBody())
                                      .build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     int status = response.status();
     checkAuthStatus(status, true, request, endpoint);
     if (status != 200 && status != 204) {
@@ -1712,7 +1741,7 @@ public class HttpCalDavClient implements CalDavClient {
     List<String> allowHeaders = response.response().headers().allValues("allow");
     if (DavOptions.of(davHeaders, List.of()).davTokens().isEmpty()) {
       HttpRequest propfind = request(endpoint, href, PROPFIND_METHOD, PROPFIND_RESOURCETYPE).header(DEPTH_HEADER, "0").build();
-      DavResponse answer = exchange(propfind);
+      DavResponse answer = exchange(propfind, endpoint);
       checkReadStatus(answer, propfind, endpoint);
       davHeaders = answer.response().headers().allValues("dav");
     }
@@ -1791,7 +1820,7 @@ public class HttpCalDavClient implements CalDavClient {
   public AclWriteResult writeAcl(CalDavEndpoint endpoint, CalendarSync pair, List<AccessControlEntry> entries) {
     String href = shareTarget(pair);
     HttpRequest request = request(endpoint, href, "ACL", aclBody(entries)).build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     int status = response.status();
     checkAuthStatus(status, false, request, endpoint);
     if (status == 502 || status == 503 || status == 504) {
@@ -2222,7 +2251,7 @@ public class HttpCalDavClient implements CalDavClient {
     String body = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<CS:share xmlns:D=\"DAV:\" xmlns:CS=\"" + CALENDARSERVER_NS + "\">"
         + change + "</CS:share>";
     HttpRequest request = request(endpoint, href, "POST", body).build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     int status = response.status();
     checkAuthStatus(status, false, request, endpoint);
     if (status < 200 || status >= 300) {
@@ -2242,7 +2271,7 @@ public class HttpCalDavClient implements CalDavClient {
                                      .header(AUTHORIZATION_HEADER, authorization(endpoint))
                                      .DELETE()
                                      .build();
-    DavResponse response = exchange(request);
+    DavResponse response = exchange(request, endpoint);
     int status = response.status();
     checkAuthStatus(status, false, request, endpoint);
     // 200/204 deleted; 404/410 already gone — absent is absent, which is what

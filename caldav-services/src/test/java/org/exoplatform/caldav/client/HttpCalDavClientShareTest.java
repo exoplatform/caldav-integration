@@ -170,6 +170,9 @@ public class HttpCalDavClientShareTest {
              .thenReturn(new CaldavServer(1L, "agenda.caldavCalendar", "Stalwart", null, SERVER_URL, true, null, null, null,
                                           null, true, null, null, null, null, null, null, "personal", null, null));
     ConnectorCredentialsService credentials = mock(ConnectorCredentialsService.class);
+    // The Personal provider carries what the user typed: it asks for user action, so
+    // a refused credential is never retried on "fresh" material (EXO-89649).
+    org.mockito.Mockito.lenient().when(credentials.requiresUserAction("personal")).thenReturn(true);
     lenient().doReturn(new HttpConnectorCredentials(AUTHORIZATION, null)).when(credentials).produce(any());
     lenient().doReturn(USER).when(credentials).resolveTargetIdentity(any());
     client = new HttpCalDavClient(transport, registry, new CaldavCredentialsResolver(credentials));
