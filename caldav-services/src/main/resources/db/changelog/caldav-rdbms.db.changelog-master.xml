@@ -826,7 +826,7 @@
     </createIndex>
   </changeSet>
 
-  <changeSet author="caldav" id="1.0.0-49">
+  <changeSet author="caldav" id="1.0.0-53">
     <comment>
       Through which door eXo writes and removes the meeting copies of a server
       (EXO-90307): CALDAV, or BLUEMIND_IMPORT - BlueMind's own ICS import API,
