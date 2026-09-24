@@ -710,4 +710,91 @@ public class CaldavRelayServiceTest {
     assertThrows(IllegalArgumentException.class, () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME));
     org.mockito.Mockito.verifyNoInteractions(httpClient);
   }
+
+  // ---- EXO-89649: one retry on fresh material after a 401 ----------------------
+
+  /**
+   * The relay: an upstream 401 on a refreshable provider's material is retried once on
+   * fresh material, and the browser sees the retry's answer.
+   */
+  @Test
+  @SuppressWarnings({ "unchecked", "rawtypes" })
+  public void relaysOnceMoreOnFreshMaterialAfterA401() throws Exception {
+    givenConnectedUser(SERVER_ID);
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavServerService.resolveServer(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.retriesAfterRefusal(PROVIDER)).thenReturn(true);
+    HttpResponse refused = org.mockito.Mockito.mock(HttpResponse.class);
+    when(refused.statusCode()).thenReturn(401);
+    when(refused.body()).thenReturn(new ByteArrayInputStream(new byte[0]));
+    HttpResponse answered = org.mockito.Mockito.mock(HttpResponse.class);
+    org.mockito.Mockito.lenient().when(answered.statusCode()).thenReturn(207);
+    org.mockito.Mockito.lenient().when(answered.body()).thenReturn(new ByteArrayInputStream("<multistatus/>".getBytes(StandardCharsets.UTF_8)));
+    org.mockito.Mockito.lenient().when(answered.headers()).thenReturn(HttpHeaders.of(Map.of(), (name, value) -> true));
+    when(httpClient.send(any(), any())).thenReturn(refused, answered);
+
+    CaldavRelayedResponse response = caldavRelayService.relay(relayRequest("PROPFIND", "/dav/cal/john/", Map.of()));
+
+    assertEquals(207, response.getStatus());
+    org.mockito.Mockito.verify(caldavCredentialsResolver, org.mockito.Mockito.times(1)).invalidate(SERVER_ID, PROVIDER, USERNAME);
+    org.mockito.Mockito.verify(httpClient, org.mockito.Mockito.times(2)).send(any(), any());
+  }
+
+  /** The relay never retries a provider that carries what the user typed, and tells it the refusal once. */
+  @Test
+  public void neverRelaysAgainForAProviderThatCannotRefreshItsMaterial() throws Exception {
+    givenConnectedUser(SERVER_ID);
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavServerService.resolveServer(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.retriesAfterRefusal(PROVIDER)).thenReturn(false);
+    givenUpstreamAnswer(401, Map.of(), new byte[0]);
+
+    assertEquals(403, caldavRelayService.relay(relayRequest("PROPFIND", "/dav/cal/john/", Map.of())).getStatus());
+
+    org.mockito.Mockito.verify(caldavCredentialsResolver, org.mockito.Mockito.times(1)).invalidate(SERVER_ID, PROVIDER, USERNAME);
+    org.mockito.Mockito.verify(httpClient, org.mockito.Mockito.times(1)).send(any(), any());
+  }
+
+  /**
+   * The one-click connect: a probe refused with 401 on material the provider kept is
+   * probed once more on fresh material, and connects.
+   */
+  @Test
+  @SuppressWarnings({ "unchecked", "rawtypes" })
+  public void probesOnceMoreOnFreshMaterialBeforeConnecting() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, USERNAME)).thenReturn(identity);
+    when(identity.getId()).thenReturn(String.valueOf(IDENTITY_ID));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
+    HttpResponse refused = org.mockito.Mockito.mock(HttpResponse.class);
+    when(refused.statusCode()).thenReturn(401);
+    HttpResponse accepted = org.mockito.Mockito.mock(HttpResponse.class);
+    when(accepted.statusCode()).thenReturn(207);
+    when(httpClient.send(any(), any())).thenReturn(refused, accepted);
+
+    assertEquals(CaldavProbeResult.OK, caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME).getResult());
+
+    org.mockito.Mockito.verify(caldavCredentialsResolver, org.mockito.Mockito.times(1)).invalidate(SERVER_ID, PROVIDER, USERNAME);
+    org.mockito.Mockito.verify(httpClient, org.mockito.Mockito.times(2)).send(any(), any());
+  }
+
+  /** The one-click probe retries on a 401 only - a 403 is the answer. */
+  @Test
+  @SuppressWarnings({ "rawtypes" })
+  public void neverProbesAgainOnA403() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
+    givenProbeAnswer(403);
+
+    assertEquals(CaldavProbeResult.CREDENTIALS, caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME).getResult());
+
+    org.mockito.Mockito.verify(caldavCredentialsResolver, org.mockito.Mockito.never()).invalidate(any(), any(), any());
+    org.mockito.Mockito.verify(httpClient, org.mockito.Mockito.times(1)).send(any(), any());
+  }
 }

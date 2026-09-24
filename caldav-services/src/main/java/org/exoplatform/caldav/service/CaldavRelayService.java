@@ -321,7 +321,27 @@ public class CaldavRelayService {
                                                relayRequest.getHeaders(),
                                                relayRequest.getBody(),
                                                authorization(server, relayRequest.getUsername()));
-    return execute(request, upstreamBase, relayRequest.getRelayPrefix(), server, relayRequest.getUsername());
+    // The one retry the credentials contract allows (EXO-89649): a 401 on the
+    // provider's material means it went stale - a kept BlueMind session dropped by a
+    // BlueMind restart - and the same request, whose body is a replayable byte
+    // array, goes out once more on fresh material.
+    // Only for a provider that produces its material itself: one carrying what the
+    // user typed would hand the same password back, a second refusal against the
+    // user's account for nothing.
+    boolean refreshable = caldavCredentialsResolver.retriesAfterRefusal(server.getAuthProviderName());
+    return execute(request,
+                   upstreamBase,
+                   relayRequest.getRelayPrefix(),
+                   server,
+                   relayRequest.getUsername(),
+                   !refreshable ? null : () -> {
+      caldavCredentialsResolver.invalidate(server.getId(), server.getAuthProviderName(), relayRequest.getUsername());
+      return buildUpstreamRequest(target,
+                                  method,
+                                  relayRequest.getHeaders(),
+                                  relayRequest.getBody(),
+                                  authorization(server, relayRequest.getUsername()));
+    });
   }
 
   /**
@@ -427,6 +447,13 @@ public class CaldavRelayService {
       throw new IllegalAccessException(PROVIDER_DISABLED_MESSAGE);
     }
     CaldavProbeResult outcome = probe(server, account, authorization(server, exoLogin));
+    if (CaldavProbeResult.CREDENTIALS.equals(outcome.getResult()) && Integer.valueOf(401).equals(outcome.getStatus())) {
+      // The one retry the credentials contract allows (EXO-89649): material kept by
+      // the provider may have gone stale; one probe more on fresh material, and its
+      // answer is the answer.
+      caldavCredentialsResolver.invalidate(server.getId(), server.getAuthProviderName(), exoLogin);
+      outcome = probe(server, account, authorization(server, exoLogin));
+    }
     // getResult() carries the classification, getStatus() the raw HTTP code: comparing
     // OK against the latter is never true, and the connection would silently never be
     // recorded while the caller was told it succeeded.
@@ -661,11 +688,26 @@ public class CaldavRelayService {
    * @param request the upstream request to send
    * @param upstreamBase the upstream base URI, for absolute-href matching
    * @param relayPrefix the relay prefix hrefs are rewritten onto
+   * @param server the registration whose provider is told of a refusal
+   * @param username the eXo user the request is relayed for
+   * @param retryOnFreshMaterial builds the same request on freshly produced material,
+   *          after telling the provider the first was refused; asked once, and only
+   *          on a 401; null when the provider's material cannot be refreshed
    * @return the response to hand the browser
    */
-  private CaldavRelayedResponse execute(HttpRequest request, URI upstreamBase, String relayPrefix, CaldavServer server, String username) {
+  private CaldavRelayedResponse execute(HttpRequest request,
+                                        URI upstreamBase,
+                                        String relayPrefix,
+                                        CaldavServer server,
+                                        String username,
+                                        java.util.function.Supplier<HttpRequest> retryOnFreshMaterial) {
     try {
       HttpResponse<InputStream> response = httpClient.send(request, BodyHandlers.ofInputStream());
+      if (response.statusCode() == 401 && retryOnFreshMaterial != null) {
+        response.body().close();
+        LOG.debug("CalDAV server refused the provider's material for {}; retrying once with fresh material", request.uri());
+        response = httpClient.send(retryOnFreshMaterial.get(), BodyHandlers.ofInputStream());
+      }
       byte[] body = readBounded(response.body());
       if (body == null) {
         LOG.warn("CalDAV relay response from server exceeded the configured cap of {} bytes", getMaxBodyBytes());
@@ -674,7 +716,7 @@ public class CaldavRelayService {
       int status = response.statusCode();
       if (status == 401 || status == 407) {
         // The provider's material was refused: told once, so a caching provider
-        // forgets it (Personal has nothing to forget); never retried from here.
+        // forgets it (Personal has nothing to forget).
         caldavCredentialsResolver.invalidate(server.getId(), server.getAuthProviderName(), username);
         // The STORED CalDAV credentials are refused: never let this travel
         // as a 401, which the platform and the browser both read as "the eXo
