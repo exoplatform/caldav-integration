@@ -1422,20 +1422,27 @@ public class CaldavPushServiceTest {
   }
 
   /**
-   * A removal refused with 412 is a conflict, and the mapping keeps what the
-   * remote side owns: cleared, it would leave the copy on the server with
-   * nothing in eXo pointing at it, and the removal would no longer be owed.
+   * A removal refused with 412 removes the copy all the same, whatever version the
+   * server now holds, and then clears the remote identity. The event is gone, and
+   * nothing adopts the server's version for an event that no longer exists: a
+   * removal conditioned on the recorded version would be refused on every retry and
+   * leave the copy for good. A row whose version was recorded before the server's
+   * write channel changed is refused exactly this way.
    */
   @Test
-  public void aRemovalRefusedBecauseTheCopyChangedKeepsTheRemoteIdentity() {
+  public void aRemovalRefusedBecauseTheCopyChangedRemovesItUnconditionally() {
     when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
     when(caldavSyncStorage.getObjectByUid(1L, "evt-1")).thenReturn(mapped("\"etag-1\""));
-    when(calDavClient.deleteObject(any(), anyString(), any())).thenReturn(PutResult.PRECONDITION_FAILED);
+    when(calDavClient.deleteObject(endpoint, MIRROR + "evt-1.ics", "\"etag-1\"")).thenReturn(PutResult.PRECONDITION_FAILED);
+    when(calDavClient.deleteObject(endpoint, MIRROR + "evt-1.ics", null)).thenReturn(204);
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
 
-    CaldavPushException failure = assertThrows(CaldavPushException.class, () -> service.deleteEvent(USER, "john", "evt-1"));
+    service.deleteEvent(USER, "john", "evt-1");
 
-    assertEquals(CaldavPushService.CONFLICT, failure.getCode());
-    verify(caldavSyncStorage, never()).saveObject(any());
+    verify(calDavClient).deleteObject(endpoint, MIRROR + "evt-1.ics", null);
+    ArgumentCaptor<ObjectSync> cleared = ArgumentCaptor.forClass(ObjectSync.class);
+    verify(caldavSyncStorage).saveObject(cleared.capture());
+    assertNull(cleared.getValue().getRemoteHref());
   }
 
   /**
