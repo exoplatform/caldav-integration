@@ -765,7 +765,23 @@
     </createIndex>
   </changeSet>
 
+  <!--
+    1.0.0-48 has two histories (EXO-90613). EXO-90307 first shipped the
+    WRITE_CHANNEL addColumn under this id on feature/ai-contribution, and the
+    acceptance server ran it and recorded 9:588b6a86d17c02ef17738e390c9f9472.
+    EXO-90190 then took the id for the ownership index below, and EXO-90307's
+    merge moved its column to 1.0.0-53. A database that ran the first history
+    refused the changelog, and with it the platform.
+
+    The validCheckSum lets that database validate. It does not make this body
+    run there: Liquibase treats the id as already run, so on such a database
+    the row stands for the WRITE_CHANNEL column, and the index below was
+    never created: 1.0.0-53 recognises the column, 1.0.0-54 creates the index.
+    The body stays exactly as it is: its checksum is the one every other
+    database recorded. Never reuse or renumber an id that has run anywhere.
+  -->
   <changeSet author="caldav" id="1.0.0-48">
+    <validCheckSum>9:588b6a86d17c02ef17738e390c9f9472</validCheckSum>
     <comment>
       The deployment-wide ownership question (EXO-90226): does any user of this
       deployment hold a pair of this origin on this server for this calendar
@@ -827,6 +843,20 @@
   </changeSet>
 
   <changeSet author="caldav" id="1.0.0-53">
+    <!--
+      Marked as run where the column is already there (EXO-90613): a database
+      that ran EXO-90307's first history holds WRITE_CHANNEL under 1.0.0-48
+      (see there), and replaying the addColumn would fail on a duplicate
+      column and stop the platform. Everywhere else - a fresh database, or one
+      that ran EXO-90190's 1.0.0-48 - the column is absent and this runs.
+      Preconditions are not part of the checksum, so the databases that
+      already ran this changeset still validate.
+    -->
+    <preConditions onFail="MARK_RAN">
+      <not>
+        <columnExists tableName="CALDAV_SERVER" columnName="WRITE_CHANNEL"/>
+      </not>
+    </preConditions>
     <comment>
       Through which door eXo writes and removes the meeting copies of a server
       (EXO-90307): CALDAV, or BLUEMIND_IMPORT - BlueMind's own ICS import API,
@@ -957,6 +987,35 @@
     <createIndex tableName="CALDAV_PENDING_SUBSCRIPTION" indexName="IDX_CALDAV_PENDING_SUBSCRIPTION_ATTEMPTS">
       <column name="ATTEMPTS"/>
     </createIndex>
+  </changeSet>
+
+  <changeSet author="caldav" id="1.0.0-54">
+    <preConditions onFail="MARK_RAN">
+      <not>
+        <indexExists tableName="CALDAV_CALENDAR_SYNC" indexName="IDX_CALDAV_CALENDAR_SYNC_ORIGIN"/>
+      </not>
+    </preConditions>
+    <comment>
+      The ownership index of 1.0.0-48, offered again for the databases where
+      1.0.0-48 recorded EXO-90307's WRITE_CHANNEL column instead (EXO-90613):
+      there the index was never created, silently, and the deployment-wide
+      ownership question walks the table again. Created only where it is
+      missing, so a fresh database and every database that ran EXO-90190's
+      1.0.0-48 mark this as run and keep the index 1.0.0-48 built. Same name
+      and columns as 1.0.0-48, for the reasons given there.
+
+      Deliberately an empty rollback. Liquibase rolls back a changeset marked
+      as run as if it had run, so the automatic one would drop the index
+      1.0.0-48 built and then fail 1.0.0-48's own rollback on a missing index.
+      Whichever of the two built it, 1.0.0-48 is recorded on every database,
+      and its rollback is the one that drops the index.
+    </comment>
+    <createIndex tableName="CALDAV_CALENDAR_SYNC" indexName="IDX_CALDAV_CALENDAR_SYNC_ORIGIN">
+      <column name="SERVER_ID"/>
+      <column name="ORIGIN"/>
+      <column name="LOCAL_CALENDAR_SYNC_UID"/>
+    </createIndex>
+    <rollback/>
   </changeSet>
 
 </databaseChangeLog>
