@@ -54,6 +54,18 @@ public class CaldavCredentialsResolver {
   }
 
   /**
+   * Whether a credentials provider of that name is registered.
+   *
+   * @param providerName the name a registration is saved with
+   * @return true when a registered provider carries that name
+   */
+  public boolean knowsProvider(String providerName) {
+    return connectorCredentialsService.getProviders()
+                                      .stream()
+                                      .anyMatch(provider -> provider.getName().equals(providerName));
+  }
+
+  /**
    * The account a conversation addresses, as the configured provider names it —
    * the user's own for Personal, someone else's for a provider that
    * authenticates as a technical account.
