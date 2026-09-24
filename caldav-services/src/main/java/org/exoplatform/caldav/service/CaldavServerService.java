@@ -913,6 +913,12 @@ public class CaldavServerService {
       caldavServerUrlValidator.validate(server.getServerUrl());
     }
     checkWriteChannel(server, stored);
+    // A body that states no channel keeps the stored one, and says so before the stamp is
+    // taken: fingerprinted as null, it would move the stamp and send every mirror of the
+    // server through a settings round that changes nothing.
+    if (server.getWriteChannel() == null && stored != null) {
+      server.setWriteChannel(stored.getWriteChannel());
+    }
     stampCopySettings(server);
     // Before the row is written, for the reason the create path already carries: the
     // registration and its configuration are two writes, and a refusal on the second
