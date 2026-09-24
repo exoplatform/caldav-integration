@@ -20,6 +20,7 @@ package org.exoplatform.caldav.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -52,6 +53,7 @@ import org.exoplatform.caldav.model.CaldavSyncTuning;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.Map;
 
@@ -548,5 +550,22 @@ public class CaldavServerRestTest {
                                                    () -> caldavServerRest.getProviderConfig(request, 7));
 
     assertEquals(HttpStatus.NOT_FOUND, refusal.getStatusCode());
+  }
+
+  /**
+   * A body that does not carry the write channel reads it as not stated, so the
+   * storage leaves the stored channel alone. With a default on the field, the
+   * no-args constructor Jackson builds a body through would turn every such
+   * save into an explicit CalDAV and move a BlueMind server back onto the door
+   * that makes BlueMind schedule every meeting.
+   */
+  @Test
+  public void aBodyWithoutTheWriteChannelDoesNotStateOne() throws Exception {
+    CaldavServer body = JsonMapper.builder()
+                                  .build()
+                                  .readValue("{\"id\":7,\"name\":\"BlueMind\",\"serverUrl\":\"https://bm.example.test/dav/\"}",
+                                             CaldavServer.class);
+
+    assertNull(body.getWriteChannel());
   }
 }

@@ -81,8 +81,7 @@ import org.exoplatform.services.log.Log;
  * path already accepts on every server.
  *
  * <p>
- * <b>Reading one object rather than the whole calendar (review round 2, F7
- * — fixed on the Architect's decision).</b> Read through the listing alone,
+ * <b>Reading one object rather than the whole calendar.</b> Read through the listing alone,
  * every conditional write cost one {@code Depth: 1} ETag-only PROPFIND of
  * the <i>whole</i> collection before it and one after it; on BlueMind the
  * destination is the main calendar, so every push, answer, exclusion or
@@ -286,10 +285,10 @@ public class BlueMindImportWriter implements CalendarObjectWriter {
     }
     String containerUid = containerUidOf(href);
     int status = importClient.deleteEvent(endpoint, containerUid, uidOf(href));
-    LOG.info("Copy {} removed from BlueMind through the calendar API with notifications off (container {}, {})",
-             href,
-             containerUid,
-             status);
+    LOG.debug("Copy {} removed from BlueMind through the calendar API with notifications off (container {}, {})",
+              href,
+              containerUid,
+              status);
     return status;
   }
 
@@ -321,11 +320,11 @@ public class BlueMindImportWriter implements CalendarObjectWriter {
       throw new CalDavException("The calendar server reported " + uid + " imported into " + containerUid
           + " but lists nothing at " + href);
     }
-    LOG.info("Copy {} written to BlueMind through the ICS import channel (container {}, {} of {} series applied)",
-             href,
-             containerUid,
-             report.uids().size(),
-             report.total());
+    LOG.debug("Copy {} written to BlueMind through the ICS import channel (container {}, {} of {} series applied)",
+              href,
+              containerUid,
+              report.uids().size(),
+              report.total());
     return stored;
   }
 
@@ -543,6 +542,11 @@ public class BlueMindImportWriter implements CalendarObjectWriter {
   /**
    * The {@code UID} the document itself names, or null when it names none.
    *
+   * <p>
+   * Read on the unfolded document: a long UID folded across lines (RFC 5545
+   * §3.1) is one value, and read off its first physical line it would never
+   * match the uid the import reports.
+   *
    * @param icsData the document
    * @return the first UID value, trimmed
    */
@@ -550,7 +554,7 @@ public class BlueMindImportWriter implements CalendarObjectWriter {
     if (icsData == null) {
       return null;
     }
-    for (String line : icsData.split("\r?\n")) {
+    for (String line : icsData.replaceAll("\r?\n[ \t]", "").split("\r?\n")) {
       if (isProperty(line, "UID")) {
         return StringUtils.trimToNull(StringUtils.substringAfter(line, ":"));
       }
