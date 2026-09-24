@@ -485,10 +485,12 @@ export default {
       // The locale off the component and not off the eXo global, and guarded:
       // a render that throws does not fail loudly, it silently keeps whatever
       // the section drew last — which here is the empty state, so a drawer
-      // would go on saying "nothing seen" while holding a finding.
+      // would go on saying "nothing seen" while holding a finding. In UTC: the
+      // value is the start of a UTC day, which a local rendering would show as
+      // the day before anywhere west of UTC.
       const when = new Date(writer.lastSeen);
       const locale = this.$i18n && this.$i18n.locale;
-      return locale && when.toLocaleDateString(locale) || when.toLocaleDateString();
+      return locale && when.toLocaleDateString(locale, {timeZone: 'UTC'}) || when.toLocaleDateString([], {timeZone: 'UTC'});
     },
     /**
      * Folds the drawer's ticks back into the lists the registration is saved
