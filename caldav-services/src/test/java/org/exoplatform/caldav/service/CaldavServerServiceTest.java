@@ -66,6 +66,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
@@ -145,6 +146,10 @@ public class CaldavServerServiceTest {
   @Mock
   private ConnectorProviderConfigStorage providerConfigStorage;
 
+  /** Knows every provider unless a test says otherwise. */
+  @Mock
+  private CaldavCredentialsResolver caldavCredentialsResolver;
+
   /**
    * The address check, REAL rather than mocked, so these tests keep measuring
    * what the registry actually refuses (EXO-89774). Its name resolution is a
@@ -197,6 +202,7 @@ public class CaldavServerServiceTest {
   @BeforeEach
   public void passRegistrationsThroughAndSaveLegacyProperties() {
     lenient().when(caldavServerQuirkService.decorate(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    lenient().when(caldavCredentialsResolver.knowsProvider(anyString())).thenReturn(true);
     previousUrlProperty = System.getProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY);
     previousEnabledProperty = System.getProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY);
   }
@@ -429,10 +435,10 @@ public class CaldavServerServiceTest {
   public void shouldRefuseUpdateOfMissingServer() {
     withUser(ADMIN_USER, true);
     CaldavServer server = server(99, null, "Nextcloud", null, SERVER_URL, true);
-    when(caldavServerStorage.updateServer(server)).thenReturn(null);
 
     assertThrows(ObjectNotFoundException.class, () -> caldavServerService.updateServer(server, ADMIN_USER));
 
+    verify(caldavServerStorage, never()).updateServer(any());
     verifyNoInteractions(agendaRemoteEventService);
   }
 
@@ -989,6 +995,7 @@ public class CaldavServerServiceTest {
     withUser(ADMIN_USER, true);
     CaldavServer server = server(7, null, "Renamed", "New description", SERVER_URL, false);
     CaldavServer updatedServer = server(7, "agenda.caldavCalendar.7", "Renamed", "New description", SERVER_URL, false);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true));
     when(caldavServerStorage.updateServer(server)).thenReturn(updatedServer);
 
     CaldavServer result = caldavServerService.updateServer(server, ADMIN_USER);
@@ -1432,6 +1439,39 @@ public class CaldavServerServiceTest {
     assertThrows(IllegalArgumentException.class, () -> caldavServerService.updateServer(posted, ADMIN_USER));
 
     verify(caldavServerStorage, never()).updateServer(any());
+  }
+
+  /**
+   * A provider nothing registers is refused: it has no descriptor, so an empty
+   * configuration would pass as one that asks for nothing, and the registration would
+   * authenticate as nobody.
+   */
+  @Test
+  public void shouldRefuseAProviderNothingRegisters() throws Exception {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+    CaldavServer posted = sudoServer(7L, null);
+    posted.setAuthProviderName("no-such-provider");
+    when(caldavCredentialsResolver.knowsProvider("no-such-provider")).thenReturn(false);
+
+    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.updateServer(posted, ADMIN_USER));
+
+    assertEquals(CaldavServerService.AUTH_PROVIDER_UNKNOWN_MESSAGE, thrown.getMessage());
+    verify(caldavServerStorage, never()).updateServer(any());
+  }
+
+  /**
+   * An unknown registration is not found before anything posted is judged: naming a
+   * provider on it must not turn the 404 into a refused configuration.
+   */
+  @Test
+  public void shouldNotFindAnUnknownRegistrationBeforeCheckingItsProvider() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer posted = sudoServer(7L, null);
+
+    assertThrows(ObjectNotFoundException.class, () -> caldavServerService.updateServer(posted, ADMIN_USER));
+    verify(providerConfigStorage, never()).validate(any(), any());
   }
 
   /**
