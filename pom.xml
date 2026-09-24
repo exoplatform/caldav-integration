@@ -26,8 +26,8 @@
   </scm>
   <properties>
     <!-- 3rd party libraries versions -->
-    <addon.exo.agenda.version>7.3.x-SNAPSHOT</addon.exo.agenda.version>
-    <org.exoplatform.commons-exo.version>7.3.x-SNAPSHOT</org.exoplatform.commons-exo.version>
+    <addon.exo.agenda.version>7.3.0-20260924</addon.exo.agenda.version>
+    <org.exoplatform.commons-exo.version>7.3.0-20260924</org.exoplatform.commons-exo.version>
     <!-- Sonar properties -->
     <sonar.organization>exoplatform</sonar.organization>
 
