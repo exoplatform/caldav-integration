@@ -99,6 +99,12 @@ public final class CopySettingsFingerprint {
    * is named here ahead of the branch that introduces it (EXO-89771) precisely
    * so that landing that branch needs no edit in this file: a name that no field
    * carries is simply never met.
+   * <p>
+   * {@code providerConfig} is the mirror case, and a secret besides: inbound only,
+   * present on the body an administrator posts and never on a row read from
+   * storage, so comparing it would move the stamp on every save that carries a
+   * provider configuration - and it would render the technical account's secret,
+   * in the clear, into the fingerprint string (EXO-89650).
    */
   static final Set<String>  EXCUSED = Set.of(
                                              // identity
@@ -117,7 +123,9 @@ public final class CopySettingsFingerprint {
                                              "imageUrl",
                                              // the stamp itself, and the sweep's own observations
                                              "copySettingsUpdated",
-                                             "observedQuirks");
+                                             "observedQuirks",
+                                             // inbound only, and it carries the provider's secret
+                                             "providerConfig");
 
   /**
    * Not instantiable: the rule is a decision, not an object.
