@@ -1425,6 +1425,31 @@ public class CaldavServerServiceTest {
   }
 
   /**
+   * A body that states no write channel keeps the stored one and leaves the stamp
+   * where it was: read as a change of channel, it would send every mirror of the
+   * server through a settings round that changes nothing.
+   *
+   * @throws Exception never, the storage is mocked
+   */
+  @Test
+  public void shouldNotStampTheRowForAWriteChannelTheBodyDoesNotState() throws Exception {
+    withUser(ADMIN_USER, true);
+    Date earlier = new Date(1_700_000_000_000L);
+    CaldavServer stored = server(7, "agenda.caldavCalendar.7", "Bluemind", null, SERVER_URL, true);
+    stored.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
+    stored.setCopySettingsUpdated(earlier);
+    CaldavServer incoming = server(7, "agenda.caldavCalendar.7", "Bluemind", "New description", SERVER_URL, true);
+    incoming.setWriteChannel(null);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    CaldavServer result = caldavServerService.updateServer(incoming, ADMIN_USER);
+
+    assertEquals(earlier, result.getCopySettingsUpdated(), "a channel nobody stated must not move the stamp");
+    assertEquals(WriteChannel.BLUEMIND_IMPORT, result.getWriteChannel());
+  }
+
+  /**
    * A stamp in the request body is ignored. Trusted, an invented timestamp
    * would set every mirror in the deployment re-comparing its copies, and an
    * echoed stale one would stop a mirror that owes a round — from a caller who
