@@ -158,14 +158,11 @@ public class CaldavServerService {
    * a coincidence.</b> A preset also carries a <i>summary sentence</i> naming
    * exactly what it ticks — {@code caldav.admin.servers.preset.bluemind.summary}
    * — so widening the preset is a product-copy change and not only a list
-   * edit, which is why the two were out of step for one commit. They are held
-   * together now by two assertions of the whole string, one where each is
-   * produced ({@code CaldavServerServiceTest}, {@code serverPresets.test.js}),
-   * and by the summary pin that fails a tick without a sentence and a
-   * sentence without a tick. Nothing mechanical can tie a Java enum to a JS
-   * map; two literals that must match is what makes a drift fail a test
-   * instead of reaching an administrator, who would otherwise meet a
-   * drawer-declared row and a seeded row disagreeing about the same server.
+   * edit. Nothing mechanical ties a Java enum to a JS map, and no test compares
+   * the two: {@code CaldavServerServiceTest} pins this side's whole string, and
+   * a change to either list must be made to the other by hand. An administrator
+   * would otherwise meet a drawer-declared row and a seeded row disagreeing
+   * about the same server.
    *
    * <p>
    * <b>Why the seed names them at all.</b> The preset is offered on a
@@ -594,7 +591,9 @@ public class CaldavServerService {
    */
   public List<ForeignWriter> getForeignWriters(long serverId, String username) throws IllegalAccessException {
     checkCanEdit(username);
-    return caldavServerStorage.getForeignWriters(serverId);
+    return caldavServerStorage.getForeignWriters(serverId,
+                                                 LocalDate.now(ZoneOffset.UTC).toEpochDay(),
+                                                 foreignWriterRetentionDays);
   }
 
   /**

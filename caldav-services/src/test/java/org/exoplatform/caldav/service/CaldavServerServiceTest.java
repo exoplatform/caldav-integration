@@ -634,7 +634,7 @@ public class CaldavServerServiceTest {
 
   /**
    * The seeded Bluemind row arrives excused for what BlueMind is known to do to
-   * a copy — the same three catalogue entries the browser's BlueMind preset
+   * a copy — the same four catalogue entries the browser's BlueMind preset
    * ticks on a declaration — because the preset is offered on a declaration
    * only, which made the one BlueMind registration eXo ships the one that
    * could never carry it. On a live account every stored object paid for that:
@@ -695,8 +695,8 @@ public class CaldavServerServiceTest {
     // preset writes the same two lists from its own copy of the catalogue
     // (serverPresets.js), and a row declared through the drawer that differed
     // from the seeded one would be the drawer and the seed giving two answers
-    // to one question. The literals are asserted on both sides so a change to
-    // either fails a test rather than drifting quietly.
+    // to one question. No test compares the two sides: a change to this
+    // literal must be made to serverPresets.js by hand.
     assertEquals("X-MICROSOFT-*,X-MOZ-*,X-ALT-DESC,PRIORITY", ignored);
     assertEquals("CONFERENCE", dropped);
     // The seed lists are the catalogue's, not a second spelling of it.

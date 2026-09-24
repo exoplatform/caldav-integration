@@ -121,6 +121,36 @@ public class ForeignWriterSummaryTest {
   }
 
   /**
+   * A name longer than a host name and a port is not one: it is refused, and
+   * the longest a host name and a port can be is kept.
+   */
+  @Test
+  public void aNameLongerThanAHostAndPortIsNotStored() {
+    String longest = "h".repeat(253) + ":65535";
+    assertEquals(longest + "@" + TODAY, ForeignWriterSummary.format(ForeignWriterSummary.record(Map.of(), longest, TODAY, 30)));
+    assertNull(ForeignWriterSummary.format(ForeignWriterSummary.record(Map.of(), "h" + longest, TODAY, 30)));
+  }
+
+  /**
+   * The summary always fits the column: the least recently seen entries are
+   * left out until the rest does.
+   */
+  @Test
+  public void theSummaryFitsItsColumn() {
+    Map<String, Long> stored = Map.of("a".repeat(250) + ".test", TODAY - 4,
+                                      "b".repeat(250) + ".test", TODAY - 3,
+                                      "c".repeat(250) + ".test", TODAY - 2,
+                                      "d".repeat(250) + ".test", TODAY - 1,
+                                      "e".repeat(250) + ".test", TODAY);
+
+    String summary = ForeignWriterSummary.format(stored);
+
+    assertTrue(summary.length() <= 1000, () -> String.valueOf(summary.length()));
+    assertEquals(List.of("e".repeat(250) + ".test", "d".repeat(250) + ".test", "c".repeat(250) + ".test"),
+                 List.copyOf(ForeignWriterSummary.parse(summary).keySet()));
+  }
+
+  /**
    * A row a hand edit or an older version left unreadable costs an entry, never
    * the drawer.
    */

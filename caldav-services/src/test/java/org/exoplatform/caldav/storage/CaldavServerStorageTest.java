@@ -51,6 +51,7 @@ import org.exoplatform.caldav.dao.CaldavServerDAO;
 import org.exoplatform.caldav.entity.CaldavServerEntity;
 import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.ObservedQuirk;
 import org.exoplatform.caldav.model.ServerQuirk;
@@ -653,6 +654,20 @@ public class CaldavServerStorageTest {
                 "the replaced record must go once its replacement is excused: " + existing.getObservedQuirks());
     assertTrue(existing.getObservedQuirks().contains("SOLO-ORGANIZER=8"),
                "and the excused entry itself must stay, ticked: " + existing.getObservedQuirks());
+  }
+
+  @Test
+  public void aForeignWriterUnseenForLongerThanTheRetentionIsNotReadBack() {
+    // Nothing rewrites the row once the foreign copies stop, so the read is
+    // where the list ages: the stored entry is still there, the answer is not.
+    CaldavServerEntity existing = observedOn(null);
+    existing.setForeignWriters("gone.test@" + (TODAY - 31) + ";still.test@" + (TODAY - 2));
+    when(caldavServerDAO.findById(7L)).thenReturn(Optional.of(existing));
+
+    List<ForeignWriter> writers = caldavServerStorage.getForeignWriters(7L, TODAY, 30);
+
+    assertEquals(List.of("still.test"), writers.stream().map(ForeignWriter::authority).toList());
+    verify(caldavServerDAO, never()).save(any());
   }
 
   @Test

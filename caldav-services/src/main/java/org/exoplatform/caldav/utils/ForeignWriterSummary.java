@@ -68,6 +68,17 @@ public class ForeignWriterSummary {
   private static final int    MAX_WRITERS     = 5;
 
   /**
+   * The longest deployment name stored: a 253-character host name, a colon and
+   * a five-digit port.
+   * The name is read off a link in somebody else's calendar, so its length is
+   * whatever that person wrote.
+   */
+  private static final int    MAX_AUTHORITY   = 259;
+
+  /** The longest summary the column holds ({@code FOREIGN_WRITERS}, 1000). */
+  private static final int    MAX_LENGTH      = 1000;
+
+  /**
    * Not instantiable: this class is a format, not a component.
    */
   private ForeignWriterSummary() {
@@ -138,6 +149,10 @@ public class ForeignWriterSummary {
   /**
    * Writes a summary back to the shape the column holds.
    *
+   * <p>
+   * Bounded to the column: the least recently seen entries are left out until
+   * the rest fits, so a write never fails on length.
+   *
    * @param writers the deployments and the epoch day each was last seen
    * @return the value to store, or null when there is nothing to say — null
    *         rather than an empty string, so a server that has never seen one
@@ -147,11 +162,19 @@ public class ForeignWriterSummary {
     if (writers == null || writers.isEmpty()) {
       return null;
     }
-    return writers.entrySet()
-                  .stream()
-                  .map(entry -> entry.getKey() + DAY_SEPARATOR + entry.getValue())
-                  .reduce((first, second) -> first + ENTRY_SEPARATOR + second)
-                  .orElse(null);
+    StringBuilder summary = new StringBuilder();
+    for (Map.Entry<String, Long> entry : sorted(writers).entrySet()) {
+      String written = entry.getKey() + DAY_SEPARATOR + entry.getValue();
+      int length = summary.length() + (summary.isEmpty() ? 0 : ENTRY_SEPARATOR.length()) + written.length();
+      if (length > MAX_LENGTH) {
+        break;
+      }
+      if (!summary.isEmpty()) {
+        summary.append(ENTRY_SEPARATOR);
+      }
+      summary.append(written);
+    }
+    return summary.isEmpty() ? null : summary.toString();
   }
 
   /**
@@ -164,13 +187,15 @@ public class ForeignWriterSummary {
    * calendar, the column is evidence, and a name that cannot survive the round
    * trip is better left out than stored wrong. A host and port never carry
    * either character; a URL with credentials in it would, and is not a shape
-   * eXo's own event links take.
+   * eXo's own event links take. A name longer than a host name and a port is
+   * not one, and is refused for the same reason.
    *
    * @param authority the deployment name read off a copy
    * @return true when it is safe to store
    */
   private static boolean isStorable(String authority) {
-    return StringUtils.isNotBlank(authority) && !StringUtils.containsAny(authority, ENTRY_SEPARATOR, DAY_SEPARATOR);
+    return StringUtils.isNotBlank(authority) && authority.length() <= MAX_AUTHORITY
+        && !StringUtils.containsAny(authority, ENTRY_SEPARATOR, DAY_SEPARATOR);
   }
 
   /**
