@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -31,6 +33,12 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Consumer;
+
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Table;
@@ -38,6 +46,11 @@ import jakarta.persistence.Table;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 
 import liquibase.Contexts;
 import liquibase.LabelExpression;
@@ -45,7 +58,10 @@ import liquibase.Liquibase;
 import liquibase.database.Database;
 import liquibase.database.DatabaseFactory;
 import liquibase.database.jvm.JdbcConnection;
+import liquibase.exception.ValidationFailedException;
 import liquibase.resource.ClassLoaderResourceAccessor;
+import liquibase.resource.DirectoryResourceAccessor;
+import liquibase.resource.ResourceAccessor;
 
 /**
  * The changelog, run by Liquibase against a real database.
@@ -60,10 +76,19 @@ import liquibase.resource.ClassLoaderResourceAccessor;
  * 1.0.0-3 recount, found on an acceptance server rather than here.
  *
  * <p>
- * Nothing in this class names a changeset, on purpose. It runs whatever the
+ * The generic checks name no changeset, on purpose. They run whatever the
  * changelog holds, so the changeset added next year is covered by the same
  * three assertions with nobody remembering to extend them: it applies, it
  * rolls back, and applying it again from nothing lands on the same schema.
+ *
+ * <p>
+ * The upgrade-path tests are the exception, and deliberately so: they are
+ * tied to changesets 1.0.0-48, 1.0.0-53 and 1.0.0-54 and to the checksums
+ * databases recorded for them (EXO-90613). The ones that stand for an
+ * existing database rebuild its state from the current changelog by editing
+ * those changesets by id, and their recorded-checksum assertion ties the
+ * rebuilt state to the real database; the others run the current changelog
+ * on an empty one.
  *
  * <p>
  * <b>What it still cannot say.</b> This is HSQLDB, not MySQL. It proves the
@@ -104,6 +129,32 @@ public class ChangelogExecutionTest {
 
   /** The subscription changes eXo owes colleagues on BlueMind, the table EXO-90277 adds. */
   private static final String PENDING_SUBSCRIPTION_TABLE = "CALDAV_PENDING_SUBSCRIPTION";
+
+  /**
+   * The checksum the acceptance server recorded for 1.0.0-48 when that id
+   * still carried EXO-90307's WRITE_CHANNEL column (EXO-90613), copied from
+   * its startup log.
+   */
+  private static final String FIRST_HISTORY_48_CHECKSUM = "9:588b6a86d17c02ef17738e390c9f9472";
+
+  /** The checksum every other database recorded for 1.0.0-48, EXO-90190's ownership index. */
+  private static final String INDEX_48_CHECKSUM         = "9:65c57ed8043bec6f241947242302533a";
+
+  /** The column EXO-90307 adds, first under 1.0.0-48 and then under 1.0.0-53. */
+  private static final String WRITE_CHANNEL_COLUMN      = "WRITE_CHANNEL";
+
+  /** The ownership index EXO-90190 adds under 1.0.0-48 and EXO-90613 offers again under 1.0.0-54. */
+  private static final String OWNERSHIP_INDEX           = "IDX_CALDAV_CALENDAR_SYNC_ORIGIN";
+
+  /** The pairs table the ownership index is on. */
+  private static final String CALENDAR_SYNC_TABLE       = "CALDAV_CALENDAR_SYNC";
+
+  /** The Liquibase namespace the changelog is written in. */
+  private static final String LIQUIBASE_NS              = "http://www.liquibase.org/xml/ns/dbchangelog";
+
+  /** Where an earlier history of the changelog is written, under the same logical path. */
+  @TempDir
+  Path                        history;
 
   private Connection          connection;
 
@@ -283,6 +334,321 @@ public class ChangelogExecutionTest {
       assertTrue(refused.getSQLState().startsWith("23"), "a second change for one colleague, server and container is an integrity violation");
       statement.executeUpdate("INSERT INTO CALDAV_PENDING_SUBSCRIPTION (ID, USER_IDENTITY_ID, SERVER_ID, CONTAINER_UID, KIND) "
           + "VALUES (3, 77, 6, 'exo-cal-shared', 'SUBSCRIBE')");
+    }
+  }
+
+  /**
+   * <b>The acceptance database starts again (EXO-90613).</b>
+   *
+   * <p>
+   * The state ai-contribution-ft.meeds.io was left in: it ran
+   * feature/ai-contribution up to 3830e43b, where 1.0.0-48 was EXO-90307's
+   * WRITE_CHANNEL column, and has no ownership index. The history is rebuilt
+   * from the current changelog and checked to record the very checksum the
+   * server's log printed, so the replay is that database and not a likeness
+   * of it. The current changelog must then validate there (the validCheckSum
+   * on 1.0.0-48), must not add the column a second time (the precondition on
+   * 1.0.0-53) and must leave the index in place (1.0.0-54).
+   *
+   * @throws Exception when a changelog cannot be applied or the catalogue read
+   */
+  @Test
+  public void aDatabaseThatRanTheWriteChannelUnder48ValidatesAndGainsTheIndex() throws Exception {
+    update(firstWriteChannelHistory());
+    assertEquals(FIRST_HISTORY_48_CHECKSUM, recordedChecksum("1.0.0-48"),
+                 "the replay must record what the acceptance server recorded, or it proves nothing about it");
+    assertTrue(columnExists("CALDAV_SERVER", WRITE_CHANNEL_COLUMN), "that history holds the column");
+    assertTrue(indexColumns(CALENDAR_SYNC_TABLE, OWNERSHIP_INDEX).isEmpty(), "and not the index");
+
+    update();
+
+    assertEquals(List.of("SERVER_ID", "ORIGIN", "LOCAL_CALENDAR_SYNC_UID"), indexColumns(CALENDAR_SYNC_TABLE, OWNERSHIP_INDEX),
+                 "the ownership index must exist once the current changelog has run");
+    assertEquals("MARK_RAN", execType("1.0.0-53"), "the column is already there, so 1.0.0-53 must only be marked");
+    assertEquals("EXECUTED", execType("1.0.0-54"), "and the index was missing, so 1.0.0-54 must have created it");
+    assertWriteChannelDefaultsToCaldav();
+
+    rollbackCount(changesetsFrom("1.0.0-48"));
+    assertTrue(indexColumns(CALENDAR_SYNC_TABLE, OWNERSHIP_INDEX).isEmpty(),
+               "rolling back through 1.0.0-48 must drop the index 1.0.0-54 built there");
+    assertFalse(columnExists("CALDAV_SERVER", WRITE_CHANNEL_COLUMN), "and the column 1.0.0-53 recognised");
+    assertTrue(tableExists(CALENDAR_SYNC_TABLE), "and leave the table");
+    update();
+    assertEquals(List.of("SERVER_ID", "ORIGIN", "LOCAL_CALENDAR_SYNC_UID"), indexColumns(CALENDAR_SYNC_TABLE, OWNERSHIP_INDEX),
+                 "and re-applying must build them again");
+    assertEquals(INDEX_48_CHECKSUM, recordedChecksum("1.0.0-48"), "this time under the index history");
+    assertWriteChannelDefaultsToCaldav();
+  }
+
+  /**
+   * Rolling 1.0.0-54 back alone never drops the index, on any database: where
+   * it only marked, the index is 1.0.0-48's, and where it built it, 1.0.0-48
+   * is still recorded and its rollback is the one that drops it. An automatic
+   * rollback here would drop 1.0.0-48's index on a fresh database, and make
+   * 1.0.0-48's own rollback fail after it.
+   *
+   * @throws Exception when a changeset cannot be applied or rolled back
+   */
+  @Test
+  public void rollingBack54AloneKeepsTheIndex() throws Exception {
+    update();
+    rollbackCount(1);
+    assertEquals(List.of("SERVER_ID", "ORIGIN", "LOCAL_CALENDAR_SYNC_UID"), indexColumns(CALENDAR_SYNC_TABLE, OWNERSHIP_INDEX),
+                 "on a fresh database the index is 1.0.0-48's and must survive");
+    rollbackCount(changesetsFrom("1.0.0-48"));
+    assertTrue(indexColumns(CALENDAR_SYNC_TABLE, OWNERSHIP_INDEX).isEmpty(), "until 1.0.0-48 itself is rolled back");
+  }
+
+  /**
+   * <b>A database that ran EXO-90190's 1.0.0-48 before 1.0.0-53 existed</b>
+   * (feature/ai-contribution between 07:38 and 11:06 on 2026-09-24, and
+   * develop): it has the index and no column. The current changelog adds the
+   * column through 1.0.0-53 and only marks 1.0.0-54, whose index is there.
+   *
+   * @throws Exception when a changelog cannot be applied or the catalogue read
+   */
+  @Test
+  public void aDatabaseThatRanTheIndexUnder48GainsTheColumnAndKeepsOneIndex() throws Exception {
+    update(historyOf(changelog -> {
+      removeChangeSet(changelog, "1.0.0-53");
+      removeChangeSet(changelog, "1.0.0-54");
+    }));
+    assertEquals(INDEX_48_CHECKSUM, recordedChecksum("1.0.0-48"));
+    assertFalse(columnExists("CALDAV_SERVER", WRITE_CHANNEL_COLUMN), "that history has no column yet");
+
+    update();
+
+    assertEquals("EXECUTED", execType("1.0.0-53"), "so 1.0.0-53 must add it");
+    assertEquals("MARK_RAN", execType("1.0.0-54"), "and 1.0.0-54 must find the index 1.0.0-48 built");
+    assertEquals(List.of("SERVER_ID", "ORIGIN", "LOCAL_CALENDAR_SYNC_UID"), indexColumns(CALENDAR_SYNC_TABLE, OWNERSHIP_INDEX));
+    assertWriteChannelDefaultsToCaldav();
+  }
+
+  /**
+   * <b>A database that ran feature/ai-contribution as it stood before this
+   * repair</b> (6f5a7428): 1.0.0-53 ran without its precondition. Adding one
+   * must not move its checksum - the precondition is not part of it - so
+   * that database validates, and 1.0.0-54 is only marked.
+   *
+   * @throws Exception when a changelog cannot be applied or the catalogue read
+   */
+  @Test
+  public void aDatabaseThatRanTheUnguarded53StillValidates() throws Exception {
+    update(historyOf(changelog -> {
+      removeChangeSet(changelog, "1.0.0-54");
+      removeChildren(changeSet(changelog, "1.0.0-53"), "preConditions");
+    }));
+    assertEquals(FIRST_HISTORY_48_CHECKSUM, recordedChecksum("1.0.0-53"));
+
+    update();
+
+    assertEquals("EXECUTED", execType("1.0.0-53"), "1.0.0-53 keeps the row it had");
+    assertEquals("MARK_RAN", execType("1.0.0-54"));
+    assertEquals(List.of("SERVER_ID", "ORIGIN", "LOCAL_CALENDAR_SYNC_UID"), indexColumns(CALENDAR_SYNC_TABLE, OWNERSHIP_INDEX));
+  }
+
+  /**
+   * On a fresh database 1.0.0-48 builds the index and 1.0.0-53 the column,
+   * so 1.0.0-54 has nothing to do - and the checksum every database recorded
+   * for 1.0.0-48 is the one it still records.
+   *
+   * @throws Exception when the changelog cannot be applied or the catalogue read
+   */
+  @Test
+  public void aFreshDatabaseBuildsTheIndexUnder48AndOnlyMarks54() throws Exception {
+    update();
+
+    assertEquals(INDEX_48_CHECKSUM, recordedChecksum("1.0.0-48"));
+    assertEquals("EXECUTED", execType("1.0.0-53"));
+    assertEquals("MARK_RAN", execType("1.0.0-54"));
+    assertEquals(List.of("SERVER_ID", "ORIGIN", "LOCAL_CALENDAR_SYNC_UID"), indexColumns(CALENDAR_SYNC_TABLE, OWNERSHIP_INDEX));
+    assertWriteChannelDefaultsToCaldav();
+  }
+
+  /**
+   * The failure this repair answers, kept reproducible: the first history,
+   * then a changelog whose 1.0.0-48 accepts only its own checksum, is refused
+   * with the message the acceptance server logged. Without it, the test above
+   * could pass because the replay silently failed to reproduce the incident.
+   *
+   * @throws Exception when a changelog cannot be written or applied
+   */
+  @Test
+  public void withoutTheSecondChecksumTheFirstHistoryIsRefused() throws Exception {
+    update(firstWriteChannelHistory());
+    Path unrepaired = historyOf(changelog -> removeChildren(changeSet(changelog, "1.0.0-48"), "validCheckSum"));
+
+    Exception thrown = org.junit.jupiter.api.Assertions.assertThrows(Exception.class, () -> update(unrepaired));
+    Throwable refused = thrown;
+    while (refused != null && !(refused instanceof ValidationFailedException)) {
+      refused = refused.getCause();
+    }
+    assertNotNull(refused, "the refusal must be a validation failure, as on the acceptance server: " + thrown);
+    assertTrue(refused.getMessage().contains("1.0.0-48::caldav was: " + FIRST_HISTORY_48_CHECKSUM + " but is now: "
+        + INDEX_48_CHECKSUM), refused.getMessage());
+  }
+
+  /**
+   * A server row written without naming WRITE_CHANNEL goes through the door
+   * every existing registration used, CALDAV.
+   *
+   * @throws Exception when the row cannot be written or read
+   */
+  private void assertWriteChannelDefaultsToCaldav() throws Exception {
+    try (Statement statement = connection.createStatement()) {
+      statement.executeUpdate("INSERT INTO CALDAV_SERVER (ID, PROVIDER_NAME, NAME, SERVER_URL, ACTIVE) "
+          + "VALUES (9, 'agenda.caldavCalendar.9', 'Bluemind', 'https://bluemind.example.invalid/dav/', TRUE)");
+      try (ResultSet rows = statement.executeQuery("SELECT " + WRITE_CHANNEL_COLUMN + " FROM CALDAV_SERVER WHERE ID = 9")) {
+        assertTrue(rows.next(), "the row must have been written");
+        assertEquals("CALDAV", rows.getString(1));
+      }
+    }
+    assertEquals(0, nullableFlag("CALDAV_SERVER", WRITE_CHANNEL_COLUMN), "and the column must be NOT NULL");
+  }
+
+  /**
+   * The changelog as feature/ai-contribution held it up to 3830e43b: 1.0.0-48
+   * is EXO-90307's WRITE_CHANNEL addColumn - the body 1.0.0-53 carries today,
+   * without its precondition - in 1.0.0-48's place, and neither 1.0.0-53 nor
+   * 1.0.0-54 exists.
+   *
+   * @return the root the history is written under
+   * @throws Exception when the changelog cannot be read or written
+   */
+  private Path firstWriteChannelHistory() throws Exception {
+    return historyOf(changelog -> {
+      Element writeChannel = changeSet(changelog, "1.0.0-53");
+      Element ownershipIndex = changeSet(changelog, "1.0.0-48");
+      removeChildren(writeChannel, "preConditions");
+      writeChannel.setAttribute("id", "1.0.0-48");
+      ownershipIndex.getParentNode().replaceChild(writeChannel, ownershipIndex);
+      removeChangeSet(changelog, "1.0.0-54");
+    });
+  }
+
+  /**
+   * Writes an earlier history of the changelog, derived from the current one
+   * by the given edit, under the logical path the webapp uses - the path is
+   * part of a changeset's identity, so the database records exactly the rows
+   * that history recorded.
+   *
+   * @param edit what the history differs by
+   * @return the root the history is written under
+   * @throws Exception when the changelog cannot be read or written
+   */
+  private Path historyOf(Consumer<Document> edit) throws Exception {
+    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+    factory.setNamespaceAware(true);
+    Document changelog;
+    try (InputStream current = getClass().getClassLoader().getResourceAsStream(CHANGELOG)) {
+      assertNotNull(current, CHANGELOG + " must be on the classpath");
+      changelog = factory.newDocumentBuilder().parse(current);
+    }
+    edit.accept(changelog);
+    Path root = Files.createTempDirectory(history, "changelog");
+    Path file = root.resolve(CHANGELOG);
+    Files.createDirectories(file.getParent());
+    TransformerFactory.newInstance().newTransformer().transform(new DOMSource(changelog), new StreamResult(file.toFile()));
+    return root;
+  }
+
+  /**
+   * One changeset of a changelog, by id.
+   *
+   * @param changelog the changelog
+   * @param id the changeset id
+   * @return the element
+   */
+  private static Element changeSet(Document changelog, String id) {
+    NodeList changeSets = changelog.getElementsByTagNameNS(LIQUIBASE_NS, "changeSet");
+    for (int i = 0; i < changeSets.getLength(); i++) {
+      Element changeSet = (Element) changeSets.item(i);
+      if (id.equals(changeSet.getAttribute("id"))) {
+        return changeSet;
+      }
+    }
+    throw new AssertionError("no changeset " + id + " in " + CHANGELOG);
+  }
+
+  /**
+   * Removes one changeset from a changelog, when the changelog holds it.
+   *
+   * <p>
+   * Tolerant on purpose, like {@link #removeChildren(Element, String)}: a
+   * history is what an earlier changelog held, and the current one losing a
+   * guard must fail the test on the database's behaviour, not on the
+   * derivation of the history. The recorded checksums the tests assert are
+   * what tie each history to the database it stands for.
+   *
+   * @param changelog the changelog
+   * @param id the changeset id
+   */
+  private static void removeChangeSet(Document changelog, String id) {
+    NodeList changeSets = changelog.getElementsByTagNameNS(LIQUIBASE_NS, "changeSet");
+    for (int i = 0; i < changeSets.getLength(); i++) {
+      Element changeSet = (Element) changeSets.item(i);
+      if (id.equals(changeSet.getAttribute("id"))) {
+        changeSet.getParentNode().removeChild(changeSet);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Removes every child element of the given name from a changeset, if it
+   * has any.
+   *
+   * @param changeSet the changeset
+   * @param name the local name of the children to remove
+   */
+  private static void removeChildren(Element changeSet, String name) {
+    NodeList children = changeSet.getElementsByTagNameNS(LIQUIBASE_NS, name);
+    List<Node> found = new ArrayList<>();
+    for (int i = 0; i < children.getLength(); i++) {
+      found.add(children.item(i));
+    }
+    found.forEach(child -> child.getParentNode().removeChild(child));
+  }
+
+  /**
+   * The checksum the database recorded for a changeset.
+   *
+   * @param id the changeset id
+   * @return the MD5SUM column
+   * @throws Exception when the changelog table cannot be read
+   */
+  private String recordedChecksum(String id) throws Exception {
+    return changelogColumn(id, "MD5SUM");
+  }
+
+  /**
+   * How the database recorded a changeset: EXECUTED, or MARK_RAN when a
+   * precondition found its work already done.
+   *
+   * @param id the changeset id
+   * @return the EXECTYPE column
+   * @throws Exception when the changelog table cannot be read
+   */
+  private String execType(String id) throws Exception {
+    return changelogColumn(id, "EXECTYPE");
+  }
+
+  /**
+   * One column of a changeset's DATABASECHANGELOG row.
+   *
+   * @param id the changeset id
+   * @param column the column
+   * @return its value
+   * @throws Exception when the row does not exist or cannot be read
+   */
+  private String changelogColumn(String id, String column) throws Exception {
+    try (Statement statement = connection.createStatement();
+         ResultSet rows = statement.executeQuery("SELECT " + column + " FROM DATABASECHANGELOG WHERE AUTHOR = 'caldav' AND ID = '"
+             + id + "' AND FILENAME = '" + CHANGELOG + "'")) {
+      assertTrue(rows.next(), "changeset " + id + " must have a row");
+      String value = rows.getString(1);
+      assertFalse(rows.next(), "and only one");
+      return value;
     }
   }
 
@@ -540,6 +906,17 @@ public class ChangelogExecutionTest {
   }
 
   /**
+   * Applies an earlier history of the changelog, written by
+   * {@link #historyOf(Consumer)}.
+   *
+   * @param root the root the history is written under
+   * @throws Exception when a changeset cannot be applied
+   */
+  private void update(Path root) throws Exception {
+    liquibase(new DirectoryResourceAccessor(root)).update(new Contexts(), new LabelExpression());
+  }
+
+  /**
    * Rolls back the given number of the most recently applied changesets.
    *
    * @param count how many
@@ -549,12 +926,6 @@ public class ChangelogExecutionTest {
     liquibase().rollback(count, new Contexts(), new LabelExpression());
   }
 
-  /**
-   * Rolls back every changeset that has run, by asking for the state the
-   * database was in before any of them existed.
-   *
-   * @throws Exception when a changeset cannot be rolled back
-   */
   /**
    * How many changesets ran from the given one onward, that one included: the
    * count that rolls the database back to just before it, however many
@@ -573,6 +944,12 @@ public class ChangelogExecutionTest {
     }
   }
 
+  /**
+   * Rolls back every changeset that has run, by asking for the state the
+   * database was in before any of them existed.
+   *
+   * @throws Exception when a changeset cannot be rolled back
+   */
   private void rollbackEverything() throws Exception {
     liquibase().rollback(new Date(0), new Contexts(), new LabelExpression());
   }
@@ -592,9 +969,22 @@ public class ChangelogExecutionTest {
    * @throws Exception when the database implementation cannot be resolved
    */
   private Liquibase liquibase() throws Exception {
+    return liquibase(new ClassLoaderResourceAccessor());
+  }
+
+  /**
+   * A Liquibase bound to this test's connection, reading the changelog from
+   * the given accessor under the webapp's logical path. Never closed, for the
+   * reason {@link #liquibase()} gives.
+   *
+   * @param resources where the changelog is read from
+   * @return the Liquibase instance
+   * @throws Exception when the database implementation cannot be resolved
+   */
+  private Liquibase liquibase(ResourceAccessor resources) throws Exception {
     Database database = DatabaseFactory.getInstance()
                                        .findCorrectDatabaseImplementation(new JdbcConnection(connection));
-    return new Liquibase(CHANGELOG, new ClassLoaderResourceAccessor(), database);
+    return new Liquibase(CHANGELOG, resources, database);
   }
 
   /**
