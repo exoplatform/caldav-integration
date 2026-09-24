@@ -29,6 +29,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import org.hibernate.annotations.DynamicUpdate;
+
 import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
 
 /**
@@ -36,10 +38,19 @@ import org.exoplatform.services.connector.credentials.PersonalCredentialsProvide
  * allowed to see — name, description, URL, activation — and never a
  * credential: per-user secrets live in the per-user settings storage, so a
  * read of this table can be served to any authenticated user.
+ *
+ * <p>
+ * {@code @DynamicUpdate}: the row has three writers and no version - an
+ * administrator's save, and the inbound pass recording observed quirks and
+ * foreign writers - each by a read-modify-save, so the statement carries the
+ * columns that changed and nothing else. A static update would write back every
+ * column as it was read, and one writer would revert what another had just
+ * saved.
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
+@DynamicUpdate
 @Entity(name = "CaldavServerEntity")
 @Table(name = "CALDAV_SERVER")
 public class CaldavServerEntity {
