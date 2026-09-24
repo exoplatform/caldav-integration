@@ -2406,9 +2406,10 @@ public class CaldavInboundServiceTest {
   @Test
   public void theDeploymentACopyNamesIsReadOffItsEventLink() {
     // The copy EXO-89824 was diagnosed from: read on the rig, written by the
-    // acceptance server, its link carried in the description without a scheme.
+    // acceptance server, its link carried in the description without a scheme,
+    // on the line of its own the block gives it.
     IcsEvent diagnosed = new IcsEvent();
-    diagnosed.setDescription("Invitation sent by Root Root. Event link: ai-contribution-ft.meeds.io/portal/dw/agenda?eventId=1");
+    diagnosed.setDescription("Invitation sent by Root Root.\nEvent link: ai-contribution-ft.meeds.io/portal/dw/agenda?eventId=1");
     assertEquals("ai-contribution-ft.meeds.io", CaldavInboundService.deploymentNamedBy(diagnosed));
 
     // BlueMind linkifies: the link repeated in angle brackets after itself.
@@ -2438,6 +2439,15 @@ public class CaldavInboundServiceTest {
     IcsEvent underAPathWithoutScheme = new IcsEvent();
     underAPathWithoutScheme.setDescription("Event link: exo.example.test/intranet/portal/dw/agenda?eventId=42");
     assertNull(CaldavInboundService.deploymentNamedBy(underAPathWithoutScheme));
+
+    // A link a person pasted into an ordinary event is not a copy: in the
+    // description only the block agenda composes for a copy names a deployment.
+    IcsEvent pasted = new IcsEvent();
+    pasted.setDescription("Agenda of the day: https://community.meeds.io/portal/meeds/agenda?eventId=42");
+    assertNull(CaldavInboundService.deploymentNamedBy(pasted));
+    IcsEvent pastedInText = new IcsEvent();
+    pastedInText.setDescription("Bring your laptop.\nSee https://community.meeds.io/portal/meeds/agenda?eventId=42 for details");
+    assertNull(CaldavInboundService.deploymentNamedBy(pastedInText));
 
     assertEquals("localhost:8080", CaldavInboundService.authorityOf("http://localhost:8080/"));
     assertEquals("exo.example.test", CaldavInboundService.authorityOf("https://EXO.example.test"));

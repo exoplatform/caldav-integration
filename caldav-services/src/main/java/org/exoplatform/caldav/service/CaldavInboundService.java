@@ -37,6 +37,7 @@ import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.agenda.model.EventFilter;
+import org.exoplatform.agenda.util.InvitationText;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.HashMap;
@@ -1315,7 +1316,7 @@ public class CaldavInboundService {
    * and a stored instance identity would be needed to tell them apart.
    *
    * <p>
-   * Once per account per process, in the shape of the shared-account warning
+   * Once per account and deployment per process, in the shape of the shared-account warning
    * of EXO-90190; a restart says it again, which is the right bias after a
    * deploy. Never allowed to fail the import: a warning is not worth a
    * calendar.
@@ -1334,15 +1335,9 @@ public class CaldavInboundService {
       if (own == null || own.equals(writer)) {
         return;
       }
-      // Keyed on the WRITER as well as the account, and that is the whole point
-      // of the key. Keyed on the account alone, the first authority ever seen
-      // latched it: a copy this deployment wrote under a different base URL, or
-      // a single ICS imported by hand from another eXo, consumed the budget and
-      // the genuine second writer - the thing this exists to find - was never
-      // reported. Three deployments on one account is the environment EXO-89824
-      // came from, and only one of them would have been named. Bounded all the
-      // same: one entry per authority actually seen on an account, which is a
-      // handful in the worst environment anybody runs.
+      // Keyed on the writer as well as the account, so one authority seen on an
+      // account cannot hide another. Bounded: one entry per authority actually
+      // seen on an account.
       String seen = pair.getUserIdentityId() + ":" + pair.getServerId() + ":" + writer;
       Long recorded = foreignDeploymentsRecorded.get(seen);
       if (recorded != null && System.nanoTime() - recorded < foreignWriterRecordSeconds * NANOS_PER_SECOND) {
@@ -1404,7 +1399,10 @@ public class CaldavInboundService {
    * <p>
    * The {@code URL} property first, then the description: both carry the same
    * address, and the second is read because a server that drops a property it
-   * does not know still keeps the text. Not because an older add-on wrote one
+   * does not know still keeps the text. In the description a link counts only
+   * inside the block agenda composes for a copy - the block
+   * {@link InvitationText#stripFrom} recognises - so a person who pastes a link
+   * to another eXo's event into an ordinary event names no deployment. Not because an older add-on wrote one
    * and not the other — it did not. Both carriers landed in the same commit
    * (EXO-89751, 2026-08-27), which is also the floor of what this can see at
    * all: a deployment running anything older writes copies with neither, and
@@ -1424,7 +1422,11 @@ public class CaldavInboundService {
    *         when the event carries no link of eXo's shape
    */
   static String deploymentNamedBy(IcsEvent master) {
-    for (String text : new String[] { master.getEventUrl(), master.getDescription() }) {
+    String description = master.getDescription();
+    if (StringUtils.isNotBlank(description) && StringUtils.equals(InvitationText.stripFrom(description), description)) {
+      description = null;
+    }
+    for (String text : new String[] { master.getEventUrl(), description }) {
       if (StringUtils.isBlank(text)) {
         continue;
       }
