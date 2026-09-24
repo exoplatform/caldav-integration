@@ -143,7 +143,7 @@ public class BlueMindImportWriterTest {
    * read back in the collection's {@code Depth: 1} listing's shape — the very
    * channel the verification pass lists with and adopts from — verbatim, raw
    * token included; never from a {@code calendar-multiget} REPORT or a GET,
-   * whose shapes the pass would overwrite on its next round (review F1).
+   * whose shapes the pass would overwrite on its next round.
    * Here the single-object reads answer nothing conclusive, so both reads are
    * the listing itself.
    */
@@ -165,7 +165,7 @@ public class BlueMindImportWriterTest {
   }
 
   /**
-   * <b>Review F7, the settled path.</b> Once the {@code Depth: 0} read has
+   * <b>The settled path.</b> Once the {@code Depth: 0} read has
    * agreed with the listing on this collection — one listing, paid on the
    * first conclusive read — a conditional write on it is two single-object
    * requests before and two after, and lists the collection never again.
@@ -191,7 +191,7 @@ public class BlueMindImportWriterTest {
   }
 
   /**
-   * <b>Review F7, the recorded version.</b> The version a write answers is
+   * <b>The recorded version.</b> The version a write answers is
    * the listing's shape whatever the {@code Depth: 0} read says: on a
    * collection where the two agreed it is the token both publish; on one
    * where they differed, the listing's value is recorded and the
@@ -211,7 +211,7 @@ public class BlueMindImportWriterTest {
   }
 
   /**
-   * <b>Review F7, every inconclusive shape.</b> No presence from the
+   * <b>Every inconclusive shape.</b> No presence from the
    * multiget, no {@code getetag} at {@code Depth: 0}, a blank one, a server
    * error on either read: each falls back to the listing and the write goes
    * on with the listing's answer.
@@ -245,7 +245,7 @@ public class BlueMindImportWriterTest {
   }
 
   /**
-   * <b>Review F7, round-3 finding 1.</b> Presence counts only under the exact
+   * <b>The exact href.</b> Presence counts only under the exact
    * spelling eXo sent: the server's response href is its own construction of
    * the object's path, the one its listing hashes from, so an object answered
    * under another spelling (a leaf eXo percent-encodes and the server does
@@ -290,7 +290,7 @@ public class BlueMindImportWriterTest {
   }
 
   /**
-   * <b>Review F7, a missing object under both hypotheses.</b> Whether a
+   * <b>A missing object under both hypotheses.</b> Whether a
    * {@code Depth: 0} on a missing href answers 404 (no version) or a node
    * minted from the path (a version for nothing — BlueMind,
    * {@code DavStore.java:474-502}), the object is absent: the create goes
@@ -320,7 +320,7 @@ public class BlueMindImportWriterTest {
   }
 
   /**
-   * <b>Review F7, no verdict on a listing that lacks the object.</b> The
+   * <b>No verdict on a listing that lacks the object.</b> The
    * multiget affirming an object the listing does not carry — a race, or a
    * listing that failed on the server — decides nothing about the two
    * channels' agreement: the listing's answer stands for that call, and the
@@ -343,7 +343,7 @@ public class BlueMindImportWriterTest {
   }
 
   /**
-   * <b>Review F7, a refusal is the listing's word.</b> On an agreed
+   * <b>A refusal is the listing's word.</b> On an agreed
    * collection, a {@code Depth: 0} version that differs from the one the
    * caller conditions on does not refuse by itself: the listing is read, and
    * it decides — a 412 carrying the listing's value when it disagrees too,
@@ -378,7 +378,7 @@ public class BlueMindImportWriterTest {
   }
 
   /**
-   * <b>Review F1, the scenario itself.</b> After a pass, the row holds the
+   * <b>The scenario itself.</b> After a pass, the row holds the
    * value the listing publishes; the next update conditions on it, and it must
    * be accepted — quoted or weak spellings of the same token included, which
    * is the tolerance the pass's own comparison has and no more.
@@ -509,6 +509,20 @@ public class BlueMindImportWriterTest {
     assertEquals("evt 1", BlueMindImportWriter.uidOf(encoded));
     assertEquals(COLLECTION, BlueMindImportWriter.collectionOf(HREF));
     assertEquals("evt-1", BlueMindImportWriter.uidInside(ICS));
+  }
+
+  /**
+   * A long UID folded across lines is read whole, as the import reports it:
+   * read off its first physical line it would never match, and that copy's
+   * write would fail on every sweep.
+   */
+  @Test
+  void aFoldedUidIsReadWhole() {
+    String folded = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:040000008200E00074C5B7101A82E0080000000\r\n 0A1B2C3D4E5F@organiser.example.test\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+    assertEquals("040000008200E00074C5B7101A82E00800000000A1B2C3D4E5F@organiser.example.test",
+                 BlueMindImportWriter.uidInside(folded));
+    assertEquals("evt-1", BlueMindImportWriter.uidInside("BEGIN:VEVENT\nUID:evt-\n\t1\nEND:VEVENT"));
   }
 
   /**
