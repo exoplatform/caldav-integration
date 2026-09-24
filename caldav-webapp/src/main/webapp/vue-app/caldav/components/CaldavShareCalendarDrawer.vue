@@ -32,36 +32,17 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ $t('caldav.share.drawer.about') }}
         </div>
         <!--
-          BlueMind lists a calendar shared with a colleague only once they
-          subscribed to it in BlueMind; said here so the owner does not take a
-          colleague seeing nothing for a share that failed.
-        -->
-        <v-alert
-          v-if="subscriptionRequired"
-          type="info"
-          class="mb-4 caldav-share-subscription-required"
-          dense
-          outlined>
-          {{ $t('caldav.share.drawer.subscriptionRequired') }}
-        </v-alert>
-        <!--
           The calendar is also where eXo writes the copies of the user's eXo
           meetings (their main calendar on a server set to copy there): anyone
-          it is shared with sees those meetings too. Said before sharing and
-          after, and asked again on the share itself.
+          it is shared with sees those meetings too. Asked once, on the share
+          itself, by its title alone (PO decision, 2026-09-17): a standing
+          notice and a long explanation were read as noise, while a plain
+          question at the moment of sharing is the one that changes what the
+          user does.
         -->
-        <v-alert
-          v-if="meetingCopies"
-          type="warning"
-          class="mb-4 caldav-share-meeting-copies"
-          dense
-          outlined>
-          {{ $t('caldav.share.drawer.meetingCopies') }}
-        </v-alert>
         <exo-confirm-dialog
           ref="meetingCopiesConfirm"
           :title="$t('caldav.share.confirm.meetingCopies.title')"
-          :message="$t('caldav.share.drawer.meetingCopies')"
           :ok-label="$t('caldav.share.confirm.meetingCopies.ok')"
           :cancel-label="$t('caldav.share.confirm.cancel')"
           @ok="doShare" />
@@ -195,7 +176,6 @@ export default {
     saving: false,
     removing: null,
     errorMessage: '',
-    subscriptionRequired: false,
     meetingCopies: false,
   }),
   computed: {
@@ -277,7 +257,6 @@ export default {
       this.candidates = [];
       this.selected = null;
       this.errorMessage = '';
-      this.subscriptionRequired = false;
       this.meetingCopies = false;
       this.opened = true;
       this.$refs.caldavShareCalendarDrawer.open();
@@ -387,12 +366,11 @@ export default {
     /**
      * Shows what the platform answered about the calendar's sharees.
      *
-     * @param {Object} shares {sharees, subscriptionRequired, meetingCopies}
+     * @param {Object} shares {sharees, meetingCopies}
      * @returns {void}
      */
     applyShares(shares) {
       this.sharees = shares && shares.sharees || [];
-      this.subscriptionRequired = !!(shares && shares.subscriptionRequired);
       this.meetingCopies = !!(shares && shares.meetingCopies);
     },
     /**
