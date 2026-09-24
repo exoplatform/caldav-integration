@@ -2815,11 +2815,17 @@ public class CaldavPushServiceTest {
    * server error for a situation nobody got wrong. Establishing a destination
    * without an account is a different matter and stays a conflict - that is the
    * POST, not this.
+   * <p>
+   * A disconnection is what the storage actually answers: a setting with no username and
+   * no password, never null.
    */
   @Test
   public void hasNoDestinationRatherThanAConflictWhenNobodyIsConnected() {
-    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(null);
+    CaldavUserSetting disconnected = new CaldavUserSetting();
+    disconnected.setServerId(SERVER);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(disconnected);
 
     assertNull(service.currentMirror(USER, "john"));
+    verify(calDavClient, never()).discoverCalendarHome(any());
   }
 }

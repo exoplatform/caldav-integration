@@ -537,4 +537,16 @@ public class CaldavServerRestTest {
 
     assertEquals(HttpStatus.FORBIDDEN, refusal.getStatusCode());
   }
+
+  /** An unknown registration is a 404, as on every other path of this resource. */
+  @Test
+  public void shouldAnswer404OnProviderConfigOfUnknownServer() throws Exception {
+    when(request.getRemoteUser()).thenReturn("root");
+    doThrow(new ObjectNotFoundException("unknown")).when(caldavServerService).getProviderConfig(7, "root");
+
+    ResponseStatusException refusal = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavServerRest.getProviderConfig(request, 7));
+
+    assertEquals(HttpStatus.NOT_FOUND, refusal.getStatusCode());
+  }
 }
