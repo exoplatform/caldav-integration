@@ -1059,21 +1059,23 @@ public class CaldavPushService {
       return;
     }
     CalDavEndpoint endpoint = endpointOf(settings, username);
-    int status;
     try {
-      status = writerFor(endpoint).deleteObject(endpoint,
-                                                known.getRemoteHref(),
-                                                known.getEtag());
+      CalendarObjectWriter writer = writerFor(endpoint);
+      int status = writer.deleteObject(endpoint, known.getRemoteHref(), known.getEtag());
+      if (status == PutResult.PRECONDITION_FAILED) {
+        // The copy is not the version recorded. It is removed all the same, whatever
+        // version the server now holds: every caller removes a copy that must go - its
+        // event is deleted, or its holder may no longer hold it - and nothing adopts the
+        // server's version for an event that no longer exists, so a condition on the
+        // recorded one would refuse every retry and leave the copy for good. A version
+        // recorded before the server's write channel changed is the ordinary case.
+        LOG.debug("The copy at {} changed since it was recorded; it is removed unconditionally", known.getRemoteHref());
+        writer.deleteObject(endpoint, known.getRemoteHref(), null);
+      }
     } catch (CalDavAuthenticationException e) {
       throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
     } catch (CalDavException e) {
       throw notWritten(e, "The calendar object could not be removed", known.getRemoteHref());
-    }
-    if (status == PutResult.PRECONDITION_FAILED) {
-      // Refused because the copy is not the version recorded: the mapping is
-      // kept, so the removal stays owed rather than leaving a copy nothing in
-      // eXo points at.
-      throw new CaldavPushException(CONFLICT, "The calendar object at " + known.getRemoteHref() + " changed since it was read");
     }
     caldavSyncStorage.saveObject(cleared(known));
   }
