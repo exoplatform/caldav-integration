@@ -351,14 +351,6 @@ public class CaldavServerRest {
   }
 
   /**
-   * Deletes a declared CalDAV server, refused with a 409 — carrying
-   * {@code caldav.server.referenced:<count>} — while connected accounts still
-   * reference it.
-   *
-   * @param request the HTTP request, carrying the authenticated user
-   * @param serverId technical identifier of the registration
-   */
-  /**
    * Serves the provider configuration of a declared server - what the drawer
    * repopulates its provider fields from. Secret values are never in the answer.
    *
@@ -371,8 +363,8 @@ public class CaldavServerRest {
   @Operation(summary = "Retrieves the provider configuration of a declared CalDAV server", method = "GET",
       description = "Returns the stored provider configuration of a declared CalDAV server, without any secret value")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
-      @ApiResponse(responseCode = "400", description = "Bad Request"),
-      @ApiResponse(responseCode = "403", description = "Forbidden") })
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "Not found") })
   public Map<String, String> getProviderConfig(HttpServletRequest request,
                                                @Parameter(description = "Technical identifier of the registration",
                                                    required = true)
@@ -380,13 +372,21 @@ public class CaldavServerRest {
                                                long serverId) {
     try {
       return caldavServerService.getProviderConfig(serverId, request.getRemoteUser());
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
-    } catch (IllegalArgumentException e) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
     }
   }
 
+  /**
+   * Deletes a declared CalDAV server, refused with a 409 — carrying
+   * {@code caldav.server.referenced:<count>} — while connected accounts still
+   * reference it.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param serverId technical identifier of the registration
+   */
   @DeleteMapping("/{serverId}")
   @Secured("administrators")
   @Operation(summary = "Deletes a declared CalDAV server", method = "DELETE",
