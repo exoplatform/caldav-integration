@@ -162,6 +162,9 @@ public class BlueMindSubscriptionClientTest {
       return next;
     });
     credentials = mock(ConnectorCredentialsService.class);
+    // The Personal provider carries what the user typed: it asks for user action, so
+    // a refused credential is never retried on "fresh" material (EXO-89649).
+    org.mockito.Mockito.lenient().when(credentials.requiresUserAction("personal")).thenReturn(true);
     lenient().doReturn(new HttpConnectorCredentials(AUTHORIZATION, null)).when(credentials).produce(any());
     lenient().doReturn(LOGIN).when(credentials).resolveTargetIdentity(any());
     client = new BlueMindSubscriptionClient(transport, new CaldavCredentialsResolver(credentials));
