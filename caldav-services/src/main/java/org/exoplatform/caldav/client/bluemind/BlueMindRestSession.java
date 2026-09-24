@@ -392,7 +392,29 @@ public class BlueMindRestSession {
    */
   private Login mint(String root, CalDavEndpoint endpoint) {
     String[] account = accountOf(endpoint);
-    return login(root, account[0], account[1]);
+    try {
+      return login(root, account[0], account[1]);
+    } catch (CalDavAuthenticationException e) {
+      if (endpoint.getExoLogin() == null || !caldavCredentialsResolver.retriesAfterRefusal(endpoint.getAuthProviderName())) {
+        // A provider carrying what the user typed would hand the same password back:
+        // a second failed login against the user's account for nothing.
+        throw e;
+      }
+      // The one retry the credentials contract allows (EXO-89649): the login's
+      // password is material the provider produced - under bluemind-sudo a kept
+      // BlueMind session - and it may have gone stale. The provider is told once and
+      // the login tried once more on fresh material; that answer is the answer.
+      // Unlike the DAV paths, which retry on a 401 only, this one retries on any login
+      // refusal - 401, 403 or a 200 answering status Bad - because a login endpoint
+      // states a refused password in any of the three, and which one BlueMind uses for
+      // a stale session is not known.
+      LOG.debug("BlueMind refused the provider's material for {}; logging in once more with fresh material",
+                endpoint.getExoLogin(),
+                e);
+      caldavCredentialsResolver.invalidate(endpoint.getServerId(), endpoint.getAuthProviderName(), endpoint.getExoLogin());
+      String[] fresh = accountOf(endpoint);
+      return login(root, fresh[0], fresh[1]);
+    }
   }
 
   /**
