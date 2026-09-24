@@ -1388,6 +1388,14 @@ public class CaldavServerServiceTest {
     assertThrows(IllegalAccessException.class, () -> caldavServerService.getProviderConfig(7L, REGULAR_USER));
   }
 
+  /** An unknown registration is not found, not an empty configuration. */
+  @Test
+  public void shouldNotFindTheProviderConfigurationOfAnUnknownServer() {
+    withUser(ADMIN_USER, true);
+
+    assertThrows(ObjectNotFoundException.class, () -> caldavServerService.getProviderConfig(7L, ADMIN_USER));
+  }
+
   /**
    * A save carrying no configuration - an edit of the registration's own fields, a
    * provider that asks for nothing - writes nothing. Taking an absent map for an empty
@@ -1404,7 +1412,44 @@ public class CaldavServerServiceTest {
     caldavServerService.createServer(posted, ADMIN_USER);
 
     verify(providerConfigStorage, never()).store(any(), any());
+  }
+
+  /**
+   * Moving a registration to a provider without posting its configuration is checked
+   * all the same, against nothing: left unchecked, the row sat on a provider whose
+   * required fields nothing held.
+   */
+  @Test
+  public void shouldRefuseAProviderChangeCarryingNoConfiguration() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7L, "caldav", "sudoServer", "d", SERVER_URL, true);
+    stored.setAuthProviderName("personal");
+    when(caldavServerStorage.getServerById(7L)).thenReturn(stored);
+    CaldavServer posted = sudoServer(7L, null);
+    doThrow(new ConnectorCredentialsException("connector.credentials.missingConfigurationField")).when(providerConfigStorage)
+                                                                                                 .validate(any(), eq(Map.of()));
+
+    assertThrows(IllegalArgumentException.class, () -> caldavServerService.updateServer(posted, ADMIN_USER));
+
+    verify(caldavServerStorage, never()).updateServer(any());
+  }
+
+  /**
+   * A save that stays on its provider and carries no configuration - a rename, an icon -
+   * is not checked: the configuration it would be checked against is the one already
+   * stored, which the save does not touch.
+   */
+  @Test
+  public void shouldNotCheckASaveThatKeepsItsProviderAndCarriesNoConfiguration() throws Exception {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+    CaldavServer posted = sudoServer(7L, null);
+    when(caldavServerStorage.updateServer(any())).thenReturn(sudoServer(7L, null));
+
+    caldavServerService.updateServer(posted, ADMIN_USER);
+
     verify(providerConfigStorage, never()).validate(any(), any());
+    verify(providerConfigStorage, never()).store(any(), any());
   }
 
   /**
