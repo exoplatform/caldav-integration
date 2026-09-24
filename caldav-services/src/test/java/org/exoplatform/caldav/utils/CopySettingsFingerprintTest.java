@@ -28,6 +28,7 @@ import java.lang.reflect.Modifier;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
@@ -163,7 +164,7 @@ public class CopySettingsFingerprintTest {
 
     for (String excused : List.of("id", "providerName", "serverUrl", "active", "name", "description", "icon",
                                   "imageFileId", "imageUploadId", "imageUrl", "copySettingsUpdated",
-                                  "observedQuirks")) {
+                                  "observedQuirks", "providerConfig")) {
       assertFalse(compared.contains(excused), excused + " must not be part of the fingerprint");
     }
     assertTrue(compared.contains("answerLinksInCopy"), "the answer-links switch changes what eXo writes into a copy");
@@ -173,6 +174,33 @@ public class CopySettingsFingerprintTest {
     // writes into somebody's calendar is pinned here so a later edit cannot
     // quietly excuse it.
     assertTrue(compared.contains("omittedProperties"), "what eXo leaves out of a copy changes the copy");
+  }
+
+  @Test
+  public void aSaveCarryingTheProviderConfigurationNeitherMovesTheStampNorRendersTheSecret() {
+    // EXO-89650. The configuration travels inbound only: a row read from storage
+    // never carries it, so comparing it would move the stamp on every save that
+    // re-types the technical account - and would render its secret, in the clear,
+    // into the fingerprint.
+    CaldavServer stored = server();
+    stored.setCopySettingsUpdated(EARLIER);
+    CaldavServer incoming = server();
+    incoming.setCopySettingsUpdated(EARLIER);
+    incoming.setProviderConfig(Map.of("technicalLogin", "svc-exo", "technicalSecret", "s3cr3t-technical"));
+
+    assertEquals(EARLIER, CopySettingsFingerprint.stampFor(stored, incoming, CHANGED_AT));
+    assertFalse(CopySettingsFingerprint.of(incoming).contains("s3cr3t-technical"));
+  }
+
+  @Test
+  public void aServerNeverPrintsItsProviderConfiguration() {
+    // EXO-89650. The generated toString would print the map, secret included, into
+    // any log line or exception message the registration reaches.
+    CaldavServer incoming = server();
+    incoming.setProviderConfig(Map.of("technicalSecret", "s3cr3t-technical"));
+
+    assertFalse(incoming.toString().contains("s3cr3t-technical"), incoming.toString());
+    assertTrue(incoming.toString().contains("Bluemind"), incoming.toString());
   }
 
   @Test

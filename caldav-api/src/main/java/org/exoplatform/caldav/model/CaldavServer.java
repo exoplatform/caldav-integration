@@ -23,6 +23,7 @@ import java.util.Map;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import lombok.ToString;
 
 /**
  * A CalDAV server registration, as an administrator declared it: where the
@@ -258,7 +259,12 @@ public class CaldavServer {
    * filled on the way out, because the secret must not leave the server - the
    * drawer reads back what it may see through the dedicated provider-config
    * endpoint.
+   * <p>
+   * Left out of {@code toString()}: the map holds the secret in the clear, and the
+   * generated one would print it into any log line or exception message the
+   * object reaches (EXO-89650).
    */
+  @ToString.Exclude
   private Map<String, String> providerConfig;
 
   /**
