@@ -22,10 +22,12 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -34,6 +36,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -48,6 +51,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.Spy;
@@ -60,10 +64,17 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.ServerQuirk;
+import org.exoplatform.caldav.model.ServerQuirkEffect;
+import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.model.MirrorTargetKind;
+import org.exoplatform.caldav.model.WriteChannel;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorProviderConfigStorage;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
@@ -136,6 +147,13 @@ public class CaldavServerServiceTest {
   @Mock
   private CaldavManagedModeService caldavManagedModeService;
 
+  @Mock
+  private ConnectorProviderConfigStorage providerConfigStorage;
+
+  /** Knows every provider unless a test says otherwise. */
+  @Mock
+  private CaldavCredentialsResolver caldavCredentialsResolver;
+
   /**
    * The address check, REAL rather than mocked, so these tests keep measuring
    * what the registry actually refuses (EXO-89774). Its name resolution is a
@@ -188,6 +206,7 @@ public class CaldavServerServiceTest {
   @BeforeEach
   public void passRegistrationsThroughAndSaveLegacyProperties() {
     lenient().when(caldavServerQuirkService.decorate(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    lenient().when(caldavCredentialsResolver.knowsProvider(anyString())).thenReturn(true);
     previousUrlProperty = System.getProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY);
     previousEnabledProperty = System.getProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY);
   }
@@ -214,6 +233,85 @@ public class CaldavServerServiceTest {
     } else {
       System.setProperty(name, value);
     }
+  }
+
+
+  /**
+   * <b>The BlueMind-only guard on the write channel (EXO-90307, PO decision of
+   * 2026-09-16).</b> The import door speaks BlueMind's REST endpoints and
+   * nothing else, so a registration whose name does not say BlueMind is
+   * refused {@code BLUEMIND_IMPORT} with a code the drawer can read — on a
+   * declaration and on an update alike, before anything is written — while a
+   * BlueMind registration may state either channel.
+   */
+  @Test
+  public void shouldRefuseTheImportChannelOnAServerThatIsNotBlueMind() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stalwart = server(0, null, "Stalwart", null, SERVER_URL, true);
+    stalwart.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
+
+    IllegalArgumentException created = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.createServer(stalwart, ADMIN_USER));
+    assertEquals(CaldavServerService.WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE, created.getMessage());
+
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, "Other", null, SERVER_URL, true));
+    CaldavServer other = server(7, null, "Other", null, SERVER_URL, true);
+    other.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
+    IllegalArgumentException updated = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.updateServer(other, ADMIN_USER));
+    assertEquals(CaldavServerService.WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE, updated.getMessage());
+
+    verify(caldavServerStorage, never()).createServer(any(), anyString());
+    verify(caldavServerStorage, never()).updateServer(any());
+  }
+
+  /**
+   * The other half of the guard: CalDAV is accepted everywhere, and a
+   * registration named BlueMind — the seed's spelling or the preset's — may
+   * take either channel. The name is the one product fact a row carries.
+   */
+  @Test
+  public void shouldAcceptEitherChannelOnBlueMindAndCalDavEverywhere() {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    for (String name : List.of("Bluemind", "BlueMind", "Our BLUEMIND at Lyon")) {
+      when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, name, null, SERVER_URL, true));
+      for (WriteChannel channel : WriteChannel.values()) {
+        CaldavServer bluemind = server(7, null, name, null, SERVER_URL, true);
+        bluemind.setWriteChannel(channel);
+        assertEquals(channel, assertDoesNotThrow(() -> caldavServerService.updateServer(bluemind, ADMIN_USER)).getWriteChannel());
+      }
+    }
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, "Stalwart", null, SERVER_URL, true));
+    CaldavServer stalwart = server(7, null, "Stalwart", null, SERVER_URL, true);
+    stalwart.setWriteChannel(WriteChannel.CALDAV);
+    assertEquals(WriteChannel.CALDAV, assertDoesNotThrow(() -> caldavServerService.updateServer(stalwart, ADMIN_USER)).getWriteChannel());
+  }
+
+  /**
+   * A save that states no channel — a drawer without the control — for a row
+   * that is on the import channel but is no longer named BlueMind is reset to
+   * CalDAV rather than refused: nobody asked for the impossible, and the
+   * storage would otherwise keep a channel the server cannot speak. Reset and
+   * not refusal, because the drawer that does carry the control sends CalDAV
+   * explicitly for every non-BlueMind server, so both paths end on one value.
+   */
+  @Test
+  public void shouldResetTheChannelWhenARowLeavesBlueMindWithoutStatingOne() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Bluemind", null, SERVER_URL, true);
+    stored.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    CaldavServer renamed = server(7, null, "Mail server", null, SERVER_URL, true);
+    renamed.setWriteChannel(null);
+
+    CaldavServer result = assertDoesNotThrow(() -> caldavServerService.updateServer(renamed, ADMIN_USER));
+
+    assertEquals(WriteChannel.CALDAV, result.getWriteChannel());
+    ArgumentCaptor<CaldavServer> written = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).updateServer(written.capture());
+    assertEquals(WriteChannel.CALDAV, written.getValue().getWriteChannel(), "stated to the storage, which keeps a null as-is");
   }
 
   /**
@@ -420,10 +518,10 @@ public class CaldavServerServiceTest {
   public void shouldRefuseUpdateOfMissingServer() {
     withUser(ADMIN_USER, true);
     CaldavServer server = server(99, null, "Nextcloud", null, SERVER_URL, true);
-    when(caldavServerStorage.updateServer(server)).thenReturn(null);
 
     assertThrows(ObjectNotFoundException.class, () -> caldavServerService.updateServer(server, ADMIN_USER));
 
+    verify(caldavServerStorage, never()).updateServer(any());
     verifyNoInteractions(agendaRemoteEventService);
   }
 
@@ -612,6 +710,138 @@ public class CaldavServerServiceTest {
     assertEquals(false, provider.getAllValues().get(0).isEnabled());
     assertEquals("agenda.caldavCalendar.2", provider.getAllValues().get(1).getName());
     assertEquals(false, provider.getAllValues().get(1).isEnabled());
+  }
+
+  /**
+   * The seeded Bluemind row arrives excused for what BlueMind is known to do to
+   * a copy — the same four catalogue entries the browser's BlueMind preset
+   * ticks on a declaration — because the preset is offered on a declaration
+   * only, which made the one BlueMind registration eXo ships the one that
+   * could never carry it. On a live account every stored object paid for that:
+   * the {@code X-ALT-DESC} BlueMind adds read as an edit, three repairs, then
+   * abandonment.
+   *
+   * <p>
+   * Read back the way the comparison reads a row, with
+   * {@link ServerQuirk#listMatches(String, String)}, against members of the
+   * families rather than the patterns themselves — so what is pinned is that
+   * a copy carrying these properties would be excused, not that a string was
+   * copied. Each entry is asserted in the column its own direction files it
+   * under, and nothing else is ticked: the description is still compared, eXo
+   * still writes everything it writes, and the Stalwart row keeps the nulls
+   * that let the deployment-wide properties decide for it.
+   */
+  @Test
+  public void shouldSeedBluemindExcusedForItsCatalogueBehaviours() {
+    System.setProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY, "false");
+    when(caldavServerStorage.countServers()).thenReturn(0L);
+    CaldavServer createdBluemind = server(2, "agenda.caldavCalendar.2", "Bluemind", null,
+                                          CaldavServerService.DEFAULT_BLUEMIND_URL, false);
+    when(caldavServerStorage.createServer(any(), eq(CaldavServerService.CALDAV_PROVIDER_NAME))).thenReturn(createdBluemind);
+
+    caldavServerService.seedDefaultServers();
+
+    ArgumentCaptor<CaldavServer> bluemind = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).createServer(bluemind.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
+    String ignored = bluemind.getValue().getIgnoredProperties();
+    String dropped = bluemind.getValue().getDroppedProperties();
+    // ADDS_FORMATTED_DESCRIPTION and ADDS_COMPATIBILITY_MARKERS point ADDED,
+    // so they land in the ignored list — members of each family, not the
+    // pattern literal, so a wildcard that stopped matching would be caught.
+    assertTrue(ServerQuirk.listMatches(ignored, "X-ALT-DESC"), ignored);
+    assertTrue(ServerQuirk.listMatches(ignored, "X-MOZ-LASTACK"), ignored);
+    assertTrue(ServerQuirk.listMatches(ignored, "X-MICROSOFT-CDO-BUSYSTATUS"), ignored);
+    // STAMPS_DEFAULT_PRIORITY points ADDED too, so the priority BlueMind
+    // stamps on every copy is excused on the seeded row with no administrator
+    // action — which is the whole of EXO-89828 once the tolerance moved off
+    // the comparison and onto the server that does it. Asserted through
+    // listMatches for the same reason as its neighbours: what is pinned is
+    // that a copy carrying PRIORITY would be excused here, not that a literal
+    // was copied into a column.
+    assertTrue(ServerQuirk.listMatches(ignored, "PRIORITY"), ignored);
+    // And in the ignored column specifically, since that is the one
+    // ServerExcusals.excuse consults for a property the server ADDS.
+    assertFalse(ServerQuirk.listMatches(dropped, "PRIORITY"), dropped);
+    // DROPS_CONFERENCE points DROPPED, so it lands in the dropped list.
+    assertTrue(ServerQuirk.listMatches(dropped, "CONFERENCE"), dropped);
+    // And the columns are not confused with each other.
+    assertFalse(ServerQuirk.listMatches(dropped, "X-ALT-DESC"), dropped);
+    assertFalse(ServerQuirk.listMatches(ignored, "CONFERENCE"), ignored);
+    // Nothing the preset does not tick: the blunt entry stays off, and eXo
+    // leaves nothing out of what it writes.
+    assertFalse(ServerQuirk.listMatches(dropped, "DESCRIPTION"), dropped);
+    assertNull(bluemind.getValue().getOmittedProperties());
+    // The whole string, not only its members, and deliberately: the browser
+    // preset writes the same two lists from its own copy of the catalogue
+    // (serverPresets.js), and a row declared through the drawer that differed
+    // from the seeded one would be the drawer and the seed giving two answers
+    // to one question. No test compares the two sides: a change to this
+    // literal must be made to serverPresets.js by hand.
+    assertEquals("X-MICROSOFT-*,X-MOZ-*,X-ALT-DESC,PRIORITY", ignored);
+    assertEquals("CONFERENCE", dropped);
+    // The seed lists are the catalogue's, not a second spelling of it.
+    for (ServerQuirk quirk : CaldavServerService.BLUEMIND_SEED_QUIRKS) {
+      for (String pattern : quirk.getPatterns()) {
+        assertTrue(ServerQuirk.listMatches(ignored + "," + dropped, pattern), pattern);
+      }
+    }
+
+    // The destination the preset chooses, chosen by the seed too: BlueMind's
+    // dedicated calendar is excluded from the account's free/busy and carries
+    // no answer buttons, so a row seeded onto it disagrees with the preset an
+    // administrator is about to apply to that very row.
+    assertEquals(MirrorTargetKind.MAIN_CALENDAR, bluemind.getValue().getMirrorTarget());
+    // The door (EXO-90307): a fresh BlueMind row writes through the import
+    // API, because a CalDAV write makes BlueMind schedule the meeting itself.
+    assertEquals(WriteChannel.BLUEMIND_IMPORT, bluemind.getValue().getWriteChannel());
+
+    ArgumentCaptor<CaldavServer> stalwart = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).createSeedServer(stalwart.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
+    assertNull(stalwart.getValue().getIgnoredProperties());
+    assertNull(stalwart.getValue().getDroppedProperties());
+    // The scoping, said as an assertion rather than only as a null: the
+    // priority excusal reaches the server observed to stamp one and no other.
+    // A server that stamps nothing goes on reporting a priority somebody set,
+    // which is what the per-server route buys over a rule about the value.
+    assertFalse(ServerQuirk.listMatches(stalwart.getValue().getIgnoredProperties(), "PRIORITY"));
+    // And only BlueMind moves: Stalwart's dedicated calendar has no such cost,
+    // and the caution on the option stands everywhere it is not answered.
+    assertEquals(MirrorTargetKind.DEDICATED_CALENDAR, stalwart.getValue().getMirrorTarget());
+    assertEquals(WriteChannel.CALDAV, stalwart.getValue().getWriteChannel());
+  }
+
+  /**
+   * The one entry shape the seed cannot write, held shut here because nothing
+   * else would notice it.
+   *
+   * <p>
+   * {@code seedExcusals} filters to {@link ServerQuirkEffect#TOLERATE} and is
+   * only ever asked for the two tolerance columns; the seed passes
+   * {@code null} for {@code omittedProperties}. So an {@link
+   * ServerQuirkEffect#OMIT} entry added to {@link
+   * CaldavServerService#BLUEMIND_SEED_QUIRKS} would be dropped by that filter
+   * with nothing routing it anywhere else: the constant would name a behaviour
+   * the seed does not write, <b>with no compile error and no test failure</b>
+   * — the row would simply arrive missing it, on every fresh install, and the
+   * first symptom would be a copy eXo wrote carrying a property the preset of
+   * the same name leaves out.
+   *
+   * <p>
+   * The browser path does not share the hole: {@code serverPresets.js} walks
+   * {@code QUIRKS[quirkId].list} and {@code omitsSoloOrganizer} maps to the
+   * omitted list, so a preset naming it writes it. Asserting the absence is
+   * the smaller of the two closures — the constant carries no such entry today
+   * and the seed has no third column to fill — and it fails the moment someone
+   * adds one, which is the moment the decision has to be taken.
+   */
+  @Test
+  public void shouldSeedNoEntryThatWouldBeWrittenNowhere() {
+    for (ServerQuirk quirk : CaldavServerService.BLUEMIND_SEED_QUIRKS) {
+      assertNotEquals(ServerQuirkEffect.OMIT,
+                      quirk.getEffect(),
+                      quirk.name() + " is an OMIT entry: the seed writes it nowhere. Route OMIT entries to"
+                          + " omittedProperties in seedExcusals before naming one here.");
+    }
   }
 
   /**
@@ -980,6 +1210,7 @@ public class CaldavServerServiceTest {
     withUser(ADMIN_USER, true);
     CaldavServer server = server(7, null, "Renamed", "New description", SERVER_URL, false);
     CaldavServer updatedServer = server(7, "agenda.caldavCalendar.7", "Renamed", "New description", SERVER_URL, false);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true));
     when(caldavServerStorage.updateServer(server)).thenReturn(updatedServer);
 
     CaldavServer result = caldavServerService.updateServer(server, ADMIN_USER);
@@ -1194,6 +1425,31 @@ public class CaldavServerServiceTest {
   }
 
   /**
+   * A body that states no write channel keeps the stored one and leaves the stamp
+   * where it was: read as a change of channel, it would send every mirror of the
+   * server through a settings round that changes nothing.
+   *
+   * @throws Exception never, the storage is mocked
+   */
+  @Test
+  public void shouldNotStampTheRowForAWriteChannelTheBodyDoesNotState() throws Exception {
+    withUser(ADMIN_USER, true);
+    Date earlier = new Date(1_700_000_000_000L);
+    CaldavServer stored = server(7, "agenda.caldavCalendar.7", "Bluemind", null, SERVER_URL, true);
+    stored.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
+    stored.setCopySettingsUpdated(earlier);
+    CaldavServer incoming = server(7, "agenda.caldavCalendar.7", "Bluemind", "New description", SERVER_URL, true);
+    incoming.setWriteChannel(null);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    CaldavServer result = caldavServerService.updateServer(incoming, ADMIN_USER);
+
+    assertEquals(earlier, result.getCopySettingsUpdated(), "a channel nobody stated must not move the stamp");
+    assertEquals(WriteChannel.BLUEMIND_IMPORT, result.getWriteChannel());
+  }
+
+  /**
    * A stamp in the request body is ignored. Trusted, an invented timestamp
    * would set every mirror in the deployment re-comparing its copies, and an
    * echoed stale one would stop a mirror that owes a round — from a caller who
@@ -1251,6 +1507,250 @@ public class CaldavServerServiceTest {
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
     return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null,
-                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null);
+                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null, null, null);
+  }
+
+  /**
+   * A registration built for these scenarios, on the sudo provider and carrying a
+   * technical account.
+   *
+   * @param id technical id, 0 for a creation
+   * @param values what the drawer posted, null for none
+   * @return the registration
+   */
+  private static CaldavServer sudoServer(long id, Map<String, String> values) {
+    CaldavServer server = server(id, "caldav", "sudoServer", "d", SERVER_URL, true);
+    server.setAuthProviderName("bluemind-sudo");
+    server.setProviderConfig(values);
+    return server;
+  }
+
+  /**
+   * The configuration is written under the id the storage attributed, not the zero the
+   * drawer posted - the id is part of the setting key.
+   */
+  @Test
+  public void shouldStoreTheProviderConfigurationOnCreate() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer posted = sudoServer(0, Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    when(caldavServerStorage.createServer(any(), anyString())).thenReturn(sudoServer(7L, null));
+
+    caldavServerService.createServer(posted, ADMIN_USER);
+
+    verify(providerConfigStorage).store(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())
+        && "caldav".equals(context.getConnectorKind())),
+                                        eq(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret")));
+  }
+
+  /**
+   * And it is checked before the insert: a refused value must leave no registration
+   * behind, or the administrator answers the error by declaring a second server.
+   */
+  @Test
+  public void shouldValidateTheProviderConfigurationBeforeInserting() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer posted = sudoServer(0, Map.of("technicalLogin", "svc"));
+    doThrow(new ConnectorCredentialsException("connector.credentials.missingConfigurationField")).when(providerConfigStorage)
+                                                                                                 .validate(any(), any());
+
+    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.createServer(posted, ADMIN_USER));
+
+    assertEquals("connector.credentials.missingConfigurationField", thrown.getMessage());
+    verify(caldavServerStorage, never()).createServer(any(), anyString());
+  }
+
+  /** The same write on the update path. */
+  @Test
+  public void shouldStoreTheProviderConfigurationOnUpdate() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer posted = sudoServer(7L, Map.of("technicalLogin", "svc", "technicalSecret", "s3cret"));
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+    when(caldavServerStorage.updateServer(any())).thenReturn(sudoServer(7L, null));
+
+    caldavServerService.updateServer(posted, ADMIN_USER);
+
+    verify(providerConfigStorage).store(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())),
+                                        eq(Map.of("technicalLogin", "svc", "technicalSecret", "s3cret")));
+  }
+
+  /**
+   * Moving a registration back to the personal provider removes the technical account of
+   * the one it leaves: nothing administers a credential no screen shows any more.
+   */
+  @Test
+  public void shouldRemoveTheConfigurationOfTheProviderBeingLeft() throws Exception {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+    CaldavServer posted = server(7L, "caldav", "sudoServer", "d", SERVER_URL, true);
+    posted.setAuthProviderName("personal");
+    when(caldavServerStorage.updateServer(any())).thenReturn(posted);
+
+    caldavServerService.updateServer(posted, ADMIN_USER);
+
+    verify(providerConfigStorage).delete(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())));
+  }
+
+  /**
+   * The registration's deletion takes its configuration with it, and takes it FIRST: the
+   * two writes share no transaction - the row goes through JPA, the settings through the
+   * kernel's own RequestLifeCycle - so this order is the guarantee. A failure here leaves
+   * the registration, which an administrator sees and retries; the other way round it
+   * leaves a technical secret with no server to reach it from.
+   */
+  @Test
+  public void shouldRemoveTheProviderConfigurationBeforeTheRegistration() throws Exception {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+
+    caldavServerService.deleteServer(7L, ADMIN_USER);
+
+    InOrder order = inOrder(providerConfigStorage, caldavServerStorage);
+    order.verify(providerConfigStorage).delete(any());
+    order.verify(caldavServerStorage).deleteServer(7L);
+  }
+
+  /**
+   * What the drawer reads back: everything but the secret, on a path that never
+   * decrypts one.
+   */
+  @Test
+  public void shouldReadTheProviderConfigurationWithoutTheSecret() throws Exception {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+    when(providerConfigStorage.readWithoutSecrets(any())).thenReturn(Map.of("technicalLogin", "svc"));
+
+    assertEquals(Map.of("technicalLogin", "svc"), caldavServerService.getProviderConfig(7L, ADMIN_USER));
+    verify(providerConfigStorage, never()).readDecrypted(any());
+  }
+
+  /** Reading a technical account is an administration act. */
+  @Test
+  public void shouldRefuseTheProviderConfigurationToNonAdministrator() {
+    withUser(REGULAR_USER, false);
+
+    assertThrows(IllegalAccessException.class, () -> caldavServerService.getProviderConfig(7L, REGULAR_USER));
+  }
+
+  /** An unknown registration is not found, not an empty configuration. */
+  @Test
+  public void shouldNotFindTheProviderConfigurationOfAnUnknownServer() {
+    withUser(ADMIN_USER, true);
+
+    assertThrows(ObjectNotFoundException.class, () -> caldavServerService.getProviderConfig(7L, ADMIN_USER));
+  }
+
+  /**
+   * A save carrying no configuration - an edit of the registration's own fields, a
+   * provider that asks for nothing - writes nothing. Taking an absent map for an empty
+   * one would erase a working technical account on every unrelated edit.
+   */
+  @Test
+  public void shouldWriteNoConfigurationWhenTheSaveCarriesNone() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer posted = server(0, "caldav", "plainServer", "d", SERVER_URL, true);
+    posted.setAuthProviderName("personal");
+    when(caldavServerStorage.createServer(any(), anyString())).thenReturn(server(7L, "caldav", "plainServer", "d",
+                                                                                 SERVER_URL, true));
+
+    caldavServerService.createServer(posted, ADMIN_USER);
+
+    verify(providerConfigStorage, never()).store(any(), any());
+  }
+
+  /**
+   * Moving a registration to a provider without posting its configuration is checked
+   * all the same, against nothing: left unchecked, the row sat on a provider whose
+   * required fields nothing held.
+   */
+  @Test
+  public void shouldRefuseAProviderChangeCarryingNoConfiguration() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7L, "caldav", "sudoServer", "d", SERVER_URL, true);
+    stored.setAuthProviderName("personal");
+    when(caldavServerStorage.getServerById(7L)).thenReturn(stored);
+    CaldavServer posted = sudoServer(7L, null);
+    doThrow(new ConnectorCredentialsException("connector.credentials.missingConfigurationField")).when(providerConfigStorage)
+                                                                                                 .validate(any(), eq(Map.of()));
+
+    assertThrows(IllegalArgumentException.class, () -> caldavServerService.updateServer(posted, ADMIN_USER));
+
+    verify(caldavServerStorage, never()).updateServer(any());
+  }
+
+  /**
+   * A provider nothing registers is refused: it has no descriptor, so an empty
+   * configuration would pass as one that asks for nothing, and the registration would
+   * authenticate as nobody.
+   */
+  @Test
+  public void shouldRefuseAProviderNothingRegisters() throws Exception {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+    CaldavServer posted = sudoServer(7L, null);
+    posted.setAuthProviderName("no-such-provider");
+    when(caldavCredentialsResolver.knowsProvider("no-such-provider")).thenReturn(false);
+
+    IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.updateServer(posted, ADMIN_USER));
+
+    assertEquals(CaldavServerService.AUTH_PROVIDER_UNKNOWN_MESSAGE, thrown.getMessage());
+    verify(caldavServerStorage, never()).updateServer(any());
+  }
+
+  /**
+   * An unknown registration is not found before anything posted is judged: naming a
+   * provider on it must not turn the 404 into a refused configuration.
+   */
+  @Test
+  public void shouldNotFindAnUnknownRegistrationBeforeCheckingItsProvider() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer posted = sudoServer(7L, null);
+
+    assertThrows(ObjectNotFoundException.class, () -> caldavServerService.updateServer(posted, ADMIN_USER));
+    verify(providerConfigStorage, never()).validate(any(), any());
+  }
+
+  /**
+   * A save that stays on its provider and carries no configuration - a rename, an icon -
+   * is not checked: the configuration it would be checked against is the one already
+   * stored, which the save does not touch.
+   */
+  @Test
+  public void shouldNotCheckASaveThatKeepsItsProviderAndCarriesNoConfiguration() throws Exception {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+    CaldavServer posted = sudoServer(7L, null);
+    when(caldavServerStorage.updateServer(any())).thenReturn(sudoServer(7L, null));
+
+    caldavServerService.updateServer(posted, ADMIN_USER);
+
+    verify(providerConfigStorage, never()).validate(any(), any());
+    verify(providerConfigStorage, never()).store(any(), any());
+  }
+
+  /**
+   * A refused configuration must leave the registration exactly as it was. It did not:
+   * the row was written first and the configuration validated after, so an
+   * administrator who moved a server to a provider without filling its password got an
+   * error AND a server sitting on the new provider with nothing configured for it -
+   * which no screen then showed as broken.
+   */
+  @Test
+  public void shouldWriteNothingAtAllWhenTheConfigurationIsRefusedOnUpdate() throws Exception {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
+    CaldavServer posted = sudoServer(7L, Map.of("technicalLogin", "svc"));
+    doThrow(new ConnectorCredentialsException("connector.credentials.missingConfigurationField")).when(providerConfigStorage)
+                                                                                                 .validate(any(), any());
+
+    assertThrows(IllegalArgumentException.class, () -> caldavServerService.updateServer(posted, ADMIN_USER));
+
+    verify(caldavServerStorage, never()).updateServer(any());
+    verify(providerConfigStorage, never()).store(any(), any());
+    verify(providerConfigStorage, never()).delete(any());
   }
 }

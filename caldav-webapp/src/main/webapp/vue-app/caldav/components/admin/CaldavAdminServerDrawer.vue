@@ -141,6 +141,15 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           v-model="server.mirrorTarget"
           :stored-value="storedMirrorTarget" />
         <!--
+          Through which door the copies are written, under the same heading:
+          on BlueMind a CalDAV write makes the server schedule the meeting
+          itself, and this radio is what turns that off - and back on
+          (EXO-90307).
+        -->
+        <caldav-admin-server-write-channel-select
+          v-if="offersWriteChannel"
+          v-model="server.writeChannel" />
+        <!--
           Always rendered, empty or not. Two drawers with different SHAPES teach
           an administrator nothing: on a server that has shown nothing, a missing
           section reads as "unsupported here" or "not implemented" rather than as
@@ -201,6 +210,88 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
             </div>
           </v-list-item-content>
         </v-list-item>
+        <!--
+          Another eXo deployment writing into the same accounts (EXO-89824).
+          Its own section and not an entry in the list above: that list is
+          behaviours of the SERVER, each excusable by a tick, and this is
+          neither something the server does nor anything to excuse. No
+          checkbox, and no control of any kind - nothing is imported, removed
+          or repaired differently on the strength of it, and the resolution is
+          an environment one the wording states.
+
+          Always rendered, empty or not, for the reason the section above
+          gives: a missing section reads as "not checked" rather than as the
+          good news it is.
+        -->
+        <v-list-item-title class="pa-0 mt-7 mb-2 text-header">
+          {{ $t('caldav.admin.servers.foreignWriters.title') }}
+        </v-list-item-title>
+        <div class="text-caption text-sub-title mb-4">
+          {{ foreignWriters.length && $t('caldav.admin.servers.foreignWriters.subtitle')
+            || $t('caldav.admin.servers.foreignWriters.none') }}
+        </div>
+        <v-list-item
+          v-for="writer in foreignWriters"
+          :key="writer.authority"
+          class="pa-0 mb-4"
+          dense>
+          <v-list-item-content class="py-0">
+            <div class="d-flex align-start">
+              <v-icon
+                class="me-2 mt-1"
+                color="warning"
+                size="16">
+                fas fa-exclamation-triangle
+              </v-icon>
+              <div class="flex-grow-1 text-start">
+                <div class="font-weight-bold">
+                  {{ writer.authority }}
+                </div>
+                <div class="text-caption mt-1">
+                  {{ $t('caldav.admin.servers.foreignWriters.cost') }}
+                </div>
+                <div class="text-caption text-sub-title mt-1">
+                  {{ $t('caldav.admin.servers.foreignWriters.lastSeen', {0: lastSeenOn(writer)}) }}
+                </div>
+              </div>
+            </div>
+          </v-list-item-content>
+        </v-list-item>
+        <div
+          v-if="foreignWriters.length"
+          class="text-caption text-sub-title mb-2">
+          {{ $t('caldav.admin.servers.foreignWriters.resolution') }}
+        </div>
+        <!-- How this server authenticates. One section, two halves: the
+             provider is chosen here, and whatever that provider needs
+             configured is drawn by commons-exo's generic renderer from the
+             descriptor the provider publishes - so a new provider adds fields
+             to this drawer without a line changing in it. -->
+        <template v-if="providerSelectable">
+          <v-list-item-title class="pa-0 mt-7 mb-4 text-header">
+            {{ $t('caldav.admin.servers.drawer.authentication') }}
+          </v-list-item-title>
+          <v-label for="caldavServerAuthProvider">
+            {{ $t('caldav.admin.servers.drawer.authProvider') }}
+          </v-label>
+          <v-select
+            id="caldavServerAuthProvider"
+            ref="caldavServerAuthProvider"
+            v-model="server.authProviderName"
+            :items="providerItems"
+            name="caldavServerAuthProvider"
+            class="pt-0 mt-2 mb-3"
+            item-text="text"
+            item-value="value"
+            outlined
+            dense
+            @change="providerConfig = {}" />
+        </template>
+        <provider-config-fields
+          v-model="providerConfig"
+          :fields="selectedProviderFields"
+          :secrets-stored="!!server.id"
+          @valid="providerConfigValid = $event" />
       </form>
     </template>
     <template #footer>
@@ -225,6 +316,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 <script>
 import {applyExcusals, describeQuirk} from '../../js/serverQuirks.js';
 import {DEFAULT_MIRROR_TARGET, mirrorTargetOf} from '../../js/mirrorTargets.js';
+import {DEFAULT_WRITE_CHANNEL, offersWriteChannel, writeChannelOf, writeChannelToSave} from '../../js/writeChannels.js';
 
 export default {
   data: () => ({
@@ -261,16 +353,75 @@ export default {
       // "not stated" and keeps whatever the row already had, which was the
       // right reading only while no drawer carried the control.
       mirrorTarget: DEFAULT_MIRROR_TARGET,
+      // Stated for the same reason as the destination above (EXO-90307).
+      writeChannel: DEFAULT_WRITE_CHANNEL,
       observedQuirks: [],
     },
     // The behaviours this server has been seen doing, as the drawer edits
     // them. Copied out of the row on open so an abandoned drawer leaves the
     // registration untouched, exactly like every other field here.
     observedQuirks: [],
+    // The other eXo deployments seen writing meeting copies into this server's
+    // accounts (EXO-89824). Read on open, never edited and never saved: it is
+    // what the inbound pass observed, not a setting.
+    foreignWriters: [],
+    // The registered credentials providers, as the REST endpoint describes
+    // them: a name and the fields each one wants configured.
+    providers: [],
+    // What the drawer is editing for the selected provider. Read back without
+    // any secret, so a secret field shows empty and an unrelated save leaves
+    // the stored one alone.
+    providerConfig: {},
+    // Whether the selected provider's required fields are all filled. The drawer does
+    // not know what those fields are - the renderer tells it, so the save button can
+    // be disabled without this file learning anything about any provider.
+    providerConfigValid: true,
   }),
   computed: {
+    /**
+     * Whether the write-channel radio is shown: a BlueMind-only choice
+     * (EXO-90307), offered when the name says BlueMind or the row is already
+     * on the import channel. See `writeChannels.offersWriteChannel`.
+     *
+     * @returns {Boolean} true when the control is rendered
+     */
+    offersWriteChannel() {
+      return offersWriteChannel(this.server);
+    },
     disabled() {
-      return !this.server.name || !this.server.serverUrl;
+      return !this.server.name || !this.server.serverUrl || !this.providerConfigValid;
+    },
+    /**
+     * Whether the provider choice is worth showing. With a single provider
+     * registered - the state before EXO-89646 ships the sudo one - a select
+     * with one entry is noise, and the registration keeps the default it has.
+     *
+     * @returns {boolean} true when more than one provider is registered
+     */
+    providerSelectable() {
+      return this.providers.length > 1;
+    },
+    /**
+     * The provider choices, labelled through i18n so a provider name stays a
+     * technical key.
+     *
+     * @returns {Array} items for the provider select
+     */
+    providerItems() {
+      return this.providers.map(provider => ({
+        text: this.$t(`credentials.provider.${provider.name}`),
+        value: provider.name,
+      }));
+    },
+    /**
+     * The configuration fields the selected provider publishes, or none when it
+     * publishes none - which is the case of the personal provider.
+     *
+     * @returns {Array} the selected provider's field descriptors
+     */
+    selectedProviderFields() {
+      const selected = this.providers.find(provider => provider.name === this.server.authProviderName);
+      return selected && selected.fields || [];
     },
     /**
      * The address shape shown in the URL field: the chosen preset's, else the
@@ -295,6 +446,13 @@ export default {
   },
   created() {
     this.$root.$on('open-caldav-server-drawer', this.open);
+    // Once for the drawer's life: the registered providers change with what is
+    // deployed, not with what the administrator is editing. A failure here is
+    // not worth an alert - the section simply does not appear, and the
+    // registration keeps the provider it has.
+    this.$credentialsProviderService.getCredentialsProviders()
+      .then(providers => this.providers = providers)
+      .catch(() => this.providers = []);
   },
   methods: {
     /**
@@ -314,8 +472,48 @@ export default {
       // administrator never chose.
       this.server.mirrorTarget = mirrorTargetOf(this.server.mirrorTarget);
       this.storedMirrorTarget = this.server.id && this.server.mirrorTarget || null;
+      this.server.writeChannel = writeChannelOf(this.server.writeChannel);
       this.observedQuirks = (this.server.observedQuirks || []).map(describeQuirk);
+      this.providerConfig = {};
+      this.foreignWriters = [];
+      if (this.server.id) {
+        this.$agendaCaldavService.getCaldavServerProviderConfig(this.server.id)
+          .then(values => this.providerConfig = values || {})
+          .catch(() => this.providerConfig = {});
+        // Read on its own, and its failure kept to itself: the section is
+        // evidence about the environment, and a drawer that would not open
+        // because that read failed is a drawer nobody can save a server with.
+        this.$agendaCaldavService.getCaldavServerForeignWriters(this.server.id)
+          .then(writers => this.foreignWriters = writers || [])
+          .catch(() => this.foreignWriters = []);
+      }
       this.$refs.caldavServerDrawer.open();
+    },
+    /**
+     * The day a deployment's copy was last read here, in the reader's own
+     * locale.
+     *
+     * <p>A date and not a time: the value is day-grained by construction, and
+     * rendering a moment inside the day would state a precision the record
+     * does not hold.</p>
+     *
+     * @param {Object} writer one entry of the list
+     * @returns {String} the date, or an empty string when the entry carries
+     *          none
+     */
+    lastSeenOn(writer) {
+      if (!writer || !writer.lastSeen) {
+        return '';
+      }
+      // The locale off the component and not off the eXo global, and guarded:
+      // a render that throws does not fail loudly, it silently keeps whatever
+      // the section drew last — which here is the empty state, so a drawer
+      // would go on saying "nothing seen" while holding a finding. In UTC: the
+      // value is the start of a UTC day, which a local rendering would show as
+      // the day before anywhere west of UTC.
+      const when = new Date(writer.lastSeen);
+      const locale = this.$i18n && this.$i18n.locale;
+      return locale && when.toLocaleDateString(locale, {timeZone: 'UTC'}) || when.toLocaleDateString([], {timeZone: 'UTC'});
     },
     /**
      * Folds the drawer's ticks back into the lists the registration is saved
@@ -352,10 +550,15 @@ export default {
         droppedProperties: null,
         omittedProperties: null,
         mirrorTarget: DEFAULT_MIRROR_TARGET,
+        writeChannel: DEFAULT_WRITE_CHANNEL,
         observedQuirks: [],
       };
       this.observedQuirks = [];
+      this.foreignWriters = [];
       this.storedMirrorTarget = null;
+      // Not kept between two openings: it holds what an administrator typed for
+      // one registration, and the next one they open is not the same one.
+      this.providerConfig = {};
       this.$refs.caldavServerDrawer.close();
     },
     /**
@@ -412,6 +615,13 @@ export default {
       // while this drawer had nothing to say about it, and a save that left it
       // out now would be relying on a guard that no longer guards anything.
       payload.mirrorTarget = mirrorTargetOf(this.server.mirrorTarget);
+      // Same rule for the door, sharpened: where the radio is offered the save
+      // states the form's value; everywhere else it states CalDAV explicitly -
+      // an omitted key would keep a stale stored channel (EXO-90307).
+      payload.writeChannel = writeChannelToSave(this.server);
+      // Relayed as typed. The keys belong to the provider's descriptor, and the
+      // server validates them against it before anything is written.
+      payload.providerConfig = this.providerConfig;
       try {
         if (isNew) {
           await this.$agendaCaldavService.createCaldavServer(payload);
@@ -427,7 +637,16 @@ export default {
         document.dispatchEvent(new CustomEvent('agenda-connectors-refresh'));
         this.close();
       } catch (e) {
-        if (isNew) {
+        // A refused configuration comes back as a message code the provider's
+        // own bundle translates, and a refused registration as one of this
+        // add-on's own (caldav.server.*). Showing the generic "error" instead
+        // would tell the administrator nothing about a form they can correct.
+        // A code this bundle does not carry keeps the generic message rather
+        // than showing its key.
+        if (e && e.messageCode && (e.messageCode.startsWith('connector.credentials.')
+            || e.messageCode.startsWith('caldav.server.') && this.$t(e.messageCode) !== e.messageCode)) {
+          this.$root.$emit('alert-message', this.$t(e.messageCode), 'error');
+        } else if (isNew) {
           this.$root.$emit('alert-message', this.$t('caldav.admin.servers.drawer.add.error'), 'error');
         } else {
           this.$root.$emit('alert-message', this.$t('caldav.admin.servers.drawer.edit.error'), 'error');

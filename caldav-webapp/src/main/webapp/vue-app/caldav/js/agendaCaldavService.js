@@ -54,6 +54,25 @@ export const getCaldavServers = () => {
 };
 
 /**
+ * Turns a refused response into an Error carrying what the server said.
+ *
+ * The provider configuration is validated server-side and refused with a message
+ * code — a missing required field, a value outside a field's options. Thrown as a
+ * bare sentence that code never reaches the screen, and the administrator is told
+ * "error" about a form they can in fact correct.
+ *
+ * @param {Response} resp the refused response
+ * @returns {Promise} a promise rejecting with the Error to throw
+ */
+const refusal = (resp) => {
+  return resp.text().then(body => {
+    const error = new Error(body || 'Response code indicates a server error');
+    error.messageCode = body || null;
+    throw error;
+  });
+};
+
+/**
  * Declares a new CalDAV server (administrators only).
  *
  * @param {Object} server the registration to create {name, description, serverUrl, active}
@@ -69,7 +88,7 @@ export const createCaldavServer = (server) => {
     body: JSON.stringify(server),
   }).then(resp => {
     if (!resp || !resp.ok) {
-      throw new Error('Response code indicates a server error', resp);
+      return refusal(resp);
     } else {
       return resp.json();
     }
@@ -92,7 +111,7 @@ export const updateCaldavServer = (server) => {
     body: JSON.stringify(server),
   }).then(resp => {
     if (!resp || !resp.ok) {
-      throw new Error('Response code indicates a server error', resp);
+      return refusal(resp);
     } else {
       return resp.json();
     }
@@ -793,6 +812,52 @@ export const getOwedCopies = () => {
 
 export const getCalendarSyncStates = () => {
   return fetch(`${window.location.origin}/caldav/rest/calendar-states`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
+ * Reads back the provider configuration stored for a declared server.
+ *
+ * Secret values are never in the answer: the endpoint omits them, so a secret
+ * field opens empty and an unrelated save leaves the stored one untouched.
+ *
+ * @param {number} serverId technical id of the registration
+ * @returns {Promise<Object>} the stored values, keyed by descriptor field
+ */
+export const getCaldavServerProviderConfig = (serverId) => {
+  return fetch(`/caldav/rest/servers/${serverId}/provider-config`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
+ * Reads the other eXo deployments seen writing meeting copies into a declared
+ * server's accounts (EXO-89824).
+ *
+ * Its own request rather than a field on the registration: the condition is
+ * evidence the inbound pass wrote, and nothing an administrator saves may carry
+ * it back. Empty on every server nobody else writes into, which is what a
+ * healthy deployment looks like.
+ *
+ * @param {number} serverId technical id of the registration
+ * @returns {Promise<Array>} the deployments, most recently seen first, each
+ *          carrying its authority and when a copy of its was last read here
+ */
+export const getCaldavServerForeignWriters = (serverId) => {
+  return fetch(`/caldav/rest/servers/${serverId}/foreign-writers`, {
     credentials: 'include',
     method: 'GET',
   }).then(resp => {

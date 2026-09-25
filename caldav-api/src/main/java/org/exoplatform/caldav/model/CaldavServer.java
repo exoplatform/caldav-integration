@@ -18,6 +18,7 @@ package org.exoplatform.caldav.model;
 
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -245,4 +246,45 @@ public class CaldavServer {
    * the positional-constructor reason they explain above.
    */
   private String  authProviderName;
+
+  /**
+   * The values this server's credentials provider asked for through its
+   * configuration descriptor - a technical login, a secret, a target login
+   * field. The registration relays this map without inspecting it: the keys are
+   * the provider's vocabulary, not CalDAV's, and the generic storage in
+   * commons-exo is what validates and encrypts them.
+   * <p>
+   * Inbound only. It carries what an administrator just typed and is never
+   * filled on the way out, because the secret must not leave the server - the
+   * drawer reads back what it may see through the dedicated provider-config
+   * endpoint.
+   */
+  private Map<String, String> providerConfig;
+
+  /**
+   * Through which door eXo writes and removes the meeting copies of this
+   * server: CalDAV, or BlueMind's own ICS import API
+   * ({@link WriteChannel#BLUEMIND_IMPORT}, EXO-90307). Chosen per server,
+   * because whether a CalDAV write makes the server schedule the meeting
+   * itself is a property of the server and of nothing else.
+   *
+   * <p>
+   * Declared LAST — after {@link #providerConfig} — for the reason
+   * {@link #answerLinksInCopy} records: the model is built positionally
+   * through its all-args constructor, so appending keeps every existing
+   * argument on its own field, and the next field appended goes after this
+   * one.
+   *
+   * <p>
+   * <b>Null means "not stated" on the way IN</b>: a save whose body does not
+   * carry the field arrives here as null and the storage leaves the stored
+   * value alone. Only an explicit value changes the row — which is what makes
+   * the flag a rollback an administrator can perform, and nothing else can
+   * undo. Hence no initialiser: Jackson builds a request body through the
+   * no-args constructor, and a default here would turn every body without the
+   * key into an explicit CalDAV. On the way OUT the field always holds a
+   * value, read from the column through {@link WriteChannel#of}, and a
+   * declaration that states none keeps the column's own default, CalDAV.
+   */
+  private WriteChannel writeChannel;
 }

@@ -96,6 +96,9 @@ public class ChangelogExecutionTest {
   /** The per-server credentials provider EXO-89657 appends. */
   private static final String AUTH_PROVIDER_COLUMN = "AUTH_PROVIDER_NAME";
 
+  /** The door a server's copies are written through (EXO-90307). */
+  private static final String WRITE_CHANNEL_COLUMN = "WRITE_CHANNEL";
+
   /** Who each connected user is on their server, the table EXO-90243 adds. */
   private static final String CONNECTION_TABLE    = "CALDAV_CONNECTION";
 
@@ -189,7 +192,8 @@ public class ChangelogExecutionTest {
 
   /**
    * The deployment-wide ownership index (1.0.0-48) exists with its columns in
-   * lookup order, and its rollback removes it without touching the table.
+   * lookup order, and its rollback removes it without touching the table. The
+   * changesets applied after it are rolled back first, however many there are.
    *
    * @throws Exception when a changeset cannot be applied or rolled back
    */
@@ -199,7 +203,7 @@ public class ChangelogExecutionTest {
     assertEquals(List.of("SERVER_ID", "ORIGIN", "LOCAL_CALENDAR_SYNC_UID"),
                  indexColumns("CALDAV_CALENDAR_SYNC", "IDX_CALDAV_CALENDAR_SYNC_ORIGIN"));
 
-    rollbackCount(1);
+    rollbackCount(appliedSince("1.0.0-48"));
 
     assertTrue(indexColumns("CALDAV_CALENDAR_SYNC", "IDX_CALDAV_CALENDAR_SYNC_ORIGIN").isEmpty(),
                "rolling 1.0.0-48 back must drop the index");
@@ -428,6 +432,30 @@ public class ChangelogExecutionTest {
   }
 
   /**
+   * The write-channel column, same promise: a server declared before it
+   * existed keeps writing its copies over CalDAV, the door every deployment
+   * already used. A DEFAULT lost in an edit would fail the ALTER on a populated
+   * table or leave every upgraded row with no channel, which no Java test can
+   * see.
+   *
+   * @throws Exception when a changeset cannot be applied or the row not written
+   */
+  @Test
+  public void aServerRowDefaultsToTheCalDavWriteChannel() throws Exception {
+    update();
+
+    try (Statement statement = connection.createStatement()) {
+      statement.executeUpdate("INSERT INTO CALDAV_SERVER (ID, PROVIDER_NAME, NAME, SERVER_URL, ACTIVE) "
+          + "VALUES (5, 'agenda.caldavCalendar.5', 'Legacy', 'https://legacy.example.invalid/dav/', TRUE)");
+      try (ResultSet rows = statement.executeQuery("SELECT " + WRITE_CHANNEL_COLUMN + " FROM CALDAV_SERVER WHERE ID = 5")) {
+        assertTrue(rows.next(), "the row must have been written");
+        assertEquals("CALDAV", rows.getString(1), "a row that says nothing about its channel writes over CalDAV");
+      }
+    }
+    assertEquals(0, nullableFlag("CALDAV_SERVER", WRITE_CHANNEL_COLUMN), "and the column must be NOT NULL");
+  }
+
+  /**
    * Every column the entities map is a column the changelog creates.
    *
    * <p>
@@ -496,6 +524,25 @@ public class ChangelogExecutionTest {
    */
   private void update() throws Exception {
     liquibase().update(new Contexts(), new LabelExpression());
+  }
+
+  /**
+   * How many changesets have run since the given one, that one included: the
+   * count a rollback needs to undo it.
+   *
+   * @param id the changeset id
+   * @return the count, at least one
+   * @throws Exception when the changelog table cannot be read
+   */
+  private int appliedSince(String id) throws Exception {
+    try (Statement statement = connection.createStatement();
+        ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM DATABASECHANGELOG WHERE ORDEREXECUTED >= "
+            + "(SELECT ORDEREXECUTED FROM DATABASECHANGELOG WHERE ID = '" + id + "')")) {
+      rows.next();
+      int count = rows.getInt(1);
+      assertTrue(count > 0, id + " must have run");
+      return count;
+    }
   }
 
   /**

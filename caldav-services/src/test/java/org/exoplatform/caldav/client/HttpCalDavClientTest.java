@@ -116,7 +116,7 @@ public class HttpCalDavClientTest {
   private static CaldavServer declaredServer(String serverUrl) {
     return new CaldavServer(1L, "agenda.caldavCalendar", "Stalwart", null, serverUrl, true, null, null, null, null,
                             true, null, null, null, null,
-                            null, null, "personal");
+                            null, null, "personal", null, null);
   }
 
   // ---- registry-only targeting -------------------------------------------

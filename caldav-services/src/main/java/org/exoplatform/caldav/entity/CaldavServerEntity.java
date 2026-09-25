@@ -29,6 +29,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import org.hibernate.annotations.DynamicUpdate;
+
 import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
 
 /**
@@ -36,10 +38,19 @@ import org.exoplatform.services.connector.credentials.PersonalCredentialsProvide
  * allowed to see — name, description, URL, activation — and never a
  * credential: per-user secrets live in the per-user settings storage, so a
  * read of this table can be served to any authenticated user.
+ *
+ * <p>
+ * {@code @DynamicUpdate}: the row has three writers and no version - an
+ * administrator's save, and the inbound pass recording observed quirks and
+ * foreign writers - each by a read-modify-save, so the statement carries the
+ * columns that changed and nothing else. A static update would write back every
+ * column as it was read, and one writer would revert what another had just
+ * saved.
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
+@DynamicUpdate
 @Entity(name = "CaldavServerEntity")
 @Table(name = "CALDAV_SERVER")
 public class CaldavServerEntity {
@@ -204,4 +215,38 @@ public class CaldavServerEntity {
    */
   @Column(name = "AUTH_PROVIDER_NAME", nullable = false)
   private String  authProviderName = PersonalCredentialsProvider.NAME;
+
+  /**
+   * Which other eXo deployments have been seen writing meeting copies into this
+   * server's accounts, as a bounded rolling list - see
+   * {@link org.exoplatform.caldav.utils.ForeignWriterSummary} for the format
+   * and EXO-89824 for why the condition is otherwise invisible.
+   *
+   * <p>
+   * Null is "nothing seen", which is where every registration starts and where
+   * one whose last entry has aged out returns. Written by the inbound pass and
+   * never by an administrator save, exactly like {@link #observedQuirks} above:
+   * it is evidence, and a drawer that could overwrite it would erase the finding
+   * the administrator opened it to read. Declared LAST, after
+   * {@link #authProviderName}, for the positional-constructor reason the fields
+   * above explain - and the next field appended goes after this one.
+   */
+  @Column(name = "FOREIGN_WRITERS")
+  private String  foreignWriters;
+
+  /**
+   * Through which door eXo writes and removes this server's meeting copies,
+   * as the name of a {@code WriteChannel} (EXO-90307).
+   *
+   * <p>
+   * A String rather than an {@code @Enumerated} field, NOT NULL with a
+   * DEFAULT, and read through {@code WriteChannel.of}, for exactly the
+   * reasons {@link #mirrorTarget} gives: an unknown value must degrade to the
+   * door every deployment already used rather than make the registration
+   * unreadable, and the column's own DEFAULT is what backfills every existing
+   * row with that same door. Declared LAST, after {@link #foreignWriters};
+   * the next column appended goes after it.
+   */
+  @Column(name = "WRITE_CHANNEL", nullable = false)
+  private String  writeChannel = "CALDAV";
 }

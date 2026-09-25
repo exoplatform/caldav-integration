@@ -32,6 +32,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -68,6 +69,9 @@ import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
+import org.exoplatform.caldav.client.CalendarObjectWriter;
+import org.exoplatform.caldav.client.CalendarObjectWriters;
+import org.exoplatform.caldav.client.CalDavObjectWriter;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
@@ -170,6 +174,15 @@ public class CaldavPushServiceTest {
   @Mock
   private CalDavClient               calDavClient;
 
+  /**
+   * The door resolver, answering the CalDAV door over the mocked client for
+   * every endpoint: what keeps every verification on {@code calDavClient}
+   * meaningful now that the service writes through {@code CalendarObjectWriters}
+   * (EXO-90307).
+   */
+  @Mock
+  private CalendarObjectWriters      calendarObjectWriters;
+
   @Mock
   private CaldavConnectorStorage     caldavConnectorStorage;
 
@@ -217,6 +230,7 @@ public class CaldavPushServiceTest {
 
   @BeforeEach
   public void connectAnAccount() {
+    lenient().when(calendarObjectWriters.writer(any())).thenReturn(new CalDavObjectWriter(calDavClient));
     lenient().when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(settings());
     lenient().when(calDavClient.endpoint(SERVER, "john")).thenReturn(endpoint);
     lenient().when(calDavClient.discoverCalendarHome(any())).thenReturn(HOME);
@@ -1408,6 +1422,30 @@ public class CaldavPushServiceTest {
   }
 
   /**
+   * A removal refused with 412 removes the copy all the same, whatever version the
+   * server now holds, and then clears the remote identity. The event is gone, and
+   * nothing adopts the server's version for an event that no longer exists: a
+   * removal conditioned on the recorded version would be refused on every retry and
+   * leave the copy for good. A row whose version was recorded before the server's
+   * write channel changed is refused exactly this way.
+   */
+  @Test
+  public void aRemovalRefusedBecauseTheCopyChangedRemovesItUnconditionally() {
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    when(caldavSyncStorage.getObjectByUid(1L, "evt-1")).thenReturn(mapped("\"etag-1\""));
+    when(calDavClient.deleteObject(endpoint, MIRROR + "evt-1.ics", "\"etag-1\"")).thenReturn(PutResult.PRECONDITION_FAILED);
+    when(calDavClient.deleteObject(endpoint, MIRROR + "evt-1.ics", null)).thenReturn(204);
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.deleteEvent(USER, "john", "evt-1");
+
+    verify(calDavClient).deleteObject(endpoint, MIRROR + "evt-1.ics", null);
+    ArgumentCaptor<ObjectSync> cleared = ArgumentCaptor.forClass(ObjectSync.class);
+    verify(caldavSyncStorage).saveObject(cleared.capture());
+    assertNull(cleared.getValue().getRemoteHref());
+  }
+
+  /**
    * A mapping that holds no href points at nothing, so there is nothing to
    * remove. Deriving one from the UID and deleting that instead would remove
    * whatever else happens to sit at the conventional filename.
@@ -1834,6 +1872,24 @@ public class CaldavPushServiceTest {
     service.excludeOccurrence(USER, "john", "series-uid", Instant.parse("2026-09-15T07:00:00Z"));
 
     verify(calDavClient).deleteObject(any(), anyString(), any());
+  }
+
+  @Test
+  public void anEmptiedSeriesWhoseRemovalIsRefusedSurfacesAsAConflict() {
+    // The removal after the last occurrence is excluded is conditional too, and
+    // a 412 there keeps the mapping, as the rewrite's own 412 does.
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("series-uid"))).thenReturn(mapped("\"etag-1\""));
+    when(calDavClient.fetchObject(any(), anyString())).thenReturn(new CalendarObject("/h", "\"etag-1\"", "BEGIN:VCALENDAR"));
+    when(icsMerger.excludeOccurrence(anyString(), any())).thenReturn(null);
+    when(calDavClient.deleteObject(any(), anyString(), any())).thenReturn(PutResult.PRECONDITION_FAILED);
+
+    CaldavPushException failure = assertThrows(CaldavPushException.class,
+                                               () -> service.excludeOccurrence(USER, "john", "series-uid",
+                                                                               Instant.parse("2026-09-15T07:00:00Z")));
+
+    assertEquals(CaldavPushService.CONFLICT, failure.getCode());
+    verify(caldavSyncStorage, never()).saveObject(any());
   }
 
   @Test
@@ -2429,6 +2485,42 @@ public class CaldavPushServiceTest {
     verify(caldavSyncStorage).deleteObject(7778L);
   }
 
+  /**
+   * A copy left behind that is not the version recorded is refused with 412, and
+   * it keeps its mapping: dropping the row would leave a copy in the user's
+   * calendar that nothing in eXo points at. The import door answers 412 exactly
+   * this way once, for a row last written over CalDAV.
+   */
+  @Test
+  public void aCopyLeftBehindThatChangedKeepsItsMapping() throws Exception {
+    givenAnAgendaEvent(112L, 0L);
+    givenPersonalCalendar(9L, "cal-anchor");
+    CalendarSync destination = boundPersonalPair();
+    destination.setId(6001L);
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(destination);
+    when(agendaRemoteEventService.findRemoteEvent(112L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-minted-anew"));
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("uid-minted-anew"))).thenReturn(null);
+    CalendarSync origin = boundPersonalPair();
+    origin.setId(6002L);
+    origin.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(destination, origin));
+    ObjectSync stray = mapped("\"etag-old\"");
+    stray.setId(7778L);
+    stray.setCalendarSyncId(6002L);
+    stray.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor/uid-original.ics");
+    when(caldavSyncStorage.getObjectByEvent(6002L, 112L)).thenReturn(stray);
+    when(calDavClient.putObject(any(), anyString(), anyString()))
+        .thenReturn(new PutResult(201, "\"etag-new\"", null));
+    when(calDavClient.deleteObject(any(), anyString(), any())).thenReturn(PutResult.PRECONDITION_FAILED);
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, "john", 112L);
+
+    verify(calDavClient).deleteObject(any(), eq("/dav/calendars/john/exo-cal-old-anchor/uid-original.ics"), eq("\"etag-old\""));
+    verify(caldavSyncStorage, never()).deleteObject(7778L);
+  }
+
   @Test
   public void twoBindingsSharingOneCollectionDoNotDeleteTheObjectJustWritten() throws Exception {
     // The trap the mirror rework arms. "Left behind" means the copy in the
@@ -2695,6 +2787,101 @@ public class CaldavPushServiceTest {
     when(caldavServerService.resolveServer(SERVER)).thenReturn(server);
   }
 
+
+
+  /**
+   * <b>The seam pin of EXO-90307 for the copy left behind.</b> When an event
+   * moved calendar, the copy still sitting in the old collection is removed
+   * through the door the registry resolved — a CalDAV DELETE of it would make
+   * BlueMind send a CANCEL of its own.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void onTheImportDoorTheCopyLeftBehindIsRemovedThroughTheDoor() throws Exception {
+    CalendarObjectWriter door = mock(CalendarObjectWriter.class);
+    when(calendarObjectWriters.writer(any())).thenReturn(door);
+    when(door.putObject(any(), anyString(), anyString())).thenReturn(new PutResult(201, "\"etag-new\"", null));
+    when(door.deleteObject(any(), anyString(), any())).thenReturn(204);
+    givenAnAgendaEvent(112L, 0L);
+    givenPersonalCalendar(9L, "cal-anchor");
+    CalendarSync destination = boundPersonalPair();
+    destination.setId(6001L);
+    when(caldavSyncStorage.getPairByLocalCalendar(USER, SERVER, "cal-anchor")).thenReturn(destination);
+    when(agendaRemoteEventService.findRemoteEvent(112L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-112"));
+    when(caldavSyncStorage.getObjectByUid(6001L, "uid-112")).thenReturn(null);
+    CalendarSync origin = boundPersonalPair();
+    origin.setId(6002L);
+    origin.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor");
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(destination, origin));
+    ObjectSync stray = mapped("\"etag-old\"");
+    stray.setId(7777L);
+    stray.setCalendarSyncId(6002L);
+    stray.setRemoteHref("/dav/calendars/john/exo-cal-old-anchor/uid-112.ics");
+    when(caldavSyncStorage.getObjectByUid(6002L, "uid-112")).thenReturn(stray);
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    service.pushAgendaEvent(USER, "john", 112L);
+
+    verify(door).deleteObject(any(), eq("/dav/calendars/john/exo-cal-old-anchor/uid-112.ics"), eq("\"etag-old\""));
+    verify(caldavSyncStorage).deleteObject(7777L);
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any());
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
+  }
+
+  /**
+   * <b>The seam pin of EXO-90307.</b> When the registry resolves the BlueMind
+   * import door for this server, every write shape of this service goes
+   * through that door and no CalDAV PUT or DELETE is issued for any of them:
+   * the create, the update over what the server holds, the repair with and
+   * without a recorded version, the removal, and the two branches of excluding
+   * an occurrence. Reads still go to the CalDAV client, which is why it is
+   * still stubbed here.
+   */
+  @Test
+  public void onTheImportDoorNoSeamIssuesACalDavWrite() {
+    CalendarObjectWriter door = mock(CalendarObjectWriter.class);
+    when(calendarObjectWriters.writer(any())).thenReturn(door);
+    when(door.putObject(any(), anyString(), anyString())).thenReturn(new PutResult(201, "\"v1\"", null));
+    when(door.updateObject(any(), anyString(), anyString(), anyString())).thenReturn(new PutResult(200, "\"v2\"", null));
+    when(door.overwriteObject(any(), anyString(), anyString())).thenReturn(new PutResult(200, "\"v3\"", null));
+    when(door.deleteObject(any(), anyString(), any())).thenReturn(204);
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    givenAMirror();
+    when(caldavSyncStorage.getPairsByOrigin(USER, SERVER, SyncOrigin.MIRROR)).thenReturn(List.of(pair()));
+    when(calDavClient.fetchObject(any(), anyString())).thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
+                                                                                     "\"etag-1\"",
+                                                                                     "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"));
+    when(icsMerger.merge(anyString(), anyString(), anyBoolean())).thenReturn("MERGED");
+
+    // The create, then the repair of an object with no recorded version.
+    assertEquals("\"v1\"", service.pushEvent(USER, "john", event("evt-1"), null, false).getEtag());
+    assertEquals("\"v3\"", service.pushEvent(USER, "john", event("evt-1"), null, true).getEtag());
+    // The update and the repair over a recorded version. A fresh row per read:
+    // the removal below clears the row it is handed, and the exclusions after
+    // it must still find a copy to rewrite.
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenAnswer(invocation -> mapped("\"etag-1\""));
+    assertEquals("\"v2\"", service.pushEvent(USER, "john", event("evt-1"), null, false).getEtag());
+    assertEquals("\"v3\"", service.pushEvent(USER, "john", event("evt-1"), null, true).getEtag());
+    // The removal.
+    service.deleteEvent(USER, "john", "evt-1");
+    // Excluding an occurrence: the rewrite, then the removal of the last one.
+    when(icsMerger.excludeOccurrence(anyString(), any())).thenReturn("REWRITTEN", (String) null);
+    service.excludeOccurrence(USER, "john", "evt-1", Instant.parse("2026-09-15T07:00:00Z"));
+    service.excludeOccurrence(USER, "john", "evt-1", Instant.parse("2026-09-15T08:00:00Z"));
+
+    verify(door).putObject(any(), eq(MIRROR + "evt-1.ics"), anyString());
+    verify(door).updateObject(any(), eq(MIRROR + "evt-1.ics"), eq("MERGED"), eq("\"etag-1\""));
+    verify(door).updateObject(any(), eq(MIRROR + "evt-1.ics"), eq("REWRITTEN"), eq("\"etag-1\""));
+    verify(door, times(2)).overwriteObject(any(), eq(MIRROR + "evt-1.ics"), anyString());
+    verify(door, times(2)).deleteObject(any(), eq(MIRROR + "evt-1.ics"), eq("\"etag-1\""));
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString());
+    verify(calDavClient, never()).deleteObject(any(), anyString(), any());
+  }
+
   /**
    * @return a connected account
    */
@@ -2803,5 +2990,29 @@ public class CaldavPushServiceTest {
                    .end(Instant.parse("2026-09-08T10:00:00Z"))
                    .timeZoneId("Europe/Paris")
                    .build();
+  }
+
+  /**
+   * A user with no connected account has <b>no destination</b>, which is what this
+   * endpoint's own contract calls 204 - not a conflict.
+   * <p>
+   * The settings screen reads the destination right after disconnecting (agenda's
+   * {@code resetConnector} calls {@code readMirror}), so the refusal fired on every
+   * single disconnection, for every connector, and the browser console reported a
+   * server error for a situation nobody got wrong. Establishing a destination
+   * without an account is a different matter and stays a conflict - that is the
+   * POST, not this.
+   * <p>
+   * A disconnection is what the storage actually answers: a setting with no username and
+   * no password, never null.
+   */
+  @Test
+  public void hasNoDestinationRatherThanAConflictWhenNobodyIsConnected() {
+    CaldavUserSetting disconnected = new CaldavUserSetting();
+    disconnected.setServerId(SERVER);
+    when(caldavConnectorStorage.getCaldavSetting(USER)).thenReturn(disconnected);
+
+    assertNull(service.currentMirror(USER, "john"));
+    verify(calDavClient, never()).discoverCalendarHome(any());
   }
 }

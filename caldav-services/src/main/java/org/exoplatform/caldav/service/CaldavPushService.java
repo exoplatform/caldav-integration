@@ -43,6 +43,8 @@ import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarObject;
+import org.exoplatform.caldav.client.CalendarObjectWriter;
+import org.exoplatform.caldav.client.CalendarObjectWriters;
 import org.exoplatform.caldav.client.MkCalendarResult;
 import org.exoplatform.caldav.client.PutResult;
 import org.exoplatform.caldav.ics.IcsMerger;
@@ -215,6 +217,9 @@ public class CaldavPushService {
 
   @Autowired
   private CalDavClient           calDavClient;
+
+  @Autowired
+  private CalendarObjectWriters  calendarObjectWriters;
 
   @Autowired
   private CaldavConnectorStorage caldavConnectorStorage;
@@ -759,9 +764,18 @@ public class CaldavPushService {
       return;
     }
     try {
-      calDavClient.deleteObject(endpoint,
-                                leftBehind.getRemoteHref(),
-                                leftBehind.getEtag());
+      int status = writerFor(endpoint).deleteObject(endpoint,
+                                                    leftBehind.getRemoteHref(),
+                                                    leftBehind.getEtag());
+      if (status == PutResult.PRECONDITION_FAILED) {
+        // The copy is not the version recorded: it stays, and so does its
+        // mapping, for the verification pass to settle. Clearing the mapping
+        // here would leave a copy nothing in eXo points at.
+        LOG.info("The copy user {} left at {} when moving the event changed since it was recorded; it stays, and so does its mapping",
+                 userIdentityId,
+                 leftBehind.getRemoteHref());
+        return;
+      }
     } catch (RuntimeException e) {
       LOG.warn("The copy user {} left at {} when moving the event could not be removed; it stays, and so does its mapping",
                userIdentityId,
@@ -1044,10 +1058,20 @@ public class CaldavPushService {
     if (known == null || StringUtils.isBlank(known.getRemoteHref())) {
       return;
     }
+    CalDavEndpoint endpoint = endpointOf(settings, username);
     try {
-      calDavClient.deleteObject(endpointOf(settings, username),
-                               known.getRemoteHref(),
-                               known.getEtag());
+      CalendarObjectWriter writer = writerFor(endpoint);
+      int status = writer.deleteObject(endpoint, known.getRemoteHref(), known.getEtag());
+      if (status == PutResult.PRECONDITION_FAILED) {
+        // The copy is not the version recorded. It is removed all the same, whatever
+        // version the server now holds: every caller removes a copy that must go - its
+        // event is deleted, or its holder may no longer hold it - and nothing adopts the
+        // server's version for an event that no longer exists, so a condition on the
+        // recorded one would refuse every retry and leave the copy for good. A version
+        // recorded before the server's write channel changed is the ordinary case.
+        LOG.debug("The copy at {} changed since it was recorded; it is removed unconditionally", known.getRemoteHref());
+        writer.deleteObject(endpoint, known.getRemoteHref(), null);
+      }
     } catch (CalDavAuthenticationException e) {
       throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
     } catch (CalDavException e) {
@@ -1097,16 +1121,19 @@ public class CaldavPushService {
       String rewritten = icsMerger.excludeOccurrence(existing.calendarData(), occurrence);
       if (rewritten == null) {
         // Nothing left in the object: the last instance was the one excluded.
-        calDavClient.deleteObject(endpoint,
-                                  known.getRemoteHref(),
-                                  known.getEtag());
+        int status = writerFor(endpoint).deleteObject(endpoint,
+                                                      known.getRemoteHref(),
+                                                      known.getEtag());
+        if (status == PutResult.PRECONDITION_FAILED) {
+          throw new CaldavPushException(CONFLICT, "The series at " + known.getRemoteHref() + " changed since it was read");
+        }
         caldavSyncStorage.saveObject(cleared(known));
         return;
       }
-      PutResult result = calDavClient.updateObject(endpoint,
-                                                   known.getRemoteHref(),
-                                                   rewritten,
-                                                   known.getEtag());
+      PutResult result = writerFor(endpoint).updateObject(endpoint,
+                                                          known.getRemoteHref(),
+                                                          rewritten,
+                                                          known.getEtag());
       if (result.preconditionFailed()) {
         throw new CaldavPushException(CONFLICT, "The series at " + known.getRemoteHref() + " changed since it was read");
       }
@@ -1271,10 +1298,10 @@ public class CaldavPushService {
                   response);
         return false;
       }
-      PutResult result = calDavClient.updateObject(endpoint,
-                                                   known.getRemoteHref(),
-                                                   rewrite.document(),
-                                                   known.getEtag());
+      PutResult result = writerFor(endpoint).updateObject(endpoint,
+                                                          known.getRemoteHref(),
+                                                          rewrite.document(),
+                                                          known.getEtag());
       if (result.preconditionFailed()) {
         throw new CaldavPushException(CONFLICT, "The copy at " + known.getRemoteHref() + " changed since it was read");
       }
@@ -1638,10 +1665,10 @@ public class CaldavPushService {
                   response);
         return AnswerOutcome.ALREADY_SAID;
       }
-      PutResult result = calDavClient.updateObject(endpoint,
-                                                   copy.getRemoteHref(),
-                                                   rewrite.document(),
-                                                   copy.getEtag());
+      PutResult result = writerFor(endpoint).updateObject(endpoint,
+                                                          copy.getRemoteHref(),
+                                                          rewrite.document(),
+                                                          copy.getEtag());
       if (result.preconditionFailed()) {
         throw new CaldavPushException(CONFLICT, "The copy at " + copy.getRemoteHref() + " changed since it was read");
       }
@@ -1795,7 +1822,15 @@ public class CaldavPushService {
    *         has none — neither the one recorded nor one at the derived path
    */
   public MirrorTarget currentMirror(long userIdentityId, String username) {
-    CaldavUserSetting settings = connectedSettings(userIdentityId);
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    // Nobody connected has no destination, which is what this endpoint's contract
+    // calls 204. Refusing instead made every disconnection - agenda reads the
+    // destination straight after resetting the connector - report a server error for
+    // a situation nobody got wrong. Establishing one without an account remains a
+    // conflict; that is the POST, not this.
+    if (!connected(settings)) {
+      return null;
+    }
     boolean recorded = StringUtils.isNotBlank(settings.getMirrorCalendarHref());
     try {
       return lookUpMirror(userIdentityId, username, settings);
@@ -2538,9 +2573,9 @@ public class CaldavPushService {
           // the state a repair exists to leave: forcing the write puts the
           // object back under the href being repaired and re-establishes the
           // mapping, where the create refused for ever.
-          return calDavClient.overwriteObject(endpoint, href, ics);
+          return writerFor(endpoint).overwriteObject(endpoint, href, ics);
         }
-        return calDavClient.putObject(endpoint, href, ics);
+        return writerFor(endpoint).putObject(endpoint, href, ics);
       }
       CalendarObject existing = calDavClient.fetchObject(endpoint, href);
       String merged = existing == null || StringUtils.isBlank(existing.calendarData()) ? ics
@@ -2554,12 +2589,12 @@ public class CaldavPushService {
         // the write precisely when the object has drifted, which is the only
         // time a repair is attempted; an If-None-Match would refuse it
         // because the object exists, which it always does here.
-        return calDavClient.overwriteObject(endpoint, href, merged);
+        return writerFor(endpoint).overwriteObject(endpoint, href, merged);
       }
-      return calDavClient.updateObject(endpoint,
-                                       href,
-                                       merged,
-                                       known.getEtag());
+      return writerFor(endpoint).updateObject(endpoint,
+                                              href,
+                                              merged,
+                                              known.getEtag());
     } catch (CalDavAuthenticationException e) {
       throw new CaldavPushException(CREDENTIALS, "The stored CalDAV credentials were rejected", e);
     } catch (CalDavException e) {
@@ -2623,6 +2658,19 @@ public class CaldavPushService {
    */
   private boolean connected(CaldavUserSetting settings) {
     return settings != null && StringUtils.isNotBlank(settings.getUsername()) && StringUtils.isNotBlank(settings.getPassword());
+  }
+
+  /**
+   * The door this account's server writes through — CalDAV, or BlueMind's
+   * import API — resolved once per write from the registry (EXO-90307). Every
+   * write and removal in this service goes through it; only reads still speak
+   * to {@link #calDavClient} directly.
+   *
+   * @param endpoint the account's endpoint
+   * @return the writer for that server
+   */
+  private CalendarObjectWriter writerFor(CalDavEndpoint endpoint) {
+    return calendarObjectWriters.writer(endpoint);
   }
 
   /**

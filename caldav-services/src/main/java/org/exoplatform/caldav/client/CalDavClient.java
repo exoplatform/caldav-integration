@@ -302,6 +302,67 @@ public interface CalDavClient {
                                 List<String> hrefs);
 
   /**
+   * Asks, in one calendar-multiget REPORT, which of the given objects the
+   * server holds and under which version — the presence question the
+   * BlueMind import door asks about one object before and after each write
+   * (EXO-90307), asked without the calendar data a
+   * {@link #multiget} would make the server render.
+   *
+   * <p>
+   * The version answered is the REPORT channel's, which on BlueMind is not
+   * the collection listing's ({@code CalendarMultigetExecutor.java:123}
+   * renders {@code SyncTokens.getEtag}, quoted base64, where the listing
+   * renders the raw token); a caller that records versions must read them
+   * from the listing's channel and use this answer for presence only.
+   *
+   * @param endpoint the declared server
+   * @param collectionHref the collection's server-absolute path
+   * @param hrefs the object paths to ask about
+   * @return object path to object version for the objects the server
+   *         answered a granted {@code getetag} for, insertion-ordered, never
+   *         null; an href the server did not answer is simply absent — which
+   *         on BlueMind is also what a failed lookup answers
+   *         ({@code CalendarMultigetExecutor.java:83-86}), so absence here
+   *         is a reason to ask the listing, never a fact on its own. Both
+   *         shapes captured on the rig, 2026-09-16
+   *         ({@code bluemind-report-multiget-one-href-getetag.captured.xml},
+   *         {@code bluemind-report-multiget-missing-href.captured.xml})
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached or errors
+   */
+  Map<String, String> multigetEtags(CalDavEndpoint endpoint,
+                                    String collectionHref,
+                                    List<String> hrefs);
+
+  /**
+   * Reads one object's version in a {@code Depth: 0} PROPFIND of
+   * {@code getetag} on its own href — the single-object read of the listing
+   * channel, the one whose value the verification pass adopts into the row
+   * when the server publishes the same value at both depths (EXO-90307).
+   *
+   * <p>
+   * What this read does not answer is existence: BlueMind's DAV router
+   * assumes an {@code .ics} node exists whenever its path is well formed
+   * ({@code MethodRouter.java:162-175}, {@code DavStore.java:474-502}: the
+   * {@code default} branch "assume yes") and mints a token from the path
+   * ({@code GetTag.java:46-56}), so a missing object is answered 207 with a
+   * version there — captured on the rig on 2026-09-16
+   * ({@code bluemind-propfind-missing-object-depth0.captured.xml}) — and 404
+   * only on a server that checks. A caller that needs existence establishes
+   * it elsewhere first.
+   *
+   * @param endpoint the declared server
+   * @param href the object's server-absolute path
+   * @return the granted {@code getetag} of the response for that href,
+   *         verbatim — quotes and all, as everywhere in this client — or
+   *         null when the server answered 404/410, answered no response for
+   *         the href, or granted no {@code getetag}
+   * @throws CalDavAuthenticationException when the credentials are refused
+   * @throws CalDavException when the server cannot be reached or errors
+   */
+  String readEtag(CalDavEndpoint endpoint, String href);
+
+  /**
    * Runs an RFC 6578 sync-collection REPORT with a stored token — tier 1,
    * one round trip for everything changed or deleted since that token.
    *

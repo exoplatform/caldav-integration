@@ -103,6 +103,22 @@ import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
  * that live listing: the same capture plus the collection an MKCALENDAR
  * declaring the component set had just created, as observed live in the
  * browser the same day.</li>
+ * <li>{@code bluemind-propfind-collection-depth1-getetag.captured.xml},
+ * {@code bluemind-propfind-object-depth0-getetag.captured.xml},
+ * {@code bluemind-report-multiget-one-href-getetag.captured.xml},
+ * {@code bluemind-propfind-missing-object-depth0.captured.xml} and
+ * {@code bluemind-report-multiget-missing-href.captured.xml} — captured
+ * live on the rig's BlueMind (2026-09-16) by
+ * {@code dev/golden-capture/capture-bluemind-object-etags.sh}, on object
+ * {@code 51.ics} of the main calendar {@code calendar:Default:751E6D1A-…}
+ * and on a probe href that does not exist: the import door's two ETag
+ * channels (EXO-90307). They replaced the DERIVED fixtures of
+ * the same names, and every shape those fixtures predicted from BlueMind's
+ * source was observed: the raw {@code bmdav_<lnum>_0} on each of the 343
+ * children, the same token at Depth:0 for the same href, the quoted base64
+ * of the multiget, the path-minted 207 on the missing href, the empty
+ * multistatus for the missing multiget. Each file keeps the script's
+ * provenance header and the HTTP headers before the body.</li>
  * <li>{@code bluemind-mkcalendar-207-failing-propstat.xml} and
  * {@code bluemind-propfind-dav-rooted.xml} — RECONSTRUCTED from the browser
  * connector's documented transcripts (caldavConnector.js:2272-2306 and the
@@ -121,6 +137,19 @@ public class HttpCalDavClientServerQuirksTest {
 
   private static final String BLUEMIND_HOME =
                                             "/dav/calendars/__uids__/9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/";
+
+  /** The rig account the F7 captures were taken on (2026-09-16): its main calendar, slash-terminated. */
+  private static final String RIG_MAIN_CALENDAR =
+                                                "/dav/calendars/__uids__/751E6D1A-7FDB-49B2-B668-B569E9A5A42D/calendar:Default:751E6D1A-7FDB-49B2-B668-B569E9A5A42D/";
+
+  /** The one existing object of that calendar the captures address. */
+  private static final String RIG_OBJECT       = RIG_MAIN_CALENDAR + "51.ics";
+
+  /** The href the captures proved absent — the probe the script minted. */
+  private static final String RIG_MISSING      = RIG_MAIN_CALENDAR + "exo-absent-probe-1789544526.ics";
+
+  /** The version the listing and the Depth:0 read both publish for {@code 51.ics}. */
+  private static final String RIG_LISTED_ETAG  = "bmdav_3980966296_0";
 
   @Mock
   private CaldavServerService caldavServerService;
@@ -141,7 +170,7 @@ public class HttpCalDavClientServerQuirksTest {
     lenient().when(caldavServerService.resolveServer(1L))
              .thenReturn(new CaldavServer(1L, "agenda.caldavCalendar", "BlueMind", null, SERVER_URL, true, null, null, null,
                                           null, true, null, null, null,
-                                          null, null, null, "personal"));
+                                          null, null, null, "personal", null, null));
     // The declared URL carries no {username}, so minting never asks the
     // provider for an account — only the requests on this endpoint do.
     endpoint = client.endpoint(1L, USER);
@@ -649,10 +678,169 @@ public class HttpCalDavClientServerQuirksTest {
     return found.get(0);
   }
 
+
   /**
-   * Reads a transcript fixture. For the {@code .http} capture the headers
-   * are part of the record but only the body travels through the client, so
-   * everything up to the first blank line is dropped.
+   * <b>The listing shape the BlueMind import door compares against
+   * (EXO-90307).</b> BlueMind publishes {@code getetag} on a
+   * child {@code .ics} as the raw token {@code bmdav_<lnum>_0}
+   * ({@code GetTag.java:46-56}: "unsupported ressource type", timestamp 0),
+   * unquoted and constant for the object's life, and on the container itself
+   * as the same token carrying its last modification. {@code listResourceEtags}
+   * hands both back verbatim — the container included, because the rule is
+   * "anything with a version", not "anything that is not the collection" —
+   * and that is the value the verification pass adopts into the row, so it is
+   * the value {@code BlueMindImportWriter} must read the precondition from.
+   * Captured on the rig (2026-09-16): 343 children, every one of them a raw
+   * {@code bmdav_<lnum>_0}, all distinct; the container's token carries its
+   * version instead.
+   *
+   * @throws Exception never — the mock declares it
+   */
+  @Test
+  void blueMindListsChildObjectsWithARawConstantGetetag() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-propfind-collection-depth1-getetag.captured.xml"));
+
+    Map<String, String> etags = client.listResourceEtags(endpoint, RIG_MAIN_CALENDAR);
+
+    assertEquals(RIG_LISTED_ETAG, etags.get(RIG_OBJECT));
+    assertEquals("bmdav_4017515208_0", etags.get(RIG_MAIN_CALENDAR + "1fc6abcd-dcaf-433e-ab5b-6cf68bbb0051.ics"));
+    assertEquals("bmdav_4158572241_1911", etags.get(RIG_MAIN_CALENDAR));
+    assertEquals(344, etags.size());
+    List<String> children = etags.keySet().stream().filter(href -> href.endsWith(".ics")).toList();
+    assertEquals(343, children.size());
+    assertTrue(children.stream().allMatch(href -> etags.get(href).matches("bmdav_\\d+_0")),
+               "every child token is the raw constant shape, timestamp 0");
+    assertEquals(343, children.stream().map(etags::get).distinct().count(), "one token per object");
+    HttpRequest request = sent.get(0);
+    assertEquals("PROPFIND", request.method());
+    assertEquals("1", request.headers().firstValue("Depth").orElse(null));
+  }
+
+  /**
+   * <b>The single-object version read of the import door (EXO-90307, review
+   * F7).</b> A {@code Depth: 0} PROPFIND of {@code getetag} on an
+   * {@code .ics} href is answered by BlueMind with one response for that href
+   * and the raw token {@code bmdav_<lnum>_0} — hashed from the request path
+   * ({@code GetTag.java:46-56}, {@code SyncTokens.java:39-47}), so equal to
+   * the Depth:1 listing's for the same object iff the two paths are spelled
+   * alike — which the writer verifies live before trusting it, and which the
+   * rig confirmed on 2026-09-16: the two captures name the same token for
+   * {@code 51.ics}, asserted here across both fixtures.
+   *
+   * @throws Exception never — the mock declares it
+   */
+  @Test
+  void blueMindAnswersADepthZeroGetetagOnAnIcsHrefAsTheListingToken() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-propfind-object-depth0-getetag.captured.xml"));
+
+    String etag = client.readEtag(endpoint, RIG_OBJECT);
+
+    assertEquals(RIG_LISTED_ETAG, etag);
+    HttpRequest request = sent.get(0);
+    assertEquals("PROPFIND", request.method());
+    assertEquals("0", request.headers().firstValue("Depth").orElse(null));
+    assertTrue(request.uri().getRawPath().endsWith("/51.ics"), request.uri().toString());
+    assertTrue(bodyOf(request).contains("<d:getetag/>"), bodyOf(request));
+
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-propfind-collection-depth1-getetag.captured.xml"));
+    assertEquals(etag, client.listResourceEtags(endpoint, RIG_MAIN_CALENDAR).get(RIG_OBJECT),
+                 "the Depth:0 token IS the listing's token for the same href — the spelling hypothesis, observed");
+  }
+
+  /**
+   * <b>Why presence is never read at Depth:0 — observed.</b> BlueMind answers
+   * a Depth:0 PROPFIND on an href that does not exist with 207 and a token
+   * minted from the path ({@code MethodRouter.java:162-175},
+   * {@code DavStore.java:474-502} "assume yes", {@code GetTag.java:46-56}) —
+   * captured on the rig (2026-09-16) on a probe href the script had just
+   * invented. The client hands the token back like any other; not reading
+   * existence into it is the writer's decision.
+   *
+   * @throws Exception never — the mock declares it
+   */
+  @Test
+  void blueMindAnswersADepthZeroOnAMissingHrefWithAPathMintedToken() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-propfind-missing-object-depth0.captured.xml"));
+
+    String etag = client.readEtag(endpoint, RIG_MISSING);
+
+    assertEquals("bmdav_3856992451_0", etag, "a version for an object that does not exist");
+  }
+
+  /**
+   * A server that checks existence answers a Depth:0 on a missing object
+   * with 404, and that is "no version", not a failure — the shape BlueMind
+   * never produces for an {@code .ics} ({@code DavStore.java:474-502},
+   * "assume yes"), which is why the writer establishes presence elsewhere.
+   *
+   * @throws Exception never — the mock declares it
+   */
+  @Test
+  void aDepthZeroOnAMissingObjectAnswersNoVersionWhenTheServerSays404() throws Exception {
+    givenAnswer(404, Map.of(), "");
+
+    assertNull(client.readEtag(endpoint, BLUEMIND_HOME + "calendar:Default:9F3C1A20-4D5E-4B7A-8C61-2E0D7A4B9C13/gone.ics"));
+  }
+
+  /**
+   * <b>The presence read of the import door (EXO-90307).</b> A
+   * one-href {@code calendar-multiget} asking {@code getetag} only: BlueMind
+   * answers one response per item its store returned
+   * ({@code CalendarMultigetExecutor.java:82,114-130}), under the REPORT
+   * channel's version — quoted base64 ({@code :123}), another string than
+   * the listing's raw token, which is why this answer is presence and never
+   * the version recorded. The body asks no {@code calendar-data}: the server
+   * renders no iCalendar for a question about existence.
+   *
+   * @throws Exception never — the mock declares it
+   */
+  @Test
+  void blueMindAnswersAOneHrefMultigetWithOneResponsePerStoredItem() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-report-multiget-one-href-getetag.captured.xml"));
+
+    Map<String, String> etags = client.multigetEtags(endpoint, RIG_MAIN_CALENDAR, List.of(RIG_OBJECT));
+
+    // The base64 of "bmdav_3980966296_1": the listing's lnum for 51.ics at
+    // item version 1 — the REPORT channel's shape, never the recorded one.
+    assertEquals(Map.of(RIG_OBJECT, "\"Ym1kYXZfMzk4MDk2NjI5Nl8x\""), etags);
+    HttpRequest request = sent.get(0);
+    assertEquals("REPORT", request.method());
+    String body = bodyOf(request);
+    assertTrue(body.contains("calendar-multiget"), body);
+    assertTrue(body.contains("<d:href>" + RIG_OBJECT + "</d:href>"), body);
+    assertTrue(body.contains("<d:getetag/>"), body);
+    assertFalse(body.contains("calendar-data"), body);
+  }
+
+  /**
+   * A missing href is answered by BlueMind with an empty multistatus — no
+   * per-href 404 element ({@code CalendarMultigetExecutor.java:114-130}
+   * builds one response per returned item and nothing else) — and the same
+   * empty document is what a failed lookup answers ({@code :83-86}). The
+   * client hands back an empty map; reading absence into it is the writer's
+   * decision, and it declines. Captured on the rig (2026-09-16) for the same
+   * probe href the Depth:0 read minted a token for.
+   *
+   * @throws Exception never — the mock declares it
+   */
+  @Test
+  void blueMindAnswersAnEmptyMultistatusForAMissingHref() throws Exception {
+    givenAnswer(207, Map.of("Content-Type", "application/xml"), fixture("bluemind-report-multiget-missing-href.captured.xml"));
+
+    Map<String, String> etags = client.multigetEtags(endpoint, RIG_MAIN_CALENDAR, List.of(RIG_MISSING));
+
+    assertTrue(etags.isEmpty(), etags.toString());
+    assertTrue(client.multigetEtags(endpoint, RIG_MAIN_CALENDAR, List.of()).isEmpty());
+    assertEquals(1, sent.size(), "an empty question is not sent");
+  }
+
+  /**
+   * Reads a transcript fixture. For the {@code .http} captures and the
+   * {@code .captured.xml} ones the capture scripts write — provenance
+   * comments, then the HTTP status line and headers, then a blank line, then
+   * the body — the headers are part of the record but only the body travels
+   * through the client, so everything up to the first blank line is dropped,
+   * and so are the separator newlines the script prints before the body.
    *
    * @param name the fixture file name
    * @return the fixture's body text
@@ -661,13 +849,13 @@ public class HttpCalDavClientServerQuirksTest {
   private String fixture(String name) throws IOException {
     try (InputStream stream = getClass().getClassLoader().getResourceAsStream("caldav/transcripts/" + name)) {
       String content = new String(stream.readAllBytes(), StandardCharsets.UTF_8);
-      if (name.endsWith(".http")) {
+      if (name.endsWith(".http") || name.endsWith(".captured.xml")) {
         int split = content.indexOf("\r\n\r\n");
         if (split < 0) {
           split = content.indexOf("\n\n");
-          return split < 0 ? content : content.substring(split + 2);
+          return split < 0 ? content : content.substring(split + 2).stripLeading();
         }
-        return content.substring(split + 4);
+        return content.substring(split + 4).stripLeading();
       }
       return content;
     }

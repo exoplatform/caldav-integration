@@ -18,17 +18,29 @@ package org.exoplatform.caldav.service;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
+import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.model.MirrorTargetKind;
+import org.exoplatform.caldav.model.WriteChannel;
+import org.exoplatform.caldav.model.ServerQuirk;
+import org.exoplatform.caldav.model.ServerQuirkDirection;
+import org.exoplatform.caldav.model.ServerQuirkEffect;
+import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.caldav.utils.CopySettingsFingerprint;
@@ -44,6 +56,9 @@ import org.exoplatform.container.PortalContainer;
 import org.exoplatform.container.RootContainer.PortalContainerPostCreateTask;
 import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.portal.config.UserACL;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorProviderConfigStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.services.security.Identity;
@@ -133,11 +148,84 @@ public class CaldavServerService {
    */
   public static final String       DEFAULT_BLUEMIND_URL          = "https://caldav.example.invalid/dav/";
 
+  /**
+   * The catalogue entries the seeded BlueMind row arrives excused for: the
+   * behaviours a live account was characterised with across EXO-89716 to
+   * EXO-89828, and the same four the browser's BlueMind preset ticks on a
+   * declaration ({@code serverPresets.js}).
+   *
+   * <p>
+   * <b>The two lists are the same list, and that is a constraint rather than
+   * a coincidence.</b> A preset also carries a <i>summary sentence</i> naming
+   * exactly what it ticks — {@code caldav.admin.servers.preset.bluemind.summary}
+   * — so widening the preset is a product-copy change and not only a list
+   * edit. Nothing mechanical ties a Java enum to a JS map, and no test compares
+   * the two: {@code CaldavServerServiceTest} pins this side's whole string, and
+   * a change to either list must be made to the other by hand. An administrator
+   * would otherwise meet a drawer-declared row and a seeded row disagreeing
+   * about the same server.
+   *
+   * <p>
+   * <b>Why the seed names them at all.</b> The preset is offered on a
+   * declaration only — editing a row is not the moment to overwrite what
+   * somebody decided about it — so the one BlueMind registration eXo ships
+   * was the one registration that could never carry the BlueMind preset. On
+   * a rig connected to a real account that cost every stored object: BlueMind
+   * adds {@code X-ALT-DESC} to each copy eXo writes, the sweep read each as
+   * altered, repaired it three times and then abandoned it.
+   *
+   * <p>
+   * <b>Why the entries and not their patterns.</b> The catalogue is where a
+   * behaviour has its patterns, its direction and its sentence; naming the
+   * entry here means the seed writes exactly what a tick of that box writes,
+   * and a pattern the catalogue later widens (one more {@code X-} family under
+   * {@link ServerQuirk#ADDS_COMPATIBILITY_MARKERS}, say) reaches the next
+   * fresh install without a second spelling to keep in step. The list is what
+   * {@link #seedExcusals(ServerQuirkDirection)} reads.
+   *
+   * <p>
+   * <b>How far that reaches, exactly.</b> A widened pattern reaches this seed
+   * and the drawer's own check-boxes, both of which read the catalogue's
+   * {@link ServerQuirk#getPatterns()} — the drawer over REST. It does
+   * <b>not</b> reach the browser's BlueMind preset: {@code serverPresets.js}
+   * carries its own hardcoded {@code QUIRKS} map of the same ids to the same
+   * patterns, because the ids cross a language boundary with no mechanism to
+   * share them. So a widened family is spelled in two places, not one, and
+   * this constant is the single source of truth for the <i>Java</i> side only.
+   * Generating the catalogue as a JS resource would close it and is more
+   * machinery than three constants justify; what must not happen is the JS
+   * quietly falling behind, so {@code QUIRKS} carries the reciprocal note.
+   *
+   * <p>
+   * <b>Fresh installs only, like everything the seeding does.</b> A row
+   * already declared keeps what was copied into it on the day it was
+   * declared, whatever this list says now — that is the design the preset
+   * states for itself, and a seed that repaired existing rows behind an
+   * administrator's back would break it from the other side.
+   */
+  static final List<ServerQuirk>   BLUEMIND_SEED_QUIRKS          = List.of(ServerQuirk.DROPS_CONFERENCE,
+                                                                             ServerQuirk.ADDS_COMPATIBILITY_MARKERS,
+                                                                             ServerQuirk.ADDS_FORMATTED_DESCRIPTION,
+                                                                             ServerQuirk.STAMPS_DEFAULT_PRIORITY);
+
   private static final String      SERVER_MANDATORY_MESSAGE      = "caldav.server.mandatory";
 
   private static final String      SERVER_NAME_MANDATORY_MESSAGE = "caldav.server.nameMandatory";
 
   private static final String      SERVER_URL_MANDATORY_MESSAGE  = "caldav.server.urlMandatory";
+
+  /** A save that moves a registration to a credentials provider nothing registers. */
+  static final String              AUTH_PROVIDER_UNKNOWN_MESSAGE = "caldav.server.authProviderUnknown";
+
+  /**
+   * The refusal of a write channel the server behind the registration cannot
+   * speak (EXO-90307): {@code BLUEMIND_IMPORT} calls BlueMind's own REST
+   * endpoints and is offered to a BlueMind registration only.
+   */
+  public static final String       WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE = "caldav.server.writeChannelNotSupported";
+
+  /** What a registration's name carries when it stands for a BlueMind server. */
+  static final String              BLUEMIND_NAME_MARKER          = "bluemind";
 
   private static final Log         LOG                           = ExoLogger.getLogger(CaldavServerService.class);
 
@@ -165,6 +253,17 @@ public class CaldavServerService {
   @Autowired
   private AgendaRemoteEventService agendaRemoteEventService;
 
+  // required = false, the same reason CaldavRelayService guards its own resolver: the
+  // storage is a bean of another WAR, so it is undefined in this addon's Spring test
+  // contexts.
+  @Autowired(required = false)
+  private ConnectorProviderConfigStorage providerConfigStorage;
+
+  // required = false for the same reason: the resolver needs the credentials service of
+  // another WAR.
+  @Autowired(required = false)
+  private CaldavCredentialsResolver      caldavCredentialsResolver;
+
   @Autowired
   private SettingService           settingService;
 
@@ -173,6 +272,24 @@ public class CaldavServerService {
 
   @Autowired
   private PortalContainer         portalContainer;
+
+  /**
+   * How long a deployment stays on a server's list after the last time a copy
+   * of its was read there.
+   *
+   * <p>
+   * A month, the same window {@code quirkRetentionDays} holds a behaviour for,
+   * and for the same reason: the entry answers "is another deployment writing
+   * here", and one nothing has seen for a month is not a thing to act on today.
+   * It is also what lets the section empty itself — an administrator who moved
+   * one of the two deployments to its own account, and removed the copies the
+   * other left behind, gets their drawer back without having to clear anything.
+   * Long enough that a quiet fortnight does not erase a live finding: the
+   * sweep reads every account every few minutes, so a condition that still
+   * holds is re-seen the same day.
+   */
+  @Value("${exo.agenda.caldav.mirror.foreignWriterRetentionDays:30}")
+  private long                        foreignWriterRetentionDays;
 
   /**
    * Defers the seeding of the registry to the portal container's post-create
@@ -213,7 +330,28 @@ public class CaldavServerService {
    * the legacy property when set, else the literal default, and its
    * activation from the legacy enabled property (historically enabled).</li>
    * <li><b>Bluemind</b>, a normally-named row whose agenda remote provider is
-   * upserted here, since no kernel plugin declares it.</li>
+   * upserted here, since no kernel plugin declares it — and which arrives
+   * excused for what BlueMind is known to do to a copy, see
+   * {@link #BLUEMIND_SEED_QUIRKS}, and pointed at the account's <b>main</b>
+   * calendar, which is where the browser preset points it too.
+   * <p>
+   * The destination is seeded rather than left at the model's default because
+   * on THIS server the default has an established cost: BlueMind's dedicated
+   * calendar is excluded from the account's free/busy — colleagues booking
+   * around the user see eXo meeting times as free — and it carries no answer
+   * buttons. The general caution on the option ("only once copies synchronise
+   * cleanly") is right and stays where it is; it simply does not weigh what is
+   * already known about this one server, which is the same judgement
+   * {@code serverPresets.js} makes for the drawer. A seed that disagreed with
+   * the preset an administrator is about to apply to the very same row would
+   * be teaching two answers to one question.
+   * <p>
+   * {@code answerLinksInCopy} is stated rather than defaulted — the model is
+   * built positionally through its all-arguments constructor, so the field
+   * initialiser is overwritten whatever the seed passes, and the seed passes
+   * {@code true}. It happens to be the model's own default and the preset's
+   * value too, so the three agree; it is simply stated twice rather than
+   * once.</li>
    * </ul>
    *
    * <p>
@@ -274,7 +412,7 @@ public class CaldavServerService {
         && !StringUtils.equalsIgnoreCase(System.getProperty(CALDAV_ENABLED_PROPERTY), "false");
     caldavServerStorage.createSeedServer(new CaldavServer(0, null, STALWART_SERVER_NAME, null, stalwartUrl, stalwartActive, null, null,
                                                           null, null, true, null, null, null, null, null,
-                                                          MirrorTargetKind.DEDICATED_CALENDAR, null),
+                                                          MirrorTargetKind.DEDICATED_CALENDAR, null, null, WriteChannel.CALDAV),
                                          CALDAV_PROVIDER_NAME);
     // The kernel plugin only CREATES the provider when missing — an existing
     // one keeps whatever enabled state it holds (an admin may have disabled
@@ -283,16 +421,107 @@ public class CaldavServerService {
     // fresh install both writes carry the same property-driven value.
     saveAgendaRemoteProvider(new CaldavServer(0, CALDAV_PROVIDER_NAME, STALWART_SERVER_NAME, null, stalwartUrl, stalwartActive, null,
                                               null, null, null, true, null, null, null, null, null,
-                                              MirrorTargetKind.DEDICATED_CALENDAR, null));
+                                              MirrorTargetKind.DEDICATED_CALENDAR, null, null, WriteChannel.CALDAV));
     LOG.info("Seeded the Stalwart CalDAV server ({}), active: {}", stalwartUrl, stalwartActive);
     boolean bluemindActive = isDeclarableSeedAddress(BLUEMIND_SERVER_NAME, DEFAULT_BLUEMIND_URL);
     CaldavServer bluemind = caldavServerStorage.createServer(new CaldavServer(0, null, BLUEMIND_SERVER_NAME, null, DEFAULT_BLUEMIND_URL,
-                                                                              bluemindActive, null, null, null, null, true, null,
-                                                                              null, null, null, null,
-                                                                              MirrorTargetKind.DEDICATED_CALENDAR, null),
+                                                                              bluemindActive, null, null, null, null, true,
+                                                                              seedExcusals(ServerQuirkDirection.ADDED),
+                                                                              seedExcusals(ServerQuirkDirection.DROPPED),
+                                                                              null, null, null,
+                                                                              MirrorTargetKind.MAIN_CALENDAR, null, null, WriteChannel.BLUEMIND_IMPORT),
                                                              CALDAV_PROVIDER_NAME);
     saveAgendaRemoteProvider(bluemind);
     LOG.info("Seeded the Bluemind CalDAV server ({}), active: {}", DEFAULT_BLUEMIND_URL, bluemindActive);
+  }
+
+  /**
+   * The stored list one of the seeded BlueMind row's tolerance columns
+   * receives: the patterns of every entry of {@link #BLUEMIND_SEED_QUIRKS}
+   * pointing in one direction, joined the way a tick in the drawer joins them.
+   *
+   * <p>
+   * Which column an entry belongs in is the entry's own declaration, read the
+   * way {@code CaldavServerQuirkService} reads it: an entry that changes what
+   * eXo writes ({@link ServerQuirkEffect#OMIT}) belongs in neither tolerance
+   * list, an added property in the ignored list, a dropped or rewritten one
+   * in the dropped list. Deciding it here from the direction rather than
+   * spelling the two lists out is what keeps a seed entry from ever being
+   * filed under the wrong column.
+   *
+   * <p>
+   * <b>"Neither tolerance list" means written nowhere — do not add an
+   * {@code OMIT} entry to {@link #BLUEMIND_SEED_QUIRKS} without extending this
+   * method.</b> The seed asks for the two tolerance columns and passes
+   * {@code null} for {@code omittedProperties}, so an {@code OMIT} entry would
+   * be dropped by the filter above with nothing routing it to a third column:
+   * the constant would name a behaviour the seed does not write, with no
+   * compile error and no test failure. The browser path does not behave this
+   * way — {@code serverPresets.js} walks {@code QUIRKS[quirkId].list} and
+   * {@code omitsSoloOrganizer} maps to the omitted list, so a preset naming it
+   * writes it. The gap is held shut by
+   * {@code CaldavServerServiceTest#shouldSeedNoEntryThatWouldBeWrittenNowhere},
+   * which fails the moment such an entry is added.
+   *
+   * <p>
+   * The separator is the comma {@link ServerQuirk#listMatches(String, String)}
+   * splits on and {@code serverQuirks.js} joins with, so the row reads back
+   * exactly as one an administrator ticked.
+   *
+   * @param column which of the two tolerance columns is being filled, named by
+   *          the direction that files an entry into it — {@code ADDED} for the
+   *          ignored list, {@code DROPPED} for the dropped one. Only those two
+   *          are columns; {@code REWRITTEN} names no column of its own, which
+   *          is what {@link #toleranceColumn(ServerQuirkDirection)} says.
+   * @return the comma-joined patterns, empty when no seed entry belongs in
+   *         that column — never null, since null means "this server has never
+   *         been asked" and falls back to the deployment-wide property, while
+   *         an empty string is this row's own "excuse nothing here" and blocks
+   *         that fallback. Both readers agree on it:
+   *         {@code ServerExcusals.of} keeps a non-null server value whatever
+   *         it holds and {@code ServerQuirk.listMatches} matches nothing in a
+   *         blank one, and {@code CaldavServerQuirkService.effective} takes
+   *         the same branch. <b>Stated with one limit</b>: that contract lives
+   *         in the Java readers, not in the column. An RDBMS that folds an
+   *         empty string into NULL on write — Oracle does exactly that for
+   *         {@code VARCHAR2}/{@code NVARCHAR2} — would read the row back as
+   *         "never asked" and silently restore the global fallback. Untested
+   *         here, and moot for this seed, whose two columns both carry
+   *         patterns; it bites the row an administrator empties by unticking
+   *         the last box, and the {@code ''} {@code serverPresets.js} writes
+   *         for Stalwart. Worth one round-trip check on Oracle before the
+   *         empty string is relied on as an answer.
+   */
+  private static String seedExcusals(ServerQuirkDirection column) {
+    return BLUEMIND_SEED_QUIRKS.stream()
+                               .filter(quirk -> quirk.getEffect() == ServerQuirkEffect.TOLERATE)
+                               .filter(quirk -> toleranceColumn(quirk.getDirection()) == column)
+                               .flatMap(quirk -> quirk.getPatterns().stream())
+                               .collect(Collectors.joining(","));
+  }
+
+  /**
+   * Which tolerance column an entry's direction files it under, written as the
+   * same switch {@code CaldavServerQuirkService.listFor} uses, so the two
+   * cannot drift.
+   *
+   * <p>
+   * There are three directions and two columns, and spelling the collapse out
+   * is the point: {@code REWRITTEN} shares the dropped list with
+   * {@code DROPPED} — the invitation text BlueMind rewrites is excused by the
+   * same column as the conference link it drops. Testing
+   * {@code direction == ADDED} would compute the same answer while reading as
+   * though a {@code REWRITTEN} column existed somewhere.
+   *
+   * @param direction the direction an entry declares
+   * @return {@code ADDED} for the ignored column, {@code DROPPED} for the
+   *         dropped one — never {@code REWRITTEN}
+   */
+  private static ServerQuirkDirection toleranceColumn(ServerQuirkDirection direction) {
+    return switch (direction) {
+      case ADDED -> ServerQuirkDirection.ADDED;
+      case DROPPED, REWRITTEN -> ServerQuirkDirection.DROPPED;
+    };
   }
 
   /**
@@ -361,6 +590,269 @@ public class CaldavServerService {
   }
 
   /**
+   * Which other eXo deployments have been seen writing meeting copies into this
+   * server's accounts (EXO-89824) — what the administration drawer shows under
+   * the behaviours this server has been seen having.
+   *
+   * @param serverId technical identifier of the registration
+   * @param username the user asking
+   * @return the deployments seen writing here, most recently seen first, empty
+   *         when none has been
+   * @throws IllegalAccessException when the user may not administer servers
+   */
+  public List<ForeignWriter> getForeignWriters(long serverId, String username) throws IllegalAccessException {
+    checkCanEdit(username);
+    return caldavServerStorage.getForeignWriters(serverId,
+                                                 LocalDate.now(ZoneOffset.UTC).toEpochDay(),
+                                                 foreignWriterRetentionDays);
+  }
+
+  /**
+   * Records that another eXo deployment was seen writing a meeting copy into an
+   * account on this server.
+   *
+   * <p>
+   * <b>Called from the inbound pass, and never allowed to matter to it.</b>
+   * Nothing is imported, skipped, removed or repaired differently on the
+   * strength of this record: what to do with a foreign copy is a product
+   * decision nobody has taken, and the wrong one destroys real calendar
+   * entries. It is written so that an administrator opening the drawer can see
+   * what until now existed only as a line in {@code platform.log}.
+   *
+   * @param serverId technical identifier of the registration the copy was read
+   *          from
+   * @param authority how the other deployment names itself in the copies it
+   *          writes — host and port, as {@code CaldavInboundService} read it
+   *          off the copy's event link
+   */
+  public void recordForeignWriter(long serverId, String authority) {
+    caldavServerStorage.mergeForeignWriter(serverId,
+                                           authority,
+                                           LocalDate.now(ZoneOffset.UTC).toEpochDay(),
+                                           foreignWriterRetentionDays);
+  }
+
+  /**
+   * The provider configuration of a registration, as an administration screen may see
+   * it: every field except the secret ones, which are never read back on this path.
+   *
+   * @param serverId the registration whose configuration is read
+   * @param username the user asking, checked against the administration ACL - reading a
+   *          technical account is an administration act
+   * @return the stored values without any secret, empty when nothing is stored or when
+   *         the storage is not deployed
+   * @throws IllegalAccessException when the user is not a platform administrator
+   * @throws ObjectNotFoundException when no registration carries that id
+   */
+  public Map<String, String> getProviderConfig(long serverId, String username) throws IllegalAccessException,
+                                                                                ObjectNotFoundException {
+    checkCanEdit(username);
+    CaldavServer stored = caldavServerStorage.getServerById(serverId);
+    if (stored == null) {
+      throw new ObjectNotFoundException("CalDAV server with id " + serverId + " doesn't exist");
+    }
+    if (providerConfigStorage == null || StringUtils.isBlank(stored.getAuthProviderName())) {
+      return Map.of();
+    }
+    return providerConfigStorage.readWithoutSecrets(providerConfigContext(serverId, stored.getAuthProviderName()));
+  }
+
+
+  /**
+   * Whether a registration stands for a BlueMind server: its name carries
+   * {@value #BLUEMIND_NAME_MARKER}, which is what the shipped seed row
+   * ({@link #BLUEMIND_SERVER_NAME}) and the administrator drawer's BlueMind
+   * preset both write.
+   *
+   * <p>
+   * The name, because nothing else on the row says which product it is: a
+   * preset is a copy, never a link (the drawer's {@code serverPresets.js}
+   * states why), so no preset identifier is stored; the provider name is the
+   * agenda bridge's, not the product's; and the sharing mechanism is a runtime
+   * capability read from the server, not a stored fact a save can be judged
+   * by. An administrator who renames a BlueMind registration to something
+   * else therefore also gives up its BlueMind-only choices — and is told so by
+   * the refusal below rather than by a silent reset.
+   *
+   * @param server the registration, may be null
+   * @return true when its name says BlueMind
+   */
+  static boolean isBlueMind(CaldavServer server) {
+    return server != null && StringUtils.containsIgnoreCase(server.getName(), BLUEMIND_NAME_MARKER);
+  }
+
+  /**
+   * Refuses the BlueMind import channel on a registration that is not
+   * BlueMind's (EXO-90307): the import door only speaks BlueMind's REST
+   * endpoints, so on any other server every write through it would fail, and
+   * the drawer's radio exists to be BlueMind's kill-switch, not a choice for
+   * everybody. The drawer already hides the radio elsewhere; this is the
+   * guard the UI is not.
+   *
+   * <p>
+   * Two shapes of payload, two answers. A payload that <b>states</b>
+   * {@code BLUEMIND_IMPORT} for a non-BlueMind name is refused with
+   * {@value #WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE}: the administrator asked
+   * for something this server cannot do, and a 400 they can read beats a row
+   * silently written otherwise. A payload that states <b>nothing</b> — a
+   * drawer that does not carry the control — while the stored row is on the
+   * import channel and the name no longer says BlueMind is reset to CalDAV
+   * rather than refused: nobody asked for the impossible, the storage would
+   * otherwise keep a channel the server cannot speak, and CalDAV is what the
+   * drawer sends explicitly for every non-BlueMind server, so both paths end
+   * on the same value.
+   *
+   * @param server the registration as posted
+   * @param stored the registration as stored, or null on a declaration
+   * @throws IllegalArgumentException carrying the message code when the
+   *           channel is stated and the server cannot speak it
+   */
+  private void checkWriteChannel(CaldavServer server, CaldavServer stored) {
+    if (isBlueMind(server)) {
+      return;
+    }
+    if (server.getWriteChannel() == WriteChannel.BLUEMIND_IMPORT) {
+      throw new IllegalArgumentException(WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE);
+    }
+    if (server.getWriteChannel() == null && stored != null && stored.getWriteChannel() == WriteChannel.BLUEMIND_IMPORT) {
+      LOG.info("CalDAV server {} is no longer declared as BlueMind; its copies go back through CalDAV", server.getId());
+      server.setWriteChannel(WriteChannel.CALDAV);
+    }
+  }
+
+  /**
+   * Checks the posted configuration against its provider's descriptor, without writing.
+   * <p>
+   * Before the insert, not after: a setting key carries the registration id, so the
+   * configuration can only be written once the row exists - and a refusal then would
+   * leave a registration declared with nothing configured, which an administrator
+   * answers by declaring a second one.
+   *
+   * <p>
+   * A save that names a provider the registration is not on yet is checked even when it
+   * carries no configuration: the row would otherwise move to a provider whose required
+   * fields nothing holds. A save that keeps the provider and carries nothing - a rename,
+   * an icon - writes no configuration and is not checked.
+   *
+   * <p>
+   * A provider the save moves to must be registered: a name nothing registers has no
+   * descriptor, so its configuration would pass as one that asks for nothing, and the
+   * registration would then authenticate as nobody.
+   *
+   * @param server the registration as posted
+   * @param stored the registration as stored, null on a creation
+   * @throws IllegalArgumentException carrying the storage's message code on a refusal,
+   *           or {@value #AUTH_PROVIDER_UNKNOWN_MESSAGE} for a provider nothing registers
+   */
+  private void validateProviderConfig(CaldavServer server, CaldavServer stored) {
+    if (isProviderChange(stored, server) && caldavCredentialsResolver != null
+        && !caldavCredentialsResolver.knowsProvider(server.getAuthProviderName())) {
+      throw new IllegalArgumentException(AUTH_PROVIDER_UNKNOWN_MESSAGE);
+    }
+    if (providerConfigStorage == null
+        || (MapUtils.isEmpty(server.getProviderConfig()) && !isProviderChange(stored, server))) {
+      return;
+    }
+    try {
+      providerConfigStorage.validate(providerConfigContext(server.getId(), server.getAuthProviderName()),
+                                     MapUtils.emptyIfNull(server.getProviderConfig()));
+    } catch (ConnectorCredentialsException e) {
+      logProviderConfigRefusal(server, e);
+      throw new IllegalArgumentException(e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Whether the save moves the registration to another provider. A blank posted provider
+   * keeps the stored one, as the storage does.
+   *
+   * @param stored the registration as stored, null on a creation
+   * @param server the registration as posted
+   * @return true when the posted provider is named and is not the stored one
+   */
+  private boolean isProviderChange(CaldavServer stored, CaldavServer server) {
+    return StringUtils.isNotBlank(server.getAuthProviderName())
+        && (stored == null || !StringUtils.equals(stored.getAuthProviderName(), server.getAuthProviderName()));
+  }
+
+  /**
+   * Writes the provider configuration an administrator just posted, under the
+   * registration it belongs to.
+   *
+   * @param server the registration as stored, for its id and provider name
+   * @param values what the drawer posted, possibly null
+   * @throws IllegalArgumentException carrying the storage's message code on a refusal
+   */
+  private void storeProviderConfig(CaldavServer server, Map<String, String> values) {
+    if (providerConfigStorage == null || MapUtils.isEmpty(values)) {
+      return;
+    }
+    try {
+      providerConfigStorage.store(providerConfigContext(server.getId(), server.getAuthProviderName()), values);
+    } catch (ConnectorCredentialsException e) {
+      logProviderConfigRefusal(server, e);
+      throw new IllegalArgumentException(e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Removes the configuration of the provider a registration is being moved away from.
+   * <p>
+   * Left alone it would stay under its own key: invisible in every screen, yet a
+   * technical login and secret still stored, and back in use the day someone selects
+   * that provider again.
+   *
+   * @param previous the registration as it was stored, possibly null
+   * @param server the registration as posted
+   */
+  private void discardConfigOfProviderBeingLeft(CaldavServer previous, CaldavServer server) {
+    if (providerConfigStorage == null || previous == null) {
+      return;
+    }
+    String previousProvider = previous.getAuthProviderName();
+    String newProvider = StringUtils.defaultIfBlank(server.getAuthProviderName(), previousProvider);
+    if (StringUtils.isNotBlank(previousProvider) && !StringUtils.equals(previousProvider, newProvider)) {
+      providerConfigStorage.delete(providerConfigContext(previous.getId(), previousProvider));
+    }
+  }
+
+  /**
+   * Says what was refused, and enough to act on it.
+   * <p>
+   * Logged because the refusal reaches the browser as a bare 400 whose message code
+   * the error body does not carry, which left an administrator - and whoever reads the
+   * server afterwards - with nothing at all to go on. The keys are named, never the
+   * values: one of them is a password.
+   *
+   * @param server the registration whose configuration was refused
+   * @param e the refusal, carrying its message code
+   */
+  private void logProviderConfigRefusal(CaldavServer server, ConnectorCredentialsException e) {
+    LOG.warn("Provider configuration refused for CalDAV server {} on provider '{}': {} (submitted keys: {})",
+             server.getId(),
+             server.getAuthProviderName(),
+             e.getMessage(),
+             server.getProviderConfig() == null ? "none" : server.getProviderConfig().keySet());
+  }
+
+  /**
+   * The context a configuration is stored under. No username - a registration's
+   * configuration is not a user's - and no channel: one configuration serves every
+   * channel the registration speaks.
+   *
+   * @param serverId the registration the configuration belongs to
+   * @param providerName the provider whose descriptor the values answer
+   * @return the context to hand to the storage
+   */
+  private ConnectorCredentialsContext providerConfigContext(long serverId, String providerName) {
+    return new ConnectorCredentialsContext(serverId,
+                                           providerName,
+                                           null,
+                                           null,
+                                           CaldavCredentialsResolver.CONNECTOR_KIND);
+  }
+
+  /**
    * Declares a new CalDAV server. The provider name is derived from the row
    * id ({@code agenda.caldavCalendar.<id>}), then the matching agenda remote
    * provider is upserted under that name — which is all agenda needs: its
@@ -376,7 +868,10 @@ public class CaldavServerService {
   public CaldavServer createServer(CaldavServer server, String username) throws IllegalAccessException {
     checkCanEdit(username);
     validate(server);
+    checkWriteChannel(server, null);
+    validateProviderConfig(server, null);
     CaldavServer createdServer = caldavServerStorage.createServer(server, CALDAV_PROVIDER_NAME);
+    storeProviderConfig(createdServer, server.getProviderConfig());
     saveAgendaRemoteProvider(createdServer);
     return caldavServerQuirkService.decorate(createdServer);
   }
@@ -411,14 +906,31 @@ public class CaldavServerService {
     // (see setServerActive), so a row cannot be parked and switched on later.
     validateWithoutAddress(server);
     CaldavServer stored = server.getId() > 0 ? caldavServerStorage.getServerById(server.getId()) : null;
-    if (stored == null || !StringUtils.equals(stored.getServerUrl(), server.getServerUrl())) {
+    if (stored == null) {
+      throw new ObjectNotFoundException("CalDAV server with id " + server.getId() + " doesn't exist");
+    }
+    if (!StringUtils.equals(stored.getServerUrl(), server.getServerUrl())) {
       caldavServerUrlValidator.validate(server.getServerUrl());
     }
+    checkWriteChannel(server, stored);
+    // A body that states no channel keeps the stored one, and says so before the stamp is
+    // taken: fingerprinted as null, it would move the stamp and send every mirror of the
+    // server through a settings round that changes nothing.
+    if (server.getWriteChannel() == null && stored != null) {
+      server.setWriteChannel(stored.getWriteChannel());
+    }
     stampCopySettings(server);
+    // Before the row is written, for the reason the create path already carries: the
+    // registration and its configuration are two writes, and a refusal on the second
+    // would otherwise leave the row on a provider whose configuration was never
+    // stored - an authentication nothing can perform, that no screen shows as broken.
+    validateProviderConfig(server, stored);
     CaldavServer updatedServer = caldavServerStorage.updateServer(server);
     if (updatedServer == null) {
       throw new ObjectNotFoundException("CalDAV server with id " + server.getId() + " doesn't exist");
     }
+    discardConfigOfProviderBeingLeft(stored, server);
+    storeProviderConfig(updatedServer, server.getProviderConfig());
     saveAgendaRemoteProvider(updatedServer);
     return caldavServerQuirkService.decorate(updatedServer);
   }
@@ -517,7 +1029,16 @@ public class CaldavServerService {
     saveAgendaRemoteProvider(new CaldavServer(server.getId(), server.getProviderName(), server.getName(),
                                               server.getDescription(), server.getServerUrl(), false, null, null, null, null,
                                               server.isAnswerLinksInCopy(), null, null, null, null,
-                                              server.getCopySettingsUpdated(), server.getMirrorTarget(), null));
+                                              server.getCopySettingsUpdated(), server.getMirrorTarget(), null, null,
+                                              server.getWriteChannel()));
+    // The configuration first, the row second. The two writes share no transaction - the
+    // row goes through JPA, the settings through the kernel's own RequestLifeCycle - so
+    // the order is the guarantee: a failure here leaves the registration, which an
+    // administrator sees and retries. The other way round it would leave a technical
+    // secret with no server to reach it from.
+    if (providerConfigStorage != null && StringUtils.isNotBlank(server.getAuthProviderName())) {
+      providerConfigStorage.delete(providerConfigContext(serverId, server.getAuthProviderName()));
+    }
     caldavServerStorage.deleteServer(serverId);
     caldavServerQuirkService.forget(serverId);
   }

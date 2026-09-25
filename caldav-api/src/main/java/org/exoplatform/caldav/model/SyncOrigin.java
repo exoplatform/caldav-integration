@@ -25,10 +25,15 @@ package org.exoplatform.caldav.model;
 public enum SyncOrigin {
 
   /**
-   * eXo created the remote collection from a local personal calendar. The
-   * inbound sweep must skip these: they are already represented locally, and
-   * materialising them again would create a second eXo calendar, which the
-   * outbound half would then push as a third collection, and so on.
+   * eXo created the remote collection from a local personal calendar.
+   * <b>Materialisation</b> must skip these: they are already represented
+   * locally, and materialising one again would create a second eXo calendar,
+   * which the outbound half would then push as a third collection, and so on.
+   * The inbound sweep, on the other hand, reads events out of them like any
+   * other calendar binding — it excludes the mirror ledger alone
+   * ({@code CaldavSyncService.importRemoteEvents}), because to the user this is
+   * simply a calendar of theirs, and an edit made on a phone in it belongs in
+   * eXo whichever side minted the collection.
    */
   EXO,
 

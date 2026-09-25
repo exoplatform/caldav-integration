@@ -20,6 +20,7 @@ package org.exoplatform.caldav.rest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -52,6 +53,9 @@ import org.exoplatform.caldav.model.CaldavSyncTuning;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+
+import java.util.Map;
 
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -354,7 +358,7 @@ public class CaldavServerRestTest {
   private static CaldavServer server(long id, String providerName, String name, String description, String serverUrl,
                                      boolean active) {
     return new CaldavServer(id, providerName, name, description, serverUrl, active, null, null, null, null, true, null,
-                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null);
+                            null, null, null, null, MirrorTargetKind.DEDICATED_CALENDAR, null, null, null);
   }
 
   /**
@@ -511,4 +515,57 @@ public class CaldavServerRestTest {
     assertEquals("caldav.managed.serverInUse", refused.getReason());
   }
 
+
+  /**
+   * The endpoint the drawer reads its provider fields back from - it relays what the
+   * service hands it, which is everything but the secret.
+   */
+  @Test
+  public void shouldRelayTheProviderConfiguration() throws Exception {
+    when(request.getRemoteUser()).thenReturn("root");
+    when(caldavServerService.getProviderConfig(7, "root")).thenReturn(Map.of("technicalLogin", "svc"));
+
+    assertEquals(Map.of("technicalLogin", "svc"), caldavServerRest.getProviderConfig(request, 7));
+  }
+
+  /** A refusal by the service is a 403 here, as on every other write of this resource. */
+  @Test
+  public void shouldAnswer403OnProviderConfigOfNonAdministrator() throws Exception {
+    when(request.getRemoteUser()).thenReturn("mary");
+    doThrow(new IllegalAccessException()).when(caldavServerService).getProviderConfig(7, "mary");
+
+    ResponseStatusException refusal = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavServerRest.getProviderConfig(request, 7));
+
+    assertEquals(HttpStatus.FORBIDDEN, refusal.getStatusCode());
+  }
+
+  /** An unknown registration is a 404, as on every other path of this resource. */
+  @Test
+  public void shouldAnswer404OnProviderConfigOfUnknownServer() throws Exception {
+    when(request.getRemoteUser()).thenReturn("root");
+    doThrow(new ObjectNotFoundException("unknown")).when(caldavServerService).getProviderConfig(7, "root");
+
+    ResponseStatusException refusal = assertThrows(ResponseStatusException.class,
+                                                   () -> caldavServerRest.getProviderConfig(request, 7));
+
+    assertEquals(HttpStatus.NOT_FOUND, refusal.getStatusCode());
+  }
+
+  /**
+   * A body that does not carry the write channel reads it as not stated, so the
+   * storage leaves the stored channel alone. With a default on the field, the
+   * no-args constructor Jackson builds a body through would turn every such
+   * save into an explicit CalDAV and move a BlueMind server back onto the door
+   * that makes BlueMind schedule every meeting.
+   */
+  @Test
+  public void aBodyWithoutTheWriteChannelDoesNotStateOne() throws Exception {
+    CaldavServer body = JsonMapper.builder()
+                                  .build()
+                                  .readValue("{\"id\":7,\"name\":\"BlueMind\",\"serverUrl\":\"https://bm.example.test/dav/\"}",
+                                             CaldavServer.class);
+
+    assertNull(body.getWriteChannel());
+  }
 }

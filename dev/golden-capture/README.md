@@ -44,3 +44,38 @@ dev/golden-capture/capture-bluemind.sh
 
 Review the produced files before committing them: credentials are scrubbed,
 but your own login may appear inside hrefs.
+
+## capture-bluemind-object-etags.sh — BlueMind, the import door's ETag channels (run it yourself)
+
+Same prompts and the same scrubbing as `capture-bluemind.sh`. On **one
+existing object of the main calendar** it records five scrubbed transcripts
+into `caldav-services/src/test/resources/caldav/transcripts/`: the Depth:1
+`getetag` listing of the collection, a Depth:0 `getetag` PROPFIND on the
+object's href, a one-href `calendar-multiget` (getetag only), and the same
+Depth:0 + multiget on a **non-existent** href. All probes are reads; the
+missing-object probes address an href that does not exist and create
+nothing. Together they settle the two halves of the hypothesis the
+import door verifies live (`BlueMindImportWriter`): whether the Depth:0 token
+equals the listing's for the same object (the spelling hypothesis), and
+whether a Depth:0 on a missing object answers 404 or a node minted from the
+path. The script prints what each capture says at the end.
+
+**Run on the rig's BlueMind on 2026-09-16** (object `51.ics` of the main
+calendar `calendar:Default:751E6D1A-…`, probe `exo-absent-probe-1789544526.ics`):
+every shape predicted from BlueMind's source held — Depth:0 `getetag` ==
+listing `getetag` (`bmdav_3980966296_0`, so the spelling hypothesis holds and
+the writer logs "agrees"); the one-href multiget answered one response with
+`"Ym1kYXZfMzk4MDk2NjI5Nl8x"` (base64 of `bmdav_3980966296_1`, the REPORT
+shape); Depth:0 on the missing href answered 207 with the path-minted
+`bmdav_3856992451_0` (Depth:0 cannot tell existence); the multiget on the
+missing href answered an empty multistatus. The five `*.captured.xml` files
+are the fixtures `HttpCalDavClientServerQuirksTest` now runs on; the DERIVED
+fixtures they superseded were dropped. Re-run the script to refresh them
+after a BlueMind upgrade.
+
+```sh
+dev/golden-capture/capture-bluemind-object-etags.sh
+```
+
+Review the produced files before committing them: credentials are scrubbed,
+but your login and the object uids appear inside hrefs.
