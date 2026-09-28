@@ -33,6 +33,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.ZonedDateTime;
 import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
@@ -47,6 +48,7 @@ import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.model.EventOccurrence;
 import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventService;
@@ -98,6 +100,9 @@ public class CaldavAnswerPushTest {
   private static final long        SERVER  = 7L;
 
   private static final long        EVENT   = 964L;
+
+  /** The exceptional occurrence of {@link #EVENT} dated 2026-09-15. */
+  private static final long        OCCURRENCE = 965L;
 
   private static final String      MIRROR  = "/dav/cal/alice@stalwart.local/exo-meetings";
 
@@ -727,6 +732,7 @@ public class CaldavAnswerPushTest {
    */
   @Test
   public void anotherAttendeesAnswerIsWrittenOntoThisAccountsCopy() throws Exception {
+    givenTheHolderSeesTheSeries();
     givenTheCopyAlsoNames(CAROL_ADDRESS, "NEEDS-ACTION");
     when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(204,
@@ -734,7 +740,7 @@ public class CaldavAnswerPushTest {
                                                                                                                                     null));
 
     assertEquals(CaldavPushService.AnswerOutcome.WRITTEN,
-                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
+                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED", EVENT));
 
     ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
     verify(calDavClient).updateObject(eq(endpoint),
@@ -782,6 +788,7 @@ public class CaldavAnswerPushTest {
    */
   @Test
   public void writingOneAttendeesAnswerLeavesTheOtherAttendeesAnswerUntouched() throws Exception {
+    givenTheHolderSeesTheSeries();
     String served = copyNaming(CAROL_ADDRESS, "NEEDS-ACTION", "ACCEPTED");
     when(calDavClient.fetchObject(eq(endpoint), eq(HREF)))
                                                                                      .thenReturn(new CalendarObject(HREF,
@@ -792,7 +799,7 @@ public class CaldavAnswerPushTest {
                                                                                                                                     "\"etag-2\"",
                                                                                                                                     null));
 
-    service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "DECLINED");
+    service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "DECLINED", EVENT);
 
     ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
     verify(calDavClient).updateObject(any(), anyString(), written.capture(), anyString());
@@ -818,10 +825,11 @@ public class CaldavAnswerPushTest {
    */
   @Test
   public void aCopyThatAlreadyCarriesTheAnswerIsNotWrittenAndIsSettled() throws Exception {
+    givenTheHolderSeesTheSeries();
     givenTheCopyAlsoNames(CAROL_ADDRESS, "ACCEPTED");
 
     assertEquals(CaldavPushService.AnswerOutcome.ALREADY_SAID,
-                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
+                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED", EVENT));
 
     verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
     verify(caldavSyncStorage, never()).saveObject(any());
@@ -837,10 +845,11 @@ public class CaldavAnswerPushTest {
    */
   @Test
   public void aCopyThatDoesNotNameTheAnswererIsNotSettled() throws Exception {
+    givenTheHolderSeesTheSeries();
     givenTheCopySays("ACCEPTED");
 
     assertEquals(CaldavPushService.AnswerOutcome.NOT_NAMED,
-                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
+                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED", EVENT));
 
     assertFalse(CaldavPushService.AnswerOutcome.NOT_NAMED.settles());
     verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
@@ -855,6 +864,7 @@ public class CaldavAnswerPushTest {
    */
   @Test
   public void aConcurrentChangeToTheHoldersCopyIsRefusedRatherThanOverwritten() throws Exception {
+    givenTheHolderSeesTheSeries();
     givenTheCopyAlsoNames(CAROL_ADDRESS, "NEEDS-ACTION");
     when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
                                                                                                           .thenReturn(new PutResult(412,
@@ -865,7 +875,7 @@ public class CaldavAnswerPushTest {
                                 org.junit.jupiter.api.Assertions.assertThrows(CaldavPushException.class,
                                                                              () -> service.pushAnswerOnto(USER, LOGIN, mapped(),
                                                                                                           List.of(CAROL_ADDRESS),
-                                                                                                          "ACCEPTED"));
+                                                                                                          "ACCEPTED", EVENT));
 
     assertEquals(CaldavPushService.CONFLICT, failure.getCode());
     verify(caldavSyncStorage, never()).saveObject(any());
@@ -887,7 +897,7 @@ public class CaldavAnswerPushTest {
                                 org.junit.jupiter.api.Assertions.assertThrows(CaldavPushException.class,
                                                                              () -> service.pushAnswerOnto(CAROL, LOGIN, mapped(),
                                                                                                           List.of(CAROL_ADDRESS),
-                                                                                                          "ACCEPTED"));
+                                                                                                          "ACCEPTED", EVENT));
 
     assertEquals(CaldavPushService.NOT_CONNECTED, failure.getCode());
     assertTrue(CaldavPushService.isKnownState(failure.getCode()));
@@ -1016,6 +1026,200 @@ public class CaldavAnswerPushTest {
   }
 
   /**
+   * An answer to one date of a series moves that date's override only
+   * (EXO-90489). The copy's master keeps the line every other date inherits,
+   * so those dates stay offered to the attendee as still to answer.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anAnswerToOneOccurrenceLeavesTheOtherDatesToAnswer() throws Exception {
+    givenTheAnsweredOccurrence();
+    givenTheCopyHoldsTheSeries(true);
+
+    assertTrue(service.pushAnswer(USER, LOGIN, OCCURRENCE, "DECLINED"));
+
+    ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).updateObject(eq(endpoint), eq(HREF), written.capture(), eq("\"etag-1\""));
+    assertEquals("PARTSTAT=DECLINED", partStatOn(component(written.getValue(), "20260915T090000Z"), ACCOUNT));
+    assertEquals("PARTSTAT=NEEDS-ACTION", partStatOn(component(written.getValue(), null), ACCOUNT));
+    assertTrue(component(written.getValue(), null).contains("RRULE:FREQ=WEEKLY"), written.getValue());
+  }
+
+  /**
+   * An answer to a date the copy holds no override for — given in eXo, where
+   * the server never saw that date amended — adds the override eXo renders for
+   * it, and leaves the master as it was.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anAnswerToAnOccurrenceTheCopyNeverAmendedAddsItsOverride() throws Exception {
+    Event occurrence = givenTheAnsweredOccurrence();
+    givenTheCopyHoldsTheSeries(false);
+    String override = component(seriesCopy(true), "20260915T090000Z").replace("PARTSTAT=NEEDS-ACTION:mailto:" + ACCOUNT,
+                                                                             "PARTSTAT=ACCEPTED:mailto:" + ACCOUNT);
+    when(icsWriter.write(any())).thenReturn(String.join("\r\n",
+                                                        "BEGIN:VCALENDAR",
+                                                        "VERSION:2.0",
+                                                        "PRODID:-//eXo//caldav//EN",
+                                                        "BEGIN:VEVENT" + override + "END:VEVENT",
+                                                        "END:VCALENDAR",
+                                                        ""));
+
+    assertTrue(service.pushAnswer(USER, LOGIN, OCCURRENCE, "ACCEPTED"));
+
+    verify(agendaEventIcsMapper).toIcsEvent(occurrence, "evt-1", USER);
+    ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).updateObject(eq(endpoint), eq(HREF), written.capture(), eq("\"etag-1\""));
+    assertEquals("PARTSTAT=ACCEPTED", partStatOn(component(written.getValue(), "20260915T090000Z"), ACCOUNT));
+    assertEquals("PARTSTAT=NEEDS-ACTION", partStatOn(component(written.getValue(), null), ACCOUNT));
+    assertTrue(component(written.getValue(), null).contains("RRULE:FREQ=WEEKLY"), written.getValue());
+  }
+
+  /**
+   * The same rule on another attendee's copy: Carol answering one date moves
+   * her line on that date's override of this account's copy, not on its master.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anotherAttendeesAnswerToOneOccurrenceMovesThatDateOnly() throws Exception {
+    givenTheAnsweredOccurrence();
+    givenTheCopyHoldsTheSeries(true);
+
+    assertEquals(CaldavPushService.AnswerOutcome.WRITTEN,
+                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED", OCCURRENCE));
+
+    ArgumentCaptor<String> written = ArgumentCaptor.forClass(String.class);
+    verify(calDavClient).updateObject(eq(endpoint), eq(HREF), written.capture(), eq("\"etag-1\""));
+    assertEquals("PARTSTAT=ACCEPTED", partStatOn(component(written.getValue(), "20260915T090000Z"), CAROL_ADDRESS));
+    assertEquals("PARTSTAT=NEEDS-ACTION", partStatOn(component(written.getValue(), null), CAROL_ADDRESS));
+  }
+
+  /**
+   * A holder who cannot read the answered event gets no rewrite: whether the
+   * answer is to the series or to one date is read off that event, and a
+   * series rewrite by default would answer every date of the copy. The copy
+   * stays owed for the full rewrite.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anAnswerTheHolderCannotReadIsLeftOwedRatherThanWrittenOnTheSeries() throws Exception {
+    when(agendaEventService.getEventById(eq(OCCURRENCE), isNull(), eq(USER))).thenThrow(new IllegalAccessException("hidden"));
+    // Lenient: the copy is never fetched when the event cannot be read, and it
+    // is served here so that a rewrite, were one attempted, would be written.
+    lenient().when(calDavClient.fetchObject(eq(endpoint), eq(HREF)))
+             .thenReturn(new CalendarObject(HREF, "\"etag-1\"", seriesCopy(true)));
+    lenient().when(calDavClient.updateObject(any(), anyString(), anyString(), anyString()))
+             .thenReturn(new PutResult(204, "\"etag-2\"", null));
+
+    assertEquals(CaldavPushService.AnswerOutcome.UNWRITABLE,
+                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED", OCCURRENCE));
+
+    assertFalse(CaldavPushService.AnswerOutcome.UNWRITABLE.settles());
+    verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
+  }
+
+  /**
+   * One VEVENT of a calendar object: the master, or the override of one
+   * instance.
+   *
+   * @param document a calendar object
+   * @param recurrenceId the RECURRENCE-ID value of the override wanted, or
+   *          null for the master
+   * @return the component's text, or an empty string when there is none
+   */
+  private String component(String document, String recurrenceId) {
+    String unfolded = document.replace("\r\n ", "").replace("\n ", "");
+    for (String block : StringUtils.substringsBetween(unfolded, "BEGIN:VEVENT", "END:VEVENT")) {
+      boolean override = block.contains("RECURRENCE-ID");
+      if (recurrenceId == null ? !override : block.contains("RECURRENCE-ID:" + recurrenceId)) {
+        return block;
+      }
+    }
+    return "";
+  }
+
+  /**
+   * A weekly series copied with every attendee still to answer, and optionally
+   * the override a client wrote for its second date.
+   *
+   * @param withOverride whether the copy carries the override of 2026-09-15
+   * @return a calendar object as a server serves it
+   */
+  private String seriesCopy(boolean withOverride) {
+    List<String> lines = new java.util.ArrayList<>(List.of("BEGIN:VCALENDAR",
+                                                           "VERSION:2.0",
+                                                           "PRODID:-//eXo//caldav//EN",
+                                                           "BEGIN:VEVENT",
+                                                           "UID:evt-1",
+                                                           "DTSTAMP:20260826T150000Z",
+                                                           "DTSTART:20260908T090000Z",
+                                                           "DTEND:20260908T100000Z",
+                                                           "RRULE:FREQ=WEEKLY;COUNT=4",
+                                                           "SUMMARY:invit5",
+                                                           "ORGANIZER;CN=Root Root:mailto:root@stalwart.local",
+                                                           "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:" + ACCOUNT,
+                                                           "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:" + CAROL_ADDRESS,
+                                                           "END:VEVENT"));
+    if (withOverride) {
+      lines.addAll(List.of("BEGIN:VEVENT",
+                           "UID:evt-1",
+                           "RECURRENCE-ID:20260915T090000Z",
+                           "DTSTAMP:20260826T150000Z",
+                           "DTSTART:20260915T090000Z",
+                           "DTEND:20260915T100000Z",
+                           "SUMMARY:invit5",
+                           "ORGANIZER;CN=Root Root:mailto:root@stalwart.local",
+                           "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:" + ACCOUNT,
+                           "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:" + CAROL_ADDRESS,
+                           "END:VEVENT"));
+    }
+    lines.addAll(List.of("END:VCALENDAR", ""));
+    return String.join("\r\n", lines);
+  }
+
+  /**
+   * The copy holds the series, with or without the override of 2026-09-15.
+   *
+   * @param withOverride whether the copy carries that override
+   */
+  private void givenTheCopyHoldsTheSeries(boolean withOverride) {
+    when(calDavClient.fetchObject(eq(endpoint), eq(HREF))).thenReturn(new CalendarObject(HREF,
+                                                                                         "\"etag-1\"",
+                                                                                         seriesCopy(withOverride)));
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString())).thenReturn(new PutResult(204,
+                                                                                                           "\"etag-2\"",
+                                                                                                           null));
+  }
+
+  /**
+   * The exceptional occurrence of 2026-09-15 agenda recorded an answer on, as
+   * the account's owner sees it, in a series copied under agenda's identifier.
+   *
+   * @return the occurrence
+   * @throws Exception never, agenda is mocked
+   */
+  private Event givenTheAnsweredOccurrence() throws Exception {
+    Event occurrence = anEvent(OCCURRENCE, EVENT, 0L);
+    occurrence.setOccurrence(new EventOccurrence(ZonedDateTime.parse("2026-09-15T09:00:00Z")));
+    when(agendaEventService.getEventById(eq(OCCURRENCE), isNull(), eq(USER))).thenReturn(occurrence);
+    lenient().when(agendaRemoteEventService.findRemoteEvent(EVENT, USER)).thenReturn(remoteEvent());
+    return occurrence;
+  }
+
+  /**
+   * The copy's holder can read the series the answer was recorded on.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  private void givenTheHolderSeesTheSeries() throws Exception {
+    when(agendaEventService.getEventById(eq(EVENT), isNull(), eq(USER))).thenReturn(anEvent(EVENT, 0L, 0L));
+  }
+
+  /**
    * The meeting has a copy, under the identifier agenda recorded for it.
    *
    * @throws Exception never, agenda is mocked
@@ -1117,7 +1321,7 @@ public class CaldavAnswerPushTest {
 
     givenTheCopyAlsoNames(CAROL_ADDRESS, "NEEDS-ACTION");
     assertEquals(CaldavPushService.AnswerOutcome.WRITTEN,
-                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED"));
+                 service.pushAnswerOnto(USER, LOGIN, mapped(), List.of(CAROL_ADDRESS), "ACCEPTED", EVENT));
 
     verify(door, times(2)).updateObject(eq(endpoint), eq(HREF), anyString(), eq("\"etag-1\""));
     verify(calDavClient, never()).updateObject(any(), anyString(), anyString(), anyString());
