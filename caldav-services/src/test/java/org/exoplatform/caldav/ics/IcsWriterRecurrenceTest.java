@@ -137,6 +137,24 @@ public class IcsWriterRecurrenceTest {
     assertFalse(ics.contains("VALUE=DATE;VALUE=DATE"), "the parameter must be written once");
   }
 
+  /**
+   * Agenda names an all-day occurrence by its calendar day at midnight UTC,
+   * whatever the series' zone, so that day is the RECURRENCE-ID. Read in a
+   * zone west of Greenwich, midnight UTC is the evening before, and the
+   * override would name an instance the series does not have (EXO-90489).
+   */
+  @Test
+  public void anOverrideOfAnAllDaySeriesWestOfGreenwichNamesAgendasDay() {
+    IcsEvent event = base();
+    event.setAllDay(true);
+    event.setTimeZoneId("America/New_York");
+    event.setOccurrenceId("2026-10-12T00:00:00Z");
+
+    String ics = writer.write(event);
+
+    assertTrue(ics.contains("RECURRENCE-ID;VALUE=DATE:20261012"), ics);
+  }
+
   @Test
   public void anOverrideOfAZonedSeriesCarriesItsZone() {
     IcsEvent event = base();
