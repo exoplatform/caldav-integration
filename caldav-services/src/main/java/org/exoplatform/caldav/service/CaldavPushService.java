@@ -1268,7 +1268,13 @@ public class CaldavPushService {
       return false;
     }
     Event answered = answeredEvent(eventId, userIdentityId);
-    String icsUid = answered == null ? null : icsUidOf(answered, userIdentityId);
+    if (answered == null) {
+      LOG.debug("Answer of user {} to event {} is not carried out: the event cannot be read as that user",
+                userIdentityId,
+                eventId);
+      return false;
+    }
+    String icsUid = icsUidOf(answered, userIdentityId);
     if (icsUid == null) {
       LOG.debug("Answer of user {} to event {} is not carried out: this meeting has no copy on their account",
                 userIdentityId,
