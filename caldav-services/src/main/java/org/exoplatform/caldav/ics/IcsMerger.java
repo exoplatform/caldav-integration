@@ -265,15 +265,49 @@ public class IcsMerger {
    * @throws IcsParseException when the document is not readable iCalendar
    */
   public AnswerRewrite setAttendeeResponse(String existing, Collection<String> addresses, String partStat) {
+    return setAttendeeResponse(existing, addresses, partStat, null);
+  }
+
+  /**
+   * Rewrites one attendee's participation status on one instance of a series,
+   * or on the whole object when no instance is named.
+   *
+   * <p>
+   * An answer to one occurrence moves the override carrying that occurrence
+   * and nothing else (EXO-90489). The master's line is what every other
+   * instance of the series inherits, so rewriting it too would answer every
+   * date the attendee has not answered yet: they would stop being offered as
+   * pending, and a decline would hide the whole series. An object holding no
+   * override for that instance comes back not naming the attendee; the caller
+   * adds the override first ({@link #holdsInstance}).
+   *
+   * @param existing the calendar object as fetched from the server
+   * @param addresses every address the copy might name this attendee by
+   * @param partStat the RFC 5545 token to set, already validated by
+   *          {@link IcsText#partStat(String)}
+   * @param occurrence the instance answered, or null for an answer to the
+   *          series, which every VEVENT carries
+   * @return whether the visited components name the attendee at all, and the
+   *         document to write back when the answer moved
+   * @throws IcsParseException when the document is not readable iCalendar
+   */
+  public AnswerRewrite setAttendeeResponse(String existing,
+                                           Collection<String> addresses,
+                                           String partStat,
+                                           Instant occurrence) {
     Set<String> wanted = comparableAddresses(addresses);
     if (wanted.isEmpty() || StringUtils.isBlank(partStat)) {
       return new AnswerRewrite(false, null);
     }
     Calendar target = parse(existing);
+    Date answered = occurrence == null ? null : utc(occurrence);
     boolean named = false;
     boolean changed = false;
     for (Object component : target.getComponents(net.fortuna.ical4j.model.Component.VEVENT)) {
       VEvent event = (VEvent) component;
+      if (answered != null && !isSameInstance(instanceOf(event), answered)) {
+        continue;
+      }
       for (Object property : event.getProperties(net.fortuna.ical4j.model.Property.ATTENDEE)) {
         Attendee attendee = (Attendee) property;
         if (!wanted.contains(bareAddress(attendee.getValue()))) {
@@ -293,6 +327,24 @@ public class IcsMerger {
       }
     }
     return new AnswerRewrite(named, changed ? target.toString() : null);
+  }
+
+  /**
+   * Whether the object carries an override for one instance of its series.
+   *
+   * @param existing the calendar object as fetched from the server
+   * @param occurrence the instance looked for
+   * @return true when a VEVENT's RECURRENCE-ID names that instance
+   * @throws IcsParseException when the document is not readable iCalendar
+   */
+  public boolean holdsInstance(String existing, Instant occurrence) {
+    Date wanted = utc(occurrence);
+    for (Object component : parse(existing).getComponents(net.fortuna.ical4j.model.Component.VEVENT)) {
+      if (isSameInstance(instanceOf((VEvent) component), wanted)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

@@ -568,7 +568,7 @@ public class CaldavPushService {
     String href = known != null && StringUtils.isNotBlank(known.getRemoteHref()) ? known.getRemoteHref()
                                                                                 : objectHref(pair.getRemoteHref(),
                                                                                              event.getUid());
-    PutResult result = write(endpoint, settings, href, ics, known, overwrite);
+    PutResult result = write(endpoint, settings, href, ics, StringUtils.isNotBlank(event.getOccurrenceId()), known, overwrite);
     if (result.preconditionFailed()) {
       // Someone else wrote the object between our read and our write. Never
       // retried blindly: the whole point of the conditional write is that the
@@ -958,6 +958,10 @@ public class CaldavPushService {
       LOG.debug("Event {} is a date poll; no copy of it is written into the account of user {}", eventId, userIdentityId);
       return null;
     }
+    // The series, for an occurrence as for its master: the object, its UID
+    // and its mapping row stand for the whole series, and a row naming one
+    // occurrence would have the verification pass rebuild the object from that
+    // occurrence alone (EXO-90489).
     long seriesId = event.getParentId() > 0 ? event.getParentId() : event.getId();
     String icsUid = adoptOrMintUid(seriesId, userIdentityId);
     IcsEvent icsEvent = agendaEventIcsMapper.toIcsEvent(event, icsUid, userIdentityId);
@@ -981,7 +985,7 @@ public class CaldavPushService {
                   event.getId());
         return null;
       }
-      return writeInto(userIdentityId, username, personal, icsEvent, event.getId(), overwrite);
+      return writeInto(userIdentityId, username, personal, icsEvent, seriesId, overwrite);
     }
     if (isAnotherUsersCalendar(event, userIdentityId)) {
       // Somebody else's personal calendar, which a colleague holding an edit
@@ -1000,7 +1004,7 @@ public class CaldavPushService {
                 userIdentityId);
       return null;
     }
-    return pushEvent(userIdentityId, username, icsEvent, event.getId(), overwrite);
+    return pushEvent(userIdentityId, username, icsEvent, seriesId, overwrite);
   }
 
   /**
@@ -1263,7 +1267,8 @@ public class CaldavPushService {
                 eventId);
       return false;
     }
-    String icsUid = icsUidOf(eventId, userIdentityId);
+    Event answered = answeredEvent(eventId, userIdentityId);
+    String icsUid = answered == null ? null : icsUidOf(answered, userIdentityId);
     if (icsUid == null) {
       LOG.debug("Answer of user {} to event {} is not carried out: this meeting has no copy on their account",
                 userIdentityId,
@@ -1301,9 +1306,12 @@ public class CaldavPushService {
                  known.getRemoteHref());
         return false;
       }
-      IcsMerger.AnswerRewrite rewrite = icsMerger.setAttendeeResponse(existing.calendarData(),
-                                                                     addresses,
-                                                                     IcsText.partStat(response));
+      IcsMerger.AnswerRewrite rewrite = answerRewrite(existing.calendarData(),
+                                                     addresses,
+                                                     response,
+                                                     answered,
+                                                     icsUid,
+                                                     userIdentityId);
       if (!rewrite.attendeeNamed()) {
         // The state that made this whole thing do nothing on a live rig, and
         // the reason the addresses are now offered as a set. Naming them in
@@ -1614,6 +1622,8 @@ public class CaldavPushService {
    * @param answererAddresses every address the copy might name the answerer
    *          by, from {@link #addressesNaming(long)}
    * @param response the answer as agenda holds it, e.g. {@code ACCEPTED}
+   * @param eventId the agenda event answered, master or occurrence: an answer
+   *          to one occurrence moves that instance of the copy only
    * @return what happened to the copy, which is what tells the caller whether
    *         anything is still owed to it
    * @throws CaldavPushException when the copy could not be written
@@ -1622,7 +1632,8 @@ public class CaldavPushService {
                                       String username,
                                       ObjectSync copy,
                                       List<String> answererAddresses,
-                                      String response) {
+                                      String response,
+                                      long eventId) {
     if (copy == null || StringUtils.isBlank(copy.getRemoteHref())) {
       // A tombstone, or a row built by hand. Nothing to write to, and writing
       // to it would re-create the object somebody deleted.
@@ -1651,6 +1662,19 @@ public class CaldavPushService {
                copy.getRemoteHref());
       return AnswerOutcome.UNWRITABLE;
     }
+    Event answered = answeredEvent(eventId, holderIdentityId);
+    if (answered == null) {
+      // Whether the answer is to the series or to one of its dates is read off
+      // the event, and rewriting it as a series answer by default would put an
+      // answer to one date on every date of the copy (EXO-90489). Left owed:
+      // the full rewrite settles it once the event can be read, or finds it
+      // gone.
+      LOG.debug("An answer is not carried onto the copy of user {} at {}: event {} cannot be read as that user",
+                holderIdentityId,
+                copy.getRemoteHref(),
+                eventId);
+      return AnswerOutcome.UNWRITABLE;
+    }
     CalDavEndpoint endpoint = endpointOf(settings, username);
     try {
       CalendarObject existing = calDavClient.fetchObject(endpoint,
@@ -1661,9 +1685,12 @@ public class CaldavPushService {
                  copy.getRemoteHref());
         return AnswerOutcome.UNWRITABLE;
       }
-      IcsMerger.AnswerRewrite rewrite = icsMerger.setAttendeeResponse(existing.calendarData(),
-                                                                     answererAddresses,
-                                                                     IcsText.partStat(response));
+      IcsMerger.AnswerRewrite rewrite = answerRewrite(existing.calendarData(),
+                                                     answererAddresses,
+                                                     response,
+                                                     answered,
+                                                     copy.getIcsUid(),
+                                                     holderIdentityId);
       if (!rewrite.attendeeNamed()) {
         // The answerer is not on this object at all: their profile hides their
         // address, or the copy predates their invitation and has never been
@@ -1776,30 +1803,97 @@ public class CaldavPushService {
    * is a separate agenda event with an id of its own. Answering an event whose
    * id is an override's would otherwise find no copy at all.
    *
-   * <p>
-   * The event is read through agenda's own service, so its ACL applies — and
-   * a user who may not see it answers null rather than raising: this is only
-   * ever asked on behalf of the user whose answer was just recorded, so a
-   * refusal means the event went away, not that anything was smuggled.
-   *
-   * @param eventId the agenda event, master or override
+   * @param event the agenda event, master or override
    * @param userIdentityId identity of the user whose copy is looked for
    * @return the UID, or null when this user has no copy of this meeting
    */
-  private String icsUidOf(long eventId, long userIdentityId) {
-    Event event;
+  private String icsUidOf(Event event, long userIdentityId) {
+    long seriesId = event.getParentId() > 0 ? event.getParentId() : event.getId();
+    RemoteEvent known = agendaRemoteEventService.findRemoteEvent(seriesId, userIdentityId);
+    return known == null ? null : StringUtils.trimToNull(known.getRemoteId());
+  }
+
+  /**
+   * The agenda event an answer was recorded on, as the holder of a copy sees
+   * it.
+   *
+   * <p>
+   * Read through agenda's own service, so its ACL applies — and a user who may
+   * not see it answers null rather than raising: this is only ever asked on
+   * behalf of a user holding a copy of the meeting, so a refusal means the
+   * event went away, not that anything was smuggled.
+   *
+   * @param eventId the agenda event answered, master or override
+   * @param userIdentityId identity of the user whose copy is written to
+   * @return the event, or null when it cannot be read
+   */
+  private Event answeredEvent(long eventId, long userIdentityId) {
     try {
-      event = agendaEventService.getEventById(eventId, null, userIdentityId);
+      return agendaEventService.getEventById(eventId, null, userIdentityId);
     } catch (IllegalAccessException e) {
       LOG.debug("Event {} is not visible to user {}; its copy is left alone", eventId, userIdentityId);
       return null;
     }
-    if (event == null) {
+  }
+
+  /**
+   * The answer rewritten onto a copy: on every component for an answer to the
+   * series, on the override of the one instance answered otherwise
+   * (EXO-90489).
+   *
+   * <p>
+   * A copy holding no override for that instance yet — the answer was given in
+   * eXo, or on another attendee's client — gains the one eXo renders for the
+   * occurrence, which carries the answer agenda has just recorded. The master
+   * keeps the line every instance nobody answered inherits.
+   *
+   * @param document the copy as fetched from the server
+   * @param addresses every address the copy might name the answerer by
+   * @param response the answer as agenda holds it, e.g. {@code ACCEPTED}
+   * @param answered the agenda event answered, master or occurrence
+   * @param icsUid the UID the copy is written under
+   * @param holderIdentityId identity of the user whose copy it is
+   * @return what the rewrite found, and the document to write back when the
+   *         copy moved
+   */
+  private IcsMerger.AnswerRewrite answerRewrite(String document,
+                                                List<String> addresses,
+                                                String response,
+                                                Event answered,
+                                                String icsUid,
+                                                long holderIdentityId) {
+    String partStat = IcsText.partStat(response);
+    Instant instance = occurrenceOf(answered);
+    if (instance == null) {
+      return icsMerger.setAttendeeResponse(document, addresses, partStat);
+    }
+    if (icsMerger.holdsInstance(document, instance)) {
+      return icsMerger.setAttendeeResponse(document, addresses, partStat, instance);
+    }
+    String override = icsWriter.write(agendaEventIcsMapper.toIcsEvent(answered, icsUid, holderIdentityId));
+    String withOverride = icsMerger.merge(document, override, true);
+    IcsMerger.AnswerRewrite rewrite = icsMerger.setAttendeeResponse(withOverride, addresses, partStat, instance);
+    if (!rewrite.attendeeNamed()) {
+      return rewrite;
+    }
+    // The override is new, so the copy moved even where the rendered line
+    // already carries the answer.
+    return new IcsMerger.AnswerRewrite(true, rewrite.hasChange() ? rewrite.document() : withOverride);
+  }
+
+  /**
+   * The instance an agenda event amends, when it is an exceptional occurrence.
+   *
+   * @param event the agenda event, possibly null
+   * @return the occurrence identifier, or null for a series, a single event or
+   *         an unreadable one
+   */
+  private Instant occurrenceOf(Event event) {
+    if (event == null || event.getParentId() <= 0 || event.getOccurrence() == null
+        || event.getOccurrence().getId() == null) {
       return null;
     }
-    long seriesId = event.getParentId() > 0 ? event.getParentId() : event.getId();
-    RemoteEvent known = agendaRemoteEventService.findRemoteEvent(seriesId, userIdentityId);
-    return known == null ? null : StringUtils.trimToNull(known.getRemoteId());
+    return event.getOccurrence().getId().toInstant();
   }
 
   /**
@@ -2579,6 +2673,10 @@ public class CaldavPushService {
    * @param settings the connected account
    * @param href where the object lives
    * @param ics the object this engine built
+   * @param occurrence whether that object is an override of one instance
+   *          rather than the series' master. Merged as a master, an override
+   *          takes the place of the master the server holds, and every other
+   *          instance of the series disappears with it (EXO-90489).
    * @param known the mapping row, or null on a first push
    * @param overwrite whether a repair is driving this write, in which case the
    *          conditional headers are dropped. The object a repair puts back is
@@ -2590,6 +2688,7 @@ public class CaldavPushService {
                           CaldavUserSetting settings,
                           String href,
                           String ics,
+                          boolean occurrence,
                           ObjectSync known,
                           boolean overwrite) {
     try {
@@ -2608,7 +2707,7 @@ public class CaldavPushService {
       }
       CalendarObject existing = calDavClient.fetchObject(endpoint, href);
       String merged = existing == null || StringUtils.isBlank(existing.calendarData()) ? ics
-                                                                              : icsMerger.merge(existing.calendarData(), ics, false);
+                                                                              : icsMerger.merge(existing.calendarData(), ics, occurrence);
       if (overwrite) {
         // No precondition at all — and it has to be neither of the two the
         // client otherwise sends. The guard protects against clobbering a

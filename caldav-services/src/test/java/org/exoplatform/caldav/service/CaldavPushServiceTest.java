@@ -1153,6 +1153,47 @@ public class CaldavPushServiceTest {
   }
 
   /**
+   * An occurrence pushed into a copy the server already holds is merged as an
+   * override: it replaces that instance only, and the series' master — which
+   * every other date comes from — stays (EXO-90489). The mapping row names the
+   * series, which is what the verification pass renders the copy from.
+   *
+   * @throws Exception never, agenda is mocked
+   */
+  @Test
+  public void anOccurrenceIsMergedAsAnOccurrenceUnderTheSeriesMapping() throws Exception {
+    givenAMirror();
+    givenAnAgendaEvent(103L, 99L);
+    RemoteEvent known = new RemoteEvent();
+    known.setRemoteId("evt-1");
+    when(agendaRemoteEventService.findRemoteEvent(99L, USER)).thenReturn(known);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(IcsEvent.builder()
+                                                                                            .uid("evt-1")
+                                                                                            .summary("Steering point")
+                                                                                            .start(Instant.parse("2026-09-15T09:00:00Z"))
+                                                                                            .end(Instant.parse("2026-09-15T10:00:00Z"))
+                                                                                            .timeZoneId("Europe/Paris")
+                                                                                            .occurrenceId("2026-09-15T09:00:00Z")
+                                                                                            .build());
+    when(icsWriter.write(any())).thenReturn("OVERRIDE");
+    when(caldavSyncStorage.getObjectByUid(anyLong(), eq("evt-1"))).thenReturn(mapped("\"etag-1\""));
+    when(calDavClient.fetchObject(any(), anyString())).thenReturn(new CalendarObject(MIRROR + "evt-1.ics",
+                                                                                     "\"etag-1\"",
+                                                                                     "SERIES"));
+    when(icsMerger.merge("SERIES", "OVERRIDE", true)).thenReturn("MERGED");
+    when(calDavClient.updateObject(any(), anyString(), anyString(), anyString())).thenReturn(new PutResult(204,
+                                                                                                           "\"etag-2\"",
+                                                                                                           null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    ObjectSync mapping = service.pushAgendaEvent(USER, "john", 103L);
+
+    verify(icsMerger, never()).merge(anyString(), anyString(), eq(false));
+    verify(calDavClient).updateObject(any(), anyString(), eq("MERGED"), eq("\"etag-1\""));
+    assertEquals(99L, mapping.getLocalEventId());
+  }
+
+  /**
    * The decision of EXO-89863, pinned at the one place that can enforce it.
    *
    * <p>
