@@ -1202,7 +1202,7 @@ public class CaldavEventPropagationService {
    *          their account on the server
    * @param copy the mapping row naming that copy
    * @param answererAddresses every address the copy might name the answerer by
-   * @param eventId the agenda event, for the log
+   * @param eventId the agenda event answered, master or occurrence
    * @param answererIdentityId who answered, for the log
    * @param response the answer, for the log
    * @return true when the copy now carries the answer
@@ -1218,7 +1218,8 @@ public class CaldavEventPropagationService {
       CaldavPushService.AnswerOutcome outcome = caldavPushService.pushAnswerOnto(holderIdentityId, username,
                                                                                 copy,
                                                                                 answererAddresses,
-                                                                                response);
+                                                                                response,
+                                                                                eventId);
       if (outcome.settles()) {
         settled(copy.getId());
       }
