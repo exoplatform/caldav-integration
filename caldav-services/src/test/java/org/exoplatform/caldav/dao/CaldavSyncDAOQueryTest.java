@@ -196,10 +196,6 @@ public class CaldavSyncDAOQueryTest {
     assertEquals(1, objectSyncDAO.count());
   }
 
-  // ---------------------------------------------------------------------
-  // EXO-90516 - which copies a user already holds, for the seeding.
-  // ---------------------------------------------------------------------
-
   /**
    * A date poll switched back to a meeting is seeded again to the invitees
    * whose copies were retired while it was a poll (EXO-90516): the retirement
