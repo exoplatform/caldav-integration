@@ -442,7 +442,12 @@ public class IcsWriter {
     if (occurrence) {
       Instant instant = IcsText.parseInstant(event.getOccurrenceId());
       if (event.isAllDay()) {
-        vEvent.getProperties().add(new RecurrenceId(icsDate(instant, event.getTimeZoneId())));
+        // Agenda names an all-day occurrence by its calendar day at midnight
+        // UTC, whatever the series' zone (Utils.getOccurrenceId). Read in the
+        // series' zone, that midnight is the evening before for every zone
+        // west of Greenwich, and the override would name a day the series
+        // does not have.
+        vEvent.getProperties().add(new RecurrenceId(icsDate(instant, "UTC")));
       } else if (timeZone != null) {
         vEvent.getProperties().add(new RecurrenceId(zonedDateTime(instant, timeZone)));
       } else {
