@@ -2028,8 +2028,8 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(2, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
 
-    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"));
-    verify(caldavPushService).pushAnswerOnto(eq(BOB), anyString(), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"));
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"), anyLong());
+    verify(caldavPushService).pushAnswerOnto(eq(BOB), anyString(), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"), anyLong());
   }
 
   /**
@@ -2052,8 +2052,8 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(1, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
 
-    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), any(), anyString());
-    verify(caldavPushService, never()).pushAnswerOnto(eq(CAROL), anyString(), any(), any(), anyString());
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), any(), anyString(), anyLong());
+    verify(caldavPushService, never()).pushAnswerOnto(eq(CAROL), anyString(), any(), any(), anyString(), anyLong());
     assertEquals(0, caldavPendingPushStorage.owed(CAROL), "the answerer's own copy owes this fan-out nothing");
   }
 
@@ -2076,7 +2076,7 @@ public class CaldavEventPropagationServiceTest {
 
     service.propagateAnswer(EVENT, CAROL, "DECLINED");
 
-    verify(caldavPushService).pushAnswerOnto(ALICE, login(ALICE), alicesCopy, CAROL_ADDRESSES, "DECLINED");
+    verify(caldavPushService).pushAnswerOnto(ALICE, login(ALICE), alicesCopy, CAROL_ADDRESSES, "DECLINED", EVENT);
     // The holder's own addresses are never asked for: they name the wrong
     // person on this object.
     verify(caldavPushService, never()).addressesNaming(ALICE);
@@ -2096,7 +2096,7 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
 
-    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString());
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
     assertEquals(0, caldavPendingPushStorage.owed(ALICE), "a tombstone is owed nothing");
   }
 
@@ -2125,7 +2125,7 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(0, service.propagateAnswer(EVENT, CAROL, "NEEDS_ACTION"));
 
-    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString());
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
     assertEquals(0, caldavPendingPushStorage.owed(ALICE), "a reset owes no copy anything");
   }
 
@@ -2149,7 +2149,7 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(0, service.propagateAnswer(EVENT, CAROL, "MAYBE_LATER"));
 
-    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString());
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
   }
 
   /**
@@ -2177,7 +2177,7 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(1, service.propagateAnswer(OCCURRENCE, CAROL, "ACCEPTED"));
 
-    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"));
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"), anyLong());
   }
 
   /**
@@ -2209,7 +2209,7 @@ public class CaldavEventPropagationServiceTest {
     // that simply stops, unwinding past every catch there is. If the guard
     // caught it, the fan-out would carry on and the test would be pinning the
     // guard instead of the ordering.
-    when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString()))
+    when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong()))
                                                                                .thenReturn(CaldavPushService.AnswerOutcome.WRITTEN)
                                                                                .thenReturn(CaldavPushService.AnswerOutcome.WRITTEN)
                                                                                .thenThrow(new OutOfMemoryError("the thread dies here"));
@@ -2251,7 +2251,7 @@ public class CaldavEventPropagationServiceTest {
     InOrder order = inOrder(caldavPendingPushStorage, caldavPushService);
     order.verify(caldavPendingPushStorage).owe(1L, ALICE, PendingPushKind.REWRITE, EVENT, "uid-8801");
     order.verify(caldavPendingPushStorage).owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
-    order.verify(caldavPushService).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString());
+    order.verify(caldavPushService).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
   }
 
   /**
@@ -2270,7 +2270,7 @@ public class CaldavEventPropagationServiceTest {
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
     givenTheAnswererIsNamed(CAROL);
-    when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString()))
+    when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong()))
                                                                                .thenReturn(CaldavPushService.AnswerOutcome.ALREADY_SAID);
 
     assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"), "nothing was written");
@@ -2292,7 +2292,7 @@ public class CaldavEventPropagationServiceTest {
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
     givenTheAnswererIsNamed(CAROL);
-    when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString()))
+    when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong()))
                                                                                .thenReturn(CaldavPushService.AnswerOutcome.NOT_NAMED);
 
     assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
@@ -2316,7 +2316,7 @@ public class CaldavEventPropagationServiceTest {
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
     givenTheAnswererIsNamed(CAROL);
-    when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString()))
+    when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong()))
                                                                                .thenThrow(new CaldavPushException(CaldavPushService.CONFLICT,
                                                                                                                   "somebody wrote it first"));
 
@@ -2335,7 +2335,7 @@ public class CaldavEventPropagationServiceTest {
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
     givenTheAnswererIsNamed(CAROL);
-    when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString()))
+    when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong()))
                                                                                .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
                                                                                                                   "alice's server is down"));
     when(caldavPushService.pushAgendaEvent(ALICE, login(ALICE), EVENT)).thenReturn(new ObjectSync());
@@ -2362,7 +2362,7 @@ public class CaldavEventPropagationServiceTest {
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
     givenTheAnswererIsNamed(CAROL);
-    when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString()))
+    when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong()))
                                                                                .thenThrow(new IllegalStateException("something nobody classified"));
 
     assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
@@ -2383,17 +2383,17 @@ public class CaldavEventPropagationServiceTest {
     givenPair(200L, BOB);
     givenPair(300L, DAVE);
     givenTheAnswererIsNamed(CAROL);
-    when(caldavPushService.pushAnswerOnto(eq(ALICE), anyString(), any(), any(), anyString()))
+    when(caldavPushService.pushAnswerOnto(eq(ALICE), anyString(), any(), any(), anyString(), anyLong()))
                                                                                .thenReturn(CaldavPushService.AnswerOutcome.WRITTEN);
-    when(caldavPushService.pushAnswerOnto(eq(BOB), anyString(), any(), any(), anyString()))
+    when(caldavPushService.pushAnswerOnto(eq(BOB), anyString(), any(), any(), anyString(), anyLong()))
                                                                              .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
                                                                                                                 "bob's server is down"));
-    when(caldavPushService.pushAnswerOnto(eq(DAVE), anyString(), any(), any(), anyString()))
+    when(caldavPushService.pushAnswerOnto(eq(DAVE), anyString(), any(), any(), anyString(), anyLong()))
                                                                               .thenReturn(CaldavPushService.AnswerOutcome.WRITTEN);
 
     assertEquals(2, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
 
-    verify(caldavPushService).pushAnswerOnto(eq(DAVE), anyString(), any(), any(), anyString());
+    verify(caldavPushService).pushAnswerOnto(eq(DAVE), anyString(), any(), any(), anyString(), anyLong());
     assertEquals(1, caldavPendingPushStorage.owed(BOB), "only the one that failed is still owed");
   }
 
@@ -2415,7 +2415,7 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
 
-    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString());
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
     assertEquals(0, caldavPendingPushStorage.owed(ALICE), "an unsatisfiable obligation is not recorded");
   }
 
@@ -2429,7 +2429,7 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
 
-    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString());
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
   }
 
   /**
@@ -2457,7 +2457,7 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(0, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
 
-    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString());
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
   }
 
   /**
@@ -2509,7 +2509,7 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(1, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
 
-    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"));
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"), anyLong());
   }
 
   /**
@@ -2526,7 +2526,7 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(1, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
 
-    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"));
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), eq(CAROL_ADDRESSES), eq("ACCEPTED"), anyLong());
   }
 
   /**
@@ -2559,7 +2559,7 @@ public class CaldavEventPropagationServiceTest {
     // stops.
     verify(caldavPushService).isOrganizerOf(OCCURRENCE, CAROL);
     verify(caldavPushService, never()).isOrganizerOf(EVENT, CAROL);
-    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString());
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
   }
 
   /**
@@ -2589,7 +2589,7 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(1, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
 
-    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), any(), anyString());
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), any(), anyString(), anyLong());
   }
 
   /**
@@ -2624,7 +2624,7 @@ public class CaldavEventPropagationServiceTest {
    * Declares that every holder's server takes the answer.
    */
   private void givenEveryCopyAcceptsTheAnswer() {
-    lenient().when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString()))
+    lenient().when(caldavPushService.pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong()))
              .thenReturn(CaldavPushService.AnswerOutcome.WRITTEN);
   }
 
