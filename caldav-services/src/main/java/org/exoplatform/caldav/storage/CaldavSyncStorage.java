@@ -713,18 +713,22 @@ public class CaldavSyncStorage {
   }
 
   /**
-   * Which of these eXo events already carry a copy.
+   * Which of these eXo events already carry a live copy for this user.
    *
-   * The batch form of {@link #isEventMapped(long)}, for callers holding a
-   * list: the seeding pass asks about a user's whole upcoming window on every
-   * sweep, and asking one event at a time made the steady state — where every
-   * one of them is already mapped — cost a query per meeting to learn there
-   * was nothing to do.
+   * Asked for a whole list at once: the seeding pass asks about a user's
+   * whole upcoming window on every sweep, and asking one event at a time made
+   * the steady state — where every one of them is already copied — cost a
+   * query per meeting to learn there was nothing to do.
+   *
+   * <p>
+   * Not the batch form of {@link #isEventMapped(long)}, which counts any row:
+   * here a cleared row, the tombstone a removal leaves, is not a copy.
    *
    * @param userIdentityId the identity whose mappings count, so the copy made
    *          for the first attendee does not answer for every other attendee
    * @param localEventIds the eXo events to ask about
-   * @return the identifiers among them that are mapped, empty when none are
+   * @return the identifiers among them this user holds a live copy of, empty
+   *         when none are
    */
   public Set<Long> mappedEventIds(long userIdentityId, Collection<Long> localEventIds) {
     if (localEventIds == null || localEventIds.isEmpty()) {

@@ -196,6 +196,33 @@ public class CaldavSyncDAOQueryTest {
     assertEquals(1, objectSyncDAO.count());
   }
 
+  /**
+   * A date poll switched back to a meeting is seeded again to the invitees
+   * whose copies were retired while it was a poll (EXO-90516): the retirement
+   * left each of them a tombstone, and the seeding's "already holds a copy"
+   * question must not read one as a copy. Both branches: the live row still
+   * counts, so a meeting already copied is not written twice.
+   */
+  @Test
+  public void aTombstoneIsNotACopyTheUserAlreadyHolds() {
+    long mirrorOfOne = persistPair(USER_ONE, SHARED_SERVER, SyncOrigin.MIRROR, "/dav/calendars/751E/exo-meetings");
+    persistObjectSync(mirrorOfOne, "uid-live", 70L);
+    persistObjectSync(mirrorOfOne, "uid-retired", 71L);
+    CaldavObjectSyncEntity retired = objectSyncDAO.findAll()
+                                                  .stream()
+                                                  .filter(o -> "uid-retired".equals(o.getIcsUid()))
+                                                  .findFirst()
+                                                  .orElseThrow();
+    // What CaldavPushService.deleteEvent leaves once a poll's copy is retired
+    retired.setRemoteHref(null);
+    retired.setEtag(null);
+    objectSyncDAO.save(retired);
+    entityManager.flush();
+
+    assertEquals(List.of(70L), objectSyncDAO.findMappedLocalEventIdsOfUser(USER_ONE, List.of(70L, 71L)),
+                 "a live copy counts, a tombstone does not, or the confirmed meeting is never seeded again");
+  }
+
   // ---------------------------------------------------------------------
   // EXO-90190 — ownership is a fact about the account: not about one user,
   // and not about the whole server registration. The rig runs one user
