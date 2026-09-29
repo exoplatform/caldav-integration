@@ -195,8 +195,10 @@ public class BlueMindShareChannel implements CalendarShareChannel {
    */
   private static final Pattern     SHAREABLE_ADDRESS      = Pattern.compile("[^\\s<>&\"'@/]+@[^\\s<>&\"'@/]+");
 
+  /** Reads a BlueMind calendar's access list back through its REST API. */
   private final BlueMindAclClient  blueMindAclClient;
 
+  /** Posts the share and reads a sharee's addresses, as the owner. */
   private final CalDavClient       calDavClient;
 
   /**
@@ -339,6 +341,8 @@ public class BlueMindShareChannel implements CalendarShareChannel {
    * @param sharee the colleague
    * @param username the owner's login, for the audit line
    * @param ownerPrincipal the owner's canonical principal
+   * @param wanted the level to grant, read or write
+   * @param host what the host lends the operation
    * @return the sharees as read back
    */
   private CalendarShares blueMindGrant(SharedCalendar target,
@@ -421,6 +425,7 @@ public class BlueMindShareChannel implements CalendarShareChannel {
    * @param sharee the colleague
    * @param username the owner's login, for the audit line
    * @param ownerPrincipal the owner's canonical principal
+   * @param host what the host lends the operation
    * @return the sharees as read back
    */
   private CalendarShares blueMindRevoke(SharedCalendar target,
@@ -603,6 +608,7 @@ public class BlueMindShareChannel implements CalendarShareChannel {
    * @param target the calendar
    * @param aces the expanded access list
    * @param ownerPrincipal the owner's canonical principal, may be null
+   * @param host what the host lends the operation
    * @return the sharees
    */
   private CalendarShares blueMindSharesOf(SharedCalendar target, List<BlueMindAce> aces, String ownerPrincipal, ShareHost host) {
@@ -776,6 +782,7 @@ public class BlueMindShareChannel implements CalendarShareChannel {
    *
    * @param target the calendar
    * @param aces the container's expanded access list
+   * @param host what the host lends the operation
    */
   private void requireBlueMindManager(SharedCalendar target, List<BlueMindAce> aces, ShareHost host) {
     if (!target.imported()) {
