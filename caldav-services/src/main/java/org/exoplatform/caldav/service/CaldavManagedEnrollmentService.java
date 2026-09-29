@@ -52,16 +52,23 @@ import jakarta.annotation.PreDestroy;
  * the administrator excluded and nothing happens; otherwise they are attached
  * to the designated server. The designation is read first here because it is
  * the cheapest read and the one that is null on every instance where managed
- * mode is off: such an instance pays two setting reads per login and never
- * opens the user's own settings.
+ * mode is off.
  *
  * <p>
  * Having no configuration and having removed one are the same case: a user
  * who disconnects is attached again at their next login, and disconnecting
  * stays useful because whoever connects elsewhere has a configuration, which
- * rule one leaves alone. Nothing is stored about the outcome - it is a
- * function of (user, designation, exclusions, the user's settings) and a
- * stored outcome would drift the moment an administrator changed one of them.
+ * rule one leaves alone. The outcome itself is not stored - it is a function of
+ * (user, designation, exclusions, the user's settings) and a stored outcome
+ * would drift the moment an administrator changed one of them.
+ *
+ * <p>
+ * What is stored is who made the connection: an attachment is marked as made by
+ * managed mode ({@code CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY},
+ * EXO-89654), and the mark is checked first. A marked user managed mode no longer
+ * governs - they joined an excluded group, or an administrator's change could not
+ * disconnect them - is disconnected, then attached again when another server is
+ * designated for them.
  *
  * <p>
  * The attachment is the one-click connect of EXO-90358: the server is probed
@@ -143,7 +150,19 @@ public class CaldavManagedEnrollmentService {
   public Outcome enrollOnLogin(String username) {
     try {
       Long serverId = caldavManagedModeService.designatedServerFor(username);
-      if (serverId == null) {
+      Identity identity = identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, username);
+      if (identity != null && isNoLongerGoverned(Long.parseLong(identity.getId()), username)) {
+        // Managed mode attached this user and no longer governs them - they joined an
+        // excluded group since, or a disconnection an administrator's change asked for
+        // did not go through (EXO-89654). Disconnected here, then attached again below
+        // when another server is designated for them.
+        caldavRelayService.disconnectForUser(Long.parseLong(identity.getId()), username);
+        LOG.info("User {} disconnected from the CalDAV server managed mode attached them to: it no longer applies to them",
+                 username);
+        if (serverId == null) {
+          return Outcome.DETACHED;
+        }
+      } else if (serverId == null) {
         LOG.debug("User {} not enrolled: no managed CalDAV server applies to them", username);
         return Outcome.NOT_MANAGED;
       }
@@ -170,7 +189,7 @@ public class CaldavManagedEnrollmentService {
    */
   private Outcome attach(Long serverId, String username) throws Exception {
     try {
-      CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(serverId, username);
+      CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(serverId, username, true);
       if (CaldavProbeResult.OK.equals(outcome.getResult())) {
         LOG.info("User {} attached to the managed CalDAV server {} at login", username, serverId);
         return Outcome.ATTACHED;
@@ -193,6 +212,26 @@ public class CaldavManagedEnrollmentService {
   }
 
   /**
+   * Whether managed mode attached this user and no longer governs them: it designates
+   * nothing for them, or another server than the one they are on. A user who made their
+   * own connection is never concerned. Judged by the verdict that refuses a user whose
+   * identity cannot be resolved: that refusal fails the login's enrolment, and nothing
+   * is deleted.
+   *
+   * @param userIdentityId the identity of the user
+   * @param username the eXo login
+   * @return true when the user is to be disconnected
+   */
+  private boolean isNoLongerGoverned(long userIdentityId, String username) {
+    if (!caldavConnectorStorage.isConnectedByManagedMode(userIdentityId)) {
+      return false;
+    }
+    Long serverId = caldavManagedModeService.governingServerFor(username);
+    CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    return serverId == null || setting == null || !serverId.equals(setting.getServerId());
+  }
+
+  /**
    * Rule one: whether the user already has a CalDAV configuration, whatever
    * server it names. The username is what "credentials exist" survives as in
    * the stored setting - the letter of the board's rule, and the predicate the
@@ -200,9 +239,9 @@ public class CaldavManagedEnrollmentService {
    * {@code CaldavServerService.isConnected}, which also asks whether the stored
    * record can still authenticate: a record left behind by an administrator's
    * change (a server switched to a provider that asks the user) reads as "has a
-   * configuration" here and as "reconnect" in the UI, and removing such records
-   * is EXO-89654's, not a reason to re-attach over them at login. A calendar
-   * connector of another kind - Google, Office 365, Exchange - is another
+   * configuration" here and as "reconnect" in the UI: such a record is the
+   * administrator's change to disconnect, never a reason to re-attach over it at
+   * login. A calendar connector of another kind - Google, Office 365, Exchange - is another
    * population of connectors and plays no part here: its user is attached to
    * CalDAV as well, and agenda lists both (decision 2026-09-23).
    *
@@ -268,6 +307,6 @@ public class CaldavManagedEnrollmentService {
 
   /** What a login attempt came to, one value per branch of the three rules and their failures. */
   public enum Outcome {
-    NOT_MANAGED, ALREADY_CONFIGURED, ATTACHED, REFUSED, FAILED
+    NOT_MANAGED, ALREADY_CONFIGURED, ATTACHED, REFUSED, FAILED, DETACHED
   }
 }

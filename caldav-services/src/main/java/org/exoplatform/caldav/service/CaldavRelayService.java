@@ -420,6 +420,25 @@ public class CaldavRelayService {
    */
   public CaldavProbeResult connectThroughProvider(Long serverId, String exoLogin) throws ObjectNotFoundException,
                                                                                   IllegalAccessException {
+    return connectThroughProvider(serverId, exoLogin, false);
+  }
+
+  /**
+   * Connects a user through the server's provider, as
+   * {@link #connectThroughProvider(Long, String)} does, and records who made the
+   * connection: managed mode at login, or the user themselves (EXO-89654). Only a
+   * connection made by managed mode is marked; one the user makes clears the mark, since
+   * it is their own choice from then on.
+   *
+   * @param serverId the server to connect to, null for the default one
+   * @param exoLogin the eXo login connecting
+   * @param byManagedMode true when managed mode makes the connection at login
+   * @return the probe's outcome; the connection is recorded only when it is OK
+   * @throws ObjectNotFoundException when no server is declared
+   * @throws IllegalAccessException when the server is inactive or its provider disabled
+   */
+  public CaldavProbeResult connectThroughProvider(Long serverId, String exoLogin, boolean byManagedMode) throws ObjectNotFoundException,
+                                                                                                      IllegalAccessException {
     CaldavServer server = serverId == null ? caldavServerService.resolveServer(null)
                                            : caldavServerService.getServerById(serverId);
     if (server == null) {
@@ -471,8 +490,36 @@ public class CaldavRelayService {
       // while caldav's can no longer refuse once the account is named.
       agendaUserSettingsService.saveUserConnector(server.getProviderName(), account, identityId);
       caldavConnectorService.createProviderBackedSetting(setting, identityId);
+      caldavConnectorStorage.markConnectedByManagedMode(identityId, byManagedMode);
     }
     return outcome;
+  }
+
+  /**
+   * Disconnects a user on the platform's initiative - an administrator's change, or
+   * the login that finds managed mode no longer governs them (EXO-89654). The
+   * counterpart of {@link #connectThroughProvider(Long, String, boolean)}: agenda's
+   * record of the connection goes as well as caldav's, or "My calendars" would still
+   * show a connector whose account is gone. A user's own disconnection goes through
+   * the front, which removes agenda's record itself.
+   *
+   * @param userIdentityId the identity to disconnect
+   * @param username the eXo login, null when the identity no longer names anybody
+   */
+  public void disconnectForUser(long userIdentityId, String username) {
+    CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    Long serverId = setting.getServerId();
+    CaldavServer server = serverId == null ? null : caldavServerService.resolveServer(serverId);
+    // resolveServer falls back to the seed registration: only the row the setting
+    // names is the connector agenda recorded.
+    if (server != null && serverId.longValue() == server.getId()) {
+      try {
+        agendaUserSettingsService.removeUserConnector(server.getProviderName(), userIdentityId);
+      } catch (RuntimeException e) {
+        LOG.warn("Agenda's record of the CalDAV connection of user identity {} could not be removed", userIdentityId, e);
+      }
+    }
+    caldavConnectorService.deleteCaldavSetting(userIdentityId, username);
   }
 
   /**

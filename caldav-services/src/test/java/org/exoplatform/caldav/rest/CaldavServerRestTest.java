@@ -48,6 +48,7 @@ import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.CaldavManagedMode;
 import org.exoplatform.caldav.rest.model.CaldavManagedModeRequest;
+import org.exoplatform.caldav.service.CaldavManagedDisconnectionService;
 import org.exoplatform.caldav.service.CaldavManagedModeService;
 import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.caldav.service.CaldavTuningService;
@@ -81,6 +82,9 @@ public class CaldavServerRestTest {
 
   @Mock
   private CaldavManagedModeService caldavManagedModeService;
+
+  @Mock
+  private CaldavManagedDisconnectionService caldavManagedDisconnectionService;
 
   @Mock
   private HttpServletRequest  request;
@@ -609,5 +613,51 @@ public class CaldavServerRestTest {
                                                    () -> caldavServerRest.getProviderConfig(request, 7));
 
     assertEquals(HttpStatus.FORBIDDEN, refusal.getStatusCode());
+  }
+
+  /** EXO-89654. The preview answers how many accounts the proposed managed-mode state would disconnect. */
+  @Test
+  public void previewManagedModeAnswersTheAccountCount() throws Exception {
+    when(request.getRemoteUser()).thenReturn("root");
+    when(caldavManagedDisconnectionService.countUsersNoLongerManaged(9L, List.of("/externals"), "root")).thenReturn(3);
+    when(caldavManagedDisconnectionService.countUsersNoLongerManaged(null, List.of(), "root")).thenReturn(5);
+
+    assertEquals(3, caldavServerRest.previewManagedMode(request, new CaldavManagedModeRequest(9L, List.of("/externals"))).affectedAccounts());
+    // No body, or no server, is the preview of switching managed mode off.
+    assertEquals(5, caldavServerRest.previewManagedMode(request, null).affectedAccounts());
+  }
+
+  /** EXO-89654. The count of a server's users is what a provider change would disconnect. */
+  @Test
+  public void countConnectedUsersAnswersTheUsersOfTheServer() throws Exception {
+    when(request.getRemoteUser()).thenReturn("root");
+    when(caldavManagedDisconnectionService.countUsersOf(7L, "root")).thenReturn(2);
+
+    assertEquals(2, caldavServerRest.countConnectedUsers(request, 7L).affectedAccounts());
+  }
+
+  /** EXO-89654. Counting the users of a server that does not exist is a 404. */
+  @Test
+  public void countConnectedUsersOfAnUnknownServerIsNotFound() throws Exception {
+    when(request.getRemoteUser()).thenReturn("root");
+    when(caldavManagedDisconnectionService.countUsersOf(99L, "root"))
+        .thenThrow(new org.exoplatform.commons.exception.ObjectNotFoundException("CalDAV server with id 99 doesn't exist"));
+
+    assertEquals(HttpStatus.NOT_FOUND,
+                 assertThrows(ResponseStatusException.class, () -> caldavServerRest.countConnectedUsers(request, 99L)).getStatusCode());
+  }
+
+  /** EXO-89654. A caller the service refuses is a 403 on both previews. */
+  @Test
+  public void previewsByANonAdministratorAreForbidden() throws Exception {
+    when(request.getRemoteUser()).thenReturn("mary");
+    when(caldavManagedDisconnectionService.countUsersOf(7L, "mary")).thenThrow(new IllegalAccessException("not an administrator"));
+    when(caldavManagedDisconnectionService.countUsersNoLongerManaged(null, List.of(), "mary"))
+        .thenThrow(new IllegalAccessException("not an administrator"));
+
+    assertEquals(HttpStatus.FORBIDDEN,
+                 assertThrows(ResponseStatusException.class, () -> caldavServerRest.countConnectedUsers(request, 7L)).getStatusCode());
+    assertEquals(HttpStatus.FORBIDDEN,
+                 assertThrows(ResponseStatusException.class, () -> caldavServerRest.previewManagedMode(request, null)).getStatusCode());
   }
 }

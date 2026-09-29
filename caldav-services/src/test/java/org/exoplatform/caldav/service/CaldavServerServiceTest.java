@@ -57,6 +57,7 @@ import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
@@ -90,6 +91,7 @@ import org.exoplatform.container.RootContainer.PortalContainerInitTask;
 import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.security.Identity;
+import org.exoplatform.caldav.event.CaldavServerProviderChangedEvent;
 
 /**
  * The registry of CalDAV servers is an administration surface bridged into
@@ -178,6 +180,9 @@ public class CaldavServerServiceTest {
   private CaldavServerUrlValidator caldavServerUrlValidator =
                                                             new CaldavServerUrlValidator("https", "80,443", "", false,
                                                                                          CaldavServerServiceTest::resolve);
+
+  @Mock
+  private ApplicationEventPublisher eventPublisher;
 
   @InjectMocks
   private CaldavServerService      caldavServerService;
@@ -324,6 +329,55 @@ public class CaldavServerServiceTest {
     ArgumentCaptor<CaldavServer> written = ArgumentCaptor.forClass(CaldavServer.class);
     verify(caldavServerStorage).updateServer(written.capture());
     assertEquals(WriteChannel.CALDAV, written.getValue().getWriteChannel(), "stated to the storage, which keeps a null as-is");
+  }
+
+  /** EXO-89654. Moving a server to another provider announces the disconnection of every user of it. */
+  @Test
+  public void aProviderChangeAnnouncesTheDisconnectionOfEveryUser() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Bluemind", null, SERVER_URL, true);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    CaldavServer posted = server(7, null, "Bluemind", null, SERVER_URL, true);
+    posted.setAuthProviderName("personal");
+
+    assertDoesNotThrow(() -> caldavServerService.updateServer(posted, ADMIN_USER));
+
+    ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
+    verify(eventPublisher).publishEvent(published.capture());
+    assertEquals(7L, ((CaldavServerProviderChangedEvent) published.getValue()).getServerId());
+  }
+
+  /** EXO-89654. An edit that keeps the provider, or leaves it blank, disconnects nobody. */
+  @Test
+  public void anEditThatKeepsTheProviderDisconnectsNobody() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Bluemind", null, SERVER_URL, true);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    CaldavServer sameProvider = server(7, null, "Renamed", null, SERVER_URL, true);
+    sameProvider.setAuthProviderName("bluemind-sudo");
+    CaldavServer blankProvider = server(7, null, "Renamed", null, SERVER_URL, true);
+    blankProvider.setAuthProviderName(null);
+
+    assertDoesNotThrow(() -> caldavServerService.updateServer(sameProvider, ADMIN_USER));
+    assertDoesNotThrow(() -> caldavServerService.updateServer(blankProvider, ADMIN_USER));
+
+    verify(eventPublisher, never()).publishEvent(any());
+  }
+
+  /** EXO-89654. The users of a server are the identities whose stored server id names it. */
+  @Test
+  public void listsTheIdentitiesConnectedToAServer() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(), anyInt()))
+        .thenReturn(List.of(Context.USER.id("41"), Context.USER.id("42"), Context.USER.id("43")));
+    doReturn(SettingValue.create("7")).when(settingService).get(eq(Context.USER.id("41")), any(), anyString());
+    doReturn(SettingValue.create("8")).when(settingService).get(eq(Context.USER.id("42")), any(), anyString());
+    when(settingService.get(eq(Context.USER.id("43")), any(), anyString())).thenReturn(null);
+
+    assertEquals(List.of(41L), caldavServerService.getUserIdentitiesOfServer(7L));
   }
 
   /**

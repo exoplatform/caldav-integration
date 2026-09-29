@@ -16,11 +16,14 @@
  */
 package org.exoplatform.caldav.storage;
 
+import java.util.List;
+
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
+import org.exoplatform.commons.api.settings.data.Scope;
 
 public class CaldavConnectorStorage {
 
@@ -190,5 +193,57 @@ public class CaldavConnectorStorage {
     this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
                                CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
+    // The managed-mode mark goes with the connection it marked (EXO-89654).
+    markConnectedByManagedMode(userIdentityId, false);
+  }
+
+  /**
+   * Records, or clears, that managed mode made this user's CalDAV connection
+   * (EXO-89654).
+   *
+   * @param userIdentityId technical identity identifier of the user
+   * @param byManagedMode true to mark the connection, false to clear the mark
+   */
+  public void markConnectedByManagedMode(long userIdentityId, boolean byManagedMode) {
+    if (byManagedMode) {
+      this.settingService.set(Context.USER.id(String.valueOf(userIdentityId)),
+                              CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                              CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY,
+                              SettingValue.create(Boolean.TRUE.toString()));
+    } else {
+      this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
+                                 CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                 CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY);
+    }
+  }
+
+  /**
+   * Whether managed mode made this user's CalDAV connection.
+   *
+   * @param userIdentityId technical identity identifier of the user
+   * @return true when managed mode made it and the user has not connected since
+   */
+  public boolean isConnectedByManagedMode(long userIdentityId) {
+    return this.settingService.get(Context.USER.id(String.valueOf(userIdentityId)),
+                                   CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                   CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY) != null;
+  }
+
+  /**
+   * The users whose CalDAV connection managed mode made, by one query on the mark - no
+   * user setting is read.
+   *
+   * @return their technical identity identifiers
+   */
+  public List<Long> getIdentitiesConnectedByManagedMode() {
+    return this.settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                       Scope.APPLICATION.getName(),
+                                                                       CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE.getId(),
+                                                                       CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY,
+                                                                       0,
+                                                                       Integer.MAX_VALUE)
+                              .stream()
+                              .map(context -> Long.valueOf(context.getId()))
+                              .toList();
   }
 }

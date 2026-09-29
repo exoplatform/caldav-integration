@@ -40,6 +40,14 @@ public class CaldavConnectorUtils {
 
   public static final String CALDAV_SERVER_ID_KEY           = "CaldavServerId";
 
+  /**
+   * Marks a CalDAV connection made by managed mode rather than by the user (EXO-89654).
+   * Its presence is the whole fact: the users it marks are listed by one query on the
+   * key, and they are always connected to the designated server, since changing the
+   * designation disconnects them.
+   */
+  public static final String CALDAV_CONNECTED_BY_MANAGED_MODE_KEY = "connectedByManagedMode";
+
   public static final String CALDAV_SERVER_URL_INIT_PARAM   = "exo.agenda.caldav.connector.url";
 
   private static final Log   LOG                            = ExoLogger.getLogger(CaldavConnectorUtils.class);

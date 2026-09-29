@@ -26,8 +26,15 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -47,6 +54,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -606,6 +614,104 @@ public class CaldavRelayServiceTest {
     HttpResponse response = org.mockito.Mockito.mock(HttpResponse.class);
     when(response.statusCode()).thenReturn(status);
     when(httpClient.send(any(), any())).thenReturn(response);
+  }
+
+  private void givenOneClickConnection() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, USERNAME)).thenReturn(identity);
+    when(identity.getId()).thenReturn(String.valueOf(IDENTITY_ID));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
+    givenProbeAnswer(207);
+  }
+
+  /** EXO-89654. A connection managed mode makes at login is marked as such. */
+  @Test
+  public void aConnectionManagedModeMakesIsMarked() throws Exception {
+    givenOneClickConnection();
+
+    caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME, true);
+
+    verify(caldavConnectorStorage).markConnectedByManagedMode(IDENTITY_ID, true);
+  }
+
+  /** EXO-89654. A one-click connection the user makes clears the mark: it is their own choice. */
+  @Test
+  public void aOneClickConnectionTheUserMakesClearsTheMark() throws Exception {
+    givenOneClickConnection();
+
+    caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
+
+    verify(caldavConnectorStorage).markConnectedByManagedMode(IDENTITY_ID, false);
+  }
+
+  /** EXO-89654. A refused probe records nothing, and marks nothing. */
+  @Test
+  public void aRefusedConnectionMarksNothing() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
+    givenProbeAnswer(403);
+
+    caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME, true);
+
+    verify(caldavConnectorStorage, never()).markConnectedByManagedMode(anyLong(), anyBoolean());
+  }
+
+  /**
+   * EXO-89654. A disconnection on the platform's initiative removes agenda's record of
+   * the connection as well as caldav's, or "My calendars" would still show it.
+   */
+  @Test
+  public void aPlatformDisconnectionRemovesAgendasRecordThenCaldavs() {
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(SERVER_ID));
+    when(caldavServerService.resolveServer(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+
+    caldavRelayService.disconnectForUser(IDENTITY_ID, USERNAME);
+
+    InOrder order = inOrder(agendaUserSettingsService, caldavConnectorService);
+    order.verify(agendaUserSettingsService).removeUserConnector("agenda.caldavCalendar." + SERVER_ID, IDENTITY_ID);
+    order.verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
+  }
+
+  /**
+   * EXO-89654. A setting naming a row that no longer exists resolves to the seed
+   * registration: agenda's record of another connector is left alone, and caldav's
+   * setting still goes.
+   */
+  @Test
+  public void aPlatformDisconnectionNeverRemovesAnotherConnectorsRecord() {
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(SERVER_ID));
+    when(caldavServerService.resolveServer(SERVER_ID)).thenReturn(server(1L, true));
+
+    caldavRelayService.disconnectForUser(IDENTITY_ID, USERNAME);
+
+    verify(agendaUserSettingsService, never()).removeUserConnector(anyString(), anyLong());
+    verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
+  }
+
+  /** EXO-89654. Agenda refusing to forget the connector does not keep caldav's setting. */
+  @Test
+  public void aPlatformDisconnectionDeletesCaldavsSettingEvenWhenAgendaFails() {
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(SERVER_ID));
+    when(caldavServerService.resolveServer(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    doThrow(new IllegalStateException("agenda unavailable")).when(agendaUserSettingsService)
+                                                            .removeUserConnector(anyString(), anyLong());
+
+    caldavRelayService.disconnectForUser(IDENTITY_ID, USERNAME);
+
+    verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
+  }
+
+  private CaldavUserSetting settingOn(long serverId) {
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("mary@bm.example.org");
+    setting.setServerId(serverId);
+    return setting;
   }
 
   /**

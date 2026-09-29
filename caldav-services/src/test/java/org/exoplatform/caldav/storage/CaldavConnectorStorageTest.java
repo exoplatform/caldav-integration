@@ -277,4 +277,45 @@ public class CaldavConnectorStorageTest {
                                   CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                   CaldavConnectorUtils.CALDAV_MIRROR_CALENDAR_KEY);
   }
+
+  /** EXO-89654. The managed-mode mark is set, read and cleared in the user's connector scope. */
+  @Test
+  public void marksReadsAndClearsTheManagedModeConnection() {
+    caldavConnectorStorage.markConnectedByManagedMode(USER_IDENTITY_ID, true);
+    verify(settingService).set(eq(Context.USER.id("42")),
+                               eq(CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE),
+                               eq(CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY),
+                               settingValueCaptor.capture());
+    assertEquals("true", settingValueCaptor.getValue().getValue());
+
+    caldavConnectorStorage.markConnectedByManagedMode(USER_IDENTITY_ID, false);
+    verify(settingService).remove(Context.USER.id("42"),
+                                  CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                  CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY);
+  }
+
+  /** EXO-89654. A disconnection takes the mark with it. */
+  @Test
+  public void aDisconnectionClearsTheManagedModeMark() {
+    caldavConnectorStorage.deleteCaldavSetting(USER_IDENTITY_ID);
+
+    verify(settingService).remove(Context.USER.id("42"),
+                                  CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                  CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY);
+  }
+
+  /** EXO-89654. The users managed mode attached are one query on the mark: no user setting is read. */
+  @Test
+  public void theUsersManagedModeAttachedAreOneQueryOnTheMark() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName("USER",
+                                                                "APPLICATION",
+                                                                "CaldavAgendaConnector",
+                                                                CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY,
+                                                                0,
+                                                                Integer.MAX_VALUE))
+        .thenReturn(java.util.List.of(Context.USER.id("42"), Context.USER.id("43")));
+
+    assertEquals(java.util.List.of(42L, 43L), caldavConnectorStorage.getIdentitiesConnectedByManagedMode());
+    verify(settingService, never()).get(any(), any(), any());
+  }
 }

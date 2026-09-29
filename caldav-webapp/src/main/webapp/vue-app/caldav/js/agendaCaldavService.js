@@ -681,11 +681,53 @@ export const saveManagedMode = (serverId, excludedGroups = []) => {
 };
 
 /**
+ * Counts, before anything is stored, the accounts a managed-mode change would
+ * disconnect: the users managed mode attached that the proposed state no longer
+ * governs (EXO-89654). Administrators only.
+ *
+ * @param {Number} serverId the server the change designates, null to preview switching off
+ * @param {Array<String>} excludedGroups eXo group ids the change excludes
+ * @returns {Promise<Number>} the number of accounts the change would disconnect
+ */
+export const previewManagedMode = (serverId, excludedGroups = []) => {
+  return fetch(`${window.location.origin}/caldav/rest/servers/managed/preview`, {
+    credentials: 'include',
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({serverId, excludedGroups}),
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json().then(preview => preview.affectedAccounts);
+  });
+};
+
+/**
+ * Counts the users connected to a server: what moving it to another credentials
+ * provider would disconnect (EXO-89654). Administrators only.
+ *
+ * @param {Number} serverId technical identifier of the registration
+ * @returns {Promise<Number>} the number of users connected to it
+ */
+export const countConnectedUsers = (serverId) => {
+  return fetch(`${window.location.origin}/caldav/rest/servers/${serverId}/connected-users/count`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json().then(preview => preview.affectedAccounts);
+  });
+};
+
+/**
  * Gives every user back the choice of their own CalDAV server. Administrators
  * only.
  *
- * Nothing is severed: the mode governs which affordances are offered, never
- * the connections that already exist.
+ * The users managed mode attached are disconnected in the background; the users
+ * who chose a server themselves keep it (EXO-89654).
  *
  * @returns {Promise<Object>} the mode now in force, naming no server
  */

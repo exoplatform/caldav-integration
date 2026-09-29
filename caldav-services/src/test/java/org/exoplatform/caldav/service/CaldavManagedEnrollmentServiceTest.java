@@ -19,8 +19,11 @@ package org.exoplatform.caldav.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -28,6 +31,7 @@ import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.concurrent.RejectedExecutionException;
@@ -39,6 +43,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.InjectMocks;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -116,11 +121,92 @@ class CaldavManagedEnrollmentServiceTest {
     return outcome;
   }
 
+  private void attachedByManagedModeTo(Long serverId) {
+    when(caldavConnectorStorage.isConnectedByManagedMode(IDENTITY_ID)).thenReturn(true);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("mary@bm.example.org");
+    setting.setServerId(serverId);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(setting);
+  }
+
+  /** EXO-89654. A user managed mode attached, now in an excluded group, is disconnected at login. */
+  @Test
+  void disconnectsAtLoginAUserManagedModeAttachedAndNoLongerGoverns() throws Exception {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(null);
+    when(caldavManagedModeService.governingServerFor(USER)).thenReturn(null);
+    attachedByManagedModeTo(7L);
+
+    assertEquals(Outcome.DETACHED, service.enrollOnLogin(USER));
+
+    verify(caldavRelayService).disconnectForUser(IDENTITY_ID, USER);
+    verify(caldavRelayService, never()).connectThroughProvider(anyLong(), anyString(), anyBoolean());
+  }
+
+  /**
+   * EXO-89654. A user managed mode attached whose identity cannot be resolved - the
+   * directory failed - is not disconnected: the enrolment fails and the next login
+   * decides.
+   */
+  @Test
+  void neverDisconnectsAtLoginAUserWhoseIdentityCannotBeResolved() {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(null);
+    attachedByManagedModeTo(7L);
+    when(caldavManagedModeService.governingServerFor(USER)).thenThrow(new IllegalStateException("no identity"));
+
+    assertEquals(Outcome.FAILED, service.enrollOnLogin(USER));
+
+    verify(caldavRelayService, never()).disconnectForUser(anyLong(), any());
+  }
+
+  /** EXO-89654. A user who chose their server is not touched in the same situation. */
+  @Test
+  void neverDisconnectsAUserWhoChoseTheirServer() {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(null);
+    when(caldavConnectorStorage.isConnectedByManagedMode(IDENTITY_ID)).thenReturn(false);
+
+    assertEquals(Outcome.NOT_MANAGED, service.enrollOnLogin(USER));
+
+    verify(caldavRelayService, never()).disconnectForUser(anyLong(), any());
+  }
+
+  /** EXO-89654. Attached to a server no longer designated: disconnected, then attached to the one designated now. */
+  @Test
+  void movesAtLoginAUserManagedModeAttachedToAServerNoLongerDesignated() throws Exception {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
+    when(caldavManagedModeService.governingServerFor(USER)).thenReturn(7L);
+    attachedByManagedModeTo(3L);
+    when(caldavRelayService.connectThroughProvider(7L, USER, true)).thenReturn(probe(CaldavProbeResult.OK));
+    // After the disconnection the user has no configuration left.
+    CaldavUserSetting none = new CaldavUserSetting();
+    CaldavUserSetting before = new CaldavUserSetting();
+    before.setUsername("mary@bm.example.org");
+    before.setServerId(3L);
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(before, none);
+
+    assertEquals(Outcome.ATTACHED, service.enrollOnLogin(USER));
+
+    InOrder order = inOrder(caldavRelayService);
+    order.verify(caldavRelayService).disconnectForUser(IDENTITY_ID, USER);
+    order.verify(caldavRelayService).connectThroughProvider(7L, USER, true);
+  }
+
+  /** EXO-89654. Attached by managed mode to the designated server: left alone. */
+  @Test
+  void leavesAloneAUserManagedModeAttachedToTheDesignatedServer() {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
+    when(caldavManagedModeService.governingServerFor(USER)).thenReturn(7L);
+    attachedByManagedModeTo(7L);
+
+    assertEquals(Outcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
+
+    verify(caldavRelayService, never()).disconnectForUser(anyLong(), any());
+  }
+
   /**
    * Managed mode does not apply - nothing designated, or an excluded user;
-   * commons-exo answered null and this class does not care which: the user's
-   * own settings are not even opened, which is what every login pays on an
-   * instance where the mode is off.
+   * commons-exo answered null and this class does not care which: only the
+   * managed-mode mark is read, which is what every login pays on an instance
+   * where the mode is off.
    */
   @Test
   void doesNothingWhenManagedModeDoesNotApply() {
@@ -128,7 +214,10 @@ class CaldavManagedEnrollmentServiceTest {
 
     assertEquals(Outcome.NOT_MANAGED, service.enrollOnLogin(USER));
 
-    verifyNoInteractions(caldavConnectorStorage, caldavRelayService);
+    // Only the managed-mode mark is read: a user managed mode never attached is left alone.
+    verify(caldavConnectorStorage).isConnectedByManagedMode(anyLong());
+    verifyNoMoreInteractions(caldavConnectorStorage);
+    verifyNoInteractions(caldavRelayService);
   }
 
   /**
@@ -143,7 +232,7 @@ class CaldavManagedEnrollmentServiceTest {
 
     assertEquals(Outcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
 
-    verify(caldavRelayService, never()).connectThroughProvider(anyLong(), anyString());
+    verify(caldavRelayService, never()).connectThroughProvider(anyLong(), anyString(), anyBoolean());
   }
 
   /**
@@ -154,7 +243,7 @@ class CaldavManagedEnrollmentServiceTest {
   void attachesAUserWithoutAConfiguration() throws Exception {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
     configured(false);
-    when(caldavRelayService.connectThroughProvider(7L, USER)).thenReturn(probe(CaldavProbeResult.OK));
+    when(caldavRelayService.connectThroughProvider(7L, USER, true)).thenReturn(probe(CaldavProbeResult.OK));
 
     assertEquals(Outcome.ATTACHED, service.enrollOnLogin(USER));
   }
@@ -169,7 +258,7 @@ class CaldavManagedEnrollmentServiceTest {
   void leavesUnattachedAUserTheServerRefuses() throws Exception {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
     configured(false);
-    when(caldavRelayService.connectThroughProvider(7L, USER)).thenReturn(probe(CaldavProbeResult.CREDENTIALS));
+    when(caldavRelayService.connectThroughProvider(7L, USER, true)).thenReturn(probe(CaldavProbeResult.CREDENTIALS));
 
     assertEquals(Outcome.REFUSED, service.enrollOnLogin(USER));
   }
@@ -184,7 +273,7 @@ class CaldavManagedEnrollmentServiceTest {
   void leavesUnattachedAUserTheConnectRefuses(Exception refusal) throws Exception {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
     configured(false);
-    doThrow(refusal).when(caldavRelayService).connectThroughProvider(7L, USER);
+    doThrow(refusal).when(caldavRelayService).connectThroughProvider(7L, USER, true);
 
     assertEquals(Outcome.REFUSED, service.enrollOnLogin(USER));
   }
@@ -208,7 +297,7 @@ class CaldavManagedEnrollmentServiceTest {
     Exception transport = new java.nio.channels.ClosedChannelException();
     Exception unreachable = new IllegalStateException("caldav.relay.notConnected",
                                                       new RuntimeException("Cannot reach BlueMind on /api/auth/login", transport));
-    doThrow(unreachable).when(caldavRelayService).connectThroughProvider(7L, USER);
+    doThrow(unreachable).when(caldavRelayService).connectThroughProvider(7L, USER, true);
 
     try (LogRecorder log = new LogRecorder(CaldavManagedEnrollmentService.class)) {
       assertEquals(Outcome.REFUSED, service.enrollOnLogin(USER));
