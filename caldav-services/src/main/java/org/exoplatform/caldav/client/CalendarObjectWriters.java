@@ -33,6 +33,7 @@ import org.exoplatform.caldav.plugin.CalendarWriteChannelPlugin;
 import org.exoplatform.caldav.service.CaldavPushException;
 import org.exoplatform.caldav.service.CaldavPushService;
 import org.exoplatform.caldav.service.CaldavServerService;
+import org.exoplatform.caldav.service.ContributedBeans;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -91,14 +92,15 @@ public class CalendarObjectWriters {
    *
    * @param caldavServerService the registry the channel is read from
    * @param calDavObjectWriter the CalDAV door
-   * @param plugins the contributed doors, from every web application; null
-   *          reads as none
+   * @param plugins the contributed doors, from every web application, each
+   *          read on its own so that one which cannot be created is left out
+   *          ({@link ContributedBeans}); null reads as none
    */
   @Autowired
   public CalendarObjectWriters(CaldavServerService caldavServerService,
                                CalDavObjectWriter calDavObjectWriter,
                                ObjectProvider<CalendarWriteChannelPlugin> plugins) {
-    this(caldavServerService, calDavObjectWriter, () -> plugins == null ? List.of() : plugins.orderedStream().toList());
+    this(caldavServerService, calDavObjectWriter, new ContributedBeans<>(plugins, "write channel", CalendarWriteChannelPlugin::channel));
   }
 
   /**
