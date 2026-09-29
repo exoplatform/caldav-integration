@@ -868,4 +868,15 @@ public class CaldavConnectorServiceImplTest {
     return setting;
   }
 
+  /** A connection the user types is their own choice: the managed-mode mark is cleared. */
+  @Test
+  public void aTypedConnectionClearsTheManagedModeMark() throws Exception {
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+
+    caldavConnectorService.createCaldavSetting(setting, 7L);
+
+    verify(caldavConnectorStorage).markConnectedByManagedMode(7L, false);
+  }
 }
