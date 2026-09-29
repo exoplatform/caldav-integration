@@ -88,6 +88,7 @@ import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.caldav.client.bluemind.BlueMindServerFlavour;
+import org.exoplatform.caldav.client.bluemind.BlueMindServerSeed;
 import org.exoplatform.container.PortalContainer;
 import org.exoplatform.container.RootContainer.PortalContainerInitTask;
 import org.exoplatform.container.component.RequestLifeCycle;
@@ -234,6 +235,11 @@ public class CaldavServerServiceTest {
     ReflectionTestUtils.setField(caldavServerService,
                                  "calendarServerFlavourRegistry",
                                  CalendarServerFlavourRegistry.of(List.of(new BlueMindServerFlavour(blueMindSessionService))));
+    // So is the BlueMind row a fresh install receives, since EXO-90737: the
+    // seeding pins below measure the built-in seed, as installed today.
+    ReflectionTestUtils.setField(caldavServerService,
+                                 "calendarServerSeedRegistry",
+                                 CalendarServerSeedRegistry.of(List.of(new BlueMindServerSeed())));
   }
 
   /**
