@@ -31,6 +31,8 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.BeanCreationException;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.support.DefaultListableBeanFactory;
+import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 
@@ -63,7 +65,7 @@ public class ContributedBeansTest {
 
   /** A contribution declaring the first order. */
   @Order(1)
-  private static final class First implements Runnable {
+  public static final class First implements Runnable {
 
     /** Does nothing: the contribution is only read. */
     @Override
@@ -74,7 +76,7 @@ public class ContributedBeansTest {
 
   /** A contribution declaring the second order. */
   @Order(2)
-  private static final class Second implements Runnable {
+  public static final class Second implements Runnable {
 
     /** Does nothing: the contribution is only read. */
     @Override
@@ -108,22 +110,23 @@ public class ContributedBeansTest {
   }
 
   /**
-   * No provider reads as no contribution, and a listing that fails part-way
-   * keeps what it had read, never throwing.
+   * No provider reads as no contribution, and a listing that fails to create
+   * one bean goes on past it, never throwing.
    */
   @Test
   public void aMissingOrFailingListingReadsAsWhatCouldBeRead() {
     assertTrue(new ContributedBeans<Runnable>(null, "test", bean -> bean).get().isEmpty());
-    Runnable first = new First();
-    @SuppressWarnings("unchecked")
-    ObjectProvider<Runnable> failing = mock(ObjectProvider.class);
-    when(failing.stream()).thenAnswer(invocation -> Stream.of(first, new Second()).map(bean -> {
-      if (bean != first) {
-        throw new BeanCreationException("broken", "the bean could not be created");
-      }
-      return bean;
+    DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
+    factory.registerBeanDefinition("broken", new RootBeanDefinition(Runnable.class, () -> {
+      throw new IllegalStateException("cannot create");
     }));
-    assertEquals(List.of(first), new ContributedBeans<>(failing, "test", bean -> bean).get());
+    factory.registerBeanDefinition("second", new RootBeanDefinition(Second.class));
+    factory.registerBeanDefinition("alsoBroken", new RootBeanDefinition(Runnable.class, () -> {
+      throw new IllegalStateException("cannot create either");
+    }));
+    factory.registerBeanDefinition("first", new RootBeanDefinition(First.class));
+    List<Runnable> read = new ContributedBeans<>(factory.getBeanProvider(Runnable.class), "test", bean -> bean).get();
+    assertEquals(List.of(First.class, Second.class), read.stream().map(Object::getClass).toList());
     @SuppressWarnings("unchecked")
     ObjectProvider<Runnable> unreadable = mock(ObjectProvider.class);
     when(unreadable.stream()).thenThrow(new IllegalStateException("no bean factory"));
