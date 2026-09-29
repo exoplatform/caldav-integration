@@ -81,6 +81,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.agenda.constant.AgendaEventModificationType;
+import org.exoplatform.agenda.constant.EventAccess;
 import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;

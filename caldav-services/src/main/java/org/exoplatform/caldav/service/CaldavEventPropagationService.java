@@ -39,6 +39,7 @@ import org.springframework.stereotype.Service;
 import io.meeds.common.ContainerTransactional;
 
 import org.exoplatform.agenda.constant.AgendaEventModificationType;
+import org.exoplatform.agenda.constant.EventAccess;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
 import org.exoplatform.agenda.model.EventAttendeeList;
