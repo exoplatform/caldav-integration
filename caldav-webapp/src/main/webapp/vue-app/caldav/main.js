@@ -103,6 +103,10 @@ adminReadyPromise.then(() => {
     vueComponent: Vue.options.components['caldav-admin-servers-section'],
   });
   document.dispatchEvent(new CustomEvent('agenda-admin-sections-refresh'));
+}).catch(error => {
+  // Registering the section failed: say so rather than lose the error, as the page
+  // then simply shows no CalDAV servers section.
+  console.error('The CalDAV administration section could not be registered', error);
 });
 
 readyPromise.then(() => {
@@ -145,9 +149,9 @@ readyPromise.then(() => {
   });
   document.dispatchEvent(new CustomEvent('agenda-user-sections-refresh'));
 }).catch(error => {
-  // Registering the sections failed: say so rather than lose the error, as the page
-  // then simply shows no CalDAV section.
-  console.error('The CalDAV administration and user sections could not be registered', error);
+  // Registering the section failed: say so rather than lose the error, as the page
+  // then simply shows no CalDAV row in the user settings.
+  console.error('The CalDAV user settings section could not be registered', error);
 });
 
 // One agenda connector per ACTIVE declared server, its label merged into the
