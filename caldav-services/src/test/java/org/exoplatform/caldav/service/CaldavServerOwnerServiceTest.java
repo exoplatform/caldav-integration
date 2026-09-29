@@ -93,8 +93,8 @@ public class CaldavServerOwnerServiceTest {
    */
   @BeforeEach
   public void mintAnEndpoint() {
-    // BlueMind's subscription channel is a contribution since EXO-90730,
-    // registered here the way the platform registers it.
+    // BlueMind's subscription channel is a contribution, registered here as
+    // the platform registers it.
     ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
 
     lenient().when(endpoint.getServerId()).thenReturn(SERVER);
