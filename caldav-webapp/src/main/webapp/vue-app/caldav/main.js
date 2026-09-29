@@ -17,6 +17,7 @@
 import './initComponents.js';
 import * as agendaCaldavService from './js/agendaCaldavService.js';
 import {connectorsBelongOnThisPage, createCaldavConnector, createLegacyCaldavConnector, serverHost} from './caldav-connector/caldavConnector.js';
+import {includeServerPresets} from './js/serverPresetRegistry.js';
 
 if (!Vue.prototype.$agendaCaldavService) {
   window.Object.defineProperty(Vue.prototype, '$agendaCaldavService', {
@@ -72,13 +73,23 @@ document.addEventListener('open-caldav-connector-settings-drawer',function(event
 // below depends on it; the bundle is the only thing awaited.
 const readyPromise = i18nPromise.catch(() => null);
 
+// The servers section waits, besides the bundle, for the server presets
+// add-ons contribute (EXO-90730): its drawer reads them to offer a product's
+// preset and its write channel, and a module that has not run yet has
+// registered nothing. Bounded, so that a contribution that never answers
+// delays the section rather than hiding it; and awaited by this section
+// alone, never by the user's rows or the agenda connectors.
+const PRESETS_WAIT_MS = 5000;
+const adminReadyPromise = Promise.all([readyPromise,
+  Promise.race([includeServerPresets(), new Promise(resolve => window.setTimeout(resolve, PRESETS_WAIT_MS))])]);
+
 // The CalDAV servers section of the agenda administration page, and the rows
 // nested under My Calendars. Registered once the Caldav bundle is merged (a
 // failed bundle fetch still registers — raw keys beat a missing section) and
 // then the refresh event the pages listen to, since the module may run before
 // or after the app is created and whichever side arrives second finds the
 // other.
-readyPromise.then(() => {
+adminReadyPromise.then(() => {
   // Ranked first on the page, ahead of agenda's own built-in sections (the
   // connectors table at 20, the embed-map settings at 30): the connectors
   // table's CalDAV rows are DERIVED from this registry, so declaring the
@@ -92,7 +103,9 @@ readyPromise.then(() => {
     vueComponent: Vue.options.components['caldav-admin-servers-section'],
   });
   document.dispatchEvent(new CustomEvent('agenda-admin-sections-refresh'));
+});
 
+readyPromise.then(() => {
   // The user-settings row, ranked to land between the connected account and
   // the copy switch: what it offers back is a calendar of that account, so it
   // reads as part of it rather than as a fourth unrelated setting. The row

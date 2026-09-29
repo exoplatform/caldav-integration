@@ -53,7 +53,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   </v-list-item>
 </template>
 <script>
-import {SERVER_PRESETS, PRESET_NONE, presetValues, presetUrlPlaceholder, presetChangesWhatIsWritten} from '../../js/serverPresets.js';
+import {PRESET_NONE, presetValues, presetUrlPlaceholder, presetChangesWhatIsWritten, serverPresets} from '../../js/serverPresets.js';
+import {SERVER_PRESET_APP, SERVER_PRESET_EXTENSION} from '../../js/serverPresetRegistry.js';
 
 export default {
   data: () => ({
@@ -63,6 +64,12 @@ export default {
      * declaration begins blank whether or not this control exists.
      */
     presetId: PRESET_NONE,
+    /**
+     * The presets offered: the built-in ones and those contributed through
+     * the `server-preset` extension point (EXO-90730), read again whenever a
+     * contribution registers.
+     */
+    presets: serverPresets(),
   }),
   computed: {
     /**
@@ -72,7 +79,7 @@ export default {
      * @returns {Array} the select's items
      */
     items() {
-      return SERVER_PRESETS.map(preset => ({
+      return this.presets.map(preset => ({
         value: preset.id,
         text: this.$t(`caldav.admin.servers.preset.${preset.id}.label`),
       }));
@@ -96,7 +103,21 @@ export default {
       return presetChangesWhatIsWritten(this.presetId);
     },
   },
+  created() {
+    document.addEventListener(`extension-${SERVER_PRESET_APP}-${SERVER_PRESET_EXTENSION}-updated`, this.refreshPresets);
+  },
+  beforeDestroy() {
+    document.removeEventListener(`extension-${SERVER_PRESET_APP}-${SERVER_PRESET_EXTENSION}-updated`, this.refreshPresets);
+  },
   methods: {
+    /**
+     * Reads the presets again, after a contribution registered one.
+     *
+     * @returns {void}
+     */
+    refreshPresets() {
+      this.presets = serverPresets();
+    },
     /**
      * Announces the values the chosen preset fills in, and the address shape
      * to show beside the one field it cannot fill.
