@@ -25,6 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
+import org.springframework.beans.factory.BeanCreationException;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 import org.springframework.util.ClassUtils;
@@ -47,7 +48,9 @@ import org.exoplatform.services.log.Log;
  * asked a question of its own first (the probe, its identity on the extension
  * point), then its order, inside its own guard; one that fails either is left
  * out and said so, once per contribution, and the others are sorted by the
- * orders read.
+ * orders read. A contribution of this web application that the bean factory
+ * itself fails to create while listing is left out the same way, and the
+ * listing goes on past it.
  *
  * @param <T> the extension point's contract
  */
@@ -55,6 +58,14 @@ public final class ContributedBeans<T> implements Supplier<List<T>> {
 
   /** The reader's log. */
   private static final Log      LOG    = ExoLogger.getLogger(ContributedBeans.class);
+
+  /**
+   * How many contributions the listing itself may fail to create before the
+   * rest of it is given up: the bean factory's listing moves past a bean it
+   * could not create, and this bound only guards against a listing that
+   * would fail for ever without moving.
+   */
+  private static final int        MAX_LISTING_FAILURES = 64;
 
   /** The contributions, as the bean factory lists them. */
   private final ObjectProvider<T> provider;
@@ -106,7 +117,8 @@ public final class ContributedBeans<T> implements Supplier<List<T>> {
       leftOut("*", e);
       return List.of();
     }
-    while (true) {
+    int failures = 0;
+    while (failures <= MAX_LISTING_FAILURES) {
       T bean;
       try {
         if (!beans.hasNext()) {
@@ -114,8 +126,9 @@ public final class ContributedBeans<T> implements Supplier<List<T>> {
         }
         bean = beans.next();
       } catch (RuntimeException e) {
-        leftOut("*", e);
-        break;
+        failures++;
+        leftOut(e instanceof BeanCreationException creation && creation.getBeanName() != null ? creation.getBeanName() : "*", e);
+        continue;
       }
       Ordered<T> ordered = resolve(bean);
       if (ordered != null) {
@@ -149,8 +162,9 @@ public final class ContributedBeans<T> implements Supplier<List<T>> {
    * Says a contribution is left out: at WARN, with the cause, the first time
    * this reader meets it, at debug afterwards.
    *
-   * @param contribution the contribution's class name, or {@code *} when the
-   *          listing itself failed
+   * @param contribution the contribution's class name, its bean name when the
+   *          listing failed to create it, or {@code *} when the listing failed
+   *          otherwise
    * @param cause why it is left out
    */
   private void leftOut(String contribution, RuntimeException cause) {
