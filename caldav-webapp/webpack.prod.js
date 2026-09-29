@@ -34,6 +34,7 @@ const config = {
   ],
   entry: {
     caldav: './src/main/webapp/vue-app/caldav/main.js',
+    bluemindCaldavServerPreset: './src/main/webapp/vue-app/caldav-bluemind-preset/main.js',
   },
   output: {
     path: path.join(__dirname, 'target/caldav/'),
