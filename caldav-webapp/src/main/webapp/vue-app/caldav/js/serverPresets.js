@@ -97,8 +97,9 @@
  *   codebase has characterised, and it is deliberately short.
  */
 
-import {MIRROR_TARGET_DEDICATED_CALENDAR, MIRROR_TARGET_MAIN_CALENDAR} from './mirrorTargets.js';
-import {WRITE_CHANNEL_CALDAV, WRITE_CHANNEL_BLUEMIND_IMPORT} from './writeChannels.js';
+import {MIRROR_TARGET_DEDICATED_CALENDAR} from './mirrorTargets.js';
+import {WRITE_CHANNEL_CALDAV} from './writeChannels.js';
+import {registeredPresets} from './serverPresetRegistry.js';
 
 /**
  * The identifier of the option that fills nothing.
@@ -147,7 +148,8 @@ const MIRROR_TARGET = 'mirrorTarget';
 
 /**
  * The registration field deciding through which door the copies are written
- * and removed: CalDAV, or BlueMind's own ICS import API (EXO-90307). Per server
+ * and removed: CalDAV, or a server's own door such as BlueMind's ICS import
+ * API (EXO-90307). Per server
  * like the two above, because whether a CalDAV write makes the server schedule
  * the meeting itself is a property of the server.
  */
@@ -190,8 +192,10 @@ const QUIRKS = {
 };
 
 /**
- * The servers this codebase has characterised, plus the option for one it has
- * not.
+ * The servers this add-on characterises itself, plus the option for one nobody
+ * has. A server product's add-on adds its own through the `server-preset`
+ * extension point (`serverPresetRegistry.js`, EXO-90730) — BlueMind's is
+ * contributed that way — and {@link serverPresets} lists them together.
  *
  * No preset fills an icon. The only icon a preset could fill is a generic font
  * glyph, and `serverIconIdentity.js` already ships one for every server that
@@ -200,57 +204,7 @@ const QUIRKS = {
  * administrator uploads. The field is carried here so that a preset shipping a
  * packaged logo one day sets it and nothing else has to change.
  */
-export const SERVER_PRESETS = [
-  {
-    /*
-     * BlueMind, characterised on a live account across EXO-89716 to EXO-89775.
-     *
-     * Its address is the DAV root. That is where BlueMind answers — its `/dav/`
-     * returns 401 Basic realm="bm.basic.auth.v2" while the bare host only
-     * redirects — and it needs no `{username}`: the server's own
-     * current-user-principal discovery finds the account's calendars, whose
-     * real hrefs are GUID-based and could not have been typed anyway.
-     *
-     * The three behaviours are what kept copies of a live account in a permanent
-     * repair loop until each was recognised — `CONFERENCE` alone was proved
-     * dropped 399 times in one day, five copies rewritten every five minutes.
-     *
-     * A fourth used to be here, `omitsSoloOrganizer`, and it is gone rather than
-     * forgotten: since EXO-89805 eXo names no organizer on an event with nobody
-     * but its creator on it, on every server, so the box buys nothing on a new
-     * registration and pre-ticking one that changes nothing is how a preset
-     * stops being read. The behaviour it described is still BlueMind's; it is
-     * simply no longer BlueMind's problem to declare.
-     *
-     * The main calendar, because BlueMind's dedicated one is known deficient:
-     * it is excluded from the account's free/busy — colleagues booking around
-     * the user see eXo meeting times as free — and it carries no answer
-     * buttons. The general caution on that option ("only once copies
-     * synchronise cleanly") is right and stays where it is; what is true here
-     * is that on THIS server the dedicated calendar has an established cost the
-     * caution does not weigh, so the preset chooses the main calendar and its
-     * summary says both things.
-     *
-     * Answer links on: BlueMind shows its own answer buttons on the default
-     * calendar only, so eXo's links are what covers anything else.
-     *
-     * The import door (EXO-90307), because a copy written over CalDAV reaches
-     * BlueMind's calendar service with notifications hard-coded on, and
-     * BlueMind then schedules the meeting itself: same-server invitees get it
-     * twice, an answer given on BlueMind's own object never reaches eXo, and
-     * external attendees get BlueMind's mail on top of eXo's. BlueMind's ICS
-     * import applies every change with notifications off. The radio beside
-     * the preset is the rollback.
-     */
-    id: 'bluemind',
-    name: 'BlueMind',
-    icon: null,
-    urlPlaceholder: 'https://bluemind.example.org/dav/',
-    quirks: ['dropsConference', 'addsCompatibilityMarkers', 'addsFormattedDescription', 'stampsDefaultPriority'],
-    [ANSWER_LINKS]: true,
-    [MIRROR_TARGET]: MIRROR_TARGET_MAIN_CALENDAR,
-    [WRITE_CHANNEL]: WRITE_CHANNEL_BLUEMIND_IMPORT,
-  },
+const BUILT_IN_PRESETS = [
   {
     /*
      * Stalwart, the server the golden corpus and the seed registration are
@@ -278,6 +232,7 @@ export const SERVER_PRESETS = [
      * treating it differently from any other.
      */
     id: 'stalwart',
+    rank: 20,
     name: 'Stalwart',
     icon: null,
     urlPlaceholder: 'https://stalwart.example.org/dav/cal/{username}/',
@@ -290,8 +245,8 @@ export const SERVER_PRESETS = [
   },
   {
     /*
-     * A server we have not characterised. Fills nothing, and — unlike the two
-     * above — leaves the three excusal lists UNSET, so the deployment-wide
+     * A server we have not characterised. Fills nothing, and — unlike every
+     * characterised preset — leaves the three excusal lists UNSET, so the deployment-wide
      * settings go on deciding for it exactly as they did before this option
      * existed. Not knowing a server is not the same statement as knowing it has
      * nothing to excuse, and a row must not confuse the two.
@@ -309,10 +264,11 @@ export const SERVER_PRESETS = [
     quirks: null,
     [ANSWER_LINKS]: null,
     [MIRROR_TARGET]: null,
-    // Stated, unlike the two above: the write channel is a BlueMind-only choice
-    // (EXO-90307), so "a server we have not characterised" IS the decision
-    // CalDAV, and a form that had BlueMind's import channel a moment ago must
-    // not carry it into a declaration of something else.
+    // Stated, unlike the characterised ones: a server-specific write channel
+    // is that server's own choice (EXO-90307), so "a server we have not
+    // characterised" IS the decision CalDAV, and a form that had BlueMind's
+    // import channel a moment ago must not carry it into a declaration of
+    // something else.
     [WRITE_CHANNEL]: WRITE_CHANNEL_CALDAV,
   },
 ];
@@ -325,8 +281,38 @@ export const SERVER_PRESETS = [
  * @returns {Object} the preset, never null
  */
 export function presetById(presetId) {
-  return SERVER_PRESETS.find(preset => preset.id === presetId)
-      || SERVER_PRESETS.find(preset => preset.id === PRESET_NONE);
+  const presets = serverPresets();
+  return presets.find(preset => preset.id === presetId)
+      || presets.find(preset => preset.id === PRESET_NONE);
+}
+
+/**
+ * Every preset the drawer offers, in the order an administrator meets them:
+ * the characterised servers — the built-in ones and the contributed ones — by
+ * rank, then the option for a server nobody has characterised, always last. A
+ * contribution reusing a built-in id is ignored rather than allowed to replace
+ * it.
+ *
+ * @returns {Array} the presets, never empty
+ */
+export function serverPresets() {
+  const builtInIds = BUILT_IN_PRESETS.map(preset => preset.id);
+  const characterised = BUILT_IN_PRESETS.filter(preset => preset.id !== PRESET_NONE)
+    .concat(registeredPresets().filter(preset => !builtInIds.includes(preset.id)))
+    .map((preset, index) => ({preset, index}))
+    .sort((a, b) => rankOf(a.preset) - rankOf(b.preset) || a.index - b.index)
+    .map(entry => entry.preset);
+  return characterised.concat(BUILT_IN_PRESETS.filter(preset => preset.id === PRESET_NONE));
+}
+
+/**
+ * A preset's rank, an unranked one after every ranked one.
+ *
+ * @param {Object} preset the preset
+ * @returns {Number} the rank
+ */
+function rankOf(preset) {
+  return Number.isFinite(preset.rank) ? preset.rank : Number.MAX_SAFE_INTEGER;
 }
 
 /**

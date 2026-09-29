@@ -34,4 +34,20 @@
         <module>credentialsProviderConfig</module>
       </depends>
   </module>
+  <!-- BlueMind's server preset, contributed to the servers drawer through its
+       server-preset extension point (EXO-90730). The NAME is what makes it
+       run: the drawer's module calls includeExtensions with the suffix
+       CaldavServerPresetExtension, which finds modules by name, not by load
+       group. Data only; it moves to the BlueMind add-on as it is. -->
+  <module>
+    <name>BlueMindCaldavServerPresetExtension</name>
+    <load-group>AgendaConnectorsGRP</load-group>
+    <script>
+      <minify>false</minify>
+      <path>/js/bluemindCaldavServerPreset.bundle.js</path>
+    </script>
+    <depends>
+      <module>extensionRegistry</module>
+    </depends>
+  </module>
 </gatein-resources>
