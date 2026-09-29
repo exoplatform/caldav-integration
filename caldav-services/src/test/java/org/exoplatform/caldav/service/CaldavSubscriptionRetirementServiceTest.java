@@ -89,8 +89,8 @@ public class CaldavSubscriptionRetirementServiceTest {
   private CaldavSubscriptionRetirementService service;
 
   /**
-   * BlueMind's subscription channel, a contribution since EXO-90730,
-   * registered here the way the platform registers it.
+   * BlueMind's subscription channel is a contribution, registered here as
+   * the platform registers it.
    */
   @BeforeEach
   public void registerTheBlueMindChannel() {
