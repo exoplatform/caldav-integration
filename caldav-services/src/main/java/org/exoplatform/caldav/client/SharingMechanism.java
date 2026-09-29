@@ -78,6 +78,14 @@ public enum SharingMechanism {
    * list back through BlueMind's REST API; and the server rewrites or removes
    * <em>every</em> entry of the sharee, so a sharee holding anything but plain
    * reading is refused rather than downgraded.
+   *
+   * <p>
+   * Selected and carried by a contributed share channel
+   * ({@code org.exoplatform.caldav.plugin.CalendarShareChannel}), never by the
+   * host itself (EXO-90730): without the BlueMind channel installed a BlueMind
+   * collection selects {@link #CALENDARSERVER_SHARE}, which is not offered.
+   * The constant stays because the name is in logs and REST answers; a
+   * second server-specific mechanism would open it to plugin-declared names.
    */
   BLUEMIND_SHARE(true),
 
@@ -197,7 +205,14 @@ public enum SharingMechanism {
    * @param options what the collection answered, null when nothing was asked
    * @param collectionHref the collection's path, may be null
    * @return the mechanism, never null
+   * @deprecated the host selects through {@code CalendarShareChannelRegistry#mechanismOf},
+   *             where BlueMind's recognition is its share channel's
+   *             ({@code BlueMindShareChannel#applies}); kept, unused by the
+   *             host, until the BlueMind classes leave this add-on
+   *             (EXO-90730), for removal then.
    */
+  /* @deprecated since 7.3.x-ai-contribution: use CalendarShareChannelRegistry#mechanismOf; for removal. */
+  @Deprecated(forRemoval = true)
   public static SharingMechanism of(DavOptions options, String collectionHref) {
     SharingMechanism mechanism = of(options);
     if (mechanism == CALENDARSERVER_SHARE && options.advertises(CALENDARSERVER_SHARING) && isBlueMindCollection(collectionHref)) {
@@ -211,7 +226,13 @@ public enum SharingMechanism {
    *
    * @param collectionHref the collection's path, may be null
    * @return true for {@code /dav/calendars/__uids__/<uid>/<container>/}
+   * @deprecated BlueMind's path rule is its share channel's
+   *             ({@code BlueMindShareChannel#isBlueMindCollection}); kept,
+   *             unused by the host, until the BlueMind classes leave this
+   *             add-on (EXO-90730), for removal then.
    */
+  /* @deprecated since 7.3.x-ai-contribution: use BlueMindShareChannel#isBlueMindCollection; for removal. */
+  @Deprecated(forRemoval = true)
   public static boolean isBlueMindCollection(String collectionHref) {
     return collectionHref != null
         && BLUEMIND_COLLECTION.matcher(CalendarCollection.principalPathOf(collectionHref)).matches();
