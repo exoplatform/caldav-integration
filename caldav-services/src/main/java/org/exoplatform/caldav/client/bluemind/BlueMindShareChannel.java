@@ -483,6 +483,19 @@ public class BlueMindShareChannel implements CalendarShareChannel {
     return blueMindAclOf(target, () -> blueMindAclClient.readAcl(target.endpoint(), containerUidOf(target)));
   }
 
+  /**
+   * Runs one read of BlueMind's access list, turning what BlueMind answers
+   * when the list cannot be read into the share refusal it means: a login
+   * its REST API does not accept is "not offered", a refusal on an imported
+   * calendar is "not the caller's", a refusal on an eXo-created one is "list
+   * unreadable".
+   *
+   * @param target the calendar whose container is read
+   * @param read the read itself
+   * @param <T> what the read answers
+   * @return what the read answered
+   * @throws CaldavShareException when BlueMind refuses the read
+   */
   private <T> T blueMindAclOf(SharedCalendar target, Supplier<T> read) {
     try {
       return read.get();
