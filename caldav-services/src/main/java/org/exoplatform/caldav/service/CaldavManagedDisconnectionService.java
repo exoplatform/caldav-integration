@@ -41,7 +41,7 @@ import jakarta.annotation.PreDestroy;
 
 /**
  * Disconnects the users an administrator's change leaves on a CalDAV server that is no
- * longer theirs (EXO-89654), and counts them beforehand for the warning the
+ * longer theirs, and counts them beforehand for the warning the
  * administration screen shows.
  * <p>
  * Two changes, two populations:
@@ -142,6 +142,11 @@ public class CaldavManagedDisconnectionService {
    * <p>
    * {@code @ContainerTransactional} because this runs on a bare executor thread; the
    * work itself is in {@link #reconcileNow()}, the un-advised method.
+   * <p>
+   * One request lifecycle for the whole run, {@link #disconnectAll(long)} likewise:
+   * every setting read stays in its persistence context until the run ends. Accepted:
+   * a run reads each user it walks once, and a lifecycle per user would set the
+   * container up again for every one of them.
    */
   @ContainerTransactional
   public void reconcile() {
@@ -202,8 +207,8 @@ public class CaldavManagedDisconnectionService {
   }
 
   /**
-   * Disconnects one user, logging a failure rather than throwing it: the next user
-   * must still be processed.
+   * Disconnects one user, logging a failure rather than throwing it - any failure, a
+   * checked exception thrown sneakily included: the next user must still be processed.
    *
    * @param userIdentityId the identity to disconnect
    * @return true when the user was disconnected
@@ -213,7 +218,7 @@ public class CaldavManagedDisconnectionService {
       caldavRelayService.disconnectForUser(userIdentityId, usernameOf(userIdentityId));
       LOG.info("User identity {} disconnected from their CalDAV server after an administrator's change", userIdentityId);
       return true;
-    } catch (RuntimeException e) {
+    } catch (Exception e) {
       LOG.warn("Cannot disconnect user identity {} from their CalDAV server after an administrator's change; the next change or their next login will retry",
                userIdentityId,
                e);
@@ -235,7 +240,7 @@ public class CaldavManagedDisconnectionService {
   private boolean isNoLongerManagedOrSkipped(long userIdentityId, Long designation, List<String> excludedGroups) {
     try {
       return isNoLongerManaged(userIdentityId, designation, excludedGroups);
-    } catch (RuntimeException e) {
+    } catch (Exception e) {
       LOG.warn("Cannot tell whether managed mode still governs user identity {}; left connected, the next change or their next login will retry",
                userIdentityId,
                e);

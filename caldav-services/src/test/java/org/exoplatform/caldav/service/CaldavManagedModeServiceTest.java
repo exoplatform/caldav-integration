@@ -172,7 +172,7 @@ public class CaldavManagedModeServiceTest {
   }
 
   /**
-   * EXO-89654. The verdict that decides a disconnection at login is the strict one, on
+   * The verdict that decides a disconnection at login is the strict one, on
    * the stored designation and exclusions; its refusal of an unresolvable user reaches
    * the caller unchanged.
    */
@@ -370,7 +370,7 @@ public class CaldavManagedModeServiceTest {
     assertTrue(mode.managedForMe());
   }
 
-  /** EXO-89654. A refused change is not announced: nothing changed, nobody is disconnected. */
+  /** A refused change is not announced: nothing changed, nobody is disconnected. */
   @Test
   public void aRefusedChangeIsNotAnnounced() throws Exception {
     when(caldavServerStorage.getServerById(9L)).thenReturn(null);
@@ -380,7 +380,7 @@ public class CaldavManagedModeServiceTest {
     verify(eventPublisher, never()).publishEvent(any());
   }
 
-  /** EXO-89654. Switching managed mode off is announced, so that the users it attached are disconnected. */
+  /** Switching managed mode off is announced, so that the users it attached are disconnected. */
   @Test
   public void switchingOffIsAnnounced() throws Exception {
     caldavManagedModeService.clearManagedServer(ADMIN);

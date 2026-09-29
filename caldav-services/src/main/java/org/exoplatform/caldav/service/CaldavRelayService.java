@@ -426,7 +426,7 @@ public class CaldavRelayService {
   /**
    * Connects a user through the server's provider, as
    * {@link #connectThroughProvider(Long, String)} does, and records who made the
-   * connection: managed mode at login, or the user themselves (EXO-89654). Only a
+   * connection: managed mode at login, or the user themselves. Only a
    * connection made by managed mode is marked; one the user makes clears the mark, since
    * it is their own choice from then on.
    *
@@ -497,7 +497,7 @@ public class CaldavRelayService {
 
   /**
    * Disconnects a user on the platform's initiative - an administrator's change, or
-   * the login that finds managed mode no longer governs them (EXO-89654). The
+   * the login that finds managed mode no longer governs them. The
    * counterpart of {@link #connectThroughProvider(Long, String, boolean)}: agenda's
    * record of the connection goes as well as caldav's, or "My calendars" would still
    * show a connector whose account is gone. A user's own disconnection goes through
@@ -509,10 +509,12 @@ public class CaldavRelayService {
   public void disconnectForUser(long userIdentityId, String username) {
     CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     Long serverId = setting.getServerId();
-    CaldavServer server = serverId == null ? null : caldavServerService.resolveServer(serverId);
-    // resolveServer falls back to the seed registration: only the row the setting
-    // names is the connector agenda recorded.
-    if (server != null && serverId.longValue() == server.getId()) {
+    CaldavServer server = caldavServerService.resolveServer(serverId);
+    // A setting naming a row recorded that row's connector - resolveServer falls back
+    // to the seed registration when the row is gone, hence the id check. A setting
+    // naming none was made through the legacy connector, which agenda recorded under
+    // the seed row's provider name: the row resolveServer(null) answers.
+    if (server != null && (serverId == null || serverId.longValue() == server.getId())) {
       try {
         agendaUserSettingsService.removeUserConnector(server.getProviderName(), userIdentityId);
       } catch (RuntimeException e) {

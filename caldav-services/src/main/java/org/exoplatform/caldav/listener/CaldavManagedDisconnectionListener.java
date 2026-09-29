@@ -26,7 +26,7 @@ import org.exoplatform.caldav.event.CaldavServerProviderChangedEvent;
 import org.exoplatform.caldav.service.CaldavManagedDisconnectionService;
 
 /**
- * Hands the disconnections an administrator's change causes (EXO-89654) to
+ * Hands the disconnections an administrator's change causes to
  * {@link CaldavManagedDisconnectionService}, which runs them in the background.
  * <p>
  * After the commit, with {@code fallbackExecution}: the change being answered must be

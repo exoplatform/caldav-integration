@@ -41,7 +41,7 @@ public class CaldavConnectorUtils {
   public static final String CALDAV_SERVER_ID_KEY           = "CaldavServerId";
 
   /**
-   * Marks a CalDAV connection made by managed mode rather than by the user (EXO-89654).
+   * Marks a CalDAV connection made by managed mode rather than by the user.
    * Its presence is the whole fact: the users it marks are listed by one query on the
    * key, and they are always connected to the designated server, since changing the
    * designation disconnects them.

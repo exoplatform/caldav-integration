@@ -310,9 +310,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </v-btn>
       </div>
       <!--
-        Moving the server to another provider disconnects every user of it
-        (EXO-89654): said, with how many, in the platform's confirmation before
-        anything is stored.
+        Moving the server to another provider disconnects every user of it:
+        said, with how many, in the platform's confirmation before anything is
+        stored.
       -->
       <confirm-dialog
         ref="disconnectionConfirm"

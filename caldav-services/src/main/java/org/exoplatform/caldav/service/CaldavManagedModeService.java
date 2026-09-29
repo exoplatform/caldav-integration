@@ -196,7 +196,7 @@ public class CaldavManagedModeService {
                                       excludedGroups,
                                       username);
     // The users managed mode attached are checked against what was just stored: another
-    // server, or a newly excluded group, disconnects them (EXO-89654).
+    // server, or a newly excluded group, disconnects them.
     eventPublisher.publishEvent(new CaldavManagedModeChangedEvent());
   }
 

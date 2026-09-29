@@ -131,7 +131,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       Off is not an ordinary flip either: it is an instance-wide change, so the
       switch asks before it commits - and says what it does: users choose again,
       the accounts they connected themselves keep syncing, and the accounts
-      managed mode attached are disconnected, with how many (EXO-89654).
+      managed mode attached are disconnected, with how many.
     -->
     <confirm-dialog
       ref="managedOffConfirm"

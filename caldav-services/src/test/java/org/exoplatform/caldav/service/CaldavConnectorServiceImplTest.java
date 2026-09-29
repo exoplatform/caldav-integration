@@ -868,7 +868,7 @@ public class CaldavConnectorServiceImplTest {
     return setting;
   }
 
-  /** EXO-89654. A connection the user types is their own choice: the managed-mode mark is cleared. */
+  /** A connection the user types is their own choice: the managed-mode mark is cleared. */
   @Test
   public void aTypedConnectionClearsTheManagedModeMark() throws Exception {
     CaldavUserSetting setting = new CaldavUserSetting();

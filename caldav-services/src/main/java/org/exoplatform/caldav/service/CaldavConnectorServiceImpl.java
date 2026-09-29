@@ -86,7 +86,7 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
       CaldavUserSetting previous = caldavConnectorStorage.getCaldavSetting(userIdentityId);
       caldavConnectorStorage.createCaldavSetting(caldavUserSetting, userIdentityId);
       // A connection the user makes is their own choice, even on the server managed
-      // mode had attached them to (EXO-89654).
+      // mode had attached them to.
       caldavConnectorStorage.markConnectedByManagedMode(userIdentityId, false);
       afterConnect(caldavUserSetting, userIdentityId, previous);
     } else {

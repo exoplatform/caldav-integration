@@ -18,7 +18,7 @@ package org.exoplatform.caldav.event;
 
 /**
  * Published when an administrator changes the CalDAV managed mode - the designated
- * server, its exclusions, or managed mode switched off (EXO-89654). The users managed
+ * server, its exclusions, or managed mode switched off. The users managed
  * mode attached are then checked against the new state, and those it no longer governs
  * are disconnected.
  */

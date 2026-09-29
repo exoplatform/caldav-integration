@@ -18,8 +18,11 @@ package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -29,6 +32,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -55,7 +59,7 @@ import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.manager.IdentityManager;
 
 /**
- * EXO-89654. What an administrator's change does to the CalDAV users managed mode
+ * What an administrator's change does to the CalDAV users managed mode
  * attached, and to the users of a server moved to another provider. The verdict is the
  * real {@link ManagedConnectorService}'s: only the users' groups are stubbed.
  */
@@ -235,6 +239,39 @@ class CaldavManagedDisconnectionServiceTest {
     verify(caldavRelayService).disconnectForUser(42L, "bob");
   }
 
+  /** A checked exception thrown sneakily by one disconnection does not abandon the others either. */
+  @Test
+  void aCheckedFailureOfOneDisconnectionDoesNotStopTheOthers() {
+    attachedByManagedMode(3L, 41, 42);
+    inForce(null);
+    doAnswer(invocation -> {
+      throw new IOException("store unreachable");
+    }).when(caldavRelayService).disconnectForUser(41L, "alice");
+
+    service.disconnectUsersNoLongerManaged();
+
+    verify(caldavRelayService).disconnectForUser(42L, "bob");
+  }
+
+  /** A checked exception thrown sneakily by one user's verdict skips that user only. */
+  @Test
+  void aCheckedFailureOfOneVerdictSkipsThatUserOnly() {
+    attachedByManagedMode(3L, 41, 42);
+    inForce(null);
+    Identity alice = new Identity("41");
+    alice.setRemoteId("alice");
+    // The verdict's read fails; any later read would answer, so a user let through
+    // would reach the disconnection.
+    when(identityManager.getIdentity("41")).thenAnswer(invocation -> {
+      throw new IOException("identity store unreachable");
+    }).thenReturn(alice);
+
+    service.disconnectUsersNoLongerManaged();
+
+    verify(caldavRelayService, never()).disconnectForUser(eq(41L), any());
+    verify(caldavRelayService).disconnectForUser(42L, "bob");
+  }
+
   /**
    * A user whose verdict cannot be computed - an identity the platform cannot resolve -
    * is skipped: the others are still disconnected.
@@ -247,7 +284,7 @@ class CaldavManagedDisconnectionServiceTest {
 
     service.disconnectUsersNoLongerManaged();
 
-    verify(caldavRelayService, never()).disconnectForUser(anyLong(), org.mockito.ArgumentMatchers.eq("alice"));
+    verify(caldavRelayService, never()).disconnectForUser(anyLong(), eq("alice"));
     verify(caldavRelayService).disconnectForUser(42L, "bob");
   }
 

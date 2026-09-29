@@ -17,8 +17,8 @@
 package org.exoplatform.caldav.event;
 
 /**
- * Published when an administrator moves a CalDAV server to another credentials provider
- * (EXO-89654). Every user of that server is then disconnected: the authentication
+ * Published when an administrator moves a CalDAV server to another credentials provider.
+ * Every user of that server is then disconnected: the authentication
  * changed for all of them.
  */
 public class CaldavServerProviderChangedEvent {

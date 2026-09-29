@@ -64,8 +64,8 @@ import jakarta.annotation.PreDestroy;
  *
  * <p>
  * What is stored is who made the connection: an attachment is marked as made by
- * managed mode ({@code CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY},
- * EXO-89654), and the mark is checked first. A marked user managed mode no longer
+ * managed mode ({@code CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY}),
+ * and the mark is checked first. A marked user managed mode no longer
  * governs - they joined an excluded group, or an administrator's change could not
  * disconnect them - is disconnected, then attached again when another server is
  * designated for them.
@@ -154,7 +154,7 @@ public class CaldavManagedEnrollmentService {
       if (identity != null && isNoLongerGoverned(Long.parseLong(identity.getId()), username)) {
         // Managed mode attached this user and no longer governs them - they joined an
         // excluded group since, or a disconnection an administrator's change asked for
-        // did not go through (EXO-89654). Disconnected here, then attached again below
+        // did not go through. Disconnected here, then attached again below
         // when another server is designated for them.
         caldavRelayService.disconnectForUser(Long.parseLong(identity.getId()), username);
         LOG.info("User {} disconnected from the CalDAV server managed mode attached them to: it no longer applies to them",

@@ -193,13 +193,12 @@ public class CaldavConnectorStorage {
     this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
                                CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
-    // The managed-mode mark goes with the connection it marked (EXO-89654).
+    // The managed-mode mark goes with the connection it marked.
     markConnectedByManagedMode(userIdentityId, false);
   }
 
   /**
-   * Records, or clears, that managed mode made this user's CalDAV connection
-   * (EXO-89654).
+   * Records, or clears, that managed mode made this user's CalDAV connection.
    *
    * @param userIdentityId technical identity identifier of the user
    * @param byManagedMode true to mark the connection, false to clear the mark

@@ -278,7 +278,7 @@ public class CaldavConnectorStorageTest {
                                   CaldavConnectorUtils.CALDAV_MIRROR_CALENDAR_KEY);
   }
 
-  /** EXO-89654. The managed-mode mark is set, read and cleared in the user's connector scope. */
+  /** The managed-mode mark is set, read and cleared in the user's connector scope. */
   @Test
   public void marksReadsAndClearsTheManagedModeConnection() {
     caldavConnectorStorage.markConnectedByManagedMode(USER_IDENTITY_ID, true);
@@ -294,7 +294,7 @@ public class CaldavConnectorStorageTest {
                                   CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY);
   }
 
-  /** EXO-89654. A disconnection takes the mark with it. */
+  /** A disconnection takes the mark with it. */
   @Test
   public void aDisconnectionClearsTheManagedModeMark() {
     caldavConnectorStorage.deleteCaldavSetting(USER_IDENTITY_ID);
@@ -304,7 +304,7 @@ public class CaldavConnectorStorageTest {
                                   CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY);
   }
 
-  /** EXO-89654. The users managed mode attached are one query on the mark: no user setting is read. */
+  /** The users managed mode attached are one query on the mark: no user setting is read. */
   @Test
   public void theUsersManagedModeAttachedAreOneQueryOnTheMark() {
     when(settingService.getContextsByTypeAndScopeAndSettingName("USER",

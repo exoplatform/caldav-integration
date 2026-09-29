@@ -627,7 +627,7 @@ public class CaldavRelayServiceTest {
     givenProbeAnswer(207);
   }
 
-  /** EXO-89654. A connection managed mode makes at login is marked as such. */
+  /** A connection managed mode makes at login is marked as such. */
   @Test
   public void aConnectionManagedModeMakesIsMarked() throws Exception {
     givenOneClickConnection();
@@ -637,7 +637,7 @@ public class CaldavRelayServiceTest {
     verify(caldavConnectorStorage).markConnectedByManagedMode(IDENTITY_ID, true);
   }
 
-  /** EXO-89654. A one-click connection the user makes clears the mark: it is their own choice. */
+  /** A one-click connection the user makes clears the mark: it is their own choice. */
   @Test
   public void aOneClickConnectionTheUserMakesClearsTheMark() throws Exception {
     givenOneClickConnection();
@@ -647,7 +647,7 @@ public class CaldavRelayServiceTest {
     verify(caldavConnectorStorage).markConnectedByManagedMode(IDENTITY_ID, false);
   }
 
-  /** EXO-89654. A refused probe records nothing, and marks nothing. */
+  /** A refused probe records nothing, and marks nothing. */
   @Test
   public void aRefusedConnectionMarksNothing() throws Exception {
     when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
@@ -663,7 +663,7 @@ public class CaldavRelayServiceTest {
   }
 
   /**
-   * EXO-89654. A disconnection on the platform's initiative removes agenda's record of
+   * A disconnection on the platform's initiative removes agenda's record of
    * the connection as well as caldav's, or "My calendars" would still show it.
    */
   @Test
@@ -679,7 +679,7 @@ public class CaldavRelayServiceTest {
   }
 
   /**
-   * EXO-89654. A setting naming a row that no longer exists resolves to the seed
+   * A setting naming a row that no longer exists resolves to the seed
    * registration: agenda's record of another connector is left alone, and caldav's
    * setting still goes.
    */
@@ -694,7 +694,26 @@ public class CaldavRelayServiceTest {
     verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
   }
 
-  /** EXO-89654. Agenda refusing to forget the connector does not keep caldav's setting. */
+  /**
+   * A setting naming no server was made through the legacy connector, which agenda
+   * recorded under the seed row's provider name: that record goes too.
+   */
+  @Test
+  public void aPlatformDisconnectionOfALegacyConnectionRemovesTheSeedRowsRecord() {
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(null));
+    CaldavServer seed = new CaldavServer(1L, CaldavServerService.CALDAV_PROVIDER_NAME, "Stalwart", null, SERVER_URL, true, null,
+                                         null, null, null, true, null, null, null, null, null,
+                                         MirrorTargetKind.DEDICATED_CALENDAR, PROVIDER, null, null);
+    when(caldavServerService.resolveServer(null)).thenReturn(seed);
+
+    caldavRelayService.disconnectForUser(IDENTITY_ID, USERNAME);
+
+    InOrder order = inOrder(agendaUserSettingsService, caldavConnectorService);
+    order.verify(agendaUserSettingsService).removeUserConnector(CaldavServerService.CALDAV_PROVIDER_NAME, IDENTITY_ID);
+    order.verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
+  }
+
+  /** Agenda refusing to forget the connector does not keep caldav's setting. */
   @Test
   public void aPlatformDisconnectionDeletesCaldavsSettingEvenWhenAgendaFails() {
     when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(SERVER_ID));
@@ -707,7 +726,7 @@ public class CaldavRelayServiceTest {
     verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
   }
 
-  private CaldavUserSetting settingOn(long serverId) {
+  private CaldavUserSetting settingOn(Long serverId) {
     CaldavUserSetting setting = new CaldavUserSetting();
     setting.setUsername("mary@bm.example.org");
     setting.setServerId(serverId);

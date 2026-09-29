@@ -129,7 +129,7 @@ class CaldavManagedEnrollmentServiceTest {
     lenient().when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(setting);
   }
 
-  /** EXO-89654. A user managed mode attached, now in an excluded group, is disconnected at login. */
+  /** A user managed mode attached, now in an excluded group, is disconnected at login. */
   @Test
   void disconnectsAtLoginAUserManagedModeAttachedAndNoLongerGoverns() throws Exception {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(null);
@@ -143,7 +143,7 @@ class CaldavManagedEnrollmentServiceTest {
   }
 
   /**
-   * EXO-89654. A user managed mode attached whose identity cannot be resolved - the
+   * A user managed mode attached whose identity cannot be resolved - the
    * directory failed - is not disconnected: the enrolment fails and the next login
    * decides.
    */
@@ -158,7 +158,7 @@ class CaldavManagedEnrollmentServiceTest {
     verify(caldavRelayService, never()).disconnectForUser(anyLong(), any());
   }
 
-  /** EXO-89654. A user who chose their server is not touched in the same situation. */
+  /** A user who chose their server is not touched in the same situation. */
   @Test
   void neverDisconnectsAUserWhoChoseTheirServer() {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(null);
@@ -169,7 +169,7 @@ class CaldavManagedEnrollmentServiceTest {
     verify(caldavRelayService, never()).disconnectForUser(anyLong(), any());
   }
 
-  /** EXO-89654. Attached to a server no longer designated: disconnected, then attached to the one designated now. */
+  /** Attached to a server no longer designated: disconnected, then attached to the one designated now. */
   @Test
   void movesAtLoginAUserManagedModeAttachedToAServerNoLongerDesignated() throws Exception {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
@@ -190,7 +190,7 @@ class CaldavManagedEnrollmentServiceTest {
     order.verify(caldavRelayService).connectThroughProvider(7L, USER, true);
   }
 
-  /** EXO-89654. Attached by managed mode to the designated server: left alone. */
+  /** Attached by managed mode to the designated server: left alone. */
   @Test
   void leavesAloneAUserManagedModeAttachedToTheDesignatedServer() {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);

@@ -683,7 +683,7 @@ export const saveManagedMode = (serverId, excludedGroups = []) => {
 /**
  * Counts, before anything is stored, the accounts a managed-mode change would
  * disconnect: the users managed mode attached that the proposed state no longer
- * governs (EXO-89654). Administrators only.
+ * governs. Administrators only.
  *
  * @param {Number} serverId the server the change designates, null to preview switching off
  * @param {Array<String>} excludedGroups eXo group ids the change excludes
@@ -705,7 +705,7 @@ export const previewManagedMode = (serverId, excludedGroups = []) => {
 
 /**
  * Counts the users connected to a server: what moving it to another credentials
- * provider would disconnect (EXO-89654). Administrators only.
+ * provider would disconnect. Administrators only.
  *
  * @param {Number} serverId technical identifier of the registration
  * @returns {Promise<Number>} the number of users connected to it
@@ -727,7 +727,7 @@ export const countConnectedUsers = (serverId) => {
  * only.
  *
  * The users managed mode attached are disconnected in the background; the users
- * who chose a server themselves keep it (EXO-89654).
+ * who chose a server themselves keep it.
  *
  * @returns {Promise<Object>} the mode now in force, naming no server
  */

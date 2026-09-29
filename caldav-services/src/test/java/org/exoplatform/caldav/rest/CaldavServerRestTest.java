@@ -615,7 +615,7 @@ public class CaldavServerRestTest {
     assertEquals(HttpStatus.FORBIDDEN, refusal.getStatusCode());
   }
 
-  /** EXO-89654. The preview answers how many accounts the proposed managed-mode state would disconnect. */
+  /** The preview answers how many accounts the proposed managed-mode state would disconnect. */
   @Test
   public void previewManagedModeAnswersTheAccountCount() throws Exception {
     when(request.getRemoteUser()).thenReturn("root");
@@ -627,7 +627,7 @@ public class CaldavServerRestTest {
     assertEquals(5, caldavServerRest.previewManagedMode(request, null).affectedAccounts());
   }
 
-  /** EXO-89654. The count of a server's users is what a provider change would disconnect. */
+  /** The count of a server's users is what a provider change would disconnect. */
   @Test
   public void countConnectedUsersAnswersTheUsersOfTheServer() throws Exception {
     when(request.getRemoteUser()).thenReturn("root");
@@ -636,7 +636,7 @@ public class CaldavServerRestTest {
     assertEquals(2, caldavServerRest.countConnectedUsers(request, 7L).affectedAccounts());
   }
 
-  /** EXO-89654. Counting the users of a server that does not exist is a 404. */
+  /** Counting the users of a server that does not exist is a 404. */
   @Test
   public void countConnectedUsersOfAnUnknownServerIsNotFound() throws Exception {
     when(request.getRemoteUser()).thenReturn("root");
@@ -647,7 +647,7 @@ public class CaldavServerRestTest {
                  assertThrows(ResponseStatusException.class, () -> caldavServerRest.countConnectedUsers(request, 99L)).getStatusCode());
   }
 
-  /** EXO-89654. A caller the service refuses is a 403 on both previews. */
+  /** A caller the service refuses is a 403 on both previews. */
   @Test
   public void previewsByANonAdministratorAreForbidden() throws Exception {
     when(request.getRemoteUser()).thenReturn("mary");

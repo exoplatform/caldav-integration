@@ -20,6 +20,7 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.stream.Collectors;
 import java.util.List;
@@ -988,7 +989,7 @@ public class CaldavServerService {
     forgetBlueMindSessions();
     if (isProviderChange(stored, server)) {
       // Every user of the server is disconnected, whoever made the connection: the
-      // authentication changed for all of them (EXO-89654).
+      // authentication changed for all of them.
       eventPublisher.publishEvent(new CaldavServerProviderChangedEvent(stored.getId()));
     }
     return caldavServerQuirkService.decorate(updatedServer);
@@ -1155,7 +1156,10 @@ public class CaldavServerService {
 
   /**
    * The users connected to a server, by their identity: what a change of its provider
-   * disconnects (EXO-89654). The same walk as {@link #countServerReferences(long)}.
+   * disconnects. The accounts whose stored server id names the row - and, for the row
+   * that carries {@link #CALDAV_PROVIDER_NAME}, also the accounts that store no server
+   * id: connected before the server list existed, every use resolves them to that row
+   * ({@link #resolveServer(Long)} with null), so they are its users too.
    *
    * @param serverId the server
    * @return the technical identity identifiers of its users
@@ -1167,12 +1171,40 @@ public class CaldavServerService {
                                                                                     CaldavConnectorUtils.CALDAV_SERVER_ID_KEY,
                                                                                     0,
                                                                                     Integer.MAX_VALUE);
-    return contexts.stream().filter(context -> {
+    List<Long> identities = new ArrayList<>(contexts.stream().filter(context -> {
       SettingValue<?> value = settingService.get(context,
                                                  CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                                  CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
       return value != null && value.getValue() != null && String.valueOf(serverId).equals(value.getValue().toString());
-    }).map(context -> Long.valueOf(context.getId())).toList();
+    }).map(context -> Long.valueOf(context.getId())).toList());
+    CaldavServer defaultRow = caldavServerStorage.getServerByProviderName(CALDAV_PROVIDER_NAME);
+    if (defaultRow != null && defaultRow.getId() == serverId) {
+      identities.addAll(identitiesWithoutServerId());
+    }
+    return identities.stream().distinct().toList();
+  }
+
+  /**
+   * The accounts that hold a CalDAV login and no server id.
+   *
+   * @return their technical identity identifiers
+   */
+  private List<Long> identitiesWithoutServerId() {
+    return settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                  Scope.APPLICATION.getName(),
+                                                                  CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE.getId(),
+                                                                  CaldavConnectorUtils.CALDAV_USERNAME_KEY,
+                                                                  0,
+                                                                  Integer.MAX_VALUE)
+                         .stream()
+                         .filter(context -> {
+                           SettingValue<?> value = settingService.get(context,
+                                                                      CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                                                      CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
+                           return value == null || value.getValue() == null;
+                         })
+                         .map(context -> Long.valueOf(context.getId()))
+                         .toList();
   }
 
   /**

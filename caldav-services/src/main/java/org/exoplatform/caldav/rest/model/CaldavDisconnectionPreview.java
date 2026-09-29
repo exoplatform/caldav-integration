@@ -18,7 +18,7 @@ package org.exoplatform.caldav.rest.model;
 
 /**
  * How many accounts an administrator's change would disconnect, answered before the
- * change is applied so that the screen can say so (EXO-89654).
+ * change is applied so that the screen can say so.
  *
  * @param affectedAccounts the number of accounts the change would disconnect
  */
