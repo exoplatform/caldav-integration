@@ -42,11 +42,11 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           <div class="d-flex align-start">
             <v-radio
               :value="option.value"
-              :aria-label="$t(option.labelKey)"
+              :aria-label="$t(option.labelKey, [option.value])"
               class="ma-0 pa-0 me-2"
               hide-details />
             <div class="flex-grow-1 text-start">
-              <div>{{ $t(option.labelKey) }}</div>
+              <div>{{ $t(option.labelKey, [option.value]) }}</div>
               <div class="text-caption text-sub-title mt-1">
                 {{ $t(option.consequenceKey) }}
               </div>
@@ -58,7 +58,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
   </v-list-item>
 </template>
 <script>
-import {WRITE_CHANNELS, writeChannelOf} from '../../js/writeChannels.js';
+import {writeChannelOptionsFor, writeChannelOf} from '../../js/writeChannels.js';
 
 export default {
   props: {
@@ -74,13 +74,14 @@ export default {
   },
   computed: {
     /**
-     * The options offered, keys and all, in the order the module declares
-     * them.
+     * The options offered, keys and all: CalDAV, each door a contributed
+     * preset declares, and — for a row on a channel none of them is — that
+     * channel, said to be unavailable rather than silently replaced.
      *
      * @returns {Array} the options to render
      */
     options() {
-      return WRITE_CHANNELS;
+      return writeChannelOptionsFor(this.value);
     },
     /**
      * The option the radio group actually shows as chosen, normalised the way
