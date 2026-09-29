@@ -141,8 +141,8 @@ public class CaldavReadServiceTest {
                                                                                          identityManager,
                                                                                          calDavClient,
                                                                                          caldavConnectionIdentityService);
-    // BlueMind's subscription channel is a contribution since EXO-90730,
-    // registered here the way the platform registers it.
+    // BlueMind's subscription channel is a contribution, registered here as
+    // the platform registers it.
     ReflectionTestUtils.setField(caldavCalendarOwnerService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
     ReflectionTestUtils.setField(caldavOutboundService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
     ReflectionTestUtils.setField(service, "caldavCalendarOwnerService", caldavCalendarOwnerService);
