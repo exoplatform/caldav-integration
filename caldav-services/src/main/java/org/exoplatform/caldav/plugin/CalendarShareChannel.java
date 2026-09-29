@@ -53,7 +53,10 @@ public interface CalendarShareChannel {
    * The mechanism this channel carries, as the host reports it in its logs
    * and answers.
    *
-   * @return an offered mechanism, never null
+   * @return an offered mechanism other than
+   *         {@link SharingMechanism#WEBDAV_ACL}, which is the host's own,
+   *         never null; a channel answering anything else is ignored, and so
+   *         is a second channel for a mechanism an earlier one carries
    */
   SharingMechanism mechanism();
 
