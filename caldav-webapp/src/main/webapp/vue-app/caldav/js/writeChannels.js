@@ -133,10 +133,10 @@ export function writeChannelOf(value) {
  *          what the save states
  */
 export function offersWriteChannel(server) {
-  const name = server && typeof server.name === 'string' && server.name.toLowerCase() || '';
+  const name = typeof server?.name === 'string' && server.name.toLowerCase() || '';
   const recognised = registeredPresets().some(preset => typeof preset.nameMarker === 'string' && preset.nameMarker
       && name.includes(preset.nameMarker.toLowerCase()));
-  return recognised || writeChannelOf(server && server.writeChannel) !== WRITE_CHANNEL_CALDAV;
+  return recognised || writeChannelOf(server?.writeChannel) !== WRITE_CHANNEL_CALDAV;
 }
 
 /**

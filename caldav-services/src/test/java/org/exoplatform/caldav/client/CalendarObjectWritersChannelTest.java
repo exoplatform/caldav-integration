@@ -89,7 +89,8 @@ public class CalendarObjectWritersChannelTest {
     CalendarObjectWriters writers = CalendarObjectWriters.of(registry, caldav, List.of());
     when(registry.resolveServer(7L)).thenReturn(server(WriteChannel.BLUEMIND_IMPORT));
 
-    CaldavPushException refused = assertThrows(CaldavPushException.class, () -> writers.writer(endpoint(7L)));
+    CalDavEndpoint endpoint = endpoint(7L);
+    CaldavPushException refused = assertThrows(CaldavPushException.class, () -> writers.writer(endpoint));
 
     assertEquals(CaldavPushService.WRITE_CHANNEL_UNAVAILABLE, refused.getCode());
     assertTrue(CaldavPushService.isKnownState(refused.getCode()), "reported as a state, at debug, not as an incident");
