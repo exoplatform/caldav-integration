@@ -130,8 +130,8 @@ public class CaldavOutboundServiceTest {
 
   @BeforeEach
   public void connectAnAccount() {
-    // BlueMind's subscription channel is a contribution since EXO-90730,
-    // registered here the way the platform registers it.
+    // BlueMind's subscription channel is a contribution, registered here as
+    // the platform registers it.
     ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
 
     // The addon's single definition of "connected" now lives in CaldavServerService.
