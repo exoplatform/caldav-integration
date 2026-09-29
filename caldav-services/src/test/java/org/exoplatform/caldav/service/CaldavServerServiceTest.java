@@ -472,6 +472,53 @@ public class CaldavServerServiceTest {
   }
 
   /**
+   * <b>Without the BlueMind flavour, a save stating the stored import channel
+   * back is accepted and keeps it</b>: the drawer states the stored channel
+   * on every save, so refusing it would turn any edit of the row into a 400.
+   * A save stating the import channel on a row stored on another channel is
+   * still refused
+   * ({@link #withoutTheBlueMindFlavourTheImportChannelIsRefusedEvenOnABlueMindName}).
+   */
+  @Test
+  public void withoutTheBlueMindFlavourAStatedStoredImportChannelIsKept() {
+    ReflectionTestUtils.setField(caldavServerService, "calendarServerFlavourRegistry", CalendarServerFlavourRegistry.of(List.of()));
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Bluemind", null, SERVER_URL, true);
+    stored.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    CaldavServer saved = server(7, null, "Bluemind", null, SERVER_URL, true);
+    saved.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
+
+    assertDoesNotThrow(() -> caldavServerService.updateServer(saved, ADMIN_USER));
+
+    ArgumentCaptor<CaldavServer> written = ArgumentCaptor.forClass(CaldavServer.class);
+    verify(caldavServerStorage).updateServer(written.capture());
+    assertEquals(WriteChannel.BLUEMIND_IMPORT, written.getValue().getWriteChannel());
+  }
+
+  /**
+   * With the BlueMind flavour installed, the stored import channel stated back
+   * on a row renamed away from BlueMind is still refused: an add-on knows the
+   * channel, and this registration is no longer one that speaks it.
+   */
+  @Test
+  public void withTheBlueMindFlavourAStatedStoredImportChannelOnARowLeavingBlueMindIsRefused() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Bluemind", null, SERVER_URL, true);
+    stored.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    CaldavServer renamed = server(7, null, "Other", null, SERVER_URL, true);
+    renamed.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
+
+    IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.updateServer(renamed, ADMIN_USER));
+
+    assertEquals(CaldavServerService.WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE, refused.getMessage());
+    verify(caldavServerStorage, never()).updateServer(any());
+  }
+
+  /**
    * The session drop after a registration write goes through the installed
    * flavours: with none installed nothing is dropped and the write succeeds.
    */
