@@ -63,7 +63,7 @@ import org.exoplatform.caldav.storage.CaldavServerStorage;
  * built-in seed; this class pins what the host does with seeds as such.
  */
 @ExtendWith(MockitoExtension.class)
-public class CaldavServerServiceSeedTest {
+class CaldavServerServiceSeedTest {
 
   /** The provider name the storage hands a created row back under. */
   private static final String      CREATED_PROVIDER = "agenda.caldavCalendar.2";
@@ -94,7 +94,7 @@ public class CaldavServerServiceSeedTest {
    * seeded.
    */
   @BeforeEach
-  public void clearLegacyProperty() {
+  void clearLegacyProperty() {
     previousUrlProperty = System.getProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY);
     System.clearProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY);
   }
@@ -103,7 +103,7 @@ public class CaldavServerServiceSeedTest {
    * Puts the legacy address property back as found.
    */
   @AfterEach
-  public void restoreLegacyProperty() {
+  void restoreLegacyProperty() {
     if (previousUrlProperty == null) {
       System.clearProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY);
     } else {
@@ -151,7 +151,7 @@ public class CaldavServerServiceSeedTest {
    * seed registry is installed and empty or not installed at all.
    */
   @Test
-  public void withNoContributedSeedOnlyTheDefaultIsSeeded() {
+  void withNoContributedSeedOnlyTheDefaultIsSeeded() {
     for (boolean installed : List.of(true, false)) {
       org.mockito.Mockito.reset(caldavServerStorage, agendaRemoteEventService);
       when(caldavServerStorage.countServers()).thenReturn(0L);
@@ -175,7 +175,7 @@ public class CaldavServerServiceSeedTest {
    * provider under the created row's name.
    */
   @Test
-  public void theBuiltInBlueMindSeedWritesTodaysRow() {
+  void theBuiltInBlueMindSeedWritesTodaysRow() {
     install(new BlueMindServerSeed());
     echoCreatedRows();
 
@@ -202,10 +202,10 @@ public class CaldavServerServiceSeedTest {
    */
   @SuppressWarnings("removal")
   @Test
-  public void theDeprecatedConstantsReadTheSeedsValues() {
+  void theDeprecatedConstantsReadTheSeedsValues() {
     assertEquals(BlueMindServerSeed.SERVER_NAME, CaldavServerService.BLUEMIND_SERVER_NAME);
     assertEquals(BlueMindServerSeed.SERVER_URL, CaldavServerService.DEFAULT_BLUEMIND_URL);
-    assertEquals(BlueMindServerSeed.QUIRKS, CaldavServerService.BLUEMIND_SEED_QUIRKS);
+    assertEquals(BlueMindServerSeed.SEED_QUIRKS, CaldavServerService.BLUEMIND_SEED_QUIRKS);
   }
 
   /**
@@ -213,7 +213,7 @@ public class CaldavServerServiceSeedTest {
    * it — the fresh registry receives exactly one BlueMind row, the add-on's.
    */
   @Test
-  public void withTwoSeedsForOneProductOnlyTheFirstIsSeeded() {
+  void withTwoSeedsForOneProductOnlyTheFirstIsSeeded() {
     install(new StandIn("bluemind", "BlueMind (add-on)", "https://add-on.example.invalid/dav/"), new BlueMindServerSeed());
     echoCreatedRows();
 
@@ -230,7 +230,7 @@ public class CaldavServerServiceSeedTest {
    * — a contribution installed after the first boot adds no row.
    */
   @Test
-  public void aRegistryHoldingARowIsUntouched() {
+  void aRegistryHoldingARowIsUntouched() {
     install(new BlueMindServerSeed(), new StandIn("other", "Other", "https://other.example.invalid/dav/"));
     when(caldavServerStorage.countServers()).thenReturn(1L);
 
@@ -246,7 +246,7 @@ public class CaldavServerServiceSeedTest {
    * the host's default's, or an earlier seed's under another identifier.
    */
   @Test
-  public void aSeedWhoseNameIsTakenIsLeftOut() {
+  void aSeedWhoseNameIsTakenIsLeftOut() {
     install(new StandIn("fake-stalwart", "stalwart", "https://s.example.invalid/dav/"),
             new StandIn("first", "Acme", "https://a.example.invalid/dav/"),
             new StandIn("second", "ACME", "https://b.example.invalid/dav/"));
@@ -263,7 +263,7 @@ public class CaldavServerServiceSeedTest {
    * nor the default its row.
    */
   @Test
-  public void aFailingSeedDoesNotStopTheNext() {
+  void aFailingSeedDoesNotStopTheNext() {
     StandIn failing = new StandIn("failing", "Failing", "https://f.example.invalid/dav/") {
       @Override
       public List<ServerQuirk> quirks() {
@@ -285,7 +285,7 @@ public class CaldavServerServiceSeedTest {
    * written into a tolerance column.
    */
   @Test
-  public void anOmitEntryIsNotWrittenAsATolerance() {
+  void anOmitEntryIsNotWrittenAsATolerance() {
     StandIn seed = new StandIn("omitting", "Omitting", "https://o.example.invalid/dav/") {
       @Override
       public List<ServerQuirk> quirks() {
