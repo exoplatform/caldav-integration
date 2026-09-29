@@ -75,6 +75,7 @@ public class CalendarObjectWriters {
 
   private final CalDavObjectWriter                        calDavObjectWriter;
 
+  /** Where the contributed doors are read from, once. */
   private final Supplier<List<CalendarWriteChannelPlugin>> plugins;
 
   /**

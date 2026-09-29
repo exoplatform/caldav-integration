@@ -34,6 +34,7 @@ import org.exoplatform.caldav.plugin.CalendarWriteChannelPlugin;
 @Service
 public class BlueMindWriteChannelPlugin implements CalendarWriteChannelPlugin {
 
+  /** The writer over BlueMind's ICS import API. */
   private final BlueMindImportWriter blueMindImportWriter;
 
   /**

@@ -19,7 +19,6 @@ package org.exoplatform.caldav.plugin;
 import java.util.function.Function;
 
 import org.exoplatform.caldav.client.CalDavEndpoint;
-import org.exoplatform.caldav.client.CalDavSubjectMismatchException;
 
 /**
  * How a calendar server product lays out, and lets eXo edit, the calendars
@@ -84,7 +83,7 @@ public interface CalendarSubscriptionChannel {
    * @return what the job produced
    * @throws UnsupportedOperationException when the user's configured
    *           credentials cannot open such a session
-   * @throws CalDavSubjectMismatchException when the server authenticated
+   * @throws org.exoplatform.caldav.client.CalDavSubjectMismatchException when the server authenticated
    *           somebody other than the recorded uid; nothing was sent
    * @throws org.exoplatform.caldav.client.CalDavException when the session
    *           cannot be opened or an edit is answered with a failure
