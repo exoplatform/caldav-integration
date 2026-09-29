@@ -164,12 +164,12 @@ public class CaldavServerService {
    * The catalogue entries the seeded BlueMind row arrives excused for.
    *
    * @deprecated the BlueMind row is a contributed seed since EXO-90737; read
-   *             {@code BlueMindServerSeed.QUIRKS} instead, which carries why
+   *             {@code BlueMindServerSeed.SEED_QUIRKS} instead, which carries why
    *             these entries. Kept until the BlueMind code leaves this
    *             add-on.
    */
   @Deprecated(forRemoval = true)
-  static final List<ServerQuirk>   BLUEMIND_SEED_QUIRKS          = BlueMindServerSeed.QUIRKS;
+  static final List<ServerQuirk>   BLUEMIND_SEED_QUIRKS          = BlueMindServerSeed.SEED_QUIRKS;
 
   private static final String      SERVER_MANDATORY_MESSAGE      = "caldav.server.mandatory";
 
