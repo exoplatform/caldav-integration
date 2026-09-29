@@ -49,6 +49,7 @@ import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CollectionAcl;
 import org.exoplatform.caldav.client.DavOptions;
 import org.exoplatform.caldav.client.bluemind.BlueMindAclClient;
+import org.exoplatform.caldav.client.bluemind.BlueMindShareChannel;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CalendarShares;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -221,7 +222,7 @@ public class CaldavShareDrawerRoundTripsTest {
                                              calDavClient,
                                              caldavConnectionIdentityService,
                                              identityManager,
-                                             blueMindAclClient,
+                                             CalendarShareChannelRegistry.of(List.of(new BlueMindShareChannel(blueMindAclClient, calDavClient))),
                                              caldavPushService,
                                              caldavShareSubscriptionService,
                                              caldavServerOwnerService,
@@ -650,7 +651,7 @@ public class CaldavShareDrawerRoundTripsTest {
                                           calDavClient,
                                           caldavConnectionIdentityService,
                                           identityManager,
-                                          blueMindAclClient,
+                                          CalendarShareChannelRegistry.of(List.of(new BlueMindShareChannel(blueMindAclClient, calDavClient))),
                                           push,
                                           caldavShareSubscriptionService,
                                           caldavServerOwnerService,
