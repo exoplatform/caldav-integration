@@ -59,12 +59,13 @@ public class CalendarServerSeedRegistry {
   /**
    * The registry over every contributed seed.
    *
-   * @param seeds the contributions, from every web application; null reads as
-   *          none
+   * @param seeds the contributions, from every web application, each read on
+   *          its own so that one which cannot be created is left out
+   *          ({@link ContributedBeans}); null reads as none
    */
   @Autowired
   public CalendarServerSeedRegistry(ObjectProvider<CalendarServerSeed> seeds) {
-    this(() -> seeds == null ? List.of() : seeds.orderedStream().toList());
+    this(new ContributedBeans<>(seeds, "server seed", CalendarServerSeed::id));
   }
 
   /**
@@ -96,16 +97,9 @@ public class CalendarServerSeedRegistry {
    * @return the effective seeds, in order, never null
    */
   public List<CalendarServerSeed> effectiveSeeds() {
-    List<CalendarServerSeed> contributed;
-    try {
-      contributed = seeds.get();
-    } catch (RuntimeException e) {
-      LOG.warn("The contributed CalDAV server seeds could not be read; only the default server is seeded", e);
-      return List.of();
-    }
     List<CalendarServerSeed> effective = new ArrayList<>();
     Set<String> seededIds = new HashSet<>();
-    for (CalendarServerSeed seed : contributed) {
+    for (CalendarServerSeed seed : seeds.get()) {
       String id = describable(seed);
       if (id == null) {
         continue;

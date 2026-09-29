@@ -101,17 +101,24 @@ public class CalendarServerSeedRegistryTest {
   }
 
   /**
-   * A contribution list that cannot be read at all reads as none, so the host
-   * still seeds its own default.
+   * A contribution the bean factory cannot create is left out: alone, it
+   * reads as none, so the host still seeds its own default; beside another
+   * seed, listed before it, the other is still seeded.
    */
   @Test
-  public void anUnreadableContributionListReadsAsNone() {
+  public void aSeedThatCannotBeCreatedIsLeftOutAndTheOthersAreSeeded() {
     DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
     factory.registerBeanDefinition("broken", new RootBeanDefinition(CalendarServerSeed.class, () -> {
       throw new IllegalStateException("cannot create");
     }));
 
     assertTrue(new CalendarServerSeedRegistry(factory.getBeanProvider(CalendarServerSeed.class)).effectiveSeeds().isEmpty());
+
+    factory.registerBeanDefinition("blueMindServerSeed", new RootBeanDefinition(BlueMindServerSeed.class));
+    List<CalendarServerSeed> seeds = new CalendarServerSeedRegistry(factory.getBeanProvider(CalendarServerSeed.class)).effectiveSeeds();
+
+    assertEquals(1, seeds.size());
+    assertEquals(BlueMindServerSeed.class, seeds.get(0).getClass());
   }
 
   /**
