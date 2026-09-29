@@ -69,10 +69,11 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   private CaldavServerOwnerService        caldavServerOwnerService;
 
   /**
-   * The BlueMind REST sessions kept per account (EXO-90397), resolved lazily
-   * for the same reason as the engines above.
+   * The server flavours installed (EXO-90730), which drop the sessions a
+   * server product keeps per account — BlueMind's REST sessions among them
+   * (EXO-90397) — resolved lazily for the same reason as the engines above.
    */
-  private BlueMindSessionService          blueMindSessionService;
+  private CalendarServerFlavourRegistry   calendarServerFlavourRegistry;
 
   public CaldavConnectorServiceImpl(CaldavConnectorStorage caldavConnectorStorage) {
     String caldavUrl = System.getProperty("exo.agenda.caldav.connector.url");
@@ -111,10 +112,10 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     // And the REST session those credentials had opened: it authenticates the
     // mailbox they named, which is not necessarily the one they name now
     // (EXO-90397).
-    forgetBlueMindSession(userIdentityId, caldavUserSetting.getServerId());
+    forgetServerSession(userIdentityId, caldavUserSetting.getServerId());
     if (previous != null && !Objects.equals(serverKeyOf(previous.getServerId()), serverKeyOf(caldavUserSetting.getServerId()))) {
       forgetServerOwners(userIdentityId, previous.getServerId());
-      forgetBlueMindSession(userIdentityId, previous.getServerId());
+      forgetServerSession(userIdentityId, previous.getServerId());
       // The account moved to another server: the shares it carried to the
       // previous one are eXo's and stay, but their delivery stamp names a
       // server this account is no longer on, so it goes - as on a
@@ -456,55 +457,53 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     forgetServerOwners(userIdentityId, settings == null ? null : settings.getServerId());
     // And the REST session it held is closed rather than left open on the
     // server until it expires (EXO-90397).
-    forgetBlueMindSession(userIdentityId, settings == null ? null : settings.getServerId());
+    forgetServerSession(userIdentityId, settings == null ? null : settings.getServerId());
   }
 
   /**
-   * Closes and drops the BlueMind REST session the account held, when the
-   * engine that keeps it is resolvable.
+   * Closes and drops the session a server product keeps for the account —
+   * BlueMind's REST session among them — when the flavours are resolvable.
    *
    * @param userIdentityId the user
    * @param serverId the declared server the account was on; null for the
    *          legacy deployment property
    */
-  private void forgetBlueMindSession(long userIdentityId, Long serverId) {
-    BlueMindSessionService sessionService = getBlueMindSessionService();
-    if (sessionService != null) {
+  private void forgetServerSession(long userIdentityId, Long serverId) {
+    CalendarServerFlavourRegistry flavours = getCalendarServerFlavourRegistry();
+    if (flavours != null) {
       try {
-        sessionService.forget(userIdentityId, serverId);
+        flavours.forgetSession(userIdentityId, serverId);
       } catch (RuntimeException e) {
         // Connecting and disconnecting must succeed; a session left behind
-        // expires on BlueMind's own clock within the entry's lifetime.
-        LOG.warn("The BlueMind session kept for user {} could not be dropped", userIdentityId, e);
+        // expires on the server's own clock within the entry's lifetime.
+        LOG.warn("The server session kept for user {} could not be dropped", userIdentityId, e);
       }
     }
   }
 
   /**
-   * The engine keeping each account's BlueMind REST session, resolved lazily
-   * as its siblings are.
+   * The installed server flavours, resolved lazily as the engines above are.
    *
-   * @return the engine, or null when it cannot be resolved
+   * @return the registry, or null when it cannot be resolved
    */
-  protected BlueMindSessionService getBlueMindSessionService() {
-    if (blueMindSessionService == null) {
+  protected CalendarServerFlavourRegistry getCalendarServerFlavourRegistry() {
+    if (calendarServerFlavourRegistry == null) {
       try {
-        blueMindSessionService = ExoContainerContext.getService(BlueMindSessionService.class);
+        calendarServerFlavourRegistry = ExoContainerContext.getService(CalendarServerFlavourRegistry.class);
       } catch (Exception | LinkageError e) {
-        LOG.debug("BlueMind session engine not resolvable; its sessions are left to expire on their own", e);
+        LOG.debug("Server flavours not resolvable; the sessions they keep are left to expire on their own", e);
       }
     }
-    return blueMindSessionService;
+    return calendarServerFlavourRegistry;
   }
 
   /**
    * The seam the tests use.
    *
-   * @param blueMindSessionService the engine keeping each account's BlueMind
-   *          REST session
+   * @param calendarServerFlavourRegistry the installed server flavours
    */
-  protected void setBlueMindSessionService(BlueMindSessionService blueMindSessionService) {
-    this.blueMindSessionService = blueMindSessionService;
+  protected void setCalendarServerFlavourRegistry(CalendarServerFlavourRegistry calendarServerFlavourRegistry) {
+    this.calendarServerFlavourRegistry = calendarServerFlavourRegistry;
   }
 
   /**

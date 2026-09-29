@@ -230,9 +230,6 @@ public class CaldavServerService {
    */
   public static final String       WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE = "caldav.server.writeChannelNotSupported";
 
-  /** What a registration's name carries when it stands for a BlueMind server. */
-  static final String              BLUEMIND_NAME_MARKER          = "bluemind";
-
   private static final Log         LOG                           = ExoLogger.getLogger(CaldavServerService.class);
 
   @Autowired
@@ -275,14 +272,15 @@ public class CaldavServerService {
   private CaldavCredentialsResolver caldavCredentialsResolver;
 
   /**
-   * The BlueMind REST sessions kept per account (EXO-90397). A session is
-   * opened under a registration's address and provider, so a registration
-   * that is edited or deleted invalidates every one of them. Guarded as the
-   * two above are: it resolves through the credentials contract, a bean of
-   * another WAR, so it is undefined in this addon's own Spring test contexts.
+   * The server flavours installed (EXO-90730): which product a registration
+   * stands for, the write channels it may declare, and the sessions it keeps
+   * per account (EXO-90397) — a session is opened under a registration's
+   * address and provider, so a registration that is edited or deleted
+   * invalidates every one of them. Optional so that a context without it
+   * reads every registration as plain CalDAV.
    */
   @Autowired(required = false)
-  private BlueMindSessionService   blueMindSessionService;
+  private CalendarServerFlavourRegistry calendarServerFlavourRegistry;
 
   @Autowired
   private SettingService           settingService;
@@ -751,48 +749,37 @@ public class CaldavServerService {
 
 
   /**
-   * Whether a registration stands for a BlueMind server: its name carries
-   * {@value #BLUEMIND_NAME_MARKER}, which is what the shipped seed row
-   * ({@link #BLUEMIND_SERVER_NAME}) and the administrator drawer's BlueMind
-   * preset both write.
+   * Refuses a write channel the registration's flavour does not allow
+   * (EXO-90307, EXO-90730): a server-specific door, such as BlueMind's import
+   * API, only speaks that server's endpoints, so on any other server every
+   * write through it would fail, and the drawer's radio exists to be that
+   * server's kill-switch, not a choice for everybody. The drawer already hides
+   * the radio elsewhere; this is the guard the UI is not. Which product a
+   * registration stands for, and which channels it allows, is the installed
+   * {@link CalendarServerFlavourRegistry}'s answer; with no flavour installed
+   * for it, a registration is plain CalDAV.
    *
    * <p>
-   * The name, because nothing else on the row says which product it is: a
-   * preset is a copy, never a link (the drawer's {@code serverPresets.js}
-   * states why), so no preset identifier is stored; the provider name is the
-   * agenda bridge's, not the product's; and the sharing mechanism is a runtime
-   * capability read from the server, not a stored fact a save can be judged
-   * by. An administrator who renames a BlueMind registration to something
-   * else therefore also gives up its BlueMind-only choices — and is told so by
-   * the refusal below rather than by a silent reset.
-   *
-   * @param server the registration, may be null
-   * @return true when its name says BlueMind
-   */
-  static boolean isBlueMind(CaldavServer server) {
-    return server != null && StringUtils.containsIgnoreCase(server.getName(), BLUEMIND_NAME_MARKER);
-  }
-
-  /**
-   * Refuses the BlueMind import channel on a registration that is not
-   * BlueMind's (EXO-90307): the import door only speaks BlueMind's REST
-   * endpoints, so on any other server every write through it would fail, and
-   * the drawer's radio exists to be BlueMind's kill-switch, not a choice for
-   * everybody. The drawer already hides the radio elsewhere; this is the
-   * guard the UI is not.
-   *
-   * <p>
-   * Two shapes of payload, two answers. A payload that <b>states</b>
-   * {@code BLUEMIND_IMPORT} for a non-BlueMind name is refused with
+   * Two shapes of payload, two answers. A payload that <b>states</b> a
+   * channel the flavour does not allow is refused with
    * {@value #WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE}: the administrator asked
    * for something this server cannot do, and a 400 they can read beats a row
    * silently written otherwise. A payload that states <b>nothing</b> — a
-   * drawer that does not carry the control — while the stored row is on the
-   * import channel and the name no longer says BlueMind is reset to CalDAV
-   * rather than refused: nobody asked for the impossible, the storage would
-   * otherwise keep a channel the server cannot speak, and CalDAV is what the
-   * drawer sends explicitly for every non-BlueMind server, so both paths end
-   * on the same value.
+   * drawer that does not carry the control — while the stored row is on a
+   * channel the posted registration's flavour does not allow is reset to
+   * CalDAV rather than refused: nobody asked for the impossible, the storage
+   * would otherwise keep a channel the server cannot speak, and CalDAV is what
+   * the drawer sends explicitly for every other server, so both paths end on
+   * the same value.
+   *
+   * <p>
+   * <b>Unless no installed flavour knows the stored channel at all</b> — the
+   * add-on that speaks it is not installed. Then the row is not reset: it
+   * keeps its channel, every write on it is refused and reported
+   * ({@code CaldavPushService#WRITE_CHANNEL_UNAVAILABLE}), and installing the
+   * add-on again resumes it as it was. Switching it to CalDAV behind the
+   * administrator's back would make that server receive exactly the CalDAV
+   * writes the channel was chosen to avoid.
    *
    * @param server the registration as posted
    * @param stored the registration as stored, or null on a declaration
@@ -800,16 +787,35 @@ public class CaldavServerService {
    *           channel is stated and the server cannot speak it
    */
   private void checkWriteChannel(CaldavServer server, CaldavServer stored) {
-    if (isBlueMind(server)) {
-      return;
-    }
-    if (server.getWriteChannel() == WriteChannel.BLUEMIND_IMPORT) {
+    if (!acceptsWriteChannel(server, server.getWriteChannel())) {
       throw new IllegalArgumentException(WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE);
     }
-    if (server.getWriteChannel() == null && stored != null && stored.getWriteChannel() == WriteChannel.BLUEMIND_IMPORT) {
-      LOG.info("CalDAV server {} is no longer declared as BlueMind; its copies go back through CalDAV", server.getId());
+    if (server.getWriteChannel() == null && stored != null && !acceptsWriteChannel(server, stored.getWriteChannel())) {
+      if (calendarServerFlavourRegistry == null || !calendarServerFlavourRegistry.knows(stored.getWriteChannel())) {
+        LOG.warn("CalDAV server {} keeps the {} channel, which no installed add-on serves: its copies are refused until the"
+            + " add-on is installed or the server is switched to CalDAV", server.getId(), stored.getWriteChannel());
+        return;
+      }
+      LOG.info("CalDAV server {} is no longer declared as a server that speaks the {} channel; its copies go back through CalDAV",
+               server.getId(),
+               stored.getWriteChannel());
       server.setWriteChannel(WriteChannel.CALDAV);
     }
+  }
+
+  /**
+   * Whether a registration may declare a write channel, as the installed
+   * flavours answer; without the registry, as plain CalDAV answers.
+   *
+   * @param server the registration as posted
+   * @param channel the channel, may be null
+   * @return true when the declaration is acceptable
+   */
+  private boolean acceptsWriteChannel(CaldavServer server, WriteChannel channel) {
+    if (calendarServerFlavourRegistry == null) {
+      return channel == null || channel == WriteChannel.CALDAV;
+    }
+    return calendarServerFlavourRegistry.accepts(server, channel);
   }
 
   /**
@@ -986,7 +992,7 @@ public class CaldavServerService {
     discardConfigOfProviderBeingLeft(stored, server);
     storeProviderConfig(updatedServer, server.getProviderConfig());
     saveAgendaRemoteProvider(updatedServer);
-    forgetBlueMindSessions();
+    forgetServerSessions();
     if (isProviderChange(stored, server)) {
       // Every user of the server is disconnected, whoever made the connection: the
       // authentication changed for all of them.
@@ -1064,7 +1070,7 @@ public class CaldavServerService {
     // A third writer of the registration row, and the invariant the two
     // Javadoc blocks above state is unconditional: a registration that is
     // written drops the sessions opened under it (EXO-90397, review round 1).
-    forgetBlueMindSessions();
+    forgetServerSessions();
     return caldavServerQuirkService.decorate(updatedServer);
   }
 
@@ -1121,12 +1127,13 @@ public class CaldavServerService {
     }
     caldavServerStorage.deleteServer(serverId);
     caldavServerQuirkService.forget(serverId);
-    forgetBlueMindSessions();
+    forgetServerSessions();
   }
 
   /**
-   * Drops every kept BlueMind REST session, because a registration was
-   * written or removed under them (EXO-90397).
+   * Drops every server session a flavour keeps — BlueMind's REST sessions
+   * among them — because a registration was written or removed under them
+   * (EXO-90397).
    *
    * <p>
    * All of them rather than that registration's: a session is keyed by the
@@ -1143,14 +1150,14 @@ public class CaldavServerService {
    * it failed because a session could not be dropped, and a session left
    * behind expires within the entry's lifetime.
    */
-  private void forgetBlueMindSessions() {
-    if (blueMindSessionService == null) {
+  private void forgetServerSessions() {
+    if (calendarServerFlavourRegistry == null) {
       return;
     }
     try {
-      blueMindSessionService.forgetAll();
+      calendarServerFlavourRegistry.forgetAllSessions();
     } catch (RuntimeException e) {
-      LOG.warn("The kept BlueMind sessions could not be dropped after a server registration was written", e);
+      LOG.warn("The kept server sessions could not be dropped after a server registration was written", e);
     }
   }
 
