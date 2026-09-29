@@ -645,7 +645,14 @@ public class BlueMindShareChannel implements CalendarShareChannel {
       }
       String canonical = "/dav/principals/__uids__/" + subject;
       String href = AccessControlEntry.principalHrefOf(canonical);
-      ShareAccess access = more ? ShareAccess.MORE : (writeGrant ? ShareAccess.WRITE : ShareAccess.READ);
+      ShareAccess access;
+      if (more) {
+        access = ShareAccess.MORE;
+      } else if (writeGrant) {
+        access = ShareAccess.WRITE;
+      } else {
+        access = ShareAccess.READ;
+      }
       List<ShareUser> users = host.usersConnectedAs(target, canonical);
       if (users.isEmpty()) {
         sharees.add(new CalendarSharee(href, ShareeKind.OUTSIDE_EXO, List.of(), host.displayNameOf(target, href, canonical), access, false));

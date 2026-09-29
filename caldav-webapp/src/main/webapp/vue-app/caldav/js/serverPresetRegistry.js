@@ -76,7 +76,7 @@ export function registeredPresets() {
  * @returns {Promise} resolved once every contribution has run
  */
 export function includeServerPresets() {
-  const utils = typeof Vue !== 'undefined' && Vue.prototype && Vue.prototype.$utils || null;
+  const utils = typeof Vue !== 'undefined' && Vue.prototype?.$utils || null;
   if (!utils || typeof utils.includeExtensions !== 'function') {
     return Promise.resolve();
   }
