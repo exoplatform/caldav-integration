@@ -37,7 +37,7 @@ import org.exoplatform.caldav.plugin.CalendarServerSeed;
  *
  * <p>
  * <b>What the row carries, and why.</b> It is excused for what BlueMind is
- * known to do to a copy ({@link #QUIRKS}), pointed at the account's
+ * known to do to a copy ({@link #SEED_QUIRKS}), pointed at the account's
  * <b>main</b> calendar, and writes through BlueMind's import channel — the
  * same choices the browser's BlueMind preset makes on a declaration
  * ({@code serverPresets.js}). The main calendar rather than the model's
@@ -107,7 +107,7 @@ public class BlueMindServerSeed implements CalendarServerSeed {
    * what eXo writes ({@code OMIT}); {@code CaldavServerServiceTest} fails the
    * moment one is named here.
    */
-  public static final List<ServerQuirk> QUIRKS     = List.of(ServerQuirk.DROPS_CONFERENCE,
+  public static final List<ServerQuirk> SEED_QUIRKS = List.of(ServerQuirk.DROPS_CONFERENCE,
                                                              ServerQuirk.ADDS_COMPATIBILITY_MARKERS,
                                                              ServerQuirk.ADDS_FORMATTED_DESCRIPTION,
                                                              ServerQuirk.STAMPS_DEFAULT_PRIORITY);
@@ -141,7 +141,7 @@ public class BlueMindServerSeed implements CalendarServerSeed {
    */
   @Override
   public List<ServerQuirk> quirks() {
-    return QUIRKS;
+    return SEED_QUIRKS;
   }
 
   /**
