@@ -45,6 +45,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -136,12 +137,15 @@ public class CaldavReadServiceTest {
     // a listing is pinned end to end — classification, owner, wire shape —
     // rather than against a mock that answers whatever the test wrote
     // (EXO-90237). Set by hand: @InjectMocks wires mocks, and this one is not.
-    ReflectionTestUtils.setField(service,
-                                 "caldavCalendarOwnerService",
-                                 new CaldavCalendarOwnerService(caldavOutboundService,
-                                                                identityManager,
-                                                                calDavClient,
-                                                                caldavConnectionIdentityService));
+    CaldavCalendarOwnerService caldavCalendarOwnerService = new CaldavCalendarOwnerService(caldavOutboundService,
+                                                                                         identityManager,
+                                                                                         calDavClient,
+                                                                                         caldavConnectionIdentityService);
+    // BlueMind's subscription channel is a contribution since EXO-90730,
+    // registered here the way the platform registers it.
+    ReflectionTestUtils.setField(caldavCalendarOwnerService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
+    ReflectionTestUtils.setField(caldavOutboundService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
+    ReflectionTestUtils.setField(service, "caldavCalendarOwnerService", caldavCalendarOwnerService);
     // The addon's single definition of "connected" now lives in CaldavServerService.
     // Reproducing here the rule these tests were written against - a username and a
     // password - keeps every assertion in this class measuring exactly what it

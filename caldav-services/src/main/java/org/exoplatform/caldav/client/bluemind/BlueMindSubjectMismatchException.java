@@ -16,7 +16,7 @@
  */
 package org.exoplatform.caldav.client.bluemind;
 
-import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavSubjectMismatchException;
 
 /**
  * The session BlueMind opened belongs to somebody other than the account eXo
@@ -40,7 +40,7 @@ import org.exoplatform.caldav.client.CalDavException;
  * comparison to change, which is not this client's job. The caller gives up
  * the change rather than counting attempts against it.
  */
-public class BlueMindSubjectMismatchException extends CalDavException {
+public class BlueMindSubjectMismatchException extends CalDavSubjectMismatchException {
 
   private static final long serialVersionUID = 7384205118866312847L;
 

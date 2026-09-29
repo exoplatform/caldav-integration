@@ -35,11 +35,11 @@ import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.MkCalendarResult;
 import org.exoplatform.caldav.client.PropPatchResult;
-import org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
+import org.exoplatform.caldav.plugin.CalendarSubscription;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
@@ -90,6 +90,15 @@ public class CaldavOutboundService {
 
   @Autowired
   private CaldavConnectionIdentityService caldavConnectionIdentityService;
+
+  /**
+   * The installed subscription channels (EXO-90730), which read a listed
+   * collection's name for a subscription to somebody else's calendar — on
+   * BlueMind, its container uid (EXO-90275). Optional: without it no
+   * subscription is recognised by its name, and the DAV signals decide.
+   */
+  @Autowired(required = false)
+  private CalendarSubscriptionChannelRegistry calendarSubscriptionChannelRegistry;
 
   /**
    * Binds every personal calendar of a user to a collection on their server,
@@ -730,7 +739,7 @@ public class CaldavOutboundService {
    * calendar, a pool vehicle, a room — under the user's own home with the
    * user as owner and the full privilege set, so neither server signal fires;
    * the container uid it names the collection by carries the owner instead
-   * ({@link BlueMindContainerNaming}). A uid other than the account's own is
+   * ({@code BlueMindContainerNaming}). A uid other than the account's own is
    * {@link CollectionOwnership#SUBSCRIBED_PERSON} or
    * {@link CollectionOwnership#SUBSCRIBED_RESOURCE}. Before the server's two
    * signals, so that a resource is told from a person wherever both could
@@ -857,8 +866,10 @@ public class CaldavOutboundService {
    * @return a subscription the naming reveals, a share the DAV signals
    *         reveal, or {@link CollectionOwnership#OWN}
    */
-  private static CollectionOwnership byNamingAndDavSignals(String href, String principal, CalendarCollection collection) {
-    BlueMindContainerNaming.Subscription subscription = BlueMindContainerNaming.subscriptionOf(href, principal);
+  private CollectionOwnership byNamingAndDavSignals(String href, String principal, CalendarCollection collection) {
+    CalendarSubscription subscription = calendarSubscriptionChannelRegistry == null ? null
+                                                                                    : calendarSubscriptionChannelRegistry.subscriptionOf(href,
+                                                                                                                                          principal);
     if (subscription != null) {
       return subscription.resource() ? CollectionOwnership.SUBSCRIBED_RESOURCE : CollectionOwnership.SUBSCRIBED_PERSON;
     }
