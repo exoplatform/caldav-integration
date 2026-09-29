@@ -46,12 +46,13 @@ public class CalendarShareChannelRegistry {
   /**
    * The registry over every contributed channel.
    *
-   * @param channels the contributions, from every web application; null reads
-   *          as none
+   * @param channels the contributions, from every web application, each read on its
+   *          own so that one which cannot be created is left out
+   *          ({@link ContributedBeans}); null reads as none
    */
   @Autowired
   public CalendarShareChannelRegistry(ObjectProvider<CalendarShareChannel> channels) {
-    this(() -> channels == null ? List.of() : channels.orderedStream().toList());
+    this(new ContributedBeans<>(channels, "share channel", CalendarShareChannel::mechanism));
   }
 
   /**
