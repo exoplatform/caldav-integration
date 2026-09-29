@@ -143,7 +143,8 @@ public class CaldavMirrorRelocationService {
 
   /**
    * The copies whose removal has already been reported, keyed by user and old
-   * href.
+   * href, and the servers whose unavailable write channel has been, keyed by
+   * server ({@link #channelUnavailableKey}).
    *
    * <p>
    * In memory, beside the verification pass's repair counts and for the same
@@ -483,9 +484,12 @@ public class CaldavMirrorRelocationService {
       // this connector's own writing under this connector's own UID.
       written = calendarObjectWriters.writer(endpoint).overwriteObject(endpoint, to, ics);
     } catch (RuntimeException | LinkageError e) {
-      LOG.warn("The copy at {} of user {} could not be written to {}; it stays where it is", from, userIdentityId, to, e);
+      if (!isChannelUnavailable(e, settings)) {
+        LOG.warn("The copy at {} of user {} could not be written to {}; it stays where it is", from, userIdentityId, to, e);
+      }
       return Outcome.FAILED;
     }
+    reported.remove(channelUnavailableKey(settings));
     object.setRemoteHref(to);
     object.setEtag(written.etag());
     object.setLastSync(new Date());
@@ -526,6 +530,9 @@ public class CaldavMirrorRelocationService {
         return true;
       }
     } catch (RuntimeException | LinkageError e) {
+      if (isChannelUnavailable(e, settings)) {
+        return false;
+      }
       sayOnce(userIdentityId,
               from,
               "The copy user {} left at {} could not be removed after their meetings moved; it stays, and the change is "
@@ -696,6 +703,44 @@ public class CaldavMirrorRelocationService {
    */
   private String normalise(String etag) {
     return StringUtils.removeStart(StringUtils.strip(etag, "\""), "W/").replace("\"", "");
+  }
+
+  /**
+   * Whether a write or a removal failed because the server's registration
+   * declares a write channel no installed add-on serves — and if so, says it
+   * once for the server, without a trace, rather than once per copy with one:
+   * every copy of every account on that server meets the same refusal, and
+   * the refusal's message already names the server and the channel. Said
+   * again after a copy on that server was written once more.
+   *
+   * @param failure what the write or the removal raised
+   * @param settings the connected account, naming its server
+   * @return true when the failure is that refusal, already reported
+   */
+  private boolean isChannelUnavailable(Throwable failure, CaldavUserSetting settings) {
+    if (!(failure instanceof CaldavPushException refusal)
+        || !CaldavPushService.WRITE_CHANNEL_UNAVAILABLE.equals(refusal.getCode())) {
+      return false;
+    }
+    if (reported.add(channelUnavailableKey(settings))) {
+      LOG.warn("The meeting copies on server {} are not moved: {}", settings == null ? null : settings.getServerId(),
+               refusal.getMessage());
+    } else {
+      LOG.debug("A meeting copy on server {} is not moved: its write channel is still unavailable",
+                settings == null ? null : settings.getServerId());
+    }
+    return true;
+  }
+
+  /**
+   * The key under which an unavailable write channel is reported for a
+   * server, apart from the per-copy keys.
+   *
+   * @param settings the connected account, naming its server
+   * @return the key
+   */
+  private static String channelUnavailableKey(CaldavUserSetting settings) {
+    return "server|" + (settings == null ? null : settings.getServerId()) + "|" + CaldavPushService.WRITE_CHANNEL_UNAVAILABLE;
   }
 
   /**
