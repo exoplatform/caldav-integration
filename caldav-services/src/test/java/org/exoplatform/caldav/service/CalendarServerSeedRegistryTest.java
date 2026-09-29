@@ -38,13 +38,13 @@ import org.exoplatform.caldav.plugin.CalendarServerSeed;
  * first in the bean factory's order, and none from a contribution that cannot
  * say what it seeds.
  */
-public class CalendarServerSeedRegistryTest {
+class CalendarServerSeedRegistryTest {
 
   /**
    * With nothing installed, nothing is seeded besides the host's default.
    */
   @Test
-  public void withNoSeedThereIsNothingToSeed() {
+  void withNoSeedThereIsNothingToSeed() {
     assertTrue(CalendarServerSeedRegistry.of(null).effectiveSeeds().isEmpty());
     assertTrue(new CalendarServerSeedRegistry(null).effectiveSeeds().isEmpty());
   }
@@ -54,7 +54,7 @@ public class CalendarServerSeedRegistryTest {
    * a seed of another identifier is kept beside it, in order.
    */
   @Test
-  public void theFirstSeedOfAnIdentifierIsTheOnlyOne() {
+  void theFirstSeedOfAnIdentifierIsTheOnlyOne() {
     CalendarServerSeed first = seed("BlueMind", "BlueMind (add-on)");
     CalendarServerSeed other = seed("acme", "Acme");
     BlueMindServerSeed builtIn = new BlueMindServerSeed();
@@ -71,7 +71,7 @@ public class CalendarServerSeedRegistryTest {
    * describe itself, and a null one are left out; the others are kept.
    */
   @Test
-  public void aSeedThatCannotSayWhatItSeedsIsLeftOut() {
+  void aSeedThatCannotSayWhatItSeedsIsLeftOut() {
     CalendarServerSeed failing = new CalendarServerSeed() {
       @Override
       public String id() {
@@ -106,7 +106,7 @@ public class CalendarServerSeedRegistryTest {
    * seed, listed before it, the other is still seeded.
    */
   @Test
-  public void aSeedThatCannotBeCreatedIsLeftOutAndTheOthersAreSeeded() {
+  void aSeedThatCannotBeCreatedIsLeftOutAndTheOthersAreSeeded() {
     DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
     factory.registerBeanDefinition("broken", new RootBeanDefinition(CalendarServerSeed.class, () -> {
       throw new IllegalStateException("cannot create");
@@ -127,7 +127,7 @@ public class CalendarServerSeedRegistryTest {
    * registered first and whichever comparator the factory carries.
    */
   @Test
-  public void anOrderedSeedIsKeptAheadOfAnUnorderedOne() {
+  void anOrderedSeedIsKeptAheadOfAnUnorderedOne() {
     for (boolean annotationAware : List.of(true, false)) {
       DefaultListableBeanFactory factory = new DefaultListableBeanFactory();
       if (annotationAware) {
