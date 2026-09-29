@@ -289,31 +289,82 @@ public class CaldavCalendarShareService {
    */
   private final ShareHost                       shareHost = new ShareHost() {
 
+    /**
+     * The lock serialising this node's edits of the calendar's access list,
+     * the channel's and the host's alike.
+     *
+     * @param calendar the calendar being shared
+     * @return the lock, not yet held
+     */
     @Override
     public Lock lockOf(SharedCalendar calendar) {
       return CaldavCalendarShareService.this.lockOf(targetOf(calendar));
     }
 
+    /**
+     * The owner's principal as eXo recorded it for their connection to the
+     * calendar's server.
+     *
+     * @param calendar the calendar being shared
+     * @return the canonical principal, or null when none is recorded
+     */
     @Override
     public String recordedPrincipal(SharedCalendar calendar) {
       return caldavConnectionIdentityService.principalOf(calendar.userIdentityId(), calendar.serverId());
     }
 
+    /**
+     * The owner's principal a read of the shares uses to tell the owner's own
+     * entry from the sharees': the recorded one, the server being asked only
+     * when nothing is recorded.
+     *
+     * @param calendar the calendar being read
+     * @return the canonical principal, or null when neither the record nor
+     *         the server says
+     */
     @Override
     public String ownerPrincipalForRead(SharedCalendar calendar) {
       return recordedOwnerPrincipal(targetOf(calendar));
     }
 
+    /**
+     * The eXo users connected to the calendar's server as one principal, the
+     * caller left out; a lookup that fails names nobody.
+     *
+     * @param calendar the calendar being shared
+     * @param principal the canonical principal
+     * @return the users, possibly empty
+     */
     @Override
     public List<ShareUser> usersConnectedAs(SharedCalendar calendar, String principal) {
       return CaldavCalendarShareService.this.usersConnectedAs(targetOf(calendar), principal);
     }
 
+    /**
+     * What a principal no eXo user is connected as calls itself: its
+     * {@code DAV:displayname}, else the decoded last segment of its path.
+     *
+     * @param calendar the calendar being shared
+     * @param href the principal href as written
+     * @param canonical the canonical principal
+     * @return the name, never blank
+     */
     @Override
     public String displayNameOf(SharedCalendar calendar, String href, String canonical) {
       return nameOf(targetOf(calendar), href, canonical);
     }
 
+    /**
+     * Makes the colleague's account follow a change the channel just
+     * confirmed on the access list: subscribed after a grant, unsubscribed
+     * after a revoke, never failing the owner's action.
+     *
+     * @param calendar the calendar shared
+     * @param sharee the colleague
+     * @param shareeUid the uid the server addresses the colleague by
+     * @param containerUid the calendar's container uid on the server
+     * @param subscribe true after a grant, false after a revoke
+     */
     @Override
     public void followSubscription(SharedCalendar calendar,
                                    ShareRecipient sharee,
