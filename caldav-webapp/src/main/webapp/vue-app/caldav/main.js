@@ -144,6 +144,10 @@ readyPromise.then(() => {
     vueComponent: Vue.options.components['caldav-device-setup-section'],
   });
   document.dispatchEvent(new CustomEvent('agenda-user-sections-refresh'));
+}).catch(error => {
+  // Registering the sections failed: say so rather than lose the error, as the page
+  // then simply shows no CalDAV section.
+  console.error('The CalDAV administration and user sections could not be registered', error);
 });
 
 // One agenda connector per ACTIVE declared server, its label merged into the
