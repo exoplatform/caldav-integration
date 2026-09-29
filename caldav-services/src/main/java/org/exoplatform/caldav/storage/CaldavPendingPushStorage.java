@@ -16,9 +16,14 @@
  */
 package org.exoplatform.caldav.storage;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
@@ -45,6 +50,8 @@ import org.exoplatform.caldav.model.PendingPushKind;
  */
 @Component
 public class CaldavPendingPushStorage {
+
+  private static final int IN_CHUNK = 500;
 
   @Autowired
   private CaldavPendingPushDAO pendingPushDAO;
@@ -152,21 +159,27 @@ public class CaldavPendingPushStorage {
   }
 
   /**
-   * Whether the copy a mapping row names is still owed a removal.
+   * Which of these mapping rows are still owed a removal, abandoned or not.
    *
    * <p>
-   * Asked by an edit before it records a rewrite over the same row: a removal
-   * owed to somebody who can no longer see the meeting must not be replaced by
-   * a rewrite their server would be refused, or the copy stays on their
-   * calendar for good.
+   * Asked once per edit or answer, before a rewrite is recorded over the same
+   * rows, in chunks of {@value #IN_CHUNK} to stay under Oracle's limit on an
+   * {@code IN} list.
    *
-   * @param objectSyncId the mapping row
-   * @return true when a removal is owed to it, abandoned or not
+   * @param objectSyncIds the mapping rows
+   * @return the mapping rows among them owed a removal, empty when none are
    */
-  public boolean removalOwed(long objectSyncId) {
-    return pendingPushDAO.findByObjectSyncId(objectSyncId)
-                         .map(entity -> entity.getKind() == PendingPushKind.REMOVE)
-                         .orElse(false);
+  public Set<Long> removalsOwed(Collection<Long> objectSyncIds) {
+    Set<Long> owed = new HashSet<>();
+    if (objectSyncIds == null || objectSyncIds.isEmpty()) {
+      return owed;
+    }
+    List<Long> ids = new ArrayList<>(new LinkedHashSet<>(objectSyncIds));
+    for (int from = 0; from < ids.size(); from += IN_CHUNK) {
+      List<Long> chunk = ids.subList(from, Math.min(from + IN_CHUNK, ids.size()));
+      owed.addAll(pendingPushDAO.findOwedObjectSyncIds(chunk, PendingPushKind.REMOVE));
+    }
+    return owed;
   }
 
   /**

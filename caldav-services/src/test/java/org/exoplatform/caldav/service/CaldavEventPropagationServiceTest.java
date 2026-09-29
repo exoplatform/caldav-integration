@@ -34,9 +34,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -626,6 +628,43 @@ public class CaldavEventPropagationServiceTest {
 
     verify(agendaEventService, never()).getEventAccess(any(), anyLong());
     verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
+  }
+
+  /**
+   * An edit reaching several holders asks which removals are owed once, not
+   * once per holder.
+   */
+  @Test
+  public void anEditAsksWhichRemovalsAreOwedOnceForEveryHolder() {
+    givenAMeetingCreatedBy(AUTHOR);
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"),
+                 mapping(3L, 300L, "uid-8801", "/dav/carol/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    givenPair(300L, CAROL);
+    when(caldavPushService.pushAgendaEvent(anyLong(), anyString(), eq(EVENT))).thenReturn(new ObjectSync());
+
+    assertEquals(3, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPendingPushStorage, times(1)).removalsOwed(any());
+  }
+
+  /**
+   * An answer reaching several holders asks which removals are owed once.
+   */
+  @Test
+  public void anAnswerAsksWhichRemovalsAreOwedOnceForEveryHolder() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+
+    assertEquals(2, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    verify(caldavPendingPushStorage, times(1)).removalsOwed(any());
   }
 
   /**
@@ -3125,9 +3164,15 @@ public class CaldavEventPropagationServiceTest {
      * {@inheritDoc}
      */
     @Override
-    public boolean removalOwed(long objectSyncId) {
-      PendingPush owed = byObject.get(objectSyncId);
-      return owed != null && owed.getKind() == PendingPushKind.REMOVE;
+    public Set<Long> removalsOwed(Collection<Long> objectSyncIds) {
+      Set<Long> owed = new HashSet<>();
+      for (Long objectSyncId : objectSyncIds) {
+        PendingPush pending = byObject.get(objectSyncId);
+        if (pending != null && pending.getKind() == PendingPushKind.REMOVE) {
+          owed.add(objectSyncId);
+        }
+      }
+      return owed;
     }
 
     /**

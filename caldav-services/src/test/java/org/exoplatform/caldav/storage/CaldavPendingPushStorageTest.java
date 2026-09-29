@@ -19,7 +19,6 @@
 package org.exoplatform.caldav.storage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -30,10 +29,12 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 
 import jakarta.persistence.EntityManager;
@@ -471,9 +472,24 @@ public class CaldavPendingPushStorageTest {
     inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REMOVE, null, "uid-8801"));
     inTransaction(() -> storage.owe(BOB_COPY, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801"));
 
-    assertTrue(storage.removalOwed(ALICE_COPY));
-    assertFalse(storage.removalOwed(BOB_COPY));
-    assertFalse(storage.removalOwed(ALICE_OTHER_COPY));
+    assertEquals(Set.of(ALICE_COPY), storage.removalsOwed(List.of(ALICE_COPY, BOB_COPY, ALICE_OTHER_COPY)));
+    assertTrue(storage.removalsOwed(List.of()).isEmpty());
+  }
+
+  /**
+   * A list longer than one {@code IN} chunk is asked in full: a removal owed
+   * past the first chunk is still found.
+   */
+  @Test
+  public void aRemovalOwedPastTheFirstChunkIsFound() {
+    inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REMOVE, null, "uid-8801"));
+    List<Long> ids = new ArrayList<>();
+    for (long id = 100_000L; id < 101_200L; id++) {
+      ids.add(id);
+    }
+    ids.add(ALICE_COPY);
+
+    assertEquals(Set.of(ALICE_COPY), storage.removalsOwed(ids));
   }
 
   // ---------------------------------------------------------------- fixtures

@@ -19,6 +19,7 @@ package org.exoplatform.caldav.service;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -830,6 +831,7 @@ public class CaldavEventPropagationService {
     if (event == null) {
       return uninvited;
     }
+    Set<Long> owed = removalsOwed(holders.values());
     boolean attendeeRemoved = modificationTypes != null
         && modificationTypes.contains(AgendaEventModificationType.ATTENDEE_DELETED);
     holders.entrySet().removeIf(holder -> {
@@ -840,9 +842,9 @@ public class CaldavEventPropagationService {
         // The series' copy, reached from an occurrence edited alone: left out
         // of the rewrite when it is owed a removal, which the retry pass
         // carries out, and never removed from here.
-        return removalOwed(mapping);
+        return isOwed(owed, mapping);
       }
-      if (userIdentityId == event.getCreatorId() || !(attendeeRemoved || removalOwed(mapping))
+      if (userIdentityId == event.getCreatorId() || !(attendeeRemoved || isOwed(owed, mapping))
           || canStillSee(event, userIdentityId)) {
         return false;
       }
@@ -864,7 +866,7 @@ public class CaldavEventPropagationService {
     try {
       return agendaEventService.getEventAccess(event, userIdentityId) != EventAccess.NONE;
     } catch (Exception | LinkageError e) {
-      LOG.debug("Whether user {} can still see event {} could not be told; their copy is kept",
+      LOG.warn("Whether user {} can still see event {} could not be told; their copy is kept",
                 userIdentityId,
                 event.getId(),
                 e);
@@ -873,21 +875,33 @@ public class CaldavEventPropagationService {
   }
 
   /**
-   * Whether the copy a mapping names is still owed a removal.
+   * Whether a mapping is among those owed a removal.
    *
-   * @param mapping the mapping row
-   * @return true when a removal is owed; false when none is, or when it
+   * @param owed the mappings owed a removal
+   * @param mapping the mapping row, possibly never persisted
+   * @return true when it is owed one
+   */
+  private static boolean isOwed(Set<Long> owed, ObjectSync mapping) {
+    return mapping.getId() != null && owed.contains(mapping.getId());
+  }
+
+  /**
+   * Which of these mappings are still owed a removal, in one read.
+   *
+   * @param mappings the mapping rows
+   * @return their identifiers owed a removal; empty when none are, or when it
    *         cannot be read
    */
-  private boolean removalOwed(ObjectSync mapping) {
-    if (mapping.getId() == null || mapping.getId() <= 0) {
-      return false;
+  private Set<Long> removalsOwed(Collection<ObjectSync> mappings) {
+    List<Long> ids = mappings.stream().map(ObjectSync::getId).filter(id -> id != null && id > 0).toList();
+    if (ids.isEmpty()) {
+      return Set.of();
     }
     try {
-      return caldavPendingPushStorage.removalOwed(mapping.getId());
+      return caldavPendingPushStorage.removalsOwed(ids);
     } catch (Exception | LinkageError e) {
-      LOG.debug("Whether a removal is owed to mapping {} could not be read", mapping.getId(), e);
-      return false;
+      LOG.warn("Which of {} mappings are owed a removal could not be read; none is treated as owed", ids.size(), e);
+      return Set.of();
     }
   }
 
@@ -1272,7 +1286,8 @@ public class CaldavEventPropagationService {
     // A holder still owed a removal (EXO-90518) keeps it: their copy has to go,
     // and recording a rewrite over it would replace the removal with a write
     // their server is refused, since agenda no longer lets them read the event.
-    holders.values().removeIf(this::removalOwed);
+    Set<Long> owed = removalsOwed(holders.values());
+    holders.values().removeIf(mapping -> isOwed(owed, mapping));
     if (holders.isEmpty()) {
       LOG.debug("User {} answered event {}, but nobody else holds a copy of it; nothing to carry out",
                 answererIdentityId,
