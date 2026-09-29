@@ -112,7 +112,7 @@ public enum CollectionOwnership {
    * Another person's calendar the user subscribed to, by the server's
    * <em>naming</em> (EXO-90275): a BlueMind container
    * {@code calendar:Default:<uid>} or {@code calendar:UserCreated:<uid>:…}
-   * whose uid is not the account's ({@link org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming}). The
+   * whose uid is not the account's ({@code BlueMindContainerNaming}). The
    * third witness, heard because the other two are silent there: BlueMind
    * lists the subscription under the user's own home, names the user as its
    * owner and grants the full privilege set. Treated exactly as

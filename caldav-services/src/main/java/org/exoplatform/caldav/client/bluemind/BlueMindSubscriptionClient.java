@@ -39,6 +39,7 @@ import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.bluemind.BlueMindRestSession.Answer;
 import org.exoplatform.caldav.client.bluemind.BlueMindRestSession.Session;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
+import org.exoplatform.caldav.plugin.SubscriptionEdits;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -115,7 +116,7 @@ public class BlueMindSubscriptionClient {
   /**
    * The edits one open session, checked to be the colleague's own, can make.
    */
-  public interface Subscriptions {
+  public interface Subscriptions extends SubscriptionEdits {
 
     /**
      * Subscribes the colleague to a container, with {@link #OFFLINE_SYNC} and

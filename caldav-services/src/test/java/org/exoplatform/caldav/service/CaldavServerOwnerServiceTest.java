@@ -30,6 +30,7 @@ import static org.mockito.Mockito.when;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.test.util.ReflectionTestUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -40,6 +41,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 
+import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
 import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
@@ -91,6 +93,10 @@ public class CaldavServerOwnerServiceTest {
    */
   @BeforeEach
   public void mintAnEndpoint() {
+    // BlueMind's subscription channel is a contribution since EXO-90730,
+    // registered here the way the platform registers it.
+    ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
+
     lenient().when(endpoint.getServerId()).thenReturn(SERVER);
     lenient().when(endpoint.getExoLogin()).thenReturn("root");
   }

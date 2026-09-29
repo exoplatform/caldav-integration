@@ -25,8 +25,8 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Component;
 
 import org.exoplatform.caldav.client.CalDavEndpoint;
-import org.exoplatform.caldav.client.bluemind.BlueMindCalendarOwners;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
+import org.exoplatform.caldav.plugin.CalendarOwners;
+import org.exoplatform.caldav.service.CalendarSubscriptionChannelRegistry;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -94,7 +94,7 @@ public class CaldavServerOwnerStorage {
   private static final Log           LOG        = ExoLogger.getLogger(CaldavServerOwnerStorage.class);
 
   @Autowired
-  private BlueMindSubscriptionClient blueMindSubscriptionClient;
+  private CalendarSubscriptionChannelRegistry calendarSubscriptionChannelRegistry;
 
   /**
    * The account a listing belongs to: the declared server and the eXo user
@@ -125,9 +125,9 @@ public class CaldavServerOwnerStorage {
    *           nothing is cached
    */
   @Cacheable(cacheNames = CACHE_NAME, key = "#p0", sync = true)
-  public BlueMindCalendarOwners listing(Key key, CalDavEndpoint endpoint) {
+  public CalendarOwners listing(Key key, CalDavEndpoint endpoint) {
     LOG.debug("Reading the calendar owners of CalDAV account {} from the server; the cache held no entry", key);
-    return blueMindSubscriptionClient.ownersOf(endpoint);
+    return calendarSubscriptionChannelRegistry.ownersOf(endpoint);
   }
 
   /**
@@ -145,9 +145,9 @@ public class CaldavServerOwnerStorage {
    *           {@link #listing}; the stale entry is left as it was
    */
   @CachePut(cacheNames = CACHE_NAME, key = "#p0")
-  public BlueMindCalendarOwners refresh(Key key, CalDavEndpoint endpoint) {
+  public CalendarOwners refresh(Key key, CalDavEndpoint endpoint) {
     LOG.debug("Re-reading the calendar owners of CalDAV account {} from the server; the cached listing did not settle a collection", key);
-    return blueMindSubscriptionClient.ownersOf(endpoint);
+    return calendarSubscriptionChannelRegistry.ownersOf(endpoint);
   }
 
   /**
