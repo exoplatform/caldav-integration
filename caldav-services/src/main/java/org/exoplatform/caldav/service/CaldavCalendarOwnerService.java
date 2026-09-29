@@ -28,7 +28,7 @@ import org.springframework.stereotype.Component;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarCollection;
-import org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming;
+import org.exoplatform.caldav.plugin.CalendarSubscription;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -103,6 +103,14 @@ public class CaldavCalendarOwnerService {
   private final Set<Long>                       incompleteServersSaid = ConcurrentHashMap.newKeySet();
 
   /**
+   * The installed subscription channels (EXO-90730), which read a listed
+   * collection's name for a subscription to somebody else's calendar.
+   * Optional: without it no subscription is recognised by its name.
+   */
+  @Autowired(required = false)
+  private CalendarSubscriptionChannelRegistry   calendarSubscriptionChannelRegistry;
+
+  /**
    * @param caldavOutboundService the one place that knows which user's pair
    *          stands behind an eXo-minted collection
    * @param identityManager the registry that turns that user into a login and
@@ -169,11 +177,11 @@ public class CaldavCalendarOwnerService {
     if (ownership.isSubscription()) {
       // BlueMind names the viewer as the owner of a subscription, so the
       // owner comes from the container uid instead (EXO-90275).
-      BlueMindContainerNaming.Subscription subscription = BlueMindContainerNaming.subscriptionOf(collection.href(), principal);
+      CalendarSubscription subscription = subscriptionOf(collection.href(), principal);
       if (subscription == null) {
         return CalendarOwner.NONE;
       }
-      String ownerPath = BlueMindContainerNaming.principalOf(principal, subscription.ownerUid());
+      String ownerPath = subscription.ownerPrincipal();
       return subscription.resource() ? resourceNamed(endpoint, ownerPath, collection, memo)
                                      : shareOwnedBy(viewerIdentityId, serverId, endpoint, ownerPath, memo);
     }
@@ -421,5 +429,17 @@ public class CaldavCalendarOwnerService {
     }
     String stripped = StringUtils.stripEnd(decoded, "/");
     return StringUtils.defaultIfBlank(StringUtils.substringAfterLast(stripped, "/"), stripped);
+  }
+
+  /**
+   * The subscription a listed collection's name reveals, as the installed
+   * channels read it.
+   *
+   * @param href the collection's path
+   * @param principal the account's own principal, may be null
+   * @return the subscription, or null when none is read
+   */
+  private CalendarSubscription subscriptionOf(String href, String principal) {
+    return calendarSubscriptionChannelRegistry == null ? null : calendarSubscriptionChannelRegistry.subscriptionOf(href, principal);
   }
 }
