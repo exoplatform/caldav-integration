@@ -34,6 +34,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.constant.AgendaEventModificationType;
+import org.exoplatform.agenda.constant.EventAccess;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
 import org.exoplatform.agenda.model.EventAttendeeList;
@@ -738,12 +739,16 @@ public class CaldavEventPropagationService {
       return 0;
     }
     int skipped = leaveOrigin(holders, origin, eventId);
+    Map<Long, ObjectSync> uninvited = takeUninvited(holders, event, eventId, modificationTypes);
     // Every obligation first, then every write. Not interleaved, deliberately:
     // a thread killed at the third of fifty attendees must leave the other
     // forty-seven recorded as owed, and interleaving would leave them looking
     // as though nobody had ever intended to write to them.
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
       owe(holder.getValue(), holder.getKey(), PendingPushKind.REWRITE, eventId);
+    }
+    for (Map.Entry<Long, ObjectSync> holder : uninvited.entrySet()) {
+      owe(holder.getValue(), holder.getKey(), PendingPushKind.REMOVE, null);
     }
     int carried = 0;
     for (Map.Entry<Long, ObjectSync> holder : holders.entrySet()) {
@@ -755,8 +760,135 @@ public class CaldavEventPropagationService {
         carried++;
       }
     }
-    LOG.info("Event {} was edited; its copy was rewritten for {} of {} holders", eventId, carried, holders.size() + skipped);
-    return carried;
+    int removed = 0;
+    for (Map.Entry<Long, ObjectSync> holder : uninvited.entrySet()) {
+      ObjectSync mapping = holder.getValue();
+      String login = resolvableLogin(holder.getKey());
+      if (login == null) {
+        continue;
+      }
+      if (removeOne(holder.getKey(), login, mapping.getIcsUid(), mapping.getId(), mapping.getRemoteHref()).landed()) {
+        LOG.info("User {} is no longer invited to event {}; the copy they held has been removed", holder.getKey(), eventId);
+        removed++;
+      }
+    }
+    if (uninvited.isEmpty()) {
+      LOG.info("Event {} was edited; its copy was rewritten for {} of {} holders", eventId, carried, holders.size() + skipped);
+    } else {
+      LOG.info("Event {} was edited; its copy was rewritten for {} of {} holders and removed for {} of {} no longer invited",
+               eventId,
+               carried,
+               holders.size() + skipped,
+               removed,
+               uninvited.size());
+    }
+    return carried + removed;
+  }
+
+  /**
+   * Takes out of the holders those who can no longer see the meeting, whose
+   * copy has to go rather than be rewritten (EXO-90518).
+   *
+   * <p>
+   * The holders are read from the mapping table, so an invitee the organiser
+   * has just removed is still one of them. Their copy is removed: a rewrite
+   * would be refused, since agenda no longer lets them read the event.
+   *
+   * <p>
+   * Decided on agenda's own {@code getEventAccess}, not on the attendee list,
+   * because a copy is written for everyone who can read the event: attendees,
+   * members of an invited space, the calendar's owner and the people it is
+   * shared with. Only {@link EventAccess#NONE} removes a copy, and anything
+   * that cannot be read keeps it; a removal is not undone by the next sweep.
+   * The creator keeps their copy too, as the author of the meeting.
+   *
+   * <p>
+   * Asked when agenda says an attendee was removed ({@code ATTENDEE_DELETED},
+   * which {@code saveEventAttendees} adds exactly when it deletes one), and
+   * for a holder still owed a removal whatever the edit: recording a rewrite
+   * over it would replace the removal with a write their server refuses. Any
+   * other holder of any other edit costs no access lookup.
+   *
+   * <p>
+   * Only a mapping filed under the edited event itself is removed from here.
+   * An occurrence edited alone reaches the copy of its series, and somebody
+   * removed from one date is still invited to the others; that copy is only
+   * left out of the rewrite when it is already owed a removal.
+   *
+   * @param holders the holders of a copy, by user, edited in place
+   * @param event the edited event, as agenda holds it now; null when it could
+   *          not be read
+   * @param eventId the agenda event
+   * @param modificationTypes what agenda says moved
+   * @return the holders whose copy must be removed, by user
+   */
+  private Map<Long, ObjectSync> takeUninvited(Map<Long, ObjectSync> holders,
+                                              Event event,
+                                              long eventId,
+                                              Set<AgendaEventModificationType> modificationTypes) {
+    Map<Long, ObjectSync> uninvited = new LinkedHashMap<>();
+    if (event == null) {
+      return uninvited;
+    }
+    boolean attendeeRemoved = modificationTypes != null
+        && modificationTypes.contains(AgendaEventModificationType.ATTENDEE_DELETED);
+    holders.entrySet().removeIf(holder -> {
+      long userIdentityId = holder.getKey();
+      ObjectSync mapping = holder.getValue();
+      Long mappedEventId = mapping.getLocalEventId();
+      if (mappedEventId == null || mappedEventId != eventId) {
+        // The series' copy, reached from an occurrence edited alone: left out
+        // of the rewrite when it is owed a removal, which the retry pass
+        // carries out, and never removed from here.
+        return removalOwed(mapping);
+      }
+      if (userIdentityId == event.getCreatorId() || !(attendeeRemoved || removalOwed(mapping))
+          || canStillSee(event, userIdentityId)) {
+        return false;
+      }
+      uninvited.put(userIdentityId, mapping);
+      return true;
+    });
+    return uninvited;
+  }
+
+  /**
+   * Whether agenda still lets a user read a meeting.
+   *
+   * @param event the agenda event
+   * @param userIdentityId the holder of a copy
+   * @return false only when agenda answers {@link EventAccess#NONE}; true when
+   *         it cannot answer
+   */
+  private boolean canStillSee(Event event, long userIdentityId) {
+    try {
+      return agendaEventService.getEventAccess(event, userIdentityId) != EventAccess.NONE;
+    } catch (Exception | LinkageError e) {
+      LOG.debug("Whether user {} can still see event {} could not be told; their copy is kept",
+                userIdentityId,
+                event.getId(),
+                e);
+      return true;
+    }
+  }
+
+  /**
+   * Whether the copy a mapping names is still owed a removal.
+   *
+   * @param mapping the mapping row
+   * @return true when a removal is owed; false when none is, or when it
+   *         cannot be read
+   */
+  private boolean removalOwed(ObjectSync mapping) {
+    if (mapping.getId() == null || mapping.getId() <= 0) {
+      return false;
+    }
+    try {
+      return caldavPendingPushStorage.removalOwed(mapping.getId());
+    } catch (Exception | LinkageError e) {
+      LOG.debug("Whether a removal is owed to mapping {} could not be read", mapping.getId(), e);
+      return false;
+    }
   }
 
   /**
@@ -1137,6 +1269,10 @@ public class CaldavEventPropagationService {
     }
     Map<Long, ObjectSync> holders = holdersOf(eventId, true);
     holders.remove(answererIdentityId);
+    // A holder still owed a removal (EXO-90518) keeps it: their copy has to go,
+    // and recording a rewrite over it would replace the removal with a write
+    // their server is refused, since agenda no longer lets them read the event.
+    holders.values().removeIf(this::removalOwed);
     if (holders.isEmpty()) {
       LOG.debug("User {} answered event {}, but nobody else holds a copy of it; nothing to carry out",
                 answererIdentityId,
@@ -1493,14 +1629,14 @@ public class CaldavEventPropagationService {
         //
         // Tested on the caught throwable rather than caught in a clause of its
         // own, so that the one message this method has stays written once.
-        LOG.debug("The copy of the deleted event held by user {} at {} is not removed: {} ({})",
+        LOG.debug("The copy held by user {} at {} is not removed: {} ({})",
                   userIdentityId,
                   remoteHref,
                   refusal.getMessage(),
                   refusal.getCode());
         return Settlement.refused(refusal.getCode(), refusal.getMessage());
       }
-      LOG.warn("The copy of the deleted event held by user {} at {} could not be removed; it stays owed and is retried",
+      LOG.warn("The copy held by user {} at {} could not be removed; it stays owed and is retried",
                userIdentityId,
                remoteHref,
                e);
@@ -1682,9 +1818,10 @@ public class CaldavEventPropagationService {
    *
    * <p>
    * The kind is read from the record rather than worked out here, and that is
-   * the point of recording it: by the time this runs, a removal's event has
-   * been destroyed and there is nothing left to look at that would say the copy
-   * has to go rather than be rewritten.
+   * the point of recording it: by the time this runs, a removal's event may
+   * have been destroyed, and when it still exists the holder may no longer be
+   * allowed to read it — either way there is nothing left to look at that
+   * would say the copy has to go rather than be rewritten.
    *
    * @param userIdentityId whose calendar the copy sits in
    * @param username their eXo login, which the credentials provider maps to

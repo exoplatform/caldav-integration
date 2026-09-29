@@ -19,6 +19,7 @@
 package org.exoplatform.caldav.storage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -458,6 +459,21 @@ public class CaldavPendingPushStorageTest {
   public void anAccountThatIsOwedNothingSaysSo() {
     assertEquals(0, storage.owed(ALICE));
     assertTrue(storage.attemptable(ALICE, 5, 10).isEmpty());
+  }
+
+  /**
+   * A removal owed to one copy is told apart from a rewrite owed to it and from
+   * nothing owed, and only for that copy (EXO-90518): an edit reads it before
+   * recording a rewrite over the same row.
+   */
+  @Test
+  public void aRemovalOwedIsToldApartFromARewriteAndFromNothing() {
+    inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REMOVE, null, "uid-8801"));
+    inTransaction(() -> storage.owe(BOB_COPY, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801"));
+
+    assertTrue(storage.removalOwed(ALICE_COPY));
+    assertFalse(storage.removalOwed(BOB_COPY));
+    assertFalse(storage.removalOwed(ALICE_OTHER_COPY));
   }
 
   // ---------------------------------------------------------------- fixtures

@@ -152,6 +152,24 @@ public class CaldavPendingPushStorage {
   }
 
   /**
+   * Whether the copy a mapping row names is still owed a removal.
+   *
+   * <p>
+   * Asked by an edit before it records a rewrite over the same row: a removal
+   * owed to somebody who can no longer see the meeting must not be replaced by
+   * a rewrite their server would be refused, or the copy stays on their
+   * calendar for good.
+   *
+   * @param objectSyncId the mapping row
+   * @return true when a removal is owed to it, abandoned or not
+   */
+  public boolean removalOwed(long objectSyncId) {
+    return pendingPushDAO.findByObjectSyncId(objectSyncId)
+                         .map(entity -> entity.getKind() == PendingPushKind.REMOVE)
+                         .orElse(false);
+  }
+
+  /**
    * How many copies of one account are behind, abandoned ones included.
    *
    * @param userIdentityId whose calendar the copies sit in
