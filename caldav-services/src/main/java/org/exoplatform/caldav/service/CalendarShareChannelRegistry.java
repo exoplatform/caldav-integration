@@ -40,6 +40,7 @@ import org.exoplatform.caldav.plugin.CalendarShareChannel;
 @Service
 public class CalendarShareChannelRegistry {
 
+  /** Where the contributed channels are read from, on each question. */
   private final Supplier<List<CalendarShareChannel>> channels;
 
   /**
