@@ -22,9 +22,13 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.MapUtils;
@@ -33,11 +37,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.util.ClassUtils;
 
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.bluemind.BlueMindServerSeed;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.model.MirrorTargetKind;
@@ -45,6 +51,7 @@ import org.exoplatform.caldav.model.WriteChannel;
 import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkDirection;
 import org.exoplatform.caldav.model.ServerQuirkEffect;
+import org.exoplatform.caldav.plugin.CalendarServerSeed;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
@@ -108,8 +115,15 @@ public class CaldavServerService {
   /** The name the Stalwart seed is declared under. */
   public static final String       STALWART_SERVER_NAME          = "Stalwart";
 
-  /** The name the Bluemind seed is declared under. */
-  public static final String       BLUEMIND_SERVER_NAME          = "Bluemind";
+  /**
+   * The name the BlueMind seed is declared under.
+   *
+   * @deprecated the BlueMind row is a contributed seed since EXO-90737; read
+   *             {@code BlueMindServerSeed.SERVER_NAME} instead. Kept until the
+   *             BlueMind code leaves this add-on.
+   */
+  @Deprecated(forRemoval = true)
+  public static final String       BLUEMIND_SERVER_NAME          = BlueMindServerSeed.SERVER_NAME;
 
   /**
    * Address the Stalwart seed row falls back to when the deployment named none
@@ -136,29 +150,18 @@ public class CaldavServerService {
   public static final String       DEFAULT_STALWART_URL          = "https://stalwart.example.invalid/dav/cal/{username}/";
 
   /**
-   * Address the Bluemind seed row is declared with: a placeholder an
-   * administrator is expected to replace with the DAV endpoint of their own
-   * BlueMind, whose shape it mirrors (BlueMind serves DAV under {@code /dav/}
-   * and answers there with 401 Basic realm="bm.basic.auth.v2"; the bare host
-   * only redirects).
+   * Address the BlueMind seed row is declared with.
    *
-   * <p>
-   * An RFC 2606 {@code .invalid} name for the same reason as
-   * {@link #DEFAULT_STALWART_URL}: it can never resolve, so the row can never
-   * be a live target, and it fails the address check — so the row is seeded
-   * inactive rather than offered to users as a connector that goes nowhere.
-   *
-   * <p>
-   * Note also that BlueMind sends no CORS headers, so connecting from the
-   * browser needs the portal to front it on its own origin.
+   * @deprecated the BlueMind row is a contributed seed since EXO-90737; read
+   *             {@code BlueMindServerSeed.SERVER_URL} instead, which carries
+   *             the reasons for the placeholder. Kept until the BlueMind code
+   *             leaves this add-on.
    */
-  public static final String       DEFAULT_BLUEMIND_URL          = "https://caldav.example.invalid/dav/";
+  @Deprecated(forRemoval = true)
+  public static final String       DEFAULT_BLUEMIND_URL          = BlueMindServerSeed.SERVER_URL;
 
   /**
-   * The catalogue entries the seeded BlueMind row arrives excused for: the
-   * behaviours a live account was characterised with across EXO-89716 to
-   * EXO-89828, and the same four the browser's BlueMind preset ticks on a
-   * declaration ({@code serverPresets.js}).
+   * The catalogue entries the seeded BlueMind row arrives excused for.
    *
    * <p>
    * <b>The two lists are the same list, and that is a constraint rather than
@@ -208,11 +211,14 @@ public class CaldavServerService {
    * declared, whatever this list says now — that is the design the preset
    * states for itself, and a seed that repaired existing rows behind an
    * administrator's back would break it from the other side.
+   *
+   * @deprecated the BlueMind row is a contributed seed since EXO-90737; read
+   *             {@code BlueMindServerSeed.QUIRKS} instead, which carries why
+   *             these entries. Kept until the BlueMind code leaves this
+   *             add-on.
    */
-  static final List<ServerQuirk>   BLUEMIND_SEED_QUIRKS          = List.of(ServerQuirk.DROPS_CONFERENCE,
-                                                                             ServerQuirk.ADDS_COMPATIBILITY_MARKERS,
-                                                                             ServerQuirk.ADDS_FORMATTED_DESCRIPTION,
-                                                                             ServerQuirk.STAMPS_DEFAULT_PRIORITY);
+  @Deprecated(forRemoval = true)
+  static final List<ServerQuirk>   BLUEMIND_SEED_QUIRKS          = BlueMindServerSeed.QUIRKS;
 
   private static final String      SERVER_MANDATORY_MESSAGE      = "caldav.server.mandatory";
 
@@ -281,6 +287,14 @@ public class CaldavServerService {
   @Autowired(required = false)
   private CalendarServerFlavourRegistry calendarServerFlavourRegistry;
 
+  /**
+   * The rows calendar server products contribute to a first install
+   * (EXO-90737), beside the host's own default. Optional so that a context
+   * without it seeds the default only.
+   */
+  @Autowired(required = false)
+  private CalendarServerSeedRegistry calendarServerSeedRegistry;
+
   @Autowired
   private SettingService           settingService;
 
@@ -309,10 +323,22 @@ public class CaldavServerService {
   private long                        foreignWriterRetentionDays;
 
   /**
-   * Defers the seeding of the registry to the portal container's post-create
-   * phase — the same deferral agenda's own provider plugin uses — because the
-   * Bluemind default needs its agenda remote provider written, and agenda's
-   * kernel services are only safely callable once the portal container is up.
+   * Hands the seeding of the registry to the portal container's post-create
+   * phase — the same deferral agenda's own provider plugin uses — because a
+   * seeded row needs its agenda remote provider written, and agenda's kernel
+   * services are only safely callable once the portal container is up.
+   *
+   * <p>
+   * <b>When that is, exactly.</b> This bean is created while the bridge
+   * finishes the Spring contexts one by one in ascending priority, and by then
+   * the portal container reports itself started, so the kernel runs a
+   * post-create task registered now <em>immediately</em>, on this thread:
+   * seeding happens while this web application's context finishes, before
+   * the contexts of higher priority — the BlueMind add-on's among them — have
+   * created their singletons. A contributed seed is found anyway: the bridge
+   * registered every exported bean into this context before any context
+   * finished, and reading the contribution creates it in its own context on
+   * demand ({@link CalendarServerSeedRegistry}).
    */
   @PostConstruct
   public void start() {
@@ -339,35 +365,31 @@ public class CaldavServerService {
   }
 
   /**
-   * Seeds the two default servers into an EMPTY registry — never over an
-   * administrator's rows:
+   * Seeds an EMPTY registry — never over an administrator's rows — with the
+   * host's own default and every contributed seed:
    * <ul>
-   * <li><b>Stalwart</b>, under the fixed legacy provider name so accounts
-   * connected before the registry existed keep resolving; its URL comes from
-   * the legacy property when set, else the literal default, and its
-   * activation from the legacy enabled property (historically enabled).</li>
-   * <li><b>Bluemind</b>, a normally-named row whose agenda remote provider is
-   * upserted here, since no kernel plugin declares it — and which arrives
-   * excused for what BlueMind is known to do to a copy, see
-   * {@link #BLUEMIND_SEED_QUIRKS}, and pointed at the account's <b>main</b>
-   * calendar, which is where the browser preset points it too.
-   * <p>
-   * The destination is seeded rather than left at the model's default because
-   * on THIS server the default has an established cost: BlueMind's dedicated
-   * calendar is excluded from the account's free/busy — colleagues booking
-   * around the user see eXo meeting times as free — and it carries no answer
-   * buttons. The general caution on the option ("only once copies synchronise
-   * cleanly") is right and stays where it is; it simply does not weigh what is
-   * already known about this one server, which is the same judgement
-   * {@code serverPresets.js} makes for the drawer. A seed that disagreed with
-   * the preset an administrator is about to apply to the very same row would
-   * be teaching two answers to one question.
+   * <li><b>Stalwart</b>, the host's default, under the fixed legacy provider
+   * name so accounts connected before the registry existed keep resolving;
+   * its URL comes from the legacy property when set, else the literal
+   * default, and its activation from the legacy enabled property
+   * (historically enabled).</li>
+   * <li><b>Every contributed seed</b> (EXO-90737), in the order
+   * {@link CalendarServerSeedRegistry#effectiveSeeds()} gives them — one per
+   * product — as a normally-named row whose agenda remote provider is
+   * upserted here, since no kernel plugin declares it. The seed says what the
+   * row carries: its name, address, excusals, destination calendar and write
+   * channel; the host alone decides its activation and its provider. A seed
+   * whose name is already taken by a row seeded in this pass is left out, so
+   * a pass never writes two rows of one name. The BlueMind row a fresh install
+   * used to receive from the host itself is such a seed now, contributed by
+   * the BlueMind code ({@code BlueMindServerSeed}) — without it, a fresh
+   * install receives no BlueMind row.
    * <p>
    * {@code answerLinksInCopy} is stated rather than defaulted — the model is
    * built positionally through its all-arguments constructor, so the field
    * initialiser is overwritten whatever the seed passes, and the seed passes
-   * {@code true}. It happens to be the model's own default and the preset's
-   * value too, so the three agree; it is simply stated twice rather than
+   * {@code true}. It happens to be the model's own default and the presets'
+   * value too, so they agree; it is simply stated twice rather than
    * once.</li>
    * </ul>
    *
@@ -410,10 +432,18 @@ public class CaldavServerService {
    * the whole upgrade story: a deployment that already holds rows returns
    * before any of this runs, so an install that has been serving its users for
    * months does not find its servers deactivated — or judged at all — by
-   * taking this version.
+   * taking this version — nor finds a row added because a contribution was
+   * installed after its first boot. That pass is logged, naming the seeds it
+   * did not write.
    */
   protected void seedDefaultServers() {
-    if (caldavServerStorage.countServers() > 0) {
+    long existing = caldavServerStorage.countServers();
+    if (existing > 0) {
+      LOG.info("The CalDAV server registry already holds {} registration(s): nothing is seeded, contributed seeds {} included",
+               existing,
+               contributedSeeds().stream()
+                                 .map(seed -> seed.id() + " (" + ClassUtils.getUserClass(seed).getName() + ")")
+                                 .toList());
       return;
     }
     String stalwartUrl = System.getProperty(CALDAV_SERVER_URL_PROPERTY);
@@ -440,21 +470,69 @@ public class CaldavServerService {
                                               null, null, null, true, null, null, null, null, null,
                                               MirrorTargetKind.DEDICATED_CALENDAR, null, null, WriteChannel.CALDAV));
     LOG.info("Seeded the Stalwart CalDAV server ({}), active: {}", stalwartUrl, stalwartActive);
-    boolean bluemindActive = isDeclarableSeedAddress(BLUEMIND_SERVER_NAME, DEFAULT_BLUEMIND_URL);
-    CaldavServer bluemind = caldavServerStorage.createServer(new CaldavServer(0, null, BLUEMIND_SERVER_NAME, null, DEFAULT_BLUEMIND_URL,
-                                                                              bluemindActive, null, null, null, null, true,
-                                                                              seedExcusals(ServerQuirkDirection.ADDED),
-                                                                              seedExcusals(ServerQuirkDirection.DROPPED),
-                                                                              null, null, null,
-                                                                              MirrorTargetKind.MAIN_CALENDAR, null, null, WriteChannel.BLUEMIND_IMPORT),
-                                                             CALDAV_PROVIDER_NAME);
-    saveAgendaRemoteProvider(bluemind);
-    LOG.info("Seeded the Bluemind CalDAV server ({}), active: {}", DEFAULT_BLUEMIND_URL, bluemindActive);
+    Set<String> seededNames = new HashSet<>();
+    seededNames.add(STALWART_SERVER_NAME.toLowerCase(Locale.ROOT));
+    for (CalendarServerSeed seed : contributedSeeds()) {
+      if (!seededNames.add(seed.name().toLowerCase(Locale.ROOT))) {
+        LOG.warn("CalDAV server seed '{}' of {} is left out: a row named '{}' is already seeded",
+                 seed.id(),
+                 ClassUtils.getUserClass(seed).getName(),
+                 seed.name());
+        continue;
+      }
+      try {
+        seedContributedServer(seed);
+      } catch (RuntimeException e) {
+        LOG.warn("CalDAV server seed '{}' of {} could not be seeded", seed.id(), ClassUtils.getUserClass(seed).getName(), e);
+      }
+    }
   }
 
   /**
-   * The stored list one of the seeded BlueMind row's tolerance columns
-   * receives: the patterns of every entry of {@link #BLUEMIND_SEED_QUIRKS}
+   * The contributed seeds a fresh registry receives, none when no seed
+   * registry is installed.
+   *
+   * @return the effective seeds, in order, never null
+   */
+  private List<CalendarServerSeed> contributedSeeds() {
+    return calendarServerSeedRegistry == null ? List.of() : calendarServerSeedRegistry.effectiveSeeds();
+  }
+
+  /**
+   * Writes one contributed seed's row and its agenda remote provider,
+   * activated only when its address passes the check an administrator's would.
+   *
+   * @param seed the contribution, one that describes itself
+   */
+  private void seedContributedServer(CalendarServerSeed seed) {
+    String name = seed.name();
+    String serverUrl = seed.serverUrl();
+    List<ServerQuirk> quirks = Objects.requireNonNullElse(seed.quirks(), List.of());
+    quirks.stream()
+          .filter(quirk -> quirk != null && quirk.getEffect() != ServerQuirkEffect.TOLERATE)
+          .forEach(quirk -> LOG.warn("CalDAV server seed '{}' names {}, which changes what eXo writes: a seed writes tolerance"
+              + " entries only, so it is left out", seed.id(), quirk.name()));
+    MirrorTargetKind mirrorTarget = Objects.requireNonNullElse(seed.mirrorTarget(), MirrorTargetKind.DEDICATED_CALENDAR);
+    WriteChannel writeChannel = Objects.requireNonNullElse(seed.writeChannel(), WriteChannel.CALDAV);
+    boolean active = isDeclarableSeedAddress(name, serverUrl);
+    CaldavServer created = caldavServerStorage.createServer(new CaldavServer(0, null, name, null, serverUrl,
+                                                                             active, null, null, null, null, true,
+                                                                             seedExcusals(quirks, ServerQuirkDirection.ADDED),
+                                                                             seedExcusals(quirks, ServerQuirkDirection.DROPPED),
+                                                                             null, null, null,
+                                                                             mirrorTarget, null, null, writeChannel),
+                                                            CALDAV_PROVIDER_NAME);
+    saveAgendaRemoteProvider(created);
+    LOG.info("Seeded the {} CalDAV server ({}), active: {}, contributed by {}",
+             name,
+             serverUrl,
+             active,
+             ClassUtils.getUserClass(seed).getName());
+  }
+
+  /**
+   * The stored list one of a seeded row's tolerance columns receives: the
+   * patterns of every entry of the seed's {@link CalendarServerSeed#quirks()}
    * pointing in one direction, joined the way a tick in the drawer joins them.
    *
    * <p>
@@ -467,24 +545,24 @@ public class CaldavServerService {
    * filed under the wrong column.
    *
    * <p>
-   * <b>"Neither tolerance list" means written nowhere — do not add an
-   * {@code OMIT} entry to {@link #BLUEMIND_SEED_QUIRKS} without extending this
-   * method.</b> The seed asks for the two tolerance columns and passes
-   * {@code null} for {@code omittedProperties}, so an {@code OMIT} entry would
-   * be dropped by the filter above with nothing routing it to a third column:
-   * the constant would name a behaviour the seed does not write, with no
-   * compile error and no test failure. The browser path does not behave this
-   * way — {@code serverPresets.js} walks {@code QUIRKS[quirkId].list} and
+   * <b>"Neither tolerance list" means written nowhere.</b> The seed asks for
+   * the two tolerance columns and passes {@code null} for
+   * {@code omittedProperties}, so an {@code OMIT} entry is dropped by the
+   * filter above with nothing routing it to a third column. It is not dropped
+   * silently: {@link #seedContributedServer(CalendarServerSeed)} warns about
+   * it at boot, and for the BlueMind seed
+   * {@code CaldavServerServiceTest#shouldSeedNoEntryThatWouldBeWrittenNowhere}
+   * fails the moment such an entry is named. The browser path does not behave
+   * this way — {@code serverPresets.js} walks {@code QUIRKS[quirkId].list} and
    * {@code omitsSoloOrganizer} maps to the omitted list, so a preset naming it
-   * writes it. The gap is held shut by
-   * {@code CaldavServerServiceTest#shouldSeedNoEntryThatWouldBeWrittenNowhere},
-   * which fails the moment such an entry is added.
+   * writes it.
    *
    * <p>
    * The separator is the comma {@link ServerQuirk#listMatches(String, String)}
    * splits on and {@code serverQuirks.js} joins with, so the row reads back
    * exactly as one an administrator ticked.
    *
+   * @param quirks the seed's catalogue entries
    * @param column which of the two tolerance columns is being filled, named by
    *          the direction that files an entry into it — {@code ADDED} for the
    *          ignored list, {@code DROPPED} for the dropped one. Only those two
@@ -509,12 +587,13 @@ public class CaldavServerService {
    *         for Stalwart. Worth one round-trip check on Oracle before the
    *         empty string is relied on as an answer.
    */
-  private static String seedExcusals(ServerQuirkDirection column) {
-    return BLUEMIND_SEED_QUIRKS.stream()
-                               .filter(quirk -> quirk.getEffect() == ServerQuirkEffect.TOLERATE)
-                               .filter(quirk -> toleranceColumn(quirk.getDirection()) == column)
-                               .flatMap(quirk -> quirk.getPatterns().stream())
-                               .collect(Collectors.joining(","));
+  private static String seedExcusals(List<ServerQuirk> quirks, ServerQuirkDirection column) {
+    return quirks.stream()
+                 .filter(Objects::nonNull)
+                 .filter(quirk -> quirk.getEffect() == ServerQuirkEffect.TOLERATE)
+                 .filter(quirk -> toleranceColumn(quirk.getDirection()) == column)
+                 .flatMap(quirk -> quirk.getPatterns().stream())
+                 .collect(Collectors.joining(","));
   }
 
   /**
