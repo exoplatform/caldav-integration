@@ -714,16 +714,9 @@ public class CaldavSyncStorage {
   }
 
   /**
-   * Which of these eXo events already carry a live copy for this user.
-   *
-   * Asked for a whole list at once: the seeding pass asks about a user's
-   * whole upcoming window on every sweep, and asking one event at a time made
-   * the steady state — where every one of them is already copied — cost a
-   * query per meeting to learn there was nothing to do.
-   *
-   * <p>
-   * Not the batch form of {@link #isEventMapped(long)}, which counts any row:
-   * here a cleared row, the tombstone a removal leaves, is not a copy.
+   * Which of these eXo events already carry a live copy for this user, asked
+   * for the whole list at once. Unlike {@link #isEventMapped(long)}, a
+   * tombstone (href cleared) does not count.
    *
    * @param userIdentityId the identity whose mappings count, so the copy made
    *          for the first attendee does not answer for every other attendee
