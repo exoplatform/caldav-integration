@@ -39,6 +39,7 @@ import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.bluemind.BlueMindRestSession.Answer;
 import org.exoplatform.caldav.client.bluemind.BlueMindRestSession.Session;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
+import org.exoplatform.caldav.plugin.SubscriptionEdits;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 

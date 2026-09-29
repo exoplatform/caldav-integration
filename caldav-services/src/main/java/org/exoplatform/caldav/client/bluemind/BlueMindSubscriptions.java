@@ -21,11 +21,12 @@ import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalDavNotFoundException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
+import org.exoplatform.caldav.plugin.SubscriptionEdits;
 
 /**
  * The edits one open session, checked to be the colleague's own, can make.
  */
-public interface BlueMindSubscriptions {
+public interface BlueMindSubscriptions extends SubscriptionEdits {
 
   /**
    * Subscribes the colleague to a container, with {@link BlueMindSubscriptionClient#OFFLINE_SYNC} and
