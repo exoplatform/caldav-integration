@@ -28,7 +28,7 @@ import org.exoplatform.caldav.client.CalDavEndpoint;
 public final class NoSubscriptionChannel implements CalendarSubscriptionChannel {
 
   /** The identifier of the absent channel. */
-  public static final String                ID       = "none";
+  public static final String                CHANNEL_ID       = "none";
 
   /** The single instance. */
   public static final NoSubscriptionChannel INSTANCE = new NoSubscriptionChannel();
@@ -44,7 +44,7 @@ public final class NoSubscriptionChannel implements CalendarSubscriptionChannel 
    */
   @Override
   public String id() {
-    return ID;
+    return CHANNEL_ID;
   }
 
   /**

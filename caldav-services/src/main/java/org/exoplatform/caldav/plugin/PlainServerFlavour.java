@@ -29,7 +29,7 @@ import org.exoplatform.caldav.model.WriteChannel;
 public final class PlainServerFlavour implements CalendarServerFlavour {
 
   /** The identifier of plain CalDAV. */
-  public static final String             ID       = "caldav";
+  public static final String             FLAVOUR_ID       = "caldav";
 
   /** The single instance. */
   public static final PlainServerFlavour INSTANCE = new PlainServerFlavour();
@@ -45,7 +45,7 @@ public final class PlainServerFlavour implements CalendarServerFlavour {
    */
   @Override
   public String id() {
-    return ID;
+    return FLAVOUR_ID;
   }
 
   /**
