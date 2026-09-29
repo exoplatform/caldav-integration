@@ -53,12 +53,13 @@ public class CalendarServerFlavourRegistry {
   /**
    * The registry over every contributed flavour.
    *
-   * @param flavours the contributions, from every web application; null reads
-   *          as none
+   * @param flavours the contributions, from every web application, each read on its
+   *          own so that one which cannot be created is left out
+   *          ({@link ContributedBeans}); null reads as none
    */
   @Autowired
   public CalendarServerFlavourRegistry(ObjectProvider<CalendarServerFlavour> flavours) {
-    this(() -> flavours == null ? List.of() : flavours.orderedStream().toList());
+    this(new ContributedBeans<>(flavours, "server flavour", CalendarServerFlavour::id));
   }
 
   /**
