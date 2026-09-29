@@ -45,6 +45,7 @@ public class BlueMindSubscriptionChannel implements CalendarSubscriptionChannel 
   /** The channel's identifier. */
   public static final String               ID = "bluemind";
 
+  /** BlueMind's REST subscription API. */
   private final BlueMindSubscriptionClient blueMindSubscriptionClient;
 
   /**

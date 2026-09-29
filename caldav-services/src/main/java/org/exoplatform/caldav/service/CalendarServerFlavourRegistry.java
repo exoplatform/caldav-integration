@@ -47,6 +47,7 @@ public class CalendarServerFlavourRegistry {
 
   private static final Log                           LOG = ExoLogger.getLogger(CalendarServerFlavourRegistry.class);
 
+  /** Where the contributed flavours are read from, on each question. */
   private final Supplier<List<CalendarServerFlavour>> flavours;
 
   /**
