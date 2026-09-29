@@ -197,11 +197,7 @@ public class CaldavSyncDAOQueryTest {
   }
 
   /**
-   * A date poll switched back to a meeting is seeded again to the invitees
-   * whose copies were retired while it was a poll (EXO-90516): the retirement
-   * left each of them a tombstone, and the seeding's "already holds a copy"
-   * question must not read one as a copy. Both branches: the live row still
-   * counts, so a meeting already copied is not written twice.
+   * EXO-90516: a live row counts, a tombstone does not.
    */
   @Test
   public void aTombstoneIsNotACopyTheUserAlreadyHolds() {
