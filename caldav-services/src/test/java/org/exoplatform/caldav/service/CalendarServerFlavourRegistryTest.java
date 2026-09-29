@@ -51,7 +51,7 @@ public class CalendarServerFlavourRegistryTest {
   public void thePlainFlavourRecognisesNothingAndAllowsOnlyCalDav() {
     PlainServerFlavour plain = PlainServerFlavour.INSTANCE;
 
-    assertEquals(PlainServerFlavour.ID, plain.id());
+    assertEquals(PlainServerFlavour.FLAVOUR_ID, plain.id());
     assertFalse(plain.recognises(named("Bluemind")));
     assertTrue(plain.writeChannels().isEmpty());
     assertDoesNotThrow(() -> plain.forgetSession(1L, 2L));
@@ -87,7 +87,7 @@ public class CalendarServerFlavourRegistryTest {
     CalendarServerFlavourRegistry registry = CalendarServerFlavourRegistry.of(List.of(new BlueMindServerFlavour(null)));
 
     for (String name : List.of("Bluemind", "BlueMind", "Our BLUEMIND at Lyon")) {
-      assertEquals(BlueMindServerFlavour.ID, registry.flavourOf(named(name)).id(), name);
+      assertEquals(BlueMindServerFlavour.FLAVOUR_ID, registry.flavourOf(named(name)).id(), name);
       assertTrue(registry.accepts(named(name), WriteChannel.BLUEMIND_IMPORT), name);
     }
     assertSame(PlainServerFlavour.INSTANCE, registry.flavourOf(named("Stalwart")));

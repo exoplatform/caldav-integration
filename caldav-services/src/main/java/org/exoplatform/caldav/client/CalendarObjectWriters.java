@@ -20,6 +20,7 @@ import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.springframework.beans.factory.ObjectProvider;
@@ -83,7 +84,7 @@ public class CalendarObjectWriters {
    * from another web application are only known once every context has
    * published its beans.
    */
-  private volatile Map<WriteChannel, CalendarObjectWriter> contributed;
+  private final AtomicReference<Map<WriteChannel, CalendarObjectWriter>> contributed = new AtomicReference<>();
 
   /**
    * The resolver over the registry, the CalDAV door and every contributed one.
@@ -194,7 +195,7 @@ public class CalendarObjectWriters {
    * @return the doors, never null
    */
   private Map<WriteChannel, CalendarObjectWriter> contributed() {
-    Map<WriteChannel, CalendarObjectWriter> doors = contributed;
+    Map<WriteChannel, CalendarObjectWriter> doors = contributed.get();
     if (doors == null) {
       Map<WriteChannel, CalendarObjectWriter> read = new EnumMap<>(WriteChannel.class);
       for (CalendarWriteChannelPlugin plugin : plugins.get()) {
@@ -205,8 +206,8 @@ public class CalendarObjectWriters {
           LOG.warn("The write channel {} is contributed twice; {} is ignored", channel, plugin);
         }
       }
-      doors = Collections.unmodifiableMap(read);
-      contributed = doors;
+      contributed.compareAndSet(null, Collections.unmodifiableMap(read));
+      doors = contributed.get();
     }
     return doors;
   }

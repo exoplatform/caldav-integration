@@ -72,7 +72,7 @@ public class CalendarSubscriptionChannelRegistryTest {
     NoSubscriptionChannel none = NoSubscriptionChannel.INSTANCE;
     CalDavEndpoint endpoint = mock(CalDavEndpoint.class);
 
-    assertEquals(NoSubscriptionChannel.ID, none.id());
+    assertEquals(NoSubscriptionChannel.CHANNEL_ID, none.id());
     assertNull(none.userUidOf(ROOT_PRINCIPAL));
     assertNull(none.subscriptionOf(ERICS_CALENDAR, ROOT_PRINCIPAL));
     assertThrows(UnsupportedOperationException.class, () -> none.asSubscriber(endpoint, ROOT_UID, edits -> null));
@@ -112,7 +112,7 @@ public class CalendarSubscriptionChannelRegistryTest {
     assertFalse(subscription.resource());
     assertEquals("/dav/principals/__uids__/" + ERIC_UID + "/", subscription.ownerPrincipal());
     assertEquals(ROOT_UID, registry.userUidOf(ROOT_PRINCIPAL));
-    assertEquals(BlueMindSubscriptionChannel.ID, registry.channelOf(ROOT_PRINCIPAL).id());
+    assertEquals(BlueMindSubscriptionChannel.CHANNEL_ID, registry.channelOf(ROOT_PRINCIPAL).id());
     assertSame(NoSubscriptionChannel.INSTANCE, registry.channelOf(STALWART));
     assertNull(registry.subscriptionOf(STALWART + "calendar:Default:" + ERIC_UID + "/", STALWART));
   }
