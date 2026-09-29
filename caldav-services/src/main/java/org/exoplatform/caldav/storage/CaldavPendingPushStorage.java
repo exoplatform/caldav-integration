@@ -16,9 +16,14 @@
  */
 package org.exoplatform.caldav.storage;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
@@ -45,6 +50,8 @@ import org.exoplatform.caldav.model.PendingPushKind;
  */
 @Component
 public class CaldavPendingPushStorage {
+
+  private static final int IN_CHUNK = 500;
 
   @Autowired
   private CaldavPendingPushDAO pendingPushDAO;
@@ -149,6 +156,30 @@ public class CaldavPendingPushStorage {
   public List<PendingPush> attemptable(long userIdentityId, int maxAttempts, int limit) {
     Pageable pageable = PageRequest.of(0, limit, Sort.by(Sort.Direction.ASC, "id"));
     return pendingPushDAO.findAttemptable(userIdentityId, maxAttempts, pageable).stream().map(this::fromEntity).toList();
+  }
+
+  /**
+   * Which of these mapping rows are still owed a removal, abandoned or not.
+   *
+   * <p>
+   * Asked once per edit or answer, before a rewrite is recorded over the same
+   * rows, in chunks of {@value #IN_CHUNK} to stay under Oracle's limit on an
+   * {@code IN} list.
+   *
+   * @param objectSyncIds the mapping rows
+   * @return the mapping rows among them owed a removal, empty when none are
+   */
+  public Set<Long> removalsOwed(Collection<Long> objectSyncIds) {
+    Set<Long> owed = new HashSet<>();
+    if (objectSyncIds == null || objectSyncIds.isEmpty()) {
+      return owed;
+    }
+    List<Long> ids = new ArrayList<>(new LinkedHashSet<>(objectSyncIds));
+    for (int from = 0; from < ids.size(); from += IN_CHUNK) {
+      List<Long> chunk = ids.subList(from, Math.min(from + IN_CHUNK, ids.size()));
+      owed.addAll(pendingPushDAO.findOwedObjectSyncIds(chunk, PendingPushKind.REMOVE));
+    }
+    return owed;
   }
 
   /**
