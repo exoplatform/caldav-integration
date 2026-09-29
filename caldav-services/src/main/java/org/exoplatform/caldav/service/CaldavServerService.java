@@ -768,8 +768,10 @@ public class CaldavServerService {
    *
    * <p>
    * <b>Unless no installed flavour knows the stored channel at all</b> — the
-   * add-on that speaks it is not installed. Then the row is not reset: it
-   * keeps its channel, every write on it is refused and reported
+   * add-on that speaks it is not installed. Then the row is not reset, and a
+   * payload stating that same stored channel — the drawer states the stored
+   * value back on every save — is not refused either: the row keeps its
+   * channel, every write on it is refused and reported
    * ({@code CaldavPushService#WRITE_CHANNEL_UNAVAILABLE}), and installing the
    * add-on again resumes it as it was. Switching it to CalDAV behind the
    * administrator's back would make that server receive exactly the CalDAV
@@ -781,13 +783,17 @@ public class CaldavServerService {
    *           channel is stated and the server cannot speak it
    */
   private void checkWriteChannel(CaldavServer server, CaldavServer stored) {
-    if (!acceptsWriteChannel(server, server.getWriteChannel())) {
+    WriteChannel stated = server.getWriteChannel();
+    if (!acceptsWriteChannel(server, stated)) {
+      if (stored != null && stated == stored.getWriteChannel() && noAddOnServes(stated)) {
+        warnKeptWithoutAddOn(server, stated);
+        return;
+      }
       throw new IllegalArgumentException(WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE);
     }
-    if (server.getWriteChannel() == null && stored != null && !acceptsWriteChannel(server, stored.getWriteChannel())) {
-      if (calendarServerFlavourRegistry == null || !calendarServerFlavourRegistry.knows(stored.getWriteChannel())) {
-        LOG.warn("CalDAV server {} keeps the {} channel, which no installed add-on serves: its copies are refused until the"
-            + " add-on is installed or the server is switched to CalDAV", server.getId(), stored.getWriteChannel());
+    if (stated == null && stored != null && !acceptsWriteChannel(server, stored.getWriteChannel())) {
+      if (noAddOnServes(stored.getWriteChannel())) {
+        warnKeptWithoutAddOn(server, stored.getWriteChannel());
         return;
       }
       LOG.info("CalDAV server {} is no longer declared as a server that speaks the {} channel; its copies go back through CalDAV",
@@ -795,6 +801,30 @@ public class CaldavServerService {
                stored.getWriteChannel());
       server.setWriteChannel(WriteChannel.CALDAV);
     }
+  }
+
+  /**
+   * Whether no installed add-on knows a write channel at all — its flavour is
+   * not installed, or no flavour registry is.
+   *
+   * @param channel the channel, may be null
+   * @return true when no installed flavour allows the channel for any
+   *         registration
+   */
+  private boolean noAddOnServes(WriteChannel channel) {
+    return calendarServerFlavourRegistry == null || !calendarServerFlavourRegistry.knows(channel);
+  }
+
+  /**
+   * Says a registration keeps a write channel no installed add-on serves, so
+   * that its refused copies have an explanation in the log.
+   *
+   * @param server the registration as posted
+   * @param channel the channel it keeps
+   */
+  private void warnKeptWithoutAddOn(CaldavServer server, WriteChannel channel) {
+    LOG.warn("CalDAV server {} keeps the {} channel, which no installed add-on serves: its copies are refused until the"
+        + " add-on is installed or the server is switched to CalDAV", server.getId(), channel);
   }
 
   /**
