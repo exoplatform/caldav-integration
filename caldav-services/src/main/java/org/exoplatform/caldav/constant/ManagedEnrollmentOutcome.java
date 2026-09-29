@@ -32,5 +32,10 @@ public enum ManagedEnrollmentOutcome {
   /** The server or the connect refused; the next login tries again. */
   REFUSED,
   /** An unexpected failure, logged; the next login tries again. */
-  FAILED
+  FAILED,
+  /**
+   * Managed mode had attached the user and no longer governs them, and nothing
+   * else is designated for them: they were disconnected.
+   */
+  DETACHED
 }

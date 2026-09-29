@@ -421,28 +421,37 @@ public class CaldavRelayService {
    */
   public CaldavProbeResult connectThroughProvider(Long serverId, String exoLogin) throws ObjectNotFoundException,
                                                                                   IllegalAccessException {
-    return connectThroughProvider(serverId, exoLogin, () -> true);
+    return connectThroughProvider(serverId, exoLogin, false, () -> true);
   }
 
   /**
-   * {@link #connectThroughProvider(Long, String)}, recording the connection only
-   * if {@code stillWanted} still answers true at the moment of the writes. The
-   * login-time attachment passes "the user still has no configuration": the
-   * probe can take as long as the server's timeout, and a connection the user
-   * made in that window is theirs, not something to overwrite.
+   * Connects a user through the server's provider, as
+   * {@link #connectThroughProvider(Long, String)} does, and records who made the
+   * connection: managed mode at login, or the user themselves. Only a
+   * connection made by managed mode is marked; one the user makes clears the mark, since
+   * it is their own choice from then on.
    *
-   * @param serverId registration to connect to, or null for the legacy one
+   * <p>
+   * The connection is recorded only if {@code stillWanted} still answers true at
+   * the moment of the writes. The login-time attachment passes "the user still has
+   * no configuration": the probe can take as long as the server's timeout, and a
+   * connection the user made in that window is theirs, not something to overwrite.
+   *
+   * @param serverId the server to connect to, null for the default one
    * @param exoLogin the eXo login connecting
+   * @param byManagedMode true when managed mode makes the connection at login
    * @param stillWanted asked once, after a probe that passed and right before
    *          anything is written
-   * @return the probe outcome, or {@link CaldavProbeResult#SUPERSEDED} when the
-   *         probe passed and {@code stillWanted} declined the writes
-   * @throws ObjectNotFoundException when no such registration is declared
-   * @throws IllegalAccessException when the registration is deactivated, when agenda has
+   * @return the probe's outcome, or {@link CaldavProbeResult#SUPERSEDED} when the
+   *         probe passed and {@code stillWanted} declined the writes; the
+   *         connection is recorded only when it is OK
+   * @throws ObjectNotFoundException when no server is declared
+   * @throws IllegalAccessException when the server is inactive, when agenda has
    *           switched its connector off, or when the provider named no account
    */
   public CaldavProbeResult connectThroughProvider(Long serverId,
                                                   String exoLogin,
+                                                  boolean byManagedMode,
                                                   BooleanSupplier stillWanted) throws ObjectNotFoundException,
                                                                                IllegalAccessException {
     CaldavServer server = serverId == null ? caldavServerService.resolveServer(null)
@@ -511,8 +520,38 @@ public class CaldavRelayService {
       // while caldav's can no longer refuse once the account is named.
       agendaUserSettingsService.saveUserConnector(server.getProviderName(), account, identityId);
       caldavConnectorService.createProviderBackedSetting(setting, identityId);
+      caldavConnectorStorage.markConnectedByManagedMode(identityId, byManagedMode);
     }
     return outcome;
+  }
+
+  /**
+   * Disconnects a user on the platform's initiative - an administrator's change, or
+   * the login that finds managed mode no longer governs them. The
+   * counterpart of {@link #connectThroughProvider(Long, String, boolean, BooleanSupplier)}: agenda's
+   * record of the connection goes as well as caldav's, or "My calendars" would still
+   * show a connector whose account is gone. A user's own disconnection goes through
+   * the front, which removes agenda's record itself.
+   *
+   * @param userIdentityId the identity to disconnect
+   * @param username the eXo login, null when the identity no longer names anybody
+   */
+  public void disconnectForUser(long userIdentityId, String username) {
+    CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    Long serverId = setting.getServerId();
+    CaldavServer server = caldavServerService.resolveServer(serverId);
+    // A setting naming a row recorded that row's connector - resolveServer falls back
+    // to the seed registration when the row is gone, hence the id check. A setting
+    // naming none was made through the legacy connector, which agenda recorded under
+    // the seed row's provider name: the row resolveServer(null) answers.
+    if (server != null && (serverId == null || serverId.longValue() == server.getId())) {
+      try {
+        agendaUserSettingsService.removeUserConnector(server.getProviderName(), userIdentityId);
+      } catch (RuntimeException e) {
+        LOG.warn("Agenda's record of the CalDAV connection of user identity {} could not be removed", userIdentityId, e);
+      }
+    }
+    caldavConnectorService.deleteCaldavSetting(userIdentityId, username);
   }
 
   /**

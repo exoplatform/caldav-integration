@@ -44,7 +44,9 @@ import org.exoplatform.caldav.model.CaldavManagedMode;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.model.CaldavSyncTuning;
+import org.exoplatform.caldav.rest.model.CaldavDisconnectionPreview;
 import org.exoplatform.caldav.rest.model.CaldavManagedModeRequest;
+import org.exoplatform.caldav.service.CaldavManagedDisconnectionService;
 import org.exoplatform.caldav.service.CaldavManagedModeService;
 import org.exoplatform.caldav.service.CaldavMirrorReportService;
 import org.exoplatform.caldav.service.CaldavServerService;
@@ -85,6 +87,9 @@ public class CaldavServerRest {
 
   @Autowired
   private CaldavManagedModeService caldavManagedModeService;
+
+  @Autowired
+  private CaldavManagedDisconnectionService caldavManagedDisconnectionService;
 
   @Autowired
   private CaldavMirrorReportService caldavMirrorReportService;
@@ -198,6 +203,66 @@ public class CaldavServerRest {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     } catch (IllegalArgumentException e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+    }
+  }
+
+  /**
+   * How many accounts a managed-mode change would disconnect, before it is applied: the
+   * users managed mode attached that the proposed state no longer governs. A body with
+   * no server previews switching managed mode off.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param body the proposed server (null to preview switching off) and excluded groups
+   * @return the number of accounts the change would disconnect
+   */
+  @PostMapping("/managed/preview")
+  @Secured("administrators")
+  @Operation(summary = "Previews a CalDAV managed-mode change", method = "POST",
+      description = "Counts the accounts a change of the designated server, of its exclusions, or switching managed mode "
+          + "off would disconnect: the users managed mode attached that the proposed state no longer governs. Nothing is "
+          + "written.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden") })
+  public CaldavDisconnectionPreview previewManagedMode(HttpServletRequest request,
+                                                       @RequestBody(required = false)
+                                                       CaldavManagedModeRequest body) {
+    try {
+      return new CaldavDisconnectionPreview(caldavManagedDisconnectionService.countUsersNoLongerManaged(body == null ? null
+                                                                                                                    : body.serverId(),
+                                                                                                       body == null ? List.of()
+                                                                                                                    : body.excludedGroups(),
+                                                                                                       request.getRemoteUser()));
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    }
+  }
+
+  /**
+   * How many users are connected to a server: what moving it to another credentials
+   * provider would disconnect.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @param serverId the server
+   * @return the number of users connected to it
+   */
+  @GetMapping("/{serverId}/connected-users/count")
+  @Secured("administrators")
+  @Operation(summary = "Counts the users connected to a CalDAV server", method = "GET",
+      description = "Counts the users a change of this server's credentials provider would disconnect: every user "
+          + "connected to it.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "Forbidden"),
+      @ApiResponse(responseCode = "404", description = "No server has this id") })
+  public CaldavDisconnectionPreview countConnectedUsers(HttpServletRequest request,
+                                                        @Parameter(description = "CalDAV server technical identifier", required = true)
+                                                        @PathVariable("serverId")
+                                                        long serverId) {
+    try {
+      return new CaldavDisconnectionPreview(caldavManagedDisconnectionService.countUsersOf(serverId, request.getRemoteUser()));
+    } catch (IllegalAccessException e) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    } catch (ObjectNotFoundException e) {
+      throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
     }
   }
 
