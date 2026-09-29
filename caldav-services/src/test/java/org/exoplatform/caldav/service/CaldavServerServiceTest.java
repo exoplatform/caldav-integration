@@ -228,8 +228,8 @@ public class CaldavServerServiceTest {
     lenient().when(caldavCredentialsResolver.knowsProvider(anyString())).thenReturn(true);
     previousUrlProperty = System.getProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY);
     previousEnabledProperty = System.getProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY);
-    // BlueMind is a contributed flavour since EXO-90730, registered here the
-    // way the platform registers it, over this class's session engine mock.
+    // BlueMind is a contributed flavour, registered here as the platform
+    // registers it, over this class's session engine mock.
     ReflectionTestUtils.setField(caldavServerService,
                                  "calendarServerFlavourRegistry",
                                  CalendarServerFlavourRegistry.of(List.of(new BlueMindServerFlavour(blueMindSessionService))));
@@ -446,8 +446,8 @@ public class CaldavServerServiceTest {
 
   /**
    * <b>Without the BlueMind flavour, a stored import channel is kept, never
-   * switched back to CalDAV behind the administrator's back</b> (EXO-90730,
-   * Q-4): no installed add-on knows the channel, so a save stating none
+   * switched back to CalDAV behind the administrator's back</b>
+   * (EXO-90730): no installed add-on knows the channel, so a save stating none
    * leaves it, and every write on the row is refused and reported instead
    * ({@code CalendarObjectWritersChannelTest}). With the flavour installed,
    * the same save on a row renamed away from BlueMind still resets it
