@@ -47,7 +47,7 @@ import org.exoplatform.caldav.service.BlueMindSessionService;
 public class BlueMindServerFlavour implements CalendarServerFlavour {
 
   /** The flavour's identifier, the same as the front end's BlueMind preset. */
-  public static final String ID          = "bluemind";
+  public static final String FLAVOUR_ID          = "bluemind";
 
   /**
    * What a registration's name carries when it stands for a BlueMind server:
@@ -85,7 +85,7 @@ public class BlueMindServerFlavour implements CalendarServerFlavour {
    */
   @Override
   public String id() {
-    return ID;
+    return FLAVOUR_ID;
   }
 
   /**

@@ -43,7 +43,7 @@ import org.exoplatform.caldav.plugin.SubscriptionEdits;
 public class BlueMindSubscriptionChannel implements CalendarSubscriptionChannel {
 
   /** The channel's identifier. */
-  public static final String               ID = "bluemind";
+  public static final String               CHANNEL_ID = "bluemind";
 
   /** BlueMind's REST subscription API. */
   private final BlueMindSubscriptionClient blueMindSubscriptionClient;
@@ -64,7 +64,7 @@ public class BlueMindSubscriptionChannel implements CalendarSubscriptionChannel 
    */
   @Override
   public String id() {
-    return ID;
+    return CHANNEL_ID;
   }
 
   /**
