@@ -42,11 +42,13 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 
 import org.exoplatform.caldav.model.CaldavManagedMode;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.services.connector.credentials.managed.ManagedConnectorService;
+import org.exoplatform.caldav.event.CaldavManagedModeChangedEvent;
 
 /**
  * The decision lives in commons-exo; what this class owes it is the CalDAV
@@ -75,6 +77,9 @@ public class CaldavManagedModeServiceTest {
 
   @Mock
   private CaldavServerStorage      caldavServerStorage;
+
+  @Mock
+  private ApplicationEventPublisher eventPublisher;
 
   @InjectMocks
   private CaldavManagedModeService caldavManagedModeService;
@@ -164,6 +169,24 @@ public class CaldavManagedModeServiceTest {
 
     assertEquals(7L, mode.serverId());
     assertFalse(mode.managedForMe());
+  }
+
+  /**
+   * The verdict that decides a disconnection at login is the strict one, on
+   * the stored designation and exclusions; its refusal of an unresolvable user reaches
+   * the caller unchanged.
+   */
+  @Test
+  public void judgesADisconnectionWithTheStrictVerdictOnTheStoredState() {
+    designated(700);
+    when(managedConnectorService.exclusionsOf(KIND)).thenReturn(List.of("/externals"));
+    when(managedConnectorService.designatedConnectorFor(700L, List.of("/externals"), USER)).thenReturn(700L);
+    when(managedConnectorService.designatedConnectorFor(700L, List.of("/externals"), "unknown"))
+        .thenThrow(new IllegalStateException("no identity"));
+
+    assertEquals(700L, caldavManagedModeService.governingServerFor(USER));
+    assertThrows(IllegalStateException.class, () -> caldavManagedModeService.governingServerFor("unknown"));
+    verify(managedConnectorService, never()).designatedConnectorFor(eq(KIND), eq(USER));
   }
 
   /**
@@ -345,5 +368,23 @@ public class CaldavManagedModeServiceTest {
     assertEquals(7L, mode.serverId());
     assertNull(mode.serverName());
     assertTrue(mode.managedForMe());
+  }
+
+  /** A refused change is not announced: nothing changed, nobody is disconnected. */
+  @Test
+  public void aRefusedChangeIsNotAnnounced() throws Exception {
+    when(caldavServerStorage.getServerById(9L)).thenReturn(null);
+
+    assertThrows(IllegalArgumentException.class, () -> caldavManagedModeService.saveManagedServer(9L, List.of(), ADMIN));
+
+    verify(eventPublisher, never()).publishEvent(any());
+  }
+
+  /** Switching managed mode off is announced, so that the users it attached are disconnected. */
+  @Test
+  public void switchingOffIsAnnounced() throws Exception {
+    caldavManagedModeService.clearManagedServer(ADMIN);
+
+    verify(eventPublisher).publishEvent(any(CaldavManagedModeChangedEvent.class));
   }
 }
