@@ -482,6 +482,41 @@ public class CaldavMirrorRelocationServiceTest {
     verify(caldavSyncStorage, never()).saveObject(any());
   }
 
+  /**
+   * A server whose write channel no installed add-on serves refuses every
+   * copy the same way: that is said once for the server, without a trace,
+   * not once per copy — while any other write failure keeps its own warning
+   * and trace.
+   */
+  @Test
+  public void anUnavailableWriteChannelIsSaidOncePerServerWithoutATrace() {
+    CalendarObjectWriter door = mock(CalendarObjectWriter.class);
+    when(calendarObjectWriters.writer(any())).thenThrow(new CaldavPushException(CaldavPushService.WRITE_CHANNEL_UNAVAILABLE,
+                                                                                "The server registration 7 declares the write"
+                                                                                    + " channel BLUEMIND_IMPORT, which no"
+                                                                                    + " installed add-on serves"))
+                                             .thenThrow(new CaldavPushException(CaldavPushService.WRITE_CHANNEL_UNAVAILABLE,
+                                                                                "again"))
+                                             .thenReturn(door);
+    when(door.overwriteObject(any(), anyString(), anyString())).thenThrow(new IllegalStateException("507 insufficient storage"));
+    givenTheDestinationIsNow(MAIN);
+    givenThePairPointsAt(DEDICATED);
+    givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\"", DEDICATED + "evt-2.ics", "\"etag-1\""));
+    givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT), stillBehind());
+    lenient().when(caldavPushService.renderAgendaEvent(USER, 6L, "evt-2")).thenReturn(ICS);
+
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+    MirrorRelocation again = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+
+    assertEquals(2, relocation.failed());
+    assertEquals(2, again.failed());
+    List<ILoggingEvent> found = warnings();
+    assertEquals(3, found.size(), "one line for the server, one per ordinary failure: " + found);
+    assertTrue(found.get(0).getFormattedMessage().contains("BLUEMIND_IMPORT"), found.get(0).getFormattedMessage());
+    assertNull(found.get(0).getThrowableProxy(), "a known state of the registration, not a fault to trace");
+    assertNotNull(found.get(1).getThrowableProxy(), "any other failure keeps its trace");
+  }
+
   @Test
   public void aRowStandingForNoEventIsLeftAloneAndDoesNotHoldTheChangeOpen() {
     // eXo can render nothing for it, and will not be able to on the next pass
