@@ -16,6 +16,7 @@
  */
 package org.exoplatform.caldav.dao;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -27,6 +28,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.caldav.entity.CaldavPendingPushEntity;
+import org.exoplatform.caldav.model.PendingPushKind;
 
 /**
  * Persistence access to the writes eXo owes but has not made.
@@ -50,6 +52,17 @@ public interface CaldavPendingPushDAO extends JpaRepository<CaldavPendingPushEnt
    * @return the obligation, when the copy is behind
    */
   Optional<CaldavPendingPushEntity> findByObjectSyncId(long objectSyncId);
+
+  /**
+   * Which of these mapping rows are owed an obligation of one kind.
+   *
+   * @param objectSyncIds the mapping rows
+   * @param kind the kind of obligation
+   * @return the mapping rows among them that are owed one
+   */
+  @Query("SELECT q.objectSyncId FROM CaldavPendingPushEntity q WHERE q.objectSyncId IN :objectSyncIds AND q.kind = :kind")
+  List<Long> findOwedObjectSyncIds(@Param("objectSyncIds") Collection<Long> objectSyncIds,
+                                   @Param("kind") PendingPushKind kind);
 
   /**
    * How many copies of one account are behind, abandoned ones included.
