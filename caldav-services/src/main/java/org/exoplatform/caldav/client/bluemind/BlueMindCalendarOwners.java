@@ -16,8 +16,9 @@
  */
 package org.exoplatform.caldav.client.bluemind;
 
-import java.io.Serializable;
 import java.util.Map;
+
+import org.exoplatform.caldav.plugin.CalendarOwners;
 
 /**
  * Whose each calendar in a BlueMind account's view is, as BlueMind's own
@@ -44,7 +45,7 @@ import java.util.Map;
  *          the container uid, which is the last segment of the calendar's
  *          collection path; unmodifiable
  */
-public record BlueMindCalendarOwners(String accountUid, Map<String, String> ownerByContainerUid) implements Serializable {
+public record BlueMindCalendarOwners(String accountUid, Map<String, String> ownerByContainerUid) implements CalendarOwners {
 
   /**
    * An answer, its map made unmodifiable.

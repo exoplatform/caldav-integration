@@ -25,9 +25,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.caldav.client.CalDavEndpoint;
-import org.exoplatform.caldav.client.bluemind.BlueMindCalendarOwners;
-import org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
+import org.exoplatform.caldav.plugin.CalendarOwners;
 import org.exoplatform.caldav.storage.CaldavServerOwnerStorage;
 import org.exoplatform.caldav.storage.CaldavServerOwnerStorage.Key;
 import org.exoplatform.services.log.ExoLogger;
@@ -38,12 +36,14 @@ import org.exoplatform.services.log.Log;
  * account per pass at most, and mostly from a cache (EXO-90347).
  *
  * <p>
- * <b>BlueMind only, deliberately.</b> The owner is read from BlueMind's
+ * <b>BlueMind only, deliberately</b> — through the installed subscription
+ * channel ({@link CalendarSubscriptionChannelRegistry}), BlueMind's being the
+ * one there is. The owner is read from BlueMind's
  * subscription listing through its own REST API
- * ({@link BlueMindSubscriptionClient#ownersOf}, kept by
+ * ({@code BlueMindSubscriptionClient#ownersOf}, kept by
  * {@link CaldavServerOwnerStorage}), because BlueMind is the server on
  * which nothing over CalDAV tells a subscribed colleague's calendar from
- * the account's own ({@link BlueMindContainerNaming}). The RFC analogue
+ * the account's own ({@code BlueMindContainerNaming}). The RFC analogue
  * would be {@code DAV:owner} (RFC 3744 §5.1) read per collection, which
  * Stalwart answers truthfully and the classifier already reads through
  * {@code CalendarCollection#isSharedWith}; a server that answers it wrongly
@@ -54,7 +54,7 @@ import org.exoplatform.services.log.Log;
  * <p>
  * <b>Which servers are BlueMind's</b>: an account whose principal has
  * BlueMind's {@code …/principals/__uids__/<uid>/} spelling
- * ({@link BlueMindContainerNaming#userUidOf}), the same rule the naming
+ * ({@code BlueMindContainerNaming#userUidOf}), the same rule the naming
  * witness is read under. A server of that spelling that is not BlueMind —
  * Apple's retired Calendar Server used it — would be asked and fail to
  * answer, and its eXo-shaped collections that nobody here recognises would
@@ -122,6 +122,14 @@ public class CaldavServerOwnerService {
   private CaldavServerOwnerStorage caldavServerOwnerStorage;
 
   /**
+   * The installed subscription channels (EXO-90730), which say whose
+   * principal has a product's spelling and read that product's owner
+   * listing. Optional: without it every account is silent.
+   */
+  @Autowired(required = false)
+  private CalendarSubscriptionChannelRegistry calendarSubscriptionChannelRegistry;
+
+  /**
    * The accounts already said, at warn, to have no readable owner listing —
    * keyed by server and user, as the cache is.
    */
@@ -148,7 +156,8 @@ public class CaldavServerOwnerService {
    *         otherwise
    */
   public AccountCalendarOwners ownersOf(long userIdentityId, CalDavEndpoint endpoint, String principal) {
-    String principalUid = BlueMindContainerNaming.userUidOf(principal);
+    String principalUid = calendarSubscriptionChannelRegistry == null ? null
+                                                                      : calendarSubscriptionChannelRegistry.userUidOf(principal);
     if (principalUid == null || endpoint == null) {
       return AccountCalendarOwners.silent();
     }
@@ -240,7 +249,7 @@ public class CaldavServerOwnerService {
       }
       refreshed = true;
       try {
-        BlueMindCalendarOwners owners = caldavServerOwnerStorage.refresh(key, endpoint);
+        CalendarOwners owners = caldavServerOwnerStorage.refresh(key, endpoint);
         return StringUtils.equalsIgnoreCase(owners.accountUid(), principalUid) ? AccountCalendarOwners.of(owners.accountUid(),
                                                                                                           owners.ownerByContainerUid())
                                                                                : null;
@@ -266,7 +275,7 @@ public class CaldavServerOwnerService {
      * @param owners the listing, from the cache or the server
      * @return the witness, or {@link AccountCalendarOwners#unavailable()}
      */
-    private AccountCalendarOwners accept(BlueMindCalendarOwners owners) {
+    private AccountCalendarOwners accept(CalendarOwners owners) {
       if (!StringUtils.equalsIgnoreCase(owners.accountUid(), principalUid)) {
         AccountCalendarOwners fresh = again();
         if (fresh != null) {

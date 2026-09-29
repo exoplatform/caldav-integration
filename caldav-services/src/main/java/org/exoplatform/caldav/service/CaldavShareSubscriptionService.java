@@ -32,13 +32,12 @@ import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalDavNotFoundException;
+import org.exoplatform.caldav.client.CalDavSubjectMismatchException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
-import org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubjectMismatchException;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient.Subscriptions;
 import org.exoplatform.caldav.model.PendingSubscription;
 import org.exoplatform.caldav.model.PendingSubscriptionKind;
+import org.exoplatform.caldav.plugin.CalendarSubscriptionChannel;
+import org.exoplatform.caldav.plugin.SubscriptionEdits;
 import org.exoplatform.caldav.storage.CaldavPendingSubscriptionStorage;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.services.log.ExoLogger;
@@ -214,8 +213,13 @@ public class CaldavShareSubscriptionService {
   @Value("${exo.agenda.caldav.push.maxAttempts:5}")
   private int                                      maxAttempts     = 5;
 
-  @Autowired
-  private BlueMindSubscriptionClient               blueMindSubscriptionClient;
+  /**
+   * The installed subscription channels (EXO-90730): BlueMind's REST
+   * subscription API among them. Optional: without one, a change eXo owes is
+   * given up with a reason at the next drain rather than retried.
+   */
+  @Autowired(required = false)
+  private CalendarSubscriptionChannelRegistry      calendarSubscriptionChannelRegistry;
 
   @Autowired
   private CaldavPendingSubscriptionStorage         caldavPendingSubscriptionStorage;
@@ -418,10 +422,10 @@ public class CaldavShareSubscriptionService {
       return giveUpAll(rows, "their eXo login cannot be resolved");
     }
     String principal = caldavConnectionIdentityService.principalOf(userIdentityId, serverId);
-    String shareeUid = BlueMindContainerNaming.userUidOf(principal);
+    CalendarSubscriptionChannel channel = channels().channelOf(principal);
+    String shareeUid = channel.userUidOf(principal);
     if (shareeUid == null) {
-      return giveUpAll(rows, principal == null ? "they are no longer connected to that server"
-                                               : "their recorded principal is not a BlueMind user");
+      return giveUpAll(rows, reasonNoUidFor(principal));
     }
     CalDavEndpoint endpoint;
     try {
@@ -431,7 +435,7 @@ public class CaldavShareSubscriptionService {
     }
     int[] landed = { 0 };
     try {
-      blueMindSubscriptionClient.asSharee(endpoint, shareeUid, edits -> {
+      channel.asSubscriber(endpoint, shareeUid, edits -> {
         for (PendingSubscription row : rows) {
           Attempt attempt = attemptInSession(edits, row.getKind(), row.getContainerUid());
           if (attempt.outcome() == Outcome.LANDED) {
@@ -446,7 +450,7 @@ public class CaldavShareSubscriptionService {
         }
         return null;
       });
-    } catch (BlueMindSubjectMismatchException | UnsupportedOperationException e) {
+    } catch (CalDavSubjectMismatchException | UnsupportedOperationException e) {
       return giveUpAll(rows, e.getMessage());
     } catch (CalDavException e) {
       // The login itself: refused, unreachable, or an unexplained answer.
@@ -487,8 +491,8 @@ public class CaldavShareSubscriptionService {
   private Attempt attempt(PendingSubscriptionKind kind, long serverId, String shareeUsername, String shareeUid, String containerUid) {
     try {
       CalDavEndpoint endpoint = endpointOf(serverId, shareeUsername);
-      return blueMindSubscriptionClient.asSharee(endpoint, shareeUid, edits -> attemptInSession(edits, kind, containerUid));
-    } catch (BlueMindSubjectMismatchException | UnsupportedOperationException e) {
+      return channels().primary().asSubscriber(endpoint, shareeUid, edits -> attemptInSession(edits, kind, containerUid));
+    } catch (CalDavSubjectMismatchException | UnsupportedOperationException e) {
       return new Attempt(Outcome.FINAL, e.getMessage(), false);
     } catch (CalDavException e) {
       return new Attempt(Outcome.RETRY, e.getMessage(), true);
@@ -513,7 +517,7 @@ public class CaldavShareSubscriptionService {
    * @param containerUid the container
    * @return how it ended
    */
-  private static Attempt attemptInSession(Subscriptions edits, PendingSubscriptionKind kind, String containerUid) {
+  private static Attempt attemptInSession(SubscriptionEdits edits, PendingSubscriptionKind kind, String containerUid) {
     try {
       if (kind == PendingSubscriptionKind.UNSUBSCRIBE) {
         edits.unsubscribe(containerUid);
@@ -632,5 +636,31 @@ public class CaldavShareSubscriptionService {
    *          the rows after this one in the same session are left untried
    */
   private record Attempt(Outcome outcome, String reason, boolean sessionLost) {
+  }
+
+  /**
+   * Why no uid can be read for a colleague's recorded principal: they are no
+   * longer connected, no subscription channel is installed, or the installed
+   * ones address no such principal.
+   *
+   * @param principal the recorded principal, may be null
+   * @return the reason, for the abandonment line
+   */
+  private String reasonNoUidFor(String principal) {
+    if (principal == null) {
+      return "they are no longer connected to that server";
+    }
+    return channels().isEmpty() ? "no subscription channel is installed for that server"
+                                : "their recorded principal is not a BlueMind user";
+  }
+
+  /**
+   * The installed subscription channels, or none.
+   *
+   * @return the registry, never null
+   */
+  private CalendarSubscriptionChannelRegistry channels() {
+    return calendarSubscriptionChannelRegistry == null ? CalendarSubscriptionChannelRegistry.of(List.of())
+                                                       : calendarSubscriptionChannelRegistry;
   }
 }

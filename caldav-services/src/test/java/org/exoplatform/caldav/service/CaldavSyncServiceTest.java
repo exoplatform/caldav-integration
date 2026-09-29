@@ -64,6 +64,7 @@ import java.util.ArrayList;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.doAnswer;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -74,6 +75,7 @@ import org.mockito.ArgumentCaptor;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 
+import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
 import org.exoplatform.caldav.LogRecorder;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
@@ -217,6 +219,10 @@ public class CaldavSyncServiceTest {
 
   @BeforeEach
   public void connectAnAccount() {
+    // BlueMind's subscription channel is a contribution since EXO-90730,
+    // registered here the way the platform registers it.
+    ReflectionTestUtils.setField(caldavOutboundService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
+
     // The addon's single definition of "connected" now lives in CaldavServerService.
     // Reproducing here the rule these tests were written against - a username and a
     // password - keeps every assertion in this class measuring exactly what it
