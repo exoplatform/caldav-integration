@@ -290,7 +290,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <provider-config-fields
           v-model="providerConfig"
           :fields="selectedProviderFields"
-          :secrets-stored="!!server.id"
+          :stored-secret-keys="storedSecretKeys"
+          :stored-values="storedProviderConfig.values"
           @valid="providerConfigValid = $event" />
       </form>
     </template>
@@ -388,12 +389,26 @@ export default {
     // any secret, so a secret field shows empty and an unrelated save leaves
     // the stored one alone.
     providerConfig: {},
+    // What the server holds for the stored provider, as opened: its non-secret values
+    // and which of its secrets have a value. Kept apart from providerConfig, which the
+    // administrator edits, because the secret fields compare against it.
+    storedProviderConfig: {values: {}, storedSecretKeys: []},
     // Whether the selected provider's required fields are all filled. The drawer does
     // not know what those fields are - the renderer tells it, so the save button can
     // be disabled without this file learning anything about any provider.
     providerConfigValid: true,
   }),
   computed: {
+    /**
+     * The secrets stored for the provider being edited. None once another provider is
+     * selected: what is stored belongs to the stored provider, and the new one has
+     * nothing yet, so its required secret must be typed.
+     *
+     * @returns {Array} the keys of the stored secret fields
+     */
+    storedSecretKeys() {
+      return this.changesProvider() ? [] : this.storedProviderConfig.storedSecretKeys || [];
+    },
     disconnectionConfirmMessage() {
       const count = this.pendingDisconnections === 1
         ? this.$t('caldav.admin.servers.drawer.disconnection.one')
@@ -500,11 +515,20 @@ export default {
       this.server.writeChannel = writeChannelOf(this.server.writeChannel);
       this.observedQuirks = (this.server.observedQuirks || []).map(describeQuirk);
       this.providerConfig = {};
+      this.storedProviderConfig = {values: {}, storedSecretKeys: []};
       this.foreignWriters = [];
       if (this.server.id) {
+        // On a failure nothing reads as stored: a secret is then asked for rather
+        // than assumed.
         this.$agendaCaldavService.getCaldavServerProviderConfig(this.server.id)
-          .then(values => this.providerConfig = values || {})
-          .catch(() => this.providerConfig = {});
+          .then(stored => {
+            this.storedProviderConfig = {values: stored?.values || {}, storedSecretKeys: stored?.storedSecretKeys || []};
+            this.providerConfig = {...this.storedProviderConfig.values};
+          })
+          .catch(() => {
+            this.storedProviderConfig = {values: {}, storedSecretKeys: []};
+            this.providerConfig = {};
+          });
         // Read on its own, and its failure kept to itself: the section is
         // evidence about the environment, and a drawer that would not open
         // because that read failed is a drawer nobody can save a server with.
@@ -584,6 +608,7 @@ export default {
       // Not kept between two openings: it holds what an administrator typed for
       // one registration, and the next one they open is not the same one.
       this.providerConfig = {};
+      this.storedProviderConfig = {values: {}, storedSecretKeys: []};
       this.$refs.caldavServerDrawer.close();
     },
     /**

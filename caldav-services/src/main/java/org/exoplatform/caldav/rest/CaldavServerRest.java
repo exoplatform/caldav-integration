@@ -42,6 +42,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.CaldavManagedMode;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.CaldavServerProviderConfig;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.model.CaldavSyncTuning;
 import org.exoplatform.caldav.rest.model.CaldavDisconnectionPreview;
@@ -463,24 +464,25 @@ public class CaldavServerRest {
    */
   /**
    * Serves the provider configuration of a declared server - what the drawer
-   * repopulates its provider fields from. Secret values are never in the answer.
+   * repopulates its provider fields from. Secret values are never in the answer;
+   * the keys of the secret fields that have one stored are.
    *
    * @param request the HTTP request, carrying the authenticated user
    * @param serverId technical identifier of the registration
-   * @return the stored values without any secret
+   * @return the stored values without any secret, and the stored secrets' keys
    */
   @GetMapping("/{serverId}/provider-config")
   @Secured("administrators")
   @Operation(summary = "Retrieves the provider configuration of a declared CalDAV server", method = "GET",
-      description = "Returns the stored provider configuration of a declared CalDAV server, without any secret value")
+      description = "Returns the stored provider configuration of a declared CalDAV server, without any secret value, and the keys of the secret fields that have a value stored")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Bad Request"),
       @ApiResponse(responseCode = "403", description = "Forbidden") })
-  public Map<String, String> getProviderConfig(HttpServletRequest request,
-                                               @Parameter(description = "Technical identifier of the registration",
-                                                   required = true)
-                                               @PathVariable("serverId")
-                                               long serverId) {
+  public CaldavServerProviderConfig getProviderConfig(HttpServletRequest request,
+                                                      @Parameter(description = "Technical identifier of the registration",
+                                                          required = true)
+                                                      @PathVariable("serverId")
+                                                      long serverId) {
     try {
       return caldavServerService.getProviderConfig(serverId, request.getRemoteUser());
     } catch (IllegalAccessException e) {

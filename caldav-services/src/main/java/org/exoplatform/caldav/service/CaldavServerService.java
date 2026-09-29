@@ -45,6 +45,7 @@ import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.bluemind.BlueMindServerSeed;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.CaldavServerProviderConfig;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.model.MirrorTargetKind;
@@ -765,13 +766,26 @@ public class CaldavServerService {
                                            foreignWriterRetentionDays);
   }
 
-  public Map<String, String> getProviderConfig(long serverId, String username) throws IllegalAccessException {
+  /**
+   * The provider configuration of a declared server, as an administration screen
+   * may see it: every field except the secret ones, which are never read back on
+   * this path, and the keys of the secret fields that have a value stored.
+   *
+   * @param serverId technical identifier of the registration
+   * @param username the user asking, checked against the administration ACL
+   * @return the stored values without any secret and the stored secrets' keys,
+   *         both empty when nothing is stored or when the storage is not deployed
+   * @throws IllegalAccessException if the user may not administer CalDAV servers
+   */
+  public CaldavServerProviderConfig getProviderConfig(long serverId, String username) throws IllegalAccessException {
     checkCanEdit(username);
     CaldavServer stored = caldavServerStorage.getServerById(serverId);
     if (providerConfigStorage == null || stored == null || StringUtils.isBlank(stored.getAuthProviderName())) {
-      return Map.of();
+      return CaldavServerProviderConfig.EMPTY;
     }
-    return providerConfigStorage.readWithoutSecrets(providerConfigContext(serverId, stored.getAuthProviderName()));
+    ConnectorCredentialsContext context = providerConfigContext(serverId, stored.getAuthProviderName());
+    return new CaldavServerProviderConfig(providerConfigStorage.readWithoutSecrets(context),
+                                          providerConfigStorage.readStoredSecretKeys(context));
   }
 
 
