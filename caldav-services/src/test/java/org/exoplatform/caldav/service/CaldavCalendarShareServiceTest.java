@@ -35,6 +35,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
@@ -63,6 +64,7 @@ import org.exoplatform.caldav.client.AccessControlEntry;
 import org.exoplatform.caldav.client.AccessControlEntry.AcePrincipal;
 import org.exoplatform.caldav.client.AclWriteResult;
 import org.exoplatform.caldav.client.bluemind.BlueMindAclClient;
+import org.exoplatform.caldav.client.bluemind.BlueMindShareChannel;
 import org.exoplatform.caldav.client.bluemind.BlueMindAclClient.BlueMindAce;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
@@ -240,7 +242,7 @@ public class CaldavCalendarShareServiceTest {
                                              calDavClient,
                                              caldavConnectionIdentityService,
                                              identityManager,
-                                             blueMindAclClient,
+                                             CalendarShareChannelRegistry.of(List.of(new BlueMindShareChannel(blueMindAclClient, calDavClient))),
                                              caldavPushService,
                                              caldavShareSubscriptionService,
                                              caldavServerOwnerService,
@@ -389,6 +391,54 @@ public class CaldavCalendarShareServiceTest {
   }
 
   // ---------------------------------------------------------------- BlueMind
+  /**
+   * <b>Refused and reported without the BlueMind share channel (EXO-90730).</b>
+   * A BlueMind collection then selects Apple sharing, which eXo does not
+   * offer: every operation is refused with {@code NOT_SUPPORTED}, nothing is
+   * read through BlueMind's REST API and no {@code CS:share} is posted — a
+   * share nobody can confirm is never attempted.
+   */
+  @Test
+  public void withoutTheBlueMindChannelEveryShareOperationOnBlueMindIsRefused() {
+    onBlueMind();
+    CaldavCalendarShareService bare = withoutShareChannels();
+
+    CaldavShareException listing = assertThrows(CaldavShareException.class, () -> bare.listShares(ALICE, "alice", CALENDAR));
+    CaldavShareException grant = assertThrows(CaldavShareException.class, () -> bare.grant(ALICE, "alice", CALENDAR, "bob"));
+    CaldavShareException revoke = assertThrows(CaldavShareException.class, () -> bare.revoke(ALICE, "alice", CALENDAR, "bob"));
+    CaldavShareException candidates = assertThrows(CaldavShareException.class,
+                                                   () -> bare.candidates(ALICE, "alice", CALENDAR, null));
+
+    assertEquals(CaldavCalendarShareService.NOT_SUPPORTED, listing.getCode());
+    assertEquals(CaldavCalendarShareService.NOT_SUPPORTED, grant.getCode());
+    assertEquals(CaldavCalendarShareService.NOT_SUPPORTED, revoke.getCode());
+    assertEquals(CaldavCalendarShareService.NOT_SUPPORTED, candidates.getCode());
+    verifyNoInteractions(blueMindAclClient);
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+    verify(caldavShareSubscriptionService, never()).subscribeSharee(any());
+  }
+
+  /**
+   * The same BlueMind calendar is offered "Share" with the channel installed
+   * and not offered without it: the menu never shows an entry every
+   * operation behind it would refuse.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aBlueMindCalendarIsOfferedWithTheChannelAndNotWithout() throws Exception {
+    onBlueMind();
+    CalendarSync bound = exoPair();
+    bound.setRemoteHref(BM_COLLECTION);
+    when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.EXO)).thenReturn(List.of(bound));
+    when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR)));
+    when(blueMindAclClient.acceptsCredentials(endpoint)).thenReturn(true);
+
+    assertEquals(List.of(CALENDAR), service.shareableCalendarIds(ALICE, "alice"));
+    assertEquals(List.of(), withoutShareChannels().shareableCalendarIds(ALICE, "alice"));
+  }
+
 
   /**
    * On BlueMind a grant is one {@code CS:share} naming eric by the mailto his
@@ -2454,13 +2504,35 @@ public class CaldavCalendarShareServiceTest {
                                           calDavClient,
                                           caldavConnectionIdentityService,
                                           identityManager,
-                                          blueMindAclClient,
+                                          CalendarShareChannelRegistry.of(List.of(new BlueMindShareChannel(blueMindAclClient, calDavClient))),
                                           caldavPushService,
                                           caldavShareSubscriptionService,
                                           caldavServerOwnerService,
                                           caldavServerService,
                                           Duration.ofSeconds(300),
                                           clock::get);
+  }
+
+  /**
+   * The service with no share channel installed — BlueMind's contribution
+   * removed (EXO-90730) — and no memo.
+   *
+   * @return the service
+   */
+  private CaldavCalendarShareService withoutShareChannels() {
+    return new CaldavCalendarShareService(agendaCalendarService,
+                                          caldavConnectorStorage,
+                                          caldavSyncStorage,
+                                          calDavClient,
+                                          caldavConnectionIdentityService,
+                                          identityManager,
+                                          CalendarShareChannelRegistry.of(List.of()),
+                                          caldavPushService,
+                                          caldavShareSubscriptionService,
+                                          caldavServerOwnerService,
+                                          caldavServerService,
+                                          Duration.ZERO,
+                                          System::nanoTime);
   }
 
   private String refusal(String login) {
