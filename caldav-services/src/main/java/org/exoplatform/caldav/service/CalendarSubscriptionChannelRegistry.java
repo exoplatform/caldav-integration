@@ -43,6 +43,7 @@ import org.exoplatform.caldav.plugin.NoSubscriptionChannel;
 @Service
 public class CalendarSubscriptionChannelRegistry {
 
+  /** Where the contributed channels are read from, on each question. */
   private final Supplier<List<CalendarSubscriptionChannel>> channels;
 
   /**
