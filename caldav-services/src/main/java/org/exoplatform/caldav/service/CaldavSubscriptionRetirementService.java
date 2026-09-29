@@ -29,10 +29,10 @@ import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
-import org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
+import org.exoplatform.caldav.plugin.CalendarSubscription;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -91,6 +91,14 @@ public class CaldavSubscriptionRetirementService {
   private CalDavClient      calDavClient;
 
   /**
+   * The installed subscription channels (EXO-90730), which read whose
+   * calendar a subscribed collection is. Optional: without it no binding is
+   * retired, since no subscription is recognised.
+   */
+  @Autowired(required = false)
+  private CalendarSubscriptionChannelRegistry calendarSubscriptionChannelRegistry;
+
+  /**
    * The bindings whose owner the server definitely did not confirm, by id —
    * not asked again in this process.
    */
@@ -141,11 +149,13 @@ public class CaldavSubscriptionRetirementService {
         || !isLive(pair.getStatus()) || collection == null || unconfirmed.contains(pair.getId())) {
       return Retirement.KEPT;
     }
-    BlueMindContainerNaming.Subscription subscription = BlueMindContainerNaming.subscriptionOf(collection.href(), principal);
+    CalendarSubscription subscription = calendarSubscriptionChannelRegistry == null ? null
+                                                                                    : calendarSubscriptionChannelRegistry.subscriptionOf(collection.href(),
+                                                                                                                                          principal);
     if (subscription == null) {
       return Retirement.KEPT;
     }
-    String ownerPath = BlueMindContainerNaming.principalOf(principal, subscription.ownerUid());
+    String ownerPath = subscription.ownerPrincipal();
     OwnerAnswer answer = ask(endpoint, ownerPath);
     if (answer != OwnerAnswer.CONFIRMED) {
       if (answer == OwnerAnswer.DENIED) {

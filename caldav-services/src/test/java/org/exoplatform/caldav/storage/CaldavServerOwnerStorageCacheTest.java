@@ -31,6 +31,7 @@ import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.cache.concurrent.ConcurrentMapCacheManager;
@@ -41,7 +42,11 @@ import org.springframework.context.annotation.Configuration;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.bluemind.BlueMindCalendarOwners;
+import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
+import org.exoplatform.caldav.plugin.CalendarOwners;
+import org.exoplatform.caldav.plugin.CalendarSubscriptionChannel;
+import org.exoplatform.caldav.service.CalendarSubscriptionChannelRegistry;
 import org.exoplatform.caldav.service.AccountCalendarOwners;
 import org.exoplatform.caldav.service.AccountCalendarOwners.Word;
 import org.exoplatform.caldav.service.CaldavServerOwnerService;
@@ -116,6 +121,25 @@ public class CaldavServerOwnerStorageCacheTest {
     }
 
     /**
+     * @param blueMindSubscriptionClient the scripted client
+     * @return BlueMind's subscription channel, contributed as the platform
+     *         contributes it (EXO-90730)
+     */
+    @Bean
+    BlueMindSubscriptionChannel blueMindSubscriptionChannel(BlueMindSubscriptionClient blueMindSubscriptionClient) {
+      return new BlueMindSubscriptionChannel(blueMindSubscriptionClient);
+    }
+
+    /**
+     * @param channels the contributed channels, collected by type
+     * @return the registry the storage and the service read through
+     */
+    @Bean
+    CalendarSubscriptionChannelRegistry calendarSubscriptionChannelRegistry(ObjectProvider<CalendarSubscriptionChannel> channels) {
+      return new CalendarSubscriptionChannelRegistry(channels);
+    }
+
+    /**
      * @return the storage under the cache proxy
      */
     @Bean
@@ -164,8 +188,8 @@ public class CaldavServerOwnerStorageCacheTest {
   public void theSecondPassWithinTheTtlMakesNoListingCall() {
     when(client.ownersOf(rootOnBlueMind)).thenReturn(rootsListing());
 
-    BlueMindCalendarOwners first = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
-    BlueMindCalendarOwners second = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
+    CalendarOwners first = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
+    CalendarOwners second = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
 
     assertSame(first, second, "the very entry, not a re-read");
     verify(client, times(1)).ownersOf(any());
@@ -201,9 +225,9 @@ public class CaldavServerOwnerStorageCacheTest {
     when(client.ownersOf(ericOnBlueMind)).thenReturn(new BlueMindCalendarOwners(ERIC_UID, Map.of(PERSO, ERIC_UID)));
     when(client.ownersOf(rootOnStalwart)).thenReturn(new BlueMindCalendarOwners("root-elsewhere", Map.of()));
 
-    BlueMindCalendarOwners root = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
-    BlueMindCalendarOwners eric = storage.listing(new Key(SERVER, ERIC), ericOnBlueMind);
-    BlueMindCalendarOwners rootElsewhere = storage.listing(new Key(1L, ROOT), rootOnStalwart);
+    CalendarOwners root = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
+    CalendarOwners eric = storage.listing(new Key(SERVER, ERIC), ericOnBlueMind);
+    CalendarOwners rootElsewhere = storage.listing(new Key(1L, ROOT), rootOnStalwart);
 
     assertEquals(ROOT_UID, root.accountUid());
     assertEquals(ERIC_UID, eric.accountUid(), "eric is not served root's mailbox");
@@ -227,7 +251,7 @@ public class CaldavServerOwnerStorageCacheTest {
     when(client.ownersOf(rootOnBlueMind)).thenThrow(new CalDavUnreachableException("down")).thenReturn(rootsListing());
 
     assertThrows(CalDavUnreachableException.class, () -> storage.listing(new Key(SERVER, ROOT), rootOnBlueMind));
-    BlueMindCalendarOwners recovered = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
+    CalendarOwners recovered = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
 
     assertEquals(ROOT_UID, recovered.accountUid());
     verify(client, times(2)).ownersOf(any());
@@ -245,8 +269,8 @@ public class CaldavServerOwnerStorageCacheTest {
                                          .thenReturn(fresher)
                                          .thenThrow(new CalDavUnreachableException("down"));
 
-    BlueMindCalendarOwners stale = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
-    BlueMindCalendarOwners refreshed = storage.refresh(new Key(SERVER, ROOT), rootOnBlueMind);
+    CalendarOwners stale = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
+    CalendarOwners refreshed = storage.refresh(new Key(SERVER, ROOT), rootOnBlueMind);
 
     assertSame(fresher, refreshed);
     assertSame(fresher, storage.listing(new Key(SERVER, ROOT), rootOnBlueMind), "the refresh replaced the entry");
@@ -263,8 +287,8 @@ public class CaldavServerOwnerStorageCacheTest {
   public void anEvictionDropsOneAccountsEntryAndNoOthers() {
     when(client.ownersOf(rootOnBlueMind)).thenReturn(rootsListing());
     when(client.ownersOf(ericOnBlueMind)).thenReturn(new BlueMindCalendarOwners(ERIC_UID, Map.of()));
-    BlueMindCalendarOwners root = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
-    BlueMindCalendarOwners eric = storage.listing(new Key(SERVER, ERIC), ericOnBlueMind);
+    CalendarOwners root = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
+    CalendarOwners eric = storage.listing(new Key(SERVER, ERIC), ericOnBlueMind);
 
     service.evict(ROOT, SERVER);
 
