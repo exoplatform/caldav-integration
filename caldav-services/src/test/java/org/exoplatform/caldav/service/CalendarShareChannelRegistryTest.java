@@ -21,7 +21,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -88,6 +92,50 @@ public class CalendarShareChannelRegistryTest {
   }
 
   /**
+   * A contribution claiming RFC 3744 is ignored: the host keeps every
+   * Stalwart share, and the contribution's {@code applies} is never asked.
+   */
+  @Test
+  public void aChannelClaimingTheHostsOwnAclMechanismIsIgnored() {
+    CalendarShareChannel acl = channel(SharingMechanism.WEBDAV_ACL, true);
+    CalendarShareChannelRegistry registry = CalendarShareChannelRegistry.of(List.of(acl));
+
+    assertEquals(SharingMechanism.WEBDAV_ACL, registry.mechanismOf(STALWART, "/dav/cal/alice/default/"));
+    assertNull(registry.channelFor(SharingMechanism.WEBDAV_ACL));
+    verify(acl, never()).applies(any(), any(), any());
+  }
+
+  /**
+   * A contribution claiming a mechanism eXo does not offer, or none, is
+   * ignored: the host's own selection stands.
+   */
+  @Test
+  public void aChannelClaimingAnUnofferedMechanismIsIgnored() {
+    CalendarShareChannelRegistry registry = CalendarShareChannelRegistry.of(List.of(channel(SharingMechanism.NONE, true),
+                                                                                    channel(null, true)));
+
+    assertEquals(SharingMechanism.WEBDAV_ACL, registry.mechanismOf(STALWART, "/dav/cal/alice/default/"));
+    assertNull(registry.channelFor(SharingMechanism.NONE));
+  }
+
+  /**
+   * Of two channels for one mechanism, the first is the only one: the
+   * channel that carries the operations is always the one whose
+   * {@code applies} selected the mechanism, never a later one's answer
+   * handed to the earlier channel.
+   */
+  @Test
+  public void aSecondChannelForTheSameMechanismIsIgnored() {
+    CalendarShareChannel first = channel(SharingMechanism.BLUEMIND_SHARE, false);
+    CalendarShareChannel second = channel(SharingMechanism.BLUEMIND_SHARE, true);
+    CalendarShareChannelRegistry registry = CalendarShareChannelRegistry.of(List.of(first, second));
+
+    assertEquals(SharingMechanism.CALENDARSERVER_SHARE, registry.mechanismOf(BLUEMIND, BLUEMIND_COLLECTION));
+    assertSame(first, registry.channelFor(SharingMechanism.BLUEMIND_SHARE));
+    verify(second, never()).applies(any(), any(), any());
+  }
+
+  /**
    * The proof the selection moved without changing: over every shape the
    * former static rule was pinned on, the registry with BlueMind's channel
    * answers exactly what {@code SharingMechanism.of(options, href)} answers.
@@ -128,5 +176,20 @@ public class CalendarShareChannelRegistryTest {
     assertTrue(BlueMindShareChannel.class.isAnnotationPresent(Service.class));
     CalendarShareChannel channel = new BlueMindShareChannel(null, null);
     assertTrue(channel.mechanism().isOffered());
+  }
+
+  /**
+   * A contributed channel carrying a mechanism and answering every
+   * collection the same way.
+   *
+   * @param mechanism the mechanism it claims, may be null
+   * @param applies what its {@code applies} answers
+   * @return the channel
+   */
+  private static CalendarShareChannel channel(SharingMechanism mechanism, boolean applies) {
+    CalendarShareChannel channel = mock(CalendarShareChannel.class);
+    when(channel.mechanism()).thenReturn(mechanism);
+    when(channel.applies(any(), any(), any())).thenReturn(applies);
+    return channel;
   }
 }
