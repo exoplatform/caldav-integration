@@ -43,7 +43,6 @@ import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.client.CalDavException;
-import org.exoplatform.caldav.client.bluemind.BlueMindServerSeed;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.model.MirrorTargetKind;
@@ -116,16 +115,6 @@ public class CaldavServerService {
   public static final String       STALWART_SERVER_NAME          = "Stalwart";
 
   /**
-   * The name the BlueMind seed is declared under.
-   *
-   * @deprecated the BlueMind row is a contributed seed since EXO-90737; read
-   *             {@code BlueMindServerSeed.SERVER_NAME} instead. Kept until the
-   *             BlueMind code leaves this add-on.
-   */
-  @Deprecated(forRemoval = true)
-  public static final String       BLUEMIND_SERVER_NAME          = BlueMindServerSeed.SERVER_NAME;
-
-  /**
    * Address the Stalwart seed row falls back to when the deployment named none
    * through {@link #CALDAV_SERVER_URL_PROPERTY}.
    *
@@ -148,77 +137,6 @@ public class CaldavServerService {
    * address check reads); it no longer works by being the shipped default.
    */
   public static final String       DEFAULT_STALWART_URL          = "https://stalwart.example.invalid/dav/cal/{username}/";
-
-  /**
-   * Address the BlueMind seed row is declared with.
-   *
-   * @deprecated the BlueMind row is a contributed seed since EXO-90737; read
-   *             {@code BlueMindServerSeed.SERVER_URL} instead, which carries
-   *             the reasons for the placeholder. Kept until the BlueMind code
-   *             leaves this add-on.
-   */
-  @Deprecated(forRemoval = true)
-  public static final String       DEFAULT_BLUEMIND_URL          = BlueMindServerSeed.SERVER_URL;
-
-  /**
-   * The catalogue entries the seeded BlueMind row arrives excused for.
-   *
-   * <p>
-   * <b>The two lists are the same list, and that is a constraint rather than
-   * a coincidence.</b> A preset also carries a <i>summary sentence</i> naming
-   * exactly what it ticks — {@code caldav.admin.servers.preset.bluemind.summary}
-   * — so widening the preset is a product-copy change and not only a list
-   * edit. Nothing mechanical ties a Java enum to a JS map, and no test compares
-   * the two: {@code CaldavServerServiceTest} pins this side's whole string, and
-   * a change to either list must be made to the other by hand. An administrator
-   * would otherwise meet a drawer-declared row and a seeded row disagreeing
-   * about the same server.
-   *
-   * <p>
-   * <b>Why the seed names them at all.</b> The preset is offered on a
-   * declaration only — editing a row is not the moment to overwrite what
-   * somebody decided about it — so the one BlueMind registration eXo ships
-   * was the one registration that could never carry the BlueMind preset. On
-   * a rig connected to a real account that cost every stored object: BlueMind
-   * adds {@code X-ALT-DESC} to each copy eXo writes, the sweep read each as
-   * altered, repaired it three times and then abandoned it.
-   *
-   * <p>
-   * <b>Why the entries and not their patterns.</b> The catalogue is where a
-   * behaviour has its patterns, its direction and its sentence; naming the
-   * entry here means the seed writes exactly what a tick of that box writes,
-   * and a pattern the catalogue later widens (one more {@code X-} family under
-   * {@link ServerQuirk#ADDS_COMPATIBILITY_MARKERS}, say) reaches the next
-   * fresh install without a second spelling to keep in step. The list is what
-   * {@link #seedExcusals(ServerQuirkDirection)} reads.
-   *
-   * <p>
-   * <b>How far that reaches, exactly.</b> A widened pattern reaches this seed
-   * and the drawer's own check-boxes, both of which read the catalogue's
-   * {@link ServerQuirk#getPatterns()} — the drawer over REST. It does
-   * <b>not</b> reach the browser's BlueMind preset: {@code serverPresets.js}
-   * carries its own hardcoded {@code QUIRKS} map of the same ids to the same
-   * patterns, because the ids cross a language boundary with no mechanism to
-   * share them. So a widened family is spelled in two places, not one, and
-   * this constant is the single source of truth for the <i>Java</i> side only.
-   * Generating the catalogue as a JS resource would close it and is more
-   * machinery than three constants justify; what must not happen is the JS
-   * quietly falling behind, so {@code QUIRKS} carries the reciprocal note.
-   *
-   * <p>
-   * <b>Fresh installs only, like everything the seeding does.</b> A row
-   * already declared keeps what was copied into it on the day it was
-   * declared, whatever this list says now — that is the design the preset
-   * states for itself, and a seed that repaired existing rows behind an
-   * administrator's back would break it from the other side.
-   *
-   * @deprecated the BlueMind row is a contributed seed since EXO-90737; read
-   *             {@code BlueMindServerSeed.SEED_QUIRKS} instead, which carries why
-   *             these entries. Kept until the BlueMind code leaves this
-   *             add-on.
-   */
-  @Deprecated(forRemoval = true)
-  static final List<ServerQuirk>   BLUEMIND_SEED_QUIRKS          = BlueMindServerSeed.SEED_QUIRKS;
 
   private static final String      SERVER_MANDATORY_MESSAGE      = "caldav.server.mandatory";
 
@@ -380,10 +298,8 @@ public class CaldavServerService {
    * row carries: its name, address, excusals, destination calendar and write
    * channel; the host alone decides its activation and its provider. A seed
    * whose name is already taken by a row seeded in this pass is left out, so
-   * a pass never writes two rows of one name. The BlueMind row a fresh install
-   * used to receive from the host itself is such a seed now, contributed by
-   * the BlueMind code ({@code BlueMindServerSeed}) — without it, a fresh
-   * install receives no BlueMind row.
+   * a pass never writes two rows of one name. A fresh install receives a
+   * BlueMind row only from such a seed, the BlueMind add-on's.
    * <p>
    * {@code answerLinksInCopy} is stated rather than defaulted — the model is
    * built positionally through its all-arguments constructor, so the field

@@ -75,7 +75,7 @@ import org.mockito.ArgumentCaptor;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
+import org.exoplatform.caldav.plugin.ContainerNamingSubscriptionChannel;
 import org.exoplatform.caldav.LogRecorder;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
@@ -219,9 +219,9 @@ public class CaldavSyncServiceTest {
 
   @BeforeEach
   public void connectAnAccount() {
-    // BlueMind's subscription channel is a contribution, registered here as
-    // the platform registers it.
-    ReflectionTestUtils.setField(caldavOutboundService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
+    // A server-specific subscription channel is a contribution, registered here
+    // as the platform registers one.
+    ReflectionTestUtils.setField(caldavOutboundService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new ContainerNamingSubscriptionChannel(null))));
 
     // The addon's single definition of "connected" now lives in CaldavServerService.
     // Reproducing here the rule these tests were written against - a username and a

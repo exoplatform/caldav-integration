@@ -17,12 +17,29 @@
 
 /*
  * The page's wiring, for the frozen jest suite: an extension registry with
- * the two calls the drawer's modules make, and BlueMind's server preset
- * registered through it the way its module's init() registers it on a page
- * (EXO-90730). Without it, the suite's BlueMind assertions would measure a
- * page on which the BlueMind preset is not installed.
+ * the two calls the drawer's modules make, and a server product's preset
+ * registered through it the way a contributing add-on's module registers one
+ * on a page (EXO-90730) — the BlueMind add-on's, as it ships it. Without it,
+ * the suite's BlueMind assertions would measure a page on which no product
+ * preset is installed.
  */
-import {init as registerBlueMindPreset} from '../../../main/webapp/vue-app/caldav-bluemind-preset/main.js';
+const CONTRIBUTED_PRESET = Object.freeze({
+  id: 'bluemind',
+  rank: 10,
+  name: 'BlueMind',
+  icon: null,
+  urlPlaceholder: 'https://bluemind.example.org/dav/',
+  quirks: ['dropsConference', 'addsCompatibilityMarkers', 'addsFormattedDescription', 'stampsDefaultPriority'],
+  answerLinksInCopy: true,
+  mirrorTarget: 'MAIN_CALENDAR',
+  writeChannel: 'BLUEMIND_IMPORT',
+  nameMarker: 'bluemind',
+  writeChannelOption: Object.freeze({
+    value: 'BLUEMIND_IMPORT',
+    labelKey: 'caldav.admin.servers.writeChannel.bluemindImport.label',
+    consequenceKey: 'caldav.admin.servers.writeChannel.bluemindImport.consequence',
+  }),
+});
 
 const extensions = [];
 
@@ -42,4 +59,4 @@ global.extensionRegistry = {
   },
 };
 
-registerBlueMindPreset();
+global.extensionRegistry.registerExtension('caldav', 'server-preset', CONTRIBUTED_PRESET);

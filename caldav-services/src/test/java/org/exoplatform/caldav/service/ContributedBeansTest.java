@@ -26,6 +26,7 @@ import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.withSettings;
 
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
@@ -40,7 +41,6 @@ import org.exoplatform.caldav.client.CalDavObjectWriter;
 import org.exoplatform.caldav.client.CalendarObjectWriters;
 import org.exoplatform.caldav.client.DavOptions;
 import org.exoplatform.caldav.client.SharingMechanism;
-import org.exoplatform.caldav.client.bluemind.BlueMindServerFlavour;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.WriteChannel;
 import org.exoplatform.caldav.plugin.CalendarServerFlavour;
@@ -49,6 +49,7 @@ import org.exoplatform.caldav.plugin.CalendarSubscriptionChannel;
 import org.exoplatform.caldav.plugin.CalendarWriteChannelPlugin;
 import org.exoplatform.caldav.plugin.NoSubscriptionChannel;
 import org.exoplatform.caldav.plugin.PlainServerFlavour;
+import org.exoplatform.caldav.plugin.TestServerFlavour;
 
 /**
  * The contributions of an extension point read one by one: one whose bean
@@ -135,7 +136,7 @@ public class ContributedBeansTest {
 
   /**
    * Each registry reads a broken contribution as absent: a broken flavour
-   * leaves plain CalDAV and BlueMind's own, a broken share channel leaves the
+   * leaves plain CalDAV and the sound flavour beside it, a broken share channel leaves the
    * host's selection, a broken subscription channel the null channel, a
    * broken write channel no door.
    */
@@ -143,7 +144,7 @@ public class ContributedBeansTest {
   public void everyRegistryReadsABrokenContributionAsItsAddOnAbsent() {
     CalendarServerFlavour brokenFlavour = mock(CalendarServerFlavour.class);
     when(brokenFlavour.id()).thenThrow(new BeanCreationException("flavour", "the proxied bean failed"));
-    BlueMindServerFlavour blueMind = new BlueMindServerFlavour(mock(BlueMindSessionService.class));
+    CalendarServerFlavour blueMind = new TestServerFlavour("bluemind", "bluemind", Set.of(WriteChannel.BLUEMIND_IMPORT));
     CaldavServer bluemindNamed = new CaldavServer();
     bluemindNamed.setName("Bluemind");
     assertSame(PlainServerFlavour.INSTANCE, new CalendarServerFlavourRegistry(providerOf(brokenFlavour)).flavourOf(bluemindNamed));

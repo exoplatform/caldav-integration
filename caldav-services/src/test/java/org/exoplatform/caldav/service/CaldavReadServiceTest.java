@@ -45,7 +45,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
+import org.exoplatform.caldav.plugin.ContainerNamingSubscriptionChannel;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -141,10 +141,10 @@ public class CaldavReadServiceTest {
                                                                                          identityManager,
                                                                                          calDavClient,
                                                                                          caldavConnectionIdentityService);
-    // BlueMind's subscription channel is a contribution, registered here as
-    // the platform registers it.
-    ReflectionTestUtils.setField(caldavCalendarOwnerService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
-    ReflectionTestUtils.setField(caldavOutboundService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
+    // A server-specific subscription channel is a contribution, registered here
+    // as the platform registers one.
+    ReflectionTestUtils.setField(caldavCalendarOwnerService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new ContainerNamingSubscriptionChannel(null))));
+    ReflectionTestUtils.setField(caldavOutboundService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new ContainerNamingSubscriptionChannel(null))));
     ReflectionTestUtils.setField(service, "caldavCalendarOwnerService", caldavCalendarOwnerService);
     // The addon's single definition of "connected" now lives in CaldavServerService.
     // Reproducing here the rule these tests were written against - a username and a
