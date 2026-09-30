@@ -2177,6 +2177,29 @@ public class CaldavServerServiceTest {
     assertEquals(Boolean.TRUE, caldavServerService.connectionRequirements().get("bluemind-sudo"));
   }
 
+  /**
+   * A declared provider that is not installed — an add-on's, while the add-on
+   * is not — sends the user to the form rather than failing the whole
+   * listing, and nobody asks it whether it needs anything; the installed ones
+   * beside it are answered as before.
+   */
+  @Test
+  public void asksTheUserForAProviderThatIsNotInstalledWithoutFailingTheListing() {
+    CaldavServer typed = server(1L, "personal");
+    CaldavServer missing = server(2L, "bluemind-sudo");
+    when(caldavServerStorage.getServers()).thenReturn(List.of(typed, missing));
+    when(caldavServerQuirkService.decorate(any())).thenAnswer(call -> call.getArgument(0));
+    when(caldavCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(true);
+    when(caldavCredentialsResolver.isProviderMissing("personal")).thenReturn(false);
+    when(caldavCredentialsResolver.requiresUserAction("personal")).thenReturn(false);
+
+    Map<String, Boolean> requirements = caldavServerService.connectionRequirements();
+
+    assertEquals(Boolean.TRUE, requirements.get("bluemind-sudo"));
+    assertEquals(Boolean.FALSE, requirements.get("personal"));
+    verify(caldavCredentialsResolver, never()).requiresUserAction("bluemind-sudo");
+  }
+
   private CaldavServer server(long id, String providerName) {
     CaldavServer server = new CaldavServer();
     server.setId(id);
@@ -2220,6 +2243,21 @@ public class CaldavServerServiceTest {
     when(caldavCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
 
     assertTrue(caldavServerService.isConnected(providerBacked(7L)));
+  }
+
+  /**
+   * No password, and a provider that would produce the material but is not
+   * installed: not connected, and the provider is never asked. The user is
+   * sent to reconnect, which is what puts it right once the add-on is back.
+   */
+  @Test
+  public void refusesAProviderBackedAccountWhoseProviderIsNotInstalled() throws Exception {
+    when(caldavServerStorage.getServerById(7L)).thenReturn(server(7L, "bluemind-sudo"));
+    when(caldavServerQuirkService.decorate(any())).thenAnswer(call -> call.getArgument(0));
+    when(caldavCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(true);
+
+    assertFalse(caldavServerService.isConnected(providerBacked(7L)));
+    verify(caldavCredentialsResolver, never()).requiresUserAction(anyString());
   }
 
   /**
