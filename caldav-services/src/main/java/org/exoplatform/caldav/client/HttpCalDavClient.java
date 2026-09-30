@@ -291,6 +291,18 @@ public class HttpCalDavClient implements CalDavClient {
     this.caldavCredentialsResolver = caldavCredentialsResolver;
   }
 
+  /**
+   * The endpoint a conversation with a registration's server runs on, for one
+   * eXo login. A registration naming a credentials provider that is not
+   * installed is refused before anything is sent.
+   *
+   * @param serverId the registration, or null for the legacy property
+   * @param exoLogin the eXo login the conversation is held for
+   * @return the endpoint
+   * @throws CalDavException when no server is declared, when the
+   *           registration's provider is not installed, or when the provider
+   *           cannot name the account
+   */
   @Override
   public CalDavEndpoint endpoint(Long serverId, String exoLogin) {
     CaldavServer server = caldavServerService.resolveServer(serverId);
@@ -299,6 +311,11 @@ public class HttpCalDavClient implements CalDavClient {
     // initialiser and the migration backfill already say. A null here would reach
     // the resolution service as a map key and fail every request of the fallback.
     String authProviderName = server == null ? PersonalCredentialsProvider.NAME : server.getAuthProviderName();
+    if (caldavCredentialsResolver.isProviderMissing(authProviderName)) {
+      // Refused here, once per conversation, rather than by every request of
+      // it failing to produce credentials: the resolver says so once per name.
+      throw new CalDavException("No credentials provider named " + authProviderName + " is installed");
+    }
     String url = declaredUrl(server == null ? null : server.getServerUrl());
     // Only a templated URL needs an account to name, and only then is the
     // provider worth asking: a server whose path is fixed gets the rest of its
