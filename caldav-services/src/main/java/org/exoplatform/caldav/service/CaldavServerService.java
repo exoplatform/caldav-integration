@@ -592,7 +592,7 @@ public class CaldavServerService {
    * there is no password to store, so all seven called such an account
    * disconnected while the screen showed it connected, and nothing ever
    * synchronised. The rule is: an account is named, <i>and</i> either it carries a
-   * password or its provider produces the material on its behalf.
+   * password or its provider, installed, produces the material on its behalf.
    * <p>
    * A typed account settles on the spot, without reading the registry: this runs
    * on every sweep.
@@ -611,6 +611,7 @@ public class CaldavServerService {
       CaldavServer server = settings.getServerId() == null ? resolveServer(null)
                                                            : getServerById(settings.getServerId());
       return server != null && caldavCredentialsResolver != null
+          && !caldavCredentialsResolver.isProviderMissing(server.getAuthProviderName())
           && !caldavCredentialsResolver.requiresUserAction(server.getAuthProviderName());
     } catch (ObjectNotFoundException | CalDavException e) {
       // A row pointing at a registration that is gone, or a provider nobody can ask
@@ -633,7 +634,9 @@ public class CaldavServerService {
    * <p>
    * <b>Silence means ask.</b> A registration naming no provider contributes
    * nothing, and a seam that is absent answers true: a connector list that cannot
-   * tell must send the user to a form, never connect on its own.
+   * tell must send the user to a form, never connect on its own. So does a
+   * provider that is not installed — an add-on's, while the add-on is not — which
+   * the resolver reports once per name rather than failing the whole listing.
    *
    * @return one entry per declared provider name, true when the user must supply
    *         something
@@ -645,6 +648,7 @@ public class CaldavServerService {
                        .distinct()
                        .collect(Collectors.toMap(name -> name,
                                                  name -> caldavCredentialsResolver == null
+                                                     || caldavCredentialsResolver.isProviderMissing(name)
                                                      || caldavCredentialsResolver.requiresUserAction(name)));
   }
 
