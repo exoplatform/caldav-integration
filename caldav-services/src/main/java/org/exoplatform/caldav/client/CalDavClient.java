@@ -583,8 +583,9 @@ public interface CalDavClient {
    * and the methods of its {@code Allow} header (EXO-90253).
    *
    * <p>
-   * The evidence {@link SharingMechanism#of(DavOptions, String)} selects a
-   * granting mechanism from. It is asked of the collection itself, not of the
+   * The evidence {@link SharingMechanism#of(DavOptions)} selects a granting
+   * mechanism from, and a contributed
+   * {@link org.exoplatform.caldav.plugin.CalendarShareChannel} refines. It is asked of the collection itself, not of the
    * server root, because RFC 4918 §10.1 lets the {@code DAV} header vary per
    * resource.
    *
