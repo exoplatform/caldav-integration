@@ -16,6 +16,9 @@
  */
 package org.exoplatform.caldav.provider;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.springframework.stereotype.Component;
 
 import org.apache.commons.lang3.StringUtils;
@@ -26,6 +29,7 @@ import org.exoplatform.services.connector.credentials.ConnectorCredentialsContex
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
 import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
+import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -55,6 +59,17 @@ public class CaldavCredentialsResolver {
 
   private final ConnectorCredentialsService connectorCredentialsService;
 
+  /**
+   * The provider names already reported as not installed: each is said once
+   * at WARN, whatever the number of servers, users and requests naming it.
+   */
+  private final Set<String>                 unregisteredProvidersReported = ConcurrentHashMap.newKeySet();
+
+  /**
+   * The resolver over the platform's credentials service.
+   *
+   * @param connectorCredentialsService the platform's credentials service
+   */
   public CaldavCredentialsResolver(ConnectorCredentialsService connectorCredentialsService) {
     this.connectorCredentialsService = connectorCredentialsService;
   }
@@ -69,6 +84,42 @@ public class CaldavCredentialsResolver {
     return connectorCredentialsService.getProviders()
                                       .stream()
                                       .anyMatch(provider -> provider.getName().equals(providerName));
+  }
+
+  /**
+   * Whether a registration names a provider that is not installed on this
+   * platform. A provider an add-on contributes is absent while that add-on is
+   * not installed: that is an expected state of the platform, not an incident,
+   * and it is said once per name at WARN, without a stack, rather than on
+   * every request that meets it.
+   * <p>
+   * A blank name is the legacy registration, served by typed credentials, and
+   * is not missing; nor is the platform's own Personal provider, which the
+   * credentials framework always registers; nor is any name on a platform
+   * whose providers cannot be listed: the provider is then asked as before and
+   * reports whatever it reports.
+   *
+   * @param providerName the provider a registration is configured with, may
+   *          be blank
+   * @return true only when the providers could be listed and none carries
+   *         that name
+   */
+  public boolean isProviderMissing(String providerName) {
+    if (StringUtils.isBlank(providerName) || PersonalCredentialsProvider.NAME.equals(providerName)) {
+      return false;
+    }
+    boolean missing;
+    try {
+      missing = connectorCredentialsService.getProviders().stream().noneMatch(provider -> providerName.equals(provider.getName()));
+    } catch (RuntimeException e) {
+      LOG.debug("The credentials providers could not be listed", e);
+      return false;
+    }
+    if (missing && unregisteredProvidersReported.add(providerName)) {
+      LOG.warn("No credentials provider named '{}' is installed: the CalDAV servers configured with it are not used until it is",
+               providerName);
+    }
+    return missing;
   }
 
   /**
