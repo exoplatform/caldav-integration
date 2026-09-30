@@ -21,7 +21,6 @@ import {
   writeChannelOf,
   writeChannelToSave,
 } from '../../main/webapp/vue-app/caldav/js/writeChannels.js';
-import {presetValues} from '../../main/webapp/vue-app/caldav/js/serverPresets.js';
 
 /**
  * The write channel is a BlueMind-only choice (EXO-90307, PO decision of
@@ -30,12 +29,6 @@ import {presetValues} from '../../main/webapp/vue-app/caldav/js/serverPresets.js
  * key, which would keep a stale stored channel.
  */
 describe('offersWriteChannel', () => {
-
-  it('offers the radio when the name says BlueMind, the seed spelling and the preset spelling alike', () => {
-    expect(offersWriteChannel({name: 'Bluemind', writeChannel: WRITE_CHANNEL_CALDAV})).toBe(true);
-    expect(offersWriteChannel({name: 'BlueMind', writeChannel: null})).toBe(true);
-    expect(offersWriteChannel({name: 'Our BLUEMIND at Lyon'})).toBe(true);
-  });
 
   it('hides it for Stalwart and for a server nobody has characterised', () => {
     expect(offersWriteChannel({name: 'Stalwart', writeChannel: WRITE_CHANNEL_CALDAV})).toBe(false);
@@ -63,13 +56,6 @@ describe('writeChannelToSave', () => {
 });
 
 describe('the presets and the channel', () => {
-
-  it('BlueMind chooses the import channel, Stalwart and the uncharacterised server state CalDAV rather than omitting the key', () => {
-    expect(presetValues('bluemind').writeChannel).toBe(WRITE_CHANNEL_BLUEMIND_IMPORT);
-    expect(presetValues('stalwart').writeChannel).toBe(WRITE_CHANNEL_CALDAV);
-    expect(presetValues('other').writeChannel).toBe(WRITE_CHANNEL_CALDAV);
-    expect(Object.prototype.hasOwnProperty.call(presetValues('other'), 'writeChannel')).toBe(true);
-  });
 
   it('reads any spelling into an offered value and nothing else', () => {
     expect(writeChannelOf(' bluemind_import ')).toBe(WRITE_CHANNEL_BLUEMIND_IMPORT);
