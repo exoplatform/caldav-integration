@@ -522,9 +522,9 @@ public class CaldavShareSubscriptionServiceTest {
   }
 
   /**
-   * A session BlueMind authenticated as somebody else, credentials that are
+   * A session the server authenticated as somebody else, credentials that are
    * not a login, a colleague no longer connected to that server, a recorded
-   * principal that is not a BlueMind user's, and a login eXo cannot resolve
+   * principal the installed channel does not name, and a login eXo cannot resolve
    * are final: every row of the colleague spends its budget, and the client
    * is not even called where the check is eXo's own.
    */
@@ -549,6 +549,8 @@ public class CaldavShareSubscriptionServiceTest {
     when(caldavConnectionIdentityService.principalOf(BOB, SERVER)).thenReturn("/dav/pal/eric@stalwart.local");
     service.retryOwed(50);
     verify(caldavPendingSubscriptionStorage, times(4)).abandoned(eq(1L), any(), eq(5));
+    assertTrue(infoLines().stream().anyMatch(line -> line.contains("not one the installed subscription channel names")),
+               infoLines().toString());
 
     when(identityManager.getIdentity(String.valueOf(BOB))).thenReturn(null);
     service.retryOwed(50);
