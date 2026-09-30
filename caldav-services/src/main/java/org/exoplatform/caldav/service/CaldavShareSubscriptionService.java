@@ -744,7 +744,7 @@ public class CaldavShareSubscriptionService {
       return "they are no longer connected to that server";
     }
     return channels().isEmpty() ? "no subscription channel is installed for that server"
-                                : "their recorded principal is not a BlueMind user";
+                                : "their recorded principal is not one the installed subscription channel names";
   }
 
   /**
