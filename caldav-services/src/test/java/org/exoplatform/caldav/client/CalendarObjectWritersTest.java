@@ -30,10 +30,9 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import org.exoplatform.caldav.client.bluemind.BlueMindImportWriter;
-import org.exoplatform.caldav.client.bluemind.BlueMindWriteChannelPlugin;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.WriteChannel;
+import org.exoplatform.caldav.plugin.CalendarWriteChannelPlugin;
 import org.exoplatform.caldav.service.CaldavServerService;
 
 /**
@@ -46,7 +45,7 @@ public class CalendarObjectWritersTest {
 
   private CalDavObjectWriter   caldav;
 
-  private BlueMindImportWriter bluemind;
+  private CalendarObjectWriter importDoor;
 
   private CalendarObjectWriters writers;
 
@@ -57,19 +56,19 @@ public class CalendarObjectWritersTest {
   void aResolverOverTheRegistry() {
     registry = mock(CaldavServerService.class);
     caldav = mock(CalDavObjectWriter.class);
-    bluemind = mock(BlueMindImportWriter.class);
-    writers = CalendarObjectWriters.of(registry, caldav, List.of(new BlueMindWriteChannelPlugin(bluemind)));
+    importDoor = mock(CalendarObjectWriter.class);
+    writers = CalendarObjectWriters.of(registry, caldav, List.of(importChannel(importDoor)));
   }
 
   /**
-   * Only a registration that declares the import channel gets the BlueMind
-   * door.
+   * Only a registration that declares the import channel gets the door
+   * contributed for it.
    */
   @Test
-  void aServerDeclaringTheImportChannelWritesThroughBlueMind() {
+  void aServerDeclaringTheImportChannelWritesThroughItsContributedDoor() {
     when(registry.resolveServer(7L)).thenReturn(server(WriteChannel.BLUEMIND_IMPORT));
 
-    assertSame(bluemind, writers.writer(endpoint(7L)));
+    assertSame(importDoor, writers.writer(endpoint(7L)));
   }
 
   /**
@@ -102,6 +101,27 @@ public class CalendarObjectWritersTest {
     when(registry.resolveServer(anyLong())).thenThrow(new IllegalStateException("registry down"));
 
     assertThrows(IllegalStateException.class, () -> writers.writer(endpoint(7L)));
+  }
+
+  /**
+   * A contribution serving the import channel, as the add-on that speaks it
+   * registers one.
+   *
+   * @param writer the door it serves
+   * @return the contribution
+   */
+  private static CalendarWriteChannelPlugin importChannel(CalendarObjectWriter writer) {
+    return new CalendarWriteChannelPlugin() {
+      @Override
+      public WriteChannel channel() {
+        return WriteChannel.BLUEMIND_IMPORT;
+      }
+
+      @Override
+      public CalendarObjectWriter writer() {
+        return writer;
+      }
+    };
   }
 
   /**
