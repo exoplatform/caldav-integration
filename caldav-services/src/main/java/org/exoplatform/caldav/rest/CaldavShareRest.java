@@ -114,7 +114,7 @@ public class CaldavShareRest {
           + "`access` is `READ` for a view-only grant and `MORE` for one made outside eXo; `removable` says whether "
           + "eXo may take it away. `subscriptionRequired` is true where a colleague sees a shared calendar only after "
           + "subscribing to it on the server itself, as on BlueMind. `meetingCopies` is true when the calendar is also where "
-          + "eXo writes the copies of the user's eXo meetings: the drawer then warns, and asks before sharing. Sharing and "
+          + "eXo writes the copies of the user's eXo meetings: the drawer then asks before sharing. Sharing and "
           + "stopping a share answer the same shape.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The sharees"),
       @ApiResponse(responseCode = "400", description = "The calendar is bound to no collection eXo can share; body message is the code"),

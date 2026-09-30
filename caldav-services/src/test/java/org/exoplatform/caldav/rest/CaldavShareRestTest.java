@@ -243,7 +243,7 @@ public class CaldavShareRestTest {
     JsonNode json = mapper.readTree(mapper.writeValueAsString(shares));
 
     assertEquals(12L, json.get("calendarId").asLong());
-    assertTrue(json.has("subscriptionRequired"), "the drawer reads shares.subscriptionRequired");
+    assertTrue(json.has("subscriptionRequired"), "the listing says whether a colleague must subscribe on the server first");
     assertEquals(false, json.get("subscriptionRequired").asBoolean(), "a server where a grant is seen at once");
     assertEquals(true,
                  mapper.readTree(mapper.writeValueAsString(new CalendarShares(12L, List.of(), true))).get("subscriptionRequired").asBoolean(),
