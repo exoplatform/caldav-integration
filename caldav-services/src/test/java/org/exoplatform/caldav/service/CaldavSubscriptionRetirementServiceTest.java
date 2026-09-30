@@ -28,14 +28,18 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import java.util.List;
 import java.util.Set;
 
+import org.springframework.test.util.ReflectionTestUtils;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
 import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -83,6 +87,15 @@ public class CaldavSubscriptionRetirementServiceTest {
 
   @InjectMocks
   private CaldavSubscriptionRetirementService service;
+
+  /**
+   * BlueMind's subscription channel is a contribution, registered here as
+   * the platform registers it.
+   */
+  @BeforeEach
+  public void registerTheBlueMindChannel() {
+    ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
+  }
 
   /**
    * The pool vehicle's binding becomes inert once the vehicle's principal

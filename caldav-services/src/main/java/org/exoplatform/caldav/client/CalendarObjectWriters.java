@@ -16,13 +16,26 @@
  */
 package org.exoplatform.caldav.client;
 
+import java.util.Collections;
+import java.util.EnumMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-import org.exoplatform.caldav.client.bluemind.BlueMindImportWriter;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.WriteChannel;
+import org.exoplatform.caldav.plugin.CalendarWriteChannelPlugin;
+import org.exoplatform.caldav.service.CaldavPushException;
+import org.exoplatform.caldav.service.CaldavPushService;
 import org.exoplatform.caldav.service.CaldavServerService;
+import org.exoplatform.caldav.service.ContributedBeans;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
 
 /**
  * Picks the door a server's copies go through: the one write-channel decision
@@ -46,30 +59,77 @@ import org.exoplatform.caldav.service.CaldavServerService;
  * retries, rather than quietly choosing the wrong door. The endpoint was
  * minted from the same registry a moment earlier, so this read failing is a
  * real incident, not a routine miss.
+ *
+ * <p>
+ * <b>The doors are contributed.</b> CalDAV is built in; every other channel's
+ * writer comes from a {@link CalendarWriteChannelPlugin}, collected by type
+ * from every web application, so this class names no server. A registration
+ * declaring a channel nobody contributes is refused with
+ * {@link CaldavPushService#WRITE_CHANNEL_UNAVAILABLE} — never written through
+ * CalDAV instead, for the reason stated above.
  */
 @Component
 public class CalendarObjectWriters {
 
-  private final CaldavServerService  caldavServerService;
+  private static final Log                                LOG = ExoLogger.getLogger(CalendarObjectWriters.class);
 
-  private final CalDavObjectWriter   calDavObjectWriter;
+  private final CaldavServerService                       caldavServerService;
 
-  private final BlueMindImportWriter blueMindImportWriter;
+  private final CalDavObjectWriter                        calDavObjectWriter;
+
+  /** Where the contributed doors are read from, once. */
+  private final Supplier<List<CalendarWriteChannelPlugin>> plugins;
 
   /**
-   * The resolver over the registry and the two doors.
+   * The contributed doors, by channel, read once on first use: contributions
+   * from another web application are only known once every context has
+   * published its beans.
+   */
+  private final AtomicReference<Map<WriteChannel, CalendarObjectWriter>> contributed = new AtomicReference<>();
+
+  /**
+   * The resolver over the registry, the CalDAV door and every contributed one.
    *
    * @param caldavServerService the registry the channel is read from
    * @param calDavObjectWriter the CalDAV door
-   * @param blueMindImportWriter the BlueMind import door
+   * @param plugins the contributed doors, from every web application, each
+   *          read on its own so that one which cannot be created is left out
+   *          ({@link ContributedBeans}); null reads as none
    */
   @Autowired
   public CalendarObjectWriters(CaldavServerService caldavServerService,
                                CalDavObjectWriter calDavObjectWriter,
-                               BlueMindImportWriter blueMindImportWriter) {
+                               ObjectProvider<CalendarWriteChannelPlugin> plugins) {
+    this(caldavServerService, calDavObjectWriter, new ContributedBeans<>(plugins, "write channel", CalendarWriteChannelPlugin::channel));
+  }
+
+  /**
+   * The resolver over a fixed list of contributions, as a test states them.
+   *
+   * @param caldavServerService the registry the channel is read from
+   * @param calDavObjectWriter the CalDAV door
+   * @param plugins the contributed doors, may be null for none
+   * @return the resolver
+   */
+  public static CalendarObjectWriters of(CaldavServerService caldavServerService,
+                                         CalDavObjectWriter calDavObjectWriter,
+                                         List<CalendarWriteChannelPlugin> plugins) {
+    return new CalendarObjectWriters(caldavServerService, calDavObjectWriter, () -> plugins == null ? List.of() : plugins);
+  }
+
+  /**
+   * The one constructor both others delegate to.
+   *
+   * @param caldavServerService the registry the channel is read from
+   * @param calDavObjectWriter the CalDAV door
+   * @param plugins where the contributed doors are read from
+   */
+  private CalendarObjectWriters(CaldavServerService caldavServerService,
+                                CalDavObjectWriter calDavObjectWriter,
+                                Supplier<List<CalendarWriteChannelPlugin>> plugins) {
     this.caldavServerService = caldavServerService;
     this.calDavObjectWriter = calDavObjectWriter;
-    this.blueMindImportWriter = blueMindImportWriter;
+    this.plugins = plugins;
   }
 
   /**
@@ -77,11 +137,35 @@ public class CalendarObjectWriters {
    *
    * @param endpoint the endpoint minted from the registry
    * @return the door the server's registration declares
+   * @throws CaldavPushException with
+   *           {@link CaldavPushService#WRITE_CHANNEL_UNAVAILABLE} when the
+   *           registration declares a channel no contribution serves
    * @throws RuntimeException whatever the registry raises when it cannot be
    *           read — propagated, never turned into a door
    */
   public CalendarObjectWriter writer(CalDavEndpoint endpoint) {
-    return channelOf(endpoint) == WriteChannel.BLUEMIND_IMPORT ? blueMindImportWriter : calDavObjectWriter;
+    WriteChannel channel = channelOf(endpoint);
+    if (channel == WriteChannel.CALDAV) {
+      return calDavObjectWriter;
+    }
+    CalendarObjectWriter writer = contributed().get(channel);
+    if (writer == null) {
+      throw new CaldavPushException(CaldavPushService.WRITE_CHANNEL_UNAVAILABLE,
+                                    "The server registration " + endpoint.getServerId() + " declares the write channel "
+                                        + channel + ", which no installed add-on serves; the copy is not written");
+    }
+    return writer;
+  }
+
+  /**
+   * Whether a channel has a door on this platform: CalDAV always, any other
+   * one when a contribution serves it.
+   *
+   * @param channel the channel, may be null for CalDAV
+   * @return true when a write on that channel can be carried out
+   */
+  public boolean serves(WriteChannel channel) {
+    return channel == null || channel == WriteChannel.CALDAV || contributed().containsKey(channel);
   }
 
   /**
@@ -102,5 +186,31 @@ public class CalendarObjectWriters {
     }
     CaldavServer server = caldavServerService.resolveServer(endpoint.getServerId());
     return server == null || server.getWriteChannel() == null ? WriteChannel.CALDAV : server.getWriteChannel();
+  }
+
+  /**
+   * The contributed doors by channel, read on first use. The first
+   * contribution for a channel wins, in the contributions' declared order; a
+   * later one for the same channel, and one claiming CalDAV, are ignored and
+   * said so.
+   *
+   * @return the doors, never null
+   */
+  private Map<WriteChannel, CalendarObjectWriter> contributed() {
+    Map<WriteChannel, CalendarObjectWriter> doors = contributed.get();
+    if (doors == null) {
+      Map<WriteChannel, CalendarObjectWriter> read = new EnumMap<>(WriteChannel.class);
+      for (CalendarWriteChannelPlugin plugin : plugins.get()) {
+        WriteChannel channel = plugin == null ? null : plugin.channel();
+        if (channel == null || channel == WriteChannel.CALDAV || plugin.writer() == null) {
+          LOG.warn("The write channel contribution {} names no channel eXo can hand over ({}); it is ignored", plugin, channel);
+        } else if (read.putIfAbsent(channel, plugin.writer()) != null) {
+          LOG.warn("The write channel {} is contributed twice; {} is ignored", channel, plugin);
+        }
+      }
+      contributed.compareAndSet(null, Collections.unmodifiableMap(read));
+      doors = contributed.get();
+    }
+    return doors;
   }
 }

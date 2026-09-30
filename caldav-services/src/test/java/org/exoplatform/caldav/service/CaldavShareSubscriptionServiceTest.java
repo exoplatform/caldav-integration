@@ -36,6 +36,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.function.Function;
 
+import org.springframework.test.util.ReflectionTestUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -50,6 +51,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
+import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -149,6 +151,10 @@ public class CaldavShareSubscriptionServiceTest {
    */
   @BeforeEach
   public void rig() {
+    // BlueMind's subscription channel is a contribution, registered here as
+    // the platform registers it.
+    ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(blueMindSubscriptionClient))));
+
     lenient().when(calDavClient.endpoint(SERVER, "bob")).thenReturn(bobEndpoint);
     lenient().when(calDavClient.endpoint(SERVER, "alice")).thenReturn(aliceEndpoint);
     lenient().when(calDavClient.endpoint(SERVER, "carol")).thenReturn(carolEndpoint);
@@ -393,6 +399,44 @@ public class CaldavShareSubscriptionServiceTest {
     verify(blueMindSubscriptionClient, times(2)).asSharee(any(), anyString(), any());
     verify(caldavPendingSubscriptionStorage, never()).refused(anyLong());
     verify(caldavPendingSubscriptionStorage, never()).settledIfStillAsking(anyLong(), anyLong(), anyString(), any());
+  }
+
+  /**
+   * <b>Refused and reported without a subscription channel (EXO-90730).</b>
+   * With no channel installed — BlueMind's contribution removed — nothing
+   * can address the colleague: every owed row is given up at once, with the
+   * reason said, never retried, and nothing is sent anywhere.
+   */
+  @Test
+  public void withNoSubscriptionChannelEveryOwedRowIsGivenUpWithTheReasonSaid() {
+    ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of()));
+    PendingSubscription bobOne = row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0);
+    PendingSubscription bobTwo = row(2L, BOB, OTHER, PendingSubscriptionKind.UNSUBSCRIBE, 0);
+    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(bobOne, bobTwo));
+
+    assertEquals(0, service.retryOwed(50));
+
+    verify(caldavPendingSubscriptionStorage).abandoned(1L, 5);
+    verify(caldavPendingSubscriptionStorage).abandoned(2L, 5);
+    verify(caldavPendingSubscriptionStorage, never()).refused(anyLong());
+    verifyNoInteractions(blueMindSubscriptionClient);
+    assertTrue(infoLines().stream().anyMatch(line -> line.contains("no subscription channel is installed")), infoLines().toString());
+  }
+
+  /**
+   * <b>Refused and reported at grant time without a subscription channel.</b>
+   * The share itself is not failed: the change is recorded as owed, said at
+   * warn, and given up at the next drain as above.
+   */
+  @Test
+  public void withNoSubscriptionChannelAFollowUpIsOwedNotSentAndTheShareStands() {
+    ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of()));
+
+    assertDoesNotThrow(() -> service.subscribeSharee(share()));
+
+    verify(caldavPendingSubscriptionStorage).owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
+    verifyNoInteractions(blueMindSubscriptionClient);
+    assertEquals(1, warnLines().size(), warnLines().toString());
   }
 
   /**

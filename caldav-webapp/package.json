@@ -46,6 +46,9 @@
     "roots": [
       "<rootDir>/src/test/js"
     ],
+    "setupFiles": [
+      "<rootDir>/src/test/js/setup/registerContributedPresets.js"
+    ],
     "transform": {
       "^.+\\.vue$": "@vue/vue2-jest",
       "^.+\\.js$": [
