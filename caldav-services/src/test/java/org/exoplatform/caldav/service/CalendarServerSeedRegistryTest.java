@@ -30,7 +30,6 @@ import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.AnnotationAwareOrderComparator;
 
-import org.exoplatform.caldav.client.bluemind.BlueMindServerSeed;
 import org.exoplatform.caldav.plugin.CalendarServerSeed;
 
 /**
@@ -57,7 +56,7 @@ class CalendarServerSeedRegistryTest {
   void theFirstSeedOfAnIdentifierIsTheOnlyOne() {
     CalendarServerSeed first = seed("BlueMind", "BlueMind (add-on)");
     CalendarServerSeed other = seed("acme", "Acme");
-    BlueMindServerSeed builtIn = new BlueMindServerSeed();
+    CalendarServerSeed builtIn = new UnorderedSeed();
 
     List<CalendarServerSeed> seeds = CalendarServerSeedRegistry.of(List.of(first, other, builtIn)).effectiveSeeds();
 
@@ -92,12 +91,12 @@ class CalendarServerSeedRegistryTest {
                                                                          failing,
                                                                          seed(" ", "No id"),
                                                                          seed("no-name", ""),
-                                                                         new BlueMindServerSeed()));
+                                                                         new UnorderedSeed()));
 
     List<CalendarServerSeed> seeds = CalendarServerSeedRegistry.of(contributed).effectiveSeeds();
 
     assertEquals(1, seeds.size());
-    assertEquals(BlueMindServerSeed.SEED_ID, seeds.get(0).id());
+    assertEquals(UnorderedSeed.SEED_ID, seeds.get(0).id());
   }
 
   /**
@@ -114,11 +113,11 @@ class CalendarServerSeedRegistryTest {
 
     assertTrue(new CalendarServerSeedRegistry(factory.getBeanProvider(CalendarServerSeed.class)).effectiveSeeds().isEmpty());
 
-    factory.registerBeanDefinition("blueMindServerSeed", new RootBeanDefinition(BlueMindServerSeed.class));
+    factory.registerBeanDefinition("unorderedSeed", new RootBeanDefinition(UnorderedSeed.class));
     List<CalendarServerSeed> seeds = new CalendarServerSeedRegistry(factory.getBeanProvider(CalendarServerSeed.class)).effectiveSeeds();
 
     assertEquals(1, seeds.size());
-    assertEquals(BlueMindServerSeed.class, seeds.get(0).getClass());
+    assertEquals(UnorderedSeed.class, seeds.get(0).getClass());
   }
 
   /**
@@ -133,7 +132,7 @@ class CalendarServerSeedRegistryTest {
       if (annotationAware) {
         factory.setDependencyComparator(AnnotationAwareOrderComparator.INSTANCE);
       }
-      factory.registerBeanDefinition("blueMindServerSeed", new RootBeanDefinition(BlueMindServerSeed.class));
+      factory.registerBeanDefinition("unorderedSeed", new RootBeanDefinition(UnorderedSeed.class));
       factory.registerBeanDefinition("orderedSeed", new RootBeanDefinition(OrderedSeed.class));
 
       List<CalendarServerSeed> seeds =
@@ -171,7 +170,41 @@ class CalendarServerSeedRegistryTest {
   }
 
   /**
-   * A BlueMind seed that states an order, as the add-on's does.
+   * A seed that states no order, as a contribution declared without one is.
+   */
+  public static class UnorderedSeed implements CalendarServerSeed {
+
+    /** The identifier this seed and {@link OrderedSeed} share. */
+    static final String SEED_ID = "bluemind";
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public String id() {
+      return SEED_ID;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public String name() {
+      return "BlueMind (unordered)";
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public String serverUrl() {
+      return "https://bluemind.example.invalid/dav/";
+    }
+  }
+
+  /**
+   * A seed of the same identifier that states an order, as a contribution
+   * meant to win does.
    */
   public static class OrderedSeed implements CalendarServerSeed, Ordered {
 
@@ -180,7 +213,7 @@ class CalendarServerSeedRegistryTest {
      */
     @Override
     public String id() {
-      return BlueMindServerSeed.SEED_ID;
+      return UnorderedSeed.SEED_ID;
     }
 
     /**
@@ -196,7 +229,7 @@ class CalendarServerSeedRegistryTest {
      */
     @Override
     public String serverUrl() {
-      return BlueMindServerSeed.SERVER_URL;
+      return "https://bluemind.example.invalid/dav/";
     }
 
     /**

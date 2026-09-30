@@ -104,9 +104,11 @@ so, not because the product shipped a default pointing at it.
 
 ### What a fresh install seeds, and in what state
 
-Two rows are seeded into an **empty** registry at startup: Stalwart (from
-`exo.agenda.caldav.connector.url` when set) and Bluemind. They are the
-pre-filled form an administrator edits, not a working configuration.
+Rows are seeded into an **empty** registry at startup: Stalwart (from
+`exo.agenda.caldav.connector.url` when set), and one per server product whose
+add-on contributes a seed — BlueMind's, when the BlueMind add-on is installed.
+They are the pre-filled form an administrator edits, not a working
+configuration.
 
 **A seeded row is switched on only when its address passes the same check an
 administrator's would.** Until [EXO-89794] seeding was exempt from the check

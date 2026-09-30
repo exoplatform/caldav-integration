@@ -41,11 +41,11 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
+import org.exoplatform.caldav.plugin.ContainerNamingSubscriptionChannel;
 import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
-import org.exoplatform.caldav.client.bluemind.BlueMindCalendarOwners;
+import org.exoplatform.caldav.plugin.TestCalendarOwners;
 import org.exoplatform.caldav.service.AccountCalendarOwners.Word;
 import org.exoplatform.caldav.storage.CaldavServerOwnerStorage;
 import org.exoplatform.caldav.storage.CaldavServerOwnerStorage.Key;
@@ -93,9 +93,9 @@ public class CaldavServerOwnerServiceTest {
    */
   @BeforeEach
   public void mintAnEndpoint() {
-    // BlueMind's subscription channel is a contribution, registered here as
-    // the platform registers it.
-    ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
+    // A server-specific subscription channel is a contribution, registered here
+    // as the platform registers one.
+    ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new ContainerNamingSubscriptionChannel(null))));
 
     lenient().when(endpoint.getServerId()).thenReturn(SERVER);
     lenient().when(endpoint.getExoLogin()).thenReturn("root");
@@ -124,7 +124,7 @@ public class CaldavServerOwnerServiceTest {
    */
   @Test
   public void theListingIsReadOnTheFirstQuestionAndOnceOnly() {
-    when(caldavServerOwnerStorage.listing(ROOTS_KEY, endpoint)).thenReturn(new BlueMindCalendarOwners(ROOT_UID,
+    when(caldavServerOwnerStorage.listing(ROOTS_KEY, endpoint)).thenReturn(new TestCalendarOwners(ROOT_UID,
                                                                                                         Map.of(PERSO,
                                                                                                                ERIC_UID,
                                                                                                                PERSONNEL,
@@ -149,8 +149,8 @@ public class CaldavServerOwnerServiceTest {
    */
   @Test
   public void aCalendarAbsentFromTheCachedListingTriggersExactlyOneRefreshInThePass() {
-    when(caldavServerOwnerStorage.listing(ROOTS_KEY, endpoint)).thenReturn(new BlueMindCalendarOwners(ROOT_UID, Map.of(PERSONNEL, ROOT_UID)));
-    when(caldavServerOwnerStorage.refresh(ROOTS_KEY, endpoint)).thenReturn(new BlueMindCalendarOwners(ROOT_UID,
+    when(caldavServerOwnerStorage.listing(ROOTS_KEY, endpoint)).thenReturn(new TestCalendarOwners(ROOT_UID, Map.of(PERSONNEL, ROOT_UID)));
+    when(caldavServerOwnerStorage.refresh(ROOTS_KEY, endpoint)).thenReturn(new TestCalendarOwners(ROOT_UID,
                                                                                                         Map.of(PERSONNEL,
                                                                                                                ROOT_UID,
                                                                                                                NEW_SHARE,
@@ -174,7 +174,7 @@ public class CaldavServerOwnerServiceTest {
    */
   @Test
   public void aRefreshTheServerDoesNotAnswerLeavesTheListingInHand() {
-    when(caldavServerOwnerStorage.listing(ROOTS_KEY, endpoint)).thenReturn(new BlueMindCalendarOwners(ROOT_UID, Map.of(PERSO, ERIC_UID)));
+    when(caldavServerOwnerStorage.listing(ROOTS_KEY, endpoint)).thenReturn(new TestCalendarOwners(ROOT_UID, Map.of(PERSO, ERIC_UID)));
     when(caldavServerOwnerStorage.refresh(ROOTS_KEY, endpoint)).thenThrow(new CalDavUnreachableException("down"));
 
     AccountCalendarOwners owners = service.ownersOf(ROOT, endpoint, ROOT_PRINCIPAL);
@@ -233,9 +233,9 @@ public class CaldavServerOwnerServiceTest {
    */
   @Test
   public void anEntryOpenedAsAnotherEntryIsRefreshedOnceAndBelievedOnlyAsTheAccountsOwn() {
-    when(caldavServerOwnerStorage.listing(ROOTS_KEY, endpoint)).thenReturn(new BlueMindCalendarOwners(ERIC_UID, Map.of(PERSO, ERIC_UID)));
-    when(caldavServerOwnerStorage.refresh(ROOTS_KEY, endpoint)).thenReturn(new BlueMindCalendarOwners(ROOT_UID, Map.of(PERSO, ERIC_UID)))
-                                                               .thenReturn(new BlueMindCalendarOwners(ERIC_UID, Map.of(PERSO, ERIC_UID)));
+    when(caldavServerOwnerStorage.listing(ROOTS_KEY, endpoint)).thenReturn(new TestCalendarOwners(ERIC_UID, Map.of(PERSO, ERIC_UID)));
+    when(caldavServerOwnerStorage.refresh(ROOTS_KEY, endpoint)).thenReturn(new TestCalendarOwners(ROOT_UID, Map.of(PERSO, ERIC_UID)))
+                                                               .thenReturn(new TestCalendarOwners(ERIC_UID, Map.of(PERSO, ERIC_UID)));
 
     AccountCalendarOwners repointed = service.ownersOf(ROOT, endpoint, ROOT_PRINCIPAL);
     assertEquals(Word.ANOTHERS, repointed.ownerOf(PERSO).word(), "the fresh listing is root's own and is believed");

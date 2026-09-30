@@ -25,7 +25,7 @@ import java.net.URI;
  * {@link CalDavEndpoint}'s constructor is package-private on purpose — in
  * production only {@link HttpCalDavClient#endpoint} may mint one, from the
  * registry — and that containment is worth keeping. A test in another package
- * ({@code client.bluemind}) still needs a concrete endpoint to drive a client
+ * (a service test, or an add-on's) still needs a concrete endpoint to drive a client
  * against canned answers, so this helper, test-scoped and in the owning
  * package, is the one door left open, and it opens onto nothing but a URI the
  * test wrote itself.

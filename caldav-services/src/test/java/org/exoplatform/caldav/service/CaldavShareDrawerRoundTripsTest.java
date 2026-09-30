@@ -48,8 +48,6 @@ import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CollectionAcl;
 import org.exoplatform.caldav.client.DavOptions;
-import org.exoplatform.caldav.client.bluemind.BlueMindAclClient;
-import org.exoplatform.caldav.client.bluemind.BlueMindShareChannel;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CalendarShares;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -82,7 +80,7 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * <p>
  * Every call this add-on makes that a server has to answer: the CalDAV client
  * (minus {@link CalDavClient#endpoint}, which mints an endpoint from the
- * registration without asking the calendar server), BlueMind's REST client, and the
+ * registration without asking the calendar server) and the
  * push's {@code mirrorDestination}. That last one counts as <b>one ask and
  * three round trips</b>: it walks {@code discoverPrincipal}, the principal's
  * {@code calendar-home-set} and a listing of that home, and more when the
@@ -182,9 +180,6 @@ public class CaldavShareDrawerRoundTripsTest {
   private CalDavEndpoint                    endpoint;
 
   @Mock
-  private BlueMindAclClient                 blueMindAclClient;
-
-  @Mock
   private CaldavPushService                 caldavPushService;
 
   @Mock
@@ -222,7 +217,7 @@ public class CaldavShareDrawerRoundTripsTest {
                                              calDavClient,
                                              caldavConnectionIdentityService,
                                              identityManager,
-                                             CalendarShareChannelRegistry.of(List.of(new BlueMindShareChannel(blueMindAclClient, calDavClient))),
+                                             CalendarShareChannelRegistry.of(List.of()),
                                              caldavPushService,
                                              caldavShareSubscriptionService,
                                              caldavServerOwnerService,
@@ -651,7 +646,7 @@ public class CaldavShareDrawerRoundTripsTest {
                                           calDavClient,
                                           caldavConnectionIdentityService,
                                           identityManager,
-                                          CalendarShareChannelRegistry.of(List.of(new BlueMindShareChannel(blueMindAclClient, calDavClient))),
+                                          CalendarShareChannelRegistry.of(List.of()),
                                           push,
                                           caldavShareSubscriptionService,
                                           caldavServerOwnerService,
@@ -751,7 +746,7 @@ public class CaldavShareDrawerRoundTripsTest {
    */
   private Map<String, Integer> asks() {
     Map<String, Integer> counts = new LinkedHashMap<>();
-    for (Object mock : List.of(calDavClient, blueMindAclClient, caldavPushService)) {
+    for (Object mock : List.of(calDavClient, caldavPushService)) {
       for (Invocation invocation : mockingDetails(mock).getInvocations()) {
         String name = invocation.getMethod().getName();
         // The endpoint is minted from the registration, locally: no server is
