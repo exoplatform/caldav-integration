@@ -223,39 +223,18 @@ public class HttpCalDavClientShareTest {
   }
 
   /**
-   * BlueMind is recognised by its header and its collection layout together
-   * (EXO-90253): the captured header on {@code /dav/calendars/__uids__/<owner
-   * uid>/<container>/} selects BlueMind's sharing, offered. Either alone is
-   * not enough — the header on another server's path, Apple CalendarServer's
-   * {@code __uids__} layout without BlueMind's {@code /dav} root, a resource
-   * under the collection, and the path under a server advertising RFC 3744
-   * each keep their own mechanism.
+   * BlueMind's captured header, read by the host alone, selects Apple sharing,
+   * which the host does not offer: telling a BlueMind collection from any
+   * other Apple-sharing server is the share channel's, contributed by the
+   * add-on that speaks BlueMind's REST API (EXO-90730). Of the mechanisms,
+   * only RFC 3744 and that contributed one are offered.
    */
   @Test
-  void blueMindIsRecognisedByItsHeaderAndItsCollectionPathTogether() {
+  void blueMindsHeaderAloneSelectsAppleSharingWhichIsNotOffered() {
     DavOptions bluemind = DavOptions.of(List.of(BLUEMIND_DAV), List.of());
-    DavOptions stalwart = DavOptions.of(List.of(STALWART_DAV), List.of(STALWART_ALLOW));
 
-    assertEquals(SharingMechanism.BLUEMIND_SHARE, SharingMechanism.of(bluemind, BLUEMIND_COLLECTION));
-    assertTrue(SharingMechanism.of(bluemind, BLUEMIND_COLLECTION).isOffered());
-    assertEquals(SharingMechanism.BLUEMIND_SHARE,
-                 SharingMechanism.of(DavOptions.of(List.of(BLUEMIND_DAV),
-                                                   List.of("ACL, COPY, DELETE, GET, HEAD, LOCK, MKCOL, OPTIONS, PROPFIND, PROPPATCH, PUT, REPORT, UNLOCK")),
-                                     BLUEMIND_COLLECTION),
-                 "an OPTIONS reaching BlueMind's own OptionsProtocol lists ACL too; calendar-proxy and the vendor sharing rule both keep it BlueMind's");
-    assertEquals(SharingMechanism.BLUEMIND_SHARE,
-                 SharingMechanism.of(bluemind, "https://bm.example.com" + StringUtils.stripEnd(BLUEMIND_COLLECTION, "/")),
-                 "an absolute href and a missing trailing slash are the same collection");
-
-    assertEquals(SharingMechanism.CALENDARSERVER_SHARE, SharingMechanism.of(bluemind, COLLECTION));
-    assertEquals(SharingMechanism.CALENDARSERVER_SHARE, SharingMechanism.of(bluemind, "/calendars/__uids__/" + BLUEMIND_OWNER + "/work/"));
-    assertEquals(SharingMechanism.CALENDARSERVER_SHARE, SharingMechanism.of(bluemind, BLUEMIND_COLLECTION + "event.ics"));
-    assertEquals(SharingMechanism.CALENDARSERVER_SHARE, SharingMechanism.of(bluemind, null));
-    assertEquals(SharingMechanism.CALENDARSERVER_SHARE,
-                 SharingMechanism.of(DavOptions.of(List.of("1, access-control, resource-sharing"), List.of("ACL")), BLUEMIND_COLLECTION),
-                 "another vendor protocol on BlueMind's path is not BlueMind's");
-    assertEquals(SharingMechanism.WEBDAV_ACL, SharingMechanism.of(stalwart, BLUEMIND_COLLECTION));
-    assertEquals(SharingMechanism.NONE, SharingMechanism.of(null, BLUEMIND_COLLECTION));
+    assertEquals(SharingMechanism.CALENDARSERVER_SHARE, SharingMechanism.of(bluemind));
+    assertFalse(SharingMechanism.of(bluemind).isOffered());
     for (SharingMechanism mechanism : SharingMechanism.values()) {
       assertEquals(mechanism == SharingMechanism.WEBDAV_ACL || mechanism == SharingMechanism.BLUEMIND_SHARE, mechanism.isOffered(),
                    mechanism.name());
@@ -303,8 +282,9 @@ public class HttpCalDavClientShareTest {
    * the same collection, with the same credentials — the header BlueMind's DAV
    * server sets on every PROPFIND answer, here as CAPTURED on its principal
    * (the {@code calendar-home-set} discovery,
-   * {@code bluemind-calendar-home.captured.xml}) — and select BlueMind's sharing, offered, with no method taken from the
-   * PROPFIND.
+   * {@code bluemind-calendar-home.captured.xml}) — with no method taken from
+   * the PROPFIND. They advertise Apple sharing, which the share channel then
+   * reads as BlueMind's.
    *
    * @throws Exception when a fixture cannot be read
    */
@@ -326,8 +306,7 @@ public class HttpCalDavClientShareTest {
     assertEquals(AUTHORIZATION, propfind.headers().firstValue("Authorization").orElse(null));
     assertTrue(capabilities.advertises("calendarserver-sharing"));
     assertTrue(capabilities.allowedMethods().isEmpty(), "methods come from OPTIONS only");
-    assertEquals(SharingMechanism.BLUEMIND_SHARE, SharingMechanism.of(capabilities, BLUEMIND_COLLECTION));
-    assertTrue(SharingMechanism.of(capabilities, BLUEMIND_COLLECTION).isOffered());
+    assertEquals(SharingMechanism.CALENDARSERVER_SHARE, SharingMechanism.of(capabilities));
   }
 
   /**
@@ -343,14 +322,14 @@ public class HttpCalDavClientShareTest {
     DavOptions fromPropfind = client.capabilities(endpoint, COLLECTION);
     assertTrue(fromPropfind.advertises("access-control"));
     assertFalse(fromPropfind.allows("ACL"));
-    assertEquals(SharingMechanism.NONE, SharingMechanism.of(fromPropfind, COLLECTION));
+    assertEquals(SharingMechanism.NONE, SharingMechanism.of(fromPropfind));
 
     answerFromTranscript("bluemind-options-bare-204.http");
     answers.add(response(207, Map.of(), ""));
     DavOptions nothing = client.capabilities(endpoint, BLUEMIND_COLLECTION);
     assertTrue(nothing.davTokens().isEmpty());
-    assertEquals(SharingMechanism.NONE, SharingMechanism.of(nothing, BLUEMIND_COLLECTION),
-                 "BlueMind's bare 204 with no DAV header anywhere offers nothing: the classes are what selects it");
+    assertEquals(SharingMechanism.NONE, SharingMechanism.of(nothing),
+                 "a bare 204 with no DAV header anywhere offers nothing: the classes are what selects it");
 
     answerFromTranscript("bluemind-options-bare-204.http");
     answers.add(response(401, Map.of(), ""));

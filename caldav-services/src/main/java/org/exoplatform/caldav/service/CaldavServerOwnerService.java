@@ -40,10 +40,10 @@ import org.exoplatform.services.log.Log;
  * channel ({@link CalendarSubscriptionChannelRegistry}), BlueMind's being the
  * one there is. The owner is read from BlueMind's
  * subscription listing through its own REST API
- * ({@code BlueMindSubscriptionClient#ownersOf}, kept by
+ * (the channel's {@code ownersOf}, in the BlueMind add-on; kept by
  * {@link CaldavServerOwnerStorage}), because BlueMind is the server on
  * which nothing over CalDAV tells a subscribed colleague's calendar from
- * the account's own ({@code BlueMindContainerNaming}). The RFC analogue
+ * the account's own (the channel's container naming). The RFC analogue
  * would be {@code DAV:owner} (RFC 3744 §5.1) read per collection, which
  * Stalwart answers truthfully and the classifier already reads through
  * {@code CalendarCollection#isSharedWith}; a server that answers it wrongly
@@ -54,7 +54,7 @@ import org.exoplatform.services.log.Log;
  * <p>
  * <b>Which servers are BlueMind's</b>: an account whose principal has
  * BlueMind's {@code …/principals/__uids__/<uid>/} spelling
- * ({@code BlueMindContainerNaming#userUidOf}), the same rule the naming
+ * (the channel's {@code userUidOf}), the same rule the naming
  * witness is read under. A server of that spelling that is not BlueMind —
  * Apple's retired Calendar Server used it — would be asked and fail to
  * answer, and its eXo-shaped collections that nobody here recognises would

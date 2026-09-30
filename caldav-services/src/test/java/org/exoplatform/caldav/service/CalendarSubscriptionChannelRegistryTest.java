@@ -23,8 +23,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -36,18 +34,16 @@ import org.junit.jupiter.api.Test;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.caldav.client.CalDavEndpoint;
-import org.exoplatform.caldav.client.CalDavSubjectMismatchException;
-import org.exoplatform.caldav.client.bluemind.BlueMindCalendarOwners;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubjectMismatchException;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
 import org.exoplatform.caldav.plugin.CalendarSubscription;
+import org.exoplatform.caldav.plugin.CalendarSubscriptionChannel;
+import org.exoplatform.caldav.plugin.ContainerNamingSubscriptionChannel;
 import org.exoplatform.caldav.plugin.NoSubscriptionChannel;
+import org.exoplatform.caldav.plugin.TestCalendarOwners;
 
 /**
  * The subscription channels as contributions (EXO-90730): with none installed
  * nothing in a listing is read as a subscription and nothing can be edited;
- * with BlueMind's installed, a BlueMind account's subscriptions are read and
+ * with one installed, the accounts it names have their subscriptions read and
  * edited through it, and an account of any other shape still gets the null
  * channel.
  */
@@ -80,12 +76,11 @@ public class CalendarSubscriptionChannelRegistryTest {
   }
 
   /**
-   * Without BlueMind's channel, a BlueMind subscription is what the DAV
-   * listing says it is: no subscription, no uid, and the owner listing is
+   * Without a channel, a subscription is what the DAV listing says it is: no subscription, no uid, and the owner listing is
    * refused rather than asked of anybody.
    */
   @Test
-  public void withNoChannelABlueMindSubscriptionIsNotReadAsOne() {
+  public void withNoChannelASubscriptionIsNotReadAsOne() {
     CalendarSubscriptionChannelRegistry registry = CalendarSubscriptionChannelRegistry.of(null);
 
     assertTrue(registry.isEmpty());
@@ -97,13 +92,14 @@ public class CalendarSubscriptionChannelRegistryTest {
   }
 
   /**
-   * With BlueMind's channel, a BlueMind account's subscription is read — the
-   * owner's uid and principal spelled the account's way — and an account of
-   * another shape still gets the null channel.
+   * With a channel installed, the subscription it reads in an account it
+   * names is the registry's answer — the owner's uid and principal spelled
+   * the account's way — and an account of another shape still gets the null
+   * channel.
    */
   @Test
-  public void theBlueMindChannelIsPickedForABlueMindAccountAndTheNullOneOtherwise() {
-    CalendarSubscriptionChannelRegistry registry = CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null)));
+  public void anInstalledChannelIsPickedForTheAccountsItNamesAndTheNullOneOtherwise() {
+    CalendarSubscriptionChannelRegistry registry = CalendarSubscriptionChannelRegistry.of(List.of(new ContainerNamingSubscriptionChannel(null)));
 
     CalendarSubscription subscription = registry.subscriptionOf(ERICS_CALENDAR, ROOT_PRINCIPAL);
 
@@ -112,38 +108,32 @@ public class CalendarSubscriptionChannelRegistryTest {
     assertFalse(subscription.resource());
     assertEquals("/dav/principals/__uids__/" + ERIC_UID + "/", subscription.ownerPrincipal());
     assertEquals(ROOT_UID, registry.userUidOf(ROOT_PRINCIPAL));
-    assertEquals(BlueMindSubscriptionChannel.CHANNEL_ID, registry.channelOf(ROOT_PRINCIPAL).id());
+    assertEquals(ContainerNamingSubscriptionChannel.CHANNEL_ID, registry.channelOf(ROOT_PRINCIPAL).id());
     assertSame(NoSubscriptionChannel.INSTANCE, registry.channelOf(STALWART));
     assertNull(registry.subscriptionOf(STALWART + "calendar:Default:" + ERIC_UID + "/", STALWART));
   }
 
   /**
-   * The BlueMind channel's edits and listing are the subscription client's,
-   * and its subject check still reads as the host's final refusal.
+   * The registry's owner listing is the primary channel's.
    */
   @Test
-  public void theBlueMindChannelEditsAndListsThroughTheSubscriptionClient() {
-    BlueMindSubscriptionClient client = mock(BlueMindSubscriptionClient.class);
+  public void theOwnerListingIsThePrimaryChannels() {
+    CalendarSubscriptionChannel sessions = mock(CalendarSubscriptionChannel.class);
     CalDavEndpoint endpoint = mock(CalDavEndpoint.class);
-    BlueMindCalendarOwners owners = new BlueMindCalendarOwners(ROOT_UID, Map.of("calendar:Default:" + ROOT_UID, ROOT_UID));
-    when(client.ownersOf(endpoint)).thenReturn(owners);
-    when(client.asSharee(eq(endpoint), eq(ROOT_UID), any())).thenReturn("done");
-    BlueMindSubscriptionChannel channel = new BlueMindSubscriptionChannel(client);
+    TestCalendarOwners owners = new TestCalendarOwners(ROOT_UID, Map.of("calendar:Default:" + ROOT_UID, ROOT_UID));
+    when(sessions.ownersOf(endpoint)).thenReturn(owners);
+    CalendarSubscriptionChannelRegistry registry = CalendarSubscriptionChannelRegistry.of(List.of(new ContainerNamingSubscriptionChannel(sessions)));
 
-    assertSame(owners, channel.ownersOf(endpoint));
-    assertEquals("done", channel.asSubscriber(endpoint, ROOT_UID, edits -> "unused"));
-    verify(client).asSharee(eq(endpoint), eq(ROOT_UID), any());
-    assertTrue(CalDavSubjectMismatchException.class.isAssignableFrom(BlueMindSubjectMismatchException.class),
-               "the host gives up on the generic mismatch, which BlueMind's must be");
+    assertSame(owners, registry.ownersOf(endpoint));
+    verify(sessions).ownersOf(endpoint);
   }
 
   /**
-   * Contributions cross the Kernel/Spring bridge only as {@code @Service}
-   * beans.
+   * The registry crosses the Kernel/Spring bridge only as a {@code @Service}
+   * bean.
    */
   @Test
-  public void theRegistryAndTheBlueMindChannelAreServiceBeans() {
+  public void theRegistryIsAServiceBean() {
     assertTrue(CalendarSubscriptionChannelRegistry.class.isAnnotationPresent(Service.class));
-    assertTrue(BlueMindSubscriptionChannel.class.isAnnotationPresent(Service.class));
   }
 }
