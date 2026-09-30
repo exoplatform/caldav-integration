@@ -39,7 +39,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
+import org.exoplatform.caldav.plugin.ContainerNamingSubscriptionChannel;
 import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -89,12 +89,12 @@ public class CaldavSubscriptionRetirementServiceTest {
   private CaldavSubscriptionRetirementService service;
 
   /**
-   * BlueMind's subscription channel is a contribution, registered here as
-   * the platform registers it.
+   * A server-specific subscription channel is a contribution, registered
+   * here as the platform registers one.
    */
   @BeforeEach
-  public void registerTheBlueMindChannel() {
-    ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
+  public void registerASubscriptionChannel() {
+    ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new ContainerNamingSubscriptionChannel(null))));
   }
 
   /**

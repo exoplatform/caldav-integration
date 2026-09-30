@@ -23,8 +23,10 @@ import org.springframework.stereotype.Component;
  * The CalDAV door: every write is the {@link CalDavClient} method of the same
  * name, with the same headers, the same body and the same answer. Zero
  * behaviour change from the days the engine called the client directly — this
- * class exists so that the other door ({@code BlueMindImportWriter}) can be
- * chosen per server without the engine knowing there are two.
+ * class exists so that another door — a contributed one
+ * ({@link org.exoplatform.caldav.plugin.CalendarWriteChannelPlugin}), such as
+ * the BlueMind add-on's import writer — can be chosen per server without the
+ * engine knowing there are two.
  */
 @Component
 public class CalDavObjectWriter implements CalendarObjectWriter {

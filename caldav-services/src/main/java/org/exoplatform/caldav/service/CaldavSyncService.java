@@ -1239,7 +1239,7 @@ public class CaldavSyncService {
     try {
       caldavShareSubscriptionService.retryOwed(userIdentityId, CaldavShareSubscriptionService.OWN_DRAIN_BATCH);
     } catch (RuntimeException | LinkageError e) {
-      LOG.warn("The BlueMind subscriptions owed to user {} could not be drained before their pass", userIdentityId, e);
+      LOG.warn("The calendar subscriptions owed to user {} could not be drained before their pass", userIdentityId, e);
     }
   }
 

@@ -158,7 +158,7 @@ public class CaldavPendingSubscriptionStorage {
                             if (entity.getKind() == kind) {
                               pendingSubscriptionDAO.deleteById(entity.getId());
                             } else {
-                              LOG.debug("A drained BlueMind {} landed for user {} and container {} on server {}, but the row now"
+                              LOG.debug("A drained calendar {} landed for user {} and container {} on server {}, but the row now"
                                   + " asks for {}; it is left for the next drain",
                                         kind,
                                         userIdentityId,

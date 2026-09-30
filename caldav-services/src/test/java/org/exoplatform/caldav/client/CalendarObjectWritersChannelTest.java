@@ -31,8 +31,6 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import org.exoplatform.caldav.client.bluemind.BlueMindImportWriter;
-import org.exoplatform.caldav.client.bluemind.BlueMindWriteChannelPlugin;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.WriteChannel;
 import org.exoplatform.caldav.plugin.CalendarWriteChannelPlugin;
@@ -98,19 +96,19 @@ public class CalendarObjectWritersChannelTest {
   }
 
   /**
-   * The BlueMind contribution, registered as any add-on's would be, serves
-   * the import channel and nothing else.
+   * A contribution for the import channel, registered as any add-on's would
+   * be, serves that channel and nothing else.
    */
   @Test
-  void theBlueMindContributionServesTheImportChannel() {
-    BlueMindImportWriter bluemind = mock(BlueMindImportWriter.class);
+  void aContributionServesItsChannelAndNothingElse() {
+    CalendarObjectWriter importDoor = mock(CalendarObjectWriter.class);
     CalendarObjectWriters writers = CalendarObjectWriters.of(registry,
                                                               caldav,
-                                                              List.of(new BlueMindWriteChannelPlugin(bluemind)));
+                                                              List.of(plugin(WriteChannel.BLUEMIND_IMPORT, importDoor)));
     when(registry.resolveServer(7L)).thenReturn(server(WriteChannel.BLUEMIND_IMPORT));
     when(registry.resolveServer(1L)).thenReturn(server(WriteChannel.CALDAV));
 
-    assertSame(bluemind, writers.writer(endpoint(7L)));
+    assertSame(importDoor, writers.writer(endpoint(7L)));
     assertSame(caldav, writers.writer(endpoint(1L)));
     assertTrue(writers.serves(WriteChannel.BLUEMIND_IMPORT));
   }
