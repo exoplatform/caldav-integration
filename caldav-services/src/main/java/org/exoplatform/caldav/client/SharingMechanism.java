@@ -24,10 +24,10 @@ package org.exoplatform.caldav.client;
  * <p>
  * The catalogue of granting mechanisms, in code: an entry is a protocol and a
  * verdict on it, and which entry a server gets is <b>selected from what the
- * server says about itself</b> ({@link #of(DavOptions, String)}: what the
- * collection advertises, {@link CalDavClient#capabilities}, and, for
- * BlueMind, where the collection lives),
- * not ticked by an
+ * server says about itself</b> ({@link #of(DavOptions)}: what the collection
+ * advertises, {@link CalDavClient#capabilities}; a contributed
+ * {@link org.exoplatform.caldav.plugin.CalendarShareChannel} may claim the
+ * collection from where it lives), not ticked by an
  * administrator nor frozen on a registration row. Granting is not a CalDAV
  * feature — no RFC defines calendar sharing — so the two servers this add-on
  * targets have nothing in common here: Stalwart takes RFC 3744's {@code ACL}
