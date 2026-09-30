@@ -51,7 +51,6 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
@@ -59,9 +58,10 @@ import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalDavNotFoundException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubjectMismatchException;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient.Subscriptions;
+import org.exoplatform.caldav.client.CalDavSubjectMismatchException;
+import org.exoplatform.caldav.plugin.CalendarSubscriptionChannel;
+import org.exoplatform.caldav.plugin.ContainerNamingSubscriptionChannel;
+import org.exoplatform.caldav.plugin.SubscriptionEdits;
 import org.exoplatform.caldav.model.PendingSubscription;
 import org.exoplatform.caldav.model.PendingSubscriptionKind;
 import org.exoplatform.caldav.service.CaldavShareSubscriptionService.ShareeSubscription;
@@ -106,7 +106,7 @@ public class CaldavShareSubscriptionServiceTest {
   private static final String OTHER       = "exo-cal-0000aaaa-1111-2222-3333-444455556666";
 
   @Mock
-  private BlueMindSubscriptionClient       blueMindSubscriptionClient;
+  private CalendarSubscriptionChannel      subscriptionSessions;
 
   @Mock
   private CaldavPendingSubscriptionStorage caldavPendingSubscriptionStorage;
@@ -130,7 +130,7 @@ public class CaldavShareSubscriptionServiceTest {
   private CalDavEndpoint                   carolEndpoint;
 
   @Mock
-  private Subscriptions                    edits;
+  private SubscriptionEdits                edits;
 
   @Mock
   private CaldavServerOwnerService         caldavServerOwnerService;
@@ -151,9 +151,9 @@ public class CaldavShareSubscriptionServiceTest {
    */
   @BeforeEach
   public void rig() {
-    // BlueMind's subscription channel is a contribution, registered here as
-    // the platform registers it.
-    ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(blueMindSubscriptionClient))));
+    // A server-specific subscription channel is a contribution, registered here
+    // as the platform registers one.
+    ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new ContainerNamingSubscriptionChannel(subscriptionSessions))));
 
     lenient().when(calDavClient.endpoint(SERVER, "bob")).thenReturn(bobEndpoint);
     lenient().when(calDavClient.endpoint(SERVER, "alice")).thenReturn(aliceEndpoint);
@@ -193,7 +193,7 @@ public class CaldavShareSubscriptionServiceTest {
 
     verify(calDavClient).endpoint(SERVER, "bob");
     verify(calDavClient, never()).endpoint(anyLong(), eq("alice"));
-    verify(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
+    verify(subscriptionSessions).asSubscriber(eq(bobEndpoint), eq(ERIC_UID), any());
     verify(edits).subscribe(CONTAINER);
     verify(caldavPendingSubscriptionStorage).settledWhateverWasOwed(BOB, SERVER, CONTAINER);
     verify(caldavPendingSubscriptionStorage, never()).owe(anyLong(), anyLong(), anyString(), any());
@@ -230,11 +230,11 @@ public class CaldavShareSubscriptionServiceTest {
   @Test
   public void aSubscribeThatDoesNotLandIsRecordedAndNeverThrown() {
     RuntimeException[] atLogin = { new CalDavUnreachableException("down"), new CalDavAuthenticationException("refused"),
-        new BlueMindSubjectMismatchException("not eric"), new UnsupportedOperationException("token, not a login"),
+        new CalDavSubjectMismatchException("not eric"), new UnsupportedOperationException("token, not a login"),
         new CalDavException("500") };
     for (RuntimeException failure : atLogin) {
       logged.list.clear();
-      doThrow(failure).when(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
+      doThrow(failure).when(subscriptionSessions).asSubscriber(eq(bobEndpoint), eq(ERIC_UID), any());
 
       assertDoesNotThrow(() -> service.subscribeSharee(share()), failure.toString());
 
@@ -245,7 +245,7 @@ public class CaldavShareSubscriptionServiceTest {
     verify(caldavServerOwnerService, never()).evict(anyLong(), anyLong());
     RuntimeException[] atEdit = { new CalDavForbiddenException("403"), new CalDavNotFoundException("gone"),
         new CalDavAuthenticationException("401 mid-session"), new CalDavException("500 other") };
-    org.mockito.Mockito.reset(blueMindSubscriptionClient);
+    org.mockito.Mockito.reset(subscriptionSessions);
     sessionOpens();
     for (RuntimeException failure : atEdit) {
       logged.list.clear();
@@ -324,7 +324,7 @@ public class CaldavShareSubscriptionServiceTest {
     verify(caldavServerOwnerService, org.mockito.Mockito.times(1)).evict(BOB, SERVER);
 
     assertEquals(1, settled);
-    verify(blueMindSubscriptionClient, times(1)).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
+    verify(subscriptionSessions, times(1)).asSubscriber(eq(bobEndpoint), eq(ERIC_UID), any());
     verify(caldavPendingSubscriptionStorage).settledIfStillAsking(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
     verify(caldavPendingSubscriptionStorage).abandoned(2L, 5);
     verify(caldavPendingSubscriptionStorage).abandoned(3L, 5);
@@ -332,7 +332,7 @@ public class CaldavShareSubscriptionServiceTest {
     verify(caldavPendingSubscriptionStorage, never()).refused(1L);
     verify(caldavPendingSubscriptionStorage, never()).refused(2L);
     verify(caldavPendingSubscriptionStorage, never()).abandoned(eq(4L), anyInt());
-    assertEquals(4, infoLines().stream().filter(line -> line.startsWith("Owed BlueMind")).count(), infoLines().toString());
+    assertEquals(4, infoLines().stream().filter(line -> line.startsWith("Owed calendar")).count(), infoLines().toString());
   }
 
   /**
@@ -346,7 +346,7 @@ public class CaldavShareSubscriptionServiceTest {
     PendingSubscription bobTwo = row(2L, BOB, OTHER, PendingSubscriptionKind.SUBSCRIBE, 0);
     PendingSubscription carols = row(3L, CAROL, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0);
     when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(bobOne, bobTwo, carols));
-    doThrow(new CalDavAuthenticationException("stale")).when(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
+    doThrow(new CalDavAuthenticationException("stale")).when(subscriptionSessions).asSubscriber(eq(bobEndpoint), eq(ERIC_UID), any());
 
     int settled = service.retryOwed(50);
 
@@ -355,9 +355,9 @@ public class CaldavShareSubscriptionServiceTest {
     verify(caldavPendingSubscriptionStorage).refused(2L);
     verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), anyInt());
     verify(caldavPendingSubscriptionStorage).settledIfStillAsking(CAROL, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
-    verify(blueMindSubscriptionClient).asSharee(eq(carolEndpoint), eq(WRITER_UID), any());
+    verify(subscriptionSessions).asSubscriber(eq(carolEndpoint), eq(WRITER_UID), any());
 
-    doThrow(new CalDavUnreachableException("down")).when(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
+    doThrow(new CalDavUnreachableException("down")).when(subscriptionSessions).asSubscriber(eq(bobEndpoint), eq(ERIC_UID), any());
     service.retryOwed(50);
     verify(caldavPendingSubscriptionStorage, times(2)).refused(1L);
   }
@@ -374,12 +374,12 @@ public class CaldavShareSubscriptionServiceTest {
     PendingSubscription bobOne = row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0);
     PendingSubscription bobTwo = row(2L, BOB, OTHER, PendingSubscriptionKind.UNSUBSCRIBE, 0);
     when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(bobOne, bobTwo));
-    doThrow(new BlueMindSubjectMismatchException("not eric")).when(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
+    doThrow(new CalDavSubjectMismatchException("not eric")).when(subscriptionSessions).asSubscriber(eq(bobEndpoint), eq(ERIC_UID), any());
     service.retryOwed(50);
     verify(caldavPendingSubscriptionStorage).abandoned(1L, 5);
     verify(caldavPendingSubscriptionStorage).abandoned(2L, 5);
 
-    doThrow(new UnsupportedOperationException("token")).when(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
+    doThrow(new UnsupportedOperationException("token")).when(subscriptionSessions).asSubscriber(eq(bobEndpoint), eq(ERIC_UID), any());
     service.retryOwed(50);
     verify(caldavPendingSubscriptionStorage, times(2)).abandoned(1L, 5);
 
@@ -396,7 +396,7 @@ public class CaldavShareSubscriptionServiceTest {
     verify(caldavPendingSubscriptionStorage, times(5)).abandoned(1L, 5);
     verify(caldavPendingSubscriptionStorage, times(5)).abandoned(2L, 5);
 
-    verify(blueMindSubscriptionClient, times(2)).asSharee(any(), anyString(), any());
+    verify(subscriptionSessions, times(2)).asSubscriber(any(), anyString(), any());
     verify(caldavPendingSubscriptionStorage, never()).refused(anyLong());
     verify(caldavPendingSubscriptionStorage, never()).settledIfStillAsking(anyLong(), anyLong(), anyString(), any());
   }
@@ -419,7 +419,7 @@ public class CaldavShareSubscriptionServiceTest {
     verify(caldavPendingSubscriptionStorage).abandoned(1L, 5);
     verify(caldavPendingSubscriptionStorage).abandoned(2L, 5);
     verify(caldavPendingSubscriptionStorage, never()).refused(anyLong());
-    verifyNoInteractions(blueMindSubscriptionClient);
+    verifyNoInteractions(subscriptionSessions);
     assertTrue(infoLines().stream().anyMatch(line -> line.contains("no subscription channel is installed")), infoLines().toString());
   }
 
@@ -435,7 +435,7 @@ public class CaldavShareSubscriptionServiceTest {
     assertDoesNotThrow(() -> service.subscribeSharee(share()));
 
     verify(caldavPendingSubscriptionStorage).owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
-    verifyNoInteractions(blueMindSubscriptionClient);
+    verifyNoInteractions(subscriptionSessions);
     assertEquals(1, warnLines().size(), warnLines().toString());
   }
 
@@ -500,8 +500,8 @@ public class CaldavShareSubscriptionServiceTest {
    */
   @Test
   public void aFailureThatIsNotAServerAnswerIsStillRecordedAndStillCounted() {
-    doThrow(new IllegalStateException("the credentials provider broke")).when(blueMindSubscriptionClient)
-                                                                        .asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
+    doThrow(new IllegalStateException("the credentials provider broke")).when(subscriptionSessions)
+                                                                        .asSubscriber(eq(bobEndpoint), eq(ERIC_UID), any());
 
     assertDoesNotThrow(() -> service.subscribeSharee(share()));
 
@@ -589,7 +589,7 @@ public class CaldavShareSubscriptionServiceTest {
 
     assertEquals(0, service.retryOwed(50));
 
-    verifyNoInteractions(blueMindSubscriptionClient, calDavClient);
+    verifyNoInteractions(subscriptionSessions, calDavClient);
   }
 
   /**
@@ -597,8 +597,8 @@ public class CaldavShareSubscriptionServiceTest {
    */
   @SuppressWarnings("unchecked")
   private void sessionOpens() {
-    lenient().when(blueMindSubscriptionClient.asSharee(any(), anyString(), any()))
-             .thenAnswer(invocation -> ((Function<Subscriptions, Object>) invocation.getArgument(2)).apply(edits));
+    lenient().when(subscriptionSessions.asSubscriber(any(), anyString(), any()))
+             .thenAnswer(invocation -> ((Function<SubscriptionEdits, Object>) invocation.getArgument(2)).apply(edits));
   }
 
   /**

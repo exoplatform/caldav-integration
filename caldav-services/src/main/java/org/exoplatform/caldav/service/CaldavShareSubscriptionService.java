@@ -300,7 +300,7 @@ public class CaldavShareSubscriptionService {
     try {
       owed = caldavPendingSubscriptionStorage.attemptable(maxAttempts, batch);
     } catch (RuntimeException | LinkageError e) {
-      LOG.warn("The subscription changes eXo owes on BlueMind could not be read; nothing is retried this run", e);
+      LOG.warn("The subscription changes eXo owes on calendar servers could not be read; nothing is retried this run", e);
       return 0;
     }
     return drain(owed);
@@ -320,7 +320,7 @@ public class CaldavShareSubscriptionService {
     try {
       owed = caldavPendingSubscriptionStorage.attemptable(userIdentityId, maxAttempts, batch);
     } catch (RuntimeException | LinkageError e) {
-      LOG.warn("The subscription changes eXo owes user {} on BlueMind could not be read; nothing is retried", userIdentityId, e);
+      LOG.warn("The subscription changes eXo owes user {} on calendar servers could not be read; nothing is retried", userIdentityId, e);
       return 0;
     }
     return drain(owed);
@@ -340,7 +340,7 @@ public class CaldavShareSubscriptionService {
         // The sharee's mailbox now sees the calendar (or no longer does): what
         // eXo remembers of its owners is stale (EXO-90347).
         caldavServerOwnerService.evict(share.shareeIdentityId(), share.serverId());
-        LOG.info("CalDAV share followed on BlueMind: user {} (entry {}) {} calendar container {} shared by {} on server {}",
+        LOG.info("CalDAV share followed by a calendar subscription: user {} (entry {}) {} calendar container {} shared by {} on server {}",
                  share.shareeUsername(),
                  share.shareeUid(),
                  kind == PendingSubscriptionKind.SUBSCRIBE ? "subscribed to" : "unsubscribed from",
@@ -504,7 +504,7 @@ public class CaldavShareSubscriptionService {
       // reason it must be classified rather than thrown: an unclassified
       // escape leaves NO row, and an obligation with no row is never retried
       // and never seen again.
-      LOG.warn("The BlueMind subscription of user {} failed before any answer was read", shareeUsername, e);
+      LOG.warn("The calendar subscription of user {} failed before any answer was read", shareeUsername, e);
       return new Attempt(Outcome.RETRY, String.valueOf(e), true);
     }
   }
@@ -554,7 +554,7 @@ public class CaldavShareSubscriptionService {
                                                           row.getServerId(),
                                                           row.getContainerUid(),
                                                           row.getKind());
-      LOG.info("Owed BlueMind {} landed: user {} and calendar container {} on server {}",
+      LOG.info("Owed calendar {} landed: user {} and calendar container {} on server {}",
                row.getKind(),
                row.getUserIdentityId(),
                row.getContainerUid(),
@@ -562,7 +562,7 @@ public class CaldavShareSubscriptionService {
     }
     case FINAL -> {
       caldavPendingSubscriptionStorage.abandoned(row.getId(), maxAttempts);
-      LOG.info("Owed BlueMind {} given up on: user {} and calendar container {} on server {}: {}",
+      LOG.info("Owed calendar {} given up on: user {} and calendar container {} on server {}: {}",
                row.getKind(),
                row.getUserIdentityId(),
                row.getContainerUid(),
@@ -571,7 +571,7 @@ public class CaldavShareSubscriptionService {
     }
     case RETRY -> {
       caldavPendingSubscriptionStorage.refused(row.getId());
-      LOG.info("Owed BlueMind {} refused ({} of {} retries): user {} and calendar container {} on server {}: {}",
+      LOG.info("Owed calendar {} refused ({} of {} retries): user {} and calendar container {} on server {}: {}",
                row.getKind(),
                row.getAttempts() + 1,
                maxAttempts,

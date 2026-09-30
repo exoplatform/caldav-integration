@@ -43,7 +43,6 @@ import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.client.CalDavException;
-import org.exoplatform.caldav.client.bluemind.BlueMindServerSeed;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
@@ -116,16 +115,6 @@ public class CaldavServerService {
   public static final String       STALWART_SERVER_NAME          = "Stalwart";
 
   /**
-   * The name the BlueMind seed is declared under.
-   *
-   * @deprecated the BlueMind row is a contributed seed since EXO-90737; read
-   *             {@code BlueMindServerSeed.SERVER_NAME} instead. Kept until the
-   *             BlueMind code leaves this add-on.
-   */
-  @Deprecated(forRemoval = true)
-  public static final String       BLUEMIND_SERVER_NAME          = BlueMindServerSeed.SERVER_NAME;
-
-  /**
    * Address the Stalwart seed row falls back to when the deployment named none
    * through {@link #CALDAV_SERVER_URL_PROPERTY}.
    *
@@ -148,28 +137,6 @@ public class CaldavServerService {
    * address check reads); it no longer works by being the shipped default.
    */
   public static final String       DEFAULT_STALWART_URL          = "https://stalwart.example.invalid/dav/cal/{username}/";
-
-  /**
-   * Address the BlueMind seed row is declared with.
-   *
-   * @deprecated the BlueMind row is a contributed seed since EXO-90737; read
-   *             {@code BlueMindServerSeed.SERVER_URL} instead, which carries
-   *             the reasons for the placeholder. Kept until the BlueMind code
-   *             leaves this add-on.
-   */
-  @Deprecated(forRemoval = true)
-  public static final String       DEFAULT_BLUEMIND_URL          = BlueMindServerSeed.SERVER_URL;
-
-  /**
-   * The catalogue entries the seeded BlueMind row arrives excused for.
-   *
-   * @deprecated the BlueMind row is a contributed seed since EXO-90737; read
-   *             {@code BlueMindServerSeed.SEED_QUIRKS} instead, which carries why
-   *             these entries. Kept until the BlueMind code leaves this
-   *             add-on.
-   */
-  @Deprecated(forRemoval = true)
-  static final List<ServerQuirk>   BLUEMIND_SEED_QUIRKS          = BlueMindServerSeed.SEED_QUIRKS;
 
   private static final String      SERVER_MANDATORY_MESSAGE      = "caldav.server.mandatory";
 
@@ -329,10 +296,8 @@ public class CaldavServerService {
    * row carries: its name, address, excusals, destination calendar and write
    * channel; the host alone decides its activation and its provider. A seed
    * whose name is already taken by a row seeded in this pass is left out, so
-   * a pass never writes two rows of one name. The BlueMind row a fresh install
-   * used to receive from the host itself is such a seed now, contributed by
-   * the BlueMind code ({@code BlueMindServerSeed}) — without it, a fresh
-   * install receives no BlueMind row.
+   * a pass never writes two rows of one name. A fresh install receives a
+   * BlueMind row only from such a seed, the BlueMind add-on's.
    * <p>
    * {@code answerLinksInCopy} is stated rather than defaulted — the model is
    * built positionally through its all-arguments constructor, so the field

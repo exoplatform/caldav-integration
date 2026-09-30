@@ -41,9 +41,8 @@ import org.springframework.context.annotation.Configuration;
 
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
-import org.exoplatform.caldav.client.bluemind.BlueMindCalendarOwners;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
+import org.exoplatform.caldav.plugin.ContainerNamingSubscriptionChannel;
+import org.exoplatform.caldav.plugin.TestCalendarOwners;
 import org.exoplatform.caldav.plugin.CalendarOwners;
 import org.exoplatform.caldav.plugin.CalendarSubscriptionChannel;
 import org.exoplatform.caldav.service.CalendarSubscriptionChannelRegistry;
@@ -59,8 +58,8 @@ import org.exoplatform.caldav.storage.CaldavServerOwnerStorage.Key;
  * Mocks cannot see a cache: a {@code @Cacheable} whose key drifted, or
  * whose annotation went missing, answers a mock exactly as before. So the
  * storage runs here under Spring's cache proxy over a
- * {@link ConcurrentMapCacheManager}, with the BlueMind client the only
- * mock — the shape the org's cached-bean tests take. The TTL and the size
+ * {@link ConcurrentMapCacheManager}, with the channel's owner listing the
+ * only mock — the shape the org's cached-bean tests take. The TTL and the size
  * bound are the platform adapter's ({@code meeds.cache.caldav.server.owners.ttl}
  * / {@code .max}), read at cache creation; a map cache has neither, so
  * they are not exercised here and this suite does not claim them.
@@ -85,7 +84,7 @@ public class CaldavServerOwnerStorageCacheTest {
 
   private AnnotationConfigApplicationContext context;
 
-  private BlueMindSubscriptionClient    client;
+  private CalendarSubscriptionChannel   client;
 
   private CaldavServerOwnerStorage      storage;
 
@@ -113,21 +112,13 @@ public class CaldavServerOwnerStorageCacheTest {
     }
 
     /**
-     * @return the client, a mock the tests script
+     * @return a server-specific subscription channel, contributed as the
+     *         platform collects one (EXO-90730), whose owner listing is a mock
+     *         the tests script
      */
     @Bean
-    BlueMindSubscriptionClient blueMindSubscriptionClient() {
-      return mock(BlueMindSubscriptionClient.class);
-    }
-
-    /**
-     * @param blueMindSubscriptionClient the scripted client
-     * @return BlueMind's subscription channel, contributed as the platform
-     *         contributes it (EXO-90730)
-     */
-    @Bean
-    BlueMindSubscriptionChannel blueMindSubscriptionChannel(BlueMindSubscriptionClient blueMindSubscriptionClient) {
-      return new BlueMindSubscriptionChannel(blueMindSubscriptionClient);
+    ContainerNamingSubscriptionChannel containerNamingSubscriptionChannel() {
+      return new ContainerNamingSubscriptionChannel(mock(CalendarSubscriptionChannel.class));
     }
 
     /**
@@ -163,7 +154,7 @@ public class CaldavServerOwnerStorageCacheTest {
   @BeforeEach
   public void boot() {
     context = new AnnotationConfigApplicationContext(CacheConfiguration.class);
-    client = context.getBean(BlueMindSubscriptionClient.class);
+    client = context.getBean(ContainerNamingSubscriptionChannel.class).sessions();
     storage = context.getBean(CaldavServerOwnerStorage.class);
     service = context.getBean(CaldavServerOwnerService.class);
     rootOnBlueMind = endpoint(SERVER, "root");
@@ -222,8 +213,8 @@ public class CaldavServerOwnerStorageCacheTest {
   @Test
   public void twoAccountsOnOneServerAndOneUserOnTwoServersNeverShareAnEntry() {
     when(client.ownersOf(rootOnBlueMind)).thenReturn(rootsListing());
-    when(client.ownersOf(ericOnBlueMind)).thenReturn(new BlueMindCalendarOwners(ERIC_UID, Map.of(PERSO, ERIC_UID)));
-    when(client.ownersOf(rootOnStalwart)).thenReturn(new BlueMindCalendarOwners("root-elsewhere", Map.of()));
+    when(client.ownersOf(ericOnBlueMind)).thenReturn(new TestCalendarOwners(ERIC_UID, Map.of(PERSO, ERIC_UID)));
+    when(client.ownersOf(rootOnStalwart)).thenReturn(new TestCalendarOwners("root-elsewhere", Map.of()));
 
     CalendarOwners root = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
     CalendarOwners eric = storage.listing(new Key(SERVER, ERIC), ericOnBlueMind);
@@ -264,7 +255,7 @@ public class CaldavServerOwnerStorageCacheTest {
    */
   @Test
   public void aRefreshReplacesTheEntryAndAFailedOneLeavesIt() {
-    BlueMindCalendarOwners fresher = new BlueMindCalendarOwners(ROOT_UID, Map.of(PERSO, ERIC_UID, PERSONNEL, ROOT_UID, "exo-cal-new", ERIC_UID));
+    TestCalendarOwners fresher = new TestCalendarOwners(ROOT_UID, Map.of(PERSO, ERIC_UID, PERSONNEL, ROOT_UID, "exo-cal-new", ERIC_UID));
     when(client.ownersOf(rootOnBlueMind)).thenReturn(rootsListing())
                                          .thenReturn(fresher)
                                          .thenThrow(new CalDavUnreachableException("down"));
@@ -286,7 +277,7 @@ public class CaldavServerOwnerStorageCacheTest {
   @Test
   public void anEvictionDropsOneAccountsEntryAndNoOthers() {
     when(client.ownersOf(rootOnBlueMind)).thenReturn(rootsListing());
-    when(client.ownersOf(ericOnBlueMind)).thenReturn(new BlueMindCalendarOwners(ERIC_UID, Map.of()));
+    when(client.ownersOf(ericOnBlueMind)).thenReturn(new TestCalendarOwners(ERIC_UID, Map.of()));
     CalendarOwners root = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
     CalendarOwners eric = storage.listing(new Key(SERVER, ERIC), ericOnBlueMind);
 
@@ -304,8 +295,8 @@ public class CaldavServerOwnerStorageCacheTest {
    * @return root's listing as captured on the rig: Personnel is root's,
    *         Perso is eric's
    */
-  private static BlueMindCalendarOwners rootsListing() {
-    return new BlueMindCalendarOwners(ROOT_UID, Map.of(PERSO, ERIC_UID, PERSONNEL, ROOT_UID));
+  private static TestCalendarOwners rootsListing() {
+    return new TestCalendarOwners(ROOT_UID, Map.of(PERSO, ERIC_UID, PERSONNEL, ROOT_UID));
   }
 
   /**
