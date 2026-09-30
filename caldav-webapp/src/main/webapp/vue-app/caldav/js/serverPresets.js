@@ -174,7 +174,8 @@ const COPY_SETTINGS = [ANSWER_LINKS, MIRROR_TARGET, WRITE_CHANNEL];
  * check-boxes (both read `ServerQuirk.getPatterns()`, the drawer over REST) and
  * does NOT reach this map. Widen a family on the Java side and widen it here in
  * the same change, or a preset starts writing less than the box of the same
- * name. `CaldavServerService.BLUEMIND_SEED_QUIRKS` carries the reciprocal note.
+ * name. A contributed server seed (`CalendarServerSeed#quirks`) carries the
+ * reciprocal note.
  *
  * `omitsSoloOrganizer` is the only one here that changes what eXo writes, and
  * the wording beside a preset that carries it says so, because a box that
