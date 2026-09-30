@@ -35,10 +35,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           The calendar is also where eXo writes the copies of the user's eXo
           meetings (their main calendar on a server set to copy there): anyone
           it is shared with sees those meetings too. Asked once, on the share
-          itself, by its title alone (PO decision, 2026-09-17): a standing
-          notice and a long explanation were read as noise, while a plain
-          question at the moment of sharing is the one that changes what the
-          user does.
+          itself, by the confirmation's title alone: the question at the
+          moment of sharing is what changes what the user does.
         -->
         <exo-confirm-dialog
           ref="meetingCopiesConfirm"
