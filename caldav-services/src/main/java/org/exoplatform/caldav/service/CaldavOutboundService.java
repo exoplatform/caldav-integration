@@ -739,7 +739,9 @@ public class CaldavOutboundService {
    * calendar, a pool vehicle, a room — under the user's own home with the
    * user as owner and the full privilege set, so neither server signal fires;
    * the container uid it names the collection by carries the owner instead
-   * ({@code BlueMindContainerNaming}). A uid other than the account's own is
+   * (read by the installed subscription channel,
+   * {@link org.exoplatform.caldav.plugin.CalendarSubscriptionChannel#subscriptionOf}).
+   * A uid other than the account's own is
    * {@link CollectionOwnership#SUBSCRIBED_PERSON} or
    * {@link CollectionOwnership#SUBSCRIBED_RESOURCE}. Before the server's two
    * signals, so that a resource is told from a person wherever both could

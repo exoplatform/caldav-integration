@@ -26,20 +26,21 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.stereotype.Service;
 
-import org.exoplatform.caldav.client.bluemind.BlueMindServerFlavour;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.WriteChannel;
 import org.exoplatform.caldav.plugin.CalendarServerFlavour;
 import org.exoplatform.caldav.plugin.PlainServerFlavour;
+import org.exoplatform.caldav.plugin.TestServerFlavour;
 
 /**
  * The server flavours as contributions (EXO-90730): with none installed every
- * registration is plain CalDAV, with BlueMind's installed a BlueMind-named
- * registration is BlueMind's and nothing else is.
+ * registration is plain CalDAV, with one installed the registrations it
+ * recognises are its own and nothing else is.
  */
 public class CalendarServerFlavourRegistryTest {
 
@@ -78,16 +79,17 @@ public class CalendarServerFlavourRegistryTest {
   }
 
   /**
-   * With BlueMind's flavour installed, the registry picks it for a
-   * BlueMind-named registration — the seed's spelling, the preset's, any case
-   * — and plain CalDAV for any other.
+   * With a flavour installed, the registry picks it for a registration it
+   * recognises, and plain CalDAV for any other; the channel it allows is
+   * accepted on its registrations only, and known.
    */
   @Test
-  public void theBlueMindFlavourIsPickedForABlueMindServerAndPlainOtherwise() {
-    CalendarServerFlavourRegistry registry = CalendarServerFlavourRegistry.of(List.of(new BlueMindServerFlavour(null)));
+  public void anInstalledFlavourIsPickedForTheRegistrationsItRecognisesAndPlainOtherwise() {
+    CalendarServerFlavour flavour = new TestServerFlavour("acme", "acme", Set.of(WriteChannel.BLUEMIND_IMPORT));
+    CalendarServerFlavourRegistry registry = CalendarServerFlavourRegistry.of(List.of(flavour));
 
-    for (String name : List.of("Bluemind", "BlueMind", "Our BLUEMIND at Lyon")) {
-      assertEquals(BlueMindServerFlavour.FLAVOUR_ID, registry.flavourOf(named(name)).id(), name);
+    for (String name : List.of("Acme", "Our ACME at Lyon")) {
+      assertSame(flavour, registry.flavourOf(named(name)), name);
       assertTrue(registry.accepts(named(name), WriteChannel.BLUEMIND_IMPORT), name);
     }
     assertSame(PlainServerFlavour.INSTANCE, registry.flavourOf(named("Stalwart")));
@@ -115,32 +117,13 @@ public class CalendarServerFlavourRegistryTest {
   }
 
   /**
-   * The BlueMind flavour's sessions are the session engine's.
-   */
-  @Test
-  public void theBlueMindFlavourDropsItsSessionsThroughTheSessionEngine() {
-    BlueMindSessionService sessions = mock(BlueMindSessionService.class);
-    BlueMindServerFlavour flavour = new BlueMindServerFlavour(sessions);
-
-    flavour.forgetSession(1L, 2L);
-    flavour.forgetAllSessions();
-
-    verify(sessions).forget(1L, 2L);
-    verify(sessions).forgetAll();
-    assertDoesNotThrow(() -> new BlueMindServerFlavour(null).forgetSession(1L, 2L));
-  }
-
-  /**
    * The Kernel connector service reaches the registry through the
    * Kernel/Spring bridge, which exports {@code @Service} beans and nothing
-   * else; and a contribution from another add-on crosses the same bridge
-   * only as a {@code @Service}. Without the annotation the lookup silently
-   * finds nothing.
+   * else. Without the annotation the lookup silently finds nothing.
    */
   @Test
-  public void theRegistryAndTheBlueMindFlavourAreServiceBeans() {
+  public void theRegistryIsAServiceBean() {
     assertTrue(CalendarServerFlavourRegistry.class.isAnnotationPresent(Service.class));
-    assertTrue(BlueMindServerFlavour.class.isAnnotationPresent(Service.class));
   }
 
   /**

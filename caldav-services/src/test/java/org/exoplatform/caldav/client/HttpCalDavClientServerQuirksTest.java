@@ -689,7 +689,8 @@ public class HttpCalDavClientServerQuirksTest {
    * hands both back verbatim — the container included, because the rule is
    * "anything with a version", not "anything that is not the collection" —
    * and that is the value the verification pass adopts into the row, so it is
-   * the value {@code BlueMindImportWriter} must read the precondition from.
+   * the value the BlueMind add-on's import writer must read the
+   * precondition from.
    * Captured on the rig (2026-09-16): 343 children, every one of them a raw
    * {@code bmdav_<lnum>_0}, all distinct; the container's token carries its
    * version instead.

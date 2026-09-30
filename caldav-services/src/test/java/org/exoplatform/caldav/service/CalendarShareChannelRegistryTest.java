@@ -27,24 +27,20 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.stereotype.Service;
 
-import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.DavOptions;
 import org.exoplatform.caldav.client.SharingMechanism;
-import org.exoplatform.caldav.client.bluemind.BlueMindAclClient;
-import org.exoplatform.caldav.client.bluemind.BlueMindShareChannel;
 import org.exoplatform.caldav.plugin.CalendarShareChannel;
 
 /**
  * The share channels as contributions (EXO-90730): with none installed a
- * collection gets the mechanism its advertised classes select, with
- * BlueMind's installed a BlueMind collection is BlueMind's and nothing else
- * changes — the same answers the host's former static selection gave.
+ * collection gets the mechanism its advertised classes select; with one
+ * installed, a collection the channel applies to gets the channel's
+ * mechanism and nothing else changes.
  */
 public class CalendarShareChannelRegistryTest {
 
@@ -76,12 +72,17 @@ public class CalendarShareChannelRegistryTest {
   }
 
   /**
-   * With BlueMind's channel, a BlueMind collection is BlueMind's; the same
-   * header elsewhere, and any other server, are not.
+   * With a channel installed, a collection it applies to gets its mechanism;
+   * a collection it does not apply to, and any other server, keep the
+   * mechanism their advertised classes select. The channel is asked with the
+   * host's own selection.
    */
   @Test
-  public void theBlueMindChannelIsPickedForABlueMindCollectionAndNothingElse() {
-    BlueMindShareChannel channel = new BlueMindShareChannel(mock(BlueMindAclClient.class), mock(CalDavClient.class));
+  public void anInstalledChannelIsPickedWhereItAppliesAndNowhereElse() {
+    CalendarShareChannel channel = mock(CalendarShareChannel.class);
+    when(channel.mechanism()).thenReturn(SharingMechanism.BLUEMIND_SHARE);
+    when(channel.applies(any(), any(), any())).thenAnswer(call -> BLUEMIND_COLLECTION.equals(call.getArgument(1))
+        && call.getArgument(2) == SharingMechanism.CALENDARSERVER_SHARE);
     CalendarShareChannelRegistry registry = CalendarShareChannelRegistry.of(List.of(channel));
 
     assertEquals(SharingMechanism.BLUEMIND_SHARE, registry.mechanismOf(BLUEMIND, BLUEMIND_COLLECTION));
@@ -89,6 +90,7 @@ public class CalendarShareChannelRegistryTest {
     assertEquals(SharingMechanism.WEBDAV_ACL, registry.mechanismOf(STALWART, BLUEMIND_COLLECTION));
     assertSame(channel, registry.channelFor(SharingMechanism.BLUEMIND_SHARE));
     assertNull(registry.channelFor(SharingMechanism.WEBDAV_ACL));
+    verify(channel).applies(BLUEMIND, BLUEMIND_COLLECTION, SharingMechanism.CALENDARSERVER_SHARE);
   }
 
   /**
@@ -136,46 +138,12 @@ public class CalendarShareChannelRegistryTest {
   }
 
   /**
-   * The proof the selection moved without changing: over every shape the
-   * former static rule was pinned on, the registry with BlueMind's channel
-   * answers exactly what {@code SharingMechanism.of(options, href)} answers.
+   * The registry crosses the Kernel/Spring bridge only as a {@code @Service}
+   * bean.
    */
   @Test
-  @SuppressWarnings("removal")
-  public void theRegistryAnswersWhatTheFormerStaticSelectionAnswered() {
-    CalendarShareChannelRegistry registry = CalendarShareChannelRegistry.of(List.of(new BlueMindShareChannel(mock(BlueMindAclClient.class),
-                                                                                                             mock(CalDavClient.class))));
-    List<DavOptions> options = new ArrayList<>(List.of(BLUEMIND,
-                                                       STALWART,
-                                                       DavOptions.of(List.of("1, access-control, resource-sharing"), List.of("ACL")),
-                                                       DavOptions.of(List.of("1, access-control, calendar-access, calendar-proxy"),
-                                                                     List.of("ACL")),
-                                                       DavOptions.of(List.of("1, calendar-access"), List.of("PROPFIND")),
-                                                       DavOptions.of(null, null)));
-    options.add(null);
-    List<String> hrefs = new ArrayList<>(List.of(BLUEMIND_COLLECTION,
-                                                 "https://bm.example.com" + BLUEMIND_COLLECTION,
-                                                 "/calendars/__uids__/x/y/",
-                                                 "/dav/cal/alice/default/",
-                                                 "/dav/calendars/__uids__/x/"));
-    hrefs.add(null);
-    for (DavOptions option : options) {
-      for (String href : hrefs) {
-        assertEquals(SharingMechanism.of(option, href), registry.mechanismOf(option, href), option + " " + href);
-      }
-    }
-  }
-
-  /**
-   * Contributions cross the Kernel/Spring bridge only as {@code @Service}
-   * beans, and the channel carries an offered mechanism.
-   */
-  @Test
-  public void theRegistryAndTheBlueMindChannelAreServiceBeans() {
+  public void theRegistryIsAServiceBean() {
     assertTrue(CalendarShareChannelRegistry.class.isAnnotationPresent(Service.class));
-    assertTrue(BlueMindShareChannel.class.isAnnotationPresent(Service.class));
-    CalendarShareChannel channel = new BlueMindShareChannel(null, null);
-    assertTrue(channel.mechanism().isOffered());
   }
 
   /**

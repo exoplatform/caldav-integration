@@ -154,7 +154,7 @@ public class CaldavPendingSubscriptionStorage {
   @Transactional
   public void settledIfStillAsking(long userIdentityId, long serverId, String containerUid, PendingSubscriptionKind kind) {
     if (pendingSubscriptionDAO.deleteAsking(userIdentityId, serverId, containerUid, kind) == 0) {
-      LOG.debug("A drained BlueMind {} landed for user {} and container {} on server {}, but no row asks for it any more;"
+      LOG.debug("A drained calendar {} landed for user {} and container {} on server {}, but no row asks for it any more;"
           + " whatever stands is left for the next drain", kind, userIdentityId, containerUid, serverId);
     }
   }
