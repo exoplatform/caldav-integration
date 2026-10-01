@@ -27,9 +27,12 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
+import org.exoplatform.agenda.service.AgendaEventService;
+import org.exoplatform.agenda.util.EventIcsBuilder;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
@@ -44,6 +47,7 @@ import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.IcsEvent;
+import org.exoplatform.caldav.model.LandedMailInvitation;
 import org.exoplatform.caldav.model.MailInvitation;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
@@ -56,10 +60,11 @@ import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvide
 import org.exoplatform.social.core.manager.IdentityManager;
 
 /**
- * Lands an invitation a user answered from a mail in their calendar (EXO-90848):
+ * Lands an invitation a user received by mail in their calendar (EXO-90848):
  * the event the mail describes ends up on the user's CalDAV account and in the
  * eXo calendar standing for it, under the identity the inbound sweep knows it
- * by, carrying the answer the user gave.
+ * by — with the answer the user gave, or without one when they only asked to
+ * add it — and leaves it when its organiser cancelled it.
  *
  * <h2>The sweep's own path, never a second one</h2>
  *
@@ -71,9 +76,25 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * The read comes <i>first</i>: a mail server that files invitations in the
  * calendar itself (BlueMind, Google) already holds the object, under whatever
  * name it chose for it, and the import finds it by the UID inside it. Only an
- * object the import did not find is written, at the path the sweep computes,
- * created and never overwritten; then read back the same way. What this
- * service adds is what the sweep cannot know — that the user answered.
+ * object the import did not find is written, under a name of this service's
+ * own, created and never overwritten; then read back the same way. What this
+ * service adds is what the sweep cannot know — what the user asked.
+ *
+ * <h2>What each click does</h2>
+ *
+ * <p>
+ * An invitation accepted or tentatively accepted, or added without an answer,
+ * lands: created, or the copy the user holds rewritten by its organiser's newer
+ * revision. A decline creates nothing — a meeting the user turned down and
+ * never added does not belong in their calendar — and sets the answer on a
+ * copy they do hold, found by the same read first (a copy the mail server
+ * filed and the sweep has not mapped yet takes the decline too, or the next
+ * sweep would bring it in accepted), as answering Decline in agenda on a
+ * synced copy does; the copy stays, declined, which is what the server and
+ * every client of it then agree on. A cancellation removes the copy the user holds — the object on the
+ * server, the mapping, the eXo event — as every calendar client does with the
+ * organiser's CANCEL; a cancellation of an event the user never added does
+ * nothing.
  *
  * <h2>Where the answer lives</h2>
  *
@@ -81,9 +102,10 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * The answer is written onto the copy here ({@code pushAnswerOnto}, offered
  * every address the copy may name the user by, their mailbox first), and
  * nowhere else: the import makes the user the creator of the event it brings
- * in, and agenda's listener that carries eXo answers onto copies declines every
- * event its user organises — so it never reaches a landed one. The write is
- * conditioned on the version the server holds <i>now</i>, read on this very
+ * in, and this add-on's {@code EventResponseSavedListener}, which carries eXo
+ * answers onto copies through {@code CaldavPushService#pushAnswer}, declines
+ * every event its user organises — so it never reaches a landed one. The write
+ * is conditioned on the version the server holds <i>now</i>, read on this very
  * call, not on the one the last sweep recorded: a mail server that filed the
  * organiser's update itself, or a phone that touched the copy, moved it since,
  * and the sweep leaves a version unrecorded on purpose when eXo's copy is the
@@ -100,29 +122,32 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * The object is the sender's. Only the answering user's own bindings are
  * consulted, never the mirror ledger; a UID this deployment minted for one of
  * its own meetings is refused before anything is written. A copy the user
- * already holds is rewritten only by its own organiser (RFC 5546 section
- * 3.2.2): a message whose ORGANIZER is not the copy's, or whose copy the user
- * organises themselves, is refused — so an invitee who learnt the UID of an
- * event the user organises on their own server cannot rewrite it from a mail.
- * The sender's UID never becomes a path: the object this service creates is
- * named by a UUID of its own, and found afterwards by the UID inside it, as the
- * sweep finds everything. The addresses the answer is written under are the
- * user's own; no attendee line is resolved to anybody.
+ * already holds is rewritten or removed only by its own organiser (RFC 5546
+ * section 3.2.2): a message whose ORGANIZER is not the copy's, or whose copy
+ * the user organises themselves, is refused — so an invitee who learnt the
+ * UID of an event the user organises on their own server cannot rewrite or
+ * remove it from a mail. The sender's UID never becomes a path: the object this
+ * service creates is named by a UUID of its own, and found afterwards by the
+ * UID inside it, as the sweep finds everything. The addresses the answer is
+ * written under are the user's own; no attendee line is resolved to anybody.
+ * The link handed back is agenda's own page for the event, built from the
+ * platform's domain and the event's id, never from the object.
  *
  * <h2>Cost and limits</h2>
  *
  * <p>
- * This runs on the request thread, after the REPLY left: at most one
- * default-calendar discovery, two reads of the collection's window, one write
- * of the object, and the answer's read and write, each bounded by the client's
- * request timeout — minutes on a server that does not answer, which the user
- * then sees as a failed update. A message about one occurrence of a series (a
- * lone RECURRENCE-ID) is refused: landing it means splicing an override into a
- * copy and answering an instance, which this path does not do yet. A newer
- * revision of an event the user holds is written over the server's copy when
- * the mail's SEQUENCE is strictly higher than the copy's master's; whether
- * eXo's own copy then follows is the sweep's freshness rule, as for any change
- * made on the server.
+ * This runs on the request thread, after the REPLY left when there was one: at
+ * most one default-calendar discovery, two reads of the collection's window,
+ * one write of the object, and the answer's read and write, each bounded by
+ * the client's request timeout — minutes on a server that does not answer,
+ * which the user then sees as a failed update. A message about one occurrence
+ * of a series (a lone RECURRENCE-ID) is refused: landing it means splicing an
+ * override into a copy and answering an instance, which this path does not do
+ * yet. A newer revision of an event the user holds is written over the
+ * server's copy when the mail's SEQUENCE is strictly higher than the copy's
+ * master's; whether eXo's own copy then follows is the sweep's freshness rule,
+ * as for any change made on the server. A user with no connected account, or
+ * no calendar bound on it, is not this add-on's to land for.
  */
 @Service
 public class CaldavInvitationLandingService {
@@ -170,23 +195,21 @@ public class CaldavInvitationLandingService {
   private AgendaCalendarService      agendaCalendarService;
 
   @Autowired
+  private AgendaEventService         agendaEventService;
+
+  @Autowired
   private AgendaEventAttendeeService agendaEventAttendeeService;
 
   /**
-   * Lands the answered invitation in the user's calendar.
+   * Whether this add-on holds a calendar for the user: a connected account with
+   * a calendar bound on it. Database reads only — this is asked on every read
+   * of an invitation.
    *
-   * @param invitation the invitation, the user and their answer
-   * @return true when the user's calendar now holds the event with this answer;
-   *         false when the user has no connected account or no calendar bound
-   *         on it
-   * @throws IllegalArgumentException when the message cannot be landed as it is
-   *           — unreadable, about another event than the one answered, about one
-   *           occurrence only, naming no organiser, naming a meeting this
-   *           deployment wrote, or rewriting a copy of another organiser's
-   * @throws IllegalStateException when the landing was attempted and failed
+   * @param username the user's eXo login
+   * @return true when a landing has somewhere to go
    */
-  public boolean land(MailInvitation invitation) {
-    long userIdentityId = identityOf(invitation.username());
+  public boolean holdsCalendarFor(String username) {
+    long userIdentityId = identityOf(username);
     if (userIdentityId <= 0) {
       return false;
     }
@@ -194,11 +217,38 @@ public class CaldavInvitationLandingService {
     if (!caldavServerService.isConnected(settings)) {
       return false;
     }
+    return !bindingsOf(userIdentityId, settings.getServerId() == null ? 0L : settings.getServerId()).isEmpty();
+  }
+
+  /**
+   * Lands the invitation in the user's calendar: creates or updates the event,
+   * answers it, or removes it, as the message and the click say.
+   *
+   * @param invitation the invitation, the user and what they asked
+   * @return what was done, or null when the user has no connected account or
+   *         no calendar bound on it, or when there was nothing to do — a
+   *         decline, or a cancellation, of an event the user never added
+   * @throws IllegalArgumentException when the message cannot be landed as it is
+   *           — unreadable, about another event than the one shown, about one
+   *           occurrence only, naming no organiser where one is needed, naming a
+   *           meeting this deployment wrote, or touching a copy of another
+   *           organiser's
+   * @throws IllegalStateException when the landing was attempted and failed
+   */
+  public LandedMailInvitation land(MailInvitation invitation) {
+    long userIdentityId = identityOf(invitation.username());
+    if (userIdentityId <= 0) {
+      return null;
+    }
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (!caldavServerService.isConnected(settings)) {
+      return null;
+    }
     long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
     List<CalendarSync> bindings = bindingsOf(userIdentityId, serverId);
     if (bindings.isEmpty()) {
-      LOG.debug("The invitation answered by user {} is not landed: no calendar is bound on their account", userIdentityId);
-      return false;
+      LOG.debug("The invitation of user {} is not landed: no calendar is bound on their account", userIdentityId);
+      return null;
     }
     IcsEvent master = masterOf(invitation);
     String uid = master.getUid();
@@ -210,9 +260,13 @@ public class CaldavInvitationLandingService {
     String username = invitation.username();
     CalDavEndpoint endpoint = calDavClient.endpoint(serverId, username);
     List<String> addresses = addressesOf(userIdentityId, settings, invitation.attendeeAddress());
-    String partStat = IcsText.partStat(invitation.response().name());
+    String partStat = invitation.response() == null ? null : IcsText.partStat(invitation.response().name());
     CalendarSync binding = bindingHolding(bindings, uid);
     ObjectSync known = binding == null ? null : caldavSyncStorage.getObjectByUid(binding.getId(), uid);
+    if (invitation.isCancellation()) {
+      return known == null ? nothingHeld(invitation, "cancellation")
+                           : remove(endpoint, userIdentityId, username, known, master, addresses);
+    }
     if (binding == null) {
       binding = homeBinding(bindings, endpoint);
     }
@@ -220,33 +274,42 @@ public class CaldavInvitationLandingService {
     String served = null;
     if (known == null) {
       // The sweep's own read first: an object the server filed itself is
-      // found by its UID, whatever the server named it.
+      // found by its UID, whatever the server named it — and takes a decline
+      // too, which would otherwise come in accepted on the next sweep.
       importAround(userIdentityId, username, binding, calendar, master);
       known = caldavSyncStorage.getObjectByUid(binding.getId(), uid);
       if (known == null) {
+        if (invitation.response() == EventAttendeeResponse.DECLINED) {
+          return nothingHeld(invitation, "decline");
+        }
         file(endpoint, binding, invitation, uid, addresses, partStat);
         importAround(userIdentityId, username, binding, calendar, master);
         known = caldavSyncStorage.getObjectByUid(binding.getId(), uid);
       }
     } else {
+      String recorded = known.getEtag();
       served = refreshIfNewer(endpoint, known, invitation, master, addresses, partStat);
       // What the server holds now — the organiser's update the mail server
       // filed, a phone's edit, the revision just written — comes into eXo the
       // way every change made on the server does.
       importAround(userIdentityId, username, binding, calendar, master);
       known = caldavSyncStorage.getObjectByUid(binding.getId(), uid);
+      if (known != null && !StringUtils.equals(known.getEtag(), recorded)) {
+        // The import recorded a version of its own, read after this call's:
+        // the later read wins.
+        served = null;
+      }
     }
     if (known == null || known.getLocalEventId() == null) {
       throw new IllegalStateException("The invitation " + uid + " is on the server and was not imported into calendar "
           + calendar.getId() + " of user " + userIdentityId);
     }
-    answer(userIdentityId, invitation, asServed(known, served), addresses);
-    LOG.debug("The invitation {} answered by user {} landed as event {} in calendar {}",
-              uid,
-              userIdentityId,
-              known.getLocalEventId(),
-              calendar.getId());
-    return true;
+    if (invitation.response() != null) {
+      answer(userIdentityId, invitation, asServed(known, served), addresses);
+    }
+    long eventId = known.getLocalEventId();
+    LOG.debug("The invitation {} of user {} landed as event {} in calendar {}", uid, userIdentityId, eventId, calendar.getId());
+    return new LandedMailInvitation(eventId, linkOf(eventId), false);
   }
 
   /**
@@ -280,13 +343,28 @@ public class CaldavInvitationLandingService {
   }
 
   /**
-   * The event the message is about, read from the message itself and checked
-   * against what the reader said it answered.
+   * Nothing to do: the user never added the event the message is about.
    *
    * @param invitation the invitation
-   * @return the master component, with an organiser
+   * @param what the click, for the log
+   * @return null
+   */
+  private static LandedMailInvitation nothingHeld(MailInvitation invitation, String what) {
+    LOG.debug("The {} of {} by user {} lands nothing: they hold no copy of it", what, invitation.uid(), invitation.username());
+    return null;
+  }
+
+  /**
+   * The event the message is about, read from the message itself and checked
+   * against what the reader said it showed. An organiser is required where
+   * the message speaks for one — an invitation, a cancellation, an answer —
+   * and not for a published event added as it is.
+   *
+   * @param invitation the invitation
+   * @return the master component
    * @throws IllegalArgumentException when the message is unreadable, carries no
-   *           master, names another event than the one answered, or no organiser
+   *           master, names another event than the one shown, or no organiser
+   *           where one is needed
    */
   private IcsEvent masterOf(MailInvitation invitation) {
     List<IcsEvent> parsed;
@@ -307,9 +385,11 @@ public class CaldavInvitationLandingService {
                                                           : "The invitation is about one occurrence of a series, which is not landed");
     }
     if (!StringUtils.equals(master.getUid(), StringUtils.trim(invitation.uid()))) {
-      throw new IllegalArgumentException("The invitation names event " + master.getUid() + ", not the one answered, " + invitation.uid());
+      throw new IllegalArgumentException("The invitation names event " + master.getUid() + ", not the one shown, " + invitation.uid());
     }
-    if (organiserOf(master) == null) {
+    boolean speaksForAnOrganiser = invitation.response() != null || invitation.isCancellation()
+        || "REQUEST".equals(invitation.method());
+    if (speaksForAnOrganiser && organiserOf(master) == null) {
       throw new IllegalArgumentException("The invitation " + master.getUid() + " names no organiser");
     }
     return master;
@@ -407,7 +487,8 @@ public class CaldavInvitationLandingService {
    * @param invitation the invitation
    * @param uid the event's UID
    * @param addresses the addresses the user's line may carry
-   * @param partStat the answer, as a PARTSTAT token
+   * @param partStat the answer as a PARTSTAT token, null to store the object as
+   *          sent
    * @throws IllegalStateException when the server refused the write
    */
   private void file(CalDavEndpoint endpoint,
@@ -430,16 +511,17 @@ public class CaldavInvitationLandingService {
   /**
    * Writes the mail's revision over the copy the user holds when its organiser
    * sent it and it is strictly newer (SEQUENCE, master against master), so an
-   * updated invitation answered from the mail reaches a server that did not file
-   * it itself; an older or equal mail leaves the copy alone. Either way, says
-   * which version the server holds once this is done.
+   * updated invitation reaches a server that did not file it itself; an older
+   * or equal mail leaves the copy alone. Either way, says which version the
+   * server holds once this is done.
    *
    * @param endpoint the account's endpoint
    * @param known the mapping of the copy
    * @param invitation the invitation
    * @param master the message's event
    * @param addresses the addresses the user's line may carry
-   * @param partStat the answer, as a PARTSTAT token
+   * @param partStat the answer as a PARTSTAT token, null to write the object as
+   *          sent
    * @return the ETag the copy carries now — the one just read, or the one the
    *         rewrite produced; null when the copy is not served
    * @throws IllegalArgumentException when the message is not the copy's
@@ -477,7 +559,14 @@ public class CaldavInvitationLandingService {
         throw new IllegalStateException("The copy of " + master.getUid() + " at " + known.getRemoteHref()
             + " changed while it was being updated");
       }
-      return StringUtils.defaultIfBlank(result.etag(), null);
+      if (StringUtils.isNotBlank(result.etag())) {
+        return result.etag();
+      }
+      // A server that altered what it stored sends no ETag with the write
+      // (RFC 4791 section 5.3.4): the version is read back, so the answer that
+      // follows is conditioned on something.
+      CalendarObject rewritten = calDavClient.fetchObject(endpoint, known.getRemoteHref());
+      return rewritten == null ? null : StringUtils.defaultIfBlank(rewritten.etag(), null);
     } catch (CalDavException e) {
       throw new IllegalStateException("The newer revision of " + master.getUid() + " could not be written at " + known.getRemoteHref(),
                                       e);
@@ -485,30 +574,80 @@ public class CaldavInvitationLandingService {
   }
 
   /**
-   * The mapping as the server serves the copy now: the same row, carrying the
-   * version just read when the recorded one is behind it — the sweep leaves a
-   * version unrecorded on purpose when eXo's copy is the newer one, and an
-   * answer conditioned on the stale version would be refused for a line it
-   * does not touch.
+   * Removes the copy the user holds of an event its organiser called off: the
+   * object on the server, under the version just read; the mapping; the eXo
+   * event. In that order, so this add-on's own deletion listener, fired by
+   * agenda when the event goes, finds no copy left to remove.
    *
-   * @param known the mapping as recorded
+   * @param endpoint the account's endpoint
+   * @param userIdentityId identity of the user
+   * @param username their eXo login
+   * @param known the mapping of the copy
+   * @param master the cancellation's event
+   * @param addresses the user's own addresses
+   * @return what was removed
+   * @throws IllegalArgumentException when the cancellation is not the copy's
+   *           organiser's, or the user organises the copy
+   * @throws IllegalStateException when the server or agenda refused the removal
+   */
+  private LandedMailInvitation remove(CalDavEndpoint endpoint,
+                                      long userIdentityId,
+                                      String username,
+                                      ObjectSync known,
+                                      IcsEvent master,
+                                      List<String> addresses) {
+    Long eventId = known.getLocalEventId();
+    if (StringUtils.isNotBlank(known.getRemoteHref())) {
+      try {
+        CalendarObject existing = calDavClient.fetchObject(endpoint, known.getRemoteHref());
+        if (existing != null && StringUtils.isNotBlank(existing.calendarData())) {
+          refuseUnlessItsOrganiser(master, masterOfCopy(existing.calendarData()), addresses);
+          int status = calendarObjectWriters.writer(endpoint).deleteObject(endpoint, known.getRemoteHref(), existing.etag());
+          if (status == PutResult.PRECONDITION_FAILED) {
+            throw new IllegalStateException("The copy of " + master.getUid() + " at " + known.getRemoteHref()
+                + " changed while it was being removed");
+          }
+        }
+      } catch (CalDavException e) {
+        throw new IllegalStateException("The copy of " + master.getUid() + " could not be removed from " + known.getRemoteHref(), e);
+      }
+    }
+    if (known.getId() != null) {
+      caldavSyncStorage.deleteObject(known.getId());
+    }
+    if (eventId != null) {
+      try {
+        agendaEventService.deleteEventById(eventId, userIdentityId);
+      } catch (Exception e) { // NOSONAR agenda declares checked refusals
+        throw new IllegalStateException("Event " + eventId + " of user " + userIdentityId + " could not be removed from agenda", e);
+      }
+    }
+    LOG.debug("The cancelled invitation {} of user {} was removed from their calendar (event {}, {})",
+              master.getUid(),
+              userIdentityId,
+              eventId,
+              known.getRemoteHref());
+    return new LandedMailInvitation(eventId == null ? 0L : eventId, null, true);
+  }
+
+  /**
+   * The mapping as the server serves the copy now: the row just reloaded,
+   * carrying the version read on this call when the recorded one is behind it
+   * — the sweep leaves a version unrecorded on purpose when eXo's copy is the
+   * newer one, and an answer conditioned on the stale version would be refused
+   * for a line it does not touch. The row is the one the answer's write then
+   * saves, so it is amended in place, never copied.
+   *
+   * @param known the mapping as just reloaded
    * @param served the version the server answered on this call, null when
-   *          none was read
+   *          none was read or the import recorded a later one
    * @return the mapping to answer on
    */
   private static ObjectSync asServed(ObjectSync known, String served) {
-    if (StringUtils.isBlank(served) || StringUtils.equals(served, known.getEtag())) {
-      return known;
+    if (StringUtils.isNotBlank(served)) {
+      known.setEtag(served);
     }
-    ObjectSync current = new ObjectSync();
-    current.setId(known.getId());
-    current.setCalendarSyncId(known.getCalendarSyncId());
-    current.setLocalEventId(known.getLocalEventId());
-    current.setIcsUid(known.getIcsUid());
-    current.setRemoteHref(known.getRemoteHref());
-    current.setEtag(served);
-    current.setLastSync(known.getLastSync());
-    return current;
+    return known;
   }
 
   /**
@@ -527,10 +666,10 @@ public class CaldavInvitationLandingService {
   }
 
   /**
-   * Only an event's organiser rewrites it (RFC 5546 section 3.2.2): a copy the
-   * user holds takes a message from its own ORGANIZER and nobody else, and a
-   * copy the user organises themselves takes none — such a message was written
-   * by somebody who learnt the UID, not by the organiser.
+   * Only an event's organiser rewrites or removes it (RFC 5546 section 3.2.2):
+   * a copy the user holds takes a message from its own ORGANIZER and nobody
+   * else, and a copy the user organises themselves takes none — such a message
+   * was written by somebody who learnt the UID, not by the organiser.
    *
    * @param master the message's event
    * @param copy the copy's master, null when the copy names none
@@ -542,7 +681,7 @@ public class CaldavInvitationLandingService {
     String copyOrganiser = organiserOf(copy);
     for (String address : addresses) {
       if (copyOrganiser != null && copyOrganiser.equals(IcsText.bareAddress(address))) {
-        throw new IllegalArgumentException("The invitation " + master.getUid() + " names an event the user organises; a mail does not rewrite it");
+        throw new IllegalArgumentException("The invitation " + master.getUid() + " names an event the user organises; a mail does not touch it");
       }
     }
     if (copyOrganiser == null || !copyOrganiser.equals(organiserOf(master))) {
@@ -551,19 +690,23 @@ public class CaldavInvitationLandingService {
   }
 
   /**
-   * The object to store: the message's event with METHOD gone and the user's
-   * answer on their own attendee line.
+   * The object to store: the message's event with METHOD gone and, when an
+   * answer was given, the user's answer on their own attendee line.
    *
    * @param invitation the invitation
    * @param uid the event's UID
    * @param addresses the addresses the user's line may carry
-   * @param partStat the answer, as a PARTSTAT token
+   * @param partStat the answer as a PARTSTAT token, null to store the object as
+   *          sent
    * @return the object
    * @throws IllegalArgumentException when the message cannot be turned into one
    */
   private String withAnswer(MailInvitation invitation, String uid, List<String> addresses, String partStat) {
     try {
       String stored = icsMerger.storedObject(invitation.icalendar(), uid);
+      if (partStat == null) {
+        return stored;
+      }
       IcsMerger.AnswerRewrite rewrite = icsMerger.setAttendeeResponse(stored, addresses, partStat);
       if (!rewrite.attendeeNamed()) {
         LOG.debug("The invitation {} names none of {}; it is stored as sent, and the answer is carried by agenda", uid, addresses);
@@ -617,14 +760,15 @@ public class CaldavInvitationLandingService {
 
   /**
    * Writes the answer onto the copy, then records it in agenda. The copy here
-   * and nowhere else: agenda's listener declines every event its user
+   * and nowhere else: this add-on's {@code EventResponseSavedListener}, through
+   * {@code CaldavPushService#pushAnswer}, declines every event its user
    * organises, which the import makes of every landed one. Agenda through the
    * same method every eXo answer takes, without the "response sent" broadcast —
    * the imported event's organiser is the user, and that notification would be
    * addressed to them.
    *
    * @param userIdentityId identity of the user
-   * @param invitation the invitation
+   * @param invitation the invitation, with an answer
    * @param known the copy's mapping, carrying the version the server holds
    * @param addresses the addresses the copy may name the user by
    * @throws IllegalStateException when agenda refuses the answer
@@ -661,6 +805,22 @@ public class CaldavInvitationLandingService {
       agendaEventAttendeeService.sendEventResponse(eventId, userIdentityId, invitation.response(), false);
     } catch (Exception e) { // NOSONAR agenda declares checked refusals
       throw new IllegalStateException("The answer of user " + userIdentityId + " to event " + eventId + " was refused by agenda", e);
+    }
+  }
+
+  /**
+   * Agenda's own page for the event, built by agenda from the platform's
+   * configured domain and the event's id — never from anything in the message.
+   *
+   * @param eventId the agenda event
+   * @return the link, or null when agenda names none
+   */
+  private static String linkOf(long eventId) {
+    try {
+      return EventIcsBuilder.eventUrl(eventId);
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("No link could be built for event {}", eventId, e);
+      return null;
     }
   }
 }
