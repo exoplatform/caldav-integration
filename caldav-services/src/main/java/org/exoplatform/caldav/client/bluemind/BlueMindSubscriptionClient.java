@@ -112,40 +112,6 @@ public class BlueMindSubscriptionClient {
   private final JsonMapper          mapper = JsonMapper.builder().build();
 
   /**
-   * The edits one open session, checked to be the colleague's own, can make.
-   */
-  public interface Subscriptions {
-
-    /**
-     * Subscribes the colleague to a container, with {@link #OFFLINE_SYNC} and
-     * {@link #AUTOMOUNT}. A no-op on the server when they already are.
-     *
-     * @param containerUid the container uid, the last segment of the
-     *          calendar collection's path
-     * @throws CalDavAuthenticationException when BlueMind refuses the session
-     * @throws CalDavForbiddenException when BlueMind refuses the edit
-     * @throws CalDavNotFoundException when BlueMind does not hold the container
-     * @throws CalDavUnreachableException when the server cannot be reached
-     * @throws CalDavException when the answer is anything else
-     */
-    void subscribe(String containerUid);
-
-    /**
-     * Unsubscribes the colleague from a container. BlueMind removes the
-     * subscription row whether or not the container still exists
-     * ({@code UserSubscriptionService.unsubscribe}: "unsub anyway").
-     *
-     * @param containerUid the container uid
-     * @throws CalDavAuthenticationException when BlueMind refuses the session
-     * @throws CalDavForbiddenException when BlueMind refuses the edit
-     * @throws CalDavNotFoundException when BlueMind answers not found
-     * @throws CalDavUnreachableException when the server cannot be reached
-     * @throws CalDavException when the answer is anything else
-     */
-    void unsubscribe(String containerUid);
-  }
-
-  /**
    * The client Spring builds, over the shared session.
    *
    * @param session the REST session every BlueMind conversation shares
@@ -190,7 +156,7 @@ public class BlueMindSubscriptionClient {
    * @throws CalDavException when the login answer names no domain, or a call
    *           answers anything else
    */
-  public <T> T asSharee(CalDavEndpoint shareeEndpoint, String shareeUid, Function<Subscriptions, T> job) {
+  public <T> T asSharee(CalDavEndpoint shareeEndpoint, String shareeUid, Function<BlueMindSubscriptions, T> job) {
     if (StringUtils.isBlank(shareeUid)) {
       throw new IllegalArgumentException("The sharee's directory entry uid is required");
     }
@@ -206,7 +172,7 @@ public class BlueMindSubscriptionClient {
       }
       String base = "/api/users/" + BlueMindRestSession.encodeSegment(open.domainUid()) + "/subscriptions/"
           + BlueMindRestSession.encodeSegment(shareeUid);
-      return job.apply(new Subscriptions() {
+      return job.apply(new BlueMindSubscriptions() {
 
         /**
          * {@inheritDoc}
@@ -243,7 +209,7 @@ public class BlueMindSubscriptionClient {
    * @param shareeUid the directory entry uid eXo recorded for them
    * @param containerUid the container uid
    * @throws CalDavException as {@link #asSharee} and
-   *           {@link Subscriptions#subscribe} throw
+   *           {@link BlueMindSubscriptions#subscribe} throw
    */
   public void subscribe(CalDavEndpoint shareeEndpoint, String shareeUid, String containerUid) {
     requireContainer(containerUid);
@@ -261,7 +227,7 @@ public class BlueMindSubscriptionClient {
    * @param shareeUid the directory entry uid eXo recorded for them
    * @param containerUid the container uid
    * @throws CalDavException as {@link #asSharee} and
-   *           {@link Subscriptions#unsubscribe} throw
+   *           {@link BlueMindSubscriptions#unsubscribe} throw
    */
   public void unsubscribe(CalDavEndpoint shareeEndpoint, String shareeUid, String containerUid) {
     requireContainer(containerUid);

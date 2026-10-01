@@ -38,11 +38,14 @@ import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubjectMismatchException;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient.Subscriptions;
+import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptions;
+import org.exoplatform.caldav.constant.SubscriptionOutcome;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.PendingSubscription;
 import org.exoplatform.caldav.model.PendingSubscriptionKind;
+import org.exoplatform.caldav.model.ShareeSubscription;
+import org.exoplatform.caldav.model.SubscriptionAttempt;
 import org.exoplatform.caldav.storage.CaldavPendingSubscriptionStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
@@ -229,38 +232,6 @@ public class CaldavShareSubscriptionService {
   private IdentityManager                          identityManager;
 
   /**
-   * A share as the owner's grant or revoke knows it, with everything the
-   * colleague's subscription needs and the audit line names.
-   *
-   * @param ownerUsername the owner's login, for the audit line
-   * @param shareeIdentityId the colleague's social identity
-   * @param shareeUsername the colleague's eXo login, which the credentials
-   *          provider maps to their account on the server
-   * @param shareeUid the directory entry uid eXo recorded for the colleague
-   * @param serverId the server key, zero for the legacy property
-   * @param containerUid the shared calendar's BlueMind container uid
-   */
-  public record ShareeSubscription(String ownerUsername,
-                                   long shareeIdentityId,
-                                   String shareeUsername,
-                                   String shareeUid,
-                                   long serverId,
-                                   String containerUid) {
-  }
-
-  /**
-   * How one attempt ended, and what to do with the row.
-   */
-  private enum Outcome {
-    /** BlueMind accepted the change. */
-    LANDED,
-    /** The answer may change by asking again: counted, retried. */
-    RETRY,
-    /** The answer will not change by asking again: given up on. */
-    FINAL
-  }
-
-  /**
    * Subscribes the colleague to the calendar just shared with them, as them.
    * Never throws.
    *
@@ -329,8 +300,8 @@ public class CaldavShareSubscriptionService {
     Lock lock = lockOf(share.shareeIdentityId(), share.serverId(), share.containerUid());
     lock.lock();
     try {
-      Attempt attempt = attempt(kind, share.serverId(), share.shareeUsername(), share.shareeUid(), share.containerUid());
-      if (attempt.outcome() == Outcome.LANDED) {
+      SubscriptionAttempt attempt = attempt(kind, share.serverId(), share.shareeUsername(), share.shareeUid(), share.containerUid());
+      if (attempt.outcome() == SubscriptionOutcome.LANDED) {
         LOG.info("CalDAV share followed on BlueMind: user {} (entry {}) {} calendar container {} shared by {} on server {}",
                  share.shareeUsername(),
                  share.shareeUid(),
@@ -441,14 +412,14 @@ public class CaldavShareSubscriptionService {
     try {
       blueMindSubscriptionClient.asSharee(endpoint, shareeUid, edits -> {
         for (PendingSubscription row : rows) {
-          Attempt attempt = attemptUnderLock(edits, row);
+          SubscriptionAttempt attempt = attemptUnderLock(edits, row);
           if (attempt == null) {
             continue;
           }
-          if (attempt.outcome() == Outcome.LANDED) {
+          if (attempt.outcome() == SubscriptionOutcome.LANDED) {
             landed[0]++;
           }
-          if (attempt.outcome() == Outcome.RETRY && attempt.sessionLost()) {
+          if (attempt.outcome() == SubscriptionOutcome.RETRY && attempt.sessionLost()) {
             // The session itself was refused or the server went away: the
             // rows not yet tried are left as they are for the next run.
             break;
@@ -500,14 +471,14 @@ public class CaldavShareSubscriptionService {
    * @param containerUid the container
    * @return how it ended
    */
-  private Attempt attempt(PendingSubscriptionKind kind, long serverId, String shareeUsername, String shareeUid, String containerUid) {
+  private SubscriptionAttempt attempt(PendingSubscriptionKind kind, long serverId, String shareeUsername, String shareeUid, String containerUid) {
     try {
       CalDavEndpoint endpoint = endpointOf(serverId, shareeUsername);
       return blueMindSubscriptionClient.asSharee(endpoint, shareeUid, edits -> attemptInSession(edits, kind, containerUid));
     } catch (BlueMindSubjectMismatchException | UnsupportedOperationException e) {
-      return new Attempt(Outcome.FINAL, e.getMessage(), false);
+      return new SubscriptionAttempt(SubscriptionOutcome.FINAL, e.getMessage(), false);
     } catch (CalDavException e) {
-      return new Attempt(Outcome.RETRY, e.getMessage(), true);
+      return new SubscriptionAttempt(SubscriptionOutcome.RETRY, e.getMessage(), true);
     } catch (RuntimeException e) {
       // Not a server answer: eXo's own machinery failed on the way - a
       // credentials provider that did not produce what its channel promised,
@@ -517,7 +488,7 @@ public class CaldavShareSubscriptionService {
       // escape leaves NO row, and an obligation with no row is never retried
       // and never seen again.
       LOG.warn("The BlueMind subscription of user {} failed before any answer was read", shareeUsername, e);
-      return new Attempt(Outcome.RETRY, String.valueOf(e), true);
+      return new SubscriptionAttempt(SubscriptionOutcome.RETRY, String.valueOf(e), true);
     }
   }
 
@@ -531,7 +502,7 @@ public class CaldavShareSubscriptionService {
    * @param row the row as the drain read it
    * @return how it ended, or null when the row no longer asks for its change
    */
-  private Attempt attemptUnderLock(Subscriptions edits, PendingSubscription row) {
+  private SubscriptionAttempt attemptUnderLock(BlueMindSubscriptions edits, PendingSubscription row) {
     Lock lock = lockOf(row.getUserIdentityId(), row.getServerId(), row.getContainerUid());
     lock.lock();
     try {
@@ -540,7 +511,7 @@ public class CaldavShareSubscriptionService {
             + " not attempted", row.getKind(), row.getUserIdentityId(), row.getContainerUid(), row.getServerId());
         return null;
       }
-      Attempt attempt = attemptInSession(edits, row.getKind(), row.getContainerUid());
+      SubscriptionAttempt attempt = attemptInSession(edits, row.getKind(), row.getContainerUid());
       settle(row, attempt);
       return attempt;
     } finally {
@@ -556,27 +527,27 @@ public class CaldavShareSubscriptionService {
    * @param containerUid the container
    * @return how it ended
    */
-  private static Attempt attemptInSession(Subscriptions edits, PendingSubscriptionKind kind, String containerUid) {
+  private static SubscriptionAttempt attemptInSession(BlueMindSubscriptions edits, PendingSubscriptionKind kind, String containerUid) {
     try {
       if (kind == PendingSubscriptionKind.UNSUBSCRIBE) {
         edits.unsubscribe(containerUid);
       } else {
         edits.subscribe(containerUid);
       }
-      return new Attempt(Outcome.LANDED, null, false);
+      return new SubscriptionAttempt(SubscriptionOutcome.LANDED, null, false);
     } catch (CalDavForbiddenException | CalDavNotFoundException e) {
-      return new Attempt(Outcome.FINAL, e.getMessage(), false);
+      return new SubscriptionAttempt(SubscriptionOutcome.FINAL, e.getMessage(), false);
     } catch (CalDavAuthenticationException | CalDavUnreachableException e) {
-      return new Attempt(Outcome.RETRY, e.getMessage(), true);
+      return new SubscriptionAttempt(SubscriptionOutcome.RETRY, e.getMessage(), true);
     } catch (CalDavException e) {
-      return new Attempt(Outcome.RETRY, e.getMessage(), false);
+      return new SubscriptionAttempt(SubscriptionOutcome.RETRY, e.getMessage(), false);
     } catch (RuntimeException e) {
       // Same reason as at grant time, with a different cost: an escape here
       // leaves the row exactly as it was, and a row that is never counted is
       // handed out again at the head of every sweep - one login as the
       // colleague per run, for ever. Counted, it spends its budget like any
       // other refusal and stops.
-      return new Attempt(Outcome.RETRY, String.valueOf(e), false);
+      return new SubscriptionAttempt(SubscriptionOutcome.RETRY, String.valueOf(e), false);
     }
   }
 
@@ -586,7 +557,7 @@ public class CaldavShareSubscriptionService {
    * @param row the row
    * @param attempt how its change ended
    */
-  private void settle(PendingSubscription row, Attempt attempt) {
+  private void settle(PendingSubscription row, SubscriptionAttempt attempt) {
     switch (attempt.outcome()) {
     case LANDED -> {
       caldavPendingSubscriptionStorage.settledIfStillAsking(row.getUserIdentityId(),
@@ -631,7 +602,7 @@ public class CaldavShareSubscriptionService {
    */
   private int giveUpAll(List<PendingSubscription> rows, String reason) {
     for (PendingSubscription row : rows) {
-      settle(row, new Attempt(Outcome.FINAL, reason, false));
+      settle(row, new SubscriptionAttempt(SubscriptionOutcome.FINAL, reason, false));
     }
     return 0;
   }
@@ -646,7 +617,7 @@ public class CaldavShareSubscriptionService {
    */
   private int retryAll(List<PendingSubscription> rows, String reason) {
     for (PendingSubscription row : rows) {
-      settle(row, new Attempt(Outcome.RETRY, reason, true));
+      settle(row, new SubscriptionAttempt(SubscriptionOutcome.RETRY, reason, true));
     }
     return 0;
   }
@@ -715,16 +686,5 @@ public class CaldavShareSubscriptionService {
       created[i] = new ReentrantLock();
     }
     return created;
-  }
-
-  /**
-   * How one attempt ended.
-   *
-   * @param outcome what to do with the row
-   * @param reason why, for the line; null when it landed
-   * @param sessionLost whether the session itself is no longer usable, so
-   *          the rows after this one in the same session are left untried
-   */
-  private record Attempt(Outcome outcome, String reason, boolean sessionLost) {
   }
 }
