@@ -27,6 +27,8 @@
   <properties>
     <!-- 3rd party libraries versions -->
     <addon.exo.agenda.version>7.3.x-ai-contribution-SNAPSHOT</addon.exo.agenda.version>
+    <!-- The mail reader's calendar-invitation SPI this add-on implements (EXO-90848); provided, never shipped -->
+    <addon.exo.email-connector.version>7.3.x-ai-contribution-SNAPSHOT</addon.exo.email-connector.version>
     <org.exoplatform.commons-exo.version>7.3.x-ai-contribution-SNAPSHOT</org.exoplatform.commons-exo.version>
     <!-- Sonar properties -->
     <sonar.organization>exoplatform</sonar.organization>
@@ -47,6 +49,12 @@
         <version>${org.exoplatform.commons-exo.version}</version>
         <type>pom</type>
         <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.exoplatform.addons.email-connector</groupId>
+        <artifactId>email-connector-services</artifactId>
+        <version>${addon.exo.email-connector.version}</version>
+        <scope>provided</scope>
       </dependency>
 
       <!-- Current project artifacts -->
