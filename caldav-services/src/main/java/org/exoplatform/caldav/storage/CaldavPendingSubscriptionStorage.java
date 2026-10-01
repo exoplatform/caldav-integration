@@ -131,14 +131,14 @@ public class CaldavPendingSubscriptionStorage {
    * <p>
    * <b>For the caller who can be stale</b> — the drain, and only the drain. It
    * reads its rows once and then spends a round trip on each, inside a session
-   * that costs a login and a logout, holding no lock the share service takes.
-   * A revoke arriving in that window records an UNSUBSCRIBE over the pending
-   * SUBSCRIBE — the same row, by the one-row-per-container rule — and the
-   * drain then lands its now-stale SUBSCRIBE. Deleting by container alone
-   * would strike off the removal nobody has made yet, and the colleague would
-   * keep, for good and without a line to say so, the dangling subscription
-   * again. With the guard the removal survives its predecessor's success and
-   * the next drain makes it.
+   * that costs a login and a logout. On one node the obligation's lock keeps a
+   * revoke out of that window; on another node it does not, and a revoke there
+   * records an UNSUBSCRIBE over the pending SUBSCRIBE — the same row, by the
+   * one-row-per-container rule — while the drain lands its now-stale
+   * SUBSCRIBE. Deleting by container alone would strike off the removal nobody
+   * has made yet. With the kind matched in the delete itself, one statement,
+   * the removal survives its predecessor's success and the next drain makes
+   * it.
    *
    * <p>
    * The guard belongs here and <b>only</b> here: at the grant and the revoke
@@ -153,42 +153,48 @@ public class CaldavPendingSubscriptionStorage {
    */
   @Transactional
   public void settledIfStillAsking(long userIdentityId, long serverId, String containerUid, PendingSubscriptionKind kind) {
-    pendingSubscriptionDAO.findByUserIdentityIdAndServerIdAndContainerUid(userIdentityId, serverId, containerUid)
-                          .ifPresent(entity -> {
-                            if (entity.getKind() == kind) {
-                              pendingSubscriptionDAO.deleteById(entity.getId());
-                            } else {
-                              LOG.debug("A drained BlueMind {} landed for user {} and container {} on server {}, but the row now"
-                                  + " asks for {}; it is left for the next drain",
-                                        kind,
-                                        userIdentityId,
-                                        containerUid,
-                                        serverId,
-                                        entity.getKind());
-                            }
-                          });
+    if (pendingSubscriptionDAO.deleteAsking(userIdentityId, serverId, containerUid, kind) == 0) {
+      LOG.debug("A drained BlueMind {} landed for user {} and container {} on server {}, but no row asks for it any more;"
+          + " whatever stands is left for the next drain", kind, userIdentityId, containerUid, serverId);
+    }
   }
 
   /**
-   * Records that one more attempt was refused.
+   * Whether an obligation still stands as it was read: the row is there and
+   * still asks for the same change.
    *
    * @param id the obligation
+   * @param kind the change it was read with
+   * @return true when it still asks for it
+   */
+  public boolean stillAsking(long id, PendingSubscriptionKind kind) {
+    return pendingSubscriptionDAO.findById(id).filter(entity -> entity.getKind() == kind).isPresent();
+  }
+
+  /**
+   * Records that one more attempt was refused, unless the row has been renewed
+   * with the other change since it was read.
+   *
+   * @param id the obligation
+   * @param kind the change that was refused
    */
   @Transactional
-  public void refused(long id) {
-    pendingSubscriptionDAO.recordAttempt(id);
+  public void refused(long id, PendingSubscriptionKind kind) {
+    pendingSubscriptionDAO.recordAttempt(id, kind);
   }
 
   /**
    * Records that an obligation is given up on, without counting toward the
-   * bound first.
+   * bound first, unless the row has been renewed with the other change since
+   * it was read.
    *
    * @param id the obligation
+   * @param kind the change given up on
    * @param maxAttempts the configured bound, written whole
    */
   @Transactional
-  public void abandoned(long id, int maxAttempts) {
-    pendingSubscriptionDAO.spendBudget(id, maxAttempts);
+  public void abandoned(long id, PendingSubscriptionKind kind, int maxAttempts) {
+    pendingSubscriptionDAO.spendBudget(id, kind, maxAttempts);
   }
 
   /**

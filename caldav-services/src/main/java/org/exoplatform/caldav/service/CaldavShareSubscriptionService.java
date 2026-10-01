@@ -20,6 +20,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,9 +39,12 @@ import org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubjectMismatchException;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient.Subscriptions;
+import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.PendingSubscription;
 import org.exoplatform.caldav.model.PendingSubscriptionKind;
 import org.exoplatform.caldav.storage.CaldavPendingSubscriptionStorage;
+import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -71,8 +76,8 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * whatever happens to the colleague's subscription. A change that does not
  * land is recorded as owed ({@code CALDAV_PENDING_SUBSCRIPTION}) and drained
  * later; a stale colleague password is a {@code WARN} here and a row, never a
- * failure of the grant and never a pause of the colleague's own account —
- * their own pass is where that verdict belongs.
+ * failure of the grant and never a pause of the colleague's own account at
+ * grant time — the drain, like their own pass, is where that verdict belongs.
  *
  * <p>
  * <b>Where the drain runs, and why it is table-driven.</b> The sweep selects
@@ -86,9 +91,15 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * decision that no new property is wanted.
  *
  * <p>
- * <b>What is given up on at once, and what is argued with.</b> A server that
- * cannot be reached, a login refused, and any other unexplained answer are
- * counted and retried up to the bound. A session BlueMind authenticated as
+ * <b>What is given up on at once, what is argued with, and what waits.</b> A
+ * server that cannot be reached and any other unexplained answer are counted
+ * and retried up to the bound. A login refused to the drain pauses the
+ * colleague's active pairs on that server, as their own synchronisation pass
+ * does at its first refusal, and their rows wait uncounted until the account
+ * is put back to work; the drain does not log in as a colleague whose account
+ * is paused. A colleague holding no pair on the server has nothing to pause,
+ * and a refused login counts against their rows like any retry. A session
+ * BlueMind authenticated as
  * somebody other than the recorded colleague, a 403, a container BlueMind
  * does not hold, a colleague no longer connected to that server, credentials
  * that are not a login, and a login eXo cannot resolve any more are final:
@@ -101,11 +112,21 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * covers "subscribed for me, I do not want it shown" exactly as for a hand
  * subscription. One edge here is bounded: a row drained after they
  * unsubscribed by hand re-subscribes them, for at most {@code maxAttempts}
- * sweep periods after the grant. The seventh limit below is the other one,
- * and it is not bounded at all.
+ * sweep periods after the grant.
  *
  * <p>
- * <b>Seven limits, named because each is a decision somebody may want to
+ * <b>A drain and a grant or revoke of the same obligation do not
+ * interleave, on one node.</b> The grant's or the revoke's attempt and settle
+ * and the drain's re-read, post and settle of a row each run under the lock
+ * of the colleague, the server and the container. So a revoke cannot land
+ * between a drain's subscribe being posted and its settle, and a drain does
+ * not post a row a grant or a revoke has decided again since the drain read
+ * it. Every write the drain makes about a row is one statement that matches
+ * the kind it read, so a row renewed with the other change is never charged
+ * with the old change's verdict.
+ *
+ * <p>
+ * <b>Six limits, named because each is a decision somebody may want to
  * revisit rather than an oversight.</b>
  * <ul>
  * <li><b>Only a revoke made from eXo unsubscribes.</b> An owner who removes
@@ -150,52 +171,16 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * the larger of the two costs named here. Self-limiting after
  * {@code maxAttempts} periods; a bound of its own, rather than the account
  * sweep's, is the Architect's and Ops' call.</li>
- * <li><b>The drain counts attempts by row id, and a renewed row keeps that
- * id.</b> Settling is kind-aware for exactly that reason, but
- * {@code refused} and {@code abandoned} are not: if a revoke is recorded
- * over a pending subscribe while the drain's session is open, the drain's
- * verdict on the <em>old</em> subscribe is written against the <em>new</em>
- * removal — a spent budget retires a removal nobody attempted, a counted
- * refusal costs it one of its five. It needs a genuinely concurrent revoke,
- * and it cannot leave a dangling subscription — the two verdicts it concerns
- * are RETRY and FINAL, which by definition mean the change did not land. The
- * LANDED case of the same window is a different animal and is the seventh
- * limit, below. So this one is recorded rather than fixed: making both writes
- * match on KIND as well is an Architect's call on an N1 surface.</li>
- * <li><b>A revoke landing inside a drain's open session leaves a dangling
- * subscription that nothing records and nothing retries: documented, not
- * closed.</b> Unlike the hand-unsubscribe edge above, this one is not bounded.
- * The drain and the share service share no lock and no lease — the stripe lock
- * is taken inside {@code CaldavCalendarShareService} only, and the drain reads
- * its rows, opens the colleague's session and posts without it. So: a grant
- * whose subscribe failed leaves a pending SUBSCRIBE; a drain opens the session
- * and is about to post it; the owner revokes from eXo in that window; the
- * revoke's {@code _unsubscribe} lands and clears the row, as it must; the
- * drain's {@code _subscribe} then lands too, because BlueMind performs no
- * access check on a subscribe; and the drain's own settle finds no row and
- * does nothing. Two success lines in the log, and
- * {@code CaldavSyncService.forgetRevokedShares} cannot heal it either, because
- * the dangling subscription is exactly what keeps the href in their listing.
- * <p>
- * <b>What it costs, which is why the decision was to document it.</b> The
- * window needs a revoke to land between the drain opening the colleague's
- * session and its subscribe returning. What it leaves is one stale calendar in
- * that colleague's listing — not lost data, and not access to anything they
- * could not already see: a subscription only makes a calendar appear for them,
- * and BlueMind still enforces its own ACL on the contents
+ * <li><b>Nodes share no lock.</b> The lock above is this node's: a drain on
+ * one node and a revoke on another can still interleave, and the revoke's
+ * unsubscribe can be followed by the drain's subscribe landing, because
+ * BlueMind performs no access check on a subscribe. What it leaves is one
+ * stale calendar in that colleague's listing — not access to anything they
+ * could not already see, since BlueMind enforces its own ACL on the contents
  * ({@code CalendarService} checks {@code Verb.Read} on the container for every
- * read, subscribed or not), so the calendar is listed and answers nothing.
- * <p>
- * <b>What closing it would take.</b> A version or a claim column on
- * {@code CALDAV_PENDING_SUBSCRIPTION}, so that a drain finding no row could
- * tell "the owner revoked while I was in flight" from "a later grant settled
- * it" — a distinction nothing in the table can make today, and the reason the
- * obvious repair is wrong: having the drain re-record an UNSUBSCRIBE whenever
- * it finds no row would, in that second case, unsubscribe a calendar that is
- * legitimately shared. That column is deliberately left to a follow-up rather
- * than added to this branch. None of it is about how settling is spelled: the
- * same interleaving reaches the same end state whichever of the two settle
- * methods the drain uses.</li>
+ * read, subscribed or not). Closing it across nodes needs a claim or a version
+ * column on {@code CALDAV_PENDING_SUBSCRIPTION}, an Ops-visible schema
+ * change, like the lease the third limit lacks.</li>
  * </ul>
  */
 @Service
@@ -205,6 +190,17 @@ public class CaldavShareSubscriptionService {
   public static final int                          OWN_DRAIN_BATCH = 10;
 
   private static final Log                         LOG             = ExoLogger.getLogger(CaldavShareSubscriptionService.class);
+
+  /** How many locks the obligations are striped over. */
+  private static final int                         LOCK_STRIPES    = 64;
+
+  /**
+   * The locks serialising, on this node, everything that decides or settles
+   * one colleague's obligation about one container: the grant's or the
+   * revoke's attempt and its settle, and the drain's re-read, post and
+   * settle of the same row.
+   */
+  private final Lock[]                             locks           = newLocks();
 
   /**
    * How many refusals are argued with before a change is given up on: the
@@ -219,6 +215,9 @@ public class CaldavShareSubscriptionService {
 
   @Autowired
   private CaldavPendingSubscriptionStorage         caldavPendingSubscriptionStorage;
+
+  @Autowired
+  private CaldavSyncStorage                        caldavSyncStorage;
 
   @Autowired
   private CalDavClient                             calDavClient;
@@ -327,6 +326,8 @@ public class CaldavShareSubscriptionService {
    * @param kind the change
    */
   private void change(ShareeSubscription share, PendingSubscriptionKind kind) {
+    Lock lock = lockOf(share.shareeIdentityId(), share.serverId(), share.containerUid());
+    lock.lock();
     try {
       Attempt attempt = attempt(kind, share.serverId(), share.shareeUsername(), share.shareeUid(), share.containerUid());
       if (attempt.outcome() == Outcome.LANDED) {
@@ -364,6 +365,8 @@ public class CaldavShareSubscriptionService {
                share.containerUid(),
                share.serverId(),
                e);
+    } finally {
+      lock.unlock();
     }
   }
 
@@ -417,6 +420,17 @@ public class CaldavShareSubscriptionService {
       return giveUpAll(rows, principal == null ? "they are no longer connected to that server"
                                                : "their recorded principal is not a BlueMind user");
     }
+    List<CalendarSync> pairs = caldavSyncStorage.getPairs(userIdentityId, serverId);
+    if (pausedAccount(pairs)) {
+      // Their own account is paused, which the sync pass does on a refused
+      // login: a login as them now would be refused again, and counted
+      // against a server that may lock the account. The rows wait, uncounted,
+      // until the account is put back to work.
+      LOG.debug("The CalDAV account of user {} on server {} is paused; the subscription changes owed to them wait",
+                userIdentityId,
+                serverId);
+      return 0;
+    }
     CalDavEndpoint endpoint;
     try {
       endpoint = endpointOf(serverId, login);
@@ -427,11 +441,13 @@ public class CaldavShareSubscriptionService {
     try {
       blueMindSubscriptionClient.asSharee(endpoint, shareeUid, edits -> {
         for (PendingSubscription row : rows) {
-          Attempt attempt = attemptInSession(edits, row.getKind(), row.getContainerUid());
+          Attempt attempt = attemptUnderLock(edits, row);
+          if (attempt == null) {
+            continue;
+          }
           if (attempt.outcome() == Outcome.LANDED) {
             landed[0]++;
           }
-          settle(row, attempt);
           if (attempt.outcome() == Outcome.RETRY && attempt.sessionLost()) {
             // The session itself was refused or the server went away: the
             // rows not yet tried are left as they are for the next run.
@@ -442,8 +458,19 @@ public class CaldavShareSubscriptionService {
       });
     } catch (BlueMindSubjectMismatchException | UnsupportedOperationException e) {
       return giveUpAll(rows, e.getMessage());
+    } catch (CalDavAuthenticationException e) {
+      // The login itself was refused. Like the sync pass, the account is
+      // paused at the first refusal, and the rows wait uncounted; a colleague
+      // who holds no pair on the server has nothing to pause, and the rows
+      // spend their bounded budget instead.
+      if (pauseActive(pairs)) {
+        LOG.warn("The CalDAV account of user {} on server {} refused its stored credentials; its synchronisation is paused"
+            + " and the subscription changes owed to it wait", userIdentityId, serverId);
+        return 0;
+      }
+      return retryAll(rows, e.getMessage());
     } catch (CalDavException e) {
-      // The login itself: refused, unreachable, or an unexplained answer.
+      // The login itself: unreachable, or an unexplained answer.
       return retryAll(rows, e.getMessage());
     } catch (RuntimeException e) {
       // Anything eXo's own machinery threw on the way, counted rather than
@@ -491,6 +518,33 @@ public class CaldavShareSubscriptionService {
       // and never seen again.
       LOG.warn("The BlueMind subscription of user {} failed before any answer was read", shareeUsername, e);
       return new Attempt(Outcome.RETRY, String.valueOf(e), true);
+    }
+  }
+
+  /**
+   * One drained row tried and settled under its obligation's lock, after
+   * reading it again: a grant or a revoke of the same container that ran since
+   * the drain read its rows has already decided, and the row it left — none,
+   * or one asking for the other change — is what stands.
+   *
+   * @param edits the open session's edits
+   * @param row the row as the drain read it
+   * @return how it ended, or null when the row no longer asks for its change
+   */
+  private Attempt attemptUnderLock(Subscriptions edits, PendingSubscription row) {
+    Lock lock = lockOf(row.getUserIdentityId(), row.getServerId(), row.getContainerUid());
+    lock.lock();
+    try {
+      if (!caldavPendingSubscriptionStorage.stillAsking(row.getId(), row.getKind())) {
+        LOG.debug("Owed BlueMind {} for user {} and calendar container {} on server {} was decided again since it was read;"
+            + " not attempted", row.getKind(), row.getUserIdentityId(), row.getContainerUid(), row.getServerId());
+        return null;
+      }
+      Attempt attempt = attemptInSession(edits, row.getKind(), row.getContainerUid());
+      settle(row, attempt);
+      return attempt;
+    } finally {
+      lock.unlock();
     }
   }
 
@@ -546,7 +600,7 @@ public class CaldavShareSubscriptionService {
                row.getServerId());
     }
     case FINAL -> {
-      caldavPendingSubscriptionStorage.abandoned(row.getId(), maxAttempts);
+      caldavPendingSubscriptionStorage.abandoned(row.getId(), row.getKind(), maxAttempts);
       LOG.info("Owed BlueMind {} given up on: user {} and calendar container {} on server {}: {}",
                row.getKind(),
                row.getUserIdentityId(),
@@ -555,7 +609,7 @@ public class CaldavShareSubscriptionService {
                attempt.reason());
     }
     case RETRY -> {
-      caldavPendingSubscriptionStorage.refused(row.getId());
+      caldavPendingSubscriptionStorage.refused(row.getId(), row.getKind());
       LOG.info("Owed BlueMind {} refused ({} of {} retries): user {} and calendar container {} on server {}: {}",
                row.getKind(),
                row.getAttempts() + 1,
@@ -610,6 +664,57 @@ public class CaldavShareSubscriptionService {
       throw new CalDavException("The sharee's login is required to mint their endpoint");
     }
     return calDavClient.endpoint(serverId == 0L ? null : serverId, shareeUsername);
+  }
+
+  /**
+   * Whether an account is paused: it holds pairs on the server and none is
+   * active, which is what the sync pass leaves after a refused login.
+   *
+   * @param pairs the account's pairs on the server
+   * @return true when it is paused
+   */
+  private static boolean pausedAccount(List<CalendarSync> pairs) {
+    return pairs.stream().anyMatch(pair -> pair.getStatus() == CalendarSyncStatus.PAUSED)
+        && pairs.stream().noneMatch(pair -> pair.getStatus() == CalendarSyncStatus.ACTIVE);
+  }
+
+  /**
+   * Pauses an account's active pairs, as the sync pass does on a refused login.
+   *
+   * @param pairs the account's pairs on the server
+   * @return true when there was at least one to pause
+   */
+  private boolean pauseActive(List<CalendarSync> pairs) {
+    boolean paused = false;
+    for (CalendarSync pair : pairs) {
+      if (pair.getStatus() == CalendarSyncStatus.ACTIVE) {
+        pair.setStatus(CalendarSyncStatus.PAUSED);
+        caldavSyncStorage.savePair(pair);
+        paused = true;
+      }
+    }
+    return paused;
+  }
+
+  /**
+   * The lock of one colleague's obligation about one container.
+   *
+   * @param shareeIdentityId the colleague
+   * @param serverId the server key
+   * @param containerUid the container
+   * @return the lock
+   */
+  private Lock lockOf(long shareeIdentityId, long serverId, String containerUid) {
+    String key = shareeIdentityId + "@" + serverId + ":" + containerUid;
+    return locks[Math.floorMod(key.hashCode(), LOCK_STRIPES)];
+  }
+
+  private static Lock[] newLocks() {
+    Lock[] created = new Lock[LOCK_STRIPES];
+    for (int i = 0; i < LOCK_STRIPES; i++) {
+      created[i] = new ReentrantLock();
+    }
+    return created;
   }
 
   /**
