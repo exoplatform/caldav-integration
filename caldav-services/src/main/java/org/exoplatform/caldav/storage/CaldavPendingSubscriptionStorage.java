@@ -212,7 +212,7 @@ public class CaldavPendingSubscriptionStorage {
    * @param limit how many to take in one pass
    * @return the obligations to attempt now, possibly none
    */
-  public List<PendingSubscription> attemptable(long userIdentityId, int maxAttempts, int limit) {
+  public List<PendingSubscription> attemptableOf(long userIdentityId, int maxAttempts, int limit) {
     return pendingSubscriptionDAO.findAttemptableOf(userIdentityId, maxAttempts, oldestFirst(0, limit))
                                  .stream()
                                  .map(this::fromEntity)
