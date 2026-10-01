@@ -133,13 +133,22 @@ public interface CaldavObjectSyncDAO extends JpaRepository<CaldavObjectSyncEntit
    * per-user pass meant the first attendee to be copied answered for all the
    * others, who were then skipped and never got their copy.
    *
+   * <p>
+   * Only a row that still names an object counts. The tombstone a removal
+   * leaves — the row kept with its href cleared — is not a copy, and counting
+   * it meant a date poll switched back to a meeting never reached the invitees
+   * whose copies were retired while it was a poll: the seeding read their
+   * tombstones as copies they already held. Tested as {@code IS NOT NULL}
+   * alone: a clearing sets null, and Oracle reads an empty string as null, so
+   * a {@code <> ''} would drop every row there.
+   *
    * @param userIdentityId the user whose copies are asked about
    * @param localEventIds the eXo events to ask about
-   * @return the identifiers this user already has a copy of
+   * @return the identifiers this user already has a live copy of
    */
   @Query("SELECT DISTINCT o.localEventId FROM CaldavObjectSyncEntity o, CaldavCalendarSyncEntity p"
       + " WHERE o.calendarSyncId = p.id AND p.userIdentityId = :userIdentityId"
-      + " AND o.localEventId IN :localEventIds")
+      + " AND o.localEventId IN :localEventIds AND o.remoteHref IS NOT NULL")
   List<Long> findMappedLocalEventIdsOfUser(@Param("userIdentityId") long userIdentityId,
                                            @Param("localEventIds") Collection<Long> localEventIds);
 
