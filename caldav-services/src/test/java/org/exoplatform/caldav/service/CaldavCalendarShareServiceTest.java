@@ -74,6 +74,7 @@ import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.CollectionAcl;
 import org.exoplatform.caldav.client.DavOptions;
+import org.exoplatform.caldav.model.ShareeSubscription;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarShares;
 import org.exoplatform.caldav.model.CalendarShares.CalendarSharee;
@@ -681,13 +682,13 @@ public class CaldavCalendarShareServiceTest {
 
     service.grant(ALICE, "alice", CALENDAR, "bob");
 
-    ArgumentCaptor<CaldavShareSubscriptionService.ShareeSubscription> subscribed =
-                                                                                 ArgumentCaptor.forClass(CaldavShareSubscriptionService.ShareeSubscription.class);
+    ArgumentCaptor<ShareeSubscription> subscribed =
+                                                                                 ArgumentCaptor.forClass(ShareeSubscription.class);
     org.mockito.InOrder order = org.mockito.Mockito.inOrder(blueMindAclClient, calDavClient, caldavShareSubscriptionService);
     order.verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false));
     order.verify(blueMindAclClient).readAcl(endpoint, BM_CONTAINER);
     order.verify(caldavShareSubscriptionService).subscribeSharee(subscribed.capture());
-    assertEquals(new CaldavShareSubscriptionService.ShareeSubscription("alice", BOB, "bob", ERIC_UID, STALWART, BM_CONTAINER),
+    assertEquals(new ShareeSubscription("alice", BOB, "bob", ERIC_UID, STALWART, BM_CONTAINER),
                  subscribed.getValue());
     verify(caldavShareSubscriptionService, never()).unsubscribeSharee(any());
 
@@ -718,7 +719,7 @@ public class CaldavCalendarShareServiceTest {
     service.revoke(ALICE, "alice", CALENDAR, "bob");
 
     verify(caldavShareSubscriptionService, org.mockito.Mockito.times(1))
-                                                                        .unsubscribeSharee(new CaldavShareSubscriptionService.ShareeSubscription("alice",
+                                                                        .unsubscribeSharee(new ShareeSubscription("alice",
                                                                                                                                                  BOB,
                                                                                                                                                  "bob",
                                                                                                                                                  ERIC_UID,

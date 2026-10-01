@@ -59,12 +59,12 @@ import org.exoplatform.caldav.client.CalDavNotFoundException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubjectMismatchException;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient.Subscriptions;
+import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptions;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.PendingSubscription;
 import org.exoplatform.caldav.model.PendingSubscriptionKind;
-import org.exoplatform.caldav.service.CaldavShareSubscriptionService.ShareeSubscription;
+import org.exoplatform.caldav.model.ShareeSubscription;
 import org.exoplatform.caldav.storage.CaldavPendingSubscriptionStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -134,7 +134,7 @@ public class CaldavShareSubscriptionServiceTest {
   private CalDavEndpoint                   carolEndpoint;
 
   @Mock
-  private Subscriptions                    edits;
+  private BlueMindSubscriptions                    edits;
 
   @InjectMocks
   private CaldavShareSubscriptionService   service;
@@ -643,7 +643,7 @@ public class CaldavShareSubscriptionServiceTest {
   @SuppressWarnings("unchecked")
   private void sessionOpens() {
     lenient().when(blueMindSubscriptionClient.asSharee(any(), anyString(), any()))
-             .thenAnswer(invocation -> ((Function<Subscriptions, Object>) invocation.getArgument(2)).apply(edits));
+             .thenAnswer(invocation -> ((Function<BlueMindSubscriptions, Object>) invocation.getArgument(2)).apply(edits));
   }
 
   /**
