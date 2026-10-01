@@ -31,6 +31,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
+import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
@@ -558,10 +559,12 @@ public class CaldavInvitationLandingService {
    * @param partStat the answer as a PARTSTAT token, null to write the object as
    *          sent
    * @return the ETag the copy carries now — the one just read, or the one the
-   *         rewrite produced; null when the copy is not served
+   *         rewrite produced; null when the copy is not served, or served
+   *         without a version and left as it is
    * @throws IllegalArgumentException when the message is not the copy's
    *           organiser's, or the user organises the copy
-   * @throws IllegalStateException when the server refused the write
+   * @throws IllegalStateException when the server refused the write, or serves
+   *           the copy without a version to condition a rewrite on
    */
   private String refreshIfNewer(CalDavEndpoint endpoint,
                                 ObjectSync known,
@@ -743,8 +746,8 @@ public class CaldavInvitationLandingService {
    * @param master the message's event
    * @return the event, already held, with its link
    * @throws IllegalArgumentException for an answer or a cancellation, when the
-   *           user may not read the event, or when the message does not
-   *           describe it
+   *           user may not read the event, when it was cancelled, or when the
+   *           message does not describe it
    */
   private LandedMailInvitation heldInAgenda(long eventId, long userIdentityId, MailInvitation invitation, IcsEvent master) {
     if (invitation.response() != null || invitation.isCancellation()) {
@@ -758,6 +761,9 @@ public class CaldavInvitationLandingService {
     }
     if (event == null) {
       throw new IllegalArgumentException("The message names eXo meeting " + eventId + ", which does not exist");
+    }
+    if (event.getStatus() == EventStatus.CANCELLED) {
+      throw new IllegalArgumentException("The message names eXo meeting " + eventId + ", which was cancelled");
     }
     boolean sameTitle = StringUtils.equalsIgnoreCase(StringUtils.trimToEmpty(event.getSummary()), StringUtils.trimToEmpty(master.getSummary()));
     boolean sameDay = event.getStart() != null && master.getStart() != null
