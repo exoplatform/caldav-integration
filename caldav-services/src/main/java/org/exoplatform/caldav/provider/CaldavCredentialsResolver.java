@@ -133,8 +133,9 @@ public class CaldavCredentialsResolver {
   /**
    * Tells the configured provider that the material it produced for this account
    * was refused by the calendar server, so a caching provider forgets it. Called
-   * exactly once per refusal by the two places that see one - the client and
-   * the relay - and never in a retry loop, as the contract asks. Personal has
+   * exactly once per refusal by the places that see one - the DAV client, the
+   * relay and the BlueMind REST login - and never in a retry loop, as the
+   * contract asks. Personal has
    * nothing to forget and answers nothing.
    *
    * @param serverId registration the account references, or null for the
