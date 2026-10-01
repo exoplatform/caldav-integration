@@ -315,7 +315,7 @@ public class HttpCalDavClient implements CalDavClient {
     if (caldavCredentialsResolver.isProviderMissing(authProviderName)) {
       // Refused here, once per conversation, rather than by every request of
       // it failing to produce credentials: the resolver says so once per name.
-      throw new CalDavProviderMissingException("No credentials provider named " + authProviderName + " is installed");
+      throw CalDavProviderMissingException.named(authProviderName);
     }
     String url = declaredUrl(server == null ? null : server.getServerUrl());
     // Only a templated URL needs an account to name, and only then is the
