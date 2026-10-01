@@ -157,12 +157,6 @@ public class CaldavServerServiceTest {
   @Mock
   private CaldavCredentialsResolver caldavCredentialsResolver;
 
-  /**
-   * The seam onto the credentials contract. Optional in production - it lives in
-   * another WAR - so it is mocked here rather than assumed present.
-   */
-  @Mock
-  private CaldavCredentialsResolver caldavCredentialsResolver;
 
   /**
    * The address check, REAL rather than mocked, so these tests keep measuring
