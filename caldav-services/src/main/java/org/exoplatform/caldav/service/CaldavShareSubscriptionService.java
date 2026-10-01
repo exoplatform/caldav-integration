@@ -201,7 +201,8 @@ public class CaldavShareSubscriptionService {
   /**
    * How many pages of owed rows one global drain reads at most, looking past the
    * rows of servers whose credentials provider is not installed. Beyond it, the
-   * rows further back wait for the next run or for their colleague's own pass.
+   * rows further back wait for their colleague's own pass, or for the provider to
+   * be installed: a later global run reads the same pages.
    */
   static final int                                 MAX_PAGES_PER_DRAIN = 20;
 
@@ -283,8 +284,8 @@ public class CaldavShareSubscriptionService {
    * <p>
    * The rows of a server whose credentials provider is not installed are left
    * where they are, uncounted, and the run reads on past them, up to
-   * {@value #MAX_PAGES_PER_DRAIN} pages: however many of them wait at the head of
-   * the queue, the rows owed on the other servers are still drained.
+   * {@value #MAX_PAGES_PER_DRAIN} pages: the rows owed on the other servers
+   * within those pages are drained, whatever waits ahead of them.
    *
    * @param batch how many owed rows one run drains at most
    * @return how many changes landed this run
@@ -377,7 +378,7 @@ public class CaldavShareSubscriptionService {
   public int retryOwed(long userIdentityId, int batch) {
     List<PendingSubscription> owed;
     try {
-      owed = caldavPendingSubscriptionStorage.attemptable(userIdentityId, maxAttempts, batch);
+      owed = caldavPendingSubscriptionStorage.attemptableOf(userIdentityId, maxAttempts, batch);
     } catch (RuntimeException | LinkageError e) {
       LOG.warn("The subscription changes eXo owes user {} on calendar servers could not be read; nothing is retried", userIdentityId, e);
       return 0;
