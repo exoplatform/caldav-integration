@@ -56,6 +56,7 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarHome;
@@ -918,6 +919,14 @@ public class CaldavSyncService {
                because(e),
                e);
       return false;
+    } catch (CalDavProviderMissingException e) {
+      // Already said once for the provider's name by the resolver; the mirror
+      // step would only meet the same absence, so it is not asked either.
+      LOG.debug("Nothing was asked of CalDAV server {} for user {} on connect: {}",
+                serverIdOf(settings),
+                userIdentityId,
+                e.getMessage());
+      return false;
     } catch (Exception | LinkageError e) {
       LOG.warn("The personal calendars of user {} could not be bound on connect; the first sweep binds them", userIdentityId, e);
       return true;
@@ -1216,6 +1225,14 @@ public class CaldavSyncService {
       // credential refusal — nobody has to do anything for a server to come
       // back, and the next pass is the one that finds out.
       noteUnreachable(userIdentityId, settings, e);
+    } catch (CalDavProviderMissingException e) {
+      // The server's credentials provider is not installed — an add-on's, while
+      // the add-on is not, or has not started yet. The resolver has said so once
+      // for that provider name; every account on the server meets the same
+      // absence at every pass, so this one says it at debug only, without a
+      // stack. Nothing is recorded either: no pause, no unreachable spell, no
+      // throttle stamp, so the first pass after the provider appears runs.
+      LOG.debug("The CalDAV calendars of user {} are not synchronised: {}", userIdentityId, e.getMessage());
     } catch (RuntimeException e) {
       // A sync that fails is not an error the caller can act on — the page it
       // was triggered from has its own events to show. It is logged and the
