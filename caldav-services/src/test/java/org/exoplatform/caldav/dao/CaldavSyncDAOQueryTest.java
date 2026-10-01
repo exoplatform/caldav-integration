@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Date;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.List;
 
 import jakarta.persistence.EntityManager;
@@ -124,8 +126,8 @@ public class CaldavSyncDAOQueryTest {
     long spent = persistPendingSubscription(bob, 5L, "exo-cal-given-up", PendingSubscriptionKind.SUBSCRIBE, 5);
     persistPendingSubscription(1L, 5L, "exo-cal-other", PendingSubscriptionKind.UNSUBSCRIBE, 2);
 
-    var due = calendarSyncDAO.findDueAccounts(CalendarSyncStatus.ACTIVE, new Date(), PageRequest.of(0, 10));
-    assertFalse(due.getContent().contains(bob), "the account sweep never reaches a colleague without a pair");
+    List<Long> due = calendarSyncDAO.findDueAccounts(CalendarSyncStatus.ACTIVE, new Date(), List.of(), List.of(), PageRequest.of(0, 10));
+    assertFalse(due.contains(bob), "the account sweep never reaches a colleague without a pair");
 
     List<CaldavPendingSubscriptionEntity> attemptable = pendingSubscriptionDAO.findAttemptable(5, PageRequest.of(0, 10, org.springframework.data.domain.Sort.by("id")));
     assertEquals(2, attemptable.size(), "the spent row is left out");
@@ -172,6 +174,96 @@ public class CaldavSyncDAOQueryTest {
     entity.setAttempts(attempts);
     entity.setSince(new Date());
     return pendingSubscriptionDAO.save(entity).getId();
+  }
+
+  // ---------------------------------------------------------------------
+  // EXO-90803 - accounts on a server that cannot be talked to stay at the head
+  // of the due queue; the sweep reads on without them.
+  // ---------------------------------------------------------------------
+
+  /** The server whose accounts wait longer than everybody else's below. */
+  private static final long     WAITING_SERVER = 9L;
+
+  /** The server of the healthy account behind them. */
+  private static final long     HEALTHY_SERVER = 1L;
+
+  /** The healthy account. */
+  private static final long     HEALTHY        = 2000L;
+
+  /**
+   * Sixty accounts waiting longer than a healthy one fill a batch of fifty and
+   * starve it; with their server left out, the healthy account heads the
+   * queue. Run through the storage, as the sweep reads it.
+   */
+  @Test
+  public void theDueAccountsOfAServerLeftOutLetTheOthersThrough() {
+    Date now = new Date();
+    persistWaitingAccounts(60);
+    persistCalendarSyncOn(HEALTHY, HEALTHY_SERVER, "healthy", CalendarSyncStatus.ACTIVE, new Date(now.getTime() - 3_600_000L));
+    CaldavSyncStorage storage = storageOverTheEngine();
+
+    List<Long> unfiltered = storage.getDueAccounts(CalendarSyncStatus.ACTIVE, now, Set.of(), Set.of(), 50);
+    assertEquals(50, unfiltered.size());
+    assertFalse(unfiltered.contains(HEALTHY), "without the exclusion, the waiting accounts take the whole batch");
+
+    assertEquals(List.of(HEALTHY), storage.getDueAccounts(CalendarSyncStatus.ACTIVE, now, Set.of(WAITING_SERVER), Set.of(), 50));
+  }
+
+  /**
+   * The accounts a run has visited are left out of its next read, and the
+   * rest come in the same order, the one waiting longest first.
+   */
+  @Test
+  public void theVisitedAccountsAreLeftOutOfTheNextRead() {
+    Date now = new Date();
+    persistWaitingAccounts(60);
+    persistCalendarSyncOn(HEALTHY, HEALTHY_SERVER, "healthy", CalendarSyncStatus.ACTIVE, new Date(now.getTime() - 3_600_000L));
+    Set<Long> visited = new HashSet<>();
+    for (long i = 0; i < 50; i++) {
+      visited.add(1000L + i);
+    }
+
+    List<Long> rest = storageOverTheEngine().getDueAccounts(CalendarSyncStatus.ACTIVE, now, Set.of(), visited, 50);
+
+    assertEquals(11, rest.size());
+    assertEquals(1050L, rest.get(0), "the one waiting longest first");
+    assertEquals(HEALTHY, rest.get(10), "the healthy account last, as it waited least");
+  }
+
+  /**
+   * An empty exclusion list excludes nothing, the legacy property's server
+   * key zero included, and the engine accepts it: the first read of every
+   * sweep run binds two empty lists.
+   */
+  @Test
+  public void anEmptyExclusionExcludesNothing() {
+    persistCalendarSyncOn(3000L, 0L, "legacy", CalendarSyncStatus.ACTIVE, null);
+
+    assertEquals(List.of(3000L), storageOverTheEngine().getDueAccounts(CalendarSyncStatus.ACTIVE, new Date(), List.of(), List.of(), 10));
+  }
+
+  /**
+   * A storage whose DAO is the repository proxy of this test, so its reads
+   * run on the engine.
+   *
+   * @return the storage
+   */
+  private CaldavSyncStorage storageOverTheEngine() {
+    CaldavSyncStorage storage = new CaldavSyncStorage();
+    ReflectionTestUtils.setField(storage, "calendarSyncDAO", calendarSyncDAO);
+    return storage;
+  }
+
+  /**
+   * Accounts 1000 and on, each with one binding on {@link #WAITING_SERVER},
+   * the first last synchronised longest ago.
+   *
+   * @param count how many
+   */
+  private void persistWaitingAccounts(int count) {
+    for (int i = 0; i < count; i++) {
+      persistCalendarSyncOn(1000L + i, WAITING_SERVER, "waiting-" + i, CalendarSyncStatus.ACTIVE, new Date(60_000L * (i + 1)));
+    }
   }
 
   @Test
@@ -847,10 +939,33 @@ public class CaldavSyncDAOQueryTest {
     objectSyncDAO.save(entity);
   }
 
+  /**
+   * One binding on server 1.
+   *
+   * @param userIdentityId the user holding it
+   * @param uid the local anchor, also the collection's name
+   * @param status the binding's state
+   * @param lastSyncEnd when it was last synchronised, or null for never
+   * @return the binding's identifier
+   */
   private long persistCalendarSync(long userIdentityId, String uid, CalendarSyncStatus status, Date lastSyncEnd) {
+    return persistCalendarSyncOn(userIdentityId, 1L, uid, status, lastSyncEnd);
+  }
+
+  /**
+   * One binding on a given server.
+   *
+   * @param userIdentityId the user holding it
+   * @param serverId the server key
+   * @param uid the local anchor, also the collection's name
+   * @param status the binding's state
+   * @param lastSyncEnd when it was last synchronised, or null for never
+   * @return the binding's identifier
+   */
+  private long persistCalendarSyncOn(long userIdentityId, long serverId, String uid, CalendarSyncStatus status, Date lastSyncEnd) {
     CaldavCalendarSyncEntity entity = new CaldavCalendarSyncEntity();
     entity.setUserIdentityId(userIdentityId);
-    entity.setServerId(1L);
+    entity.setServerId(serverId);
     entity.setLocalCalendarSyncUid(uid);
     entity.setRemoteHref("/calendars/" + uid + "/");
     entity.setOrigin(SyncOrigin.EXO);
