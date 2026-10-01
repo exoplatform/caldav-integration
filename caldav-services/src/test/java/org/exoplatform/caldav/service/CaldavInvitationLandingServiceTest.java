@@ -767,13 +767,18 @@ public class CaldavInvitationLandingServiceTest {
                  () -> service.land(new MailInvitation(LOGIN, MAILBOX, "PUBLISH", UID, 3, null, published.replace("SEQUENCE:2", "SEQUENCE:3"))));
     verify(writer, never()).updateObject(any(), anyString(), anyString(), anyString());
 
+    // Each under a UID the user holds nothing of, so that only the method can
+    // refuse it: landed, it would be read and written like a new event.
     for (String method : List.of("REPLY", "COUNTER", "REFRESH", "ADD", "DECLINECOUNTER")) {
-      assertThrows(IllegalArgumentException.class,
-                   () -> service.land(invitation(method, null, UID, REQUEST.replace("METHOD:REQUEST", "METHOD:" + method))),
-                   method);
+      String uid = method.toLowerCase() + "-" + UID;
+      lenient().when(caldavSyncStorage.getObjectByUid(PAIR, uid)).thenReturn(null);
+      lenient().when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, uid)).thenReturn(null);
+      String message = REQUEST.replace("METHOD:REQUEST", "METHOD:" + method).replace("UID:" + UID, "UID:" + uid);
+      assertThrows(IllegalArgumentException.class, () -> service.land(invitation(method, null, uid, message)), method);
     }
     // The one read the first add made; the refusals above read nothing.
     verify(caldavInboundService, times(1)).importInto(anyLong(), anyString(), any(), any(), any(), any());
+    verify(writer, never()).putObject(any(), anyString(), anyString());
   }
 
   /**
