@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
@@ -324,6 +326,32 @@ public class BlueMindSubscriptionClientTest {
     CalDavEndpoint elsewhere = TestEndpoints.endpoint(1L, URI.create("ftp://bm.example.com/dav/"), "personal", "bob");
     assertThrows(CalDavException.class, () -> client.subscribe(elsewhere, LOGIN_UID, CONTAINER));
     assertTrue(sent.isEmpty());
+  }
+
+  /**
+   * A refused login - a 401, and a 200 whose status is not {@code Ok} - tells
+   * the provider once that its material was refused, so a caching provider
+   * forgets it; an unreachable server and a refused edit inside an open
+   * session do not. Kills the mutant that drops the invalidation from
+   * {@code BlueMindRestSession#open}.
+   */
+  @Test
+  void aRefusedLoginInvalidatesTheMaterialOnceAndNothingElseDoes() {
+    answer(401, "");
+    assertThrows(CalDavAuthenticationException.class, () -> client.subscribe(endpoint, LOGIN_UID, CONTAINER));
+    verify(credentials, times(1)).invalidate(any());
+
+    answer(200, "{\"status\":\"Bad\"}");
+    assertThrows(CalDavAuthenticationException.class, () -> client.subscribe(endpoint, LOGIN_UID, CONTAINER));
+    verify(credentials, times(2)).invalidate(any());
+
+    answers.add(new IOException("connection refused"));
+    assertThrows(CalDavUnreachableException.class, () -> client.subscribe(endpoint, LOGIN_UID, CONTAINER));
+    answer(200, derived("bluemind-rest-login-ok.derived.json"));
+    answer(401, "");
+    answer(200, "");
+    assertThrows(CalDavAuthenticationException.class, () -> client.subscribe(endpoint, LOGIN_UID, CONTAINER));
+    verify(credentials, times(2)).invalidate(any());
   }
 
   /**
