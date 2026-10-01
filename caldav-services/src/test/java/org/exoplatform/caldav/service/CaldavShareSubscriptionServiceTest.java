@@ -541,15 +541,15 @@ public class CaldavShareSubscriptionServiceTest {
    */
   @Test
   public void theColleaguesOwnDrainReadsTheirRowsOnly() {
-    when(caldavPendingSubscriptionStorage.attemptable(BOB, 5, 10)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
+    when(caldavPendingSubscriptionStorage.attemptableOf(BOB, 5, 10)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
 
     assertEquals(1, service.retryOwed(BOB, 10));
 
-    verify(caldavPendingSubscriptionStorage).attemptable(BOB, 5, 10);
+    verify(caldavPendingSubscriptionStorage).attemptableOf(BOB, 5, 10);
     verify(caldavPendingSubscriptionStorage, never()).attemptable(anyInt(), anyInt(), anyInt());
     verify(edits).subscribe(CONTAINER);
 
-    when(caldavPendingSubscriptionStorage.attemptable(BOB, 5, 10)).thenThrow(new IllegalStateException("db"));
+    when(caldavPendingSubscriptionStorage.attemptableOf(BOB, 5, 10)).thenThrow(new IllegalStateException("db"));
     assertEquals(0, assertDoesNotThrow(() -> service.retryOwed(BOB, 10)));
     when(caldavPendingSubscriptionStorage.attemptable(5, 0, 50)).thenThrow(new IllegalStateException("db"));
     assertEquals(0, assertDoesNotThrow(() -> service.retryOwed(50)));
