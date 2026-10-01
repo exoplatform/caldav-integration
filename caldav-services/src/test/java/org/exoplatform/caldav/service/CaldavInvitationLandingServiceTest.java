@@ -210,6 +210,10 @@ public class CaldavInvitationLandingServiceTest {
     lenient().when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, UID)).thenReturn(null);
     lenient().when(calDavClient.endpoint(SERVER, LOGIN)).thenReturn(endpoint);
     lenient().when(calendarObjectWriters.writer(endpoint)).thenReturn(writer);
+    // Answered rather than left unstubbed, so a write the test forbids fails on
+    // its verify and not on a null result.
+    lenient().when(writer.putObject(any(), anyString(), anyString())).thenReturn(new PutResult(201, "\"w\"", null));
+    lenient().when(writer.updateObject(any(), anyString(), anyString(), anyString())).thenReturn(new PutResult(204, "\"w\"", null));
     lenient().when(caldavPushService.addressesNaming(USER, settings)).thenReturn(List.of("john@dav.example"));
     calendar = new Calendar();
     calendar.setId(CALENDAR);
