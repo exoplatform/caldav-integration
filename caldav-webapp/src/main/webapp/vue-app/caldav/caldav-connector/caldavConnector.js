@@ -91,7 +91,7 @@ const caldavConnector = {
     // own material, server-side - so a resolved promise means tested here just
     // as it does below, and the connected state that follows is the same one a
     // typed connection leaves behind.
-    if (this.requiresUserAction === false) {
+    if (this.requiresUserAction === false && this.usable !== false) {
       return caldavConnectorService.connectThroughProvider(this.serverId)
         .then(outcome => {
           if (!outcome || outcome.result !== 'ok') {
@@ -112,6 +112,7 @@ const caldavConnector = {
           serverId: this.serverId || null,
           serverUrl: this.serverUrl || null,
           name: this.name,
+          usable: this.usable !== false,
         },
       }));
       document.addEventListener('test-connection', (settings) => {
@@ -695,9 +696,10 @@ function isUnderAHome(path) {
  * @param {Number} index position of the server in the declared list, keeps ranks distinct
  * @param {Object} requirements whether each provider asks its user for anything,
  *          keyed by provider name; anything but an explicit false means ask
+ * @param {Array} unavailableProviders the provider names that are not installed
  * @returns {Object} the connector descriptor to register under agenda/connectors
  */
-export function createCaldavConnector(server, index, requirements) {
+export function createCaldavConnector(server, index, requirements, unavailableProviders) {
   return Object.assign({}, caldavConnector, {
     name: server.providerName,
     description: `${server.providerName}.description`,
@@ -707,6 +709,11 @@ export function createCaldavConnector(server, index, requirements) {
     // a provider the registry does not name, an older server - every one of them
     // must send the user to the drawer, never connect them silently.
     requiresUserAction: !((requirements || {})[server.authProviderName] === false),
+    // Whether the server can be connected at all: not while the credentials
+    // provider its registration names is not installed. Connecting then opens
+    // the drawer, which says so instead of offering a form the server would
+    // refuse.
+    usable: !(unavailableProviders || []).includes(server.authProviderName),
     // Whether there is a calendar for eXo to create on this server (EXO-90396).
     // Read from the registration, never declared true by the family: on a
     // server whose copies go to the account's own default calendar there is
