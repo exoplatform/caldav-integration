@@ -165,14 +165,25 @@ public class CaldavSyncStorage {
    * batching bindings let one user's collections fill a whole run, so no
    * other account was reached at all.
    *
+   * <p>
+   * Always the head of the set: the sweep reads it again, with more left out,
+   * rather than paging on, because the accounts it synchronises leave the set
+   * as it goes and an offset would then skip the rows behind them.
+   *
    * @param status the binding state that counts as sweepable
    * @param before bindings last synchronised strictly before this instant
-   * @param offset page index
-   * @param limit how many users one page carries
-   * @return one page of user identities
+   * @param excludedServers the servers whose bindings are left out, possibly
+   *          empty but never null
+   * @param excludedAccounts the users left out, possibly empty but never null
+   * @param limit how many users to read
+   * @return the user identities, the one waiting longest first
    */
-  public Page<Long> getDueAccounts(CalendarSyncStatus status, Date before, int offset, int limit) {
-    return calendarSyncDAO.findDueAccounts(status, before, PageRequest.of(offset, limit));
+  public List<Long> getDueAccounts(CalendarSyncStatus status,
+                                   Date before,
+                                   Collection<Long> excludedServers,
+                                   Collection<Long> excludedAccounts,
+                                   int limit) {
+    return calendarSyncDAO.findDueAccounts(status, before, excludedServers, excludedAccounts, PageRequest.of(0, limit));
   }
 
   /**
