@@ -21,7 +21,10 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -53,6 +56,8 @@ import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -121,7 +126,13 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * <p>
  * The object is the sender's. Only the answering user's own bindings are
  * consulted, never the mirror ledger; a UID this deployment minted for one of
- * its own meetings is refused before anything is written. A copy the user
+ * its own meetings is refused before anything is written, and the UID agenda
+ * mails for one of its own meetings ({@code agenda-event-<id>@<this host>})
+ * lands nothing: the meeting is in agenda already, so adding it hands back
+ * agenda's page when the user may read it, and an answer or a cancellation
+ * carried by such a message is refused. Only an invitation, a published event
+ * or a cancellation is landed — a REPLY or a COUNTER speaks to an organiser,
+ * not to a calendar. A copy the user
  * already holds is rewritten or removed only by its own organiser (RFC 5546
  * section 3.2.2): a message whose ORGANIZER is not the copy's, or whose copy
  * the user organises themselves, is refused — so an invitee who learnt the
@@ -161,6 +172,17 @@ public class CaldavInvitationLandingService {
    */
   private static final Duration   IMPORT_MARGIN = Duration.ofDays(1);
 
+  /** The methods a message may carry to be landed: an invitation, a published event, a cancellation, or none. */
+  private static final Set<String> LANDABLE_METHODS = Set.of("REQUEST", "PUBLISH", MailInvitation.CANCEL);
+
+  /**
+   * The UID agenda stamps on the object it mails for one of its own meetings:
+   * {@code agenda-event-<id>@<host>}, the host being this deployment's — the
+   * derivation agenda's own {@code Utils.icsUid} makes, which is deliberately
+   * not the per-user UID a CalDAV copy carries.
+   */
+  private static final Pattern    OWN_AGENDA_UID = Pattern.compile("^agenda-event-(\\d{1,18})@(.+)$");
+
   @Autowired
   private IdentityManager            identityManager;
 
@@ -190,6 +212,9 @@ public class CaldavInvitationLandingService {
 
   @Autowired
   private CaldavPushService          caldavPushService;
+
+  @Autowired
+  private CaldavEventPropagationService caldavEventPropagationService;
 
   @Autowired
   private AgendaCalendarService      agendaCalendarService;
@@ -252,6 +277,10 @@ public class CaldavInvitationLandingService {
     }
     IcsEvent master = masterOf(invitation);
     String uid = master.getUid();
+    Long ownMeeting = ownAgendaEventOf(uid);
+    if (ownMeeting != null) {
+      return heldInAgenda(ownMeeting, userIdentityId, invitation);
+    }
     Long mirrored = caldavSyncStorage.getMirrorEventIdOnServer(serverId, uid);
     if (mirrored != null && mirrored > 0) {
       throw new IllegalArgumentException("The invitation names a meeting this deployment wrote (" + uid
@@ -363,8 +392,9 @@ public class CaldavInvitationLandingService {
    * @param invitation the invitation
    * @return the master component
    * @throws IllegalArgumentException when the message is unreadable, carries no
-   *           master, names another event than the one shown, or no organiser
-   *           where one is needed
+   *           master, names another event than the one shown, is not an
+   *           invitation, a published event or a cancellation, or names no
+   *           organiser where one is needed
    */
   private IcsEvent masterOf(MailInvitation invitation) {
     List<IcsEvent> parsed;
@@ -386,6 +416,10 @@ public class CaldavInvitationLandingService {
     }
     if (!StringUtils.equals(master.getUid(), StringUtils.trim(invitation.uid()))) {
       throw new IllegalArgumentException("The invitation names event " + master.getUid() + ", not the one shown, " + invitation.uid());
+    }
+    if (invitation.method() != null && !LANDABLE_METHODS.contains(invitation.method())) {
+      // A REPLY, a COUNTER, a REFRESH… speak to an organiser, not to a calendar.
+      throw new IllegalArgumentException("A " + invitation.method() + " is not landed in a calendar");
     }
     boolean speaksForAnOrganiser = invitation.response() != null || invitation.isCancellation()
         || "REQUEST".equals(invitation.method());
@@ -546,8 +580,17 @@ public class CaldavInvitationLandingService {
         return null;
       }
       IcsEvent copy = masterOfCopy(existing.calendarData());
+      boolean newer = invitation.sequence() > (copy == null ? 0 : copy.getSequence());
+      if (copy != null && organiserOf(copy) == null && organiserOf(master) == null) {
+        // A published event, held as it was added: there is no organiser to
+        // take a newer revision from, and adding it again is adding nothing.
+        if (newer) {
+          throw new IllegalArgumentException("The published event " + master.getUid() + " the user holds names no organiser; it is not rewritten");
+        }
+        return existing.etag();
+      }
       refuseUnlessItsOrganiser(master, copy, addresses);
-      if (invitation.sequence() <= (copy == null ? 0 : copy.getSequence())) {
+      if (!newer) {
         return existing.etag();
       }
       PutResult result = calendarObjectWriters.writer(endpoint)
@@ -575,9 +618,12 @@ public class CaldavInvitationLandingService {
 
   /**
    * Removes the copy the user holds of an event its organiser called off: the
-   * object on the server, under the version just read; the mapping; the eXo
-   * event. In that order, so this add-on's own deletion listener, fired by
-   * agenda when the event goes, finds no copy left to remove.
+   * object on the server, under the version just read; then the eXo event,
+   * announced as the server's own change so this add-on's deletion listener
+   * does not ask the server again; then the mapping, dropped only once agenda
+   * agreed — the sweep's own order for an object that vanished. A copy the
+   * server does not serve is left alone: whether it is gone or the server is
+   * not answering, the sweep tells the two apart and this cannot.
    *
    * @param endpoint the account's endpoint
    * @param userIdentityId identity of the user
@@ -588,7 +634,8 @@ public class CaldavInvitationLandingService {
    * @return what was removed
    * @throws IllegalArgumentException when the cancellation is not the copy's
    *           organiser's, or the user organises the copy
-   * @throws IllegalStateException when the server or agenda refused the removal
+   * @throws IllegalStateException when the copy is not served, or the server
+   *           or agenda refused the removal
    */
   private LandedMailInvitation remove(CalDavEndpoint endpoint,
                                       long userIdentityId,
@@ -596,38 +643,113 @@ public class CaldavInvitationLandingService {
                                       ObjectSync known,
                                       IcsEvent master,
                                       List<String> addresses) {
-    Long eventId = known.getLocalEventId();
-    if (StringUtils.isNotBlank(known.getRemoteHref())) {
-      try {
-        CalendarObject existing = calDavClient.fetchObject(endpoint, known.getRemoteHref());
-        if (existing != null && StringUtils.isNotBlank(existing.calendarData())) {
-          refuseUnlessItsOrganiser(master, masterOfCopy(existing.calendarData()), addresses);
-          int status = calendarObjectWriters.writer(endpoint).deleteObject(endpoint, known.getRemoteHref(), existing.etag());
-          if (status == PutResult.PRECONDITION_FAILED) {
-            throw new IllegalStateException("The copy of " + master.getUid() + " at " + known.getRemoteHref()
-                + " changed while it was being removed");
-          }
-        }
-      } catch (CalDavException e) {
-        throw new IllegalStateException("The copy of " + master.getUid() + " could not be removed from " + known.getRemoteHref(), e);
+    CalendarObject existing;
+    try {
+      existing = StringUtils.isBlank(known.getRemoteHref()) ? null : calDavClient.fetchObject(endpoint, known.getRemoteHref());
+      if (existing == null || StringUtils.isBlank(existing.calendarData())) {
+        throw new IllegalStateException("The copy of " + master.getUid() + " at " + known.getRemoteHref()
+            + " is not served; the sweep decides what became of it");
       }
+      refuseUnlessItsOrganiser(master, masterOfCopy(existing.calendarData()), addresses);
+      int status = calendarObjectWriters.writer(endpoint).deleteObject(endpoint, known.getRemoteHref(), existing.etag());
+      if (status == PutResult.PRECONDITION_FAILED) {
+        throw new IllegalStateException("The copy of " + master.getUid() + " at " + known.getRemoteHref()
+            + " changed while it was being removed");
+      }
+    } catch (CalDavException e) {
+      throw new IllegalStateException("The copy of " + master.getUid() + " could not be removed from " + known.getRemoteHref(), e);
     }
-    if (known.getId() != null) {
-      caldavSyncStorage.deleteObject(known.getId());
-    }
-    if (eventId != null) {
+    long eventId = known.getLocalEventId() == null ? 0L : known.getLocalEventId();
+    long mappingId = known.getId() == null ? 0L : known.getId();
+    if (eventId > 0) {
+      caldavEventPropagationService.changedOnTheServer(eventId, mappingId);
       try {
         agendaEventService.deleteEventById(eventId, userIdentityId);
+      } catch (ObjectNotFoundException e) {
+        caldavEventPropagationService.notChangedAfterAll(eventId);
+        LOG.debug("Event {} was already gone from agenda; only its mapping is dropped", eventId, e);
       } catch (Exception e) { // NOSONAR agenda declares checked refusals
+        caldavEventPropagationService.notChangedAfterAll(eventId);
+        // The mapping stays: dropping it would hide an event eXo can no
+        // longer account for.
         throw new IllegalStateException("Event " + eventId + " of user " + userIdentityId + " could not be removed from agenda", e);
       }
+    }
+    if (mappingId > 0) {
+      caldavSyncStorage.deleteObject(mappingId);
     }
     LOG.debug("The cancelled invitation {} of user {} was removed from their calendar (event {}, {})",
               master.getUid(),
               userIdentityId,
               eventId,
               known.getRemoteHref());
-    return new LandedMailInvitation(eventId == null ? 0L : eventId, null, true);
+    return new LandedMailInvitation(eventId, null, true);
+  }
+
+  /**
+   * The agenda event one of this deployment's own meetings is, when the UID
+   * is the one agenda mails for it — {@code agenda-event-<id>@<this host>}.
+   * Another deployment's meeting, whose host differs, is an external event
+   * like any other.
+   *
+   * @param uid the message's UID
+   * @return the event id, or null when the UID is not agenda's own
+   */
+  private static Long ownAgendaEventOf(String uid) {
+    Matcher matcher = uid == null ? null : OWN_AGENDA_UID.matcher(uid.trim());
+    if (matcher == null || !matcher.matches()) {
+      return null;
+    }
+    String host = ownHost();
+    return host != null && host.equalsIgnoreCase(matcher.group(2)) ? Long.valueOf(matcher.group(1)) : null;
+  }
+
+  /**
+   * This deployment's host as agenda writes it into its UIDs: the configured
+   * domain without scheme, port or path, {@code exo} when none is configured.
+   *
+   * @return the host, or null when the portal could not be asked
+   */
+  private static String ownHost() {
+    String domain;
+    try {
+      domain = CommonsUtils.getCurrentDomain();
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("This deployment's own address could not be resolved; agenda's own UIDs go unrecognised", e);
+      return null;
+    }
+    return StringUtils.isBlank(domain) ? "exo" : domain.replaceFirst("^https?://", "").replaceAll("[/:].*$", "");
+  }
+
+  /**
+   * One of this deployment's own meetings, mailed by agenda to a user holding
+   * no copy of it: it is in agenda already, and agenda is where it is
+   * answered or cancelled. Adding it hands back agenda's own page when the
+   * user may read it; nothing is written anywhere, and an answer or a
+   * cancellation carried by such a message is refused — the message is the
+   * sender's, and a UID is not a reason to act on an event the user was not
+   * shown.
+   *
+   * @param eventId the agenda event
+   * @param userIdentityId identity of the user
+   * @param invitation the invitation
+   * @return the event, with its link
+   * @throws IllegalArgumentException for an answer or a cancellation, or when
+   *           the user may not read the event
+   */
+  private LandedMailInvitation heldInAgenda(long eventId, long userIdentityId, MailInvitation invitation) {
+    if (invitation.response() != null || invitation.isCancellation()) {
+      throw new IllegalArgumentException("The message names eXo meeting " + eventId + ", which is answered and cancelled in agenda");
+    }
+    try {
+      if (agendaEventService.getEventById(eventId, null, userIdentityId) == null) {
+        throw new IllegalArgumentException("The message names eXo meeting " + eventId + ", which does not exist");
+      }
+    } catch (IllegalAccessException e) {
+      throw new IllegalArgumentException("The message names eXo meeting " + eventId + ", which the user may not read", e);
+    }
+    LOG.debug("The message of user {} names eXo meeting {}; it is in agenda already and nothing is written", userIdentityId, eventId);
+    return new LandedMailInvitation(eventId, linkOf(eventId), false);
   }
 
   /**
