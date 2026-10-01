@@ -62,6 +62,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.agenda.service.AgendaUserSettingsService;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavRelayRequest;
 import org.exoplatform.caldav.model.CaldavRelayedResponse;
@@ -821,6 +822,26 @@ public class CaldavRelayServiceTest {
     // The message matters: without it this assertion passes on a version that
     // dropped the guard entirely and merely failed later, for another reason.
     assertEquals(CaldavRelayService.PROVIDER_ASKS_MESSAGE, refusal.getMessage());
+    org.mockito.Mockito.verifyNoInteractions(httpClient);
+    org.mockito.Mockito.verifyNoInteractions(caldavConnectorService);
+  }
+
+  /**
+   * A server whose credentials provider is not installed is refused before the
+   * provider is asked anything or the server probed, and nothing is recorded; the
+   * refusal is the typed one a managed login stays quiet about.
+   */
+  @Test
+  public void refusesToConnectAServerWhoseProviderIsNotInstalledBeforeAskingIt() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.isProviderMissing(PROVIDER)).thenReturn(true);
+
+    CalDavProviderMissingException refusal = assertThrows(CalDavProviderMissingException.class,
+                                                          () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME));
+
+    assertTrue(refusal.getMessage().contains(PROVIDER), refusal.getMessage());
+    verify(caldavCredentialsResolver, never()).requiresUserAction(anyString());
+    verify(caldavCredentialsResolver, never()).targetAccount(any(), anyString(), anyString());
     org.mockito.Mockito.verifyNoInteractions(httpClient);
     org.mockito.Mockito.verifyNoInteractions(caldavConnectorService);
   }
