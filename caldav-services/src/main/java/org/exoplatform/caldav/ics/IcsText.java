@@ -109,6 +109,27 @@ public final class IcsText {
   }
 
   /**
+   * A CAL-ADDRESS reduced to what two spellings of one person compare as: the
+   * {@code mailto:} scheme gone, trimmed, lower-cased. RFC 5545 makes the value
+   * a URI, and clients differ on the case of the scheme; the local part of a
+   * mailbox is technically case-sensitive, but no calendar server this
+   * connector talks to treats it as such.
+   *
+   * @param value a CAL-ADDRESS or a bare mail address, may be null
+   * @return the comparable address, or null when there is none
+   */
+  public static String bareAddress(String value) {
+    String trimmed = StringUtils.trimToNull(value);
+    if (trimmed == null) {
+      return null;
+    }
+    if (StringUtils.startsWithIgnoreCase(trimmed, "mailto:")) {
+      trimmed = StringUtils.trimToNull(trimmed.substring("mailto:".length()));
+    }
+    return trimmed == null ? null : trimmed.toLowerCase();
+  }
+
+  /**
    * The PARTSTAT token for an agenda attendee response.
    *
    * <p>
