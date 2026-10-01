@@ -2623,9 +2623,18 @@ public class CaldavSyncServiceTest {
     verify(caldavOutboundService, never()).bindPersonalCalendars(longThat(id -> id != USER), anyString());
     verify(caldavServerService, times(1)).missingProviderOf(OTHER_SERVER);
     ArgumentCaptor<Collection<Long>> excluded = ArgumentCaptor.captor();
-    verify(caldavSyncStorage, times(2)).getDueAccounts(eq(CalendarSyncStatus.ACTIVE), any(), excluded.capture(), any(), anyInt());
+    ArgumentCaptor<Collection<Long>> visited = ArgumentCaptor.captor();
+    verify(caldavSyncStorage, times(2)).getDueAccounts(eq(CalendarSyncStatus.ACTIVE),
+                                                       any(),
+                                                       excluded.capture(),
+                                                       visited.capture(),
+                                                       anyInt());
     assertEquals(Set.of(), Set.copyOf(excluded.getAllValues().get(0)), "nothing is known to wait before the first read");
     assertEquals(Set.of(OTHER_SERVER), Set.copyOf(excluded.getAllValues().get(1)), "the second read leaves the server out");
+    // The run's one set of served accounts, read once the run is over: the
+    // skipped accounts are left out by their server, not one by one, so the
+    // list the query binds stays within one batch.
+    assertEquals(Set.of(USER), Set.copyOf(visited.getValue()), "only the served account is excluded by its id");
   }
 
   /**
@@ -2670,18 +2679,18 @@ public class CaldavSyncServiceTest {
   }
 
   /**
-   * Sixty accounts on a server that does not answer cost one pass, not the
+   * Sixty accounts on a server that does not answer cost two passes, not the
    * batch (EXO-90803).
    *
    * <p>
    * An unreachable server stops a pass before anything is stamped, so its
    * accounts stay at the head of the due queue exactly as those of a server
-   * missing its provider do. Its first account's pass is what finds the
-   * silence — and, on a later run, what finds the server back — and the rest
-   * of its accounts are left for a later run.
+   * missing its provider do. The passes of its first two accounts are what
+   * find the silence — and, on a later run, what find the server back — and
+   * the rest of its accounts are left for a later run.
    */
   @Test
-  public void accountsOnAnUnreachableServerCostOnePassAndDoNotStarveTheOthers() {
+  public void accountsOnAnUnreachableServerCostTwoPassesAndDoNotStarveTheOthers() {
     givenDueQueue(waitingAccounts(60, OTHER_SERVER), USER);
     doThrow(new CalDavUnreachableException("The calendar server answered 502 for PROPFIND"))
                                                                                           .when(caldavOutboundService)
@@ -2690,15 +2699,15 @@ public class CaldavSyncServiceTest {
     givenServerCalendars();
     givenNoKnownPairs();
 
-    assertEquals(2, service.sweepDueAccounts(30L, 50));
+    assertEquals(3, service.sweepDueAccounts(30L, 50));
 
     verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
-    verify(caldavOutboundService, times(1)).bindPersonalCalendars(longThat(id -> id != USER), anyString());
+    verify(caldavOutboundService, times(2)).bindPersonalCalendars(longThat(id -> id != USER), anyString());
   }
 
   /**
-   * A pass that finds the provider missing although the registration said it
-   * was installed — it went away between the two — leaves the server's other
+   * Passes that find the provider missing although the registration said it
+   * was installed — it went away between the two — leave the server's other
    * accounts for a later run, as an unreachable server does.
    */
   @Test
@@ -2711,10 +2720,34 @@ public class CaldavSyncServiceTest {
     givenServerCalendars();
     givenNoKnownPairs();
 
-    assertEquals(2, service.sweepDueAccounts(30L, 50));
+    assertEquals(3, service.sweepDueAccounts(30L, 50));
 
     verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
-    verify(caldavOutboundService, times(1)).bindPersonalCalendars(longThat(id -> id != USER), anyString());
+    verify(caldavOutboundService, times(2)).bindPersonalCalendars(longThat(id -> id != USER), anyString());
+  }
+
+  /**
+   * One account whose own pass meets an unreachable server, while the rest of
+   * that server answers — a gateway timing out on one large home — does not
+   * hold back the other accounts of its server, although it is always that
+   * server's oldest.
+   */
+  @Test
+  public void oneUnreachableAccountDoesNotHoldBackItsServer() {
+    List<long[]> ahead = waitingAccounts(2, SERVER);
+    givenDueQueue(ahead, USER);
+    long failing = ahead.get(0)[0];
+    long healthyNeighbour = ahead.get(1)[0];
+    doThrow(new CalDavUnreachableException("The calendar server answered 504 for PROPFIND"))
+                                                                                          .when(caldavOutboundService)
+                                                                                          .bindPersonalCalendars(eq(failing), anyString());
+    givenServerCalendars();
+    givenNoKnownPairs();
+
+    assertEquals(3, service.sweepDueAccounts(30L, 50));
+
+    verify(caldavOutboundService).bindPersonalCalendars(healthyNeighbour, LOGIN);
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
   }
 
   /**
