@@ -88,6 +88,26 @@ describe('one-click connect', () => {
   });
 
   /**
+   * A server whose credentials provider is not installed cannot be connected at
+   * all: even a provider that would ask nothing does not connect in one click, and
+   * the drawer is told the server is not usable, so it warns instead of offering a
+   * form the server would refuse. Every other server is usable, whatever the list
+   * of unavailable providers looked like, or when it could not be read.
+   */
+  it('opens the drawer marked not usable for a server whose provider is not installed', () => {
+    const connector = createCaldavConnector(server, 0, {'bluemind-sudo': false}, ['bluemind-sudo']);
+
+    expect(connector.usable).toBe(false);
+    connector.connect();
+
+    expect(mockConnectThroughProvider).not.toHaveBeenCalled();
+    expect(document.dispatchEvent.mock.calls[0][0].detail.usable).toBe(false);
+    expect(createCaldavConnector(server, 0, {'bluemind-sudo': false}, ['acme-sudo']).usable).toBe(true);
+    expect(createCaldavConnector(server, 0, {'bluemind-sudo': false}, null).usable).toBe(true);
+    expect(createCaldavConnector(server, 0, {'bluemind-sudo': false}, {}).usable).toBe(true);
+  });
+
+  /**
    * The legacy connector never went through the factory and carries no such flag
    * at all. It must still open its drawer - and only a strict comparison against
    * false says so: a truthiness test reads `undefined` as "asks nothing" and would
