@@ -384,7 +384,7 @@ public class CaldavShareSubscriptionServiceTest {
    */
   @Test
   public void aPausedColleagueIsNotLoggedInAndTheirRowsWaitUncounted() {
-    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
+    when(caldavPendingSubscriptionStorage.attemptable(5, 0, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
     when(caldavSyncStorage.getPairs(BOB, SERVER)).thenReturn(List.of(pair(CalendarSyncStatus.PAUSED, CalendarSyncPauseReason.CREDENTIALS)));
 
     assertEquals(0, service.retryOwed(50));
@@ -400,7 +400,7 @@ public class CaldavShareSubscriptionServiceTest {
    */
   @Test
   public void aPauseWithoutARecordedReasonIsWaitedOnAsACredentialPause() {
-    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
+    when(caldavPendingSubscriptionStorage.attemptable(5, 0, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
     when(caldavSyncStorage.getPairs(BOB, SERVER)).thenReturn(List.of(pair(CalendarSyncStatus.PAUSED)));
 
     assertEquals(0, service.retryOwed(50));
@@ -416,7 +416,7 @@ public class CaldavShareSubscriptionServiceTest {
    */
   @Test
   public void aColleagueWhosePairsArePausedForFailingImportsIsStillSubscribed() {
-    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
+    when(caldavPendingSubscriptionStorage.attemptable(5, 0, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
     when(caldavSyncStorage.getPairs(BOB, SERVER)).thenReturn(List.of(pair(CalendarSyncStatus.PAUSED, CalendarSyncPauseReason.FAILING_IMPORTS),
                                                                      pair(CalendarSyncStatus.PAUSED, CalendarSyncPauseReason.FAILING_IMPORTS)));
 
@@ -435,7 +435,7 @@ public class CaldavShareSubscriptionServiceTest {
    */
   @Test
   public void aPauseMadeWhileTheLoginWasInFlightStillWaitsUncounted() {
-    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
+    when(caldavPendingSubscriptionStorage.attemptable(5, 0, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
     CalendarSync active = pair(CalendarSyncStatus.ACTIVE);
     CalendarSync pausedMeanwhile = pair(CalendarSyncStatus.PAUSED, CalendarSyncPauseReason.FAILING_IMPORTS);
     when(caldavSyncStorage.getPairs(BOB, SERVER)).thenReturn(List.of(active), List.of(pausedMeanwhile));
@@ -457,7 +457,7 @@ public class CaldavShareSubscriptionServiceTest {
    */
   @Test
   public void aRefusedLoginPausesTheColleaguesAccountAndCountsNothing() {
-    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
+    when(caldavPendingSubscriptionStorage.attemptable(5, 0, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
     CalendarSync active = pair(CalendarSyncStatus.ACTIVE);
     CalendarSync gone = pair(CalendarSyncStatus.REMOTE_GONE);
     when(caldavSyncStorage.getPairs(BOB, SERVER)).thenReturn(List.of(active, gone));
@@ -483,7 +483,7 @@ public class CaldavShareSubscriptionServiceTest {
   public void aRowDecidedAgainSinceItWasReadIsNotAttempted() {
     PendingSubscription stale = row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0);
     PendingSubscription current = row(2L, BOB, OTHER, PendingSubscriptionKind.SUBSCRIBE, 0);
-    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(stale, current));
+    when(caldavPendingSubscriptionStorage.attemptable(5, 0, 50)).thenReturn(List.of(stale, current));
     when(caldavPendingSubscriptionStorage.stillAsking(1L, PendingSubscriptionKind.SUBSCRIBE)).thenReturn(false);
 
     assertEquals(1, service.retryOwed(50));
@@ -504,7 +504,7 @@ public class CaldavShareSubscriptionServiceTest {
    */
   @Test
   public void aRevokeWaitsForTheDrainOfTheSameContainer() throws Exception {
-    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
+    when(caldavPendingSubscriptionStorage.attemptable(5, 0, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
     java.util.concurrent.atomic.AtomicBoolean revokeWaited = new java.util.concurrent.atomic.AtomicBoolean();
     Thread[] revoke = new Thread[1];
     org.mockito.Mockito.doAnswer(invocation -> {
@@ -582,8 +582,8 @@ public class CaldavShareSubscriptionServiceTest {
 
     verify(caldavConnectionIdentityService, never()).principalOf(BOB, waitingServer);
     verify(calDavClient, never()).endpoint(waitingServer, "bob");
-    verify(caldavPendingSubscriptionStorage, never()).refused(anyLong());
-    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), anyInt());
+    verify(caldavPendingSubscriptionStorage, never()).refused(anyLong(), any());
+    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), any(), anyInt());
     verify(caldavServerService).missingProviderOf(waitingServer);
     assertTrue(warnLines().isEmpty(), warnLines().toString());
 
