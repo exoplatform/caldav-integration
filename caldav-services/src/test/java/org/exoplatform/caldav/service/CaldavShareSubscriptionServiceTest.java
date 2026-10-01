@@ -290,7 +290,8 @@ public class CaldavShareSubscriptionServiceTest {
   // ---------------------------------------------------------------- the drain
 
   /**
-   * <b>Hole 2 of the brief.</b> The drain reads the owed table, not the
+   * <b>A colleague the account sweep never reaches.</b> The drain reads the
+   * owed table, not the
    * accounts: bob, who holds no pair of his own and is never swept, is
    * reached through his rows alone — one session for his two containers —
    * and each row is settled by its own answer: landed is settled, a refused
