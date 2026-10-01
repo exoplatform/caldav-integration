@@ -581,12 +581,10 @@ public class CaldavInvitationLandingService {
       }
       IcsEvent copy = masterOfCopy(existing.calendarData());
       boolean newer = invitation.sequence() > (copy == null ? 0 : copy.getSequence());
-      if (copy != null && organiserOf(copy) == null && organiserOf(master) == null) {
-        // A published event, held as it was added: there is no organiser to
-        // take a newer revision from, and adding it again is adding nothing.
-        if (newer) {
-          throw new IllegalArgumentException("The published event " + master.getUid() + " the user holds names no organiser; it is not rewritten");
-        }
+      if (copy != null && organiserOf(copy) == null && organiserOf(master) == null && !newer) {
+        // A published event, held as it was added: adding it again is adding
+        // nothing. A newer revision of it meets the organiser rule below, and
+        // there is no organiser to take it from.
         return existing.etag();
       }
       refuseUnlessItsOrganiser(master, copy, addresses);
