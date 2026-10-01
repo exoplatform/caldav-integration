@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mockStatic;
@@ -52,6 +53,7 @@ import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
+import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.agenda.util.EventIcsBuilder;
 import org.exoplatform.caldav.client.CalDavClient;
@@ -72,6 +74,8 @@ import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
+import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvider;
 import org.exoplatform.social.core.manager.IdentityManager;
@@ -206,6 +210,9 @@ public class CaldavInvitationLandingServiceTest {
 
   @Mock
   private AgendaEventService         agendaEventService;
+
+  @Mock
+  private CaldavEventPropagationService caldavEventPropagationService;
 
   @Mock
   private AgendaEventAttendeeService agendaEventAttendeeService;
@@ -658,12 +665,27 @@ public class CaldavInvitationLandingServiceTest {
     assertTrue(removed.removed());
     assertEquals(EVENT, removed.eventId());
     assertNull(removed.link());
-    InOrder order = inOrder(writer, caldavSyncStorage, agendaEventService);
+    InOrder order = inOrder(writer, caldavEventPropagationService, agendaEventService, caldavSyncStorage);
     order.verify(writer).deleteObject(endpoint, FILED_HREF, "\"e5\"");
-    order.verify(caldavSyncStorage).deleteObject(5L);
+    order.verify(caldavEventPropagationService).changedOnTheServer(EVENT, 5L);
     order.verify(agendaEventService).deleteEventById(EVENT, USER);
+    order.verify(caldavSyncStorage).deleteObject(5L);
     verify(caldavInboundService, never()).importInto(anyLong(), anyString(), any(), any(), any(), any());
     verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any(), eq(false));
+
+    // Already gone from agenda: done, the mapping dropped; agenda refusing:
+    // the mapping stays, the user is told; the copy not served: nothing here.
+    doThrow(new ObjectNotFoundException("gone")).when(agendaEventService).deleteEventById(EVENT, USER);
+    assertTrue(service.land(invitation("CANCEL", null, UID, cancel)).removed());
+    verify(caldavEventPropagationService, times(1)).notChangedAfterAll(EVENT);
+    verify(caldavSyncStorage, times(2)).deleteObject(5L);
+    doThrow(new IllegalAccessException("not yours")).when(agendaEventService).deleteEventById(EVENT, USER);
+    assertThrows(IllegalStateException.class, () -> service.land(invitation("CANCEL", null, UID, cancel)));
+    verify(caldavEventPropagationService, times(2)).notChangedAfterAll(EVENT);
+    verify(caldavSyncStorage, times(2)).deleteObject(5L);
+    when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(null);
+    assertThrows(IllegalStateException.class, () -> service.land(invitation("CANCEL", null, UID, cancel)));
+    verify(writer, times(3)).deleteObject(eq(endpoint), eq(FILED_HREF), anyString());
 
     when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF,
                                                                                        "\"e6\"",
@@ -671,11 +693,87 @@ public class CaldavInvitationLandingServiceTest {
                                                                                                     "mailto:somebody@else.example")));
     assertThrows(IllegalArgumentException.class, () -> service.land(invitation("CANCEL", null, UID, cancel)));
     verify(writer, never()).deleteObject(endpoint, FILED_HREF, "\"e6\"");
-    verify(agendaEventService, times(1)).deleteEventById(EVENT, USER);
+    verify(agendaEventService, times(3)).deleteEventById(EVENT, USER);
 
     when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF, "\"e7\"", COPY));
     when(writer.deleteObject(endpoint, FILED_HREF, "\"e7\"")).thenReturn(PutResult.PRECONDITION_FAILED);
     assertThrows(IllegalStateException.class, () -> service.land(invitation("CANCEL", null, UID, cancel)));
+  }
+
+  /**
+   * One of this deployment's own meetings, mailed by agenda with the UID
+   * agenda stamps ({@code agenda-event-<id>@<this host>}): it is in agenda
+   * already. Adding it hands back agenda's page and writes nothing; an answer
+   * or a cancellation carried by such a message is refused, and so is a meeting
+   * the user may not read. Another deployment's meeting is an external event.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anOwnAgendaMeetingIsNeverLandedTwice() throws Exception {
+    String own = "agenda-event-42@exo.example";
+    String published = REQUEST.replace("METHOD:REQUEST", "METHOD:PUBLISH").replace("UID:" + UID, "UID:" + own);
+    when(agendaEventService.getEventById(42L, null, USER)).thenReturn(new Event());
+    try (MockedStatic<CommonsUtils> platform = mockStatic(CommonsUtils.class);
+         MockedStatic<EventIcsBuilder> agenda = mockStatic(EventIcsBuilder.class)) {
+      platform.when(CommonsUtils::getCurrentDomain).thenReturn("https://exo.example:8443/portal");
+      agenda.when(() -> EventIcsBuilder.eventUrl(42L)).thenReturn("https://exo.example/portal/dw/agenda?eventId=42");
+
+      LandedMailInvitation held = service.land(invitation("PUBLISH", null, own, published));
+
+      assertEquals(42L, held.eventId());
+      assertEquals("https://exo.example/portal/dw/agenda?eventId=42", held.link());
+      verify(caldavInboundService, never()).importInto(anyLong(), anyString(), any(), any(), any(), any());
+      verify(writer, never()).putObject(any(), anyString(), anyString());
+      verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any(), eq(false));
+
+      String request = REQUEST.replace("UID:" + UID, "UID:" + own);
+      assertThrows(IllegalArgumentException.class,
+                   () -> service.land(invitation("REQUEST", EventAttendeeResponse.ACCEPTED, own, request)));
+      assertThrows(IllegalArgumentException.class,
+                   () -> service.land(invitation("CANCEL", null, own, request.replace("METHOD:REQUEST", "METHOD:CANCEL"))));
+      when(agendaEventService.getEventById(42L, null, USER)).thenThrow(new IllegalAccessException("not yours"));
+      assertThrows(IllegalArgumentException.class, () -> service.land(invitation("PUBLISH", null, own, published)));
+      verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any(), eq(false));
+
+      // Another deployment's meeting is an ordinary external event.
+      String elsewhere = published.replace(own, "agenda-event-42@other.example");
+      when(caldavSyncStorage.getObjectByUid(PAIR, "agenda-event-42@other.example")).thenReturn(null, null, mapping(HREF));
+      lenient().when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, "agenda-event-42@other.example")).thenReturn(null);
+      assertNotNull(service.land(invitation("PUBLISH", null, "agenda-event-42@other.example", elsewhere)));
+      verify(writer).putObject(any(), anyString(), anyString());
+    }
+  }
+
+  /**
+   * A published event without organiser, added once, is held as it is on a
+   * second add — there is no organiser to take a newer revision from, and
+   * adding again is adding nothing; a newer revision of it is refused. Only an
+   * invitation, a published event or a cancellation is landed at all.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aPublishedEventIsHeldAsItIsAndOtherMethodsAreRefused() throws Exception {
+    String published = REQUEST.replace("METHOD:REQUEST", "METHOD:PUBLISH").replace("ORGANIZER;CN=Olivia:mailto:" + ORGANISER + "\r\n", "");
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenAnswer(call -> mapping(FILED_HREF));
+    when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF, "\"e5\"", published.replace("METHOD:PUBLISH\r\n", "")));
+
+    assertNotNull(service.land(invitation("PUBLISH", null, UID, published)));
+    verify(writer, never()).updateObject(any(), anyString(), anyString(), anyString());
+    verify(writer, never()).putObject(any(), anyString(), anyString());
+
+    assertThrows(IllegalArgumentException.class,
+                 () -> service.land(new MailInvitation(LOGIN, MAILBOX, "PUBLISH", UID, 3, null, published.replace("SEQUENCE:2", "SEQUENCE:3"))));
+    verify(writer, never()).updateObject(any(), anyString(), anyString(), anyString());
+
+    for (String method : List.of("REPLY", "COUNTER", "REFRESH", "ADD", "DECLINECOUNTER")) {
+      assertThrows(IllegalArgumentException.class,
+                   () -> service.land(invitation(method, null, UID, REQUEST.replace("METHOD:REQUEST", "METHOD:" + method))),
+                   method);
+    }
+    // The one read the first add made; the refusals above read nothing.
+    verify(caldavInboundService, times(1)).importInto(anyLong(), anyString(), any(), any(), any(), any());
   }
 
   /**
