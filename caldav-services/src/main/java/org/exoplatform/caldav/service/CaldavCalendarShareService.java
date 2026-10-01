@@ -44,6 +44,7 @@ import org.exoplatform.caldav.client.AccessControlEntry;
 import org.exoplatform.caldav.client.AclWriteResult;
 import org.exoplatform.caldav.client.bluemind.BlueMindAclClient;
 import org.exoplatform.caldav.client.bluemind.BlueMindAclClient.BlueMindAce;
+import org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
@@ -267,9 +268,6 @@ public class CaldavCalendarShareService {
    * holds no more than reading.
    */
   private static final Set<String> BLUEMIND_READ_CLOSURE  = Set.of("Read", "Freebusy", "Invitation", "Visible");
-
-  /** A BlueMind user principal: the segment is the directory entry uid. */
-  private static final Pattern     BLUEMIND_PRINCIPAL     = Pattern.compile("/dav/principals/__uids__/([^/]+)");
 
   /**
    * A BlueMind calendar collection: the first segment is its owner's directory
@@ -1757,17 +1755,14 @@ public class CaldavCalendarShareService {
   }
 
   /**
-   * The directory entry uid a BlueMind principal names.
+   * The directory entry uid a BlueMind principal names, read by the one
+   * parser the subscription drain reads it with.
    *
    * @param principal a principal path, any spelling, may be null
    * @return the uid, or null when the path is not a BlueMind user principal
    */
   private static String blueMindUidOf(String principal) {
-    if (StringUtils.isBlank(principal)) {
-      return null;
-    }
-    Matcher matcher = BLUEMIND_PRINCIPAL.matcher(CalendarCollection.principalPathOf(principal));
-    return matcher.matches() ? matcher.group(1) : null;
+    return BlueMindContainerNaming.userUidOf(principal);
   }
 
   /**
