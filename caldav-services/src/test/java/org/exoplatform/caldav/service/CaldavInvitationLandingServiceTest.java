@@ -77,8 +77,9 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * <p>
  * What is pinned: the collection is read before anything is written, so an
  * object the mail server filed is found by its UID whatever its name; the
- * object reaches the server once, created only; the eXo event comes from the
- * import, never from a second create; the answer is written onto the copy with
+ * object reaches the server once, created only, under a name of this service's
+ * own; the eXo event comes from the import, never from a second create; the
+ * answer is written onto the copy on the version the server holds now, with
  * every address the copy may name the user by, the mailbox first, and then
  * recorded through agenda; a copy the user holds is rewritten by its organiser
  * only, and only by a newer revision; and nothing of the sender's is trusted
@@ -283,10 +284,13 @@ public class CaldavInvitationLandingServiceTest {
 
     InOrder order = inOrder(caldavInboundService, writer, caldavPushService, agendaEventAttendeeService);
     order.verify(caldavInboundService).importInto(USER, LOGIN, binding, calendar, FROM, TO);
+    ArgumentCaptor<String> href = ArgumentCaptor.forClass(String.class);
     ArgumentCaptor<String> stored = ArgumentCaptor.forClass(String.class);
-    order.verify(writer).putObject(eq(endpoint), eq(HREF), stored.capture());
+    order.verify(writer).putObject(eq(endpoint), href.capture(), stored.capture());
     order.verify(caldavInboundService).importInto(USER, LOGIN, binding, calendar, FROM, TO);
     order.verify(caldavPushService).pushAnswerOnto(USER, LOGIN, mapping(HREF), List.of(MAILBOX, ACCOUNT), "ACCEPTED", EVENT);
+    assertTrue(href.getValue().matches(HOME + "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.ics"),
+               "named by this service, never by the sender: " + href.getValue());
     order.verify(agendaEventAttendeeService).sendEventResponse(EVENT, USER, EventAttendeeResponse.ACCEPTED, false);
     String document = stored.getValue().replace("\r\n ", "");
     assertFalse(document.contains("METHOD:"), document);
@@ -319,13 +323,26 @@ public class CaldavInvitationLandingServiceTest {
     verify(caldavPushService).pushAnswerOnto(USER, LOGIN, mapping(FILED_HREF), List.of(MAILBOX, ACCOUNT), "DECLINED", EVENT);
     verify(agendaEventAttendeeService).sendEventResponse(EVENT, USER, EventAttendeeResponse.DECLINED, false);
 
+    // Mapped before this answer, and moved on the server since the last sweep:
+    // the copy is read again through the sweep, and the answer is written on
+    // the version the server holds now, not on the one the sweep recorded.
     when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(mapping(FILED_HREF));
     when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF, "\"e5\"", COPY));
     assertTrue(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
-    verify(caldavInboundService, times(1)).importInto(anyLong(), anyString(), any(), any(), any(), any());
+    verify(caldavInboundService, times(2)).importInto(USER, LOGIN, binding, calendar, FROM, TO);
     verify(writer, never()).putObject(any(), anyString(), anyString());
     verify(writer, never()).updateObject(any(), anyString(), anyString(), anyString());
+    ArgumentCaptor<ObjectSync> answered = ArgumentCaptor.forClass(ObjectSync.class);
+    verify(caldavPushService).pushAnswerOnto(eq(USER), eq(LOGIN), answered.capture(), eq(List.of(MAILBOX, ACCOUNT)), eq("TENTATIVE"), eq(EVENT));
+    assertEquals("\"e5\"", answered.getValue().getEtag(), "the version the server holds now");
+    assertEquals(FILED_HREF, answered.getValue().getRemoteHref());
+    assertEquals(EVENT, answered.getValue().getLocalEventId());
     verify(agendaEventAttendeeService).sendEventResponse(EVENT, USER, EventAttendeeResponse.TENTATIVE, false);
+
+    // The sweep's record and the server agree: the row is answered on as is.
+    when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF, "\"e1\"", COPY));
+    assertTrue(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
+    verify(caldavPushService).pushAnswerOnto(USER, LOGIN, mapping(FILED_HREF), List.of(MAILBOX, ACCOUNT), "TENTATIVE", EVENT);
   }
 
   /**
@@ -348,6 +365,9 @@ public class CaldavInvitationLandingServiceTest {
     assertTrue(rewritten.getValue().contains("SEQUENCE:2"), rewritten.getValue());
     assertTrue(rewritten.getValue().replace("\r\n ", "").contains("PARTSTAT=TENTATIVE"), rewritten.getValue());
     verify(caldavInboundService).importInto(USER, LOGIN, binding, calendar, FROM, TO);
+    ArgumentCaptor<ObjectSync> answered = ArgumentCaptor.forClass(ObjectSync.class);
+    verify(caldavPushService).pushAnswerOnto(eq(USER), eq(LOGIN), answered.capture(), any(), eq("TENTATIVE"), eq(EVENT));
+    assertEquals("\"w\"", answered.getValue().getEtag(), "the version the rewrite produced");
 
     // The master is older but an override of the copy carries a higher
     // revision: the master still decides.
@@ -360,11 +380,13 @@ public class CaldavInvitationLandingServiceTest {
     when(calDavClient.fetchObject(endpoint, HREF)).thenReturn(new CalendarObject(HREF, "\"e6\"", overrideNewer));
     assertTrue(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
     verify(writer).updateObject(eq(endpoint), eq(HREF), anyString(), eq("\"e6\""));
+    verify(caldavInboundService, times(2)).importInto(USER, LOGIN, binding, calendar, FROM, TO);
 
     // An equal revision leaves the copy alone.
     when(calDavClient.fetchObject(endpoint, HREF)).thenReturn(new CalendarObject(HREF, "\"e7\"", COPY));
     assertTrue(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
     verify(writer, never()).updateObject(eq(endpoint), eq(HREF), anyString(), eq("\"e7\""));
+    verify(caldavInboundService, times(3)).importInto(USER, LOGIN, binding, calendar, FROM, TO);
   }
 
   /**
@@ -426,22 +448,50 @@ public class CaldavInvitationLandingServiceTest {
   }
 
   /**
-   * A write the server refuses, and an object the import did not bring in, are
-   * failures the user is told of, not a silent "no calendar"; a 412 on the
-   * creation is not one — something is at that path and the read decides.
+   * A write the server refuses — a 403, or a 412 on a name this service just
+   * minted — and an object the import did not bring in are failures the user is
+   * told of, not a silent "no calendar"; agenda is told nothing.
+   *
+   * @throws Exception never
    */
   @Test
-  public void aRefusedWriteAndAnObjectNotImportedAreFailures() {
+  public void aRefusedWriteAndAnObjectNotImportedAreFailures() throws Exception {
     when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(null);
-    when(writer.putObject(eq(endpoint), eq(HREF), anyString())).thenThrow(new CalDavForbiddenException("no-uid-conflict"));
+    when(writer.putObject(eq(endpoint), anyString(), anyString())).thenThrow(new CalDavForbiddenException("no-uid-conflict"));
     assertThrows(IllegalStateException.class, () -> service.land(invitation(EventAttendeeResponse.ACCEPTED)));
 
-    when(writer.putObject(eq(endpoint), eq(HREF), anyString())).thenReturn(new PutResult(201, "\"w\"", null));
+    when(writer.putObject(eq(endpoint), anyString(), anyString())).thenReturn(new PutResult(PutResult.PRECONDITION_FAILED, null, null));
     assertThrows(IllegalStateException.class, () -> service.land(invitation(EventAttendeeResponse.ACCEPTED)));
 
-    when(writer.putObject(eq(endpoint), eq(HREF), anyString())).thenReturn(new PutResult(PutResult.PRECONDITION_FAILED, null, null));
-    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(null, null, mapping(HREF));
-    assertTrue(service.land(invitation(EventAttendeeResponse.ACCEPTED)));
+    when(writer.putObject(eq(endpoint), anyString(), anyString())).thenReturn(new PutResult(201, "\"w\"", null));
+    assertThrows(IllegalStateException.class, () -> service.land(invitation(EventAttendeeResponse.ACCEPTED)));
+    verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any(), eq(false));
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
+  }
+
+  /**
+   * The sender's UID is content, never a path: whatever it holds — a space, a
+   * slash, an encoded parent, a non-ASCII letter — the object is created under
+   * a name of this service's own, and the UID travels inside it.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void theSendersUidIsNeverAPath() throws Exception {
+    for (String uid : List.of("weird uid", "../../x/y", "a%2E%2E%2Fb", "r\u00e9union@partner.example", "hash#frag")) {
+      when(caldavSyncStorage.getObjectByUid(PAIR, uid)).thenReturn(null, null, mapping(HOME + "x.ics"));
+      lenient().when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, uid)).thenReturn(null);
+      String request = REQUEST.replace("UID:" + UID, "UID:" + uid);
+
+      assertTrue(service.land(invitation(EventAttendeeResponse.ACCEPTED, uid, request)));
+    }
+    ArgumentCaptor<String> hrefs = ArgumentCaptor.forClass(String.class);
+    ArgumentCaptor<String> documents = ArgumentCaptor.forClass(String.class);
+    verify(writer, times(5)).putObject(eq(endpoint), hrefs.capture(), documents.capture());
+    for (String href : hrefs.getAllValues()) {
+      assertTrue(href.matches(HOME + "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.ics"), href);
+    }
+    assertTrue(documents.getAllValues().get(1).replace("\r\n ", "").contains("UID:../../x/y"), "the UID stays content");
   }
 
   /**
@@ -465,7 +515,7 @@ public class CaldavInvitationLandingServiceTest {
     when(caldavSyncStorage.getObjectByUid(OTHER, UID)).thenReturn(null);
 
     assertTrue(service.land(invitation(EventAttendeeResponse.ACCEPTED)));
-    verify(writer).putObject(eq(endpoint), eq(HREF), anyString());
+    verify(writer).putObject(eq(endpoint), anyString(), anyString());
     verify(caldavInboundService, times(2)).importInto(eq(USER), eq(LOGIN), eq(binding), eq(calendar), any(), any());
 
     when(caldavSyncStorage.getObjectByUid(OTHER, UID)).thenReturn(mapping(OTHER_HOME + UID + ".ics"));
@@ -473,8 +523,11 @@ public class CaldavInvitationLandingServiceTest {
                                                                                                      "\"e9\"",
                                                                                                      COPY));
     assertTrue(service.land(invitation(EventAttendeeResponse.ACCEPTED)));
-    verify(caldavInboundService, never()).importInto(eq(USER), eq(LOGIN), eq(work), eq(workCalendar), any(), any());
-    verify(caldavPushService).pushAnswerOnto(eq(USER), eq(LOGIN), eq(mapping(OTHER_HOME + UID + ".ics")), any(), eq("ACCEPTED"), eq(EVENT));
+    verify(caldavInboundService, times(1)).importInto(eq(USER), eq(LOGIN), eq(work), eq(workCalendar), any(), any());
+    ArgumentCaptor<ObjectSync> answered = ArgumentCaptor.forClass(ObjectSync.class);
+    verify(caldavPushService, times(2)).pushAnswerOnto(eq(USER), eq(LOGIN), answered.capture(), any(), eq("ACCEPTED"), eq(EVENT));
+    assertEquals(OTHER_HOME + UID + ".ics", answered.getValue().getRemoteHref());
+    assertEquals("\"e9\"", answered.getValue().getEtag());
   }
 
   /**
