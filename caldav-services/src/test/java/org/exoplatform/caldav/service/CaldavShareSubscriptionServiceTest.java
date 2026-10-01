@@ -539,16 +539,16 @@ public class CaldavShareSubscriptionServiceTest {
 
     assertEquals(1, service.retryOwed(50), "carol's row landed");
 
-    verify(caldavPendingSubscriptionStorage, never()).refused(anyLong());
-    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), anyInt());
+    verify(caldavPendingSubscriptionStorage, never()).refused(anyLong(), any());
+    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), any(), anyInt());
     verify(subscriptionSessions, never()).asSubscriber(eq(bobEndpoint), anyString(), any());
     assertTrue(warnLines().isEmpty(), warnLines().toString());
     assertTrue(infoLines().stream().noneMatch(line -> line.contains("acme-sudo")), infoLines().toString());
 
     doThrow(new CalDavException("No CalDAV server is declared to talk to")).when(calDavClient).endpoint(SERVER, "bob");
     service.retryOwed(50);
-    verify(caldavPendingSubscriptionStorage).refused(1L);
-    verify(caldavPendingSubscriptionStorage).refused(2L);
+    verify(caldavPendingSubscriptionStorage).refused(eq(1L), any());
+    verify(caldavPendingSubscriptionStorage).refused(eq(2L), any());
   }
 
   /**
