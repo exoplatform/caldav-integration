@@ -408,6 +408,12 @@ public class CaldavInvitationLandingServiceTest {
     verify(caldavPushService, times(2)).pushAnswerOnto(eq(USER), eq(LOGIN), answered.capture(), any(), eq("TENTATIVE"), eq(EVENT));
     assertEquals("\"e5b\"", answered.getValue().getEtag(), "read back after a write the server answered without a version");
 
+    // A copy served without a version cannot take a newer revision: the
+    // server's shortcoming, told as a failure, never as the sender's fault.
+    when(calDavClient.fetchObject(endpoint, HREF)).thenReturn(new CalendarObject(HREF, null, older));
+    assertThrows(IllegalStateException.class, () -> service.land(invitation(EventAttendeeResponse.TENTATIVE)));
+    verify(writer, never()).updateObject(eq(endpoint), eq(HREF), anyString(), eq((String) null));
+
     // The master is older but an override of the copy carries a higher
     // revision: the master still decides.
     String overrideNewer = older.replace("END:VEVENT\r\n",
@@ -713,7 +719,10 @@ public class CaldavInvitationLandingServiceTest {
   public void anOwnAgendaMeetingIsNeverLandedTwice() throws Exception {
     String own = "agenda-event-42@exo.example";
     String published = REQUEST.replace("METHOD:REQUEST", "METHOD:PUBLISH").replace("UID:" + UID, "UID:" + own);
-    when(agendaEventService.getEventById(42L, null, USER)).thenReturn(new Event());
+    Event meeting = new Event();
+    meeting.setSummary(" weekly SYNC ");
+    meeting.setStart(java.time.ZonedDateTime.parse("2026-10-05T10:00:00+02:00[Europe/Paris]"));
+    when(agendaEventService.getEventById(42L, null, USER)).thenReturn(meeting);
     try (MockedStatic<CommonsUtils> platform = mockStatic(CommonsUtils.class);
          MockedStatic<EventIcsBuilder> agenda = mockStatic(EventIcsBuilder.class)) {
       platform.when(CommonsUtils::getCurrentDomain).thenReturn("https://exo.example:8443/portal");
@@ -723,6 +732,13 @@ public class CaldavInvitationLandingServiceTest {
 
       assertEquals(42L, held.eventId());
       assertEquals("https://exo.example/portal/dw/agenda?eventId=42", held.link());
+      assertTrue(held.alreadyHeld(), "nothing was written: it is in agenda already");
+      assertFalse(held.removed());
+      // The sender's UID alone links nothing: the message must describe the meeting.
+      assertThrows(IllegalArgumentException.class,
+                   () -> service.land(invitation("PUBLISH", null, own, published.replace("SUMMARY:Weekly sync", "SUMMARY:Lunch"))));
+      assertThrows(IllegalArgumentException.class,
+                   () -> service.land(invitation("PUBLISH", null, own, published.replace("20261005T100000", "20261012T100000"))));
       verify(caldavInboundService, never()).importInto(anyLong(), anyString(), any(), any(), any(), any());
       verify(writer, never()).putObject(any(), anyString(), anyString());
       verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any(), eq(false));
