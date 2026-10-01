@@ -2944,8 +2944,8 @@ public class CaldavSyncServiceTest {
   public void aMissingCredentialsProviderStopsEveryPassQuietlyAndRecordsNothing() {
     givenServerCalendars();
     givenNoKnownPairs();
-    doThrow(new CalDavProviderMissingException("No credentials provider named bluemind-sudo is installed"))
-        .doThrow(new CalDavProviderMissingException("No credentials provider named bluemind-sudo is installed"))
+    doThrow(CalDavProviderMissingException.named("bluemind-sudo"))
+        .doThrow(CalDavProviderMissingException.named("bluemind-sudo"))
         .doReturn(List.of())
         .when(caldavOutboundService)
         .bindPersonalCalendars(USER, LOGIN);
@@ -2981,7 +2981,7 @@ public class CaldavSyncServiceTest {
   @Test
   public void aMissingCredentialsProviderOnConnectIsNotAskedASecondTime() {
     givenConnectedIdentity();
-    doThrow(new CalDavProviderMissingException("No credentials provider named bluemind-sudo is installed"))
+    doThrow(CalDavProviderMissingException.named("bluemind-sudo"))
         .when(caldavOutboundService)
         .bindPersonalCalendars(USER, LOGIN);
 
