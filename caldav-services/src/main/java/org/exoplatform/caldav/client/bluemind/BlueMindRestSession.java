@@ -188,13 +188,24 @@ public class BlueMindRestSession {
    * call needs; {@link Session#close()} logs it out. The exceptions are those
    * of {@link #call(CalDavEndpoint, Function)} for the login half.
    *
+   * <p>
+   * A refused login tells the configured provider, once, that the material it
+   * produced was refused, so a caching provider does not hand it out again
+   * until it expires. Only a refusal: an unreachable server or any other
+   * answer says nothing about the material.
+   *
    * @param endpoint the account's DAV endpoint, minted from the registry
    * @return the session, to close
    */
   public Session open(CalDavEndpoint endpoint) {
     String root = apiRootOf(endpoint);
     String[] account = accountOf(endpoint);
-    return new Session(root, login(root, account[0], account[1]));
+    try {
+      return new Session(root, login(root, account[0], account[1]));
+    } catch (CalDavAuthenticationException e) {
+      caldavCredentialsResolver.invalidate(endpoint.getServerId(), endpoint.getAuthProviderName(), endpoint.getExoLogin());
+      throw e;
+    }
   }
 
   /**
