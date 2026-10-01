@@ -26,6 +26,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -119,6 +120,15 @@ public class CaldavSyncService {
    * one that has wedged.
    */
   private static final long           IN_FLIGHT_WAIT_SECONDS   = 20L;
+
+  /**
+   * How many times one sweep run reads the head of the due accounts at most.
+   * A read is repeated only when the one before it left accounts out because
+   * their server turned out not to be talkable, so this bounds the run's
+   * queries when many servers are in that state at once; the accounts beyond
+   * it wait for the next run (EXO-90803).
+   */
+  private static final int            MAX_DUE_READS_PER_SWEEP  = 20;
 
   /**
    * The pieces of outward work a pass may do once the calendars themselves are
@@ -418,65 +428,174 @@ public class CaldavSyncService {
    * it can list anything.
    *
    * <p>
-   * Bounded on purpose: one run takes a page of the stalest bindings and
-   * stops. A sweep that tries to cover every account in one pass is one that
-   * eventually cannot finish, and the accounts it never reached are exactly
-   * the ones that needed it.
+   * Bounded on purpose: one run serves at most one batch of the stalest
+   * accounts and stops. A sweep that tries to cover every account in one pass
+   * is one that eventually cannot finish, and the accounts it never reached
+   * are exactly the ones that needed it.
    *
    * <p>
    * Bindings are grouped by account before anything is synchronised —
    * synchronisation is per account, not per collection, and an account with
    * five stale calendars must cost one pass rather than five.
    *
+   * <p>
+   * <b>The accounts of a server that cannot be talked to take no place in the
+   * batch</b> (EXO-90803). A server whose credentials provider is not
+   * installed, or that does not answer, never lets a pass stamp
+   * {@code lastSyncEnd}: its accounts stay the stalest of all, and fifty of
+   * them at the head of the queue took every batch, so no other server was
+   * ever swept in the background. Such a server is now left out for the rest
+   * of the run, and the head of the queue is read again without it, up to
+   * {@value #MAX_DUE_READS_PER_SWEEP} reads. A server missing its provider is
+   * recognised before any pass, from its registration; an unreachable one by
+   * the one pass that meets the silence, which is also what finds out, every
+   * run, that it has come back.
+   *
    * @param staleMinutes how long since a successful sync makes a binding due
-   * @param batchSize how many stale bindings one run looks at
+   * @param batchSize how many accounts one run serves at most
    * @return how many accounts were synchronised
    */
   public int sweepDueAccounts(long staleMinutes, int batchSize) {
     Date before = Date.from(Instant.now().minus(Duration.ofMinutes(staleMinutes)));
-    // Accounts, not bindings. Paging the bindings and folding them into
-    // accounts afterwards meant a batch could be filled by one user's
-    // collections: a user holding forty of them, all stale after an outage,
-    // took every run and nobody else was swept at all — the log said "swept 1
-    // account" and looked like throughput rather than starvation. A batch of
-    // ten is now ten users, whatever each of them holds.
-    List<Long> accounts = caldavSyncStorage.getDueAccounts(CalendarSyncStatus.ACTIVE, before, 0, batchSize)
-                                           .getContent();
-    if (accounts.isEmpty()) {
-      return 0;
-    }
+    // Whether each server met this run cannot be talked to, learnt as servers
+    // are met; the ones that cannot are left out of every later read.
+    Map<Long, Boolean> waiting = new HashMap<>();
+    Set<Long> visited = new HashSet<>();
+    int served = 0;
+    int skipped = 0;
     int swept = 0;
-    for (Long userIdentityId : accounts) {
-      String username = loginOf(userIdentityId);
-      if (username == null) {
-        continue;
+    for (int read = 0; read < MAX_DUE_READS_PER_SWEEP && served < batchSize; read++) {
+      int wanted = batchSize - served;
+      // Accounts, not bindings. Paging the bindings and folding them into
+      // accounts afterwards meant a batch could be filled by one user's
+      // collections: a user holding forty of them, all stale after an outage,
+      // took every run and nobody else was swept at all — the log said "swept 1
+      // account" and looked like throughput rather than starvation. A batch of
+      // ten is now ten users, whatever each of them holds.
+      List<Long> accounts = caldavSyncStorage.getDueAccounts(CalendarSyncStatus.ACTIVE,
+                                                             before,
+                                                             waitingServers(waiting),
+                                                             visited,
+                                                             wanted);
+      for (Long userIdentityId : accounts) {
+        visited.add(userIdentityId);
+        Long serverId = serverToSweep(userIdentityId, waiting);
+        if (serverId == null) {
+          skipped++;
+          continue;
+        }
+        served++;
+        if (sweepAccount(userIdentityId, serverId, waiting)) {
+          swept++;
+        }
       }
-      try {
-        // syncNow, not syncIfDue: these bindings were selected precisely
-        // because they are stale, and the throttle would refuse the very
-        // accounts the sweep exists to reach. The per-user guard still makes
-        // this return at once when the owner's own page load is already
-        // synchronising them.
-        // The background entry: this is the one pass that also verifies the
-        // copies eXo pushed, because it is the only one nobody is waiting for.
-        syncInBackground(userIdentityId, username);
-        swept++;
-      } catch (RuntimeException | LinkageError e) {
-        // One account must not cost the rest of the page. It stays stale and
-        // comes back at the top of the next run.
-        //
-        // LinkageError is caught beside the exceptions on purpose. A missing
-        // optional dependency of the iCalendar parser — ical4j builds its
-        // EMAIL parameter through commons-validator — surfaced as a
-        // NoClassDefFoundError while reading an object a client had written,
-        // and being an Error it walked straight past a RuntimeException
-        // guard: the sweep died mid-run, every run, and every account after
-        // the failing one silently stopped synchronising. A pass that visits
-        // accounts on everyone's behalf cannot let one object end the pass.
-        LOG.warn("The CalDAV account of user {} could not be swept", userIdentityId, e);
+      if (accounts.size() < wanted) {
+        // The head held fewer accounts than asked for: nothing is left behind
+        // it, whatever this read skipped.
+        break;
       }
+    }
+    if (skipped > 0) {
+      LOG.debug("{} CalDAV account(s) were left for a later run: their server cannot be talked to", skipped);
     }
     return swept;
+  }
+
+  /**
+   * The servers a sweep run has found it cannot talk to.
+   *
+   * @param waiting whether each server met so far cannot be talked to
+   * @return the keys of those that cannot
+   */
+  private static Set<Long> waitingServers(Map<Long, Boolean> waiting) {
+    return waiting.entrySet()
+                  .stream()
+                  .filter(Map.Entry::getValue)
+                  .map(Map.Entry::getKey)
+                  .collect(Collectors.toSet());
+  }
+
+  /**
+   * The server a due account is swept on, unless that server cannot be talked
+   * to.
+   *
+   * <p>
+   * A failure to read the account or its server is not a reason to leave it
+   * out: the account is swept, and its pass meets and reports the same
+   * failure.
+   *
+   * @param userIdentityId identity of the user
+   * @param waiting whether each server met so far cannot be talked to, filled
+   *          as servers are met
+   * @return the server key, zero for the legacy property, or null when the
+   *         account is left for a later run
+   */
+  private Long serverToSweep(long userIdentityId, Map<Long, Boolean> waiting) {
+    long serverId = 0L;
+    try {
+      serverId = serverIdOf(caldavConnectorStorage.getCaldavSetting(userIdentityId));
+      if (Boolean.TRUE.equals(waiting.computeIfAbsent(serverId, this::waitsForItsProvider))) {
+        return null;
+      }
+    } catch (RuntimeException | LinkageError e) {
+      LOG.debug("The server of the CalDAV account of user {} could not be read before its pass", userIdentityId, e);
+    }
+    return serverId;
+  }
+
+  /**
+   * Sweeps one due account, and records when its pass found that its server
+   * cannot be talked to.
+   *
+   * @param userIdentityId identity of the user
+   * @param serverId the server the account is on, zero for the legacy property
+   * @param waiting whether each server met so far cannot be talked to, updated
+   * @return true when a pass ran, false when the account was left as it was
+   */
+  private boolean sweepAccount(long userIdentityId, long serverId, Map<Long, Boolean> waiting) {
+    String username = loginOf(userIdentityId);
+    if (username == null) {
+      return false;
+    }
+    try {
+      // syncNow's rule, not syncIfDue's: these bindings were selected precisely
+      // because they are stale, and the throttle would refuse the very
+      // accounts the sweep exists to reach. The per-user guard still makes
+      // this return at once when the owner's own page load is already
+      // synchronising them.
+      // The background entry, as syncInBackground: this is the one pass that
+      // also verifies the copies eXo pushed, because it is the only one nobody
+      // is waiting for.
+      if (sync(userIdentityId, username, false, ALL_OUTBOUND_PHASES)) {
+        waiting.put(serverId, Boolean.TRUE);
+      }
+      return true;
+    } catch (RuntimeException | LinkageError e) {
+      // One account must not cost the rest of the page. It stays stale and
+      // comes back at the top of the next run.
+      //
+      // LinkageError is caught beside the exceptions on purpose. A missing
+      // optional dependency of the iCalendar parser — ical4j builds its
+      // EMAIL parameter through commons-validator — surfaced as a
+      // NoClassDefFoundError while reading an object a client had written,
+      // and being an Error it walked straight past a RuntimeException
+      // guard: the sweep died mid-run, every run, and every account after
+      // the failing one silently stopped synchronising. A pass that visits
+      // accounts on everyone's behalf cannot let one object end the pass.
+      LOG.warn("The CalDAV account of user {} could not be swept", userIdentityId, e);
+      return false;
+    }
+  }
+
+  /**
+   * Whether a server's credentials provider is not installed, so no pass on it
+   * can produce credentials.
+   *
+   * @param serverId the server key, zero for the legacy property
+   * @return true when its registration names a provider that is not installed
+   */
+  private boolean waitsForItsProvider(long serverId) {
+    return caldavServerService.missingProviderOf(serverId == 0L ? null : serverId) != null;
   }
 
   /**
@@ -1162,11 +1281,16 @@ public class CaldavSyncService {
    *          {@link OutboundPhase}. Empty for every pass somebody is waiting
    *          for; the whole set for the sweep, which may spend 30 seconds
    *          verifying because no request is blocked on it.
+   * @return true when the pass stopped because the account's server cannot be
+   *         talked to — it did not answer, or its credentials provider is not
+   *         installed — which is what the sweep reads to leave that server's
+   *         other accounts for a later run (EXO-90803); false otherwise,
+   *         including when no pass ran
    */
-  private void sync(long userIdentityId, String username, boolean awaitPassInFlight, Set<OutboundPhase> outboundPhases) {
+  private boolean sync(long userIdentityId, String username, boolean awaitPassInFlight, Set<OutboundPhase> outboundPhases) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
     if (!connected(settings)) {
-      return;
+      return false;
     }
     // One sync per user at a time. Two page loads a second apart would
     // otherwise both create the same calendar, and the second would find the
@@ -1181,7 +1305,7 @@ public class CaldavSyncService {
       if (awaitPassInFlight && running.threadId() != Thread.currentThread().threadId()) {
         awaitPass(userIdentityId, running);
       }
-      return;
+      return false;
     }
     try {
       // First, before the home is listed: a calendar a colleague shared from
@@ -1224,6 +1348,7 @@ public class CaldavSyncService {
       // credential refusal — nobody has to do anything for a server to come
       // back, and the next pass is the one that finds out.
       noteUnreachable(userIdentityId, settings, e);
+      return true;
     } catch (CalDavProviderMissingException e) {
       // The server's credentials provider is not installed — an add-on's, while
       // the add-on is not, or has not started yet. The resolver has said so once
@@ -1232,6 +1357,7 @@ public class CaldavSyncService {
       // stack. Nothing is recorded either: no pause, no unreachable spell, no
       // throttle stamp, so the first pass after the provider appears runs.
       LOG.debug("The CalDAV calendars of user {} are not synchronised: {}", userIdentityId, e.getMessage());
+      return true;
     } catch (RuntimeException e) {
       // A sync that fails is not an error the caller can act on — the page it
       // was triggered from has its own events to show. It is logged and the
@@ -1243,6 +1369,7 @@ public class CaldavSyncService {
       // over, not for it to have succeeded.
       pass.done().complete(null);
     }
+    return false;
   }
 
   /**
