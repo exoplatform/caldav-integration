@@ -378,16 +378,16 @@ public class CaldavPendingSubscriptionStorageTest {
   public void refusedCountsOneAndAbandonedSpendsTheBudgetWhole() {
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
     inTransaction(() -> storage.owe(CAROL, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
-    long bobs = storage.attemptable(BOB, 5, 10).get(0).getId();
-    long carols = storage.attemptable(CAROL, 5, 10).get(0).getId();
+    long bobs = storage.attemptableOf(BOB, 5, 10).get(0).getId();
+    long carols = storage.attemptableOf(CAROL, 5, 10).get(0).getId();
 
     for (int i = 0; i < 4; i++) {
       inTransaction(() -> storage.refused(bobs, PendingSubscriptionKind.SUBSCRIBE));
     }
     inTransaction(() -> storage.abandoned(carols, PendingSubscriptionKind.SUBSCRIBE, 5));
 
-    assertEquals(4, only(storage.attemptable(BOB, 5, 10)).getAttempts());
-    assertTrue(storage.attemptable(CAROL, 5, 10).isEmpty(), "abandoned is below the bound for good");
+    assertEquals(4, only(storage.attemptableOf(BOB, 5, 10)).getAttempts());
+    assertTrue(storage.attemptableOf(CAROL, 5, 10).isEmpty(), "abandoned is below the bound for good");
     assertEquals(1, storage.attemptable(5, 0, 10).size(), "table-wide, only bob's is still worth attempting");
     inTransaction(() -> storage.refused(bobs, PendingSubscriptionKind.SUBSCRIBE));
     assertTrue(storage.attemptable(5, 0, 10).isEmpty(), "the fifth refusal reaches the bound");
@@ -407,8 +407,8 @@ public class CaldavPendingSubscriptionStorageTest {
     assertEquals(List.of(CAROL, BOB, BOB), all.stream().map(PendingSubscription::getUserIdentityId).toList());
     assertEquals(2, storage.attemptable(5, 0, 2).size());
     assertEquals(CAROL, storage.attemptable(5, 0, 1).get(0).getUserIdentityId());
-    assertEquals(List.of(CONTAINER, OTHER), storage.attemptable(BOB, 5, 10).stream().map(PendingSubscription::getContainerUid).toList());
-    assertTrue(storage.attemptable(99L, 5, 10).isEmpty());
+    assertEquals(List.of(CONTAINER, OTHER), storage.attemptableOf(BOB, 5, 10).stream().map(PendingSubscription::getContainerUid).toList());
+    assertTrue(storage.attemptableOf(99L, 5, 10).isEmpty());
   }
 
   /**
