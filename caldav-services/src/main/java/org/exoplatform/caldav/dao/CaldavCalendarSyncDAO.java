@@ -16,6 +16,7 @@
  */
 package org.exoplatform.caldav.dao;
 
+import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
@@ -117,16 +118,37 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
    * Ordered by each user's oldest binding, so the account waiting longest is
    * served first.
    *
+   * <p>
+   * Two exclusions let the sweep read on past the accounts it cannot serve
+   * (EXO-90803). The bindings on {@code excludedServers} are left out: those
+   * of a server whose credentials provider is not installed, or that did not
+   * answer earlier in the same run, never stamp {@code lastSyncEnd} and would
+   * otherwise stay at the head of every page. The users in
+   * {@code excludedAccounts} are left out: the ones the run has already
+   * visited, so that reading the head again after an exclusion was added does
+   * not hand them back. Either may be empty: Hibernate's SQL translator
+   * renders an empty {@code NOT IN} list as {@code 1=1} itself, so no SQL
+   * with an empty list reaches the database.
+   *
+   * <p>
+   * A {@link List} and not a page: no caller reads a total, and a page whose
+   * content fills the request would cost a count query over a grouped select.
+   *
    * @param status the binding state that counts as sweepable
    * @param before bindings last synchronised strictly before this instant
-   * @param pageable page and sort; required, this set spans every user
-   * @return one page of user identities
+   * @param excludedServers the servers whose bindings are left out, possibly empty
+   * @param excludedAccounts the users left out, possibly empty
+   * @param pageable how many users to read; required, this set spans every user
+   * @return the user identities, the one waiting longest first
    */
   @Query("SELECT p.userIdentityId FROM CaldavCalendarSyncEntity p WHERE p.status = :status"
       + " AND (p.lastSyncEnd IS NULL OR p.lastSyncEnd < :before)"
+      + " AND p.serverId NOT IN :excludedServers AND p.userIdentityId NOT IN :excludedAccounts"
       + " GROUP BY p.userIdentityId ORDER BY MIN(COALESCE(p.lastSyncEnd, {d '1970-01-01'})) ASC")
-  Page<Long> findDueAccounts(@Param("status") CalendarSyncStatus status,
+  List<Long> findDueAccounts(@Param("status") CalendarSyncStatus status,
                              @Param("before") Date before,
+                             @Param("excludedServers") Collection<Long> excludedServers,
+                             @Param("excludedAccounts") Collection<Long> excludedAccounts,
                              Pageable pageable);
 
   /**
