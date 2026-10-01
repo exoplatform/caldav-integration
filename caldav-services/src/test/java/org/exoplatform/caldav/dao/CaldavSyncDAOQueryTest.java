@@ -109,7 +109,7 @@ public class CaldavSyncDAOQueryTest {
   // ---------------------------------------------------------------------
 
   /**
-   * <b>Hole 2 of the brief, on the engine.</b> Bob (77) received a share and
+   * <b>A colleague the account sweep never reaches, on the engine.</b> Bob (77) received a share and
    * holds no CALDAV_CALENDAR_SYNC row at all, so the sweep's due-accounts
    * query never names him - and the owed-subscription query does. Every
    * hand-written query of the DAO binds its named parameters and runs; the

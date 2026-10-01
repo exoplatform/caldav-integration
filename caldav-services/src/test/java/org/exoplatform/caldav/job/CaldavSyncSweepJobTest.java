@@ -139,7 +139,7 @@ public class CaldavSyncSweepJobTest {
   }
 
   /**
-   * <b>Hole 2 of the EXO-90277 brief.</b> A colleague owed a subscription
+   * <b>A colleague the account sweep never reaches (EXO-90277).</b> A colleague owed a subscription
    * holds no pair and is never among the due accounts, so the owed changes
    * are drained whatever the account sweep found - including nothing.
    */
@@ -155,7 +155,7 @@ public class CaldavSyncSweepJobTest {
   }
 
   /**
-   * <b>Hole 2 again, one door further.</b> The account sweep reads its due
+   * <b>The same colleague, one door further.</b> The account sweep reads its due
    * accounts outside any guard, so a database that will not answer it ends
    * the run — and the colleagues owed a subscription are precisely the ones
    * who hold no account for that sweep to visit. The second hand-off is

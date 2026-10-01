@@ -47,7 +47,7 @@
 #           (UserSubscriptionService.java:134-138 updates, never refuses).
 #   7. POST _subscribe an UNKNOWN container uid
 #        -> the fault {errorCode:NOT_FOUND} (subscriptionToContainer :282-298).
-#           404 was predicted by the brief; ResponseBuilder.java:70-76 says
+#           A 404 is one reading; ResponseBuilder.java:70-76 says
 #           500. The client accepts both; this settles which one the rig sends.
 #           Fixture bluemind-rest-subscribe-unknown-container.captured.json.
 #   8. POST _subscribe a container the sharee has NO access to, then PROPFIND it
@@ -66,7 +66,7 @@
 #        "X has modified your access rights" mail when the share was granted
 #        (AclChangedNotificationVerticle) — answered by looking at the sharee's
 #        inbox, typed in when asked.
-#  12. The dangling-subscription question behind hole 3: the sharee is
+#  12. Whether a subscription dangles after a revoke: the sharee is
 #        subscribed again (as in 3), the OWNER revokes the share from eXo
 #        while the script waits, then GET listing / PROPFIND home / PROPFIND
 #        the collection are captured -> whether the subscription row survives
@@ -335,7 +335,7 @@ AGAIN_STATUS="$LAST_STATUS"
 UNKNOWN="calendar:Default:exo-absent-probe-$(date +%s)"
 echo "7/12 POST _subscribe an UNKNOWN container ($UNKNOWN) — 404 or 500 NOT_FOUND..."
 capture_rest POST "$SUBS/_subscribe" "$OUT/bluemind-rest-subscribe-unknown-container.captured.json" \
-  'An _subscribe naming a container BlueMind does not hold. Fault {errorCode:NOT_FOUND} predicted (subscriptionToContainer :282-298); the brief predicted HTTP 404, ResponseBuilder.java:70-76 says 500 - this settles it. Replaces bluemind-rest-fault-subscribe-not-found.derived.json.' \
+  'An _subscribe naming a container BlueMind does not hold. Fault {errorCode:NOT_FOUND} predicted (subscriptionToContainer :282-298); one reading predicts HTTP 404, ResponseBuilder.java:70-76 says 500 - this settles it. Replaces bluemind-rest-fault-subscribe-not-found.derived.json.' \
   -H 'Content-Type: application/json' --data-binary "$(subscribe_body "$UNKNOWN")"
 UNKNOWN_STATUS="$LAST_STATUS"
 UNKNOWN_CODE="$(json_of "$LAST_FILE" 'errorCode')"
@@ -384,7 +384,7 @@ echo '11/12 Observation: did the sharee receive BlueMind'"'"'s "access rights mo
 printf '    Look at the sharee'"'"'s inbox, then type yes / no / unknown: '
 read -r MAIL_SEEN
 
-echo '12/12 The dangling-subscription question (hole 3): subscribing again, then the OWNER revokes...'
+echo '12/12 Whether a subscription dangles after a revoke: subscribing again, then the OWNER revokes...'
 capture_rest POST "$SUBS/_subscribe" "$OUT/bluemind-rest-subscribe-before-revoke.captured.json" \
   'Step 12a: the sharee subscribed again, so the owner''s revoke below meets a live subscription.' \
   -H 'Content-Type: application/json' --data-binary "$(subscribe_body "$SHARED")"
@@ -394,7 +394,7 @@ read -r REVOKED
 REVOKE_LIST='skipped'; REVOKE_HOME='skipped'; REVOKE_COLLECTION='skipped'
 if [ "$REVOKED" != 'skip' ]; then
   capture_rest GET "$SUBS?type=calendar" "$OUT/bluemind-rest-subscriptions-after-revoke.captured.json" \
-    'The sharee''s listing AFTER the owner revoked while they were subscribed. Predicted: the subscription row SURVIVES (BlueMind auto-unsubscribes on an ACL removal for mailboxacl only, MailboxAutoSubscribeAclHook.java:60-91) - the dangling subscription hole 3 is about.'
+    'The sharee''s listing AFTER the owner revoked while they were subscribed. Predicted: the subscription row SURVIVES (BlueMind auto-unsubscribes on an ACL removal for mailboxacl only, MailboxAutoSubscribeAclHook.java:60-91) - the dangling subscription a revoke would leave.'
   REVOKE_LIST="$(lists_container "$LAST_FILE" "$SHARED")"
   if [ -n "$HOME" ]; then
     capture PROPFIND "$(absolutize "$HOME")" "$OUT/bluemind-propfind-home-depth1-sharee-revoked.captured.xml" \
@@ -431,7 +431,7 @@ else
 fi
 [ "$AGAIN_STATUS" = 200 ] && echo '  - a second _subscribe answered 200: idempotent, as predicted.' || echo "  - a second _subscribe answered $AGAIN_STATUS: NOT idempotent as predicted; the drain must not repeat a landed subscribe on this server."
 case "$UNKNOWN_STATUS" in
-  404) echo "  - an unknown container answered 404 ($UNKNOWN_CODE): the brief's prediction; the client's 404 branch is the one taken." ;;
+  404) echo "  - an unknown container answered 404 ($UNKNOWN_CODE): the client's 404 branch is the one taken." ;;
   500) echo "  - an unknown container answered 500 ($UNKNOWN_CODE): the source's prediction (ResponseBuilder.java:70-76); the client's 500+NOT_FOUND branch is the one taken." ;;
   *)   echo "  - an unknown container answered $UNKNOWN_STATUS ($UNKNOWN_CODE): neither predicted shape; see the capture." ;;
 esac
@@ -445,8 +445,8 @@ echo "  - ACL-change mail received by the sharee: $MAIL_SEEN (capture 11; settle
 if [ "$REVOKED" != 'skip' ]; then
   echo "  - after the owner's revoke while subscribed: listing names the container: $REVOKE_LIST; home lists it: $REVOKE_HOME; PROPFIND on the collection: $REVOKE_COLLECTION."
   case "$REVOKE_LIST" in
-    yes*) echo '    -> the subscription DANGLES after an ACL removal (as predicted from MailboxAutoSubscribeAclHook.java): blueMindRevoke must unsubscribe, which it does (hole 3 confirmed).' ;;
-    no)   echo '    -> BlueMind removed the subscription with the ACL: hole 3 is closed on the server side too; the unsubscribe eXo posts is then a harmless no-op.' ;;
+    yes*) echo '    -> the subscription DANGLES after an ACL removal (as predicted from MailboxAutoSubscribeAclHook.java): blueMindRevoke must unsubscribe, which it does.' ;;
+    no)   echo '    -> BlueMind removed the subscription with the ACL, on the server side too; the unsubscribe eXo posts is then a harmless no-op.' ;;
   esac
 fi
 echo "  - final _unsubscribe answered $FINAL_STATUS: the account is left as it was found."
