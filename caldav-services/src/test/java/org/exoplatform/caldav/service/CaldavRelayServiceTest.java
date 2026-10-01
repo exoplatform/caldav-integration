@@ -548,7 +548,7 @@ public class CaldavRelayServiceTest {
     when(caldavCredentialsResolver.isProviderMissing(PROVIDER)).thenReturn(true);
 
     assertEquals(CaldavProbeResult.SERVER_NOT_USABLE, caldavRelayService.probeAccount(SERVER_ID, "john", "pw").getResult());
-    org.mockito.Mockito.verifyNoInteractions(httpClient);
+    verifyNoInteractions(httpClient);
 
     when(caldavCredentialsResolver.isProviderMissing(PROVIDER)).thenReturn(false);
     givenProbeAnswer(207);
