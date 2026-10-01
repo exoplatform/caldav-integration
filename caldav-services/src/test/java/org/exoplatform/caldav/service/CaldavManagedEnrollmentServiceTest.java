@@ -41,6 +41,8 @@ import java.util.List;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.function.BooleanSupplier;
 
+import ch.qos.logback.classic.Level;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -353,7 +355,7 @@ class CaldavManagedEnrollmentServiceTest {
     try (LogRecorder log = new LogRecorder(CaldavManagedEnrollmentService.class)) {
       assertEquals(ManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
 
-      assertTrue(log.events().stream().noneMatch(event -> event.getLevel().isGreaterOrEqual(ch.qos.logback.classic.Level.INFO)),
+      assertTrue(log.events().stream().noneMatch(event -> event.getLevel().isGreaterOrEqual(Level.INFO)),
                  log.events().toString());
       assertTrue(log.events().stream().noneMatch(event -> event.getThrowableProxy() != null), log.events().toString());
     }
