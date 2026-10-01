@@ -634,7 +634,9 @@ public class CaldavServerService {
    * nothing, and a seam that is absent answers true: a connector list that cannot
    * tell must send the user to a form, never connect on its own. So does a
    * provider that is not installed — an add-on's, while the add-on is not — which
-   * the resolver reports once per name rather than failing the whole listing.
+   * the resolver reports once per name rather than failing the whole listing; such a
+   * provider is told apart from one that asks by {@link #unavailableProviders()},
+   * whose servers cannot be connected at all until it is installed.
    *
    * @return one entry per declared provider name, true when the user must supply
    *         something
@@ -648,6 +650,46 @@ public class CaldavServerService {
                                                  name -> caldavCredentialsResolver == null
                                                      || caldavCredentialsResolver.isProviderMissing(name)
                                                      || caldavCredentialsResolver.requiresUserAction(name)));
+  }
+
+  /**
+   * The declared provider names whose credentials provider is not installed — an
+   * add-on's, while the add-on is not or has not started yet. A server configured
+   * with one of them cannot be connected, by a click or by a form, until it is: its
+   * connect refuses before storing anything. This is what lets a browser tell such a
+   * server apart from one whose provider asks the user for credentials, which
+   * {@link #connectionRequirements()} answers alike.
+   *
+   * @return the declared provider names that are not installed, empty when the
+   *         credentials seam is absent
+   */
+  public Set<String> unavailableProviders() {
+    if (caldavCredentialsResolver == null) {
+      return Set.of();
+    }
+    return getServers().stream()
+                       .map(CaldavServer::getAuthProviderName)
+                       .filter(StringUtils::isNotBlank)
+                       .filter(caldavCredentialsResolver::isProviderMissing)
+                       .collect(Collectors.toSet());
+  }
+
+  /**
+   * The credentials provider an account's registration names, when that provider is
+   * not installed: the one state in which no account, typed or provider-backed, can be
+   * stored on it.
+   *
+   * @param serverId registration the account references, or null for the seed row
+   * @return the missing provider's name, or null when the registration resolves to
+   *         none, names none, or its provider is installed
+   */
+  public String missingProviderOf(Long serverId) {
+    CaldavServer server = resolveServer(serverId);
+    if (server == null || caldavCredentialsResolver == null
+        || !caldavCredentialsResolver.isProviderMissing(server.getAuthProviderName())) {
+      return null;
+    }
+    return server.getAuthProviderName();
   }
 
   public List<CaldavServer> getServers() {

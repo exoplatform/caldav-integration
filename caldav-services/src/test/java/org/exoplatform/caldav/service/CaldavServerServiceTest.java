@@ -2097,6 +2097,43 @@ public class CaldavServerServiceTest {
     verify(caldavCredentialsResolver, never()).requiresUserAction("bluemind-sudo");
   }
 
+  /**
+   * A provider that is not installed is told apart from one that asks: it is
+   * listed as unavailable, and the installed ones beside it are not, whether they
+   * ask the user or not. A blank provider name is never listed.
+   */
+  @Test
+  public void listsAsUnavailableOnlyTheDeclaredProvidersThatAreNotInstalled() {
+    CaldavServer typed = server(1L, "personal");
+    CaldavServer missing = server(2L, "bluemind-sudo");
+    CaldavServer legacy = server(3L, null);
+    when(caldavServerStorage.getServers()).thenReturn(List.of(typed, missing, legacy));
+    when(caldavServerQuirkService.decorate(any())).thenAnswer(call -> call.getArgument(0));
+    when(caldavCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(true);
+    when(caldavCredentialsResolver.isProviderMissing("personal")).thenReturn(false);
+
+    assertEquals(java.util.Set.of("bluemind-sudo"), caldavServerService.unavailableProviders());
+    verify(caldavCredentialsResolver, never()).isProviderMissing(null);
+  }
+
+  /**
+   * The provider an account's registration names is reported missing only when it
+   * is not installed; an installed one, and a registration that resolves to
+   * nothing, report none.
+   */
+  @Test
+  public void namesTheMissingProviderOfARegistrationOnlyWhenItIsNotInstalled() {
+    when(caldavServerQuirkService.decorate(any())).thenAnswer(call -> call.getArgument(0));
+    when(caldavServerStorage.getServerById(2L)).thenReturn(server(2L, "bluemind-sudo"));
+    when(caldavServerStorage.getServerById(1L)).thenReturn(server(1L, "personal"));
+    when(caldavCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(true);
+    when(caldavCredentialsResolver.isProviderMissing("personal")).thenReturn(false);
+
+    assertEquals("bluemind-sudo", caldavServerService.missingProviderOf(2L));
+    assertNull(caldavServerService.missingProviderOf(1L));
+    assertNull(caldavServerService.missingProviderOf(null), "no seed row declared");
+  }
+
   private CaldavServer server(long id, String providerName) {
     CaldavServer server = new CaldavServer();
     server.setId(id);
