@@ -32,6 +32,7 @@ import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalDavNotFoundException;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.client.CalDavSubjectMismatchException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.model.PendingSubscription;
@@ -430,6 +431,16 @@ public class CaldavShareSubscriptionService {
     CalDavEndpoint endpoint;
     try {
       endpoint = endpointOf(serverId, login);
+    } catch (CalDavProviderMissingException e) {
+      // The server's credentials provider is not installed yet, which the
+      // resolver has said once for its name. No attempt is counted against
+      // the rows: they stay owed as they are, and land at the first drain
+      // after the provider appears instead of running out of attempts first.
+      LOG.debug("The subscription changes owed to user {} on server {} wait for their credentials provider: {}",
+                userIdentityId,
+                serverId,
+                e.getMessage());
+      return 0;
     } catch (CalDavException e) {
       return retryAll(rows, "their endpoint could not be minted: " + e.getMessage());
     }
