@@ -68,8 +68,8 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.Date;
 import java.util.List;
-import java.util.Set;
 import java.util.Map;
+import java.util.Set;
 
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -2218,7 +2218,7 @@ public class CaldavServerServiceTest {
     when(caldavCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(true);
     when(caldavCredentialsResolver.isProviderMissing("personal")).thenReturn(false);
 
-    assertEquals(java.util.Set.of("bluemind-sudo"), caldavServerService.unavailableProviders());
+    assertEquals(Set.of("bluemind-sudo"), caldavServerService.unavailableProviders());
     verify(caldavCredentialsResolver, never()).isProviderMissing(null);
   }
 

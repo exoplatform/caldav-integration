@@ -16,6 +16,14 @@
  */
 export const USER_TIMEZONE_ID = new window.Intl.DateTimeFormat().resolvedOptions().timeZone;
 
+/**
+ * Stores a verified CalDAV account. A 409 means the server's credentials
+ * provider is not installed and nothing was stored: the rejection carries
+ * `caldav.error.serverNotUsable` as its code, which the drawer shows.
+ *
+ * @param {Object} caldavSettings the account {username, password, serverId}
+ * @returns {Promise<Number>} the HTTP status of the stored account
+ */
 export const createCaldavSetting = (caldavSettings) => {
   return fetch(`${eXo.env.portal.context}/${eXo.env.portal.rest}/v1/caldav`, {
     headers: {
@@ -25,6 +33,9 @@ export const createCaldavSetting = (caldavSettings) => {
     method: 'POST',
     body: JSON.stringify(caldavSettings)
   }).then(resp => {
+    if (resp && resp.status === 409) {
+      throw caldavError('caldav.error.serverNotUsable', 409);
+    }
     if (!resp || !resp.ok) {
       throw new Error('Response code indicates a server error', resp);
     } else {
