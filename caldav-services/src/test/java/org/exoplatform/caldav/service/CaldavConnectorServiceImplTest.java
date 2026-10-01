@@ -28,6 +28,7 @@ import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.verify;
@@ -46,7 +47,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.service.AgendaCalendarShareService;
-import org.exoplatform.caldav.client.bluemind.BlueMindServerFlavour;
+import org.exoplatform.caldav.plugin.CalendarServerFlavour;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -84,7 +86,7 @@ public class CaldavConnectorServiceImplTest {
   private AgendaCalendarShareService     agendaCalendarShareService;
 
   @Mock
-  private BlueMindSessionService         blueMindSessionService;
+  private CalendarServerFlavour          sessionFlavour;
 
   @InjectMocks
   private CaldavConnectorServiceImpl     caldavConnectorService;
@@ -302,6 +304,34 @@ public class CaldavConnectorServiceImplTest {
 
     caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
 
+    verify(caldavConnectorStorage).createCaldavSetting(setting, USER_IDENTITY_ID);
+  }
+
+  /**
+   * A typed account on a registration whose credentials provider is not installed
+   * is refused and nothing is stored: every conversation with that server goes
+   * through the provider, so it would show as connected and never synchronise.
+   * The same account is stored once the provider is installed.
+   */
+  @Test
+  public void refusesToStoreAnAccountOnAServerWhoseProviderIsNotInstalled() throws Exception {
+    CaldavServerService registry = mock(CaldavServerService.class);
+    caldavConnectorService.setCaldavServerService(registry);
+    when(registry.missingProviderOf(3L)).thenReturn("bluemind-sudo");
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+    setting.setServerId(3L);
+
+    CalDavProviderMissingException refused = assertThrows(CalDavProviderMissingException.class,
+                                                          () -> caldavConnectorService.createCaldavSetting(setting,
+                                                                                                           USER_IDENTITY_ID));
+
+    assertTrue(refused.getMessage().contains("bluemind-sudo"), refused.getMessage());
+    verify(caldavConnectorStorage, never()).createCaldavSetting(any(), anyLong());
+
+    when(registry.missingProviderOf(3L)).thenReturn(null);
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
     verify(caldavConnectorStorage).createCaldavSetting(setting, USER_IDENTITY_ID);
   }
 
@@ -529,15 +559,16 @@ public class CaldavConnectorServiceImplTest {
   }
 
   /**
-   * Connecting drops the BlueMind REST session the account held, on the
-   * server it is now on and on the one it was on (EXO-90397). The session
+   * Connecting drops the server session the account held — a flavour's,
+   * such as BlueMind's REST session — on the server it is now on and on the
+   * one it was on (EXO-90397). The session
    * authenticates the mailbox the previous credentials named; the new ones
    * may name another, and a session is not a stale answer but an identity.
    */
   @Test
-  public void connectingDropsTheKeptBlueMindSessionOnBothServers() throws Exception {
+  public void connectingDropsTheKeptServerSessionOnBothServers() throws Exception {
     caldavConnectorService.setCaldavSyncService(caldavSyncService);
-    caldavConnectorService.setCalendarServerFlavourRegistry(CalendarServerFlavourRegistry.of(List.of(new BlueMindServerFlavour(blueMindSessionService))));
+    caldavConnectorService.setCalendarServerFlavourRegistry(CalendarServerFlavourRegistry.of(List.of(sessionFlavour)));
     CaldavUserSetting previous = new CaldavUserSetting();
     previous.setServerId(1L);
     when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(previous);
@@ -548,39 +579,39 @@ public class CaldavConnectorServiceImplTest {
 
     caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
 
-    verify(blueMindSessionService).forget(USER_IDENTITY_ID, 2L);
-    verify(blueMindSessionService).forget(USER_IDENTITY_ID, 1L);
+    verify(sessionFlavour).forgetSession(USER_IDENTITY_ID, 2L);
+    verify(sessionFlavour).forgetSession(USER_IDENTITY_ID, 1L);
   }
 
   /**
-   * Disconnecting drops and closes the account's BlueMind session, rather
-   * than leaving it open on the server until it expires (EXO-90397).
+   * Disconnecting drops the account's server session, rather than leaving it
+   * open on the server until it expires (EXO-90397).
    */
   @Test
-  public void disconnectingDropsTheKeptBlueMindSession() {
-    caldavConnectorService.setCalendarServerFlavourRegistry(CalendarServerFlavourRegistry.of(List.of(new BlueMindServerFlavour(blueMindSessionService))));
+  public void disconnectingDropsTheKeptServerSession() {
+    caldavConnectorService.setCalendarServerFlavourRegistry(CalendarServerFlavourRegistry.of(List.of(sessionFlavour)));
     CaldavUserSetting connected = new CaldavUserSetting();
     connected.setServerId(2L);
     when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(connected);
 
     caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
 
-    verify(blueMindSessionService).forget(USER_IDENTITY_ID, 2L);
+    verify(sessionFlavour).forgetSession(USER_IDENTITY_ID, 2L);
   }
 
   /**
    * A session engine that throws does not fail the connection or the
-   * disconnection: a session left behind expires on BlueMind's own clock,
+   * disconnection: a session left behind expires on the server's own clock,
    * while a user told their disconnection failed is left connected to an
    * account they no longer want.
    */
   @Test
   public void aSessionThatCannotBeDroppedDoesNotFailTheDisconnection() {
-    caldavConnectorService.setCalendarServerFlavourRegistry(CalendarServerFlavourRegistry.of(List.of(new BlueMindServerFlavour(blueMindSessionService))));
+    caldavConnectorService.setCalendarServerFlavourRegistry(CalendarServerFlavourRegistry.of(List.of(sessionFlavour)));
     CaldavUserSetting connected = new CaldavUserSetting();
     connected.setServerId(2L);
     when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(connected);
-    doThrow(new IllegalStateException("down")).when(blueMindSessionService).forget(USER_IDENTITY_ID, 2L);
+    doThrow(new IllegalStateException("down")).when(sessionFlavour).forgetSession(USER_IDENTITY_ID, 2L);
 
     caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
 
@@ -588,16 +619,17 @@ public class CaldavConnectorServiceImplTest {
   }
 
   /**
-   * The eviction above reaches the session engine through a seam the tests
-   * set by hand; in production this Kernel component resolves it through the
-   * Kernel/Spring bridge, which registers {@code @Service} beans back into
-   * the container and nothing else. A plain {@code @Component} would never
-   * be found and every eviction would silently do nothing (EXO-90397).
+   * The eviction above reaches the flavours through a seam the tests set by
+   * hand; in production this Kernel component resolves their registry
+   * through the Kernel/Spring bridge, which registers {@code @Service} beans
+   * back into the container and nothing else. A plain {@code @Component}
+   * would never be found and every eviction would silently do nothing
+   * (EXO-90397).
    */
   @Test
-  public void theSessionEngineIsAServiceBeanSoTheBridgeExportsItToThisKernelComponent() {
-    assertTrue(BlueMindSessionService.class.isAnnotationPresent(Service.class),
-               "BlueMindSessionService must carry @Service, or ExoContainerContext.getService never finds it");
+  public void theFlavourRegistryIsAServiceBeanSoTheBridgeExportsItToThisKernelComponent() {
+    assertTrue(CalendarServerFlavourRegistry.class.isAnnotationPresent(Service.class),
+               "CalendarServerFlavourRegistry must carry @Service, or ExoContainerContext.getService never finds it");
   }
 
   /**

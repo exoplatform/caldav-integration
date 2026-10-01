@@ -20,6 +20,8 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
+import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.service.CaldavConnectorService;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
@@ -53,6 +55,7 @@ public class CaldavConnectorRest implements ResourceContainer {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Invalid query input"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "409", description = "The server's credentials provider is not installed; nothing stored"),
       @ApiResponse(responseCode = "500", description = "Internal server error") })
   public Response createCaldavSetting(@Parameter(description = "Caldav user setting object to create", required = true)
   CaldavUserSetting caldavUserSetting) {
@@ -63,6 +66,11 @@ public class CaldavConnectorRest implements ResourceContainer {
     try {
       caldavConnectorService.createCaldavSetting(caldavUserSetting, identityId);
       return Response.ok().build();
+    } catch (CalDavProviderMissingException e) {
+      // A state of the platform the connect drawer already reported, not an error
+      // of this request: answered with the code it shows, without a stack.
+      LOG.debug("No CalDAV account stored: {}", e.getMessage());
+      return Response.status(Response.Status.CONFLICT).entity(CaldavProbeResult.SERVER_NOT_USABLE).build();
     } catch (Exception e) {
       LOG.error("Error when creating caldav user setting ", e);
       return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();

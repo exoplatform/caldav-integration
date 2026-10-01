@@ -44,12 +44,12 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
-import org.exoplatform.caldav.client.bluemind.BlueMindServerSeed;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.WriteChannel;
 import org.exoplatform.caldav.plugin.CalendarServerSeed;
+import org.exoplatform.caldav.plugin.TestServerSeed;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 
 /**
@@ -170,13 +170,14 @@ class CaldavServerServiceSeedTest {
   }
 
   /**
-   * With caldav's own BlueMind seed installed, the fresh registry receives
-   * the BlueMind row exactly as it did when the host named it, and its agenda
-   * provider under the created row's name.
+   * A seed stating every field — tolerance entries, the main calendar as
+   * destination, its own write channel — gives the fresh registry a row
+   * carrying each of them, inactive, and its agenda provider under the
+   * created row's name.
    */
   @Test
-  void theBuiltInBlueMindSeedWritesTodaysRow() {
-    install(new BlueMindServerSeed());
+  void aSeedStatingEveryFieldWritesARowCarryingEachOfThem() {
+    install(TestServerSeed.product());
     echoCreatedRows();
 
     caldavServerService.seedDefaultServers();
@@ -198,23 +199,12 @@ class CaldavServerServiceSeedTest {
   }
 
   /**
-   * The deprecated host constants still read today's values, now the seed's.
-   */
-  @SuppressWarnings("removal")
-  @Test
-  void theDeprecatedConstantsReadTheSeedsValues() {
-    assertEquals(BlueMindServerSeed.SERVER_NAME, CaldavServerService.BLUEMIND_SERVER_NAME);
-    assertEquals(BlueMindServerSeed.SERVER_URL, CaldavServerService.DEFAULT_BLUEMIND_URL);
-    assertEquals(BlueMindServerSeed.SEED_QUIRKS, CaldavServerService.BLUEMIND_SEED_QUIRKS);
-  }
-
-  /**
-   * With both BlueMind seeds installed — the add-on's first, as its order puts
-   * it — the fresh registry receives exactly one BlueMind row, the add-on's.
+   * With two seeds of one identifier installed, the fresh registry receives
+   * exactly one row for it, the first seed's.
    */
   @Test
   void withTwoSeedsForOneProductOnlyTheFirstIsSeeded() {
-    install(new StandIn("bluemind", "BlueMind (add-on)", "https://add-on.example.invalid/dav/"), new BlueMindServerSeed());
+    install(new StandIn("bluemind", "BlueMind (add-on)", "https://add-on.example.invalid/dav/"), TestServerSeed.product());
     echoCreatedRows();
 
     caldavServerService.seedDefaultServers();
@@ -231,7 +221,7 @@ class CaldavServerServiceSeedTest {
    */
   @Test
   void aRegistryHoldingARowIsUntouched() {
-    install(new BlueMindServerSeed(), new StandIn("other", "Other", "https://other.example.invalid/dav/"));
+    install(TestServerSeed.product(), new StandIn("other", "Other", "https://other.example.invalid/dav/"));
     when(caldavServerStorage.countServers()).thenReturn(1L);
 
     caldavServerService.seedDefaultServers();

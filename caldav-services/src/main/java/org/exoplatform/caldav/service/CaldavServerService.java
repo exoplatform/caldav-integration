@@ -43,7 +43,6 @@ import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.client.CalDavException;
-import org.exoplatform.caldav.client.bluemind.BlueMindServerSeed;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
@@ -116,16 +115,6 @@ public class CaldavServerService {
   public static final String       STALWART_SERVER_NAME          = "Stalwart";
 
   /**
-   * The name the BlueMind seed is declared under.
-   *
-   * @deprecated the BlueMind row is a contributed seed since EXO-90737; read
-   *             {@code BlueMindServerSeed.SERVER_NAME} instead. Kept until the
-   *             BlueMind code leaves this add-on.
-   */
-  @Deprecated(forRemoval = true)
-  public static final String       BLUEMIND_SERVER_NAME          = BlueMindServerSeed.SERVER_NAME;
-
-  /**
    * Address the Stalwart seed row falls back to when the deployment named none
    * through {@link #CALDAV_SERVER_URL_PROPERTY}.
    *
@@ -148,28 +137,6 @@ public class CaldavServerService {
    * address check reads); it no longer works by being the shipped default.
    */
   public static final String       DEFAULT_STALWART_URL          = "https://stalwart.example.invalid/dav/cal/{username}/";
-
-  /**
-   * Address the BlueMind seed row is declared with.
-   *
-   * @deprecated the BlueMind row is a contributed seed since EXO-90737; read
-   *             {@code BlueMindServerSeed.SERVER_URL} instead, which carries
-   *             the reasons for the placeholder. Kept until the BlueMind code
-   *             leaves this add-on.
-   */
-  @Deprecated(forRemoval = true)
-  public static final String       DEFAULT_BLUEMIND_URL          = BlueMindServerSeed.SERVER_URL;
-
-  /**
-   * The catalogue entries the seeded BlueMind row arrives excused for.
-   *
-   * @deprecated the BlueMind row is a contributed seed since EXO-90737; read
-   *             {@code BlueMindServerSeed.SEED_QUIRKS} instead, which carries why
-   *             these entries. Kept until the BlueMind code leaves this
-   *             add-on.
-   */
-  @Deprecated(forRemoval = true)
-  static final List<ServerQuirk>   BLUEMIND_SEED_QUIRKS          = BlueMindServerSeed.SEED_QUIRKS;
 
   private static final String      SERVER_MANDATORY_MESSAGE      = "caldav.server.mandatory";
 
@@ -329,10 +296,8 @@ public class CaldavServerService {
    * row carries: its name, address, excusals, destination calendar and write
    * channel; the host alone decides its activation and its provider. A seed
    * whose name is already taken by a row seeded in this pass is left out, so
-   * a pass never writes two rows of one name. The BlueMind row a fresh install
-   * used to receive from the host itself is such a seed now, contributed by
-   * the BlueMind code ({@code BlueMindServerSeed}) — without it, a fresh
-   * install receives no BlueMind row.
+   * a pass never writes two rows of one name. A fresh install receives a
+   * BlueMind row only from such a seed, the BlueMind add-on's.
    * <p>
    * {@code answerLinksInCopy} is stated rather than defaulted — the model is
    * built positionally through its all-arguments constructor, so the field
@@ -625,7 +590,7 @@ public class CaldavServerService {
    * there is no password to store, so all seven called such an account
    * disconnected while the screen showed it connected, and nothing ever
    * synchronised. The rule is: an account is named, <i>and</i> either it carries a
-   * password or its provider produces the material on its behalf.
+   * password or its provider, installed, produces the material on its behalf.
    * <p>
    * A typed account settles on the spot, without reading the registry: this runs
    * on every sweep.
@@ -644,6 +609,7 @@ public class CaldavServerService {
       CaldavServer server = settings.getServerId() == null ? resolveServer(null)
                                                            : getServerById(settings.getServerId());
       return server != null && caldavCredentialsResolver != null
+          && !caldavCredentialsResolver.isProviderMissing(server.getAuthProviderName())
           && !caldavCredentialsResolver.requiresUserAction(server.getAuthProviderName());
     } catch (ObjectNotFoundException | CalDavException e) {
       // A row pointing at a registration that is gone, or a provider nobody can ask
@@ -666,7 +632,11 @@ public class CaldavServerService {
    * <p>
    * <b>Silence means ask.</b> A registration naming no provider contributes
    * nothing, and a seam that is absent answers true: a connector list that cannot
-   * tell must send the user to a form, never connect on its own.
+   * tell must send the user to a form, never connect on its own. So does a
+   * provider that is not installed — an add-on's, while the add-on is not — which
+   * the resolver reports once per name rather than failing the whole listing; such a
+   * provider is told apart from one that asks by {@link #unavailableProviders()},
+   * whose servers cannot be connected at all until it is installed.
    *
    * @return one entry per declared provider name, true when the user must supply
    *         something
@@ -678,7 +648,48 @@ public class CaldavServerService {
                        .distinct()
                        .collect(Collectors.toMap(name -> name,
                                                  name -> caldavCredentialsResolver == null
+                                                     || caldavCredentialsResolver.isProviderMissing(name)
                                                      || caldavCredentialsResolver.requiresUserAction(name)));
+  }
+
+  /**
+   * The declared provider names whose credentials provider is not installed — an
+   * add-on's, while the add-on is not or has not started yet. A server configured
+   * with one of them cannot be connected, by a click or by a form, until it is: its
+   * connect refuses before storing anything. This is what lets a browser tell such a
+   * server apart from one whose provider asks the user for credentials, which
+   * {@link #connectionRequirements()} answers alike.
+   *
+   * @return the declared provider names that are not installed, empty when the
+   *         credentials seam is absent
+   */
+  public Set<String> unavailableProviders() {
+    if (caldavCredentialsResolver == null) {
+      return Set.of();
+    }
+    return getServers().stream()
+                       .map(CaldavServer::getAuthProviderName)
+                       .filter(StringUtils::isNotBlank)
+                       .filter(caldavCredentialsResolver::isProviderMissing)
+                       .collect(Collectors.toSet());
+  }
+
+  /**
+   * The credentials provider an account's registration names, when that provider is
+   * not installed: the one state in which no account, typed or provider-backed, can be
+   * stored on it.
+   *
+   * @param serverId registration the account references, or null for the seed row
+   * @return the missing provider's name, or null when the registration resolves to
+   *         none, names none, or its provider is installed
+   */
+  public String missingProviderOf(Long serverId) {
+    CaldavServer server = resolveServer(serverId);
+    if (server == null || caldavCredentialsResolver == null
+        || !caldavCredentialsResolver.isProviderMissing(server.getAuthProviderName())) {
+      return null;
+    }
+    return server.getAuthProviderName();
   }
 
   public List<CaldavServer> getServers() {

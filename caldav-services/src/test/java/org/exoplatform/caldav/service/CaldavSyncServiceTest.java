@@ -75,7 +75,7 @@ import org.mockito.ArgumentCaptor;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
+import org.exoplatform.caldav.plugin.ContainerNamingSubscriptionChannel;
 import org.exoplatform.caldav.LogRecorder;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
@@ -95,6 +95,7 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarHome;
@@ -219,9 +220,9 @@ public class CaldavSyncServiceTest {
 
   @BeforeEach
   public void connectAnAccount() {
-    // BlueMind's subscription channel is a contribution, registered here as
-    // the platform registers it.
-    ReflectionTestUtils.setField(caldavOutboundService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
+    // A server-specific subscription channel is a contribution, registered here
+    // as the platform registers one.
+    ReflectionTestUtils.setField(caldavOutboundService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new ContainerNamingSubscriptionChannel(null))));
 
     // The addon's single definition of "connected" now lives in CaldavServerService.
     // Reproducing here the rule these tests were written against - a username and a
@@ -2928,6 +2929,70 @@ public class CaldavSyncServiceTest {
     }
 
     assertTrue(said.isEmpty(), "nothing came back that had been seen to go: " + said);
+  }
+
+  /**
+   * A server whose credentials provider is not installed — an add-on's, while
+   * the add-on is not, or has not started yet — stops the pass where its
+   * endpoint is minted, quietly: the resolver has said it once for the
+   * provider's name, so the pass says nothing at WARN and carries no stack,
+   * however many passes meet it. Nothing is recorded either — no binding is
+   * paused, no unreachable spell is begun, no throttle is stamped — so the
+   * first throttled pass after the provider appears runs in full.
+   */
+  @Test
+  public void aMissingCredentialsProviderStopsEveryPassQuietlyAndRecordsNothing() {
+    givenServerCalendars();
+    givenNoKnownPairs();
+    doThrow(CalDavProviderMissingException.named("bluemind-sudo"))
+        .doThrow(CalDavProviderMissingException.named("bluemind-sudo"))
+        .doReturn(List.of())
+        .when(caldavOutboundService)
+        .bindPersonalCalendars(USER, LOGIN);
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncIfDue(USER, LOGIN);
+      service.syncIfDue(USER, LOGIN);
+      verify(calDavClient, never()).discoverHome(any());
+      // The provider is installed now: the very next throttled pass runs.
+      service.syncIfDue(USER, LOGIN);
+      // And that pass, being the first to succeed, is the first the throttle
+      // counts: the one after it waits.
+      service.syncIfDue(USER, LOGIN);
+      said = log.events();
+    }
+
+    assertTrue(said.stream().noneMatch(event -> event.getLevel().isGreaterOrEqual(Level.WARN)), said.toString());
+    assertTrue(said.stream().noneMatch(event -> event.getThrowableProxy() != null), "said without a stack: " + said);
+    assertTrue(said.stream().noneMatch(event -> event.getFormattedMessage().contains("is answering again")),
+               "no unreachable spell was begun: " + said);
+    verify(caldavSyncStorage, never()).savePair(any());
+    verify(caldavOutboundService, times(3)).bindPersonalCalendars(USER, LOGIN);
+    verify(calDavClient).discoverHome(endpoint);
+  }
+
+  /**
+   * Connecting an account on a server whose credentials provider is not
+   * installed asks nothing more of the server once the first step met that
+   * absence, and says nothing at WARN: the resolver has said it once for the
+   * provider's name.
+   */
+  @Test
+  public void aMissingCredentialsProviderOnConnectIsNotAskedASecondTime() {
+    givenConnectedIdentity();
+    doThrow(CalDavProviderMissingException.named("bluemind-sudo"))
+        .when(caldavOutboundService)
+        .bindPersonalCalendars(USER, LOGIN);
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      assertDoesNotThrow(() -> service.establishDestinations(USER));
+      said = log.events();
+    }
+
+    verify(caldavPushService, never()).ensureMirror(anyLong(), anyString());
+    assertTrue(said.stream().noneMatch(event -> event.getLevel().isGreaterOrEqual(Level.WARN)), said.toString());
   }
 
   /**

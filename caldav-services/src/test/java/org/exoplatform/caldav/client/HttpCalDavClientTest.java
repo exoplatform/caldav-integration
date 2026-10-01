@@ -62,6 +62,7 @@ import org.exoplatform.services.connector.credentials.ConnectorCredentialsContex
 import org.exoplatform.services.connector.credentials.PersonalCredentialsProvider;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsProvider;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
 import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
 
@@ -224,6 +225,34 @@ public class HttpCalDavClientTest {
     assertEquals(1L, context.getValue().getConnectorId());
     assertEquals("personal", context.getValue().getConnectorCredentialsProviderName());
     assertEquals(USER, context.getValue().getUsername());
+  }
+
+  /**
+   * A registration naming a credentials provider that is not installed — an
+   * add-on's, while the add-on is not — is refused where its endpoint is
+   * minted, before the provider is asked for anything and before any request
+   * is sent; an installed contributed provider is minted as any other.
+   */
+  @Test
+  void anEndpointOnAServerWhoseProviderIsNotInstalledIsRefusedBeforeAnythingIsSent() throws Exception {
+    CaldavServer server = declaredServer(SERVER_URL);
+    server.setAuthProviderName("bluemind-sudo");
+    when(caldavServerService.resolveServer(1L)).thenReturn(server);
+    when(connectorCredentialsService.getProviders()).thenReturn(List.of());
+
+    // Typed, so that a pass meeting it stops quietly rather than as a failure.
+    CalDavProviderMissingException refused = assertThrows(CalDavProviderMissingException.class,
+                                                          () -> client.endpoint(1L, "alice"));
+
+    assertTrue(refused.getMessage().contains("bluemind-sudo"), refused.getMessage());
+    verify(connectorCredentialsService, never()).resolveTargetIdentity(any());
+    verify(connectorCredentialsService, never()).produce(any());
+    verifyNoInteractions(transport);
+
+    ConnectorCredentialsProvider installed = mock(ConnectorCredentialsProvider.class);
+    when(installed.getName()).thenReturn("bluemind-sudo");
+    when(connectorCredentialsService.getProviders()).thenReturn(List.of(installed));
+    assertEquals("bluemind-sudo", client.endpoint(1L, "alice").getAuthProviderName());
   }
 
   @Test
