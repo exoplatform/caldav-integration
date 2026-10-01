@@ -535,7 +535,7 @@ public class CaldavShareSubscriptionServiceTest {
     PendingSubscription bobTwo = row(2L, BOB, OTHER, PendingSubscriptionKind.SUBSCRIBE, 0);
     PendingSubscription carols = row(3L, CAROL, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0);
     when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(bobOne, bobTwo, carols));
-    when(calDavClient.endpoint(SERVER, "bob")).thenThrow(new CalDavProviderMissingException("No credentials provider named acme-sudo is installed"));
+    when(calDavClient.endpoint(SERVER, "bob")).thenThrow(CalDavProviderMissingException.named("acme-sudo"));
 
     assertEquals(1, service.retryOwed(50), "carol's row landed");
 
