@@ -26,6 +26,8 @@ package org.exoplatform.caldav.model;
  *          named
  * @param removed true when the event was removed — its organiser cancelled it
  *          — rather than put there
+ * @param alreadyHeld true when nothing was written because the event is one
+ *          of this deployment's own meetings, in agenda already
  */
-public record LandedMailInvitation(long eventId, String link, boolean removed) {
+public record LandedMailInvitation(long eventId, String link, boolean removed, boolean alreadyHeld) {
 }
