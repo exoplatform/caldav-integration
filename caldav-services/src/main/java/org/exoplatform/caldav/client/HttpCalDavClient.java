@@ -299,8 +299,9 @@ public class HttpCalDavClient implements CalDavClient {
    * @param serverId the registration, or null for the legacy property
    * @param exoLogin the eXo login the conversation is held for
    * @return the endpoint
-   * @throws CalDavException when no server is declared, when the
-   *           registration's provider is not installed, or when the provider
+   * @throws CalDavProviderMissingException when the registration's provider
+   *           is not installed
+   * @throws CalDavException when no server is declared, or when the provider
    *           cannot name the account
    */
   @Override
@@ -314,7 +315,7 @@ public class HttpCalDavClient implements CalDavClient {
     if (caldavCredentialsResolver.isProviderMissing(authProviderName)) {
       // Refused here, once per conversation, rather than by every request of
       // it failing to produce credentials: the resolver says so once per name.
-      throw new CalDavException("No credentials provider named " + authProviderName + " is installed");
+      throw new CalDavProviderMissingException("No credentials provider named " + authProviderName + " is installed");
     }
     String url = declaredUrl(server == null ? null : server.getServerUrl());
     // Only a templated URL needs an account to name, and only then is the
