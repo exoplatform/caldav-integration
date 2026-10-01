@@ -712,7 +712,7 @@ export function createCaldavConnector(server, index, requirements, unavailablePr
     // provider its registration names is not installed. Connecting then opens
     // the drawer, which says so instead of offering a form the server would
     // refuse.
-    usable: !(unavailableProviders || []).includes(server.authProviderName),
+    usable: !(Array.isArray(unavailableProviders) && unavailableProviders.includes(server.authProviderName)),
     // Whether there is a calendar for eXo to create on this server (EXO-90396).
     // Read from the registration, never declared true by the family: on a
     // server whose copies go to the account's own default calendar there is
