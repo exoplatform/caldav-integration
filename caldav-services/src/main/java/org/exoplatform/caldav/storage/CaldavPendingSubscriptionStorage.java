@@ -192,17 +192,6 @@ public class CaldavPendingSubscriptionStorage {
   }
 
   /**
-   * What is owed to anybody and still worth attempting, oldest first.
-   *
-   * @param maxAttempts how many refusals are argued with before stopping
-   * @param limit how many to take in one pass
-   * @return the obligations to attempt now, possibly none
-   */
-  public List<PendingSubscription> attemptable(int maxAttempts, int limit) {
-    return attemptable(maxAttempts, 0, limit);
-  }
-
-  /**
    * One page of what is owed to anybody and still worth attempting, oldest first:
    * what lets a drain look past rows it has to leave where they are.
    *
