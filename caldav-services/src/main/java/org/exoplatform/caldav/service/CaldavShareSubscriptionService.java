@@ -17,6 +17,7 @@
 package org.exoplatform.caldav.service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -204,6 +205,13 @@ public class CaldavShareSubscriptionService {
   /** How many owed rows the colleague's own pass drains before it lists anything. */
   public static final int                          OWN_DRAIN_BATCH = 10;
 
+  /**
+   * How many pages of owed rows one global drain reads at most, looking past the
+   * rows of servers whose credentials provider is not installed. Beyond it, the
+   * rows further back wait for the next run or for their colleague's own pass.
+   */
+  static final int                                 MAX_PAGES_PER_DRAIN = 20;
+
   private static final Log                         LOG             = ExoLogger.getLogger(CaldavShareSubscriptionService.class);
 
   /**
@@ -236,6 +244,9 @@ public class CaldavShareSubscriptionService {
 
   @Autowired
   private CaldavServerOwnerService                 caldavServerOwnerService;
+
+  @Autowired
+  private CaldavServerService                      caldavServerService;
 
   /**
    * A share as the owner's grant or revoke knows it, with everything the
@@ -293,18 +304,89 @@ public class CaldavShareSubscriptionService {
    * Drains the changes owed to anybody, oldest first, one session per
    * colleague and server: what the sweep job calls (hole 2 of the brief).
    *
-   * @param batch how many owed rows one run looks at
+   * <p>
+   * The rows of a server whose credentials provider is not installed are left
+   * where they are, uncounted, and the run reads on past them, up to
+   * {@value #MAX_PAGES_PER_DRAIN} pages: however many of them wait at the head of
+   * the queue, the rows owed on the other servers are still drained.
+   *
+   * @param batch how many owed rows one run drains at most
    * @return how many changes landed this run
    */
   public int retryOwed(int batch) {
     List<PendingSubscription> owed;
     try {
-      owed = caldavPendingSubscriptionStorage.attemptable(maxAttempts, batch);
+      owed = attemptableOnUsableServers(batch);
     } catch (RuntimeException | LinkageError e) {
       LOG.warn("The subscription changes eXo owes on calendar servers could not be read; nothing is retried this run", e);
       return 0;
     }
     return drain(owed);
+  }
+
+  /**
+   * The oldest owed rows on servers that can be talked to, up to one batch: the
+   * pages are read in order, and the rows of a server whose credentials provider
+   * is not installed are skipped, not counted.
+   *
+   * @param batch how many rows to collect at most, and the page size
+   * @return the rows to drain this run, oldest first
+   */
+  private List<PendingSubscription> attemptableOnUsableServers(int batch) {
+    List<PendingSubscription> usable = new ArrayList<>();
+    Map<Long, Boolean> waiting = new HashMap<>();
+    int skipped = 0;
+    for (int page = 0; page < MAX_PAGES_PER_DRAIN && usable.size() < batch; page++) {
+      List<PendingSubscription> rows = caldavPendingSubscriptionStorage.attemptable(maxAttempts, page, batch);
+      skipped += collectUsable(rows, usable, waiting, batch);
+      if (rows.size() < batch) {
+        break;
+      }
+    }
+    if (skipped > 0) {
+      LOG.debug("{} owed subscription change(s) wait for their server's credentials provider", skipped);
+    }
+    return usable;
+  }
+
+  /**
+   * Adds to the collection the rows of one page whose server can be talked to,
+   * until it holds one batch.
+   *
+   * @param rows the page, oldest first
+   * @param usable the rows collected so far, added to
+   * @param waiting whether each server met so far waits for its provider, filled
+   *          as servers are met
+   * @param batch how many rows to collect at most
+   * @return how many rows of the page were skipped as waiting
+   */
+  private int collectUsable(List<PendingSubscription> rows,
+                            List<PendingSubscription> usable,
+                            Map<Long, Boolean> waiting,
+                            int batch) {
+    int skipped = 0;
+    for (PendingSubscription row : rows) {
+      if (usable.size() >= batch) {
+        break;
+      }
+      if (Boolean.TRUE.equals(waiting.computeIfAbsent(row.getServerId(), this::waitsForItsProvider))) {
+        skipped++;
+      } else {
+        usable.add(row);
+      }
+    }
+    return skipped;
+  }
+
+  /**
+   * Whether a server's credentials provider is not installed, so nothing owed on
+   * it can be attempted yet.
+   *
+   * @param serverId the server key, zero for the legacy property
+   * @return true when its registration names a provider that is not installed
+   */
+  private boolean waitsForItsProvider(long serverId) {
+    return caldavServerService != null && caldavServerService.missingProviderOf(serverId == 0L ? null : serverId) != null;
   }
 
   /**
