@@ -42,6 +42,7 @@ import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
+import org.exoplatform.caldav.model.BlueMindLogin;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -316,21 +317,6 @@ public class BlueMindRestSession {
   }
 
   /**
-   * What a login answered and a session carries: the key, and who BlueMind
-   * says the session belongs to.
-   *
-   * @param key the session key, sent in {@link #API_KEY_HEADER}
-   * @param userUid the directory entry uid of the authenticated user
-   *          ({@code LoginResponse.authUser.uid}), or null when the answer
-   *          named none
-   * @param domainUid the uid of their domain
-   *          ({@code LoginResponse.authUser.domainUid}), or null when the
-   *          answer named none
-   */
-  private record Login(String key, String userUid, String domainUid) {
-  }
-
-  /**
    * Opens a REST session: {@code IAuthentication.login}. The password is the
    * body, encoded as a JSON string under exactly
    * {@code Content-Type: application/json}; see the class comment for why no
@@ -351,7 +337,7 @@ public class BlueMindRestSession {
    * @param password the password
    * @return the key and the authenticated user
    */
-  private Login login(String root, String login, String password) {
+  private BlueMindLogin login(String root, String login, String password) {
     URI named = URI.create(root + "/api/auth/login");
     URI uri = URI.create(named + "?login=" + URLEncoder.encode(login, StandardCharsets.UTF_8) + "&origin=" + LOGIN_ORIGIN);
     HttpRequest request = HttpRequest.newBuilder(uri)
@@ -376,7 +362,7 @@ public class BlueMindRestSession {
           + ") for POST " + named);
     }
     JsonNode authUser = response.get("authUser");
-    return new Login(key, textOf(authUser, "uid"), textOf(authUser, "domainUid"));
+    return new BlueMindLogin(key, textOf(authUser, "uid"), textOf(authUser, "domainUid"));
   }
 
   /**
@@ -438,7 +424,7 @@ public class BlueMindRestSession {
 
     private final String root;
 
-    private final Login  login;
+    private final BlueMindLogin login;
 
     /**
      * An open session.
@@ -446,7 +432,7 @@ public class BlueMindRestSession {
      * @param root the REST root
      * @param login the key and the authenticated user
      */
-    private Session(String root, Login login) {
+    private Session(String root, BlueMindLogin login) {
       this.root = root;
       this.login = login;
     }

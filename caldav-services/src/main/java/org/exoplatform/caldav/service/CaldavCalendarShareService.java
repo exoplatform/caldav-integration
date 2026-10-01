@@ -56,6 +56,7 @@ import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.CollectionAcl;
 import org.exoplatform.caldav.client.DavOptions;
 import org.exoplatform.caldav.client.SharingMechanism;
+import org.exoplatform.caldav.model.ShareeSubscription;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarShares;
 import org.exoplatform.caldav.model.CalendarShares.CalendarSharee;
@@ -1495,8 +1496,8 @@ public class CaldavCalendarShareService {
    */
   private void followShareeSubscription(ShareTarget target, Sharee sharee, String username, String shareeUid, boolean subscribe) {
     try {
-      CaldavShareSubscriptionService.ShareeSubscription subscription =
-                                                                     new CaldavShareSubscriptionService.ShareeSubscription(username,
+      ShareeSubscription subscription =
+                                                                     new ShareeSubscription(username,
                                                                                                                            sharee.identityId(),
                                                                                                                            sharee.username(),
                                                                                                                            shareeUid,
