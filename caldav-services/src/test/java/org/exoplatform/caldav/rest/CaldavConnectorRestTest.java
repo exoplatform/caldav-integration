@@ -36,9 +36,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import org.exoplatform.caldav.model.CaldavUserSetting;
-import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.client.CalDavProviderMissingException;
+import org.exoplatform.caldav.model.CaldavProbeResult;
+import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.service.CaldavConnectorService;
 import org.exoplatform.services.security.ConversationState;
 import org.exoplatform.social.core.identity.model.Identity;
