@@ -190,6 +190,25 @@ public class CaldavPendingSubscriptionStorageTest {
   }
 
   /**
+   * The owed rows can be read page by page, in the same oldest-first order, so a
+   * drain can look past the rows it has to leave where they are.
+   */
+  @Test
+  public void theOwedRowsAreReadPageByPageOldestFirst() {
+    inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
+    inTransaction(() -> storage.owe(BOB, SERVER, OTHER, PendingSubscriptionKind.SUBSCRIBE));
+    inTransaction(() -> storage.owe(CAROL, OTHER_SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
+
+    List<PendingSubscription> first = storage.attemptable(5, 0, 2);
+    List<PendingSubscription> second = storage.attemptable(5, 1, 2);
+
+    assertEquals(2, first.size());
+    assertEquals(CAROL, only(second).getUserIdentityId());
+    assertTrue(first.get(0).getId() < first.get(1).getId() && first.get(1).getId() < second.get(0).getId());
+    assertTrue(storage.attemptable(5, 2, 2).isEmpty());
+  }
+
+  /**
    * The latest instruction wins: a revoke recorded over a pending subscribe
    * leaves one row, an UNSUBSCRIBE, with its attempts back to zero — and a
    * second colleague, another server or another container each get a row of
