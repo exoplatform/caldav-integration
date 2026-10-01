@@ -18,6 +18,8 @@ package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -26,6 +28,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -40,6 +43,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
+import org.mockito.MockedStatic;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -48,6 +52,8 @@ import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
+import org.exoplatform.agenda.service.AgendaEventService;
+import org.exoplatform.agenda.util.EventIcsBuilder;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
@@ -60,6 +66,7 @@ import org.exoplatform.caldav.ics.IcsParser;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
+import org.exoplatform.caldav.model.LandedMailInvitation;
 import org.exoplatform.caldav.model.MailInvitation;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
@@ -198,6 +205,9 @@ public class CaldavInvitationLandingServiceTest {
   private AgendaCalendarService      agendaCalendarService;
 
   @Mock
+  private AgendaEventService         agendaEventService;
+
+  @Mock
   private AgendaEventAttendeeService agendaEventAttendeeService;
 
   @InjectMocks
@@ -249,7 +259,7 @@ public class CaldavInvitationLandingServiceTest {
   @Test
   public void aUserWithoutABoundCalendarIsNotThisAddonsToLand() {
     when(caldavServerService.isConnected(settings)).thenReturn(false);
-    assertFalse(service.land(invitation(EventAttendeeResponse.ACCEPTED)));
+    assertNull(service.land(invitation(EventAttendeeResponse.ACCEPTED)));
 
     when(caldavServerService.isConnected(settings)).thenReturn(true);
     when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(OTHER,
@@ -262,7 +272,7 @@ public class CaldavInvitationLandingServiceTest {
                                                                            SyncOrigin.REMOTE,
                                                                            CalendarSyncStatus.PAUSED,
                                                                            "anchor-2")));
-    assertFalse(service.land(invitation(EventAttendeeResponse.ACCEPTED)));
+    assertNull(service.land(invitation(EventAttendeeResponse.ACCEPTED)));
     verify(caldavInboundService, never()).importInto(anyLong(), anyString(), any(), any(), any(), any());
     verify(writer, never()).putObject(any(), anyString(), anyString());
   }
@@ -280,7 +290,7 @@ public class CaldavInvitationLandingServiceTest {
   public void aNewInvitationIsReadThenWrittenThenImportedThenAnswered() throws Exception {
     when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(null, null, mapping(HREF));
 
-    assertTrue(service.land(invitation(EventAttendeeResponse.ACCEPTED)));
+    assertNotNull(service.land(invitation(EventAttendeeResponse.ACCEPTED)));
 
     InOrder order = inOrder(caldavInboundService, writer, caldavPushService, agendaEventAttendeeService);
     order.verify(caldavInboundService).importInto(USER, LOGIN, binding, calendar, FROM, TO);
@@ -315,7 +325,7 @@ public class CaldavInvitationLandingServiceTest {
   public void anInvitationTheServerAlreadyHoldsIsReadNotWritten() throws Exception {
     when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(null, mapping(FILED_HREF));
 
-    assertTrue(service.land(invitation(EventAttendeeResponse.DECLINED)));
+    assertNotNull(service.land(invitation(EventAttendeeResponse.DECLINED)));
 
     verify(caldavInboundService, times(1)).importInto(USER, LOGIN, binding, calendar, FROM, TO);
     verify(writer, never()).putObject(any(), anyString(), anyString());
@@ -325,10 +335,11 @@ public class CaldavInvitationLandingServiceTest {
 
     // Mapped before this answer, and moved on the server since the last sweep:
     // the copy is read again through the sweep, and the answer is written on
-    // the version the server holds now, not on the one the sweep recorded.
-    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(mapping(FILED_HREF));
+    // the version the server holds now, not on the one the sweep recorded. A
+    // fresh row per read, as storage answers.
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenAnswer(call -> mapping(FILED_HREF));
     when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF, "\"e5\"", COPY));
-    assertTrue(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
+    assertNotNull(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
     verify(caldavInboundService, times(2)).importInto(USER, LOGIN, binding, calendar, FROM, TO);
     verify(writer, never()).putObject(any(), anyString(), anyString());
     verify(writer, never()).updateObject(any(), anyString(), anyString(), anyString());
@@ -341,8 +352,20 @@ public class CaldavInvitationLandingServiceTest {
 
     // The sweep's record and the server agree: the row is answered on as is.
     when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF, "\"e1\"", COPY));
-    assertTrue(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
+    assertNotNull(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
     verify(caldavPushService).pushAnswerOnto(USER, LOGIN, mapping(FILED_HREF), List.of(MAILBOX, ACCOUNT), "TENTATIVE", EVENT);
+
+    // The import recorded a version of its own after this call's read — the
+    // copy moved in between: the later read wins over the earlier one.
+    when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF, "\"e5\"", COPY));
+    ObjectSync recordedByTheImport = mapping(FILED_HREF);
+    recordedByTheImport.setEtag("\"e8\"");
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenAnswer(call -> mapping(FILED_HREF))
+                                                     .thenAnswer(call -> mapping(FILED_HREF))
+                                                     .thenReturn(recordedByTheImport);
+    assertNotNull(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
+    verify(caldavPushService).pushAnswerOnto(USER, LOGIN, recordedByTheImport, List.of(MAILBOX, ACCOUNT), "TENTATIVE", EVENT);
+    assertEquals("\"e8\"", recordedByTheImport.getEtag());
   }
 
   /**
@@ -354,11 +377,11 @@ public class CaldavInvitationLandingServiceTest {
    */
   @Test
   public void aKnownCopyIsRewrittenOnlyByItsOrganisersNewerRevision() throws Exception {
-    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(mapping(HREF));
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenAnswer(call -> mapping(HREF));
     String older = COPY.replace("SEQUENCE:2", "SEQUENCE:1");
     when(calDavClient.fetchObject(endpoint, HREF)).thenReturn(new CalendarObject(HREF, "\"e5\"", older));
 
-    assertTrue(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
+    assertNotNull(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
 
     ArgumentCaptor<String> rewritten = ArgumentCaptor.forClass(String.class);
     verify(writer).updateObject(eq(endpoint), eq(HREF), rewritten.capture(), eq("\"e5\""));
@@ -369,6 +392,15 @@ public class CaldavInvitationLandingServiceTest {
     verify(caldavPushService).pushAnswerOnto(eq(USER), eq(LOGIN), answered.capture(), any(), eq("TENTATIVE"), eq(EVENT));
     assertEquals("\"w\"", answered.getValue().getEtag(), "the version the rewrite produced");
 
+    // A server that altered what it stored answers the rewrite with no ETag
+    // (RFC 4791 section 5.3.4): the version is read back before the answer.
+    when(writer.updateObject(eq(endpoint), eq(HREF), anyString(), eq("\"e5\""))).thenReturn(new PutResult(204, null, null));
+    when(calDavClient.fetchObject(endpoint, HREF)).thenReturn(new CalendarObject(HREF, "\"e5\"", older),
+                                                              new CalendarObject(HREF, "\"e5b\"", COPY));
+    assertNotNull(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
+    verify(caldavPushService, times(2)).pushAnswerOnto(eq(USER), eq(LOGIN), answered.capture(), any(), eq("TENTATIVE"), eq(EVENT));
+    assertEquals("\"e5b\"", answered.getValue().getEtag(), "read back after a write the server answered without a version");
+
     // The master is older but an override of the copy carries a higher
     // revision: the master still decides.
     String overrideNewer = older.replace("END:VEVENT\r\n",
@@ -378,15 +410,15 @@ public class CaldavInvitationLandingServiceTest {
                                              + "DTEND;TZID=Europe/Paris:20261012T150000\r\nSUMMARY:moved\r\nORGANIZER:mailto:"
                                              + ORGANISER + "\r\nEND:VEVENT\r\n");
     when(calDavClient.fetchObject(endpoint, HREF)).thenReturn(new CalendarObject(HREF, "\"e6\"", overrideNewer));
-    assertTrue(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
+    assertNotNull(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
     verify(writer).updateObject(eq(endpoint), eq(HREF), anyString(), eq("\"e6\""));
-    verify(caldavInboundService, times(2)).importInto(USER, LOGIN, binding, calendar, FROM, TO);
+    verify(caldavInboundService, times(3)).importInto(USER, LOGIN, binding, calendar, FROM, TO);
 
     // An equal revision leaves the copy alone.
     when(calDavClient.fetchObject(endpoint, HREF)).thenReturn(new CalendarObject(HREF, "\"e7\"", COPY));
-    assertTrue(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
+    assertNotNull(service.land(invitation(EventAttendeeResponse.TENTATIVE)));
     verify(writer, never()).updateObject(eq(endpoint), eq(HREF), anyString(), eq("\"e7\""));
-    verify(caldavInboundService, times(3)).importInto(USER, LOGIN, binding, calendar, FROM, TO);
+    verify(caldavInboundService, times(4)).importInto(USER, LOGIN, binding, calendar, FROM, TO);
   }
 
   /**
@@ -483,7 +515,7 @@ public class CaldavInvitationLandingServiceTest {
       lenient().when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, uid)).thenReturn(null);
       String request = REQUEST.replace("UID:" + UID, "UID:" + uid);
 
-      assertTrue(service.land(invitation(EventAttendeeResponse.ACCEPTED, uid, request)));
+      assertNotNull(service.land(invitation(EventAttendeeResponse.ACCEPTED, uid, request)));
     }
     ArgumentCaptor<String> hrefs = ArgumentCaptor.forClass(String.class);
     ArgumentCaptor<String> documents = ArgumentCaptor.forClass(String.class);
@@ -514,7 +546,7 @@ public class CaldavInvitationLandingServiceTest {
     when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(null, null, mapping(HREF));
     when(caldavSyncStorage.getObjectByUid(OTHER, UID)).thenReturn(null);
 
-    assertTrue(service.land(invitation(EventAttendeeResponse.ACCEPTED)));
+    assertNotNull(service.land(invitation(EventAttendeeResponse.ACCEPTED)));
     verify(writer).putObject(eq(endpoint), anyString(), anyString());
     verify(caldavInboundService, times(2)).importInto(eq(USER), eq(LOGIN), eq(binding), eq(calendar), any(), any());
 
@@ -522,12 +554,128 @@ public class CaldavInvitationLandingServiceTest {
     when(calDavClient.fetchObject(endpoint, OTHER_HOME + UID + ".ics")).thenReturn(new CalendarObject(OTHER_HOME + UID + ".ics",
                                                                                                      "\"e9\"",
                                                                                                      COPY));
-    assertTrue(service.land(invitation(EventAttendeeResponse.ACCEPTED)));
+    assertNotNull(service.land(invitation(EventAttendeeResponse.ACCEPTED)));
     verify(caldavInboundService, times(1)).importInto(eq(USER), eq(LOGIN), eq(work), eq(workCalendar), any(), any());
     ArgumentCaptor<ObjectSync> answered = ArgumentCaptor.forClass(ObjectSync.class);
     verify(caldavPushService, times(2)).pushAnswerOnto(eq(USER), eq(LOGIN), answered.capture(), any(), eq("ACCEPTED"), eq(EVENT));
     assertEquals(OTHER_HOME + UID + ".ics", answered.getValue().getRemoteHref());
     assertEquals("\"e9\"", answered.getValue().getEtag());
+  }
+
+  /**
+   * The reader offers the calendar when the user has a connected account with a
+   * calendar bound on it — database reads only.
+   */
+  @Test
+  public void theCalendarIsHeldForAConnectedUserWithABinding() {
+    assertTrue(service.holdsCalendarFor(LOGIN));
+    verify(calDavClient, never()).endpoint(anyLong(), anyString());
+
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of());
+    assertFalse(service.holdsCalendarFor(LOGIN));
+    when(caldavServerService.isConnected(settings)).thenReturn(false);
+    assertFalse(service.holdsCalendarFor(LOGIN));
+  }
+
+  /**
+   * "Add to my calendar": the event lands as sent — no answer on the copy, none
+   * recorded in agenda — and the reader is handed agenda's own link to it. A
+   * published event with no organiser lands the same way.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anInvitationAddedWithoutAnAnswerLandsAsSent() throws Exception {
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(null, null, mapping(HREF));
+    try (MockedStatic<EventIcsBuilder> agenda = mockStatic(EventIcsBuilder.class)) {
+      agenda.when(() -> EventIcsBuilder.eventUrl(EVENT)).thenReturn("https://exo.example/portal/dw/agenda?eventId=964");
+
+      LandedMailInvitation landed = service.land(invitation("REQUEST", null, UID, REQUEST));
+
+      assertEquals(EVENT, landed.eventId());
+      assertEquals("https://exo.example/portal/dw/agenda?eventId=964", landed.link());
+      assertFalse(landed.removed());
+    }
+    ArgumentCaptor<String> stored = ArgumentCaptor.forClass(String.class);
+    verify(writer).putObject(eq(endpoint), anyString(), stored.capture());
+    assertTrue(stored.getValue().replace("\r\n ", "").contains("PARTSTAT=NEEDS-ACTION"), "stored as sent: " + stored.getValue());
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
+    verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any(), eq(false));
+
+    String published = REQUEST.replace("METHOD:REQUEST", "METHOD:PUBLISH").replace("ORGANIZER;CN=Olivia:mailto:" + ORGANISER + "\r\n", "");
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(null, null, mapping(HREF));
+    assertNotNull(service.land(invitation("PUBLISH", null, UID, published)));
+  }
+
+  /**
+   * A decline creates nothing: a meeting the user turned down and never added
+   * does not belong in their calendar. The collection is still read first, so
+   * a copy the mail server filed takes the decline instead of coming in
+   * accepted on the next sweep; on a copy they hold it sets the answer, as
+   * answering Decline in agenda does, and the copy stays.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aDeclineAnswersACopyTheUserHoldsAndCreatesNone() throws Exception {
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(null);
+    assertNull(service.land(invitation(EventAttendeeResponse.DECLINED)));
+    verify(caldavInboundService, times(1)).importInto(USER, LOGIN, binding, calendar, FROM, TO);
+    verify(writer, never()).putObject(any(), anyString(), anyString());
+    verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any(), eq(false));
+
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenAnswer(call -> mapping(FILED_HREF));
+    when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF, "\"e1\"", COPY));
+    assertNotNull(service.land(invitation(EventAttendeeResponse.DECLINED)));
+    verify(caldavPushService).pushAnswerOnto(eq(USER), eq(LOGIN), any(), eq(List.of(MAILBOX, ACCOUNT)), eq("DECLINED"), eq(EVENT));
+    verify(agendaEventAttendeeService).sendEventResponse(EVENT, USER, EventAttendeeResponse.DECLINED, false);
+    verify(writer, never()).deleteObject(any(), anyString(), anyString());
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+  }
+
+  /**
+   * The organiser's cancellation removes the copy the user holds — the object
+   * on the server under the version just read, the mapping, the eXo event, in
+   * that order — and nothing when they hold none. From the organiser only.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aCancellationRemovesTheCopyTheUserHoldsFromItsOrganiserOnly() throws Exception {
+    String cancel = REQUEST.replace("METHOD:REQUEST", "METHOD:CANCEL").replace("SEQUENCE:2", "SEQUENCE:3");
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(null);
+    assertNull(service.land(invitation("CANCEL", null, UID, cancel)));
+    verify(writer, never()).deleteObject(any(), anyString(), anyString());
+
+    ObjectSync held = mapping(FILED_HREF);
+    held.setId(5L);
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(held);
+    when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF, "\"e5\"", COPY));
+    when(writer.deleteObject(endpoint, FILED_HREF, "\"e5\"")).thenReturn(204);
+
+    LandedMailInvitation removed = service.land(invitation("CANCEL", null, UID, cancel));
+
+    assertTrue(removed.removed());
+    assertEquals(EVENT, removed.eventId());
+    assertNull(removed.link());
+    InOrder order = inOrder(writer, caldavSyncStorage, agendaEventService);
+    order.verify(writer).deleteObject(endpoint, FILED_HREF, "\"e5\"");
+    order.verify(caldavSyncStorage).deleteObject(5L);
+    order.verify(agendaEventService).deleteEventById(EVENT, USER);
+    verify(caldavInboundService, never()).importInto(anyLong(), anyString(), any(), any(), any(), any());
+    verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any(), eq(false));
+
+    when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF,
+                                                                                       "\"e6\"",
+                                                                                       COPY.replace("mailto:" + ORGANISER,
+                                                                                                    "mailto:somebody@else.example")));
+    assertThrows(IllegalArgumentException.class, () -> service.land(invitation("CANCEL", null, UID, cancel)));
+    verify(writer, never()).deleteObject(endpoint, FILED_HREF, "\"e6\"");
+    verify(agendaEventService, times(1)).deleteEventById(EVENT, USER);
+
+    when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF, "\"e7\"", COPY));
+    when(writer.deleteObject(endpoint, FILED_HREF, "\"e7\"")).thenReturn(PutResult.PRECONDITION_FAILED);
+    assertThrows(IllegalStateException.class, () -> service.land(invitation("CANCEL", null, UID, cancel)));
   }
 
   /**
@@ -549,7 +697,20 @@ public class CaldavInvitationLandingServiceTest {
    * @return the invitation
    */
   private static MailInvitation invitation(EventAttendeeResponse response, String uid, String icalendar) {
-    return new MailInvitation(LOGIN, MAILBOX, uid, 2, response, icalendar);
+    return invitation("REQUEST", response, uid, icalendar);
+  }
+
+  /**
+   * An invitation of a given kind.
+   *
+   * @param method the iTIP method
+   * @param response the answer given, null to add or remove without one
+   * @param uid what the reader said the UID is
+   * @param icalendar the object
+   * @return the invitation
+   */
+  private static MailInvitation invitation(String method, EventAttendeeResponse response, String uid, String icalendar) {
+    return new MailInvitation(LOGIN, MAILBOX, method, uid, 2, response, icalendar);
   }
 
   /**
