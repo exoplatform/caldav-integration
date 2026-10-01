@@ -420,6 +420,68 @@ public class CaldavInboundServiceTest {
   }
 
   /**
+   * The object a mail invitation is stored as (EXO-90848,
+   * {@code IcsMerger.storedObject}: the organiser's REQUEST with METHOD gone,
+   * zones kept, the user's answer on their line) is brought in by this very
+   * path as any object the server holds: one event, the user as its attendee,
+   * the UID as its remote identity under this connector's name, and the mapping
+   * row — which is what makes the landing recognised by the next sweep instead
+   * of imported twice.
+   */
+  @Test
+  public void aLandedInvitationIsImportedLikeAnyObjectTheServerHolds() throws Exception {
+    String request = """
+        BEGIN:VCALENDAR
+        PRODID:-//Google Inc//Google Calendar 70.9054//EN
+        VERSION:2.0
+        METHOD:REQUEST
+        BEGIN:VTIMEZONE
+        TZID:Europe/Paris
+        BEGIN:STANDARD
+        DTSTART:19701025T030000
+        TZOFFSETFROM:+0200
+        TZOFFSETTO:+0100
+        END:STANDARD
+        END:VTIMEZONE
+        BEGIN:VEVENT
+        UID:weekly-sync@google.com
+        SEQUENCE:2
+        DTSTAMP:20261001T080000Z
+        DTSTART;TZID=Europe/Paris:20261012T100000
+        DTEND;TZID=Europe/Paris:20261012T110000
+        RRULE:FREQ=WEEKLY;BYDAY=MO
+        SUMMARY:Weekly sync
+        ORGANIZER;CN=Olivia:mailto:olivia@partner.example
+        ATTENDEE;CN=John;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:john@acme.com
+        END:VEVENT
+        END:VCALENDAR
+        """.replace("\n", "\r\n");
+    org.exoplatform.caldav.ics.IcsMerger merger = new org.exoplatform.caldav.ics.IcsMerger();
+    String stored = merger.setAttendeeResponse(merger.storedObject(request, "weekly-sync@google.com"),
+                                               java.util.List.of("john@acme.com"),
+                                               "ACCEPTED")
+                          .document();
+    givenServerObjects(object("weekly-sync@google.com.ics", "etag-7", stored));
+    givenAgendaCreates(777L);
+
+    assertEquals(1, service.importInto(USER, LOGIN, pair(), calendar(), from(), to()));
+
+    ArgumentCaptor<Event> created = ArgumentCaptor.forClass(Event.class);
+    ArgumentCaptor<RemoteEvent> identity = ArgumentCaptor.forClass(RemoteEvent.class);
+    verify(agendaEventService).createEvent(created.capture(), any(), any(), any(), any(), identity.capture(), eq(false), eq(USER));
+    assertEquals("Weekly sync", created.getValue().getSummary());
+    assertNotNull(created.getValue().getRecurrence(), "the series stays a series");
+    assertEquals("weekly-sync@google.com", identity.getValue().getRemoteId());
+    assertEquals(CONNECTOR, identity.getValue().getRemoteProviderName());
+    ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
+    verify(caldavSyncStorage).saveObject(saved.capture());
+    assertEquals(PAIR, saved.getValue().getCalendarSyncId());
+    assertEquals("weekly-sync@google.com", saved.getValue().getIcsUid());
+    assertEquals(777L, saved.getValue().getLocalEventId());
+    assertEquals("etag-7", saved.getValue().getEtag());
+  }
+
+  /**
    * An unchanged object costs nothing.
    */
   @Test
