@@ -379,6 +379,8 @@ public class CaldavRelayService {
    * @throws IllegalAccessException when the resolved server is deactivated
    * @throws IllegalArgumentException when the credentials are blank or the
    *           username cannot be part of a URL path
+   * @see CaldavProbeResult#SERVER_NOT_USABLE the outcome for a server whose
+   *      credentials provider is not installed, answered without probing
    */
   public CaldavProbeResult probeAccount(Long serverId, String username, String password) throws ObjectNotFoundException,
                                                                                          IllegalAccessException {
@@ -395,6 +397,15 @@ public class CaldavRelayService {
     }
     if (!server.isActive()) {
       throw new IllegalAccessException(SERVER_INACTIVE_MESSAGE);
+    }
+    if (caldavCredentialsResolver.isProviderMissing(server.getAuthProviderName())) {
+      // Typed credentials or not, every conversation with this server goes through
+      // its provider, which is not installed: an account stored now would show as
+      // connected and never synchronise. Nothing is sent to the server.
+      LOG.debug("CalDAV server {} is not usable yet: its credentials provider {} is not installed",
+                server.getId(),
+                server.getAuthProviderName());
+      return new CaldavProbeResult(CaldavProbeResult.SERVER_NOT_USABLE, null);
     }
     return probe(server, username, basicAuth(username, password));
   }

@@ -37,6 +37,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.model.CaldavProbeResult;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.service.CaldavConnectorService;
 import org.exoplatform.services.security.ConversationState;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -158,6 +160,26 @@ public class CaldavConnectorRestTest {
 
     assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
     verify(caldavConnectorService).createCaldavSetting(setting, 42L);
+  }
+
+  /**
+   * An account refused because its server's credentials provider is not installed
+   * answers 409 with the code the drawer shows, not the 500 of an error.
+   */
+  @Test
+  public void anAccountOnAServerNotUsableYetAnswersAConflict() throws Exception {
+    withCurrentUser();
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+    doThrow(CalDavProviderMissingException.named("bluemind-sudo"))
+        .when(caldavConnectorService)
+        .createCaldavSetting(setting, 42L);
+
+    Response response = caldavConnectorRest.createCaldavSetting(setting);
+
+    assertEquals(Response.Status.CONFLICT.getStatusCode(), response.getStatus());
+    assertEquals(CaldavProbeResult.SERVER_NOT_USABLE, response.getEntity());
   }
 
   /**
