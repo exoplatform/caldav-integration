@@ -18,6 +18,7 @@ package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
@@ -35,34 +36,57 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
+import org.exoplatform.caldav.model.LandedMailInvitation;
 import org.exoplatform.caldav.model.MailInvitation;
 import org.exoplatform.emailConnector.model.InvitationAnswer;
 import org.exoplatform.emailConnector.model.InvitationLanding;
+import org.exoplatform.emailConnector.model.LandedInvitation;
 import org.exoplatform.emailConnector.plugin.InvitationCalendarPlugin;
 
 /**
  * The bean the mail reader finds across add-ons: a named, non-final
  * {@code @Service} conditional on the reader's SPI class, translating the
- * reader's record into this add-on's and carrying the call, nothing else
- * (EXO-90848).
+ * reader's records into this add-on's and back, and carrying the call, nothing
+ * else (EXO-90848).
  */
 @ExtendWith(MockitoExtension.class)
 public class CaldavInvitationCalendarPluginTest {
 
-  private static final InvitationLanding LANDING    = new InvitationLanding("john",
+  private static final String            ICS        = "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n";
+
+  private static final InvitationLanding ANSWERED   = new InvitationLanding("john",
                                                                             "john@acme.com",
+                                                                            "REQUEST",
                                                                             "weekly-sync@google.com",
                                                                             null,
                                                                             2,
                                                                             InvitationAnswer.TENTATIVE,
-                                                                            "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n");
+                                                                            ICS);
+
+  private static final InvitationLanding ADDED      = new InvitationLanding("john",
+                                                                            "john@acme.com",
+                                                                            "PUBLISH",
+                                                                            "weekly-sync@google.com",
+                                                                            null,
+                                                                            0,
+                                                                            null,
+                                                                            ICS);
 
   private static final MailInvitation    INVITATION = new MailInvitation("john",
                                                                          "john@acme.com",
+                                                                         "REQUEST",
                                                                          "weekly-sync@google.com",
                                                                          2,
                                                                          EventAttendeeResponse.TENTATIVE,
-                                                                         "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n");
+                                                                         ICS);
+
+  private static final MailInvitation    PUBLISHED  = new MailInvitation("john",
+                                                                         "john@acme.com",
+                                                                         "PUBLISH",
+                                                                         "weekly-sync@google.com",
+                                                                         0,
+                                                                         null,
+                                                                         ICS);
 
   @Mock
   private CaldavInvitationLandingService caldavInvitationLandingService;
@@ -71,19 +95,29 @@ public class CaldavInvitationCalendarPluginTest {
   private CaldavInvitationCalendarPlugin plugin;
 
   /**
-   * The reader's record becomes this add-on's, field for field, and the answer
-   * and the failure are the landing service's.
+   * The reader's record becomes this add-on's, field for field — an answer
+   * given or none — and what this add-on did becomes the reader's record; the
+   * failure is the landing service's.
    */
   @Test
-  public void theCallIsTranslatedAndCarriedAsIs() {
-    when(caldavInvitationLandingService.land(INVITATION)).thenReturn(true);
-    assertTrue(plugin.land(LANDING));
+  public void theCallIsTranslatedBothWaysAndCarriedAsIs() {
+    when(caldavInvitationLandingService.land(INVITATION)).thenReturn(new LandedMailInvitation(77L, "/portal/dw/agenda?eventId=77", false));
+    LandedInvitation landed = plugin.land(ANSWERED);
+    assertEquals(77L, landed.eventId());
+    assertEquals("/portal/dw/agenda?eventId=77", landed.link());
+    assertFalse(landed.removed());
 
-    when(caldavInvitationLandingService.land(INVITATION)).thenReturn(false);
-    assertFalse(plugin.land(LANDING));
+    when(caldavInvitationLandingService.land(PUBLISHED)).thenReturn(new LandedMailInvitation(78L, null, true));
+    assertTrue(plugin.land(ADDED).removed());
+
+    when(caldavInvitationLandingService.land(INVITATION)).thenReturn(null);
+    assertNull(plugin.land(ANSWERED));
 
     when(caldavInvitationLandingService.land(INVITATION)).thenThrow(new IllegalStateException("refused"));
-    assertThrows(IllegalStateException.class, () -> plugin.land(LANDING));
+    assertThrows(IllegalStateException.class, () -> plugin.land(ANSWERED));
+
+    when(caldavInvitationLandingService.holdsCalendarFor("john")).thenReturn(true);
+    assertTrue(plugin.holdsCalendarFor("john"));
   }
 
   /**
@@ -104,7 +138,7 @@ public class CaldavInvitationCalendarPluginTest {
   /**
    * No bean but this one names a type of the reader's in a method signature:
    * Spring introspects every method of every bean it creates, and an
-   * unconditional bean naming the reader's record would fail this add-on's
+   * unconditional bean naming the reader's records would fail this add-on's
    * context on a server without the reader. Pinned on the landing service,
    * the one bean this plugin hands the call to.
    */
