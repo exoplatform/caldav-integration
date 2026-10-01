@@ -739,6 +739,10 @@ public class CaldavInvitationLandingServiceTest {
                    () -> service.land(invitation("PUBLISH", null, own, published.replace("SUMMARY:Weekly sync", "SUMMARY:Lunch"))));
       assertThrows(IllegalArgumentException.class,
                    () -> service.land(invitation("PUBLISH", null, own, published.replace("20261005T100000", "20261012T100000"))));
+      // A meeting agenda cancelled is not "already in your calendar".
+      meeting.setStatus(org.exoplatform.agenda.constant.EventStatus.CANCELLED);
+      assertThrows(IllegalArgumentException.class, () -> service.land(invitation("PUBLISH", null, own, published)));
+      meeting.setStatus(org.exoplatform.agenda.constant.EventStatus.CONFIRMED);
       verify(caldavInboundService, never()).importInto(anyLong(), anyString(), any(), any(), any(), any());
       verify(writer, never()).putObject(any(), anyString(), anyString());
       verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any(), eq(false));
