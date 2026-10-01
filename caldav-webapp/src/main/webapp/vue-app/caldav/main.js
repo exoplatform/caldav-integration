@@ -167,8 +167,11 @@ readyPromise
     // beside the registry rather than per connector, and
     // failing to an empty map: a requirement nobody could
     // read must leave every button opening its drawer.
-    agendaCaldavService.getConnectionRequirements().catch(() => ({}))]))
-  .then(([servers, requirements]) => {
+    agendaCaldavService.getConnectionRequirements().catch(() => ({})),
+    // Which providers are not installed, failing to none: the server then
+    // refuses the connection itself, and only the drawer's warning is lost.
+    agendaCaldavService.getUnavailableProviders().catch(() => [])]))
+  .then(([servers, requirements, unavailableProviders]) => {
     // Not on a space's agenda (EXO-90383): a connector is the viewer's own
     // account, and a space's agenda shows the space's calendars alone
     if (!connectorsBelongOnThisPage()) {
@@ -182,7 +185,7 @@ readyPromise
     const labels = {};
     activeServers.forEach((server, index) => {
       extensionRegistry.registerExtension('agenda', 'connectors',
-        createCaldavConnector(server, index, requirements));
+        createCaldavConnector(server, index, requirements, unavailableProviders));
       labels[server.providerName] = server.name;
       // The secondary line of the connect-drawer row: the admin's words when
       // there are some, else the host — always present, and the thing that

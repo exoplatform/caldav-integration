@@ -539,6 +539,25 @@ public class CaldavRelayServiceTest {
   }
 
   /**
+   * Typed credentials for a server whose credentials provider is not installed are
+   * not sent anywhere: the probe answers that the server is not usable yet, so the
+   * drawer stores nothing that would show as connected and never synchronise. The
+   * same server probes as before once its provider is installed.
+   */
+  @Test
+  public void probesNothingOnAServerWhoseProviderIsNotInstalled() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.isProviderMissing(PROVIDER)).thenReturn(true);
+
+    assertEquals(CaldavProbeResult.SERVER_NOT_USABLE, caldavRelayService.probeAccount(SERVER_ID, "john", "pw").getResult());
+    org.mockito.Mockito.verifyNoInteractions(httpClient);
+
+    when(caldavCredentialsResolver.isProviderMissing(PROVIDER)).thenReturn(false);
+    givenProbeAnswer(207);
+    assertEquals(CaldavProbeResult.OK, caldavRelayService.probeAccount(SERVER_ID, "john", "pw").getResult());
+  }
+
+  /**
    * EXO-89806. A gateway status is an unreachable server, not a wrongly
    * declared address: the measured failure was a proxy answering 502 in front
    * of a Stalwart that had banned the platform's source address, and the user
