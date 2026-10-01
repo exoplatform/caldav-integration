@@ -45,6 +45,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.CaldavServerProviderConfig;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.CaldavManagedMode;
 import org.exoplatform.caldav.rest.model.CaldavManagedModeRequest;
@@ -58,6 +59,7 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.Map;
+import java.util.Set;
 
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -593,14 +595,16 @@ public class CaldavServerRestTest {
 
   /**
    * The endpoint the drawer reads its provider fields back from - it relays what the
-   * service hands it, which is everything but the secret.
+   * service hands it, which is everything but the secret, and which secrets are stored.
    */
   @Test
   public void shouldRelayTheProviderConfiguration() throws Exception {
     when(request.getRemoteUser()).thenReturn("root");
-    when(caldavServerService.getProviderConfig(7, "root")).thenReturn(Map.of("technicalLogin", "svc"));
+    CaldavServerProviderConfig config = new CaldavServerProviderConfig(Map.of("technicalLogin", "svc"),
+                                                                       Set.of("technicalSecret"));
+    when(caldavServerService.getProviderConfig(7, "root")).thenReturn(config);
 
-    assertEquals(Map.of("technicalLogin", "svc"), caldavServerRest.getProviderConfig(request, 7));
+    assertEquals(config, caldavServerRest.getProviderConfig(request, 7));
   }
 
   /** A refusal by the service is a 403 here, as on every other write of this resource. */
