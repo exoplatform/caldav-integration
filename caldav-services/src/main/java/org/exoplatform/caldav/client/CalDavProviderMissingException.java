@@ -43,4 +43,15 @@ public class CalDavProviderMissingException extends CalDavException {
   public CalDavProviderMissingException(String message) {
     super(message);
   }
+
+  /**
+   * The refusal for a registration configured with a provider that is not
+   * installed, in the one wording every caller uses.
+   *
+   * @param providerName the provider the registration names
+   * @return the refusal, naming that provider
+   */
+  public static CalDavProviderMissingException named(String providerName) {
+    return new CalDavProviderMissingException("No credentials provider named " + providerName + " is installed");
+  }
 }

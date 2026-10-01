@@ -44,6 +44,7 @@ import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.agenda.service.AgendaUserSettingsService;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavRelayRequest;
 import org.exoplatform.caldav.model.CaldavRelayedResponse;
@@ -436,6 +437,9 @@ public class CaldavRelayService {
    * @return the probe's outcome; the connection is recorded only when it is OK
    * @throws ObjectNotFoundException when no server is declared
    * @throws IllegalAccessException when the server is inactive or its provider disabled
+   * @throws CalDavProviderMissingException when the server's credentials provider is
+   *           not installed; nothing is asked of the provider or the server, and
+   *           nothing is recorded
    */
   public CaldavProbeResult connectThroughProvider(Long serverId, String exoLogin, boolean byManagedMode) throws ObjectNotFoundException,
                                                                                                       IllegalAccessException {
@@ -446,6 +450,12 @@ public class CaldavRelayService {
     }
     if (!server.isActive()) {
       throw new IllegalAccessException(SERVER_INACTIVE_MESSAGE);
+    }
+    // Before the provider is asked anything: one that is not installed - an add-on's,
+    // not installed or not started yet - would only answer with a failure, and the
+    // resolver has said that once for its name.
+    if (caldavCredentialsResolver.isProviderMissing(server.getAuthProviderName())) {
+      throw CalDavProviderMissingException.named(server.getAuthProviderName());
     }
     // This path exists for the connectors that ask nothing. One that does ask is
     // refused here rather than connected with no credentials at all.
