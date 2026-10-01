@@ -57,6 +57,7 @@ import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalDavNotFoundException;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalDavSubjectMismatchException;
 import org.exoplatform.caldav.plugin.CalendarSubscriptionChannel;
@@ -519,6 +520,35 @@ public class CaldavShareSubscriptionServiceTest {
     order.verify(caldavPendingSubscriptionStorage).settledIfStillAsking(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
     order.verify(edits).unsubscribe(CONTAINER);
     order.verify(caldavPendingSubscriptionStorage).settledWhateverWasOwed(BOB, SERVER, CONTAINER);
+  }
+
+  /**
+   * A colleague whose server's credentials provider is not installed — an
+   * add-on's, while the add-on is not, or has not started yet — keeps every
+   * owed row as it is: no attempt is counted, none is given up on, nothing is
+   * said at WARN or INFO, and the other colleague's rows are still drained.
+   * Any other failure to mint the endpoint still counts its attempt.
+   */
+  @Test
+  public void aMissingCredentialsProviderCountsNoAttemptAgainstTheColleaguesRows() {
+    PendingSubscription bobOne = row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0);
+    PendingSubscription bobTwo = row(2L, BOB, OTHER, PendingSubscriptionKind.SUBSCRIBE, 0);
+    PendingSubscription carols = row(3L, CAROL, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0);
+    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(bobOne, bobTwo, carols));
+    when(calDavClient.endpoint(SERVER, "bob")).thenThrow(new CalDavProviderMissingException("No credentials provider named acme-sudo is installed"));
+
+    assertEquals(1, service.retryOwed(50), "carol's row landed");
+
+    verify(caldavPendingSubscriptionStorage, never()).refused(anyLong());
+    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), anyInt());
+    verify(subscriptionSessions, never()).asSubscriber(eq(bobEndpoint), anyString(), any());
+    assertTrue(warnLines().isEmpty(), warnLines().toString());
+    assertTrue(infoLines().stream().noneMatch(line -> line.contains("acme-sudo")), infoLines().toString());
+
+    doThrow(new CalDavException("No CalDAV server is declared to talk to")).when(calDavClient).endpoint(SERVER, "bob");
+    service.retryOwed(50);
+    verify(caldavPendingSubscriptionStorage).refused(1L);
+    verify(caldavPendingSubscriptionStorage).refused(2L);
   }
 
   /**

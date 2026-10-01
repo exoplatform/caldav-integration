@@ -240,7 +240,9 @@ public class HttpCalDavClientTest {
     when(caldavServerService.resolveServer(1L)).thenReturn(server);
     when(connectorCredentialsService.getProviders()).thenReturn(List.of());
 
-    CalDavException refused = assertThrows(CalDavException.class, () -> client.endpoint(1L, "alice"));
+    // Typed, so that a pass meeting it stops quietly rather than as a failure.
+    CalDavProviderMissingException refused = assertThrows(CalDavProviderMissingException.class,
+                                                          () -> client.endpoint(1L, "alice"));
 
     assertTrue(refused.getMessage().contains("bluemind-sudo"), refused.getMessage());
     verify(connectorCredentialsService, never()).resolveTargetIdentity(any());
