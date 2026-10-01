@@ -57,7 +57,7 @@ public interface CaldavPendingSubscriptionDAO extends JpaRepository<CaldavPendin
    * The changes still worth attempting, whoever they are owed to.
    *
    * <p>
-   * Table-wide on purpose (hole 2 of the brief): the colleague owed a
+   * Table-wide on purpose: the colleague owed a
    * subscription holds no active pair and is never selected by the sweep's
    * per-account paging, so the drain reads the table rather than visiting
    * accounts. The caller pages oldest first and groups by sharee.
