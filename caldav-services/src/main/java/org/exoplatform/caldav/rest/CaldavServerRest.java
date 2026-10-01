@@ -20,6 +20,7 @@ import java.io.InputStream;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.InputStreamResource;
@@ -339,6 +340,27 @@ public class CaldavServerRest {
   @ApiResponses(@ApiResponse(responseCode = "200", description = "Request fulfilled"))
   public Map<String, Boolean> connectionRequirements() {
     return caldavServerService.connectionRequirements();
+  }
+
+  /**
+   * The declared provider names whose credentials provider is not installed: a server
+   * configured with one cannot be connected until it is, which a browser tells apart
+   * from a provider that asks the user for credentials, since both answer true in
+   * {@link #connectionRequirements()}.
+   * <p>
+   * Open to every authenticated user, for the same reason: it answers about the
+   * connectors offered to the caller.
+   *
+   * @return the declared provider names that are not installed
+   */
+  @GetMapping("/unavailable-providers")
+  @Secured("users")
+  @Operation(summary = "Tells which declared providers are not installed", method = "GET",
+      description = "The provider names the registry uses whose credentials provider is not installed. A server configured "
+          + "with one cannot be connected until it is.")
+  @ApiResponses(@ApiResponse(responseCode = "200", description = "Request fulfilled"))
+  public Set<String> unavailableProviders() {
+    return caldavServerService.unavailableProviders();
   }
 
   /**

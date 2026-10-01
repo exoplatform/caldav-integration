@@ -27,6 +27,9 @@ public interface CaldavConnectorService {
    * @param userIdentityId User identity creating the exchange user setting
    * @throws IllegalAccessException when the user is not authorized to create
    *           caldav setting
+   * @throws RuntimeException the services' provider-missing refusal, when the
+   *           account's registration names a credentials provider that is not
+   *           installed; nothing is stored
    */
   void createCaldavSetting(CaldavUserSetting caldavUserSetting, long userIdentityId) throws IllegalAccessException;
 

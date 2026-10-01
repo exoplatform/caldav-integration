@@ -44,6 +44,12 @@ public class CaldavProbeResult {
   /** The URL reaches something that is not a CalDAV collection. */
   public static final String NOT_CALDAV  = "caldav.error.notCaldav";
 
+  /**
+   * The server cannot be used yet: the credentials provider its registration names
+   * is not installed, so nothing was asked of the server.
+   */
+  public static final String SERVER_NOT_USABLE = "caldav.error.serverNotUsable";
+
   /** One of the stable outcome codes above. */
   private String  result;
 
