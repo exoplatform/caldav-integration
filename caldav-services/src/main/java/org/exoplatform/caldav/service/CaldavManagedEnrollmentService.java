@@ -33,6 +33,7 @@ import org.springframework.stereotype.Service;
 
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.constant.ManagedEnrollmentOutcome;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -254,6 +255,16 @@ public class CaldavManagedEnrollmentService {
       // not answer. Nothing is recorded, and the next login tries again - the
       // administrator's remedy is a BlueMind account or an exclusion.
       LOG.info("User {} left unattached: the managed CalDAV server {} answered {}", username, serverId, outcome.getResult());
+      return ManagedEnrollmentOutcome.REFUSED;
+    } catch (CalDavProviderMissingException e) {
+      // Met at every login of every governed user while the server's credentials
+      // provider is not installed, which the resolver has said once for its name:
+      // a debug line here, nothing recorded, and the first login after the provider
+      // appears attaches.
+      LOG.debug("User {} left unattached: the managed CalDAV server {} waits for its credentials provider ({})",
+                username,
+                serverId,
+                e.getMessage());
       return ManagedEnrollmentOutcome.REFUSED;
     } catch (IllegalAccessException | IllegalArgumentException | IllegalStateException | CalDavException e) {
       // The connect refused before probing: the server inactive, a provider that
