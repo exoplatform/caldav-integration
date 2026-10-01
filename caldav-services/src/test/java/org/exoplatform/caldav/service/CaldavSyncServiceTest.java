@@ -2447,7 +2447,7 @@ public class CaldavSyncServiceTest {
   }
 
   /**
-   * EXO-90277, PO decision 4: the subscriptions a colleague is owed are
+   * EXO-90277, the PO's decision of 2026-09-16: the subscriptions a colleague is owed are
    * drained at the top of their own pass, before the home is listed, so the
    * calendar just shared with them is in this pass's listing.
    */

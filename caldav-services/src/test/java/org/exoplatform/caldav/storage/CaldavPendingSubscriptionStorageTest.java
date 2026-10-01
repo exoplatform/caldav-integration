@@ -172,7 +172,8 @@ public class CaldavPendingSubscriptionStorageTest {
    * An obligation comes back saying what it was recorded as — and it is
    * recorded for a colleague who holds <b>no pair at all</b>: no
    * {@code CALDAV_CALENDAR_SYNC} row was written for bob, and nothing refused
-   * the insert. That is hole 2 of the brief at the schema level.
+   * the insert. That is the colleague the account sweep never reaches, at the
+   * schema level.
    */
   @Test
   public void anObligationIsRecordedForAColleagueWhoHoldsNoPair() {

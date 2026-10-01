@@ -8,8 +8,8 @@
 //   buildFault() shapes it; replyServerFault answers 403 for
 //   PERMISSION_DENIED and 500 for every other code - so at master this body
 //   travels with HTTP 500.
-// OPEN QUESTION the capture settles: the implementation brief on Tribe task
-// 90277 predicted a 404 for NOT_FOUND at master; the source read here says
+// OPEN QUESTION the capture settles: a 404 for NOT_FOUND is one reading of
+// BlueMind's REST layer; the source read here says
 // 500 (RestRootHandler.java:144,151 answers NOT_FOUND only for an unknown
 // route, not for a service fault). BlueMindSubscriptionClient treats a 404
 // and a 500 carrying errorCode NOT_FOUND as the same absence, so either

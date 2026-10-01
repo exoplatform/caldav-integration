@@ -72,8 +72,9 @@ import org.exoplatform.services.log.Log;
  * — 403 for {@code PERMISSION_DENIED}, and for an unknown container
  * {@code NOT_FOUND} ({@code subscriptionToContainer}), which
  * {@code ResponseBuilder.replyServerFault} sends as a 500 at BlueMind master
- * and which this client also accepts as a 404, the shape an earlier reading
- * predicted; a live capture settles it, and both are the same absence here.
+ * and which this client also accepts as a 404, since no capture has yet
+ * settled which of the two a live server sends; both are the same absence
+ * here.
  *
  * <p>
  * <b>Whose session, and the one check that guards it.</b> The session is

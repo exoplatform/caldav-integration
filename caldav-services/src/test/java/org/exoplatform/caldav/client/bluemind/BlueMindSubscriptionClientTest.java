@@ -198,7 +198,7 @@ public class BlueMindSubscriptionClientTest {
    * answer>/subscriptions/<the uid asked for>/_subscribe} with the key in
    * {@code X-BM-ApiKey} and exactly the body {@code IUserSubscription}
    * declares — {@code offlineSync} and {@code automount} both true (PO
-   * decision 3); the logout with the same key. An empty 200 is success.
+   * decision of 2026-09-16); the logout with the same key. An empty 200 is success.
    */
   @Test
   void theColleagueIsSubscribedInOneSessionOfTheirOwn() {
@@ -226,8 +226,8 @@ public class BlueMindSubscriptionClientTest {
     JsonNode body = JsonMapper.builder().build().readTree(bodyOf(subscribe));
     assertTrue(body.isArray() && body.size() == 1, "one ContainerSubscription in a list: " + body);
     assertEquals(CONTAINER, body.get(0).get("containerUid").asText());
-    assertTrue(body.get(0).get("offlineSync").asBoolean(), "offlineSync=true, BlueMind's webmail default (PO decision 3)");
-    assertTrue(body.get(0).get("automount").asBoolean(), "automount=true (PO decision 3)");
+    assertTrue(body.get(0).get("offlineSync").asBoolean(), "offlineSync=true, BlueMind's webmail default (the PO's decision of 2026-09-16)");
+    assertTrue(body.get(0).get("automount").asBoolean(), "automount=true (the PO's decision of 2026-09-16)");
     assertEquals(3, body.get(0).size(), "nothing but the three fields ContainerSubscription declares");
 
     HttpRequest logout = sent.get(2);

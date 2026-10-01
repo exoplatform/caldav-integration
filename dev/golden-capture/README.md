@@ -88,7 +88,7 @@ the container uid of the calendar shared from eXo, a container uid the sharee
 has **no** access to, and another user's directory entry uid. It logs in **as
 the sharee** (the colleague the calendar was shared with) and records, into
 `caldav-services/src/test/resources/caldav/transcripts/`, the twelve steps
-the EXO-90277 brief (Tribe task 90277, comment 337358) asks for: the login
+EXO-90277 relies on: the login
 answer with `authUser.uid`/`domainUid` (1); the calendar subscriptions
 before (2), after the subscribe (4) and after the unsubscribe (10); the
 `_subscribe` of the shared container (3) and its repeat (6, idempotency); the
@@ -97,7 +97,7 @@ unknown container (7 — the 404-vs-500 `NOT_FOUND` question); an `_subscribe`
 of a container without access and a PROPFIND on it (8, undone at once); an
 `_subscribe` addressed to another uid (9 — the `ROLE_SELF` 403); the
 `_unsubscribe` (10); whether the sharee received BlueMind's access-change
-mail (11, typed in); and the dangling-subscription sequence behind hole 3 —
+mail (11, typed in); and whether a subscription dangles after a revoke —
 subscribe again, the owner revokes from eXo while the script waits, then the
 listing, the home and the collection are captured (12), followed by a final
 `_unsubscribe` that leaves the account as found.

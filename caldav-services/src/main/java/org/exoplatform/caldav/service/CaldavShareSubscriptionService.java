@@ -89,7 +89,8 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * never swept. So the owed rows are read from their own table — every sharee,
  * oldest first, one session per sharee — from the sweep job, and the
  * colleague's own rows are drained at the top of their own synchronisation
- * pass when they open their agenda (PO decision 4). The attempt bound is the
+ * pass when they open their agenda (the PO's decision of 2026-09-16). The
+ * attempt bound is the
  * meeting-copy one, {@code exo.agenda.caldav.push.maxAttempts}, on the PO's
  * decision that no new property is wanted.
  *
@@ -207,7 +208,7 @@ public class CaldavShareSubscriptionService {
 
   /**
    * How many refusals are argued with before a change is given up on: the
-   * meeting-copy bound, reused (PO decision 4, 2026-09-16). It counts the
+   * meeting-copy bound, reused (the PO's decision of 2026-09-16). It counts the
    * retries and not the attempt that failed first, as the push bound does.
    */
   @Value("${exo.agenda.caldav.push.maxAttempts:5}")
@@ -253,7 +254,8 @@ public class CaldavShareSubscriptionService {
 
   /**
    * Drains the changes owed to anybody, oldest first, one session per
-   * colleague and server: what the sweep job calls (hole 2 of the brief).
+   * colleague and server: what the sweep job calls, because a colleague who
+   * holds no pair is never reached by the account sweep.
    *
    * @param batch how many owed rows one run looks at
    * @return how many changes landed this run
