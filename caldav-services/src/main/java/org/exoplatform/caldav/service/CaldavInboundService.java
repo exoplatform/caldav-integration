@@ -1299,7 +1299,10 @@ public class CaldavInboundService {
    * <p>
    * <b>Detect and tell, nothing more.</b> Nothing is imported, skipped,
    * removed or repaired differently for it, which is why this is asked before
-   * any of those decisions and returns nothing. Whether a foreign copy should
+   * any of those decisions and returns nothing. The signal is only as
+   * trustworthy as the object: since EXO-90848 an object may be the one a user
+   * landed from a mail they received, so a link in it was the sender's to
+   * write. Whether a foreign copy should
    * be left alone, imported or removed is a product decision nobody has taken,
    * and the wrong one destroys real calendar entries. The resolution is an
    * environment one — one of the two deployments moves to a different account —

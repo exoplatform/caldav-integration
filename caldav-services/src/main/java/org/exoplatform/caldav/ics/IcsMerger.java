@@ -449,14 +449,7 @@ public class IcsMerger {
    * @return the comparable address, or null when there is none
    */
   private String bareAddress(String value) {
-    String trimmed = StringUtils.trimToNull(value);
-    if (trimmed == null) {
-      return null;
-    }
-    if (StringUtils.startsWithIgnoreCase(trimmed, "mailto:")) {
-      trimmed = StringUtils.trimToNull(trimmed.substring("mailto:".length()));
-    }
-    return trimmed == null ? null : trimmed.toLowerCase();
+    return IcsText.bareAddress(value);
   }
 
   /**
