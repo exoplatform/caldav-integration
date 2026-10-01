@@ -26,6 +26,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       {{ $t('agenda.caldavCalendar.settings.connect.drawer.title') }}
     </template>
     <template slot="content">
+      <v-alert
+        v-if="serverNotUsable"
+        type="warning"
+        class="ma-4"
+        dense
+        outlined>
+        {{ $t('caldav.error.serverNotUsable') }}
+      </v-alert>
       <v-form ref="form1" class="pa-2 ms-2 mt-4">
         <div class="d-flex flex-column flex-grow-1">
           <div class="d-flex flex-column mb-2">
@@ -131,7 +139,17 @@ export default {
      * @returns {Boolean} true when the Connect button must not act
      */
     disableConnectButton() {
-      return this.saving || this.account === '' || this.account.length < 3 || this.password === '';
+      return this.saving || this.serverNotUsable || this.account === '' || this.account.length < 3 || this.password === '';
+    },
+    /**
+     * Whether the clicked server cannot be connected yet: the credentials
+     * provider its registration names is not installed, and the server would
+     * refuse the account whatever is typed.
+     *
+     * @returns {Boolean} true when the server is known not to be usable
+     */
+    serverNotUsable() {
+      return !!this.server && this.server.usable === false;
     }
   },
   watch: {
@@ -251,7 +269,7 @@ export default {
       // server-side and CaldavProbeResult has no such outcome, so the code could
       // never arrive and the string told administrators to satisfy a browser
       // constraint that no longer exists.
-      const knownCodes = ['caldav.error.credentials', 'caldav.error.connection', 'caldav.error.notCaldav'];
+      const knownCodes = ['caldav.error.credentials', 'caldav.error.connection', 'caldav.error.notCaldav', 'caldav.error.serverNotUsable'];
       if (error && knownCodes.includes(error.code)) {
         return error.code;
       }

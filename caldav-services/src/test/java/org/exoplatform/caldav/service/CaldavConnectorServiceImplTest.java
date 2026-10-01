@@ -28,6 +28,7 @@ import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.verify;
@@ -47,6 +48,7 @@ import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.service.AgendaCalendarShareService;
 import org.exoplatform.caldav.plugin.CalendarServerFlavour;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -302,6 +304,34 @@ public class CaldavConnectorServiceImplTest {
 
     caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
 
+    verify(caldavConnectorStorage).createCaldavSetting(setting, USER_IDENTITY_ID);
+  }
+
+  /**
+   * A typed account on a registration whose credentials provider is not installed
+   * is refused and nothing is stored: every conversation with that server goes
+   * through the provider, so it would show as connected and never synchronise.
+   * The same account is stored once the provider is installed.
+   */
+  @Test
+  public void refusesToStoreAnAccountOnAServerWhoseProviderIsNotInstalled() throws Exception {
+    CaldavServerService registry = mock(CaldavServerService.class);
+    caldavConnectorService.setCaldavServerService(registry);
+    when(registry.missingProviderOf(3L)).thenReturn("bluemind-sudo");
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+    setting.setServerId(3L);
+
+    CalDavProviderMissingException refused = assertThrows(CalDavProviderMissingException.class,
+                                                          () -> caldavConnectorService.createCaldavSetting(setting,
+                                                                                                           USER_IDENTITY_ID));
+
+    assertTrue(refused.getMessage().contains("bluemind-sudo"), refused.getMessage());
+    verify(caldavConnectorStorage, never()).createCaldavSetting(any(), anyLong());
+
+    when(registry.missingProviderOf(3L)).thenReturn(null);
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
     verify(caldavConnectorStorage).createCaldavSetting(setting, USER_IDENTITY_ID);
   }
 
