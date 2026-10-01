@@ -129,8 +129,9 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * its own meetings is refused before anything is written, and the UID agenda
  * mails for one of its own meetings ({@code agenda-event-<id>@<this host>})
  * lands nothing: the meeting is in agenda already, so adding it hands back
- * agenda's page when the user may read it, and an answer or a cancellation
- * carried by such a message is refused. Only an invitation, a published event
+ * agenda's page as "already in your calendar" when the user may read it and the
+ * message describes it, and an answer or a cancellation carried by such a
+ * message is refused. Only an invitation, a published event
  * or a cancellation is landed — a REPLY or a COUNTER speaks to an organiser,
  * not to a calendar. A copy the user
  * already holds is rewritten or removed only by its own organiser (RFC 5546
@@ -279,7 +280,7 @@ public class CaldavInvitationLandingService {
     String uid = master.getUid();
     Long ownMeeting = ownAgendaEventOf(uid);
     if (ownMeeting != null) {
-      return heldInAgenda(ownMeeting, userIdentityId, invitation);
+      return heldInAgenda(ownMeeting, userIdentityId, invitation, master);
     }
     Long mirrored = caldavSyncStorage.getMirrorEventIdOnServer(serverId, uid);
     if (mirrored != null && mirrored > 0) {
@@ -338,7 +339,7 @@ public class CaldavInvitationLandingService {
     }
     long eventId = known.getLocalEventId();
     LOG.debug("The invitation {} of user {} landed as event {} in calendar {}", uid, userIdentityId, eventId, calendar.getId());
-    return new LandedMailInvitation(eventId, linkOf(eventId), false);
+    return new LandedMailInvitation(eventId, linkOf(eventId), false, false);
   }
 
   /**
@@ -591,6 +592,12 @@ public class CaldavInvitationLandingService {
       if (!newer) {
         return existing.etag();
       }
+      if (StringUtils.isBlank(existing.etag())) {
+        // No version to condition the rewrite on: the server's shortcoming,
+        // not the sender's, and the client refuses an unconditional write.
+        throw new IllegalStateException("The copy of " + master.getUid() + " at " + known.getRemoteHref()
+            + " is served without a version; its newer revision cannot be written");
+      }
       PutResult result = calendarObjectWriters.writer(endpoint)
                                               .updateObject(endpoint,
                                                             known.getRemoteHref(),
@@ -681,7 +688,7 @@ public class CaldavInvitationLandingService {
               userIdentityId,
               eventId,
               known.getRemoteHref());
-    return new LandedMailInvitation(eventId, null, true);
+    return new LandedMailInvitation(eventId, null, true, false);
   }
 
   /**
@@ -722,32 +729,44 @@ public class CaldavInvitationLandingService {
   /**
    * One of this deployment's own meetings, mailed by agenda to a user holding
    * no copy of it: it is in agenda already, and agenda is where it is
-   * answered or cancelled. Adding it hands back agenda's own page when the
-   * user may read it; nothing is written anywhere, and an answer or a
-   * cancellation carried by such a message is refused — the message is the
-   * sender's, and a UID is not a reason to act on an event the user was not
-   * shown.
+   * answered or cancelled. Adding it writes nothing and hands back agenda's
+   * own page, as "already in your calendar", when the user may read the event
+   * and the message describes it — same title, start within a day, since the
+   * UID is the sender's and a UID alone would link any event the user may read
+   * under the sender's title. An answer or a cancellation carried by such a
+   * message is refused: a UID is not a reason to act on an event the user was
+   * not shown.
    *
    * @param eventId the agenda event
    * @param userIdentityId identity of the user
    * @param invitation the invitation
-   * @return the event, with its link
-   * @throws IllegalArgumentException for an answer or a cancellation, or when
-   *           the user may not read the event
+   * @param master the message's event
+   * @return the event, already held, with its link
+   * @throws IllegalArgumentException for an answer or a cancellation, when the
+   *           user may not read the event, or when the message does not
+   *           describe it
    */
-  private LandedMailInvitation heldInAgenda(long eventId, long userIdentityId, MailInvitation invitation) {
+  private LandedMailInvitation heldInAgenda(long eventId, long userIdentityId, MailInvitation invitation, IcsEvent master) {
     if (invitation.response() != null || invitation.isCancellation()) {
       throw new IllegalArgumentException("The message names eXo meeting " + eventId + ", which is answered and cancelled in agenda");
     }
+    org.exoplatform.agenda.model.Event event;
     try {
-      if (agendaEventService.getEventById(eventId, null, userIdentityId) == null) {
-        throw new IllegalArgumentException("The message names eXo meeting " + eventId + ", which does not exist");
-      }
+      event = agendaEventService.getEventById(eventId, null, userIdentityId);
     } catch (IllegalAccessException e) {
       throw new IllegalArgumentException("The message names eXo meeting " + eventId + ", which the user may not read", e);
     }
+    if (event == null) {
+      throw new IllegalArgumentException("The message names eXo meeting " + eventId + ", which does not exist");
+    }
+    boolean sameTitle = StringUtils.equalsIgnoreCase(StringUtils.trimToEmpty(event.getSummary()), StringUtils.trimToEmpty(master.getSummary()));
+    boolean sameDay = event.getStart() != null && master.getStart() != null
+        && Duration.between(event.getStart().toInstant(), master.getStart()).abs().compareTo(Duration.ofDays(1)) < 0;
+    if (!sameTitle || !sameDay) {
+      throw new IllegalArgumentException("The message names eXo meeting " + eventId + " and describes another event");
+    }
     LOG.debug("The message of user {} names eXo meeting {}; it is in agenda already and nothing is written", userIdentityId, eventId);
-    return new LandedMailInvitation(eventId, linkOf(eventId), false);
+    return new LandedMailInvitation(eventId, linkOf(eventId), false, true);
   }
 
   /**
