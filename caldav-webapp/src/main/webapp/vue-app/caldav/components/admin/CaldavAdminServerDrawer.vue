@@ -519,13 +519,22 @@ export default {
       this.foreignWriters = [];
       if (this.server.id) {
         // On a failure nothing reads as stored: a secret is then asked for rather
-        // than assumed.
-        this.$agendaCaldavService.getCaldavServerProviderConfig(this.server.id)
+        // than assumed. The drawer opens without waiting for the read, so an
+        // answer that arrives once another server is open is dropped: it would
+        // tell that server's form what this one stores.
+        const serverId = this.server.id;
+        this.$agendaCaldavService.getCaldavServerProviderConfig(serverId)
           .then(stored => {
+            if (this.server.id !== serverId) {
+              return;
+            }
             this.storedProviderConfig = {values: stored?.values || {}, storedSecretKeys: stored?.storedSecretKeys || []};
             this.providerConfig = {...this.storedProviderConfig.values};
           })
           .catch(() => {
+            if (this.server.id !== serverId) {
+              return;
+            }
             this.storedProviderConfig = {values: {}, storedSecretKeys: []};
             this.providerConfig = {};
           });
