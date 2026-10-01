@@ -17,6 +17,7 @@
 package org.exoplatform.caldav.storage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -199,8 +200,8 @@ public class CaldavPendingSubscriptionStorageTest {
   public void aRevokeRecordedOverAPendingSubscribeReplacesItAndResetsTheCount() {
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
     long id = only(storage.attemptable(5, 10)).getId();
-    inTransaction(() -> storage.refused(id));
-    inTransaction(() -> storage.refused(id));
+    inTransaction(() -> storage.refused(id, PendingSubscriptionKind.SUBSCRIBE));
+    inTransaction(() -> storage.refused(id, PendingSubscriptionKind.SUBSCRIBE));
     assertEquals(2, only(storage.attemptable(5, 10)).getAttempts());
 
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE));
@@ -272,8 +273,8 @@ public class CaldavPendingSubscriptionStorageTest {
   public void aLandedSubscribeDoesNotSettleTheRevokeRecordedWhileItWasInFlight() {
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
     long owed = only(storage.attemptable(5, 10)).getId();
-    inTransaction(() -> storage.refused(owed));
-    inTransaction(() -> storage.refused(owed));
+    inTransaction(() -> storage.refused(owed, PendingSubscriptionKind.SUBSCRIBE));
+    inTransaction(() -> storage.refused(owed, PendingSubscriptionKind.SUBSCRIBE));
     // The revoke lands in eXo while the drain's session is still open.
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE));
 
@@ -292,8 +293,8 @@ public class CaldavPendingSubscriptionStorageTest {
                                  .filter(event -> event.getLevel() == Level.DEBUG)
                                  .map(ILoggingEvent::getFormattedMessage)
                                  .collect(java.util.stream.Collectors.joining("\n"));
-    assertTrue(declined.contains("SUBSCRIBE") && declined.contains("UNSUBSCRIBE") && declined.contains(CONTAINER),
-               "the decline names the container and both kinds: " + declined);
+    assertTrue(declined.contains("SUBSCRIBE landed") && declined.contains(CONTAINER),
+               "the decline names the container and the kind that landed: " + declined);
 
     // And when the drain does land that removal, it settles.
     inTransaction(() -> storage.settledIfStillAsking(BOB, SERVER, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE));
@@ -327,6 +328,28 @@ public class CaldavPendingSubscriptionStorageTest {
   }
 
   /**
+   * A verdict on the change the drain read is not written against the change
+   * the row asks for now: a revoke recorded over a pending subscribe while the
+   * drain's session was open keeps its own patience, whether the old
+   * subscribe was refused or given up on.
+   */
+  @Test
+  public void aVerdictOnTheOldKindIsNotWrittenAgainstTheRenewedRow() {
+    inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
+    long id = only(storage.attemptable(5, 10)).getId();
+    inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE));
+
+    assertFalse(storage.stillAsking(id, PendingSubscriptionKind.SUBSCRIBE));
+    assertTrue(storage.stillAsking(id, PendingSubscriptionKind.UNSUBSCRIBE));
+    inTransaction(() -> storage.refused(id, PendingSubscriptionKind.SUBSCRIBE));
+    inTransaction(() -> storage.abandoned(id, PendingSubscriptionKind.SUBSCRIBE, 5));
+
+    PendingSubscription standing = only(storage.attemptable(5, 10));
+    assertEquals(PendingSubscriptionKind.UNSUBSCRIBE, standing.getKind());
+    assertEquals(0, standing.getAttempts(), "neither the refusal nor the give-up of the old subscribe is counted");
+  }
+
+  /**
    * Refused counts one; abandoned spends the whole bound; both leave the
    * attemptable set as the bound says — the abandoned row stays in the table
    * as the record that eXo gave up, and is never handed out again.
@@ -339,14 +362,14 @@ public class CaldavPendingSubscriptionStorageTest {
     long carols = storage.attemptable(CAROL, 5, 10).get(0).getId();
 
     for (int i = 0; i < 4; i++) {
-      inTransaction(() -> storage.refused(bobs));
+      inTransaction(() -> storage.refused(bobs, PendingSubscriptionKind.SUBSCRIBE));
     }
-    inTransaction(() -> storage.abandoned(carols, 5));
+    inTransaction(() -> storage.abandoned(carols, PendingSubscriptionKind.SUBSCRIBE, 5));
 
     assertEquals(4, only(storage.attemptable(BOB, 5, 10)).getAttempts());
     assertTrue(storage.attemptable(CAROL, 5, 10).isEmpty(), "abandoned is below the bound for good");
     assertEquals(1, storage.attemptable(5, 10).size(), "table-wide, only bob's is still worth attempting");
-    inTransaction(() -> storage.refused(bobs));
+    inTransaction(() -> storage.refused(bobs, PendingSubscriptionKind.SUBSCRIBE));
     assertTrue(storage.attemptable(5, 10).isEmpty(), "the fifth refusal reaches the bound");
     assertEquals(2, rowCount("SELECT COUNT(*) FROM CALDAV_PENDING_SUBSCRIPTION"), "both rows stay as the record");
   }

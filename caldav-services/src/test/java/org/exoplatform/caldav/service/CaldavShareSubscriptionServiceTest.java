@@ -60,10 +60,13 @@ import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubjectMismatchException;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient.Subscriptions;
+import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.PendingSubscription;
 import org.exoplatform.caldav.model.PendingSubscriptionKind;
 import org.exoplatform.caldav.service.CaldavShareSubscriptionService.ShareeSubscription;
 import org.exoplatform.caldav.storage.CaldavPendingSubscriptionStorage;
+import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.manager.IdentityManager;
 
@@ -110,6 +113,9 @@ public class CaldavShareSubscriptionServiceTest {
   private CaldavPendingSubscriptionStorage caldavPendingSubscriptionStorage;
 
   @Mock
+  private CaldavSyncStorage                caldavSyncStorage;
+
+  @Mock
   private CalDavClient                     calDavClient;
 
   @Mock
@@ -153,6 +159,7 @@ public class CaldavShareSubscriptionServiceTest {
     lenient().when(identityManager.getIdentity(String.valueOf(CAROL))).thenReturn(user(CAROL, "carol"));
     lenient().when(caldavConnectionIdentityService.principalOf(BOB, SERVER)).thenReturn(ERIC_PRINCIPAL);
     lenient().when(caldavConnectionIdentityService.principalOf(CAROL, SERVER)).thenReturn(WRITER_PRINCIPAL);
+    lenient().when(caldavPendingSubscriptionStorage.stillAsking(anyLong(), any())).thenReturn(true);
     sessionOpens();
     logger = (Logger) LoggerFactory.getLogger(CaldavShareSubscriptionService.class);
     previousLevel = logger.getLevel();
@@ -308,19 +315,20 @@ public class CaldavShareSubscriptionServiceTest {
     assertEquals(1, settled);
     verify(blueMindSubscriptionClient, times(1)).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
     verify(caldavPendingSubscriptionStorage).settledIfStillAsking(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
-    verify(caldavPendingSubscriptionStorage).abandoned(2L, 5);
-    verify(caldavPendingSubscriptionStorage).abandoned(3L, 5);
-    verify(caldavPendingSubscriptionStorage).refused(4L);
-    verify(caldavPendingSubscriptionStorage, never()).refused(1L);
-    verify(caldavPendingSubscriptionStorage, never()).refused(2L);
-    verify(caldavPendingSubscriptionStorage, never()).abandoned(eq(4L), anyInt());
+    verify(caldavPendingSubscriptionStorage).abandoned(eq(2L), any(), eq(5));
+    verify(caldavPendingSubscriptionStorage).abandoned(eq(3L), any(), eq(5));
+    verify(caldavPendingSubscriptionStorage).refused(eq(4L), any());
+    verify(caldavPendingSubscriptionStorage, never()).refused(eq(1L), any());
+    verify(caldavPendingSubscriptionStorage, never()).refused(eq(2L), any());
+    verify(caldavPendingSubscriptionStorage, never()).abandoned(eq(4L), any(), anyInt());
     assertEquals(4, infoLines().stream().filter(line -> line.startsWith("Owed BlueMind")).count(), infoLines().toString());
   }
 
   /**
-   * A server that cannot be reached, or a login refused, may change by asking
-   * again: every row of the colleague is counted once, none is given up on,
-   * and the other colleague's rows are still drained.
+   * A server that cannot be reached, or a login refused for a colleague who
+   * holds no pair to pause, may change by asking again: every row of the
+   * colleague is counted once, none is given up on, and the other colleague's
+   * rows are still drained.
    */
   @Test
   public void anUnreachableServerOrARefusedLoginCountsARetryForEveryRowOfTheColleague() {
@@ -333,15 +341,108 @@ public class CaldavShareSubscriptionServiceTest {
     int settled = service.retryOwed(50);
 
     assertEquals(1, settled, "carol's row landed although bob's login was refused");
-    verify(caldavPendingSubscriptionStorage).refused(1L);
-    verify(caldavPendingSubscriptionStorage).refused(2L);
-    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), anyInt());
+    verify(caldavPendingSubscriptionStorage).refused(eq(1L), any());
+    verify(caldavPendingSubscriptionStorage).refused(eq(2L), any());
+    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), any(), anyInt());
     verify(caldavPendingSubscriptionStorage).settledIfStillAsking(CAROL, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
     verify(blueMindSubscriptionClient).asSharee(eq(carolEndpoint), eq(WRITER_UID), any());
 
     doThrow(new CalDavUnreachableException("down")).when(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
     service.retryOwed(50);
-    verify(caldavPendingSubscriptionStorage, times(2)).refused(1L);
+    verify(caldavPendingSubscriptionStorage, times(2)).refused(eq(1L), any());
+  }
+
+  /**
+   * A colleague whose account the sync pass paused, which it does on a refused
+   * login, is not logged in as: their rows wait, uncounted, for the account
+   * to be put back to work.
+   */
+  @Test
+  public void aPausedColleagueIsNotLoggedInAndTheirRowsWaitUncounted() {
+    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
+    when(caldavSyncStorage.getPairs(BOB, SERVER)).thenReturn(List.of(pair(CalendarSyncStatus.PAUSED)));
+
+    assertEquals(0, service.retryOwed(50));
+
+    verify(blueMindSubscriptionClient, never()).asSharee(any(), anyString(), any());
+    verify(caldavPendingSubscriptionStorage, never()).refused(anyLong(), any());
+    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), any(), anyInt());
+  }
+
+  /**
+   * A refused login for a colleague who holds active pairs pauses them, as
+   * the sync pass does at its first refusal, and counts nothing: the rows are
+   * drained once the account is put back to work, not spent on a password
+   * nobody has fixed yet.
+   */
+  @Test
+  public void aRefusedLoginPausesTheColleaguesAccountAndCountsNothing() {
+    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
+    CalendarSync active = pair(CalendarSyncStatus.ACTIVE);
+    CalendarSync gone = pair(CalendarSyncStatus.REMOTE_GONE);
+    when(caldavSyncStorage.getPairs(BOB, SERVER)).thenReturn(List.of(active, gone));
+    doThrow(new CalDavAuthenticationException("stale")).when(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
+
+    assertEquals(0, service.retryOwed(50));
+
+    assertEquals(CalendarSyncStatus.PAUSED, active.getStatus());
+    assertEquals(CalendarSyncStatus.REMOTE_GONE, gone.getStatus(), "only the active pairs are paused");
+    verify(caldavSyncStorage).savePair(active);
+    verify(caldavSyncStorage, never()).savePair(gone);
+    verify(caldavPendingSubscriptionStorage, never()).refused(anyLong(), any());
+    assertTrue(warnLines().stream().anyMatch(line -> line.contains("paused")), warnLines().toString());
+  }
+
+  /**
+   * A row a grant or a revoke decided again since the drain read it is not
+   * posted, and nothing is written against it; the colleague's other rows go
+   * on.
+   */
+  @Test
+  public void aRowDecidedAgainSinceItWasReadIsNotAttempted() {
+    PendingSubscription stale = row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0);
+    PendingSubscription current = row(2L, BOB, OTHER, PendingSubscriptionKind.SUBSCRIBE, 0);
+    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(stale, current));
+    when(caldavPendingSubscriptionStorage.stillAsking(1L, PendingSubscriptionKind.SUBSCRIBE)).thenReturn(false);
+
+    assertEquals(1, service.retryOwed(50));
+
+    verify(edits, never()).subscribe(CONTAINER);
+    verify(edits).subscribe(OTHER);
+    verify(caldavPendingSubscriptionStorage, never()).settledIfStillAsking(anyLong(), anyLong(), eq(CONTAINER), any());
+    verify(caldavPendingSubscriptionStorage, never()).refused(eq(1L), any());
+    verify(caldavPendingSubscriptionStorage, never()).abandoned(eq(1L), any(), anyInt());
+  }
+
+  /**
+   * A revoke of the container a drain is posting waits for the drain's post
+   * and settle to finish: it cannot land in between and be undone by the
+   * drain's subscribe landing after it. On this node; nodes share no lock.
+   *
+   * @throws Exception when the revoke's thread cannot be joined
+   */
+  @Test
+  public void aRevokeWaitsForTheDrainOfTheSameContainer() throws Exception {
+    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
+    java.util.concurrent.atomic.AtomicBoolean revokeWaited = new java.util.concurrent.atomic.AtomicBoolean();
+    Thread[] revoke = new Thread[1];
+    org.mockito.Mockito.doAnswer(invocation -> {
+      revoke[0] = new Thread(() -> service.unsubscribeSharee(share()));
+      revoke[0].start();
+      revoke[0].join(300);
+      revokeWaited.set(revoke[0].isAlive());
+      return null;
+    }).when(edits).subscribe(CONTAINER);
+
+    service.retryOwed(50);
+    revoke[0].join(5000);
+
+    assertTrue(revokeWaited.get(), "the revoke ran while the drain was posting the same container");
+    org.mockito.InOrder order = org.mockito.Mockito.inOrder(caldavPendingSubscriptionStorage, edits);
+    order.verify(edits).subscribe(CONTAINER);
+    order.verify(caldavPendingSubscriptionStorage).settledIfStillAsking(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
+    order.verify(edits).unsubscribe(CONTAINER);
+    order.verify(caldavPendingSubscriptionStorage).settledWhateverWasOwed(BOB, SERVER, CONTAINER);
   }
 
   /**
@@ -358,28 +459,28 @@ public class CaldavShareSubscriptionServiceTest {
     when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(bobOne, bobTwo));
     doThrow(new BlueMindSubjectMismatchException("not eric")).when(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
     service.retryOwed(50);
-    verify(caldavPendingSubscriptionStorage).abandoned(1L, 5);
-    verify(caldavPendingSubscriptionStorage).abandoned(2L, 5);
+    verify(caldavPendingSubscriptionStorage).abandoned(eq(1L), any(), eq(5));
+    verify(caldavPendingSubscriptionStorage).abandoned(eq(2L), any(), eq(5));
 
     doThrow(new UnsupportedOperationException("token")).when(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
     service.retryOwed(50);
-    verify(caldavPendingSubscriptionStorage, times(2)).abandoned(1L, 5);
+    verify(caldavPendingSubscriptionStorage, times(2)).abandoned(eq(1L), any(), eq(5));
 
     when(caldavConnectionIdentityService.principalOf(BOB, SERVER)).thenReturn(null);
     service.retryOwed(50);
-    verify(caldavPendingSubscriptionStorage, times(3)).abandoned(1L, 5);
+    verify(caldavPendingSubscriptionStorage, times(3)).abandoned(eq(1L), any(), eq(5));
 
     when(caldavConnectionIdentityService.principalOf(BOB, SERVER)).thenReturn("/dav/pal/eric@stalwart.local");
     service.retryOwed(50);
-    verify(caldavPendingSubscriptionStorage, times(4)).abandoned(1L, 5);
+    verify(caldavPendingSubscriptionStorage, times(4)).abandoned(eq(1L), any(), eq(5));
 
     when(identityManager.getIdentity(String.valueOf(BOB))).thenReturn(null);
     service.retryOwed(50);
-    verify(caldavPendingSubscriptionStorage, times(5)).abandoned(1L, 5);
-    verify(caldavPendingSubscriptionStorage, times(5)).abandoned(2L, 5);
+    verify(caldavPendingSubscriptionStorage, times(5)).abandoned(eq(1L), any(), eq(5));
+    verify(caldavPendingSubscriptionStorage, times(5)).abandoned(eq(2L), any(), eq(5));
 
     verify(blueMindSubscriptionClient, times(2)).asSharee(any(), anyString(), any());
-    verify(caldavPendingSubscriptionStorage, never()).refused(anyLong());
+    verify(caldavPendingSubscriptionStorage, never()).refused(anyLong(), any());
     verify(caldavPendingSubscriptionStorage, never()).settledIfStillAsking(anyLong(), anyLong(), anyString(), any());
   }
 
@@ -397,10 +498,10 @@ public class CaldavShareSubscriptionServiceTest {
 
     service.retryOwed(50);
 
-    verify(caldavPendingSubscriptionStorage).refused(1L);
+    verify(caldavPendingSubscriptionStorage).refused(eq(1L), any());
     verify(edits, never()).subscribe(OTHER);
-    verify(caldavPendingSubscriptionStorage, never()).refused(2L);
-    verify(caldavPendingSubscriptionStorage, never()).abandoned(eq(2L), anyInt());
+    verify(caldavPendingSubscriptionStorage, never()).refused(eq(2L), any());
+    verify(caldavPendingSubscriptionStorage, never()).abandoned(eq(2L), any(), anyInt());
     verify(caldavPendingSubscriptionStorage, never()).settledIfStillAsking(eq(BOB), anyLong(), eq(OTHER), any());
   }
 
@@ -457,9 +558,9 @@ public class CaldavShareSubscriptionServiceTest {
 
     assertEquals(0, assertDoesNotThrow(() -> service.retryOwed(50)));
 
-    verify(caldavPendingSubscriptionStorage).refused(1L);
-    verify(caldavPendingSubscriptionStorage).refused(2L);
-    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), anyInt());
+    verify(caldavPendingSubscriptionStorage).refused(eq(1L), any());
+    verify(caldavPendingSubscriptionStorage).refused(eq(2L), any());
+    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), any(), anyInt());
     verify(caldavPendingSubscriptionStorage, never()).settledIfStillAsking(anyLong(), anyLong(), anyString(), any());
   }
 
@@ -478,10 +579,10 @@ public class CaldavShareSubscriptionServiceTest {
 
     assertEquals(1, service.retryOwed(50));
 
-    verify(caldavPendingSubscriptionStorage).refused(1L);
+    verify(caldavPendingSubscriptionStorage).refused(eq(1L), any());
     verify(edits).subscribe(OTHER);
     verify(caldavPendingSubscriptionStorage).settledIfStillAsking(BOB, SERVER, OTHER, PendingSubscriptionKind.SUBSCRIBE);
-    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), anyInt());
+    verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), any(), anyInt());
   }
 
   /**
@@ -566,6 +667,18 @@ public class CaldavShareSubscriptionServiceTest {
    */
   private static PendingSubscription row(long id, long user, String container, PendingSubscriptionKind kind, int attempts) {
     return new PendingSubscription(id, user, SERVER, container, kind, attempts, new Date());
+  }
+
+  /**
+   * One of the colleague's pairs on the server.
+   *
+   * @param status its status
+   * @return the pair
+   */
+  private static CalendarSync pair(CalendarSyncStatus status) {
+    CalendarSync pair = new CalendarSync();
+    pair.setStatus(status);
+    return pair;
   }
 
   /**
