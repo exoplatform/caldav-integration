@@ -177,8 +177,9 @@ public class CaldavReadRest {
           + "the owner principal's display name, else the decoded last segment of the principal path; all three "
           + "null when nobody can be named, and always null when `shared` is false. `ownerKind` says whether the "
           + "owner of a shared calendar is a `PERSON` or a `RESOURCE` — a room or a vehicle the user subscribed to on "
-          + "BlueMind, whose `ownerDisplayName` is then the resource's name and whose identity fields are null; null "
-          + "when `shared` is false.")
+          + "the server, recognised as such by the server's installed subscription channel, whose `ownerDisplayName` "
+          + "is then the resource's name and whose identity fields are null; null when `shared` is false. Without a "
+          + "subscription channel for the server, every shared calendar's owner is a `PERSON`.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The account's calendars, and whether the "
       + "listing failed") })
   public RemoteCalendarsRead calendars() {

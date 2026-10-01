@@ -89,9 +89,10 @@ public class CaldavShareRest {
   @Secured("users")
   @Operation(summary = "Lists the connected user's calendars that can be shared from eXo",
       description = "A calendar is listed when the user owns it, it is bound to a collection eXo created or to an imported collection the user owns on the CalDAV "
-          + "server, and that server offers a way to grant access whose every change eXo confirms by reading it back (Stalwart's RFC 3744 ACL "
-          + "method; BlueMind's CS:share, confirmed through BlueMind's REST access list, when the account's credentials are a "
-          + "login and password). Never fails: no account, an unreachable server or any other obstacle answers an empty list.")
+          + "server, and that server offers a way to grant access whose every change eXo confirms by reading it back: RFC 3744's ACL "
+          + "method, or a share channel an installed extension contributes for the server's own way of sharing, when that channel "
+          + "accepts the account's credentials for the session it reads the access list back through. Never fails: no account, an "
+          + "unreachable server or any other obstacle answers an empty list.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The shareable calendar ids, possibly none") })
   public ShareableCalendars shareableCalendars() {
     return new ShareableCalendars(caldavCalendarShareService.shareableCalendarIds(currentUser(), currentLogin()));
@@ -107,15 +108,15 @@ public class CaldavShareRest {
   @Secured("users")
   @Operation(summary = "Lists who a calendar of the user's is shared with",
       description = "Read from the server's access list on every call — over DAV on a server using RFC 3744 ACLs, "
-          + "through BlueMind's REST API on BlueMind; nothing is stored. The caller's own principal, which decides "
+          + "or through the share channel that takes the calendar over; nothing is stored. The caller's own principal, which decides "
           + "which entry of that list is theirs and so not a sharee, is taken from eXo's record of their connection, "
           + "and asked of the server only when none is recorded. Each sharee is a principal: "
           + "`EXO_USERS` with the eXo users connected as it, `OUTSIDE_EXO` named by the server, `EVERYONE`, or "
-          + "`PUBLISHED_LINK` for a link BlueMind's calendar publishing gave out, with `publishedLink` `PRIVATE` or `PUBLIC` "
+          + "`PUBLISHED_LINK` for a link the server's calendar publishing gave out, as a share channel reports it, with `publishedLink` `PRIVATE` or `PUBLIC` "
           + "and never the link's secret, which is its access entry's subject; a published link is never removable. "
           + "`access` is `READ` for a view-only grant and `MORE` for one made outside eXo; `removable` says whether "
           + "eXo may take it away. `subscriptionRequired` is true where a colleague sees a shared calendar only after "
-          + "subscribing to it on the server itself, as on BlueMind. `meetingCopies` is true when the calendar is also where "
+          + "subscribing to it on the server itself, as the calendar's share channel reports. `meetingCopies` is true when the calendar is also where "
           + "eXo writes the copies of the user's eXo meetings: the drawer then asks before sharing. Sharing and "
           + "stopping a share answer the same shape.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "The sharees"),
@@ -143,12 +144,13 @@ public class CaldavShareRest {
   @Operation(summary = "Shares a calendar of the user's read-only with a colleague",
       description = "The colleague must be an eXo user connected to the same CalDAV server under another login. On a "
           + "server using RFC 3744 ACLs, the access list is read, the grant added beside every existing entry, written "
-          + "back, and read again. On BlueMind, a CS:share naming the colleague's own BlueMind address is posted, and "
-          + "the access list is read back through BlueMind's REST API. Either way, the answer is the list as read after "
-          + "the change, and a grant it does not hold is reported as not applied. On a server using RFC 3744 ACLs, "
-          + "sharing with a colleague who can already read it changes nothing and succeeds. On BlueMind only a "
-          + "colleague holding plain view access does; one holding more is refused (caldav.share.notReadOnly), and one "
-          + "holding only other access given outside eXo too (caldav.share.shareeHasOtherAccess). The grant names the "
+          + "back, and read again. On a calendar a share channel takes over, the channel makes the change in the "
+          + "server's own way and reads the access list back. Either way, the answer is the list as read after "
+          + "the change, and a grant it does not hold is reported as not applied. On a server using RFC 3744 ACLs, a "
+          + "colleague already holding exactly a view-only grant changes nothing and succeeds, one holding an edit grant "
+          + "eXo made is narrowed to view-only, and one holding an entry eXo does not write is refused "
+          + "(caldav.share.notReadOnly). A share channel may refuse a colleague holding more than view access the same "
+          + "way, and one holding only other access given outside eXo (caldav.share.shareeHasOtherAccess). The grant names the "
           + "colleague's server login, not the person: every eXo user connected to this server under that same login "
           + "can then read the calendar, and the answer lists each of them under that sharee.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Shared; the sharees as read back"),
@@ -183,10 +185,10 @@ public class CaldavShareRest {
   @DeleteMapping("/calendars/{calendarId}/shares/{username}")
   @Secured("users")
   @Operation(summary = "Stops sharing a calendar of the user's with a colleague",
-      description = "Removes the colleague's view-only grants and nothing else. On a server using RFC 3744 ACLs the "
-          + "access list is read, the grant removed, written back and read again; on BlueMind a CS:share remove naming "
-          + "the colleague's own BlueMind address is posted, and confirmed when the colleague is gone from the access "
-          + "list read through BlueMind's REST API. A colleague holding more, granted outside eXo, is refused rather "
+      description = "Removes the colleague's grants eXo made, view-only or edit, and nothing else. On a server using RFC 3744 ACLs the "
+          + "access list is read, the grant removed, written back and read again; on a calendar a share channel takes "
+          + "over, the channel removes it in the server's own way and it is confirmed when the colleague is gone from "
+          + "the access list the channel reads back. A colleague holding more, granted outside eXo, is refused rather "
           + "than partly removed. A colleague with no grant changes nothing and succeeds.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Removed; the sharees as read back"),
       @ApiResponse(responseCode = "400", description = "Unknown colleague, not connected, the user themself, holding more "
