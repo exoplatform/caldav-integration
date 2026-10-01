@@ -101,14 +101,17 @@ public class CaldavInvitationCalendarPluginTest {
    */
   @Test
   public void theCallIsTranslatedBothWaysAndCarriedAsIs() {
-    when(caldavInvitationLandingService.land(INVITATION)).thenReturn(new LandedMailInvitation(77L, "/portal/dw/agenda?eventId=77", false));
+    when(caldavInvitationLandingService.land(INVITATION)).thenReturn(new LandedMailInvitation(77L, "/portal/dw/agenda?eventId=77", false, false));
     LandedInvitation landed = plugin.land(ANSWERED);
     assertEquals(77L, landed.eventId());
     assertEquals("/portal/dw/agenda?eventId=77", landed.link());
     assertFalse(landed.removed());
+    assertFalse(landed.alreadyHeld());
 
-    when(caldavInvitationLandingService.land(PUBLISHED)).thenReturn(new LandedMailInvitation(78L, null, true));
+    when(caldavInvitationLandingService.land(PUBLISHED)).thenReturn(new LandedMailInvitation(78L, null, true, false));
     assertTrue(plugin.land(ADDED).removed());
+    when(caldavInvitationLandingService.land(PUBLISHED)).thenReturn(new LandedMailInvitation(79L, "/portal/dw/agenda?eventId=79", false, true));
+    assertTrue(plugin.land(ADDED).alreadyHeld());
 
     when(caldavInvitationLandingService.land(INVITATION)).thenReturn(null);
     assertNull(plugin.land(ANSWERED));
