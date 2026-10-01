@@ -44,6 +44,7 @@ import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.CaldavServerProviderConfig;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.WriteChannel;
@@ -758,28 +759,31 @@ public class CaldavServerService {
   }
 
   /**
-   * The provider configuration of a registration, as an administration screen may see
-   * it: every field except the secret ones, which are never read back on this path.
+   * The provider configuration of a declared server, as an administration screen
+   * may see it: every field except the secret ones, which are never read back on
+   * this path, and the keys of the secret fields that have a value stored.
    *
-   * @param serverId the registration whose configuration is read
-   * @param username the user asking, checked against the administration ACL - reading a
-   *          technical account is an administration act
-   * @return the stored values without any secret, empty when nothing is stored or when
-   *         the storage is not deployed
-   * @throws IllegalAccessException when the user is not a platform administrator
+   * @param serverId technical identifier of the registration
+   * @param username the user asking, checked against the administration ACL -
+   *          reading a technical account is an administration act
+   * @return the stored values without any secret and the stored secrets' keys,
+   *         both empty when nothing is stored or when the storage is not deployed
+   * @throws IllegalAccessException if the user may not administer CalDAV servers
    * @throws ObjectNotFoundException when no registration carries that id
    */
-  public Map<String, String> getProviderConfig(long serverId, String username) throws IllegalAccessException,
-                                                                                ObjectNotFoundException {
+  public CaldavServerProviderConfig getProviderConfig(long serverId, String username) throws IllegalAccessException,
+                                                                                        ObjectNotFoundException {
     checkCanEdit(username);
     CaldavServer stored = caldavServerStorage.getServerById(serverId);
     if (stored == null) {
       throw new ObjectNotFoundException("CalDAV server with id " + serverId + " doesn't exist");
     }
     if (providerConfigStorage == null || StringUtils.isBlank(stored.getAuthProviderName())) {
-      return Map.of();
+      return CaldavServerProviderConfig.EMPTY;
     }
-    return providerConfigStorage.readWithoutSecrets(providerConfigContext(serverId, stored.getAuthProviderName()));
+    ConnectorCredentialsContext context = providerConfigContext(serverId, stored.getAuthProviderName());
+    return new CaldavServerProviderConfig(providerConfigStorage.readWithoutSecrets(context),
+                                          providerConfigStorage.readStoredSecretKeys(context));
   }
 
 
