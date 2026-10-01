@@ -132,6 +132,15 @@ public class CaldavSyncService {
   private static final int            MAX_DUE_READS_PER_SWEEP  = 20;
 
   /**
+   * How many passes of one sweep run must find a server unable to answer
+   * before the run leaves that server's other accounts out. Two and not one:
+   * a single account failing on its own would otherwise hold back its whole
+   * server (EXO-90803). A server that is really down then costs two requests
+   * per run, not the burst EXO-89806 guards against.
+   */
+  private static final int            FAILED_PASSES_BEFORE_LEAVING_OUT = 2;
+
+  /**
    * The pieces of outward work a pass may do once the calendars themselves are
    * in step — each named, and each governed on its own.
    *
@@ -448,9 +457,13 @@ public class CaldavSyncService {
    * ever swept in the background. Such a server is now left out for the rest
    * of the run, and the head of the queue is read again without it, up to
    * {@value #MAX_DUE_READS_PER_SWEEP} reads. A server missing its provider is
-   * recognised before any pass, from its registration; an unreachable one by
-   * the one pass that meets the silence, which is also what finds out, every
-   * run, that it has come back.
+   * recognised before any pass, from its registration. An unreachable one is
+   * left out once {@value #FAILED_PASSES_BEFORE_LEAVING_OUT} passes on its
+   * accounts have met the silence in the run, and not at the first: one
+   * account whose own home times out while the rest of its server answers is
+   * always its server's oldest, and would otherwise hold back every other
+   * account of that server, every run. Those passes are also what find out,
+   * every run, that the server has come back.
    *
    * @param staleMinutes how long since a successful sync makes a binding due
    * @param batchSize how many accounts one run serves at most
@@ -461,6 +474,11 @@ public class CaldavSyncService {
     // Whether each server met this run cannot be talked to, learnt as servers
     // are met; the ones that cannot are left out of every later read.
     Map<Long, Boolean> waiting = new HashMap<>();
+    // How many passes this run met each server unable to answer.
+    Map<Long, Integer> failedPasses = new HashMap<>();
+    // The accounts served, left out of every later read. Skipped accounts are
+    // not added: their server is left out already, which keeps this list
+    // within one batch.
     Set<Long> visited = new HashSet<>();
     int served = 0;
     int skipped = 0;
@@ -479,14 +497,14 @@ public class CaldavSyncService {
                                                              visited,
                                                              wanted);
       for (Long userIdentityId : accounts) {
-        visited.add(userIdentityId);
         Long serverId = serverToSweep(userIdentityId, waiting);
         if (serverId == null) {
           skipped++;
           continue;
         }
+        visited.add(userIdentityId);
         served++;
-        if (sweepAccount(userIdentityId, serverId, waiting)) {
+        if (sweepAccount(userIdentityId, serverId, waiting, failedPasses)) {
           swept++;
         }
       }
@@ -545,15 +563,21 @@ public class CaldavSyncService {
   }
 
   /**
-   * Sweeps one due account, and records when its pass found that its server
-   * cannot be talked to.
+   * Sweeps one due account, and leaves its server out for the rest of the run
+   * once {@value #FAILED_PASSES_BEFORE_LEAVING_OUT} passes on it have found
+   * that it cannot be talked to.
    *
    * @param userIdentityId identity of the user
    * @param serverId the server the account is on, zero for the legacy property
    * @param waiting whether each server met so far cannot be talked to, updated
+   * @param failedPasses how many passes this run met each server unable to
+   *          answer, updated
    * @return true when a pass ran, false when the account was left as it was
    */
-  private boolean sweepAccount(long userIdentityId, long serverId, Map<Long, Boolean> waiting) {
+  private boolean sweepAccount(long userIdentityId,
+                               long serverId,
+                               Map<Long, Boolean> waiting,
+                               Map<Long, Integer> failedPasses) {
     String username = loginOf(userIdentityId);
     if (username == null) {
       return false;
@@ -564,10 +588,10 @@ public class CaldavSyncService {
       // accounts the sweep exists to reach. The per-user guard still makes
       // this return at once when the owner's own page load is already
       // synchronising them.
-      // The background entry, as syncInBackground: this is the one pass that
-      // also verifies the copies eXo pushed, because it is the only one nobody
-      // is waiting for.
-      if (sync(userIdentityId, username, false, ALL_OUTBOUND_PHASES)) {
+      // The background entry: this is the one pass that also verifies the
+      // copies eXo pushed, because it is the only one nobody is waiting for.
+      if (syncInBackground(userIdentityId, username)
+          && failedPasses.merge(serverId, 1, Integer::sum) >= FAILED_PASSES_BEFORE_LEAVING_OUT) {
         waiting.put(serverId, Boolean.TRUE);
       }
       return true;
@@ -702,9 +726,12 @@ public class CaldavSyncService {
    *
    * @param userIdentityId identity of the user
    * @param username the user's login
+   * @return true when the pass stopped because the account's server cannot be
+   *         talked to, which the sweep counts towards leaving that server out
+   *         for the rest of its run (EXO-90803)
    */
-  public void syncInBackground(long userIdentityId, String username) {
-    sync(userIdentityId, username, false, ALL_OUTBOUND_PHASES);
+  public boolean syncInBackground(long userIdentityId, String username) {
+    return sync(userIdentityId, username, false, ALL_OUTBOUND_PHASES);
   }
 
   /**
@@ -1284,7 +1311,7 @@ public class CaldavSyncService {
    *          verifying because no request is blocked on it.
    * @return true when the pass stopped because the account's server cannot be
    *         talked to — it did not answer, or its credentials provider is not
-   *         installed — which is what the sweep reads to leave that server's
+   *         installed — which the sweep counts towards leaving that server's
    *         other accounts for a later run (EXO-90803); false otherwise,
    *         including when no pass ran
    */
