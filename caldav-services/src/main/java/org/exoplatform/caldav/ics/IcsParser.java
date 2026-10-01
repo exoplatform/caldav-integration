@@ -174,6 +174,7 @@ public class IcsParser {
     readSchedule(event, vEvent, start);
     event.setCreated(instantOrNull(vEvent, Property.CREATED));
     event.setUpdated(instantOrNull(vEvent, Property.LAST_MODIFIED));
+    event.setSequence(sequenceOf(vEvent));
     event.setRecurrenceRule(text(vEvent, Property.RRULE));
     event.setExceptionDates(exceptionDates(vEvent));
     event.setOccurrenceId(occurrenceId(vEvent));
@@ -397,6 +398,23 @@ public class IcsParser {
   private String text(VEvent vEvent, String name) {
     Property property = vEvent.getProperty(name);
     return property == null ? null : StringUtils.trimToNull(property.getValue());
+  }
+
+  /**
+   * The revision the organiser stamped on the component (SEQUENCE).
+   *
+   * <p>
+   * The library refuses a value that is not a number at the parse, so what
+   * reaches here is an integer; a negative one, which the RFC does not allow,
+   * is read as the default.
+   *
+   * @param vEvent the component being read
+   * @return the sequence, 0 when absent — the RFC default, which a comparison
+   *         then reads as the oldest revision there is
+   */
+  private int sequenceOf(VEvent vEvent) {
+    String value = text(vEvent, Property.SEQUENCE);
+    return value == null ? 0 : Math.max(0, Integer.parseInt(value));
   }
 
   /**

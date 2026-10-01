@@ -85,6 +85,14 @@ public class IcsEvent {
   private Instant           updated;
 
   /**
+   * The revision the organiser stamped on the object (RFC 5545 SEQUENCE), 0
+   * when it carries none — what an invitation received by mail is compared
+   * against the copy a server holds by, so an older mail never rewrites a
+   * newer copy (EXO-90848).
+   */
+  private int               sequence;
+
+  /**
    * Who called the meeting — the eXo event's organizer, never the connected
    * CalDAV account. Naming the account owner on a meeting they merely
    * accepted would put a subtly false event in their calendar, and their
