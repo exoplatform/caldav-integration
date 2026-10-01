@@ -134,13 +134,22 @@ public class CaldavSyncDAOQueryTest {
     List<CaldavPendingSubscriptionEntity> bobs = pendingSubscriptionDAO.findAttemptableOf(bob, 5, PageRequest.of(0, 10, org.springframework.data.domain.Sort.by("id")));
     assertEquals(List.of(owed), bobs.stream().map(CaldavPendingSubscriptionEntity::getId).toList());
 
-    assertEquals(1, pendingSubscriptionDAO.recordAttempt(owed));
-    assertEquals(1, pendingSubscriptionDAO.spendBudget(owed, 5));
+    assertEquals(0, pendingSubscriptionDAO.recordAttempt(owed, PendingSubscriptionKind.UNSUBSCRIBE), "the other kind counts nothing");
+    assertEquals(0, pendingSubscriptionDAO.spendBudget(owed, PendingSubscriptionKind.UNSUBSCRIBE, 5), "nor spends anything");
+    assertEquals(1, pendingSubscriptionDAO.recordAttempt(owed, PendingSubscriptionKind.SUBSCRIBE));
+    assertEquals(1, pendingSubscriptionDAO.spendBudget(owed, PendingSubscriptionKind.SUBSCRIBE, 5));
     entityManager.clear();
     assertEquals(5, pendingSubscriptionDAO.findById(owed).orElseThrow().getAttempts());
     assertTrue(pendingSubscriptionDAO.findAttemptableOf(bob, 5, PageRequest.of(0, 10)).isEmpty());
     assertTrue(pendingSubscriptionDAO.findByUserIdentityIdAndServerIdAndContainerUid(bob, 5L, "exo-cal-shared").isPresent());
     assertTrue(pendingSubscriptionDAO.findByUserIdentityIdAndServerIdAndContainerUid(bob, 6L, "exo-cal-shared").isEmpty());
+
+    assertEquals(0, pendingSubscriptionDAO.deleteAsking(bob, 5L, "exo-cal-shared", PendingSubscriptionKind.UNSUBSCRIBE),
+                 "a row asking for the other change is not deleted");
+    assertEquals(1, pendingSubscriptionDAO.deleteAsking(bob, 5L, "exo-cal-shared", PendingSubscriptionKind.SUBSCRIBE));
+    entityManager.clear();
+    assertTrue(pendingSubscriptionDAO.findById(owed).isEmpty());
+    assertTrue(pendingSubscriptionDAO.findById(spent).isPresent(), "only that row");
   }
 
   /**

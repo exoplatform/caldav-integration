@@ -27,6 +27,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import org.exoplatform.caldav.entity.CaldavPendingSubscriptionEntity;
+import org.exoplatform.caldav.model.PendingSubscriptionKind;
 
 /**
  * The subscription changes eXo owes colleagues' BlueMind accounts
@@ -84,15 +85,19 @@ public interface CaldavPendingSubscriptionDAO extends JpaRepository<CaldavPendin
 
   /**
    * Counts one more refused attempt, in one statement, so two nodes draining
-   * the same row do not lose an increment to a read-modify-save.
+   * the same row do not lose an increment to a read-modify-save — and only
+   * while the row still asks for the change that was refused: a row renewed
+   * with the other kind since it was read is a new instruction, and the old
+   * one's verdict is not written against it.
    *
    * @param id the row
+   * @param kind the change that was refused
    * @return rows updated, one or zero
    */
   @Modifying(flushAutomatically = true)
   @Transactional
-  @Query("UPDATE CaldavPendingSubscriptionEntity q SET q.attempts = q.attempts + 1 WHERE q.id = :id")
-  int recordAttempt(@Param("id") long id);
+  @Query("UPDATE CaldavPendingSubscriptionEntity q SET q.attempts = q.attempts + 1 WHERE q.id = :id AND q.kind = :kind")
+  int recordAttempt(@Param("id") long id, @Param("kind") PendingSubscriptionKind kind);
 
   /**
    * Spends the whole budget at once: the change is given up on without
@@ -100,13 +105,38 @@ public interface CaldavPendingSubscriptionDAO extends JpaRepository<CaldavPendin
    * again — a refusal, a container that is gone, a colleague no longer
    * connected, a session that is not theirs.
    *
+   * <p>
+   * Only while the row still asks for the change given up on, for the reason
+   * {@link #recordAttempt(long, PendingSubscriptionKind)} gives.
+   *
    * @param id the row
+   * @param kind the change given up on
    * @param attempts the configured bound, written whole
    * @return rows updated, one or zero
    */
   @Modifying(flushAutomatically = true)
   @Transactional
-  @Query("UPDATE CaldavPendingSubscriptionEntity q SET q.attempts = :attempts WHERE q.id = :id")
-  int spendBudget(@Param("id") long id, @Param("attempts") int attempts);
+  @Query("UPDATE CaldavPendingSubscriptionEntity q SET q.attempts = :attempts WHERE q.id = :id AND q.kind = :kind")
+  int spendBudget(@Param("id") long id, @Param("kind") PendingSubscriptionKind kind, @Param("attempts") int attempts);
+
+  /**
+   * Deletes the row of a colleague, a server and a container only while it
+   * still asks for the given change, in one statement: a read followed by a
+   * delete by id would let a revoke recorded in between be deleted with it.
+   *
+   * @param userIdentityId the sharee
+   * @param serverId the server key
+   * @param containerUid the container uid
+   * @param kind the change that landed
+   * @return rows deleted, one or zero
+   */
+  @Modifying(flushAutomatically = true)
+  @Transactional
+  @Query("DELETE FROM CaldavPendingSubscriptionEntity q WHERE q.userIdentityId = :userIdentityId AND q.serverId = :serverId"
+      + " AND q.containerUid = :containerUid AND q.kind = :kind")
+  int deleteAsking(@Param("userIdentityId") long userIdentityId,
+                   @Param("serverId") long serverId,
+                   @Param("containerUid") String containerUid,
+                   @Param("kind") PendingSubscriptionKind kind);
 
 }
