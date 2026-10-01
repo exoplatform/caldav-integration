@@ -67,6 +67,8 @@ public interface CalDavClient {
    *          the seed-row / legacy-property resolution
    * @param exoLogin the eXo login of the user this conversation is for
    * @return the endpoint every other method addresses
+   * @throws CalDavProviderMissingException when the registration names a
+   *           credentials provider that is not installed; nothing is sent
    * @throws CalDavException when no server is declared anywhere, the resolved
    *           URL is unusable, or no account name can be resolved for a URL
    *           that needs one

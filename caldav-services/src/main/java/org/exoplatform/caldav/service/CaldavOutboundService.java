@@ -137,6 +137,9 @@ public class CaldavOutboundService {
    * @throws CalDavAuthenticationException when the server refused the stored
    *           credentials
    * @throws CalDavUnreachableException when the server could not be reached
+   * @throws org.exoplatform.caldav.client.CalDavProviderMissingException when the
+   *           server's credentials provider is not installed; nothing was asked
+   *           of the server
    */
   public List<CalendarSync> bindPersonalCalendars(long userIdentityId, String username) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
