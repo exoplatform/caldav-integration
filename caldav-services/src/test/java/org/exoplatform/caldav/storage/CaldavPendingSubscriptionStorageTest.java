@@ -179,7 +179,7 @@ public class CaldavPendingSubscriptionStorageTest {
 
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
 
-    PendingSubscription owed = only(storage.attemptable(5, 10));
+    PendingSubscription owed = only(storage.attemptable(5, 0, 10));
     assertNotNull(owed.getId());
     assertEquals(BOB, owed.getUserIdentityId());
     assertEquals(SERVER, owed.getServerId());
@@ -217,14 +217,14 @@ public class CaldavPendingSubscriptionStorageTest {
   @Test
   public void aRevokeRecordedOverAPendingSubscribeReplacesItAndResetsTheCount() {
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
-    long id = only(storage.attemptable(5, 10)).getId();
+    long id = only(storage.attemptable(5, 0, 10)).getId();
     inTransaction(() -> storage.refused(id));
     inTransaction(() -> storage.refused(id));
-    assertEquals(2, only(storage.attemptable(5, 10)).getAttempts());
+    assertEquals(2, only(storage.attemptable(5, 0, 10)).getAttempts());
 
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.UNSUBSCRIBE));
 
-    PendingSubscription replaced = only(storage.attemptable(5, 10));
+    PendingSubscription replaced = only(storage.attemptable(5, 0, 10));
     assertEquals(id, replaced.getId(), "the same row, rewritten");
     assertEquals(PendingSubscriptionKind.UNSUBSCRIBE, replaced.getKind());
     assertEquals(0, replaced.getAttempts(), "a new instruction deserves its own patience");
@@ -265,7 +265,7 @@ public class CaldavPendingSubscriptionStorageTest {
 
     inTransaction(() -> storage.settledIfStillAsking(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
 
-    assertEquals(OTHER, only(storage.attemptable(5, 10)).getContainerUid());
+    assertEquals(OTHER, only(storage.attemptable(5, 0, 10)).getContainerUid());
     inTransaction(() -> storage.settledIfStillAsking(BOB, SERVER, "never-owed", PendingSubscriptionKind.SUBSCRIBE));
     assertEquals(1, rowCount("SELECT COUNT(*) FROM CALDAV_PENDING_SUBSCRIPTION"), "settling what is not owed is a no-op");
   }
@@ -290,7 +290,7 @@ public class CaldavPendingSubscriptionStorageTest {
   @Test
   public void aLandedSubscribeDoesNotSettleTheRevokeRecordedWhileItWasInFlight() {
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
-    long owed = only(storage.attemptable(5, 10)).getId();
+    long owed = only(storage.attemptable(5, 0, 10)).getId();
     inTransaction(() -> storage.refused(owed));
     inTransaction(() -> storage.refused(owed));
     // The revoke lands in eXo while the drain's session is still open.
@@ -299,7 +299,7 @@ public class CaldavPendingSubscriptionStorageTest {
     // The drain comes back and reports the subscribe it posted before that.
     inTransaction(() -> storage.settledIfStillAsking(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
 
-    PendingSubscription standing = only(storage.attemptable(5, 10));
+    PendingSubscription standing = only(storage.attemptable(5, 0, 10));
     assertEquals(PendingSubscriptionKind.UNSUBSCRIBE, standing.getKind(), "the removal nobody has made yet is still owed");
     assertEquals(CONTAINER, standing.getContainerUid());
     assertEquals(0, standing.getAttempts(), "and with its own patience, not the subscribe's two spent attempts");
@@ -364,9 +364,9 @@ public class CaldavPendingSubscriptionStorageTest {
 
     assertEquals(4, only(storage.attemptable(BOB, 5, 10)).getAttempts());
     assertTrue(storage.attemptable(CAROL, 5, 10).isEmpty(), "abandoned is below the bound for good");
-    assertEquals(1, storage.attemptable(5, 10).size(), "table-wide, only bob's is still worth attempting");
+    assertEquals(1, storage.attemptable(5, 0, 10).size(), "table-wide, only bob's is still worth attempting");
     inTransaction(() -> storage.refused(bobs));
-    assertTrue(storage.attemptable(5, 10).isEmpty(), "the fifth refusal reaches the bound");
+    assertTrue(storage.attemptable(5, 0, 10).isEmpty(), "the fifth refusal reaches the bound");
     assertEquals(2, rowCount("SELECT COUNT(*) FROM CALDAV_PENDING_SUBSCRIPTION"), "both rows stay as the record");
   }
 
@@ -379,10 +379,10 @@ public class CaldavPendingSubscriptionStorageTest {
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
     inTransaction(() -> storage.owe(BOB, SERVER, OTHER, PendingSubscriptionKind.UNSUBSCRIBE));
 
-    List<PendingSubscription> all = storage.attemptable(5, 10);
+    List<PendingSubscription> all = storage.attemptable(5, 0, 10);
     assertEquals(List.of(CAROL, BOB, BOB), all.stream().map(PendingSubscription::getUserIdentityId).toList());
-    assertEquals(2, storage.attemptable(5, 2).size());
-    assertEquals(CAROL, storage.attemptable(5, 1).get(0).getUserIdentityId());
+    assertEquals(2, storage.attemptable(5, 0, 2).size());
+    assertEquals(CAROL, storage.attemptable(5, 0, 1).get(0).getUserIdentityId());
     assertEquals(List.of(CONTAINER, OTHER), storage.attemptable(BOB, 5, 10).stream().map(PendingSubscription::getContainerUid).toList());
     assertTrue(storage.attemptable(99L, 5, 10).isEmpty());
   }
