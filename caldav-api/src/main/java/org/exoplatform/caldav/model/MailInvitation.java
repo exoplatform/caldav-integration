@@ -21,8 +21,9 @@ import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
 
 /**
- * A calendar invitation a user answered from a mail, as this add-on lands it
- * (EXO-90848) — this add-on's own words for what the mail reader hands over, so
+ * A calendar invitation a user wants in their calendar — answered, added as it
+ * is, or removed because its organiser cancelled it — as this add-on lands it
+ * (EXO-90848). This add-on's own words for what the mail reader hands over, so
  * that nothing but the one bean conditional on the reader names a type of the
  * reader's: a bean whose signature did would make this whole add-on fail to
  * boot on a server without the mail reader installed, since Spring introspects
@@ -33,36 +34,54 @@ import org.exoplatform.agenda.constant.EventAttendeeResponse;
  * {@code username}, in their own calendar; the attendee address is that same
  * user's mailbox, the one the organiser invited.
  *
- * @param username the user who answered, the only person the landing acts for
+ * @param username the user who asked, the only person the landing acts for
  * @param attendeeAddress the user's own mailbox address, possibly null
- * @param uid the UID the reader showed and the user answered
+ * @param method the iTIP method, upper-cased: REQUEST, PUBLISH, CANCEL…; null
+ *          when the object names none
+ * @param uid the UID the reader showed
  * @param sequence the SEQUENCE the reader read, 0 when the message carries none
- * @param response the answer, as agenda holds it
+ * @param response the answer, as agenda holds it; null to add or remove the
+ *          event without answering
  * @param icalendar the message's iCalendar object, as received
  */
 public record MailInvitation(String username,
                              String attendeeAddress,
+                             String method,
                              String uid,
                              int sequence,
                              EventAttendeeResponse response,
                              String icalendar) {
+
+  /** The method of an organiser's cancellation. */
+  public static final String CANCEL = "CANCEL";
 
   /**
    * Refuses an invitation missing what the landing needs.
    *
    * @param username the user
    * @param attendeeAddress their mailbox address
+   * @param method the iTIP method
    * @param uid the event's UID
    * @param sequence the SEQUENCE
-   * @param response the answer
+   * @param response the answer, or null
    * @param icalendar the object
-   * @throws IllegalArgumentException without a user, a UID, an answer that is
-   *           one or an object
+   * @throws IllegalArgumentException without a user, a UID or an object, or
+   *           with an answer that is none
    */
   public MailInvitation {
-    if (StringUtils.isBlank(username) || StringUtils.isBlank(uid) || response == null
-        || response == EventAttendeeResponse.NEEDS_ACTION || StringUtils.isBlank(icalendar)) {
-      throw new IllegalArgumentException("A mail invitation names the user, the event's UID, an answer and the object");
+    if (StringUtils.isBlank(username) || StringUtils.isBlank(uid) || response == EventAttendeeResponse.NEEDS_ACTION
+        || StringUtils.isBlank(icalendar)) {
+      throw new IllegalArgumentException("A mail invitation names the user, the event's UID and the object, and an answer when it carries one");
     }
+    method = StringUtils.upperCase(StringUtils.trimToNull(method));
+  }
+
+  /**
+   * Whether the message is the organiser calling the event off.
+   *
+   * @return true for a CANCEL
+   */
+  public boolean isCancellation() {
+    return CANCEL.equals(method);
   }
 }
