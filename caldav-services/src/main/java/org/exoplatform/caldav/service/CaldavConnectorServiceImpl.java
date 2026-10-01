@@ -20,6 +20,7 @@ import java.util.Objects;
 
 import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.agenda.service.AgendaCalendarShareService;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -84,6 +85,7 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   @Override
   public void createCaldavSetting(CaldavUserSetting caldavUserSetting, long userIdentityId) throws IllegalAccessException {
     if (StringUtils.isNotBlank(caldavUserSetting.getPassword()) && StringUtils.isNotBlank(caldavUserSetting.getUsername())) {
+      refuseAServerNotUsableYet(caldavUserSetting.getServerId());
       CaldavUserSetting previous = caldavConnectorStorage.getCaldavSetting(userIdentityId);
       caldavConnectorStorage.createCaldavSetting(caldavUserSetting, userIdentityId);
       // A connection the user makes is their own choice, even on the server managed
@@ -92,6 +94,24 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
       afterConnect(caldavUserSetting, userIdentityId, previous);
     } else {
       throw new IllegalAccessException("username or password not be null");
+    }
+  }
+
+  /**
+   * Refuses to store an account on a registration whose credentials provider is not
+   * installed: every conversation with that server goes through the provider, so the
+   * account would show as connected and never synchronise. The registry being out of
+   * reach refuses nothing, as before.
+   *
+   * @param serverId registration the account references, or null for the seed row
+   * @throws CalDavProviderMissingException when the registration's provider is not
+   *           installed
+   */
+  private void refuseAServerNotUsableYet(Long serverId) {
+    CaldavServerService serverRegistry = getCaldavServerService();
+    String missingProvider = serverRegistry == null ? null : serverRegistry.missingProviderOf(serverId);
+    if (missingProvider != null) {
+      throw CalDavProviderMissingException.named(missingProvider);
     }
   }
 
@@ -281,7 +301,7 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     if (caldavServerService == null) {
       try {
         caldavServerService = ExoContainerContext.getService(CaldavServerService.class);
-      } catch (Exception e) {
+      } catch (Exception | LinkageError e) {
         LOG.debug("CalDAV server registry not resolvable yet, keeping the property-based URL", e);
       }
     }
