@@ -60,6 +60,25 @@ export const getConnectionRequirements = () => {
 };
 
 /**
+ * The declared provider names whose credentials provider is not installed: a
+ * server configured with one cannot be connected until it is, by a click or by
+ * a form.
+ *
+ * @returns {Promise<Array>} the provider names that are not installed
+ */
+export const getUnavailableProviders = () => {
+  return fetch('/caldav/rest/servers/unavailable-providers', {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
  * Connects to a registration whose provider asks the user for nothing. The
  * server probes with the service account's own material and records the
  * connection only if that passed, so a resolved promise means tested — the same

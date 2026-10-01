@@ -50,6 +50,12 @@ public class CaldavProbeResult {
    */
   public static final String SUPERSEDED  = "caldav.connect.superseded";
 
+  /**
+   * The server cannot be used yet: the credentials provider its registration names
+   * is not installed, so nothing was asked of the server.
+   */
+  public static final String SERVER_NOT_USABLE = "caldav.error.serverNotUsable";
+
   /** One of the stable outcome codes above. */
   private String  result;
 
