@@ -48,6 +48,7 @@ import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.service.AgendaCalendarShareService;
 import org.exoplatform.caldav.plugin.CalendarServerFlavour;
+import org.exoplatform.caldav.exception.ManagedConnectionLockedException;
 import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
@@ -87,6 +88,9 @@ public class CaldavConnectorServiceImplTest {
 
   @Mock
   private CalendarServerFlavour          sessionFlavour;
+
+  @Mock
+  private CaldavManagedModeService       caldavManagedModeService;
 
   @InjectMocks
   private CaldavConnectorServiceImpl     caldavConnectorService;
@@ -913,5 +917,54 @@ public class CaldavConnectorServiceImplTest {
     caldavConnectorService.createCaldavSetting(setting, 7L);
 
     verify(caldavConnectorStorage).markConnectedByManagedMode(7L, false);
+  }
+
+  /**
+   * EXO-90836. A governed user cannot disconnect, nor connect with typed credentials:
+   * nothing is removed, nothing is stored.
+   */
+  @Test
+  public void aGovernedUserCannotDisconnectNorConnectWithTypedCredentials() throws Exception {
+    // Handed in: the constructor injection leaves the lazily resolved services alone.
+    caldavConnectorService.setCaldavManagedModeService(caldavManagedModeService);
+    when(caldavManagedModeService.checkUserMayChangeConnection("john", null)).thenThrow(new ManagedConnectionLockedException());
+    CaldavUserSetting typed = new CaldavUserSetting();
+    typed.setUsername("john");
+    typed.setPassword("secret");
+
+    assertThrows(ManagedConnectionLockedException.class,
+                 () -> caldavConnectorService.disconnectCaldavSetting(USER_IDENTITY_ID, "john"));
+    assertThrows(ManagedConnectionLockedException.class,
+                 () -> caldavConnectorService.connectCaldavSetting(typed, USER_IDENTITY_ID, "john"));
+
+    verifyNoInteractions(caldavConnectorStorage);
+  }
+
+  /** EXO-90836. A user managed mode does not govern disconnects as before. */
+  @Test
+  public void anUngovernedUserDisconnects() throws Exception {
+    caldavConnectorService.setCaldavManagedModeService(caldavManagedModeService);
+    caldavConnectorService.disconnectCaldavSetting(USER_IDENTITY_ID, "john");
+
+    verify(caldavManagedModeService).checkUserMayChangeConnection("john", null);
+    verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+  }
+
+  /**
+   * EXO-90836. When managed mode's verdict cannot be asked, a user-requested change is
+   * refused: it may be one the instance took from them.
+   */
+  @Test
+  public void aChangeIsRefusedWhenManagedModeCannotBeAsked() {
+    CaldavConnectorServiceImpl withoutManagedMode = new CaldavConnectorServiceImpl(caldavConnectorStorage) {
+      @Override
+      protected CaldavManagedModeService getCaldavManagedModeService() {
+        return null;
+      }
+    };
+
+    assertThrows(ManagedConnectionLockedException.class,
+                 () -> withoutManagedMode.disconnectCaldavSetting(USER_IDENTITY_ID, "john"));
+    verifyNoInteractions(caldavConnectorStorage);
   }
 }

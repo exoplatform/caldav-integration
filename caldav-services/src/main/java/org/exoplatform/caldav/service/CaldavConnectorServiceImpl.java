@@ -21,6 +21,7 @@ import java.util.Objects;
 import org.apache.commons.lang3.StringUtils;
 import org.exoplatform.agenda.service.AgendaCalendarShareService;
 import org.exoplatform.caldav.client.CalDavProviderMissingException;
+import org.exoplatform.caldav.exception.ManagedConnectionLockedException;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -76,10 +77,27 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
    */
   private CalendarServerFlavourRegistry   calendarServerFlavourRegistry;
 
+  /**
+   * Managed mode's verdict on the user-requested connection changes (EXO-90836),
+   * resolved lazily for the same reason as the engines above.
+   */
+  private CaldavManagedModeService        caldavManagedModeService;
+
   public CaldavConnectorServiceImpl(CaldavConnectorStorage caldavConnectorStorage) {
     String caldavUrl = System.getProperty("exo.agenda.caldav.connector.url");
     this.caldavConnectorStorage = caldavConnectorStorage;
     this.caldavUrl = caldavUrl;
+  }
+
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  public void connectCaldavSetting(CaldavUserSetting caldavUserSetting,
+                                   long userIdentityId,
+                                   String username) throws IllegalAccessException {
+    checkUserMayChangeConnection(username);
+    createCaldavSetting(caldavUserSetting, userIdentityId);
   }
 
   @Override
@@ -435,6 +453,58 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   @Override
   public void deleteCaldavSetting(long userIdentityId) {
     deleteCaldavSetting(userIdentityId, null);
+  }
+
+  /**
+   * {@inheritDoc}
+   */
+  @Override
+  public void disconnectCaldavSetting(long userIdentityId, String username) throws IllegalAccessException {
+    checkUserMayChangeConnection(username);
+    deleteCaldavSetting(userIdentityId, username);
+  }
+
+  /**
+   * Hands managed mode's verdict to tests, which have no container to resolve it from.
+   *
+   * @param caldavManagedModeService the service to use
+   */
+  protected void setCaldavManagedModeService(CaldavManagedModeService caldavManagedModeService) {
+    this.caldavManagedModeService = caldavManagedModeService;
+  }
+
+  /**
+   * Resolves managed mode's service lazily through the kernel/Spring bridge, and
+   * remembers it.
+   *
+   * @return the service, or null when the bridge cannot provide it
+   */
+  protected CaldavManagedModeService getCaldavManagedModeService() {
+    if (caldavManagedModeService == null) {
+      try {
+        caldavManagedModeService = ExoContainerContext.getService(CaldavManagedModeService.class);
+      } catch (Exception | LinkageError e) {
+        LOG.debug("CalDAV managed mode not resolvable", e);
+      }
+    }
+    return caldavManagedModeService;
+  }
+
+  /**
+   * Refuses a connection change the user asks for when managed mode governs them. A
+   * verdict that cannot be asked refuses too: the change may be one the instance took
+   * from them.
+   *
+   * @param username the user's login
+   * @throws ManagedConnectionLockedException when managed mode governs the user, or
+   *           when its verdict cannot be asked
+   */
+  private void checkUserMayChangeConnection(String username) throws ManagedConnectionLockedException {
+    CaldavManagedModeService managedModeService = getCaldavManagedModeService();
+    if (managedModeService == null) {
+      throw new ManagedConnectionLockedException();
+    }
+    managedModeService.checkUserMayChangeConnection(username, null);
   }
 
   /**

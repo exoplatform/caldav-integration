@@ -60,7 +60,7 @@ describe('The CalDAV connectors and the page they are on', () => {
   it('is asked on every path that registers a descriptor', () => {
     const main = fs.readFileSync(path.resolve(__dirname, '../../main/webapp/vue-app/caldav/main.js'), 'utf8');
     const registrations = main.match(/registerExtension\('agenda', 'connectors'/g) || [];
-    const answered = main.slice(main.indexOf('.then(([servers, requirements, unavailableProviders]) => {'), main.indexOf('.finally('));
+    const answered = main.slice(main.indexOf('.then(([servers, requirements, unavailableProviders, managedForMe]) => {'), main.indexOf('.finally('));
     const guard = answered.indexOf('if (!connectorsBelongOnThisPage()) {');
     const inTheAnswer = (answered.match(/registerExtension\('agenda', 'connectors'/g) || []).length;
 

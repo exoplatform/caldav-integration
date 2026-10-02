@@ -37,6 +37,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.caldav.client.CalDavProviderMissingException;
+import org.exoplatform.caldav.exception.ManagedConnectionLockedException;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.service.CaldavConnectorService;
@@ -159,7 +160,7 @@ public class CaldavConnectorRestTest {
     Response response = caldavConnectorRest.createCaldavSetting(setting);
 
     assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
-    verify(caldavConnectorService).createCaldavSetting(setting, 42L);
+    verify(caldavConnectorService).connectCaldavSetting(setting, 42L, USER_NAME);
   }
 
   /**
@@ -174,7 +175,7 @@ public class CaldavConnectorRestTest {
     setting.setPassword("secret");
     doThrow(CalDavProviderMissingException.named("bluemind-sudo"))
         .when(caldavConnectorService)
-        .createCaldavSetting(setting, 42L);
+        .connectCaldavSetting(setting, 42L, USER_NAME);
 
     Response response = caldavConnectorRest.createCaldavSetting(setting);
 
@@ -190,7 +191,7 @@ public class CaldavConnectorRestTest {
     Response response = caldavConnectorRest.createCaldavSetting(null);
 
     assertEquals(Response.Status.BAD_REQUEST.getStatusCode(), response.getStatus());
-    verify(caldavConnectorService, never()).createCaldavSetting(any(), anyLong());
+    verify(caldavConnectorService, never()).connectCaldavSetting(any(), anyLong(), any());
   }
 
   /**
@@ -205,7 +206,7 @@ public class CaldavConnectorRestTest {
     CaldavUserSetting setting = new CaldavUserSetting();
     setting.setUsername("john");
     setting.setPassword("secret");
-    doThrow(new IllegalAccessException("refused")).when(caldavConnectorService).createCaldavSetting(setting, 42L);
+    doThrow(new IllegalAccessException("refused")).when(caldavConnectorService).connectCaldavSetting(setting, 42L, USER_NAME);
 
     Response response = caldavConnectorRest.createCaldavSetting(setting);
 
@@ -247,7 +248,7 @@ public class CaldavConnectorRestTest {
    * Disconnecting names the caller's own account, and passes their login.
    */
   @Test
-  public void disconnectingPassesTheLogin() {
+  public void disconnectingPassesTheLogin() throws Exception {
     // The identity comes from the conversation state — the request carries no
     // way to name another user's. The login goes with it because without one
     // the service has no ACL to remove a calendar under, and the mirrored
@@ -257,20 +258,43 @@ public class CaldavConnectorRestTest {
     Response response = caldavConnectorRest.deleteCaldavSetting();
 
     assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
-    verify(caldavConnectorService).deleteCaldavSetting(42L, USER_NAME);
+    verify(caldavConnectorService).disconnectCaldavSetting(42L, USER_NAME);
+    verify(caldavConnectorService, never()).deleteCaldavSetting(anyLong(), anyString());
   }
 
   /**
    * A failure while disconnecting is reported rather than swallowed.
    */
   @Test
-  public void aFailureWhileDisconnectingIsReported() {
+  public void aFailureWhileDisconnectingIsReported() throws Exception {
     withCurrentUser();
-    doThrow(new IllegalStateException("boom")).when(caldavConnectorService).deleteCaldavSetting(anyLong(), anyString());
+    doThrow(new IllegalStateException("boom")).when(caldavConnectorService).disconnectCaldavSetting(anyLong(), anyString());
 
     Response response = caldavConnectorRest.deleteCaldavSetting();
 
     assertEquals(Response.Status.INTERNAL_SERVER_ERROR.getStatusCode(), response.getStatus());
+  }
+
+  /**
+   * EXO-90836. A governed user's disconnection and typed connection answer 403 with the
+   * code the interface translates, not the 500 of a failure.
+   */
+  @Test
+  public void aGovernedUsersConnectionChangesAnswer403WithTheirCode() throws Exception {
+    withCurrentUser();
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+    doThrow(new ManagedConnectionLockedException()).when(caldavConnectorService).connectCaldavSetting(setting, 42L, USER_NAME);
+    doThrow(new ManagedConnectionLockedException()).when(caldavConnectorService).disconnectCaldavSetting(42L, USER_NAME);
+
+    Response connecting = caldavConnectorRest.createCaldavSetting(setting);
+    Response disconnecting = caldavConnectorRest.deleteCaldavSetting();
+
+    assertEquals(Response.Status.FORBIDDEN.getStatusCode(), connecting.getStatus());
+    assertEquals(ManagedConnectionLockedException.MESSAGE_CODE, connecting.getEntity());
+    assertEquals(Response.Status.FORBIDDEN.getStatusCode(), disconnecting.getStatus());
+    assertEquals(ManagedConnectionLockedException.MESSAGE_CODE, disconnecting.getEntity());
   }
 
 }

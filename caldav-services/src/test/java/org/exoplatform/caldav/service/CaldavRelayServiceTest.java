@@ -51,6 +51,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -63,6 +64,7 @@ import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.agenda.service.AgendaUserSettingsService;
 import org.exoplatform.caldav.client.CalDavProviderMissingException;
+import org.exoplatform.caldav.exception.ManagedConnectionLockedException;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavRelayRequest;
 import org.exoplatform.caldav.model.CaldavRelayedResponse;
@@ -144,6 +146,19 @@ public class CaldavRelayServiceTest {
 
   @Mock
   private AgendaRemoteEventService  agendaRemoteEventService;
+
+  @Mock
+  private CaldavManagedModeService  caldavManagedModeService;
+
+  /**
+   * Managed mode governs nobody unless a test says so. Stated, because a mocked
+   * {@code Long} answers 0, not null: left alone, every user would be governed by
+   * registration 0.
+   */
+  @BeforeEach
+  void managedModeGovernsNobodyByDefault() throws Exception {
+    org.mockito.Mockito.lenient().when(caldavManagedModeService.checkUserMayChangeConnection(any(), any())).thenReturn(null);
+  }
 
   @InjectMocks
   private CaldavRelayService     caldavRelayService;
@@ -961,5 +976,88 @@ public class CaldavRelayServiceTest {
 
     org.mockito.Mockito.verify(caldavCredentialsResolver, org.mockito.Mockito.never()).invalidate(any(), any(), any());
     org.mockito.Mockito.verify(httpClient, org.mockito.Mockito.times(1)).send(any(), any());
+  }
+
+  /**
+   * EXO-90836. A governed user's one-click connect to another registration is refused
+   * before anything is asked of the provider or the server.
+   */
+  @Test
+  public void aGovernedUserCannotConnectAnotherServer() throws Exception {
+    when(caldavManagedModeService.checkUserMayChangeConnection(USERNAME, SERVER_ID)).thenThrow(new ManagedConnectionLockedException());
+
+    assertThrows(ManagedConnectionLockedException.class, () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME));
+
+    org.mockito.Mockito.verifyNoInteractions(caldavServerService, caldavCredentialsResolver, httpClient, caldavConnectorService);
+  }
+
+  /**
+   * EXO-90836. A governed user's own one-click connect to the designated registration is
+   * marked as made by managed mode, as the login-time attachment is.
+   */
+  @Test
+  public void aGovernedUsersConnectionToTheDesignatedServerIsMarked() throws Exception {
+    when(caldavManagedModeService.checkUserMayChangeConnection(USERNAME, SERVER_ID)).thenReturn(SERVER_ID);
+    givenOneClickConnection();
+
+    caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
+
+    verify(caldavConnectorStorage).markConnectedByManagedMode(IDENTITY_ID, true);
+  }
+
+  /**
+   * EXO-90836. Once the designated server answered, the switch disconnects the previous
+   * account as the platform does - agenda's record of it, then caldav's - before the
+   * new account is recorded and marked.
+   */
+  @Test
+  public void aSwitchDisconnectsThePreviousAccountOnceTheDesignatedServerAnswered() throws Exception {
+    givenOneClickConnection();
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(99L));
+    when(caldavServerService.resolveServer(99L)).thenReturn(server(99L, true));
+
+    CaldavProbeResult outcome = caldavRelayService.switchThroughProvider(SERVER_ID, USERNAME);
+
+    assertEquals(CaldavProbeResult.OK, outcome.getResult());
+    InOrder order = inOrder(agendaUserSettingsService, caldavConnectorService, caldavConnectorStorage);
+    order.verify(agendaUserSettingsService).removeUserConnector("agenda.caldavCalendar.99", IDENTITY_ID);
+    order.verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
+    order.verify(agendaUserSettingsService)
+         .saveUserConnector("agenda.caldavCalendar." + SERVER_ID, "eric@bm.example.org", IDENTITY_ID);
+    order.verify(caldavConnectorService).createProviderBackedSetting(any(), eq(IDENTITY_ID));
+    order.verify(caldavConnectorStorage).markConnectedByManagedMode(IDENTITY_ID, true);
+  }
+
+  /** EXO-90836. A switch the designated server refuses changes nothing of the previous account. */
+  @Test
+  public void aRefusedSwitchKeepsThePreviousAccount() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
+    givenProbeAnswer(403);
+
+    caldavRelayService.switchThroughProvider(SERVER_ID, USERNAME);
+
+    org.mockito.Mockito.verifyNoInteractions(caldavConnectorService, agendaUserSettingsService);
+    verify(caldavConnectorStorage, never()).markConnectedByManagedMode(anyLong(), anyBoolean());
+  }
+
+  /**
+   * EXO-90836. An account connected through the legacy connector names no registration
+   * and resolves to the seed one: switching it to that registration disconnects nothing.
+   */
+  @Test
+  public void aSwitchOfALegacyAccountToTheRegistrationItResolvesToDisconnectsNothing() throws Exception {
+    givenOneClickConnection();
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(null));
+    when(caldavServerService.resolveServer(null)).thenReturn(server(SERVER_ID, true));
+
+    caldavRelayService.switchThroughProvider(SERVER_ID, USERNAME);
+
+    verify(caldavConnectorService, never()).deleteCaldavSetting(anyLong(), any());
+    verify(agendaUserSettingsService, never()).removeUserConnector(anyString(), anyLong());
+    verify(caldavConnectorService).createProviderBackedSetting(any(), eq(IDENTITY_ID));
   }
 }

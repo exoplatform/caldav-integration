@@ -41,6 +41,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       <div class="flex-grow-1 text-start">
         <div>{{ $t('caldav.admin.managed.title') }}</div>
         <div class="text-subtitle">{{ managedSummary }}</div>
+        <div v-if="managed && managed.serverId" class="text-subtitle">
+          {{ $t('caldav.admin.managed.switchNotice') }}
+        </div>
       </div>
       <v-btn
         v-if="managedOn"

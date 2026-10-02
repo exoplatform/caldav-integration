@@ -255,6 +255,9 @@ public class CaldavRelayService {
   @Autowired
   private AgendaRemoteEventService  agendaRemoteEventService;
 
+  @Autowired
+  private CaldavManagedModeService  caldavManagedModeService;
+
   /**
    * The JDK's own HTTP client, TLS trust from the platform truststore —
    * exactly the transport email-connector's CardDAV client rides. Redirects
@@ -423,16 +426,24 @@ public class CaldavRelayService {
    * is stored and does not work is worse than one that was refused, because only the
    * first looks fine on screen.
    *
+   * <p>
+   * A user managed mode governs may connect the designated registration only, and that
+   * connection is marked as made by managed mode, as the login-time attachment marks
+   * its own (EXO-90836).
+   *
    * @param serverId registration to connect to, or null for the legacy one
    * @param exoLogin the eXo login connecting
    * @return the probe outcome; the connection is recorded only on {@link CaldavProbeResult#OK}
    * @throws ObjectNotFoundException when no such registration is declared
    * @throws IllegalAccessException when the registration is deactivated, when agenda has
-   *           switched its connector off, or when the provider named no account
+   *           switched its connector off, or when the provider named no account; a
+   *           {@code ManagedConnectionLockedException} when managed mode governs the
+   *           user and this is not the designated registration
    */
   public CaldavProbeResult connectThroughProvider(Long serverId, String exoLogin) throws ObjectNotFoundException,
                                                                                   IllegalAccessException {
-    return connectThroughProvider(serverId, exoLogin, false);
+    Long governing = caldavManagedModeService.checkUserMayChangeConnection(exoLogin, serverId);
+    return connectThroughProvider(serverId, exoLogin, governing != null, false);
   }
 
   /**
@@ -454,6 +465,35 @@ public class CaldavRelayService {
    */
   public CaldavProbeResult connectThroughProvider(Long serverId, String exoLogin, boolean byManagedMode) throws ObjectNotFoundException,
                                                                                                       IllegalAccessException {
+    return connectThroughProvider(serverId, exoLogin, byManagedMode, false);
+  }
+
+  /**
+   * Moves a user managed mode governs from the account they have to the designated
+   * registration, at login (EXO-90836): the one-click connect, probed before anything
+   * changes, so a refusal leaves the previous account as it was. Once the designated
+   * server answered, the previous account is disconnected as the platform disconnects
+   * one - agenda's record of it removed, its calendars tidied - and the new one is
+   * recorded, marked as made by managed mode.
+   *
+   * @param serverId the designated registration
+   * @param exoLogin the eXo login to move
+   * @return the probe's outcome; the move is made only when it is OK
+   * @throws ObjectNotFoundException when no server is declared
+   * @throws IllegalAccessException when the server is inactive or its provider disabled
+   * @throws CalDavProviderMissingException when the server's credentials provider is
+   *           not installed; nothing is changed
+   */
+  public CaldavProbeResult switchThroughProvider(Long serverId, String exoLogin) throws ObjectNotFoundException,
+                                                                                 IllegalAccessException {
+    return connectThroughProvider(serverId, exoLogin, true, true);
+  }
+
+  private CaldavProbeResult connectThroughProvider(Long serverId,
+                                                   String exoLogin,
+                                                   boolean byManagedMode,
+                                                   boolean replacing) throws ObjectNotFoundException,
+                                                                      IllegalAccessException {
     CaldavServer server = serverId == null ? caldavServerService.resolveServer(null)
                                            : caldavServerService.getServerById(serverId);
     if (server == null) {
@@ -502,6 +542,10 @@ public class CaldavRelayService {
       setting.setUsername(account);
       setting.setServerId(server.getId());
       long identityId = getUserIdentityId(exoLogin);
+      CaldavUserSetting previous = replacing ? caldavConnectorStorage.getCaldavSetting(identityId) : null;
+      if (previous != null && StringUtils.isNotBlank(previous.getUsername()) && !isOn(previous, server)) {
+        disconnectForUser(identityId, exoLogin);
+      }
       // Agenda's own record of the connection: what "My calendars" reads to show
       // the connector as connected, and what the typed path leaves to the front.
       // Written here so a connection nobody clicked - the login-time attachment
@@ -543,6 +587,23 @@ public class CaldavRelayService {
       }
     }
     caldavConnectorService.deleteCaldavSetting(userIdentityId, username);
+  }
+
+  /**
+   * Whether a stored account is on this registration: it names it, or it names none
+   * and resolves to it, as an account connected through the legacy connector resolves
+   * to the seed registration.
+   *
+   * @param setting the stored account
+   * @param server the registration
+   * @return true when the account is on that registration
+   */
+  private boolean isOn(CaldavUserSetting setting, CaldavServer server) {
+    if (setting.getServerId() != null) {
+      return setting.getServerId().longValue() == server.getId();
+    }
+    CaldavServer resolved = caldavServerService.resolveServer(null);
+    return resolved != null && resolved.getId() == server.getId();
   }
 
   /**

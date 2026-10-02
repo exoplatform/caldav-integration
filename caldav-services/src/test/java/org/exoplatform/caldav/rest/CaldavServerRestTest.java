@@ -18,6 +18,7 @@
  */
 package org.exoplatform.caldav.rest;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -46,6 +47,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.rest.model.CaldavManagedForUser;
 import org.exoplatform.caldav.model.CaldavServerProviderConfig;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.CaldavManagedMode;
@@ -694,5 +696,27 @@ public class CaldavServerRestTest {
                  assertThrows(ResponseStatusException.class, () -> caldavServerRest.countConnectedUsers(request, 7L)).getStatusCode());
     assertEquals(HttpStatus.FORBIDDEN,
                  assertThrows(ResponseStatusException.class, () -> caldavServerRest.previewManagedMode(request, null)).getStatusCode());
+  }
+
+  /**
+   * EXO-90836. A user reads whether managed mode keeps them on a server and which one,
+   * without the instance's exclusions.
+   */
+  @Test
+  public void aUserReadsWhetherManagedModeKeepsThem() {
+    when(request.getRemoteUser()).thenReturn("mary");
+    when(caldavManagedModeService.designatedServerFor("mary")).thenReturn(7L);
+
+    CaldavManagedForUser governed = caldavServerRest.getManagedModeForMe(request);
+
+    assertTrue(governed.managed());
+    assertEquals(7L, governed.serverId());
+
+    when(caldavManagedModeService.designatedServerFor("mary")).thenReturn(null);
+
+    CaldavManagedForUser free = caldavServerRest.getManagedModeForMe(request);
+
+    assertFalse(free.managed());
+    assertNull(free.serverId());
   }
 }

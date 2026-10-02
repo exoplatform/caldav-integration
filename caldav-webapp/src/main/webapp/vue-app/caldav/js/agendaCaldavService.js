@@ -90,6 +90,24 @@ export const getUnavailableProviders = () => {
 };
 
 /**
+ * Whether managed mode keeps the current user on a declared server, and which one
+ * (EXO-90836).
+ *
+ * @returns {Promise<Object>} `{managed, serverId}`
+ */
+export const getManagedModeForMe = () => {
+  return fetch('/caldav/rest/servers/managed/me', {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
  * Connects to a registration whose provider asks the user for nothing. The
  * server probes with the service account's own material and records the
  * connection only if that passed, so a resolved promise means tested — the same
