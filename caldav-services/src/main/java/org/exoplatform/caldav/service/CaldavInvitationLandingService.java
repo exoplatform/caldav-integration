@@ -50,7 +50,9 @@ import org.exoplatform.caldav.ics.IcsText;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
+import org.exoplatform.caldav.model.HeldMailInvitation;
 import org.exoplatform.caldav.model.IcsEvent;
+import org.exoplatform.caldav.model.IcsPerson;
 import org.exoplatform.caldav.model.LandedMailInvitation;
 import org.exoplatform.caldav.model.MailInvitation;
 import org.exoplatform.caldav.model.ObjectSync;
@@ -161,6 +163,26 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * master's; whether eXo's own copy then follows is the sweep's freshness rule,
  * as for any change made on the server. A user with no connected account, or
  * no calendar bound on it, is not this add-on's to land for.
+ *
+ * <h2>Whether the calendar holds an invitation already</h2>
+ *
+ * <p>
+ * Asked by the mail reader every time it shows an invitation it could add
+ * (EXO-90873), so it answers from the mapping: the copy the sweep or a landing
+ * mapped under the UID on one of the user's own bindings. No collection is read
+ * to find one: a copy the mail server filed and no sweep has mapped yet is not
+ * told of — the next sweep maps it, within its period, and a click on "Add to
+ * my calendar" meanwhile finds it by the landing's own read first, so nothing
+ * is written twice. That one collection query per invitation opened, on the
+ * reader's request, is the cost this declines. The mapped copy itself is read,
+ * one GET of the object at its known href: the user's answer and the copy's
+ * SEQUENCE live on the server only, where a phone or a webmail changed them —
+ * the sweep brings an imported event in accepted and never carries a later
+ * PARTSTAT back. The same rules as a landing say what is not told: one of this
+ * deployment's own meetings, a copy the mirror wrote, a message about one
+ * occurrence, an event gone from agenda or cancelled there, a copy the server
+ * does not serve, a copy the message's organiser is not the organiser of, and
+ * one the user organises. Nothing is written.
  */
 @Service
 public class CaldavInvitationLandingService {
@@ -341,6 +363,100 @@ public class CaldavInvitationLandingService {
     long eventId = known.getLocalEventId();
     LOG.debug("The invitation {} of user {} landed as event {} in calendar {}", uid, userIdentityId, eventId, calendar.getId());
     return new LandedMailInvitation(eventId, linkOf(eventId), false, false);
+  }
+
+  /**
+   * The copy of an invitation the user's calendar holds, for the mail reader to
+   * say so when it shows the invitation: the mapped copy, read once from the
+   * server, with the user's answer on it and its SEQUENCE. Reads only.
+   *
+   * @param username the user's eXo login, the reader's authenticated user
+   * @param attendeeAddress the user's mailbox address, possibly null
+   * @param uid the invitation's UID
+   * @param recurrenceId the occurrence the message is about, null for a series
+   *          or a single event
+   * @param organizer the message's organiser, null for a published event
+   *          naming none
+   * @return the copy held, or null when the user has no calendar here, the UID
+   *         is not mapped on their bindings, or the copy is not one to tell of
+   * @throws IllegalStateException when the mapped copy could not be read
+   */
+  public HeldMailInvitation held(String username, String attendeeAddress, String uid, String recurrenceId, String organizer) {
+    if (StringUtils.isBlank(uid) || StringUtils.isNotBlank(recurrenceId)) {
+      // Landed by series only: an occurrence is not told of either.
+      return null;
+    }
+    String eventUid = uid.trim();
+    long userIdentityId = identityOf(username);
+    if (userIdentityId <= 0) {
+      return null;
+    }
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (!caldavServerService.isConnected(settings)) {
+      return null;
+    }
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    List<CalendarSync> bindings = bindingsOf(userIdentityId, serverId);
+    if (bindings.isEmpty() || ownAgendaEventOf(eventUid) != null) {
+      return null;
+    }
+    Long mirrored = caldavSyncStorage.getMirrorEventIdOnServer(serverId, eventUid);
+    if (mirrored != null && mirrored > 0) {
+      return null;
+    }
+    CalendarSync binding = bindingHolding(bindings, eventUid);
+    ObjectSync known = binding == null ? null : caldavSyncStorage.getObjectByUid(binding.getId(), eventUid);
+    if (known == null || known.getLocalEventId() == null || StringUtils.isBlank(known.getRemoteHref())) {
+      return null;
+    }
+    long eventId = known.getLocalEventId();
+    org.exoplatform.agenda.model.Event event = agendaEventService.getEventById(eventId);
+    if (event == null || event.getStatus() == EventStatus.CANCELLED) {
+      // Gone from agenda, or cancelled there: not "in your calendar".
+      return null;
+    }
+    CalendarObject copy;
+    try {
+      copy = calDavClient.fetchObject(calDavClient.endpoint(serverId, username), known.getRemoteHref());
+    } catch (CalDavException e) {
+      throw new IllegalStateException("The copy of " + eventUid + " at " + known.getRemoteHref() + " could not be read", e);
+    }
+    IcsEvent master = copy == null || StringUtils.isBlank(copy.calendarData()) ? null : masterOfCopy(copy.calendarData());
+    if (master == null) {
+      // Not served: whether it is gone is the sweep's to tell.
+      return null;
+    }
+    List<String> addresses = addressesOf(userIdentityId, settings, attendeeAddress);
+    String copyOrganiser = organiserOf(master);
+    if (copyOrganiser != null && addresses.stream().anyMatch(address -> copyOrganiser.equals(IcsText.bareAddress(address)))
+        || !Objects.equals(copyOrganiser, IcsText.bareAddress(organizer))) {
+      LOG.debug("The copy of {} user {} holds is not the message's organiser's to tell of", eventUid, userIdentityId);
+      return null;
+    }
+    return new HeldMailInvitation(eventId, linkOf(eventId), responseOf(master, addresses), master.getSequence());
+  }
+
+  /**
+   * The user's answer on a copy: the PARTSTAT of the first attendee line naming
+   * one of their addresses, the mailbox first.
+   *
+   * @param master the copy's master
+   * @param addresses the user's own addresses
+   * @return the answer, null when no line names them or agenda has no word for
+   *         its PARTSTAT
+   */
+  private static EventAttendeeResponse responseOf(IcsEvent master, List<String> addresses) {
+    List<IcsPerson> attendees = master.getAttendees() == null ? List.of() : master.getAttendees();
+    for (String address : addresses) {
+      String wanted = IcsText.bareAddress(address);
+      for (IcsPerson attendee : attendees) {
+        if (wanted != null && wanted.equals(IcsText.bareAddress(attendee.getEmail()))) {
+          String response = IcsText.agendaResponse(attendee.getResponse());
+          return response == null ? null : EventAttendeeResponse.valueOf(response);
+        }
+      }
+    }
+    return null;
   }
 
   /**

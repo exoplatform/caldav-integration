@@ -50,6 +50,7 @@ import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
+import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventAttendeeService;
@@ -58,6 +59,7 @@ import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.agenda.util.EventIcsBuilder;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
+import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.client.CalendarObjectWriter;
@@ -68,6 +70,7 @@ import org.exoplatform.caldav.ics.IcsParser;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
+import org.exoplatform.caldav.model.HeldMailInvitation;
 import org.exoplatform.caldav.model.LandedMailInvitation;
 import org.exoplatform.caldav.model.MailInvitation;
 import org.exoplatform.caldav.model.ObjectSync;
@@ -799,6 +802,153 @@ public class CaldavInvitationLandingServiceTest {
     // The one read the first add made; the refusals above read nothing.
     verify(caldavInboundService, times(1)).importInto(anyLong(), anyString(), any(), any(), any(), any());
     verify(writer, never()).putObject(any(), anyString(), anyString());
+  }
+
+  /**
+   * The reader's question is answered from the mapping and the mapped copy
+   * alone (EXO-90873): the copy is read once at its known href, the user's
+   * answer is read off their own line — the mailbox first, then the account's
+   * address — with the copy's SEQUENCE and agenda's link, and nothing is
+   * written, imported or answered by asking.
+   */
+  @Test
+  public void heldReadsTheUsersAnswerOffTheMappedCopy() {
+    givenTheMappedCopy(COPY.replace("PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:" + MAILBOX, "PARTSTAT=DECLINED:mailto:" + MAILBOX));
+
+    try (MockedStatic<EventIcsBuilder> agenda = mockStatic(EventIcsBuilder.class)) {
+      agenda.when(() -> EventIcsBuilder.eventUrl(EVENT)).thenReturn("https://exo.example/portal/dw/agenda?eventId=964");
+      assertEquals(new HeldMailInvitation(EVENT, "https://exo.example/portal/dw/agenda?eventId=964", EventAttendeeResponse.DECLINED, 2),
+                   held(ORGANISER));
+    }
+
+    // Named by the account's address only: that line is the user's.
+    givenTheMappedCopy(COPY.replace("ATTENDEE;CN=John;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:" + MAILBOX,
+                                    "ATTENDEE;CN=John;PARTSTAT=TENTATIVE:mailto:" + ACCOUNT.toUpperCase()));
+    assertEquals(EventAttendeeResponse.TENTATIVE, held(ORGANISER).response());
+    // Not answered yet, or not named at all: held, with no answer.
+    givenTheMappedCopy(COPY);
+    assertEquals(EventAttendeeResponse.NEEDS_ACTION, held(ORGANISER).response());
+    givenTheMappedCopy(COPY.replace("mailto:" + MAILBOX, "mailto:someone@else.example"));
+    assertNull(held(ORGANISER).response());
+
+    verify(caldavInboundService, never()).importInto(anyLong(), anyString(), any(), any(), any(), any());
+    verify(calendarObjectWriters, never()).writer(any());
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
+  }
+
+  /**
+   * An invitation no binding of the user maps is not held, and no server is
+   * asked: the collection is not read to look for a copy the mail server may
+   * have filed — the next sweep maps it, and a click finds it meanwhile.
+   */
+  @Test
+  public void anUnmappedInvitationIsNotHeldAndNoServerIsAsked() {
+    assertNull(held(ORGANISER));
+    verify(calDavClient, never()).fetchObject(any(), anyString());
+    verify(calDavClient, never()).endpoint(anyLong(), anyString());
+    verify(caldavInboundService, never()).importInto(anyLong(), anyString(), any(), any(), any(), any());
+  }
+
+  /**
+   * Nothing is told of where a landing would not act, most of it before the
+   * server is asked: one occurrence, no connected account or no calendar bound,
+   * one of this deployment's own meetings, a copy the mirror wrote, an event
+   * gone from agenda or cancelled there, a copy the server does not serve.
+   */
+  @Test
+  public void heldIsNullWhereALandingWouldNotAct() {
+    givenTheMappedCopy(COPY);
+    assertNotNull(held(ORGANISER));
+
+    assertNull(service.held(LOGIN, MAILBOX, UID, "20261012T100000", ORGANISER), "one occurrence");
+    assertNull(service.held(LOGIN, MAILBOX, " ", null, ORGANISER), "no UID");
+
+    when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, UID)).thenReturn(964L);
+    assertNull(held(ORGANISER), "the mirror's copy");
+    when(caldavSyncStorage.getMirrorEventIdOnServer(SERVER, UID)).thenReturn(null);
+
+    Event cancelled = new Event();
+    cancelled.setId(EVENT);
+    cancelled.setStatus(EventStatus.CANCELLED);
+    when(agendaEventService.getEventById(EVENT)).thenReturn(cancelled);
+    assertNull(held(ORGANISER), "cancelled in agenda");
+    when(agendaEventService.getEventById(EVENT)).thenReturn(null);
+    assertNull(held(ORGANISER), "gone from agenda");
+    verify(calDavClient, times(1)).fetchObject(endpoint, HREF);
+
+    givenTheMappedCopy(COPY);
+    when(calDavClient.fetchObject(endpoint, HREF)).thenReturn(null);
+    assertNull(held(ORGANISER), "not served");
+
+    try (MockedStatic<CommonsUtils> portal = mockStatic(CommonsUtils.class)) {
+      portal.when(CommonsUtils::getCurrentDomain).thenReturn("https://exo.example.test");
+      // Even mapped and served: one of this deployment's own meetings is answered in agenda.
+      givenTheMappedCopy(COPY);
+      lenient().when(caldavSyncStorage.getObjectByUid(PAIR, "agenda-event-42@exo.example.test")).thenReturn(mapping(HREF));
+      assertNull(service.held(LOGIN, MAILBOX, "agenda-event-42@exo.example.test", null, ORGANISER), "an eXo meeting");
+    }
+
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of());
+    assertNull(held(ORGANISER), "no calendar bound");
+    when(caldavServerService.isConnected(settings)).thenReturn(false);
+    assertNull(held(ORGANISER), "no account connected");
+  }
+
+  /**
+   * The UID is the sender's: a copy is told of only to its own organiser's
+   * message, never one the user organises, and a published event naming no
+   * organiser only to a message naming none.
+   */
+  @Test
+  public void heldIsToldOnlyToTheCopysOwnOrganiser() {
+    givenTheMappedCopy(COPY);
+    assertNull(held("intruder@else.example"), "another organiser");
+    assertNull(held(null), "no organiser");
+    assertNotNull(held(ORGANISER.toUpperCase()), "the organiser in any case");
+
+    givenTheMappedCopy(COPY.replace("ORGANIZER;CN=Olivia:mailto:" + ORGANISER, "ORGANIZER;CN=John:mailto:" + ACCOUNT));
+    assertNull(held(ACCOUNT), "the user's own event");
+
+    givenTheMappedCopy(COPY.replace("ORGANIZER;CN=Olivia:mailto:" + ORGANISER + "\r\n", ""));
+    assertNotNull(held(null), "a published event");
+    assertNull(held(ORGANISER), "a published event, claimed by an organiser");
+  }
+
+  /**
+   * A mapped copy the server would not serve is a failure the reader logs and
+   * shows nothing for, not "not held".
+   */
+  @Test
+  public void aCopyThatCannotBeReadIsAFailure() {
+    givenTheMappedCopy(COPY);
+    when(calDavClient.fetchObject(endpoint, HREF)).thenThrow(new CalDavException("timed out"));
+    assertThrows(IllegalStateException.class, () -> held(ORGANISER));
+  }
+
+  /**
+   * The reader's question for the test user, from their mailbox.
+   *
+   * @param organizer the message's organiser
+   * @return the copy held, or null
+   */
+  private HeldMailInvitation held(String organizer) {
+    return service.held(LOGIN, MAILBOX, UID, null, organizer);
+  }
+
+  /**
+   * The UID mapped on the user's binding at {@link #HREF}, standing for an
+   * event agenda holds confirmed, and the server serving that copy.
+   *
+   * @param copy the copy the server serves
+   */
+  private void givenTheMappedCopy(String copy) {
+    lenient().when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(mapping(HREF));
+    Event event = new Event();
+    event.setId(EVENT);
+    event.setStatus(EventStatus.CONFIRMED);
+    lenient().when(agendaEventService.getEventById(EVENT)).thenReturn(event);
+    lenient().when(calDavClient.fetchObject(endpoint, HREF)).thenReturn(new CalendarObject(HREF, "\"e9\"", copy));
   }
 
   /**
