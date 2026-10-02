@@ -330,6 +330,44 @@ public class IcsMerger {
   }
 
   /**
+   * The calendar object a scheduling message is stored as (EXO-90848): the same
+   * zones and the same components of one event, with the message's METHOD gone —
+   * a calendar object resource must not carry one (RFC 4791 section 4.1) — and
+   * every other component dropped: a REQUEST is about one event, and anything
+   * else in it is the sender's to keep, not the user's calendar's.
+   *
+   * @param scheduling the message's iCalendar object, as received
+   * @param uid the UID of the event the message is about
+   * @return the object to store
+   * @throws IcsParseException when the message is not readable iCalendar, or
+   *           carries no VEVENT with that UID
+   */
+  public String storedObject(String scheduling, String uid) {
+    Calendar source = parse(scheduling);
+    Calendar stored = new Calendar();
+    for (Object property : source.getProperties()) {
+      if (!net.fortuna.ical4j.model.Property.METHOD.equals(((net.fortuna.ical4j.model.Property) property).getName())) {
+        stored.getProperties().add((net.fortuna.ical4j.model.Property) property);
+      }
+    }
+    for (Object timeZone : source.getComponents(net.fortuna.ical4j.model.Component.VTIMEZONE)) {
+      stored.getComponents().add((VTimeZone) timeZone);
+    }
+    boolean named = false;
+    for (Object component : source.getComponents(net.fortuna.ical4j.model.Component.VEVENT)) {
+      VEvent event = (VEvent) component;
+      if (event.getUid() != null && StringUtils.equals(StringUtils.trim(event.getUid().getValue()), uid)) {
+        stored.getComponents().add(event);
+        named = true;
+      }
+    }
+    if (!named) {
+      throw new IcsParseException("The message carries no event with UID " + uid, null);
+    }
+    return stored.toString();
+  }
+
+  /**
    * Whether the object carries an override for one instance of its series.
    *
    * @param existing the calendar object as fetched from the server
@@ -411,14 +449,7 @@ public class IcsMerger {
    * @return the comparable address, or null when there is none
    */
   private String bareAddress(String value) {
-    String trimmed = StringUtils.trimToNull(value);
-    if (trimmed == null) {
-      return null;
-    }
-    if (StringUtils.startsWithIgnoreCase(trimmed, "mailto:")) {
-      trimmed = StringUtils.trimToNull(trimmed.substring("mailto:".length()));
-    }
-    return trimmed == null ? null : trimmed.toLowerCase();
+    return IcsText.bareAddress(value);
   }
 
   /**
