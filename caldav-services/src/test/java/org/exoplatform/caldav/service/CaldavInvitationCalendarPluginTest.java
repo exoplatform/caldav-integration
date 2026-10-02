@@ -36,10 +36,13 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
+import org.exoplatform.caldav.model.HeldMailInvitation;
 import org.exoplatform.caldav.model.LandedMailInvitation;
 import org.exoplatform.caldav.model.MailInvitation;
+import org.exoplatform.emailConnector.model.HeldInvitation;
 import org.exoplatform.emailConnector.model.InvitationAnswer;
 import org.exoplatform.emailConnector.model.InvitationLanding;
+import org.exoplatform.emailConnector.model.InvitationProbe;
 import org.exoplatform.emailConnector.model.LandedInvitation;
 import org.exoplatform.emailConnector.plugin.InvitationCalendarPlugin;
 
@@ -121,6 +124,34 @@ public class CaldavInvitationCalendarPluginTest {
 
     when(caldavInvitationLandingService.holdsCalendarFor("john")).thenReturn(true);
     assertTrue(plugin.holdsCalendarFor("john"));
+  }
+
+  /**
+   * The reader's question is handed over field for field, and the copy held
+   * comes back with the answer by its name, NEEDS_ACTION told as none
+   * (EXO-90873); a failure to read it is the landing service's.
+   */
+  @Test
+  public void whatIsHeldIsTranslatedBothWays() {
+    InvitationProbe probe = new InvitationProbe("john", "john@acme.com", "weekly-sync@google.com", null, "olivia@partner.example");
+    when(caldavInvitationLandingService.held("john", "john@acme.com", "weekly-sync@google.com", null, "olivia@partner.example"))
+                                                                                                                             .thenReturn(new HeldMailInvitation(77L,
+                                                                                                                                                                "/portal/dw/agenda?eventId=77",
+                                                                                                                                                                EventAttendeeResponse.DECLINED,
+                                                                                                                                                                4));
+    assertEquals(new HeldInvitation(77L, "/portal/dw/agenda?eventId=77", InvitationAnswer.DECLINED, 4), plugin.held(probe));
+
+    when(caldavInvitationLandingService.held("john", "john@acme.com", "weekly-sync@google.com", null, "olivia@partner.example"))
+                                                                                                                             .thenReturn(new HeldMailInvitation(77L, null, EventAttendeeResponse.NEEDS_ACTION, 0),
+                                                                                                                                         new HeldMailInvitation(77L, null, null, 0),
+                                                                                                                                         null);
+    assertNull(plugin.held(probe).answer());
+    assertNull(plugin.held(probe).answer());
+    assertNull(plugin.held(probe));
+
+    when(caldavInvitationLandingService.held("john", "john@acme.com", "weekly-sync@google.com", null, "olivia@partner.example"))
+                                                                                                                             .thenThrow(new IllegalStateException("unreadable"));
+    assertThrows(IllegalStateException.class, () -> plugin.held(probe));
   }
 
   /**
