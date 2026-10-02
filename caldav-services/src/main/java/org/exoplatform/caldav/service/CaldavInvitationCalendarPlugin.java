@@ -21,9 +21,13 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
+import org.exoplatform.caldav.model.HeldMailInvitation;
 import org.exoplatform.caldav.model.LandedMailInvitation;
 import org.exoplatform.caldav.model.MailInvitation;
+import org.exoplatform.emailConnector.model.HeldInvitation;
+import org.exoplatform.emailConnector.model.InvitationAnswer;
 import org.exoplatform.emailConnector.model.InvitationLanding;
+import org.exoplatform.emailConnector.model.InvitationProbe;
 import org.exoplatform.emailConnector.model.LandedInvitation;
 import org.exoplatform.emailConnector.plugin.InvitationCalendarPlugin;
 
@@ -89,5 +93,29 @@ public class CaldavInvitationCalendarPlugin implements InvitationCalendarPlugin 
                                                                                                                                                        .name()),
                                                                                        landing.icalendar()));
     return landed == null ? null : new LandedInvitation(landed.eventId(), landed.link(), landed.removed(), landed.alreadyHeld());
+  }
+
+  /**
+   * The copy of the invitation the user's CalDAV-bound calendar holds
+   * (EXO-90873): the user's answer on it, NEEDS-ACTION told as none, and its
+   * SEQUENCE.
+   *
+   * @param probe the user and the event's UID
+   * @return the copy held, null when the user has no calendar here or holds
+   *         no copy to tell of
+   * @throws IllegalStateException when the mapped copy could not be read
+   */
+  @Override
+  public HeldInvitation held(InvitationProbe probe) {
+    HeldMailInvitation held = caldavInvitationLandingService.held(probe.username(),
+                                                                  probe.attendeeAddress(),
+                                                                  probe.uid(),
+                                                                  probe.recurrenceId(),
+                                                                  probe.organizer());
+    if (held == null) {
+      return null;
+    }
+    InvitationAnswer answer = held.response() == null ? null : InvitationAnswer.ofPartStat(held.response().name());
+    return new HeldInvitation(held.eventId(), held.link(), answer, held.sequence());
   }
 }
