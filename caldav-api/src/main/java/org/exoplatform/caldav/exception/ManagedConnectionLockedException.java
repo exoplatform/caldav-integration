@@ -21,12 +21,12 @@ package org.exoplatform.caldav.exception;
  * typed credentials, or connect another server than the designated one.
  * <p>
  * An {@link IllegalAccessException}, as the other refusals of these calls; its own type
- * lets the REST layer answer it with <b>403</b> and its message code, for the interface
- * to say why, without changing how the other refusals are answered.
+ * lets the REST layer answer it with <b>403</b> and its message code in the body, without
+ * changing how the other refusals are answered.
  */
 public class ManagedConnectionLockedException extends IllegalAccessException {
 
-  /** The message code the interface translates. */
+  /** The message code of the refusal, carried in the 403 body. */
   public static final String MESSAGE_CODE     = "caldav.managed.connectionLocked";
 
   private static final long  serialVersionUID = 1L;

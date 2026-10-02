@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
@@ -82,6 +83,9 @@ class CaldavManagedEnrollmentServiceTest {
 
   @Mock
   private CaldavConnectorStorage         caldavConnectorStorage;
+
+  @Mock
+  private CaldavServerService            caldavServerService;
 
   @Mock
   private IdentityManager                identityManager;
@@ -206,6 +210,7 @@ class CaldavManagedEnrollmentServiceTest {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
     when(caldavManagedModeService.governingServerFor(USER)).thenReturn(7L);
     attachedByManagedModeTo(7L);
+    when(caldavServerService.isOnServer(any(CaldavUserSetting.class), eq(7L))).thenReturn(true);
 
     assertEquals(Outcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
 
@@ -238,6 +243,7 @@ class CaldavManagedEnrollmentServiceTest {
   void leavesAloneAUserAlreadyOnTheDesignatedServer() throws Exception {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
     configuredOn(7L);
+    when(caldavServerService.isOnServer(any(CaldavUserSetting.class), eq(7L))).thenReturn(true);
 
     assertEquals(Outcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
 
@@ -399,5 +405,21 @@ class CaldavManagedEnrollmentServiceTest {
     });
 
     assertFalse(service.scheduleEnrollment(USER));
+  }
+
+  /**
+   * EXO-90836. An account connected through the legacy connector names no registration;
+   * when the one it resolves to is the designated server, the user is on it already,
+   * and nothing is switched over their account.
+   */
+  @Test
+  void leavesAloneALegacyAccountOnTheRegistrationItResolvesTo() throws Exception {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
+    configuredOn(null);
+    when(caldavServerService.isOnServer(any(CaldavUserSetting.class), eq(7L))).thenReturn(true);
+
+    assertEquals(Outcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
+
+    verify(caldavRelayService, never()).switchThroughProvider(anyLong(), anyString());
   }
 }

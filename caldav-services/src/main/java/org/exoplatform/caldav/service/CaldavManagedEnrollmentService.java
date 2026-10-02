@@ -113,6 +113,9 @@ public class CaldavManagedEnrollmentService {
   private CaldavConnectorStorage   caldavConnectorStorage;
 
   @Autowired
+  private CaldavServerService      caldavServerService;
+
+  @Autowired
   private IdentityManager          identityManager;
 
   private Executor                 executor    = newEnrollmentExecutor();
@@ -171,7 +174,7 @@ public class CaldavManagedEnrollmentService {
         return Outcome.NOT_MANAGED;
       }
       CaldavUserSetting configuration = configuration(username);
-      if (configuration != null && serverId.equals(configuration.getServerId())) {
+      if (configuration != null && caldavServerService.isOnServer(configuration, serverId)) {
         LOG.debug("User {} not enrolled: they are already on the managed CalDAV server", username);
         return Outcome.ALREADY_CONFIGURED;
       }

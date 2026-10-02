@@ -543,7 +543,7 @@ public class CaldavRelayService {
       setting.setServerId(server.getId());
       long identityId = getUserIdentityId(exoLogin);
       CaldavUserSetting previous = replacing ? caldavConnectorStorage.getCaldavSetting(identityId) : null;
-      if (previous != null && StringUtils.isNotBlank(previous.getUsername()) && !isOn(previous, server)) {
+      if (previous != null && StringUtils.isNotBlank(previous.getUsername()) && !caldavServerService.isOnServer(previous, server.getId())) {
         disconnectForUser(identityId, exoLogin);
       }
       // Agenda's own record of the connection: what "My calendars" reads to show
@@ -587,23 +587,6 @@ public class CaldavRelayService {
       }
     }
     caldavConnectorService.deleteCaldavSetting(userIdentityId, username);
-  }
-
-  /**
-   * Whether a stored account is on this registration: it names it, or it names none
-   * and resolves to it, as an account connected through the legacy connector resolves
-   * to the seed registration.
-   *
-   * @param setting the stored account
-   * @param server the registration
-   * @return true when the account is on that registration
-   */
-  private boolean isOn(CaldavUserSetting setting, CaldavServer server) {
-    if (setting.getServerId() != null) {
-      return setting.getServerId().longValue() == server.getId();
-    }
-    CaldavServer resolved = caldavServerService.resolveServer(null);
-    return resolved != null && resolved.getId() == server.getId();
   }
 
   /**

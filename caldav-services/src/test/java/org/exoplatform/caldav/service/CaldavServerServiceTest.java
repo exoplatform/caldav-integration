@@ -1554,6 +1554,24 @@ public class CaldavServerServiceTest {
   }
 
   /**
+   * EXO-90836. An account is on a registration when it names it, or when it names none
+   * and resolves to it - the legacy account and the seed registration - and on no other.
+   */
+  @Test
+  public void anAccountIsOnTheRegistrationItNamesOrResolvesTo() {
+    CaldavServer seed = server(1, "agenda.caldavCalendar", "CalDAV", null, "https://seed.example.org/", true);
+    when(caldavServerStorage.getServerByProviderName(CaldavServerService.CALDAV_PROVIDER_NAME)).thenReturn(seed);
+    CaldavUserSetting named = new CaldavUserSetting();
+    named.setServerId(7L);
+    CaldavUserSetting legacy = new CaldavUserSetting();
+
+    assertTrue(caldavServerService.isOnServer(named, 7L));
+    assertFalse(caldavServerService.isOnServer(named, 1L));
+    assertTrue(caldavServerService.isOnServer(legacy, 1L));
+    assertFalse(caldavServerService.isOnServer(legacy, 7L));
+  }
+
+  /**
    * The listing is handed through exactly as storage produced it — inactive
    * rows included, because the admin table shows both states. A service that
    * started filtering (say, hiding inactive rows) would silently empty the

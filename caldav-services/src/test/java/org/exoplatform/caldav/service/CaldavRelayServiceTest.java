@@ -1045,14 +1045,14 @@ public class CaldavRelayServiceTest {
   }
 
   /**
-   * EXO-90836. An account connected through the legacy connector names no registration
-   * and resolves to the seed one: switching it to that registration disconnects nothing.
+   * EXO-90836. An account already on the registration - the legacy one resolving to it
+   * included, as the registry decides - is not disconnected by a switch to it.
    */
   @Test
-  public void aSwitchOfALegacyAccountToTheRegistrationItResolvesToDisconnectsNothing() throws Exception {
+  public void aSwitchOfAnAccountAlreadyOnTheRegistrationDisconnectsNothing() throws Exception {
     givenOneClickConnection();
     when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(null));
-    when(caldavServerService.resolveServer(null)).thenReturn(server(SERVER_ID, true));
+    when(caldavServerService.isOnServer(any(CaldavUserSetting.class), eq(SERVER_ID))).thenReturn(true);
 
     caldavRelayService.switchThroughProvider(SERVER_ID, USERNAME);
 

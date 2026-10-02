@@ -1387,6 +1387,24 @@ public class CaldavServerService {
   }
 
   /**
+   * Whether a stored account is on this registration: it names it, or it names none
+   * and resolves to it, as an account connected through the legacy connector resolves
+   * to the seed registration. The one rule the login-time enrolment and the switch it
+   * runs both read (EXO-90836).
+   *
+   * @param setting the stored account
+   * @param serverId the registration
+   * @return true when the account is on that registration
+   */
+  public boolean isOnServer(CaldavUserSetting setting, long serverId) {
+    if (setting.getServerId() != null) {
+      return setting.getServerId().longValue() == serverId;
+    }
+    CaldavServer resolved = resolveServer(null);
+    return resolved != null && resolved.getId() == serverId;
+  }
+
+  /**
    * Resolves the CalDAV base URL a user's account reads and pushes through:
    * the URL of the resolved registration, else null — the caller then falls
    * back to the legacy configuration property, which is today's behaviour
