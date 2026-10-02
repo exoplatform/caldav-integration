@@ -145,9 +145,11 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * the share's stripe lock.</b> It is one login, one POST and one logout, each
  * bounded by the REST session's 30-second timeout, so a stalled BlueMind can
  * hold the owner's Share or Unshare for up to a minute and a half beyond what
- * the grant itself already costs — and with it every other share hashing to
- * the same one of the share service's 64 lock stripes, which is one share in
- * 64 on that node, of any calendar on any server, not only of this one.
+ * the grant itself already costs, and up to 30 seconds more when a drain is
+ * posting the same obligation, whose lock the grant then waits for — and with
+ * it every other share hashing to the same one of the share service's 64 lock
+ * stripes, which is one share in 64 on that node, of any calendar on any
+ * server, not only of this one.
  * It buys immediacy in BlueMind's own webmail and on the colleague's devices;
  * the drain alone would put the calendar in their very next eXo pass anyway.
  * The trade is the PO's and the Architect's, not this class's.</li>
@@ -395,13 +397,14 @@ public class CaldavShareSubscriptionService {
     }
     List<CalendarSync> pairs = caldavSyncStorage.getPairs(userIdentityId, serverId);
     if (pausedAccount(pairs)) {
-      // Their own account is paused, which the sync pass does on a refused
-      // login: a login as them now would be refused again, and counted
+      // Their own account is paused - by a refused login, or by imports that
+      // kept failing: a login as them now may be refused again, and counted
       // against a server that may lock the account. The rows wait, uncounted,
       // until the account is put back to work.
-      LOG.debug("The CalDAV account of user {} on server {} is paused; the subscription changes owed to them wait",
-                userIdentityId,
-                serverId);
+      LOG.info("The CalDAV account of user {} on server {} is paused; the {} subscription change(s) owed to them wait",
+               userIdentityId,
+               serverId,
+               rows.size());
       return 0;
     }
     CalDavEndpoint endpoint;
@@ -436,7 +439,7 @@ public class CaldavShareSubscriptionService {
       // paused at the first refusal, and the rows wait uncounted; a colleague
       // who holds no pair on the server has nothing to pause, and the rows
       // spend their bounded budget instead.
-      if (pauseActive(pairs)) {
+      if (pauseActive(userIdentityId, serverId)) {
         LOG.warn("The CalDAV account of user {} on server {} refused its stored credentials; its synchronisation is paused"
             + " and the subscription changes owed to it wait", userIdentityId, serverId);
         return 0;
@@ -641,7 +644,9 @@ public class CaldavShareSubscriptionService {
 
   /**
    * Whether an account is paused: it holds pairs on the server and none is
-   * active, which is what the sync pass leaves after a refused login.
+   * active. The sync pass leaves that after a refused login, and also after
+   * every remaining pair was paused for failing imports; the table records no
+   * reason, so both wait the same way.
    *
    * @param pairs the account's pairs on the server
    * @return true when it is paused
@@ -652,14 +657,17 @@ public class CaldavShareSubscriptionService {
   }
 
   /**
-   * Pauses an account's active pairs, as the sync pass does on a refused login.
+   * Pauses an account's active pairs, as the sync pass does on a refused login,
+   * reading them again at pause time: the login took a round trip, and a
+   * concurrent pass may have written them meanwhile.
    *
-   * @param pairs the account's pairs on the server
+   * @param userIdentityId the colleague
+   * @param serverId the server key
    * @return true when there was at least one to pause
    */
-  private boolean pauseActive(List<CalendarSync> pairs) {
+  private boolean pauseActive(long userIdentityId, long serverId) {
     boolean paused = false;
-    for (CalendarSync pair : pairs) {
+    for (CalendarSync pair : caldavSyncStorage.getPairs(userIdentityId, serverId)) {
       if (pair.getStatus() == CalendarSyncStatus.ACTIVE) {
         pair.setStatus(CalendarSyncStatus.PAUSED);
         caldavSyncStorage.savePair(pair);

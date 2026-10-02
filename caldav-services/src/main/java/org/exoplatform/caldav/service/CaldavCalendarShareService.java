@@ -56,7 +56,6 @@ import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.CollectionAcl;
 import org.exoplatform.caldav.client.DavOptions;
 import org.exoplatform.caldav.client.SharingMechanism;
-import org.exoplatform.caldav.model.ShareeSubscription;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarShares;
 import org.exoplatform.caldav.model.CalendarShares.CalendarSharee;
@@ -66,6 +65,7 @@ import org.exoplatform.caldav.model.CalendarShares.ShareUser;
 import org.exoplatform.caldav.model.CalendarShares.ShareeKind;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
+import org.exoplatform.caldav.model.ShareeSubscription;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
@@ -1496,13 +1496,12 @@ public class CaldavCalendarShareService {
    */
   private void followShareeSubscription(ShareTarget target, Sharee sharee, String username, String shareeUid, boolean subscribe) {
     try {
-      ShareeSubscription subscription =
-                                                                     new ShareeSubscription(username,
-                                                                                                                           sharee.identityId(),
-                                                                                                                           sharee.username(),
-                                                                                                                           shareeUid,
-                                                                                                                           target.serverId(),
-                                                                                                                           containerUidOf(target));
+      ShareeSubscription subscription = new ShareeSubscription(username,
+                                                               sharee.identityId(),
+                                                               sharee.username(),
+                                                               shareeUid,
+                                                               target.serverId(),
+                                                               containerUidOf(target));
       if (subscribe) {
         caldavShareSubscriptionService.subscribeSharee(subscription);
       } else {

@@ -134,7 +134,7 @@ public class CaldavShareSubscriptionServiceTest {
   private CalDavEndpoint                   carolEndpoint;
 
   @Mock
-  private BlueMindSubscriptions                    edits;
+  private BlueMindSubscriptions            edits;
 
   @InjectMocks
   private CaldavShareSubscriptionService   service;
