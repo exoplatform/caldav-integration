@@ -404,7 +404,7 @@ public class CaldavManagedModeServiceTest {
    * EXO-90836. A governed user may connect the designated registration in one click, and
    * nothing else: the designated id is returned for the caller to mark the connection;
    * a disconnection or a typed connection (no target) and any other registration are
-   * refused with the code the interface translates.
+   * refused with the code carried in the 403 body.
    */
   @Test
   public void aGovernedUserMayConnectTheDesignatedServerAndNothingElse() throws Exception {

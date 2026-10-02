@@ -277,7 +277,7 @@ public class CaldavConnectorRestTest {
 
   /**
    * EXO-90836. A governed user's disconnection and typed connection answer 403 with the
-   * code the interface translates, not the 500 of a failure.
+   * code carried in the 403 body, not the 500 of a failure.
    */
   @Test
   public void aGovernedUsersConnectionChangesAnswer403WithTheirCode() throws Exception {
