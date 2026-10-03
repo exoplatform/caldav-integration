@@ -43,6 +43,7 @@ import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.agenda.service.AgendaCalendarShareService;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -75,6 +76,9 @@ public class CaldavConnectorServiceImplTest {
 
   @Mock
   private CaldavServerOwnerService       caldavServerOwnerService;
+
+  @Mock
+  private AgendaCalendarShareService     agendaCalendarShareService;
 
   @InjectMocks
   private CaldavConnectorServiceImpl     caldavConnectorService;
@@ -380,6 +384,36 @@ public class CaldavConnectorServiceImplTest {
   }
 
   /**
+   * An account moving to another server forgets, on agenda's share records,
+   * that the previous server carried its shares (EXO-90357, the same rule
+   * as a disconnect): the stamp of the server it left goes, the server it
+   * is now on has no stamp to clear. Reconnecting to the same server clears
+   * nothing — the grants are still where the stamp says.
+   */
+  @Test
+  public void connectingToAnotherServerForgetsTheDeliveriesOnTheOneLeft() throws Exception {
+    caldavConnectorService.setCaldavSyncService(caldavSyncService);
+    caldavConnectorService.setCaldavServerOwnerService(caldavServerOwnerService);
+    caldavConnectorService.setAgendaCalendarShareService(agendaCalendarShareService);
+    CaldavUserSetting previous = new CaldavUserSetting();
+    previous.setServerId(1L);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(previous);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+    setting.setServerId(2L);
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(agendaCalendarShareService).clearDelivery(USER_IDENTITY_ID, "caldav:1");
+    verify(agendaCalendarShareService, never()).clearDelivery(USER_IDENTITY_ID, "caldav:2");
+
+    setting.setServerId(1L);
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+    verify(agendaCalendarShareService, org.mockito.Mockito.times(1)).clearDelivery(anyLong(), anyString());
+  }
+
+  /**
    * The two evictions above reach the owner engine through a seam the tests
    * set by hand; in production this Kernel component resolves it through
    * the Kernel/Spring bridge, which registers {@code @Service} beans back
@@ -492,6 +526,45 @@ public class CaldavConnectorServiceImplTest {
     InOrder inOrder = inOrder(caldavDeletionService, caldavConnectorStorage);
     inOrder.verify(caldavDeletionService).freezeOnDisconnect(USER_IDENTITY_ID, 7L, "john");
     inOrder.verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+  }
+
+  /**
+   * Disconnecting forgets, on agenda's share records, that this account's
+   * server carried the user's shares (EXO-90357, the owner-disconnects rule):
+   * the shares stay eXo's, the stamp goes, keyed by the channel identifier
+   * the delivery was made under, with or without a login.
+   */
+  @Test
+  public void disconnectingForgetsTheDeliveriesOnThatServer() {
+    caldavConnectorService.setAgendaCalendarShareService(agendaCalendarShareService);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(settingsOnServer(7L));
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
+
+    verify(agendaCalendarShareService).clearDelivery(USER_IDENTITY_ID, "caldav:7");
+    verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+  }
+
+  /**
+   * An account that was never connected has carried nothing: agenda is not
+   * asked. And agenda refusing, or being absent, never stops the
+   * disconnection.
+   */
+  @Test
+  public void disconnectingClearsNoDeliveryWithoutAnAccountAndSurvivesAgendaFailing() {
+    caldavConnectorService.setAgendaCalendarShareService(agendaCalendarShareService);
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
+    verify(agendaCalendarShareService, never()).clearDelivery(anyLong(), anyString());
+
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(settingsOnServer(7L));
+    doThrow(new IllegalStateException("agenda down")).when(agendaCalendarShareService).clearDelivery(anyLong(), anyString());
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
+    verify(caldavConnectorStorage, org.mockito.Mockito.times(2)).deleteCaldavSetting(USER_IDENTITY_ID);
+
+    caldavConnectorService.setAgendaCalendarShareService(null);
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
+    verify(caldavConnectorStorage, org.mockito.Mockito.times(3)).deleteCaldavSetting(USER_IDENTITY_ID);
   }
 
   /**

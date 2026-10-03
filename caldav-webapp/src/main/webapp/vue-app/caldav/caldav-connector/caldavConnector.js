@@ -88,6 +88,21 @@ const caldavConnector = {
    * @returns {Promise<String>} the username of the connected account
    */
   connect() {
+    // A connector whose provider asks for nothing connects in one click: no
+    // drawer, no form. The platform still verifies - with the service account's
+    // own material, server-side - so a resolved promise means tested here just
+    // as it does below, and the connected state that follows is the same one a
+    // typed connection leaves behind.
+    if (this.requiresUserAction === false) {
+      return caldavConnectorService.connectThroughProvider(this.serverId)
+        .then(outcome => {
+          if (!outcome || outcome.result !== 'ok') {
+            return Promise.reject(outcome && outcome.result || 'caldav.error.connection');
+          }
+          return caldavConnectorService.getCaldavSetting();
+        })
+        .then(setting => setting && setting.username || null);
+    }
     return new Promise((resolve, reject) => {
       // The drawer must know WHICH declared server this connector fronts:
       // the URL to probe the typed credentials against, and the registration
@@ -229,50 +244,67 @@ const caldavConnector = {
   },
 
   /**
-   * What this connector adds to the menu of the user's own calendars in
-   * agenda's left panel (EXO-90253): "Share", on each calendar the platform
-   * says can be shared from eXo — owned, exported to the connected account or
-   * imported from it and owned there, on
-   * a server where every grant is confirmed. Agenda asks connectors declaring this
-   * and `runCalendarAction`, and draws the labels as given.
+   * What agenda's Share drawer calls a share this add-on carried to the
+   * server (EXO-90357): the server's host, for a delivery this connector's
+   * server made — `caldav:<serverId>` — and nothing for any other channel,
+   * so agenda asks the next connector or words the id itself.
    *
-   * Never rejects: a connector that cannot answer adds nothing.
+   * A legacy, property-configured connector fronts no declared server: its
+   * deliveries are stamped `caldav:0` (an account predating registrations),
+   * and it answers its host when it knows one, else the bare word "CalDAV"
+   * — never "CalDAV 0".
    *
-   * @returns {Promise<Object>} {calendarId: [{id, label, icon}]}, empty when
-   *          no calendar can be shared
+   * @param {String} channelId the channel a share was delivered to
+   * @returns {String} the host, or an empty string when the channel is not
+   *          this connector's server
    */
-  calendarActions() {
-    return Promise.all([caldavConnectorService.getShareableCalendars(), labels()])
-      .then(([calendarIds, bundle]) => {
-        // The key itself when the bundle could not be read, like every other
-        // label of this add-on: an English word would pass for a translation.
-        const label = bundle && bundle['caldav.share.menu'] || 'caldav.share.menu';
-        const actions = {};
-        (calendarIds || []).forEach(calendarId => {
-          actions[calendarId] = [{id: 'caldavShareCalendar', label, icon: 'fa-share-alt'}];
-        });
-        return actions;
-      })
-      .catch(() => ({}));
+  channelLabel(channelId) {
+    if (!channelId) {
+      return '';
+    }
+    if (this.serverId == null) {
+      return channelId === 'caldav:0' ? (serverHost(this.serverUrl) || 'CalDAV') : '';
+    }
+    return channelId === `caldav:${this.serverId}` ? (serverHost(this.serverUrl) || '') : '';
   },
 
   /**
-   * Runs an action `calendarActions` offered. "Share" opens the share drawer
-   * of this add-on, which lives in a Vue app of its own: the request crosses
-   * as a document event, the one signal that reaches it from agenda's app.
+   * Whether one of this connector's listed calendars is the server's copy
+   * of a share agenda delivered to this server (EXO-90357), so agenda draws
+   * the share through its eXo row once and leaves the copy out.
    *
-   * @param {String} actionId the id of the action offered
-   * @param {Object} calendar the agenda calendar, {id, name}
-   * @returns {Promise<Boolean>} true when the action was this connector's
+   * <p>
+   * Only a delivery this connector's server made can be one of its rows.
+   * The channel recorded, at delivery, the collection as the owner's account
+   * spells it; the colleague's listing spells it the same on a server that
+   * lists a share at the owner's path (Stalwart), and under the colleague's
+   * own home on a server that subscribes the colleague to it (BlueMind:
+   * `/dav/calendars/__uids__/<uid>/<container>/`), where the container uid,
+   * the last segment, is what both spellings share — the rule the add-on's
+   * own sync relies on. A path of any other shape is matched whole, since a
+   * last segment alone is a name every account may reuse (`default`).
+   *
+   * @param {Object} calendar a calendar this connector listed
+   * @param {Object} delivery the eXo share, with `deliveredTo` and
+   *          `deliveryRef` as the channel recorded them
+   * @returns {Boolean} true when the calendar is the delivery's server copy
    */
-  runCalendarAction(actionId, calendar) {
-    if (actionId !== 'caldavShareCalendar' || !calendar || !calendar.id) {
-      return Promise.resolve(false);
+  isDeliveryOf(calendar, delivery) {
+    if (!calendar || !delivery || !delivery.deliveryRef) {
+      return false;
     }
-    document.dispatchEvent(new CustomEvent('open-caldav-share-calendar-drawer', {
-      detail: {id: calendar.id, name: calendar.name || calendar.title || ''},
-    }));
-    return Promise.resolve(true);
+    if (this.serverId != null && delivery.deliveredTo !== `caldav:${this.serverId}`) {
+      return false;
+    }
+    const listed = comparablePath(calendar.id);
+    const delivered = comparablePath(delivery.deliveryRef);
+    if (!listed || !delivered) {
+      return false;
+    }
+    if (listed === delivered) {
+      return true;
+    }
+    return isUnderAHome(listed) && isUnderAHome(delivered) && lastSegment(listed) === lastSegment(delivered);
   },
 
   /**
@@ -589,6 +621,45 @@ const caldavConnector = {
 
 export default caldavConnector;
 
+/**
+ * A collection path as compared: decoded, without a trailing slash, so two
+ * spellings of one path differing in encoding compare equal.
+ *
+ * @param {String} href a collection href or identifier
+ * @returns {String} the comparable form, empty for none
+ */
+function comparablePath(href) {
+  let path = String(href || '');
+  try {
+    path = decodeURIComponent(path);
+  } catch (e) {
+    // Not encoded: compared as is
+  }
+  return path.replace(/\/+$/, '');
+}
+
+/**
+ * The last segment of a comparable path: on BlueMind the container uid.
+ *
+ * @param {String} path a comparable path
+ * @returns {String} the last segment
+ */
+function lastSegment(path) {
+  return path.substring(path.lastIndexOf('/') + 1);
+}
+
+/**
+ * Whether a comparable path is a calendar home's, as BlueMind spells one:
+ * `/dav/calendars/__uids__/<uid>/<container>`. Only there does the last
+ * segment name a container on its own.
+ *
+ * @param {String} path a comparable path
+ * @returns {Boolean} true for a path under a `__uids__` home
+ */
+function isUnderAHome(path) {
+  return /\/__uids__\/[^/]+\/[^/]+$/.test(path);
+}
+
 
 /**
  * Builds one agenda connector descriptor for one declared CalDAV server: the
@@ -606,14 +677,21 @@ export default caldavConnector;
  * @param {Object} server a declared server {id, providerName, name, description, serverUrl}
  * @param {Number} index position of the server in the declared list, keeps ranks distinct
  * @param {Object} managed the mode in force, {managedForMe, serverName}; absent
+ * @param {Object} requirements whether each provider asks its user for anything,
+ *          keyed by provider name; anything but an explicit false means ask
  *          or false-verdicted leaves the descriptor unmanaged
  * @returns {Object} the connector descriptor to register under agenda/connectors
  */
-export function createCaldavConnector(server, index, managed) {
+export function createCaldavConnector(server, index, managed, requirements) {
   return Object.assign({}, caldavConnector, stampManaged(managed), {
     name: server.providerName,
     description: `${server.providerName}.description`,
     serverId: server.id,
+    // Whether clicking "connect" opens a form or connects outright. Read as an
+    // explicit false and nothing else: a requirement that could not be fetched,
+    // a provider the registry does not name, an older server - every one of them
+    // must send the user to the drawer, never connect them silently.
+    requiresUserAction: !((requirements || {})[server.authProviderName] === false),
     serverUrl: server.serverUrl,
     // The visual identity, in the admin's order of precedence: the uploaded
     // image, else the font icon chosen in admin, else the packaged calendar
@@ -663,6 +741,25 @@ export function stampManaged(managed) {
  */
 export function createLegacyCaldavConnector(managed) {
   return Object.assign({}, caldavConnector, stampManaged(managed));
+}
+
+/**
+ * Whether the CalDAV connectors belong on the page being rendered (EXO-90383).
+ *
+ * <p>A connector describes the calendar account of the person looking at the
+ * page — their plug in the agenda toolbar, their remote events, their "Connect
+ * your personal agenda". A space's agenda is the space's calendars, not the
+ * viewer's: the plug there connects an account that has nothing to do with the
+ * space, and the events it would bring are the viewer's own. Agenda reads every
+ * one of those affordances off the descriptors this module registers, so the
+ * page they do not belong on is the page they are not registered on — the rule
+ * that hides a connect affordance under managed mode, applied to the place
+ * rather than to the deployment.</p>
+ *
+ * @returns {Boolean} true on the personal agenda, false inside a space
+ */
+export function connectorsBelongOnThisPage() {
+  return !(window.eXo && eXo.env && eXo.env.portal && eXo.env.portal.spaceId);
 }
 
 /**

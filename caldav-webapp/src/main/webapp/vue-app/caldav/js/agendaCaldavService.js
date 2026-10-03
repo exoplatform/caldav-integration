@@ -40,6 +40,47 @@ export const createCaldavSetting = (caldavSettings) => {
  *
  * @returns {Promise<Array>} every declared server
  */
+/**
+ * Whether each declared provider asks the user for anything, keyed by provider
+ * name. A provider answering false connects in one click, with no drawer: the
+ * platform holds what it takes.
+ *
+ * @returns {Promise<Object>} provider name to boolean
+ */
+export const getConnectionRequirements = () => {
+  return fetch('/caldav/rest/servers/connection-requirements', {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
+ * Connects to a registration whose provider asks the user for nothing. The
+ * server probes with the service account's own material and records the
+ * connection only if that passed, so a resolved promise means tested — the same
+ * promise the typed drawer makes.
+ *
+ * @param {Number} serverId the registration to connect to
+ * @returns {Promise<Object>} the probe outcome, `result` being 'ok' on success
+ */
+export const connectThroughProvider = (serverId) => {
+  const query = serverId ? `?serverId=${serverId}` : '';
+  return fetch(`/caldav/rest/connection/connect${query}`, {
+    credentials: 'include',
+    method: 'POST',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
 export const getCaldavServers = () => {
   return fetch('/caldav/rest/servers', {
     credentials: 'include',
@@ -490,95 +531,6 @@ function codedRefusal(resp) {
     throw error;
   });
 }
-
-/**
- * The ids of the user's own calendars agenda may offer "Share" on
- * (EXO-90253): owned, exported by eXo to the connected CalDAV account or
- * imported from it and owned there, on a
- * server where every grant is confirmed.
- *
- * Never rejects. Whether an entry is offered is not worth an error: a
- * platform that cannot answer offers no calendar, and the menu reads as it
- * did before this feature.
- *
- * One request for every caller asking at the same moment. The add-on registers
- * a connector per declared server and agenda asks each of them on every
- * refresh, so without this one refresh made one identical request per server,
- * each costing the platform a round trip to the calendar server. The shared
- * request is forgotten once it settles: the next refresh asks again.
- *
- * @returns {Promise<Array>} the agenda calendar ids, possibly empty
- */
-export const getShareableCalendars = () => {
-  if (!shareableCalendarsInFlight) {
-    shareableCalendarsInFlight = fetch(`${window.location.origin}/caldav/rest/calendars/shareable`, {credentials: 'include'})
-      .then(resp => (resp && resp.ok ? resp.json() : null))
-      .then(payload => (payload && Array.isArray(payload.calendarIds) ? payload.calendarIds : []))
-      .catch(() => [])
-      .finally(() => shareableCalendarsInFlight = null);
-  }
-  return shareableCalendarsInFlight;
-};
-
-/** The shareable-calendars request in flight, shared by concurrent callers. */
-let shareableCalendarsInFlight = null;
-
-/**
- * Who one of the user's calendars is shared with, read from the server now.
- *
- * @param {Number} calendarId the agenda calendar id
- * @returns {Promise<Object>} {calendarId, sharees}; rejects with the coded
- *          error, carrying what the server said when it refused
- */
-export const getCalendarShares = calendarId => {
-  return fetch(`${window.location.origin}/caldav/rest/calendars/${encodeURIComponent(calendarId)}/shares`, {
-    credentials: 'include',
-  }).then(resp => (resp && resp.ok ? resp.json() : codedRefusal(resp)));
-};
-
-/**
- * Shares one of the user's calendars read-only with a colleague.
- *
- * @param {Number} calendarId the agenda calendar id
- * @param {String} username the colleague's eXo login
- * @returns {Promise<Object>} the sharees as the server lists them afterwards
- */
-export const shareCalendar = (calendarId, username) => {
-  return fetch(`${window.location.origin}/caldav/rest/calendars/${encodeURIComponent(calendarId)}/shares`, {
-    credentials: 'include',
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({username}),
-  }).then(resp => (resp && resp.ok ? resp.json() : codedRefusal(resp)));
-};
-
-/**
- * Stops sharing one of the user's calendars with a colleague.
- *
- * @param {Number} calendarId the agenda calendar id
- * @param {String} username the colleague's eXo login
- * @returns {Promise<Object>} the sharees as the server lists them afterwards
- */
-export const unshareCalendar = (calendarId, username) => {
-  return fetch(`${window.location.origin}/caldav/rest/calendars/${encodeURIComponent(calendarId)}/shares/${encodeURIComponent(username)}`, {
-    credentials: 'include',
-    method: 'DELETE',
-  }).then(resp => (resp && resp.ok ? resp.json() : codedRefusal(resp)));
-};
-
-/**
- * The colleagues one of the user's calendars can be shared with: eXo users
- * connected to the same CalDAV server under another login.
- *
- * @param {Number} calendarId the agenda calendar id
- * @returns {Promise<Array>} {identityId, username, fullName, avatarUrl}
- */
-export const getShareCandidates = calendarId => {
-  return fetch(`${window.location.origin}/caldav/rest/calendars/${encodeURIComponent(calendarId)}/share-candidates`, {
-    credentials: 'include',
-  }).then(resp => (resp && resp.ok ? resp.json() : codedRefusal(resp)))
-    .then(candidates => (Array.isArray(candidates) ? candidates : []));
-};
 
 /**
  * Synchronises the connected account now, whatever the throttle says.

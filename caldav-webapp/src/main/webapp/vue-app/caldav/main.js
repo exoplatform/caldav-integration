@@ -16,7 +16,7 @@
  */
 import './initComponents.js';
 import * as agendaCaldavService from './js/agendaCaldavService.js';
-import {createCaldavConnector, createLegacyCaldavConnector, serverHost} from './caldav-connector/caldavConnector.js';
+import {connectorsBelongOnThisPage, createCaldavConnector, createLegacyCaldavConnector, serverHost} from './caldav-connector/caldavConnector.js';
 
 if (!Vue.prototype.$agendaCaldavService) {
   window.Object.defineProperty(Vue.prototype, '$agendaCaldavService', {
@@ -63,51 +63,6 @@ document.addEventListener('open-caldav-connector-settings-drawer',function(event
       i18n
     }, `#${appId}>div`, 'Agenda Connectors Settings');
   });
-});
-
-// The share drawer (EXO-90253), opened from agenda's calendar menu through the
-// connector's runCalendarAction. Mounted in an app of its own on the first
-// request and kept for the life of the page: exo-drawer moves itself under
-// #vuetify-apps and only removes its overlay in close(), so a drawer destroyed
-// while open leaves an overlay nobody can dismiss (EXO-90239). Every later
-// request reuses the same instance.
-let shareDrawerApp = null;
-document.addEventListener('open-caldav-share-calendar-drawer', event => {
-  const calendar = event && event.detail;
-  if (!calendar || !calendar.id) {
-    return;
-  }
-  if (!shareDrawerApp) {
-    // The shared i18n instance when the bundle could not be fetched: raw keys
-    // in a drawer beat a menu entry that does nothing. A mount that failed is
-    // forgotten, so the next click tries again rather than meeting the same
-    // rejected promise for the life of the page.
-    shareDrawerApp = i18nPromise
-      .catch(() => exoi18n.i18n)
-      .then(i18n => {
-        const element = document.createElement('div');
-        element.id = 'caldavShareCalendarDrawerApp';
-        document.body.appendChild(element);
-        const app = Vue.createApp({
-          template: '<caldav-share-calendar-drawer ref="drawer" />',
-          vuetify,
-          i18n,
-        }, element, 'CalDAV Share Calendar Drawer');
-        if (!app) {
-          // Removed, so the retry the outer catch allows does not append a
-          // second element with the same id.
-          element.remove();
-          throw new Error('the share drawer could not be mounted');
-        }
-        return app;
-      });
-  }
-  shareDrawerApp
-    .then(app => app.$refs.drawer.open(calendar))
-    .catch(error => {
-      shareDrawerApp = null;
-      console.error('cannot open the share drawer', error);
-    });
 });
 
 // Whether this instance chose the user's CalDAV server, fetched ONCE and
@@ -248,8 +203,18 @@ managedPromise.then(managed => {
 let managedMode = null;
 managedPromise
   .then(managed => managedMode = managed)
-  .then(() => agendaCaldavService.getCaldavServers())
-  .then(servers => {
+  .then(() => Promise.all([agendaCaldavService.getCaldavServers(),
+    // Which connectors ask their user for anything. Fetched
+    // beside the registry rather than per connector, and
+    // failing to an empty map: a requirement nobody could
+    // read must leave every button opening its drawer.
+    agendaCaldavService.getConnectionRequirements().catch(() => ({}))]))
+  .then(([servers, requirements]) => {
+    // Not on a space's agenda (EXO-90383): a connector is the viewer's own
+    // account, and a space's agenda shows the space's calendars alone
+    if (!connectorsBelongOnThisPage()) {
+      return null;
+    }
     const activeServers = (servers || []).filter(server => server.active);
     if (!activeServers.length) {
       extensionRegistry.registerExtension('agenda', 'connectors', createLegacyCaldavConnector(managedMode));
@@ -257,7 +222,8 @@ managedPromise
     }
     const labels = {};
     activeServers.forEach((server, index) => {
-      extensionRegistry.registerExtension('agenda', 'connectors', createCaldavConnector(server, index, managedMode));
+      extensionRegistry.registerExtension('agenda', 'connectors',
+        createCaldavConnector(server, index, managedMode, requirements));
       labels[server.providerName] = server.name;
       // The secondary line of the connect-drawer row: the admin's words when
       // there are some, else the host — always present, and the thing that
@@ -266,6 +232,7 @@ managedPromise
     });
     return i18nPromise.then(i18n => i18n.mergeLocaleMessage(lang, labels));
   })
-  .catch(() => extensionRegistry.registerExtension('agenda', 'connectors', createLegacyCaldavConnector(managedMode)))
+  .catch(() => connectorsBelongOnThisPage()
+    && extensionRegistry.registerExtension('agenda', 'connectors', createLegacyCaldavConnector(managedMode)))
   .finally(() => document.dispatchEvent(new CustomEvent('agenda-connectors-refresh')));
 
