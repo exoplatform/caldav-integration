@@ -1570,11 +1570,11 @@ public class CaldavCalendarShareService {
    *
    * <p>
    * BlueMind's handler removes <em>every</em> entry of the sharee, so only a
-   * colleague holding plain reading — {@code Read} and the verbs it expands to,
+   * colleague holding what eXo writes — plain reading ({@code Read} and the
+   * verbs it expands to) or plain writing ({@code Write} and its verbs), and
    * nothing else — is removed; one holding more, or only free/busy, holds
-   * something eXo did not give and is refused. Plain reading cannot hide
-   * earlier free/busy access, because a grant is refused to a colleague
-   * holding any.
+   * something eXo did not give and is refused. Neither shape can hide earlier
+   * free/busy access, because a grant is refused to a colleague holding any.
    *
    * @param target the calendar
    * @param sharee the colleague
