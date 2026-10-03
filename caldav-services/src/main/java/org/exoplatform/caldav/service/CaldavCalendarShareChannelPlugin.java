@@ -163,15 +163,6 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
   }
 
   /**
-   * Takes the colleague's read access away on the server, as the share
-   * service does it. A colleague who holds no grant any more changes nothing
-   * and counts as withdrawn.
-   *
-   * @param share the eXo record this channel carried
-   * @param ownerUsername the owner's login
-   * @return true when the grant is gone
-   */
-  /**
    * The server-side level an eXo share level asks for (EXO-90378).
    *
    * @param level the record's level, never null
@@ -219,6 +210,15 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
   }
 
   @Override
+  /**
+   * Takes the colleague's access away on the server, whatever its level, as
+   * the share service does it. A colleague who holds no grant any more changes nothing
+   * and counts as withdrawn.
+   *
+   * @param share the eXo record this channel carried
+   * @param ownerUsername the owner's login
+   * @return true when the grant is gone
+   */
   public boolean withdraw(CalendarShare share, String ownerUsername) {
     if (share == null || StringUtils.isBlank(ownerUsername)) {
       return false;
@@ -371,14 +371,6 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
   }
 
   /**
-   * What a refusal of the share service means to agenda: nothing to carry
-   * for the refusals in {@link #NOT_APPLICABLE}, a named failure otherwise.
-   *
-   * @param refusal the refusal
-   * @param share the record, for the log
-   * @return the outcome
-   */
-  /**
    * How agenda names a server-side access level (EXO-90378): {@code VIEW},
    * {@code EDIT}, or {@code MORE} for a grant eXo does not write and therefore
    * never adopts.
@@ -393,6 +385,14 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
     return access == ShareAccess.WRITE ? CalendarShareLevel.EDIT.name() : "MORE";
   }
 
+  /**
+   * What a refusal of the share service means to agenda: nothing to carry
+   * for the refusals in {@link #NOT_APPLICABLE}, a named failure otherwise.
+   *
+   * @param refusal the refusal
+   * @param share the record, for the log
+   * @return the outcome
+   */
   private static ChannelDelivery outcomeOf(RuntimeException refusal, CalendarShare share) {
     String code = refusal instanceof CaldavShareException failure ? failure.getCode() : refusal.getMessage();
     if (code != null && NOT_APPLICABLE.contains(code)) {
