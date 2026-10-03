@@ -90,10 +90,8 @@ import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
  */
 public class HttpCalDavClientShareTest {
 
-
   /** Apple's CalendarServer namespace, which the sharing elements live in. */
-
-  private static final String CALENDARSERVER_NS = "http://calendarserver.org/ns/";
+  private static final String   CALENDARSERVER_NS = "http://calendarserver.org/ns/";
 
   private static final String   SERVER_URL      = "http://cal.example.com/dav/cal/{username}/";
 
@@ -533,6 +531,53 @@ public class HttpCalDavClientShareTest {
     assertTrue(carol.appliesTo("/dav/pal/carol@stalwart.local"), "compared in the canonical form a principal is recorded in");
     assertTrue(acl.currentUserPrivileges().contains("{DAV:}write-acl"));
     assertTrue(acl.currentUserPrivileges().contains("{urn:ietf:params:xml:ns:caldav}read-free-busy"));
+  }
+
+  /**
+   * Stalwart's read-back of the edit grant eXo writes (EXO-90378): the
+   * {@code DAV:write} aggregate comes back beside its members
+   * {@code write-properties} and {@code write-content}, with
+   * {@code read-current-user-privilege-set} beside {@code read}. Parsed from
+   * the transcript, the entry is the edit shape eXo recognises as its own.
+   */
+  @Test
+  void stalwartsReadBackOfAnEditGrantIsTheEditShape() {
+    answer(207, Map.of(), transcript("stalwart-propfind-acl-exo-cal-edit-shared-with-bob.xml"));
+
+    CollectionAcl acl = client.readAcl(endpoint, COLLECTION);
+
+    assertEquals(1, acl.entries().size());
+    AccessControlEntry bob = acl.entries().get(0);
+    assertEquals(AcePrincipal.href("/dav/pal/bob%40stalwart.local/"), bob.principal());
+    assertEquals(Set.of(AccessControlEntry.READ,
+                        "{DAV:}read-current-user-privilege-set",
+                        AccessControlEntry.WRITE,
+                        "{DAV:}write-properties",
+                        "{DAV:}write-content"),
+                 bob.privileges());
+    assertTrue(bob.grantsEditOnly(), "the entry eXo wrote, as Stalwart reports it");
+    assertFalse(bob.grantsReadOnly());
+    assertTrue(bob.isModifiable());
+  }
+
+  /**
+   * A grant made outside eXo that Stalwart reports as {@code read} plus the
+   * {@code write} aggregate alone — what a read-and-delete right granted
+   * through JMAP reads back as. The parser reports exactly those privileges;
+   * what eXo makes of such an entry is decided by {@link AccessControlEntry},
+   * not here.
+   */
+  @Test
+  void aReadAndDeleteGrantReadsBackAsReadAndTheWriteAggregate() {
+    answer(207, Map.of(), transcript("stalwart-propfind-acl-exo-cal-read-delete-carol.xml"));
+
+    CollectionAcl acl = client.readAcl(endpoint, COLLECTION);
+
+    assertEquals(1, acl.entries().size());
+    AccessControlEntry carol = acl.entries().get(0);
+    assertEquals(AcePrincipal.href("/dav/pal/carol%40stalwart.local/"), carol.principal());
+    assertEquals(Set.of(AccessControlEntry.READ, "{DAV:}read-current-user-privilege-set", AccessControlEntry.WRITE), carol.privileges());
+    assertFalse(carol.grantsReadOnly(), "it carries more than reading");
   }
 
   /**
