@@ -16,32 +16,28 @@
  */
 package org.exoplatform.caldav.model;
 
+import java.util.List;
+
 /**
  * Whether this deployment chooses the CalDAV server on its users' behalf, and
  * which one.
  *
  * <p>
  * Two answers in one payload, and they are deliberately not the same question.
- * {@code serverId} and {@code serverName} say what the <b>instance</b> decided
- * — the administration screen renders them, and they are the same for
- * everybody. {@code managedForMe} says whether the decision applies to
- * <b>the caller</b>, which is what the browser acts on when it takes the
- * connect and disconnect affordances away.
- *
- * <p>
- * Today the two cannot disagree: managed mode is on or off for the whole
- * instance. They are separate anyway because the next step is group
- * exclusions, and when an excluded group may still connect an account of its
- * own, the per-viewer verdict is the only one a component may read. Answering
- * it here costs one service method; discovering later that every front-end
- * component read the global flag would cost a component each.
+ * {@code serverId}, {@code serverName} and {@code excludedGroups} say what the
+ * <b>instance</b> decided — the administration screen renders them. {@code
+ * managedForMe} says whether the decision applies to <b>the caller</b>: the
+ * designation exists and the caller is in none of the excluded groups. No
+ * screen acts on it today — managed mode takes no affordance away from anyone;
+ * it is kept as the read contract of the login-time attachment (EXO-89653).
  *
  * @param serverId the registration the instance chose, null when managed mode
  *          is off
  * @param serverName that registration's display name, null when managed mode
  *          is off — the screens name the server rather than print its id
- * @param managedForMe whether the caller is governed by that choice, so their
- *          connect and disconnect affordances must not be offered
+ * @param excludedGroups the eXo group ids whose members the choice does not
+ *          reach, empty when managed mode is off or excludes nobody
+ * @param managedForMe whether the caller is governed by that choice
  */
-public record CaldavManagedMode(Long serverId, String serverName, boolean managedForMe) {
+public record CaldavManagedMode(Long serverId, String serverName, List<String> excludedGroups, boolean managedForMe) {
 }
