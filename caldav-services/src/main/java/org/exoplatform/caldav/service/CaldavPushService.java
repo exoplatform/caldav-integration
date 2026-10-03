@@ -30,10 +30,14 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.model.Event;
+import org.exoplatform.agenda.model.EventAttendee;
+import org.exoplatform.agenda.model.EventAttendeeList;
 import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaCalendarService;
+import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
@@ -62,6 +66,8 @@ import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.manager.IdentityManager;
 
 /**
  * Writes eXo's space events into the user's remote calendar, server-side.
@@ -245,8 +251,24 @@ public class CaldavPushService {
   @Autowired
   private AgendaCalendarService  agendaCalendarService;
 
+  /**
+   * Whether the user being pushed for is invited to an event held in another
+   * user's calendar (EXO-90378): the mirror takes a meeting they attend,
+   * whichever calendar holds it.
+   */
+  @Autowired
+  private AgendaEventAttendeeService agendaEventAttendeeService;
+
   @Autowired
   private CaldavCopyPolicy       caldavCopyPolicy;
+
+  /**
+   * Tells a personal calendar's owner from a space's (EXO-90378): a space
+   * meeting belongs in the mirror, an event of another <b>user's</b> calendar
+   * belongs nowhere on this account.
+   */
+  @Autowired
+  private IdentityManager        identityManager;
 
   /**
    * Where the account-wide ownership question lives. One definition for the
@@ -982,7 +1004,82 @@ public class CaldavPushService {
       }
       return writeInto(userIdentityId, username, personal, icsEvent, event.getId(), overwrite);
     }
+    if (isAnotherUsersCalendar(event, userIdentityId) && !isInvitedTo(event, userIdentityId)) {
+      // Somebody else's personal calendar, which a colleague holding an edit
+      // share writes in (EXO-90378), and an event this user is not invited to.
+      // Their browser pushes after every save exactly as it does for their own
+      // events, and the mirror below would take it: the owner's event would
+      // land among the copies of the space meetings this colleague attends,
+      // on this colleague's account.
+      //
+      // Not this account's to copy. The owner's own account carries it — the
+      // propagation rewrites every holder's copy as that holder, and a
+      // creation is pushed as the owner — so the event does reach the server,
+      // once, in the right collection. Null, not an exception: nothing failed.
+      //
+      // An invitee is the other case: a meeting held in the owner's calendar
+      // is one this user attends, and the mirror takes it as it takes a space
+      // meeting, so the fan-out and the seeding reach them as before.
+      LOG.debug("Event {} lives in calendar {}, which belongs to another user; user {} does not copy it",
+                event.getId(),
+                event.getCalendarId(),
+                userIdentityId);
+      return null;
+    }
     return pushEvent(userIdentityId, username, icsEvent, event.getId(), overwrite);
+  }
+
+  /**
+   * Whether an event lives in the personal calendar of a user <b>other</b>
+   * than the one being pushed for (EXO-90378).
+   *
+   * <p>
+   * The question the mirror must not be asked for. A space calendar's owner is
+   * a space, and a space meeting the user attends is exactly what the mirror
+   * exists for; a personal calendar's owner is a user, and an event of theirs
+   * is theirs to carry out, whoever wrote it in eXo.
+   *
+   * @param event the agenda event being pushed
+   * @param userIdentityId identity of the user being pushed for
+   * @return true when the event's calendar is another user's personal one
+   */
+  private boolean isAnotherUsersCalendar(Event event, long userIdentityId) {
+    Calendar calendar = agendaCalendarService.getCalendarById(event.getCalendarId());
+    if (calendar == null || calendar.getOwnerId() == userIdentityId) {
+      return false;
+    }
+    Identity owner = identityManager.getIdentity(String.valueOf(calendar.getOwnerId()));
+    return owner != null && owner.isUser();
+  }
+
+  /**
+   * Whether the user being pushed for is an invited, non-declined attendee of
+   * an event: the one case in which an event of another user's personal
+   * calendar belongs on this account, in the mirror, as a space meeting does.
+   * The event's own attendees are asked first, then the series' for an
+   * occurrence that carries none of its own. An answer agenda cannot give
+   * reads as not invited: nothing is written on a guess, and the owner's own
+   * account carries the event either way.
+   *
+   * @param event the agenda event being pushed
+   * @param userIdentityId identity of the user being pushed for
+   * @return true when they are invited and have not declined
+   */
+  private boolean isInvitedTo(Event event, long userIdentityId) {
+    try {
+      boolean invited = agendaEventAttendeeService.isEventAttendee(event.getId(), userIdentityId)
+          || (event.getParentId() > 0 && agendaEventAttendeeService.isEventAttendee(event.getParentId(), userIdentityId));
+      return invited && !hasDeclined(event.getId(), userIdentityId);
+    } catch (Exception | LinkageError e) { // NOSONAR an unreadable answer must not stop the push
+      LOG.debug("The attendees of event {} could not be read; user {} is treated as not invited", event.getId(), userIdentityId, e);
+      return false;
+    }
+  }
+
+  private boolean hasDeclined(long eventId, long userIdentityId) {
+    EventAttendeeList declined = agendaEventAttendeeService.getEventAttendees(eventId, EventAttendeeResponse.DECLINED);
+    List<EventAttendee> attendees = declined == null ? null : declined.getEventAttendees();
+    return attendees != null && attendees.stream().anyMatch(attendee -> attendee.getIdentityId() == userIdentityId);
   }
 
   /**

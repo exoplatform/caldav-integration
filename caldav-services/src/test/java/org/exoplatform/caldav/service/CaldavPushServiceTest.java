@@ -55,6 +55,10 @@ import org.mockito.InjectMocks;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvider;
+import org.exoplatform.social.core.identity.provider.SpaceIdentityProvider;
+import org.exoplatform.social.core.manager.IdentityManager;
 import org.exoplatform.caldav.LogRecorder;
 import org.mockito.Mock;
 import org.mockito.Spy;
@@ -66,6 +70,10 @@ import org.exoplatform.agenda.model.RemoteEvent;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
+import org.exoplatform.agenda.service.AgendaEventAttendeeService;
+import org.exoplatform.agenda.constant.EventAttendeeResponse;
+import org.exoplatform.agenda.model.EventAttendee;
+import org.exoplatform.agenda.model.EventAttendeeList;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
@@ -206,6 +214,13 @@ public class CaldavPushServiceTest {
 
   @Mock
   private AgendaCalendarService      agendaCalendarService;
+
+  /** Tells a personal calendar's owner from a space's (EXO-90378). */
+  @Mock
+  private IdentityManager            identityManager;
+  /** Whether this user is invited to an event of another user's calendar (EXO-90378). */
+  @Mock
+  private AgendaEventAttendeeService agendaEventAttendeeService;
 
   @Mock
   private CalDavEndpoint             endpoint;
@@ -2655,6 +2670,82 @@ public class CaldavPushServiceTest {
     verify(caldavSyncStorage, never()).getPairs(anyLong(), anyLong());
   }
 
+  /**
+   * An event of another user's personal calendar that this user is not
+   * invited to is never copied into this account (EXO-90378): a colleague
+   * holding an edit share saves in the owner's calendar, their browser pushes
+   * as it always does, and the mirror — which exists for the meetings they
+   * attend — must not take the owner's event. Nothing is written, and nothing
+   * failed: the refusal comes before the mirror is even looked for, which is
+   * why this test stages none.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anEventOfAnotherUsersCalendarIsNeverCopiedIntoThisAccount() throws Exception {
+    givenAnAgendaEvent(113L, 0L);
+    givenAnotherUsersCalendar(10L, 77L);
+    lenient().when(agendaRemoteEventService.findRemoteEvent(113L, USER)).thenReturn(null);
+    lenient().when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-113"));
+
+    assertNull(service.pushAgendaEvent(USER, "john", 113L));
+
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  /**
+   * An invitee of a meeting held in another user's personal calendar gets
+   * their copy in the mirror (EXO-90378): the owner's account carries the
+   * event in its own collection, and each invitee's account takes it as it
+   * takes a space meeting. Only a user who is not invited — a colleague who
+   * merely edits the owner's calendar — is kept out of the mirror.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anInviteeOfAMeetingInAnotherUsersCalendarGetsTheirCopyInTheMirror() throws Exception {
+    givenAMirror();
+    givenAnAgendaEvent(113L, 0L);
+    givenAnotherUsersCalendar(10L, 77L);
+    when(agendaEventAttendeeService.isEventAttendee(113L, USER)).thenReturn(true);
+    when(agendaEventAttendeeService.getEventAttendees(113L, EventAttendeeResponse.DECLINED)).thenReturn(new EventAttendeeList(List.of()));
+    when(agendaRemoteEventService.findRemoteEvent(113L, USER)).thenReturn(null);
+    when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-113"));
+    when(calDavClient.putObject(any(), anyString(), anyString())).thenReturn(new PutResult(201, "\"e\"", null));
+    when(caldavSyncStorage.saveObject(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+    ObjectSync pushed = service.pushAgendaEvent(USER, "john", 113L);
+
+    assertNotNull(pushed, "the invitee's copy is written into the mirror");
+    assertEquals(1L, pushed.getCalendarSyncId());
+    verify(calDavClient).putObject(any(), anyString(), anyString());
+  }
+
+  /**
+   * An invitee who declined the meeting is not copied either (EXO-90378): the
+   * mirror carries what the user attends, and a declined meeting is not that.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void anInviteeWhoDeclinedAMeetingInAnotherUsersCalendarIsNotCopied() throws Exception {
+    givenAnAgendaEvent(113L, 0L);
+    givenAnotherUsersCalendar(10L, 77L);
+    when(agendaEventAttendeeService.isEventAttendee(113L, USER)).thenReturn(true);
+    when(agendaEventAttendeeService.getEventAttendees(113L, EventAttendeeResponse.DECLINED))
+                                                                                             .thenReturn(new EventAttendeeList(List.of(new EventAttendee(1L,
+                                                                                                                                                         113L,
+                                                                                                                                                         USER,
+                                                                                                                                                         EventAttendeeResponse.DECLINED))));
+    lenient().when(agendaRemoteEventService.findRemoteEvent(113L, USER)).thenReturn(null);
+    lenient().when(agendaEventIcsMapper.toIcsEvent(any(), anyString(), anyLong())).thenReturn(event("uid-113"));
+
+    assertNull(service.pushAgendaEvent(USER, "john", 113L));
+
+    verify(calDavClient, never()).putObject(any(), anyString(), anyString());
+  }
+
   @Test
   public void aSpaceEventStillGoesToTheMirror() throws Exception {
     givenAMirror();
@@ -2697,6 +2788,26 @@ public class CaldavPushServiceTest {
     calendar.setId(calendarId);
     calendar.setOwnerId(999L);
     when(agendaCalendarService.getCalendarById(calendarId)).thenReturn(calendar);
+    Identity space = new Identity(SpaceIdentityProvider.NAME, "team");
+    space.setId("999");
+    lenient().when(identityManager.getIdentity("999")).thenReturn(space);
+  }
+
+  /**
+   * Another <b>user's</b> personal calendar, which a colleague may hold an
+   * edit share on (EXO-90378): the one shape the mirror must not take.
+   *
+   * @param calendarId the calendar the event lives in
+   * @param ownerIdentityId the colleague who owns it
+   */
+  private void givenAnotherUsersCalendar(long calendarId, long ownerIdentityId) {
+    Calendar calendar = new Calendar();
+    calendar.setId(calendarId);
+    calendar.setOwnerId(ownerIdentityId);
+    when(agendaCalendarService.getCalendarById(calendarId)).thenReturn(calendar);
+    Identity owner = new Identity(OrganizationIdentityProvider.NAME, "bob");
+    owner.setId(String.valueOf(ownerIdentityId));
+    lenient().when(identityManager.getIdentity(String.valueOf(ownerIdentityId))).thenReturn(owner);
   }
 
   /**
