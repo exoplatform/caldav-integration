@@ -96,6 +96,7 @@ import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncPauseReason;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -2752,6 +2753,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     assertEquals(CalendarSyncStatus.PAUSED, bound.getStatus());
+    assertEquals(CalendarSyncPauseReason.CREDENTIALS, bound.getPauseReason(), "a credential pause, which the subscription drain waits on");
   }
 
   /**
@@ -2846,6 +2848,7 @@ public class CaldavSyncServiceTest {
     service.syncNow(USER, LOGIN);
 
     assertEquals(CalendarSyncStatus.PAUSED, bound.getStatus());
+    assertEquals(CalendarSyncPauseReason.FAILING_IMPORTS, bound.getPauseReason(), "paused for its imports, which says nothing about the login");
   }
 
   /**

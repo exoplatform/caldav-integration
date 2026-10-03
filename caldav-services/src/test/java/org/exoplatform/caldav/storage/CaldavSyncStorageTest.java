@@ -56,6 +56,7 @@ import org.exoplatform.caldav.dao.CaldavObjectSyncDAO;
 import org.exoplatform.caldav.entity.CaldavCalendarSyncEntity;
 import org.exoplatform.caldav.entity.CaldavObjectSyncEntity;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncPauseReason;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
@@ -123,6 +124,21 @@ public class CaldavSyncStorageTest {
                  CaldavSyncStorage.canonicalHref("/caldav/rest/dav/7/dav/calendars/john/work/"));
     assertEquals(CaldavSyncStorage.canonicalHref("/dav/calendars/john/work"),
                  CaldavSyncStorage.canonicalHref("https://exo.test/caldav/rest/dav/12/dav/calendars/john/work/"));
+  }
+
+  @Test
+  public void savePairKeepsThePauseReasonBothWays() {
+    when(calendarSyncDAO.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    CalendarSync paused = pair(null, "/cal/john/work", "uid-1", SyncOrigin.EXO);
+    paused.setStatus(CalendarSyncStatus.PAUSED);
+    paused.setPauseReason(CalendarSyncPauseReason.FAILING_IMPORTS);
+
+    CalendarSync saved = storage.savePair(paused);
+
+    ArgumentCaptor<CaldavCalendarSyncEntity> entity = ArgumentCaptor.forClass(CaldavCalendarSyncEntity.class);
+    verify(calendarSyncDAO).save(entity.capture());
+    assertEquals(CalendarSyncPauseReason.FAILING_IMPORTS, entity.getValue().getPauseReason(), "written to the entity");
+    assertEquals(CalendarSyncPauseReason.FAILING_IMPORTS, saved.getPauseReason(), "and read back from it");
   }
 
   @Test
@@ -235,7 +251,7 @@ public class CaldavSyncStorageTest {
    * @return the pair
    */
   private CalendarSync pair(Long id, String href, String anchor, SyncOrigin origin) {
-    return new CalendarSync(id, USER, SERVER, anchor, href, origin, null, null, CalendarSyncStatus.ACTIVE, null, null, 0, null);
+    return new CalendarSync(id, USER, SERVER, anchor, href, origin, null, null, CalendarSyncStatus.ACTIVE, null, null, 0, null, null);
   }
 
   /**
@@ -259,7 +275,9 @@ public class CaldavSyncStorageTest {
                                         CalendarSyncStatus.ACTIVE,
                                         null,
                                         null,
-                                        0, null);
+                                        0,
+                                        null,
+                                        null);
   }
 
   @Test

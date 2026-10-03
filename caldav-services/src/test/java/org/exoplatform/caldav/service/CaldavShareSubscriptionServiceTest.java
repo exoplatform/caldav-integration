@@ -61,6 +61,7 @@ import org.exoplatform.caldav.client.bluemind.BlueMindSubjectMismatchException;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptions;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncPauseReason;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.PendingSubscription;
 import org.exoplatform.caldav.model.PendingSubscriptionKind;
@@ -373,13 +374,68 @@ public class CaldavShareSubscriptionServiceTest {
   @Test
   public void aPausedColleagueIsNotLoggedInAndTheirRowsWaitUncounted() {
     when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
-    when(caldavSyncStorage.getPairs(BOB, SERVER)).thenReturn(List.of(pair(CalendarSyncStatus.PAUSED)));
+    when(caldavSyncStorage.getPairs(BOB, SERVER)).thenReturn(List.of(pair(CalendarSyncStatus.PAUSED, CalendarSyncPauseReason.CREDENTIALS)));
 
     assertEquals(0, service.retryOwed(50));
 
     verify(blueMindSubscriptionClient, never()).asSharee(any(), anyString(), any());
     verify(caldavPendingSubscriptionStorage, never()).refused(anyLong(), any());
     verify(caldavPendingSubscriptionStorage, never()).abandoned(anyLong(), any(), anyInt());
+  }
+
+  /**
+   * A pause recorded before the reason was is waited on as a credential
+   * pause: waiting costs a sweep, logging in through it may cost the account.
+   */
+  @Test
+  public void aPauseWithoutARecordedReasonIsWaitedOnAsACredentialPause() {
+    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
+    when(caldavSyncStorage.getPairs(BOB, SERVER)).thenReturn(List.of(pair(CalendarSyncStatus.PAUSED)));
+
+    assertEquals(0, service.retryOwed(50));
+
+    verify(blueMindSubscriptionClient, never()).asSharee(any(), anyString(), any());
+    verify(caldavPendingSubscriptionStorage, never()).refused(anyLong(), any());
+  }
+
+  /**
+   * An account whose every pair is paused for failing imports says nothing
+   * about its login: the drain logs in as the colleague and subscribes them,
+   * and only a credential pause makes the rows wait.
+   */
+  @Test
+  public void aColleagueWhosePairsArePausedForFailingImportsIsStillSubscribed() {
+    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
+    when(caldavSyncStorage.getPairs(BOB, SERVER)).thenReturn(List.of(pair(CalendarSyncStatus.PAUSED, CalendarSyncPauseReason.FAILING_IMPORTS),
+                                                                     pair(CalendarSyncStatus.PAUSED, CalendarSyncPauseReason.FAILING_IMPORTS)));
+
+    service.retryOwed(50);
+
+    verify(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
+    verify(edits).subscribe(CONTAINER);
+    verify(caldavPendingSubscriptionStorage).settledIfStillAsking(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE);
+  }
+
+  /**
+   * The sync pass may pause the colleague's pairs between the drain's check
+   * and its refused login. The fresh read then finds no active pair, and the
+   * account still waits uncounted: a pair it finds paused for another reason
+   * is re-attributed to the credentials the server just refused.
+   */
+  @Test
+  public void aPauseMadeWhileTheLoginWasInFlightStillWaitsUncounted() {
+    when(caldavPendingSubscriptionStorage.attemptable(5, 50)).thenReturn(List.of(row(1L, BOB, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0)));
+    CalendarSync active = pair(CalendarSyncStatus.ACTIVE);
+    CalendarSync pausedMeanwhile = pair(CalendarSyncStatus.PAUSED, CalendarSyncPauseReason.FAILING_IMPORTS);
+    when(caldavSyncStorage.getPairs(BOB, SERVER)).thenReturn(List.of(active), List.of(pausedMeanwhile));
+    doThrow(new CalDavAuthenticationException("stale")).when(blueMindSubscriptionClient).asSharee(eq(bobEndpoint), eq(ERIC_UID), any());
+
+    assertEquals(0, service.retryOwed(50));
+
+    assertEquals(CalendarSyncPauseReason.CREDENTIALS, pausedMeanwhile.getPauseReason());
+    verify(caldavSyncStorage).savePair(pausedMeanwhile);
+    verify(caldavSyncStorage, never()).savePair(active);
+    verify(caldavPendingSubscriptionStorage, never()).refused(anyLong(), any());
   }
 
   /**
@@ -399,6 +455,7 @@ public class CaldavShareSubscriptionServiceTest {
     assertEquals(0, service.retryOwed(50));
 
     assertEquals(CalendarSyncStatus.PAUSED, active.getStatus());
+    assertEquals(CalendarSyncPauseReason.CREDENTIALS, active.getPauseReason(), "paused for the credentials the server refused");
     assertEquals(CalendarSyncStatus.REMOTE_GONE, gone.getStatus(), "only the active pairs are paused");
     verify(caldavSyncStorage).savePair(active);
     verify(caldavSyncStorage, never()).savePair(gone);
@@ -689,8 +746,20 @@ public class CaldavShareSubscriptionServiceTest {
    * @return the pair
    */
   private static CalendarSync pair(CalendarSyncStatus status) {
+    return pair(status, null);
+  }
+
+  /**
+   * One of the colleague's pairs on the server, paused for a stated reason.
+   *
+   * @param status its status
+   * @param pauseReason why it is paused, null for a pause recorded before the reason was
+   * @return the pair
+   */
+  private static CalendarSync pair(CalendarSyncStatus status, CalendarSyncPauseReason pauseReason) {
     CalendarSync pair = new CalendarSync();
     pair.setStatus(status);
+    pair.setPauseReason(pauseReason);
     return pair;
   }
 
