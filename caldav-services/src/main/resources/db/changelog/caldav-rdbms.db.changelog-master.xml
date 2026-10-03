@@ -959,4 +959,19 @@
     </createIndex>
   </changeSet>
 
+  <changeSet author="caldav" id="1.0.0-54">
+    <comment>
+      Why a pair is paused: a refused login, imports that kept failing, or the
+      account's disconnection. The subscription drain waits on a credential
+      pause, which a login as the colleague would repeat against a server that
+      may lock the account, and goes on through a pause for failing imports,
+      which says nothing about the login. Nullable: a pair paused before this
+      column existed carries no reason and is waited on as a credential pause,
+      the error that costs. Own changeset, no modifySql, automatic rollback.
+    </comment>
+    <addColumn tableName="CALDAV_CALENDAR_SYNC">
+      <column name="PAUSE_REASON" type="NVARCHAR(32)"/>
+    </addColumn>
+  </changeSet>
+
 </databaseChangeLog>

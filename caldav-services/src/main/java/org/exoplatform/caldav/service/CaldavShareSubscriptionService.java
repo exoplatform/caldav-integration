@@ -41,6 +41,7 @@ import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
 import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptions;
 import org.exoplatform.caldav.constant.SubscriptionOutcome;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncPauseReason;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.PendingSubscription;
 import org.exoplatform.caldav.model.PendingSubscriptionKind;
@@ -403,10 +404,11 @@ public class CaldavShareSubscriptionService {
     }
     List<CalendarSync> pairs = caldavSyncStorage.getPairs(userIdentityId, serverId);
     if (pausedAccount(pairs)) {
-      // Their own account is paused - by a refused login, or by imports that
-      // kept failing: a login as them now may be refused again, and counted
-      // against a server that may lock the account. The rows wait, uncounted,
-      // until the account is put back to work.
+      // Their own account is paused by a refused login: a login as them now
+      // may be refused again, and counted against a server that may lock the
+      // account. The rows wait, uncounted, until the account is put back to
+      // work. A pause for failing imports says nothing about the login and
+      // does not reach here.
       LOG.info("The CalDAV account of user {} on server {} is paused; the {} subscription change(s) owed to them wait",
                userIdentityId,
                serverId,
@@ -654,38 +656,53 @@ public class CaldavShareSubscriptionService {
   }
 
   /**
-   * Whether an account is paused: it holds pairs on the server and none is
-   * active. The sync pass leaves that after a refused login, and also after
-   * every remaining pair was paused for failing imports; the table records no
-   * reason, so both wait the same way.
+   * Whether an account is paused for its credentials: it holds pairs on the
+   * server, none is active, and one of them was paused by a refused login. A
+   * pair paused for failing imports does not count: it says nothing about the
+   * login, and an account whose every pair failed its imports keeps its
+   * subscriptions moving. A pause recorded before the reason was
+   * ({@code null}) counts as a credential pause: waiting on it costs a sweep,
+   * logging in through it may cost the account.
    *
    * @param pairs the account's pairs on the server
-   * @return true when it is paused
+   * @return true when the drain must not log in as this colleague
    */
   private static boolean pausedAccount(List<CalendarSync> pairs) {
-    return pairs.stream().anyMatch(pair -> pair.getStatus() == CalendarSyncStatus.PAUSED)
-        && pairs.stream().noneMatch(pair -> pair.getStatus() == CalendarSyncStatus.ACTIVE);
+    return pairs.stream().noneMatch(pair -> pair.getStatus() == CalendarSyncStatus.ACTIVE)
+        && pairs.stream().anyMatch(CaldavShareSubscriptionService::pausedForCredentials);
+  }
+
+  private static boolean pausedForCredentials(CalendarSync pair) {
+    return pair.getStatus() == CalendarSyncStatus.PAUSED
+        && (pair.getPauseReason() == null || pair.getPauseReason() == CalendarSyncPauseReason.CREDENTIALS);
   }
 
   /**
-   * Pauses an account's active pairs, as the sync pass does on a refused login,
+   * Records a refused login on an account's pairs, as the sync pass does,
    * reading them again at pause time: the login took a round trip, and a
-   * concurrent pass may have written them meanwhile.
+   * concurrent pass may have written them meanwhile. Every active pair is
+   * paused for its credentials, and a pair paused for another reason is
+   * re-attributed to them, since the login was just refused. An account that
+   * holds pairs waits whatever state the fresh read found them in; only a
+   * colleague with no pair on the server at all is retried, and counted.
    *
    * @param userIdentityId the colleague
    * @param serverId the server key
-   * @return true when there was at least one to pause
+   * @return true when the account holds pairs on the server
    */
   private boolean pauseActive(long userIdentityId, long serverId) {
-    boolean paused = false;
-    for (CalendarSync pair : caldavSyncStorage.getPairs(userIdentityId, serverId)) {
-      if (pair.getStatus() == CalendarSyncStatus.ACTIVE) {
+    List<CalendarSync> pairs = caldavSyncStorage.getPairs(userIdentityId, serverId);
+    for (CalendarSync pair : pairs) {
+      boolean active = pair.getStatus() == CalendarSyncStatus.ACTIVE;
+      boolean pausedOtherwise = pair.getStatus() == CalendarSyncStatus.PAUSED
+          && pair.getPauseReason() != CalendarSyncPauseReason.CREDENTIALS;
+      if (active || pausedOtherwise) {
         pair.setStatus(CalendarSyncStatus.PAUSED);
+        pair.setPauseReason(CalendarSyncPauseReason.CREDENTIALS);
         caldavSyncStorage.savePair(pair);
-        paused = true;
       }
     }
-    return paused;
+    return !pairs.isEmpty();
   }
 
   /**

@@ -860,7 +860,8 @@ public class CaldavSyncStorage {
                             entity.getLastSyncStart(),
                             entity.getLastSyncEnd(),
                             entity.getConsecutiveFailures(),
-                            entity.getCopySettingsApplied());
+                            entity.getCopySettingsApplied(),
+                            entity.getPauseReason());
   }
 
   /**
@@ -882,7 +883,8 @@ public class CaldavSyncStorage {
                                         pair.getLastSyncStart(),
                                         pair.getLastSyncEnd(),
                                         pair.getConsecutiveFailures(),
-                                        pair.getCopySettingsApplied());
+                                        pair.getCopySettingsApplied(),
+                                        pair.getPauseReason());
   }
 
   /**

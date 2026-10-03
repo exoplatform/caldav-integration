@@ -61,6 +61,7 @@ import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncPauseReason;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -1497,6 +1498,7 @@ public class CaldavSyncService {
                    pair.getRemoteHref(),
                    pair.getConsecutiveFailures());
           pair.setStatus(CalendarSyncStatus.PAUSED);
+          pair.setPauseReason(CalendarSyncPauseReason.FAILING_IMPORTS);
           pair.setConsecutiveFailures(0);
         }
         caldavSyncStorage.savePair(pair);
@@ -1509,7 +1511,9 @@ public class CaldavSyncService {
    *
    * <p>
    * A refused credential is not a property of one calendar, so pausing one
-   * would leave the others retrying the same rejected password.
+   * would leave the others retrying the same rejected password. The pause is
+   * recorded as a credential pause: the readers that log in as this user wait
+   * on it, where they go on through a pause for failing imports.
    *
    * @param userIdentityId identity of the user
    * @param settings the connected account
@@ -1519,6 +1523,7 @@ public class CaldavSyncService {
     for (CalendarSync pair : caldavSyncStorage.getPairs(userIdentityId, serverId)) {
       if (pair.getStatus() == CalendarSyncStatus.ACTIVE) {
         pair.setStatus(CalendarSyncStatus.PAUSED);
+        pair.setPauseReason(CalendarSyncPauseReason.CREDENTIALS);
         caldavSyncStorage.savePair(pair);
       }
     }

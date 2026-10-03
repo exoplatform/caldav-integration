@@ -71,6 +71,7 @@ import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarDeletionPlan;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncState;
+import org.exoplatform.caldav.model.CalendarSyncPauseReason;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.RemoteCalendar;
 import org.exoplatform.caldav.model.RemoteCalendarsRead;
@@ -298,6 +299,7 @@ public class CaldavDeletionServiceTest {
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
     assertEquals(CalendarSyncStatus.PAUSED, saved.getValue().getStatus());
+    assertEquals(CalendarSyncPauseReason.DISCONNECT, saved.getValue().getPauseReason());
     verify(caldavSyncStorage, never()).deletePair(anyLong());
   }
 
@@ -326,6 +328,7 @@ public class CaldavDeletionServiceTest {
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
     assertEquals(CalendarSyncStatus.PAUSED, saved.getValue().getStatus());
+    assertEquals(CalendarSyncPauseReason.DISCONNECT, saved.getValue().getPauseReason());
   }
 
   @Test
@@ -1392,12 +1395,15 @@ public class CaldavDeletionServiceTest {
     // binding is thawed only incidentally by the next sweep re-ensuring its
     // collection — and until then a connected account reports the user's own
     // calendar as failing.
-    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(pair(SyncOrigin.EXO, CalendarSyncStatus.PAUSED)));
+    CalendarSync paused = pair(SyncOrigin.EXO, CalendarSyncStatus.PAUSED);
+    paused.setPauseReason(CalendarSyncPauseReason.DISCONNECT);
+    when(caldavSyncStorage.getPairs(USER, SERVER)).thenReturn(List.of(paused));
 
     service.thawOnConnect(USER, SERVER);
 
     ArgumentCaptor<CalendarSync> saved = ArgumentCaptor.forClass(CalendarSync.class);
     verify(caldavSyncStorage).savePair(saved.capture());
+    assertNull(saved.getValue().getPauseReason(), "a pair that is no longer paused carries no reason");
     assertEquals(CalendarSyncStatus.ACTIVE, saved.getValue().getStatus());
   }
 

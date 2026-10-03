@@ -47,7 +47,9 @@ public enum CalendarSyncStatus {
    * Synchronisation is suspended and will not resume on its own. Set on
    * repeated failure, and immediately on an authentication rejection — a stale
    * password must never be retried in a loop against a server that may lock
-   * the account.
+   * the account. The cause is recorded beside it as a
+   * {@link CalendarSyncPauseReason}, for the readers that treat the causes
+   * differently.
    */
   PAUSED,
 
