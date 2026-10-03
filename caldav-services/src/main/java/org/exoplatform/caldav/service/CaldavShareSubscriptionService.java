@@ -177,7 +177,8 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * this add-on's own account sweep for as many periods as it takes, and it is
  * the larger of the two costs named here. Self-limiting after
  * {@code maxAttempts} periods; a bound of its own, rather than the account
- * sweep's, is the Architect's and Ops' call.</li>
+ * sweep's, is the Architect's and Ops' call. The claim EXO-90920 adds bounds
+ * the sweep to one node per period.</li>
  * <li><b>Nodes share no lock.</b> The lock above is this node's: a drain on
  * one node and a revoke on another can still interleave, and the revoke's
  * unsubscribe can be followed by the drain's subscribe landing, because
@@ -187,7 +188,7 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * ({@code CalendarService} checks {@code Verb.Read} on the container for every
  * read, subscribed or not). Closing it across nodes needs a claim or a version
  * column on {@code CALDAV_PENDING_SUBSCRIPTION}, an Ops-visible schema
- * change, like the lease the third limit lacks.</li>
+ * change, like the lease the third limit lacks: EXO-90920.</li>
  * </ul>
  */
 @Service
