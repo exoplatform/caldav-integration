@@ -1,5 +1,6 @@
 import * as caldavConnectorService from '../js/agendaCaldavService.js';
 import {DEFAULT_SERVER_ICON, DEFAULT_SERVER_IMAGE} from '../js/serverIconIdentity.js';
+import {MIRROR_TARGET_MAIN_CALENDAR, mirrorTargetOf} from '../js/mirrorTargets.js';
 /**
  * What deleting each calendar would do, kept from the moment agenda asks until
  * the deletion it precedes. Not a cache of remote state: it holds one answer
@@ -392,6 +393,30 @@ const caldavConnector = {
       .catch(() => ({}));
   },
 
+  // The family's answer when no registration is in hand. A descriptor built
+  // for a declared server overrides it from that server's `mirrorTarget` (see
+  // createCaldavConnector): the flag is what every surface offering the
+  // creation step reads, so on a server writing into the account's own default
+  // calendar it must be false or the step is offered for an act the push
+  // refuses to perform.
+  //
+  // It survives onto the LEGACY descriptor, and that descriptor does front a
+  // registration — the seed row, whose provider name it carries verbatim
+  // (`agenda.caldavCalendar`, CaldavServerService.CALDAV_PROVIDER_NAME). An
+  // account connected through it stores no serverId, and the push resolves it
+  // to that same row (`resolveServer(null)` → `getServerByProviderName`), so
+  // the destination governing those copies is the seed row's, not a default.
+  // What the legacy descriptor lacks is not a registration but a READING of
+  // one: it is registered on the branch where `GET /caldav/rest/servers` could
+  // not be read at all, which is exactly why deriving the flag there is not
+  // an option. So this is a fail-open default, chosen the way the rest of the
+  // resolution chain chooses: the shipped seed is DEDICATED_CALENDAR, and
+  // hiding the step from a server that genuinely needs a dedicated calendar
+  // strands the copies, while offering it where it is inert costs a drawer.
+  // The corner that remains — a seed row an administrator set to
+  // MAIN_CALENDAR, connected during an outage of that one endpoint — is the
+  // original defect in miniature, and closing it means asking the server for
+  // the resolved destination rather than guessing better here.
   canCreateCalendar: true,
   /**
    * Creates, on the connected CalDAV server, the dedicated calendar that will
@@ -674,7 +699,7 @@ function isUnderAHome(path) {
  * one row's. A user offered to connect a different CalDAV server would be
  * offered exactly the act the mode exists to take away.
  *
- * @param {Object} server a declared server {id, providerName, name, description, serverUrl}
+ * @param {Object} server a declared server {id, providerName, name, description, serverUrl, mirrorTarget}
  * @param {Number} index position of the server in the declared list, keeps ranks distinct
  * @param {Object} managed the mode in force, {managedForMe, serverName}; absent
  * @param {Object} requirements whether each provider asks its user for anything,
@@ -692,6 +717,26 @@ export function createCaldavConnector(server, index, managed, requirements) {
     // a provider the registry does not name, an older server - every one of them
     // must send the user to the drawer, never connect them silently.
     requiresUserAction: !((requirements || {})[server.authProviderName] === false),
+    // Whether there is a calendar for eXo to create on this server (EXO-90396).
+    // Read from the registration, never declared true by the family: on a
+    // server whose copies go to the account's own default calendar there is
+    // nothing to create, and this flag is the single gate every surface
+    // offering that step reads — the step offered right after connecting, the
+    // drawer's own guard, the destination row in the user settings. Left true,
+    // a user connecting such a server was offered a calendar the push then
+    // refused to create.
+    //
+    // `mirrorTargetOf` resolves an absent, unknown or withdrawn value exactly
+    // as the registry itself resolves it (`MirrorTargetKind.of`, and
+    // `CaldavPushService.mirrorTargetOf` for the push): the dedicated
+    // calendar. So a registration stating no kind — a row written before the
+    // setting existed, or a server the REST answer truncated — keeps the
+    // behaviour every deployment already had, and keeps this flag true. The
+    // asymmetry is the same one the push makes: offering a step that is
+    // occasionally pointless costs a drawer the user closes, while hiding it
+    // from a server that genuinely needs a dedicated calendar leaves the
+    // copies with nowhere to go.
+    canCreateCalendar: mirrorTargetOf(server.mirrorTarget) !== MIRROR_TARGET_MAIN_CALENDAR,
     serverUrl: server.serverUrl,
     // The visual identity, in the admin's order of precedence: the uploaded
     // image, else the font icon chosen in admin, else the packaged calendar
