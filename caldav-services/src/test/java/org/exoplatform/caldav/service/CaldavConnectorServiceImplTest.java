@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.inOrder;
@@ -40,6 +41,7 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.stereotype.Service;
 
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
@@ -70,6 +72,9 @@ public class CaldavConnectorServiceImplTest {
 
   @Mock
   private CaldavConnectionIdentityService caldavConnectionIdentityService;
+
+  @Mock
+  private CaldavServerOwnerService       caldavServerOwnerService;
 
   @InjectMocks
   private CaldavConnectorServiceImpl     caldavConnectorService;
@@ -348,6 +353,63 @@ public class CaldavConnectorServiceImplTest {
     caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
 
     verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+  }
+
+  /**
+   * Connecting drops what the owner cache remembers of the account, on the
+   * server it is now on and on the one it was on (EXO-90347): new
+   * credentials may open another mailbox, and the old entry describes
+   * nobody.
+   */
+  @Test
+  public void connectingDropsTheCachedOwnersOfTheAccountOnBothServers() throws Exception {
+    caldavConnectorService.setCaldavSyncService(caldavSyncService);
+    caldavConnectorService.setCaldavServerOwnerService(caldavServerOwnerService);
+    CaldavUserSetting previous = new CaldavUserSetting();
+    previous.setServerId(1L);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(previous);
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("john");
+    setting.setPassword("secret");
+    setting.setServerId(2L);
+
+    caldavConnectorService.createCaldavSetting(setting, USER_IDENTITY_ID);
+
+    verify(caldavServerOwnerService).evict(USER_IDENTITY_ID, 2L);
+    verify(caldavServerOwnerService).evict(USER_IDENTITY_ID, 1L);
+  }
+
+  /**
+   * The two evictions above reach the owner engine through a seam the tests
+   * set by hand; in production this Kernel component resolves it through
+   * the Kernel/Spring bridge, which registers {@code @Service} beans back
+   * into the container and nothing else ({@code KernelContainerLifecyclePlugin}:
+   * {@code isServiceBean} is {@code isAnnotationPresent(Service.class)}). A
+   * plain {@code @Component} is never found, the lookup answers null, and
+   * both evictions silently do nothing — which is what this pin guards, the
+   * one thing a container-less test can say about that path (EXO-90347).
+   */
+  @Test
+  public void theOwnerEngineIsAServiceBeanSoTheBridgeExportsItToThisKernelComponent() {
+    assertTrue(CaldavServerOwnerService.class.isAnnotationPresent(Service.class),
+               "CaldavServerOwnerService must carry @Service, or ExoContainerContext.getService never finds it");
+  }
+
+  /**
+   * Disconnecting drops the account's entry; an engine that cannot be
+   * resolved leaves the entry to expire and the disconnect succeeds.
+   */
+  @Test
+  public void disconnectingDropsTheCachedOwnersOfTheAccount() {
+    caldavConnectorService.setCaldavServerOwnerService(caldavServerOwnerService);
+    CaldavUserSetting connected = new CaldavUserSetting();
+    connected.setServerId(2L);
+    when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(connected);
+
+    caldavConnectorService.deleteCaldavSetting(USER_IDENTITY_ID);
+
+    verify(caldavConnectorStorage).deleteCaldavSetting(USER_IDENTITY_ID);
+    verify(caldavServerOwnerService).evict(USER_IDENTITY_ID, 2L);
   }
 
   /**

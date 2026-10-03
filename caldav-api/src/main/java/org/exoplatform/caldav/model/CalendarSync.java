@@ -91,4 +91,7 @@ public class CalendarSync {
    */
   private Date               copySettingsApplied;
 
+  /** Why the pair is paused, null for a pair that is not paused or was paused before the reason was recorded. */
+  private CalendarSyncPauseReason pauseReason;
+
 }

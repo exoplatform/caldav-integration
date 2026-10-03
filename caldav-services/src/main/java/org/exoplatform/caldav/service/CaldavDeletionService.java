@@ -45,6 +45,7 @@ import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.caldav.model.HiddenCalendar;
 import org.exoplatform.caldav.model.CalendarSyncState;
+import org.exoplatform.caldav.model.CalendarSyncPauseReason;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.RemoteCalendar;
 import org.exoplatform.caldav.model.RemoteCalendarsRead;
@@ -330,6 +331,7 @@ public class CaldavDeletionService {
       // listing may withdraw.
       if (pair.getStatus() == CalendarSyncStatus.PAUSED) {
         pair.setStatus(CalendarSyncStatus.ACTIVE);
+        pair.setPauseReason(null);
         caldavSyncStorage.savePair(pair);
       }
     }
@@ -396,6 +398,7 @@ public class CaldavDeletionService {
         continue;
       }
       pair.setStatus(CalendarSyncStatus.PAUSED);
+      pair.setPauseReason(CalendarSyncPauseReason.DISCONNECT);
       caldavSyncStorage.savePair(pair);
     }
     LOG.debug("The bindings of {} on server {} are paused; nothing was deleted on either side",
@@ -885,6 +888,7 @@ public class CaldavDeletionService {
    */
   private void restore(CalendarSync pair) {
     pair.setStatus(CalendarSyncStatus.ACTIVE);
+    pair.setPauseReason(null);
     caldavSyncStorage.savePair(pair);
   }
 

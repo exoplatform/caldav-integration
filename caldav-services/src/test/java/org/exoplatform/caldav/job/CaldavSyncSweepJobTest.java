@@ -17,6 +17,7 @@
 package org.exoplatform.caldav.job;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -30,6 +31,7 @@ import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.caldav.service.CaldavShareSubscriptionService;
 import org.exoplatform.caldav.service.CaldavSyncService;
 import org.exoplatform.caldav.service.CaldavTuningService;
 import org.exoplatform.container.ExoContainer;
@@ -67,6 +69,9 @@ public class CaldavSyncSweepJobTest {
 
   @Mock
   private CaldavTuningService   caldavTuningService;
+
+  @Mock
+  private CaldavShareSubscriptionService caldavShareSubscriptionService;
 
   @Mock
   private ExoContainer          container;
@@ -120,9 +125,9 @@ public class CaldavSyncSweepJobTest {
 
   @Test
   public void theJobDelegatesAndHoldsNoLogicOfItsOwn() {
-    // A scheduled task resolves what to do and hands it to the service. If
-    // this ever needs more than one call, the decision has moved into the job
-    // and belongs back in the service.
+    // A scheduled task resolves what to do and hands it to the services. Two
+    // hand-offs, each a straight delegation; if either ever needs a decision
+    // here, it has moved into the job and belongs back in its service.
     when(caldavTuningService.getSweepStaleMinutes()).thenReturn(30L);
     when(caldavTuningService.getSweepBatchSize()).thenReturn(50);
     when(caldavSyncService.sweepDueAccounts(30L, 50)).thenReturn(3);
@@ -130,5 +135,41 @@ public class CaldavSyncSweepJobTest {
     job.sweep();
 
     verify(caldavSyncService).sweepDueAccounts(30L, 50);
+    verify(caldavShareSubscriptionService).retryOwed(50);
+  }
+
+  /**
+   * <b>A colleague the account sweep never reaches (EXO-90277).</b> A colleague owed a subscription
+   * holds no pair and is never among the due accounts, so the owed changes
+   * are drained whatever the account sweep found - including nothing.
+   */
+  @Test
+  public void theOwedSubscriptionsAreDrainedEvenWhenNoAccountIsDue() {
+    when(caldavTuningService.getSweepStaleMinutes()).thenReturn(30L);
+    when(caldavTuningService.getSweepBatchSize()).thenReturn(20);
+    when(caldavSyncService.sweepDueAccounts(30L, 20)).thenReturn(0);
+
+    job.sweep();
+
+    verify(caldavShareSubscriptionService).retryOwed(20);
+  }
+
+  /**
+   * <b>The same colleague, one door further.</b> The account sweep reads its due
+   * accounts outside any guard, so a database that will not answer it ends
+   * the run — and the colleagues owed a subscription are precisely the ones
+   * who hold no account for that sweep to visit. The second hand-off is
+   * therefore made whatever the first did, and the failure still reaches the
+   * scheduler rather than being swallowed here.
+   */
+  @Test
+  public void theOwedSubscriptionsAreDrainedEvenWhenTheAccountSweepFails() {
+    when(caldavTuningService.getSweepStaleMinutes()).thenReturn(30L);
+    when(caldavTuningService.getSweepBatchSize()).thenReturn(20);
+    when(caldavSyncService.sweepDueAccounts(30L, 20)).thenThrow(new IllegalStateException("the database is away"));
+
+    assertThrows(IllegalStateException.class, job::sweep);
+
+    verify(caldavShareSubscriptionService).retryOwed(20);
   }
 }

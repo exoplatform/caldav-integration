@@ -18,6 +18,7 @@ package org.exoplatform.caldav.entity;
 
 import java.util.Date;
 
+import org.exoplatform.caldav.model.CalendarSyncPauseReason;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.SyncOrigin;
 
@@ -165,4 +166,12 @@ public class CaldavCalendarSyncEntity {
   @Temporal(TemporalType.TIMESTAMP)
   @Column(name = "COPY_SETTINGS_APPLIED")
   private Date               copySettingsApplied;
+
+  /**
+   * Why the pair is paused; see {@link CalendarSyncPauseReason}. Null for a
+   * pair that is not paused, and for one paused before the column existed.
+   */
+  @Enumerated(EnumType.STRING)
+  @Column(name = "PAUSE_REASON")
+  private CalendarSyncPauseReason pauseReason;
 }

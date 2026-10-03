@@ -34,6 +34,7 @@ import org.springframework.data.repository.query.Param;
 import org.exoplatform.caldav.entity.CaldavCalendarSyncEntity;
 import org.exoplatform.caldav.entity.CaldavObjectSyncEntity;
 import org.exoplatform.caldav.entity.CaldavConnectionEntity;
+import org.exoplatform.caldav.entity.CaldavPendingSubscriptionEntity;
 import org.exoplatform.caldav.entity.CaldavPendingPushEntity;
 import org.exoplatform.caldav.entity.CaldavServerEntity;
 
@@ -59,6 +60,16 @@ public class RepositoryQueryContractTest {
   private static final Pattern NAMED_PARAM = Pattern.compile(":(\\w+)");
 
   private static final Pattern DERIVED     = Pattern.compile("(?:find|count|exists|delete|remove)By(\\w+)");
+
+  /**
+   * The comparison keywords Spring Data's {@code PartTree} reads at the end
+   * of a property in a derived name, longest first so that {@code IsNotNull}
+   * is not read as {@code Null} after {@code IsNot}.
+   */
+  private static final Pattern COMPARISON_KEYWORD =
+                                                  Pattern.compile("(?:IsNotNull|IsNull|NotNull|Null|NotIn|In|NotLike|Like|NotContaining|Containing"
+                                                      + "|StartingWith|EndingWith|LessThanEqual|LessThan|GreaterThanEqual|GreaterThan"
+                                                      + "|Between|Before|After|IgnoreCase|IsNot|Not|IsTrue|True|IsFalse|False|Is|Equals)$");
 
   private static final Pattern ENTITY_IN   =
                                            Pattern.compile("\\b(?:FROM|UPDATE)\\s+(\\w+)", Pattern.CASE_INSENSITIVE);
@@ -103,7 +114,8 @@ public class RepositoryQueryContractTest {
                                     nameOf(CaldavObjectSyncEntity.class),
                                     nameOf(CaldavPendingPushEntity.class),
                                     nameOf(CaldavServerEntity.class),
-                                    nameOf(CaldavConnectionEntity.class));
+                                    nameOf(CaldavConnectionEntity.class),
+                                    nameOf(CaldavPendingSubscriptionEntity.class));
     List<String> unknown = new ArrayList<>();
     for (Class<?> dao : repositories()) {
       for (Method method : dao.getDeclaredMethods()) {
@@ -224,12 +236,24 @@ public class RepositoryQueryContractTest {
    * is one of this add-on's — so splitting on it unconditionally invents
    * properties nobody wrote.
    *
+   * <p>
+   * A comparison keyword Spring Data appends to a property — {@code Not},
+   * {@code EndingWith}, {@code In}, {@code IsNull}… ({@code PartTree.Part.Type})
+   * — is stripped only when the segment does not resolve as written, and one
+   * keyword at a time from the end, so a property that happens to end in one
+   * is still read as the property first (EXO-90347, which added
+   * {@code OriginNot} and {@code RemoteHrefEndingWith}).
+   *
    * @param entity the entity class
    * @param segment one {@code And}-separated part of the derived name
    * @return true when the segment names properties the entity declares
    */
   private boolean resolves(Class<?> entity, String segment) {
     if (hasField(entity, uncapitalised(segment))) {
+      return true;
+    }
+    Matcher keyword = COMPARISON_KEYWORD.matcher(segment);
+    if (keyword.find() && keyword.start() > 0 && resolves(entity, segment.substring(0, keyword.start()))) {
       return true;
     }
     String[] alternatives = segment.split("Or");
@@ -298,6 +322,7 @@ public class RepositoryQueryContractTest {
                    CaldavObjectSyncDAO.class,
                    CaldavPendingPushDAO.class,
                    CaldavServerDAO.class,
-                   CaldavConnectionDAO.class);
+                   CaldavConnectionDAO.class,
+                   CaldavPendingSubscriptionDAO.class);
   }
 }

@@ -44,6 +44,7 @@ import org.exoplatform.caldav.client.AccessControlEntry;
 import org.exoplatform.caldav.client.AclWriteResult;
 import org.exoplatform.caldav.client.bluemind.BlueMindAclClient;
 import org.exoplatform.caldav.client.bluemind.BlueMindAclClient.BlueMindAce;
+import org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
@@ -64,6 +65,7 @@ import org.exoplatform.caldav.model.CalendarShares.ShareUser;
 import org.exoplatform.caldav.model.CalendarShares.ShareeKind;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
+import org.exoplatform.caldav.model.ShareeSubscription;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
@@ -268,9 +270,6 @@ public class CaldavCalendarShareService {
    */
   private static final Set<String> BLUEMIND_READ_CLOSURE  = Set.of("Read", "Freebusy", "Invitation", "Visible");
 
-  /** A BlueMind user principal: the segment is the directory entry uid. */
-  private static final Pattern     BLUEMIND_PRINCIPAL     = Pattern.compile("/dav/principals/__uids__/([^/]+)");
-
   /**
    * A BlueMind calendar collection: the first segment is its owner's directory
    * entry uid ({@code ResType.VSTUFF_CONTAINER}).
@@ -342,6 +341,10 @@ public class CaldavCalendarShareService {
 
   private final CaldavPushService               caldavPushService;
 
+  private final CaldavShareSubscriptionService  caldavShareSubscriptionService;
+
+  private final CaldavServerOwnerService        caldavServerOwnerService;
+
   /**
    * The servers this node has already reported, at INFO, as offering no
    * sharing. Reported once per server per process, so the reason is visible
@@ -391,6 +394,9 @@ public class CaldavCalendarShareService {
    * @param identityManager the social identities of caller and sharees
    * @param blueMindAclClient reads a BlueMind calendar's access list back
    * @param caldavPushService says where the copies of eXo meetings are written
+   * @param caldavShareSubscriptionService subscribes a BlueMind colleague to
+   *          the calendar just shared with them, and unsubscribes them on a
+   *          revoke (EXO-90277)
    */
   @Autowired
   public CaldavCalendarShareService(AgendaCalendarService agendaCalendarService,
@@ -401,6 +407,8 @@ public class CaldavCalendarShareService {
                                     IdentityManager identityManager,
                                     BlueMindAclClient blueMindAclClient,
                                     CaldavPushService caldavPushService,
+                                    CaldavShareSubscriptionService caldavShareSubscriptionService,
+                                    CaldavServerOwnerService caldavServerOwnerService,
                                     @Value("${exo.caldav.share.probeMemoSeconds:300}")
                                     long probeMemoSeconds) {
     this(agendaCalendarService,
@@ -411,6 +419,8 @@ public class CaldavCalendarShareService {
          identityManager,
          blueMindAclClient,
          caldavPushService,
+         caldavShareSubscriptionService,
+         caldavServerOwnerService,
          Duration.ofSeconds(Math.max(0, probeMemoSeconds)),
          System::nanoTime);
   }
@@ -429,10 +439,13 @@ public class CaldavCalendarShareService {
                              IdentityManager identityManager,
                              BlueMindAclClient blueMindAclClient,
                              CaldavPushService caldavPushService,
+                             CaldavShareSubscriptionService caldavShareSubscriptionService,
+                             CaldavServerOwnerService caldavServerOwnerService,
                              Duration probeMemo,
                              LongSupplier nanoTime) {
     this.probeMemo = probeMemo;
     this.nanoTime = nanoTime;
+    this.caldavServerOwnerService = caldavServerOwnerService;
     this.agendaCalendarService = agendaCalendarService;
     this.caldavConnectorStorage = caldavConnectorStorage;
     this.caldavSyncStorage = caldavSyncStorage;
@@ -441,6 +454,7 @@ public class CaldavCalendarShareService {
     this.identityManager = identityManager;
     this.blueMindAclClient = blueMindAclClient;
     this.caldavPushService = caldavPushService;
+    this.caldavShareSubscriptionService = caldavShareSubscriptionService;
     for (int i = 0; i < LOCK_STRIPES; i++) {
       locks[i] = new ReentrantLock();
     }
@@ -1383,6 +1397,7 @@ public class CaldavCalendarShareService {
             + " access; reported as not applied", target.calendarId(), target.href(), sharee.principal(), shareeUid);
         throw new CaldavShareException(NOT_APPLIED);
       }
+      followShareeSubscription(target, sharee, username, shareeUid, true);
       LOG.info("CalDAV share granted: user {} gave {} read access to calendar {} ({}) as BlueMind entry {} on server {}",
                username,
                sharee.username(),
@@ -1440,6 +1455,7 @@ public class CaldavCalendarShareService {
             + " reported as not applied", sharee.principal(), target.calendarId(), target.href(), shareeUid);
         throw new CaldavShareException(NOT_APPLIED);
       }
+      followShareeSubscription(target, sharee, username, shareeUid, false);
       LOG.info("CalDAV share revoked: user {} took read access to calendar {} ({}) away from {} as BlueMind entry {} on server {}",
                username,
                target.calendarId(),
@@ -1450,6 +1466,64 @@ public class CaldavCalendarShareService {
       return blueMindSharesOf(target, after, ownerPrincipal);
     } finally {
       lock.unlock();
+    }
+  }
+
+  /**
+   * Makes the colleague's BlueMind account follow the change just confirmed
+   * on the access list: subscribed to the calendar after a grant, unsubscribed
+   * after a revoke (EXO-90277). Inside the stripe lock, after the read-back,
+   * before the audit line — and never a failure of the owner's action: the
+   * service records what did not land and never throws, and this seam guards
+   * against it anyway, because the share on the server is already made.
+   *
+   * <p>
+   * <b>The guard is not belt and braces.</b> This call sits lexically inside
+   * {@link #onServer}, whose whole job is to turn a
+   * {@code CalDavAuthenticationException} into a
+   * {@code CaldavShareException(CREDENTIALS)} and fail the caller — and the
+   * likeliest thing to come out of a subscription attempt is exactly that
+   * exception, raised by the <em>colleague's</em> stale password. Letting it
+   * travel would fail the owner's share over somebody else's credentials.
+   *
+   * <p>
+   * Two things this seam does not do, both deliberate and both stated in
+   * {@link CaldavShareSubscriptionService}'s own comment: it is not reached
+   * when the colleague already holds {@code Read} (the grant returns before
+   * it, so re-clicking Share is not a way to re-drive a subscription that has
+   * spent its budget — revoking and granting again is), and it costs the
+   * owner's request up to three synchronous round trips to BlueMind.
+   *
+   * @param target the calendar
+   * @param sharee the colleague
+   * @param username the owner's login, for the audit line
+   * @param shareeUid the colleague's directory entry uid
+   * @param subscribe true after a grant, false after a revoke
+   */
+  private void followShareeSubscription(ShareTarget target, Sharee sharee, String username, String shareeUid, boolean subscribe) {
+    // What the sharee's mailbox sees just changed by eXo's own hand, so what
+    // the sweep and the calendar list remember of it is dropped before the
+    // subscription is followed (EXO-90347): the next pass reads it afresh,
+    // and the drain evicts again once a deferred subscription lands.
+    caldavServerOwnerService.evict(sharee.identityId(), target.serverId());
+    try {
+      ShareeSubscription subscription = new ShareeSubscription(username,
+                                                               sharee.identityId(),
+                                                               sharee.username(),
+                                                               shareeUid,
+                                                               target.serverId(),
+                                                               containerUidOf(target));
+      if (subscribe) {
+        caldavShareSubscriptionService.subscribeSharee(subscription);
+      } else {
+        caldavShareSubscriptionService.unsubscribeSharee(subscription);
+      }
+    } catch (RuntimeException | LinkageError e) {
+      LOG.warn("The subscription of {} to calendar {} ({}) could not be followed on the server; the share itself is applied",
+               sharee.username(),
+               target.calendarId(),
+               target.href(),
+               e);
     }
   }
 
@@ -1692,17 +1766,14 @@ public class CaldavCalendarShareService {
   }
 
   /**
-   * The directory entry uid a BlueMind principal names.
+   * The directory entry uid a BlueMind principal names, read by the one
+   * parser the subscription drain reads it with.
    *
    * @param principal a principal path, any spelling, may be null
    * @return the uid, or null when the path is not a BlueMind user principal
    */
   private static String blueMindUidOf(String principal) {
-    if (StringUtils.isBlank(principal)) {
-      return null;
-    }
-    Matcher matcher = BLUEMIND_PRINCIPAL.matcher(CalendarCollection.principalPathOf(principal));
-    return matcher.matches() ? matcher.group(1) : null;
+    return BlueMindContainerNaming.userUidOf(principal);
   }
 
   /**

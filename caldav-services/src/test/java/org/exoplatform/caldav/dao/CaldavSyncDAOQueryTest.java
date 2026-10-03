@@ -40,6 +40,8 @@ import org.springframework.test.context.TestPropertySource;
 
 import org.exoplatform.caldav.entity.CaldavCalendarSyncEntity;
 import org.exoplatform.caldav.entity.CaldavConnectionEntity;
+import org.exoplatform.caldav.entity.CaldavPendingSubscriptionEntity;
+import org.exoplatform.caldav.model.PendingSubscriptionKind;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.service.CaldavConnectionIdentityService;
 import org.exoplatform.caldav.storage.CaldavConnectionStorage;
@@ -89,6 +91,9 @@ public class CaldavSyncDAOQueryTest {
   @Autowired
   private CaldavConnectionDAO   connectionDAO;
 
+  @Autowired
+  private CaldavPendingSubscriptionDAO pendingSubscriptionDAO;
+
   /** The server two users share in the EXO-90190 scenarios below. */
   private static final long     SHARED_SERVER = 5L;
 
@@ -98,6 +103,75 @@ public class CaldavSyncDAOQueryTest {
 
   /** The one meeting user one's mirror wrote a copy of. */
   private static final String   SHARED_UID    = "485e6afe-c5f5-4026-ae51-8c1ad905c45c";
+
+  // ---------------------------------------------------------------------
+  // EXO-90277 - the subscription changes eXo owes colleagues on BlueMind.
+  // ---------------------------------------------------------------------
+
+  /**
+   * <b>A colleague the account sweep never reaches, on the engine.</b> Bob (77) received a share and
+   * holds no CALDAV_CALENDAR_SYNC row at all, so the sweep's due-accounts
+   * query never names him - and the owed-subscription query does. Every
+   * hand-written query of the DAO binds its named parameters and runs; the
+   * two bulk updates reach the one row they name.
+   */
+  @Test
+  public void aColleagueWhoHoldsNoPairIsDrainedFromTheOwedTableNotFromTheAccounts() {
+    long bob = 77L;
+    persistCalendarSync(1L, "alices", CalendarSyncStatus.ACTIVE, new Date(0L));
+    long owed = persistPendingSubscription(bob, 5L, "exo-cal-shared", PendingSubscriptionKind.SUBSCRIBE, 0);
+    long spent = persistPendingSubscription(bob, 5L, "exo-cal-given-up", PendingSubscriptionKind.SUBSCRIBE, 5);
+    persistPendingSubscription(1L, 5L, "exo-cal-other", PendingSubscriptionKind.UNSUBSCRIBE, 2);
+
+    var due = calendarSyncDAO.findDueAccounts(CalendarSyncStatus.ACTIVE, new Date(), PageRequest.of(0, 10));
+    assertFalse(due.getContent().contains(bob), "the account sweep never reaches a colleague without a pair");
+
+    List<CaldavPendingSubscriptionEntity> attemptable = pendingSubscriptionDAO.findAttemptable(5, PageRequest.of(0, 10, org.springframework.data.domain.Sort.by("id")));
+    assertEquals(2, attemptable.size(), "the spent row is left out");
+    assertEquals(owed, attemptable.get(0).getId(), "oldest first, and bob is reached");
+    assertTrue(attemptable.stream().noneMatch(e -> e.getId() == spent));
+
+    List<CaldavPendingSubscriptionEntity> bobs = pendingSubscriptionDAO.findAttemptableOf(bob, 5, PageRequest.of(0, 10, org.springframework.data.domain.Sort.by("id")));
+    assertEquals(List.of(owed), bobs.stream().map(CaldavPendingSubscriptionEntity::getId).toList());
+
+    assertEquals(0, pendingSubscriptionDAO.recordAttempt(owed, PendingSubscriptionKind.UNSUBSCRIBE), "the other kind counts nothing");
+    assertEquals(0, pendingSubscriptionDAO.spendBudget(owed, PendingSubscriptionKind.UNSUBSCRIBE, 5), "nor spends anything");
+    assertEquals(1, pendingSubscriptionDAO.recordAttempt(owed, PendingSubscriptionKind.SUBSCRIBE));
+    assertEquals(1, pendingSubscriptionDAO.spendBudget(owed, PendingSubscriptionKind.SUBSCRIBE, 5));
+    entityManager.clear();
+    assertEquals(5, pendingSubscriptionDAO.findById(owed).orElseThrow().getAttempts());
+    assertTrue(pendingSubscriptionDAO.findAttemptableOf(bob, 5, PageRequest.of(0, 10)).isEmpty());
+    assertTrue(pendingSubscriptionDAO.findByUserIdentityIdAndServerIdAndContainerUid(bob, 5L, "exo-cal-shared").isPresent());
+    assertTrue(pendingSubscriptionDAO.findByUserIdentityIdAndServerIdAndContainerUid(bob, 6L, "exo-cal-shared").isEmpty());
+
+    assertEquals(0, pendingSubscriptionDAO.deleteAsking(bob, 5L, "exo-cal-shared", PendingSubscriptionKind.UNSUBSCRIBE),
+                 "a row asking for the other change is not deleted");
+    assertEquals(1, pendingSubscriptionDAO.deleteAsking(bob, 5L, "exo-cal-shared", PendingSubscriptionKind.SUBSCRIBE));
+    entityManager.clear();
+    assertTrue(pendingSubscriptionDAO.findById(owed).isEmpty());
+    assertTrue(pendingSubscriptionDAO.findById(spent).isPresent(), "only that row");
+  }
+
+  /**
+   * One owed change, written straight through the repository.
+   *
+   * @param userIdentityId the sharee
+   * @param serverId the server key
+   * @param containerUid the container
+   * @param kind the change
+   * @param attempts refusals so far
+   * @return the row id
+   */
+  private long persistPendingSubscription(long userIdentityId, long serverId, String containerUid, PendingSubscriptionKind kind, int attempts) {
+    CaldavPendingSubscriptionEntity entity = new CaldavPendingSubscriptionEntity();
+    entity.setUserIdentityId(userIdentityId);
+    entity.setServerId(serverId);
+    entity.setContainerUid(containerUid);
+    entity.setKind(kind);
+    entity.setAttempts(attempts);
+    entity.setSince(new Date());
+    return pendingSubscriptionDAO.save(entity).getId();
+  }
 
   @Test
   public void findDueBindsItsNamedParametersAndRuns() {
@@ -568,6 +642,46 @@ public class CaldavSyncDAOQueryTest {
                                                                       SyncOrigin.EXO,
                                                                       CaldavSyncServiceTest.RENAMED_BY_THE_SERVER),
                 "compared as stored: the trailing slash the listing carries is the caller's to strip");
+  }
+
+  /**
+   * The third arm (EXO-90347), on the engine: a colleague's calendar
+   * <em>imported</em> — REMOTE, a tombstone since she deleted it in eXo,
+   * recorded under her own home — is found by the container uid the sharee's
+   * listing spells under his home, and by nothing the other two arms read.
+   * The mirror ledger is left out, another server is not asked, and the
+   * suffix is a suffix: a row whose container merely contains the uid, and
+   * a row one wildcard away from it, do not answer — the derived query
+   * escapes what it is given.
+   */
+  @Test
+  public void aColleaguesImportedCalendarIsFoundByItsContainerUidUnderAnyHome() {
+    String container = "exo-cal-fd3fe75f-58f9-49e5-93d0-85f63b24a807";
+    String erics = "/dav/calendars/__uids__/4C60FEDD-0562-4903-A524-E95E1CCBCDE0/" + container;
+    persistPair(USER_SIX, SHARED_SERVER, SyncOrigin.REMOTE, erics, CalendarSyncStatus.LOCALLY_DELETED);
+    persistPair(USER_ONE, 99L, SyncOrigin.REMOTE, "/dav/calendars/__uids__/other/" + container);
+    persistPair(USER_ONE, SHARED_SERVER, SyncOrigin.MIRROR, "/dav/calendars/__uids__/other/exo-cal-mirror-only");
+    persistPair(USER_ONE, SHARED_SERVER, SyncOrigin.REMOTE, "/dav/calendars/__uids__/other/exo-cal-ab_d-suffix");
+    persistPair(USER_ONE, SHARED_SERVER, SyncOrigin.REMOTE, "/dav/calendars/__uids__/other/exo-cal-abXd");
+
+    assertFalse(calendarSyncDAO.existsByServerIdAndOriginAndLocalCalendarSyncUid(SHARED_SERVER,
+                                                                                SyncOrigin.EXO,
+                                                                                "fd3fe75f-58f9-49e5-93d0-85f63b24a807"),
+                "the slug is not her anchor: the first arm misses");
+    assertFalse(calendarSyncDAO.existsByServerIdAndOriginAndRemoteHref(SHARED_SERVER,
+                                                                      SyncOrigin.EXO,
+                                                                      "/dav/calendars/__uids__/751E6D1A-7FDB-49B2-B668-B569E9A5A42D/" + container),
+                "the sharee's spelling is under his home, and the pair is not an export: the second arm misses");
+    assertTrue(calendarSyncDAO.existsByServerIdAndOriginNotAndRemoteHrefEndingWith(SHARED_SERVER, SyncOrigin.MIRROR, "/" + container),
+               "the container uid answers, whatever home the pair recorded and whatever its status");
+    assertFalse(calendarSyncDAO.existsByServerIdAndOriginNotAndRemoteHrefEndingWith(SHARED_SERVER, SyncOrigin.MIRROR, "/exo-cal-mirror-only"),
+                "the mirror ledger binds no calendar");
+    assertFalse(calendarSyncDAO.existsByServerIdAndOriginNotAndRemoteHrefEndingWith(77L, SyncOrigin.MIRROR, "/" + container),
+                "another server is not asked");
+    assertFalse(calendarSyncDAO.existsByServerIdAndOriginNotAndRemoteHrefEndingWith(SHARED_SERVER, SyncOrigin.MIRROR, "/exo-cal-ab_d"),
+                "a suffix, not a substring: the row ending in -suffix does not answer");
+    assertFalse(calendarSyncDAO.existsByServerIdAndOriginNotAndRemoteHrefEndingWith(SHARED_SERVER, SyncOrigin.MIRROR, "/exo-cal-abXd".replace('X', '_')),
+                "the underscore is escaped, not a wildcard: exo-cal-abXd does not answer exo-cal-ab_d");
   }
 
   /**
