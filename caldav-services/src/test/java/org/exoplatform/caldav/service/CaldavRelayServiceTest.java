@@ -1006,6 +1006,28 @@ public class CaldavRelayServiceTest {
   }
 
   /**
+   * EXO-90836. A governed user's own one-click connect to the designated registration
+   * disconnects the account they have on another server, as the switch does, so agenda
+   * is not left with the previous connector's record beside the new one.
+   */
+  @Test
+  public void aGovernedUsersConnectDisconnectsTheAccountOnAnotherServer() throws Exception {
+    when(caldavManagedModeService.checkUserMayChangeConnection(USERNAME, SERVER_ID)).thenReturn(SERVER_ID);
+    givenOneClickConnection();
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(99L));
+    when(caldavServerService.resolveServer(99L)).thenReturn(server(99L, true));
+
+    caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
+
+    InOrder order = inOrder(agendaUserSettingsService, caldavConnectorService, caldavConnectorStorage);
+    order.verify(agendaUserSettingsService).removeUserConnector("agenda.caldavCalendar.99", IDENTITY_ID);
+    order.verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
+    order.verify(agendaUserSettingsService)
+         .saveUserConnector("agenda.caldavCalendar." + SERVER_ID, "eric@bm.example.org", IDENTITY_ID);
+    order.verify(caldavConnectorStorage).markConnectedByManagedMode(IDENTITY_ID, true);
+  }
+
+  /**
    * EXO-90836. Once the designated server answered, the switch disconnects the previous
    * account as the platform does - agenda's record of it, then caldav's - before the
    * new account is recorded and marked.

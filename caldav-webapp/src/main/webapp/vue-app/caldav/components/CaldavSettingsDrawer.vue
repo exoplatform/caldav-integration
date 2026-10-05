@@ -257,8 +257,9 @@ export default {
     },
     /**
      * Resolves the message shown for a failed connection attempt. The probe
-     * rejects with an error carrying one of the stable caldav.error.* codes,
-     * which double as translation keys; anything else — the settings REST
+     * rejects with an error carrying one of the stable caldav.error.* codes, and
+     * a managed-mode refusal with caldav.managed.connectionLocked; these double
+     * as translation keys, and anything else — the settings REST
      * failing, an unexpected shape — falls back to the generic message.
      *
      * @param {Error} error the failure the connection attempt rejected with
@@ -269,7 +270,7 @@ export default {
       // server-side and CaldavProbeResult has no such outcome, so the code could
       // never arrive and the string told administrators to satisfy a browser
       // constraint that no longer exists.
-      const knownCodes = ['caldav.error.credentials', 'caldav.error.connection', 'caldav.error.notCaldav', 'caldav.error.serverNotUsable'];
+      const knownCodes = ['caldav.error.credentials', 'caldav.error.connection', 'caldav.error.notCaldav', 'caldav.error.serverNotUsable', 'caldav.managed.connectionLocked'];
       if (error && knownCodes.includes(error.code)) {
         return error.code;
       }

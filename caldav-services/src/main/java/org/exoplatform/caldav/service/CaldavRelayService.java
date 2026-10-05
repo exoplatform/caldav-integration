@@ -427,9 +427,10 @@ public class CaldavRelayService {
    * first looks fine on screen.
    *
    * <p>
-   * A user managed mode governs may connect the designated registration only, and that
-   * connection is marked as made by managed mode, as the login-time attachment marks
-   * its own (EXO-90836).
+   * A user managed mode governs may connect the designated registration only (EXO-90836).
+   * That connect replaces an account the user has on another server, as the login-time
+   * switch does - agenda's record of it removed, its calendars tidied - and is marked as
+   * made by managed mode.
    *
    * @param serverId registration to connect to, or null for the legacy one
    * @param exoLogin the eXo login connecting
@@ -443,7 +444,7 @@ public class CaldavRelayService {
   public CaldavProbeResult connectThroughProvider(Long serverId, String exoLogin) throws ObjectNotFoundException,
                                                                                   IllegalAccessException {
     Long governing = caldavManagedModeService.checkUserMayChangeConnection(exoLogin, serverId);
-    return connectThroughProvider(serverId, exoLogin, governing != null, false);
+    return connectThroughProvider(serverId, exoLogin, governing != null, governing != null);
   }
 
   /**

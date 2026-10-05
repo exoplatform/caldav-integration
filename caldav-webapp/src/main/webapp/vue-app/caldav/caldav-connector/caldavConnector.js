@@ -765,10 +765,11 @@ export function createCaldavConnector(server, index, requirements, unavailablePr
  * @returns {Object} the fallback descriptor to register
  */
 export function createLegacyCaldavConnector(managedForMe) {
-  // The only CalDAV descriptor there is: when managed mode governs the user, it
-  // is the server they are kept on.
+  // Never the designated one: it is registered when no active registration is
+  // listed, and its connect can only open the typed-credentials drawer, so
+  // offering it as the one-click connect would end on a refusal.
   const managed = !!(managedForMe && managedForMe.managed);
-  return Object.assign({}, caldavConnector, {managed, designated: managed});
+  return Object.assign({}, caldavConnector, {managed, designated: false});
 }
 
 /**
