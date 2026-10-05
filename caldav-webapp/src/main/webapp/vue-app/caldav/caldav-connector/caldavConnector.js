@@ -407,9 +407,10 @@ const caldavConnector = {
   // to that same row (`resolveServer(null)` → `getServerByProviderName`), so
   // the destination governing those copies is the seed row's, not a default.
   // What the legacy descriptor lacks is not a registration but a READING of
-  // one: it is registered on the branch where `GET /caldav/rest/servers` could
-  // not be read at all, which is exactly why deriving the flag there is not
-  // an option. So this is a fail-open default, chosen the way the rest of the
+  // one: it is registered on the two branches where there is none to read —
+  // `GET /caldav/rest/servers` could not be read at all, or it answered with
+  // no active row — which is exactly why deriving the flag there is not an
+  // option. So this is a fail-open default, chosen the way the rest of the
   // resolution chain chooses: the shipped seed is DEDICATED_CALENDAR, and
   // hiding the step from a server that genuinely needs a dedicated calendar
   // strands the copies, while offering it where it is inert costs a drawer.
