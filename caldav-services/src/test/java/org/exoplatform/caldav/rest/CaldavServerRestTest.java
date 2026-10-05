@@ -43,6 +43,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.server.ResponseStatusException;
 
 import org.exoplatform.caldav.model.CaldavServer;
@@ -497,6 +500,36 @@ public class CaldavServerRestTest {
     assertEquals("caldav.managed.serverRequired", noBody.getReason());
     assertEquals("caldav.managed.serverRequired", noServer.getReason());
     verify(caldavManagedModeService, never()).saveManagedServer(anyLong(), any(), any());
+  }
+
+  /**
+   * The refusal handler is wired, not merely callable: a refused
+   * {@code PUT /servers/managed} dispatched through Spring answers with the
+   * status and the code under {@code message}. Without
+   * {@code @ExceptionHandler} on {@code onRefusal} the reason never reaches
+   * the body and every drawer falls back to its generic message; a test that
+   * calls {@code onRefusal} by hand cannot tell. The body is a real
+   * {@code CaldavManagedModeRequest} read from JSON.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void aDispatchedRefusalCarriesItsCodeInTheBody() throws Exception {
+    doThrow(new IllegalArgumentException("caldav.managed.serverNotEligible")).when(caldavManagedModeService)
+                                                                            .saveManagedServer(9, List.of("/externals"), "root");
+
+    MockMvcBuilders.standaloneSetup(caldavServerRest)
+                   .build()
+                   .perform(MockMvcRequestBuilders.put("/servers/managed")
+                                                  .contentType(MediaType.APPLICATION_JSON)
+                                                  .content("{\"serverId\":9,\"excludedGroups\":[\"/externals\"]}")
+                                                  .with(dispatched -> {
+                                                    dispatched.setRemoteUser("root");
+                                                    return dispatched;
+                                                  }))
+                   .andExpect(MockMvcResultMatchers.status().isBadRequest())
+                   .andExpect(MockMvcResultMatchers.jsonPath("$.status").value(400))
+                   .andExpect(MockMvcResultMatchers.jsonPath("$.message").value("caldav.managed.serverNotEligible"));
   }
 
   /**
