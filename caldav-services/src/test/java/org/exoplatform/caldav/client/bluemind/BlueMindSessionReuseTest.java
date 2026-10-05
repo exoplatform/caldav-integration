@@ -24,6 +24,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
@@ -141,6 +144,9 @@ public class BlueMindSessionReuseTest {
 
   private ListAppender<ILoggingEvent> logged;
 
+  /** The credentials service behind the resolver, to see what a refusal tells it. */
+  private ConnectorCredentialsService credentials;
+
   private Level                       previousLevel;
 
   /**
@@ -162,7 +168,7 @@ public class BlueMindSessionReuseTest {
       }
       return next;
     });
-    ConnectorCredentialsService credentials = mock(ConnectorCredentialsService.class);
+    credentials = mock(ConnectorCredentialsService.class);
     lenient().doAnswer(invocation -> {
       ConnectorCredentialsContext context = invocation.getArgument(0);
       return new HttpConnectorCredentials(basic(bluemindLoginOf(context.getUsername())), null);
@@ -421,6 +427,60 @@ public class BlueMindSessionReuseTest {
     assertEquals(ROOT_KEY, keyOf(sent.get(2)), "the refused read carried the stale key");
     assertEquals(SECOND_KEY, keyOf(sent.get(4)), "the read is sent again on the new session");
     assertEquals(SECOND_KEY, keyOf(sent.get(5)), "and the new session is the one now kept");
+  }
+
+  /**
+   * <b>A refused login tells the provider, once.</b> The account's first login
+   * is refused, so the material the provider produced is invalidated and the
+   * refusal is the caller's. Nothing is kept for the account.
+   */
+  @Test
+  void aRefusedFirstLoginInvalidatesTheMaterialOnce() {
+    answer(401, "");
+
+    assertThrows(CalDavAuthenticationException.class, () -> client.readAcl(rootHere, CONTAINER));
+
+    verify(credentials, times(1)).invalidate(any());
+    assertEquals(1, countOf("/api/auth/login"));
+  }
+
+  /**
+   * <b>A kept session the server no longer honours says nothing about the
+   * material.</b> Its key is refused, the session is renewed with the same
+   * credentials and the renewal is accepted: the provider is told nothing.
+   */
+  @Test
+  void aKeptSessionRenewedAfterARefusalLeavesTheMaterialAlone() {
+    answer(200, loginOk(ROOT_KEY, ROOT_UID));
+    answer(200, "[]");
+    answer(401, "");
+    answer(200, loginOk(SECOND_KEY, ROOT_UID));
+    answer(200, "[]");
+
+    client.readAcl(rootHere, CONTAINER);
+    client.readAcl(rootHere, CONTAINER);
+
+    verify(credentials, never()).invalidate(any());
+    assertEquals(2, countOf("/api/auth/login"));
+  }
+
+  /**
+   * <b>A renewal whose login is refused does tell the provider.</b> The kept
+   * key is refused, and the login that would renew it is refused too: that
+   * second refusal is about the material, so it is invalidated, once.
+   */
+  @Test
+  void aRenewalWhoseLoginIsRefusedInvalidatesTheMaterialOnce() {
+    answer(200, loginOk(ROOT_KEY, ROOT_UID));
+    answer(200, "[]");
+    answer(401, "");
+    answer(401, "");
+
+    client.readAcl(rootHere, CONTAINER);
+    assertThrows(CalDavAuthenticationException.class, () -> client.readAcl(rootHere, CONTAINER));
+
+    verify(credentials, times(1)).invalidate(any());
+    assertEquals(2, countOf("/api/auth/login"));
   }
 
   /**
