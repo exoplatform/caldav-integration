@@ -422,7 +422,7 @@ public class CaldavRelayService {
     // before anything is probed or written: agenda's record of the connection
     // refuses when it is off, and a refusal after caldav's setting was stored
     // would leave a half-connected account that the login-time attachment's
-    // rule 1 then hides for good (EXO-89653 review).
+    // rule 1 then hides for good.
     if (!agendaRemoteProviderEnabled(server.getProviderName())) {
       throw new IllegalAccessException(PROVIDER_DISABLED_MESSAGE);
     }
@@ -517,13 +517,11 @@ public class CaldavRelayService {
       }
       return new CaldavProbeResult(CaldavProbeResult.OK, status);
     } catch (IOException e) {
-      // One line, at warning: this is the only request a refused connection
-      // makes, and until now it made none. An administrator whose users cannot
-      // connect had nothing whatsoever to read (EXO-89806).
-      // WARN on purpose: an unreachable server is something an administrator
-      // must act on (EXO-89806). One line, no stack - since EXO-89653 this also
-      // runs at every login of every unattached managed user during an outage,
-      // and the stack adds nothing to that line; it is a debug line away.
+      // WARN, because an unreachable server is something an administrator must
+      // act on and this is the only request a refused connection makes. Without
+      // the stack: the probe also runs at every login of every unattached
+      // managed user during an outage, and the stack adds nothing to the line.
+      // It is logged at DEBUG.
       LOG.warn("CalDAV server {} could not be reached while verifying the account {}: {}", server.getId(), username, e.getMessage());
       LOG.debug("CalDAV server {} unreachable while verifying the account {}", server.getId(), username, e);
       return new CaldavProbeResult(CaldavProbeResult.CONNECTION, null);
