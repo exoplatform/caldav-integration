@@ -44,9 +44,10 @@ import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.caldav.LogRecorder;
+import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.constant.ManagedEnrollmentOutcome;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavUserSetting;
-import org.exoplatform.caldav.service.CaldavManagedEnrollmentService.Outcome;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.container.ExoContainer;
 import org.exoplatform.container.ExoContainerContext;
@@ -126,7 +127,7 @@ class CaldavManagedEnrollmentServiceTest {
   void doesNothingWhenManagedModeDoesNotApply() {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(null);
 
-    assertEquals(Outcome.NOT_MANAGED, service.enrollOnLogin(USER));
+    assertEquals(ManagedEnrollmentOutcome.NOT_MANAGED, service.enrollOnLogin(USER));
 
     verifyNoInteractions(caldavConnectorStorage, caldavRelayService);
   }
@@ -141,7 +142,7 @@ class CaldavManagedEnrollmentServiceTest {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
     configured(true);
 
-    assertEquals(Outcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
+    assertEquals(ManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
 
     verify(caldavRelayService, never()).connectThroughProvider(anyLong(), anyString());
   }
@@ -156,7 +157,21 @@ class CaldavManagedEnrollmentServiceTest {
     configured(false);
     when(caldavRelayService.connectThroughProvider(7L, USER)).thenReturn(probe(CaldavProbeResult.OK));
 
-    assertEquals(Outcome.ATTACHED, service.enrollOnLogin(USER));
+    assertEquals(ManagedEnrollmentOutcome.ATTACHED, service.enrollOnLogin(USER));
+  }
+
+  /**
+   * A login with no social identity has nothing to record a connection
+   * against: the server is not asked.
+   */
+  @Test
+  void leavesAloneAUserWithoutAnIdentity() {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
+    when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, USER)).thenReturn(null);
+
+    assertEquals(ManagedEnrollmentOutcome.NO_IDENTITY, service.enrollOnLogin(USER));
+
+    verifyNoInteractions(caldavConnectorStorage, caldavRelayService);
   }
 
   /**
@@ -171,7 +186,7 @@ class CaldavManagedEnrollmentServiceTest {
     configured(false);
     when(caldavRelayService.connectThroughProvider(7L, USER)).thenReturn(probe(CaldavProbeResult.CREDENTIALS));
 
-    assertEquals(Outcome.REFUSED, service.enrollOnLogin(USER));
+    assertEquals(ManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
   }
 
   /**
@@ -186,14 +201,15 @@ class CaldavManagedEnrollmentServiceTest {
     configured(false);
     doThrow(refusal).when(caldavRelayService).connectThroughProvider(7L, USER);
 
-    assertEquals(Outcome.REFUSED, service.enrollOnLogin(USER));
+    assertEquals(ManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
   }
 
-  /** The three refusals the connect throws before probing, one per type the catch names. */
+  /** The refusals the connect throws before probing, one per type the catch names. */
   static java.util.stream.Stream<Exception> refusals() {
     return java.util.stream.Stream.of(new IllegalAccessException("caldav.relay.serverInactive"),
                                       new IllegalArgumentException("caldav.connect.providerNamesNobody"),
-                                      new IllegalStateException("caldav.relay.notConnected"));
+                                      new IllegalStateException("caldav.relay.notConnected"),
+                                      new CalDavException("No credentials provider named bluemind could resolve the CalDAV account"));
   }
 
   /**
@@ -211,7 +227,7 @@ class CaldavManagedEnrollmentServiceTest {
     doThrow(unreachable).when(caldavRelayService).connectThroughProvider(7L, USER);
 
     try (LogRecorder log = new LogRecorder(CaldavManagedEnrollmentService.class)) {
-      assertEquals(Outcome.REFUSED, service.enrollOnLogin(USER));
+      assertEquals(ManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
 
       assertEquals("User mary left unattached: the managed CalDAV server 7 refused "
           + "(caldav.relay.notConnected <- Cannot reach BlueMind on /api/auth/login <- ClosedChannelException)",
@@ -224,7 +240,7 @@ class CaldavManagedEnrollmentServiceTest {
   void swallowsAFailureAndLeavesTheUserForTheNextLogin() {
     when(caldavManagedModeService.designatedServerFor(USER)).thenThrow(new RuntimeException("boom"));
 
-    assertEquals(Outcome.FAILED, service.enrollOnLogin(USER));
+    assertEquals(ManagedEnrollmentOutcome.FAILED, service.enrollOnLogin(USER));
   }
 
   /** Scheduling hands the user to the executor and returns; a blank login is dropped before that. */
