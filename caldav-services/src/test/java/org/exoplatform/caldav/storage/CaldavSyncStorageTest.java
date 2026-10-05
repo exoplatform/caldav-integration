@@ -288,6 +288,31 @@ public class CaldavSyncStorageTest {
   }
 
   @Test
+  public void aPairThatIsNoLongerPausedIsSavedWithoutItsOldReason() {
+    // A pair can leave PAUSED by paths other than a thaw (gone from the
+    // listing, then revived), carrying the reason its object still holds.
+    when(calendarSyncDAO.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    CalendarSync revived = pair(null, "/cal/john/work", "uid-1", SyncOrigin.EXO);
+    revived.setPauseReason(CalendarSyncPauseReason.FAILING_IMPORTS);
+
+    CalendarSync saved = storage.savePair(revived);
+
+    ArgumentCaptor<CaldavCalendarSyncEntity> entity = ArgumentCaptor.forClass(CaldavCalendarSyncEntity.class);
+    verify(calendarSyncDAO).save(entity.capture());
+    assertNull(entity.getValue().getPauseReason(), "an active pair is written without a reason");
+    assertNull(saved.getPauseReason());
+  }
+
+  @Test
+  public void aStoredReasonOnAPairThatIsNotPausedIsNotReadBack() {
+    CaldavCalendarSyncEntity active = entity(9L, "/cal/a", "anchor-a", SyncOrigin.REMOTE);
+    active.setPauseReason(CalendarSyncPauseReason.CREDENTIALS);
+    when(calendarSyncDAO.findById(9L)).thenReturn(Optional.of(active));
+
+    assertNull(storage.getPair(9L).getPauseReason());
+  }
+
+  @Test
   public void oneBindingIsReadByItsIdentifier() {
     when(calendarSyncDAO.findById(9L)).thenReturn(Optional.of(entity(9L, "/cal/a", "anchor-a", SyncOrigin.REMOTE)));
 

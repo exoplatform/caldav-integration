@@ -169,7 +169,9 @@ public class CaldavCalendarSyncEntity {
 
   /**
    * Why the pair is paused; see {@link CalendarSyncPauseReason}. Null for a
-   * pair that is not paused, and for one paused before the column existed.
+   * pair paused before the column existed, and for any pair that is not
+   * paused: {@code CaldavSyncStorage} writes and reads it only while the
+   * status is {@code PAUSED}.
    */
   @Enumerated(EnumType.STRING)
   @Column(name = "PAUSE_REASON")
