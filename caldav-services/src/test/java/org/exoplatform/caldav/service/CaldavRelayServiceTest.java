@@ -26,6 +26,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -46,6 +48,8 @@ import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -627,6 +631,8 @@ public class CaldavRelayServiceTest {
     CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
 
     assertEquals(CaldavProbeResult.OK, outcome.getResult());
+    // Accepted material is the provider's to keep.
+    verify(caldavCredentialsResolver, never()).invalidate(any(), any(), any());
     ArgumentCaptor<CaldavUserSetting> recorded = ArgumentCaptor.forClass(CaldavUserSetting.class);
     // Agenda's record too, under the connector's name: without it "My calendars"
     // shows the account as not connected, whatever caldav stored (EXO-89653).
@@ -663,20 +669,25 @@ public class CaldavRelayServiceTest {
   /**
    * A refused probe records nothing. A stored connection that does not work is worse
    * than a refused one: only the first looks right on screen, and the user discovers
-   * it through an empty calendar.
+   * it through an empty calendar. The refused material was the provider's, so the
+   * provider is told, once: a caching provider would hand it out again otherwise.
+   *
+   * @param status the server's refusal
    */
-  @Test
-  public void recordsNothingWhenTheServerRefusesTheServiceAccount() throws Exception {
+  @ParameterizedTest
+  @ValueSource(ints = { 401, 403 })
+  public void recordsNothingWhenTheServerRefusesTheServiceAccount(int status) throws Exception {
     when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
     when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
     when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
     when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
     givenAgendaConnector(true);
-    givenProbeAnswer(401);
+    givenProbeAnswer(status);
 
     CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
 
     assertEquals(CaldavProbeResult.CREDENTIALS, outcome.getResult());
+    verify(caldavCredentialsResolver).invalidate(SERVER_ID, PROVIDER, USERNAME);
     org.mockito.Mockito.verifyNoInteractions(caldavConnectorService, agendaUserSettingsService);
   }
 
