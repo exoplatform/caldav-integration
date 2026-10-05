@@ -427,6 +427,12 @@ public class CaldavRelayService {
       throw new IllegalAccessException(PROVIDER_DISABLED_MESSAGE);
     }
     CaldavProbeResult outcome = probe(server, account, authorization(server, exoLogin));
+    if (CaldavProbeResult.CREDENTIALS.equals(outcome.getResult())) {
+      // The material was the provider's, so the provider is told, once: a
+      // caching provider would otherwise hand the refused material out again
+      // until it expires. Outside any retry, as the contract asks.
+      caldavCredentialsResolver.invalidate(server.getId(), server.getAuthProviderName(), exoLogin);
+    }
     // getResult() carries the classification, getStatus() the raw HTTP code: comparing
     // OK against the latter is never true, and the connection would silently never be
     // recorded while the caller was told it succeeded.
