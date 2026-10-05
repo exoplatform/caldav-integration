@@ -137,7 +137,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :ok-label="$t('caldav.admin.managed.off.confirm.ok')"
       :cancel-label="$t('caldav.admin.managed.off.confirm.cancel')"
       @ok="clearManagedMode"
-      @closed="managedOffDeclined" />
+      @dialog-closed="managedOffDeclined" />
   </div>
 </template>
 
