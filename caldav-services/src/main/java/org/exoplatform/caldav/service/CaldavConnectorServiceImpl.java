@@ -502,6 +502,7 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
   private void checkUserMayChangeConnection(String username) throws ManagedConnectionLockedException {
     CaldavManagedModeService managedModeService = getCaldavManagedModeService();
     if (managedModeService == null) {
+      LOG.warn("CalDAV managed mode cannot be resolved: the connection change of user {} is refused", username);
       throw new ManagedConnectionLockedException();
     }
     managedModeService.checkUserMayChangeConnection(username, null);

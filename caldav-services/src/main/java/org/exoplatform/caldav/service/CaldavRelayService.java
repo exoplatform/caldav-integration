@@ -490,6 +490,25 @@ public class CaldavRelayService {
     return connectThroughProvider(serverId, exoLogin, true, true);
   }
 
+  /**
+   * The one-click connect behind the user's click, the login-time attachment and the
+   * login-time switch: the server is probed before anything is written, and only an OK
+   * answer records the connection.
+   * <p>
+   * With {@code replacing}, an account on another server is disconnected before the new
+   * one is recorded, and the writes share no transaction: a failure between the two
+   * leaves the user with no account until their next click or login, which attaches them
+   * again.
+   *
+   * @param serverId registration to connect to, or null for the legacy one
+   * @param exoLogin the eXo login connecting
+   * @param byManagedMode whether the connection is marked as made by managed mode
+   * @param replacing whether an account on another server is disconnected first
+   * @return the probe outcome; the connection is recorded only on {@link CaldavProbeResult#OK}
+   * @throws ObjectNotFoundException when no such registration is declared
+   * @throws IllegalAccessException when the registration is deactivated or its connector
+   *           switched off in agenda
+   */
   private CaldavProbeResult connectThroughProvider(Long serverId,
                                                    String exoLogin,
                                                    boolean byManagedMode,
