@@ -1229,7 +1229,8 @@ public class CaldavServerServiceTest {
   /**
    * Deleting an unreferenced server first disables its agenda remote
    * provider — agenda has no provider-delete API, and disabled is what
-   * removes the connector from every user's list — then removes the row.
+   * removes the connector from every user's list — then removes the row, and
+   * drops the BlueMind sessions opened under it, as an edit does.
    */
   @Test
   public void shouldDeleteUnreferencedServerAndDisableItsProvider() throws Exception {
@@ -1246,6 +1247,7 @@ public class CaldavServerServiceTest {
     assertEquals("agenda.caldavCalendar.7", provider.getValue().getName());
     assertEquals(false, provider.getValue().isEnabled());
     verify(caldavServerStorage).deleteServer(7);
+    verify(blueMindSessionService).forgetAll();
   }
 
   /**
