@@ -426,7 +426,8 @@ export const CONNECTION_LOCKED_CODE = 'caldav.managed.connectionLocked';
 
 /**
  * Rejects for a connection change the server did not perform: with the managed-mode
- * lock's code when the 403 body names it, a generic server error otherwise.
+ * lock's code when the 403 names it - in its body for the settings endpoints, in the
+ * relay-code header for the one-click connect - a generic server error otherwise.
  *
  * @param {Response} resp the answer, absent when the request failed
  * @returns {Promise} always rejected
@@ -435,8 +436,9 @@ function rejectRefusal(resp) {
   if (!resp || resp.status !== 403) {
     return Promise.reject(new Error('Response code indicates a server error', resp));
   }
+  const code = resp.headers && resp.headers.get('x-caldav-relay-code');
   return resp.text().catch(() => '').then(message => {
-    if (message && message.includes(CONNECTION_LOCKED_CODE)) {
+    if (code === CONNECTION_LOCKED_CODE || (message && message.includes(CONNECTION_LOCKED_CODE))) {
       throw caldavError(CONNECTION_LOCKED_CODE, 403);
     }
     throw new Error('Response code indicates a server error', resp);
