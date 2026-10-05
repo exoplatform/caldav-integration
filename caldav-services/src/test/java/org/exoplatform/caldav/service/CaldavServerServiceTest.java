@@ -1554,21 +1554,29 @@ public class CaldavServerServiceTest {
   }
 
   /**
-   * EXO-90836. An account is on a registration when it names it, or when it names none
-   * and resolves to it - the legacy account and the seed registration - and on no other.
+   * EXO-90836. An account is on the registration {@code resolveServer} answers for it:
+   * the row it names while that row exists; the seed registration when it names none
+   * (the legacy account) or names a row that is gone - and on no other.
    */
   @Test
-  public void anAccountIsOnTheRegistrationItNamesOrResolvesTo() {
+  public void anAccountIsOnTheRegistrationItResolvesTo() {
     CaldavServer seed = server(1, "agenda.caldavCalendar", "CalDAV", null, "https://seed.example.org/", true);
+    CaldavServer declared = server(7, "agenda.caldavCalendar.7", "Nextcloud", null, SERVER_URL, true);
     when(caldavServerStorage.getServerByProviderName(CaldavServerService.CALDAV_PROVIDER_NAME)).thenReturn(seed);
+    when(caldavServerStorage.getServerById(7)).thenReturn(declared);
+    when(caldavServerStorage.getServerById(9)).thenReturn(null);
     CaldavUserSetting named = new CaldavUserSetting();
     named.setServerId(7L);
     CaldavUserSetting legacy = new CaldavUserSetting();
+    CaldavUserSetting namingAGoneRow = new CaldavUserSetting();
+    namingAGoneRow.setServerId(9L);
 
     assertTrue(caldavServerService.isOnServer(named, 7L));
     assertFalse(caldavServerService.isOnServer(named, 1L));
     assertTrue(caldavServerService.isOnServer(legacy, 1L));
     assertFalse(caldavServerService.isOnServer(legacy, 7L));
+    assertTrue(caldavServerService.isOnServer(namingAGoneRow, 1L));
+    assertFalse(caldavServerService.isOnServer(namingAGoneRow, 9L));
   }
 
   /**
