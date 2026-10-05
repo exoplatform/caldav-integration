@@ -29,6 +29,8 @@ import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.constant.ManagedEnrollmentOutcome;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -87,10 +89,10 @@ import jakarta.annotation.PreDestroy;
 @Service
 public class CaldavManagedEnrollmentService {
 
-  private static final Log         LOG         = ExoLogger.getLogger(CaldavManagedEnrollmentService.class);
-
   /** Enrolments waiting for a thread: beyond this, a login's attempt is dropped and retried next time. */
   static final int                 QUEUE_DEPTH = 256;
+
+  private static final Log         LOG         = ExoLogger.getLogger(CaldavManagedEnrollmentService.class);
 
   @Autowired
   private CaldavManagedModeService caldavManagedModeService;
@@ -140,21 +142,40 @@ public class CaldavManagedEnrollmentService {
    * @return what happened, for the tests and the log
    */
   @ContainerTransactional
-  public Outcome enrollOnLogin(String username) {
+  public ManagedEnrollmentOutcome enrollOnLogin(String username) {
     try {
       Long serverId = caldavManagedModeService.designatedServerFor(username);
       if (serverId == null) {
         LOG.debug("User {} not enrolled: no managed CalDAV server applies to them", username);
-        return Outcome.NOT_MANAGED;
+        return ManagedEnrollmentOutcome.NOT_MANAGED;
       }
-      if (hasConfiguration(username)) {
+      Identity identity = identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, username);
+      if (identity == null) {
+        // Nothing to record a connection against: agenda's own record refuses
+        // an identity it cannot name, so probing first would cost a request
+        // for nothing.
+        LOG.debug("User {} not enrolled: they have no social identity", username);
+        return ManagedEnrollmentOutcome.NO_IDENTITY;
+      }
+      long identityId = Long.parseLong(identity.getId());
+      if (hasConfiguration(identityId)) {
         LOG.debug("User {} not enrolled: they already have a CalDAV configuration", username);
-        return Outcome.ALREADY_CONFIGURED;
+        return ManagedEnrollmentOutcome.ALREADY_CONFIGURED;
       }
       return attach(serverId, username);
     } catch (Exception e) {
       LOG.warn("Cannot attach user {} to the managed CalDAV server at login; their next login will try again", username, e);
-      return Outcome.FAILED;
+      return ManagedEnrollmentOutcome.FAILED;
+    }
+  }
+
+  @PreDestroy
+  public void stop() {
+    if (executor instanceof ExecutorService service) {
+      // Drop what is queued rather than run it against a context being torn
+      // down; the probe already treats the interruption as "not reached", and
+      // the next login retries.
+      service.shutdownNow();
     }
   }
 
@@ -168,27 +189,28 @@ public class CaldavManagedEnrollmentService {
    * @return ATTACHED or REFUSED
    * @throws Exception an unexpected failure, logged by the caller
    */
-  private Outcome attach(Long serverId, String username) throws Exception {
+  private ManagedEnrollmentOutcome attach(Long serverId, String username) throws Exception {
     try {
       CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(serverId, username);
       if (CaldavProbeResult.OK.equals(outcome.getResult())) {
         LOG.info("User {} attached to the managed CalDAV server {} at login", username, serverId);
-        return Outcome.ATTACHED;
+        return ManagedEnrollmentOutcome.ATTACHED;
       }
       // The server refused the user: no account there, or a server that does
       // not answer. Nothing is recorded, and the next login tries again - the
       // administrator's remedy is a BlueMind account or an exclusion.
       LOG.info("User {} left unattached: the managed CalDAV server {} answered {}", username, serverId, outcome.getResult());
-      return Outcome.REFUSED;
-    } catch (IllegalAccessException | IllegalArgumentException | IllegalStateException e) {
+      return ManagedEnrollmentOutcome.REFUSED;
+    } catch (IllegalAccessException | IllegalArgumentException | IllegalStateException | CalDavException e) {
       // The connect refused before probing: the server inactive, a provider that
-      // asks the user or names nobody, or one that produced no credentials - a
-      // BlueMind that does not answer lands here, once per login, without a stack.
+      // asks the user, names nobody or is not registered, or one that produced
+      // no credentials - a BlueMind that does not answer lands here, once per
+      // login, without a stack.
       // The whole cause chain, not the outer code: a refusal from BlueMind is
       // wrapped several times on its way here, and the message that says why
       // is not always the innermost one.
       LOG.info("User {} left unattached: the managed CalDAV server {} refused ({})", username, serverId, causeChain(e));
-      return Outcome.REFUSED;
+      return ManagedEnrollmentOutcome.REFUSED;
     }
   }
 
@@ -206,15 +228,11 @@ public class CaldavManagedEnrollmentService {
    * population of connectors and plays no part here: its user is attached to
    * CalDAV as well, and agenda lists both (decision 2026-09-23).
    *
-   * @param username the eXo login
+   * @param identityId the user's social identity
    * @return true when a configuration exists
    */
-  private boolean hasConfiguration(String username) {
-    Identity identity = identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, username);
-    if (identity == null) {
-      return false;
-    }
-    CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(Long.parseLong(identity.getId()));
+  private boolean hasConfiguration(long identityId) {
+    CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(identityId);
     return setting != null && StringUtils.isNotBlank(setting.getUsername());
   }
 
@@ -231,16 +249,6 @@ public class CaldavManagedEnrollmentService {
       thread.setDaemon(true);
       return thread;
     });
-  }
-
-  @PreDestroy
-  public void stop() {
-    if (executor instanceof ExecutorService service) {
-      // Drop what is queued rather than run it against a context being torn
-      // down; the probe already treats the interruption as "not reached", and
-      // the next login retries.
-      service.shutdownNow();
-    }
   }
 
   /**
@@ -264,10 +272,5 @@ public class CaldavManagedEnrollmentService {
   /** For the tests: run the enrolments on the caller's thread. */
   void setExecutor(Executor executor) {
     this.executor = executor;
-  }
-
-  /** What a login attempt came to, one value per branch of the three rules and their failures. */
-  public enum Outcome {
-    NOT_MANAGED, ALREADY_CONFIGURED, ATTACHED, REFUSED, FAILED
   }
 }
