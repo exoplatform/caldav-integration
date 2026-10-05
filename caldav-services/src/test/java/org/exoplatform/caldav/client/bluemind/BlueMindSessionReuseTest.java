@@ -58,8 +58,8 @@ import ch.qos.logback.core.read.ListAppender;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.TestEndpoints;
-import org.exoplatform.caldav.model.BlueMindLogin;
 import org.exoplatform.caldav.client.bluemind.BlueMindSessionCache.Key;
+import org.exoplatform.caldav.model.BlueMindLogin;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsContext;
 import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
@@ -287,8 +287,7 @@ public class BlueMindSessionReuseTest {
    * open would put one live session on BlueMind per call, for as long as the
    * node stays above the bound, until BlueMind's own clock expires each one.
    * That is what every call did before EXO-90397 and what the {@code call}
-   * Javadoc says still happens whenever nothing keeps a session (review
-   * round 1).
+   * Javadoc says still happens whenever nothing keeps a session.
    */
   @Test
   void aSessionTheStoreHadNoRoomForIsClosedWhenItsCallEnds() {
@@ -376,7 +375,7 @@ public class BlueMindSessionReuseTest {
    * And the session it dropped is closed at the host that minted it, which is
    * the only one that knows it — the address change is eXo's doing, so the
    * session is eXo's to close rather than one more left open on a server
-   * nobody will ask again (review round 1).
+   * nobody will ask again.
    */
   @Test
   void aKeptSessionIsNeverPresentedAtAnotherAddress() {

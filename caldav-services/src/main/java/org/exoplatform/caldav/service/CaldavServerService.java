@@ -270,7 +270,8 @@ public class CaldavServerService {
   /**
    * The BlueMind REST sessions kept per account (EXO-90397). A session is
    * opened under a registration's address and provider, so a registration
-   * that is edited or deleted invalidates every one of them. Guarded as the
+   * that is edited or deleted invalidates every one of them on this node; on
+   * another node a kept session lives until its lifetime runs out. Guarded as the
    * two above are: it resolves through the credentials contract, a bean of
    * another WAR, so it is undefined in this addon's own Spring test contexts.
    */
@@ -1067,7 +1068,7 @@ public class CaldavServerService {
     saveAgendaRemoteProvider(updatedServer);
     // A third writer of the registration row, and the invariant the two
     // Javadoc blocks above state is unconditional: a registration that is
-    // written drops the sessions opened under it (EXO-90397, review round 1).
+    // written drops the sessions opened under it.
     forgetBlueMindSessions();
     return caldavServerQuirkService.decorate(updatedServer);
   }

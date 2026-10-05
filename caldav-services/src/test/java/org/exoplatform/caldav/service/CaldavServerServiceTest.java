@@ -479,7 +479,7 @@ public class CaldavServerServiceTest {
 
   /**
    * And so does the activation switch, which is a third writer of the same
-   * row (review round 1). The invariant the field and the helper both state
+   * row. The invariant the field and the helper both state
    * is unconditional — a registration that is written drops the sessions
    * opened under it — and taking a server out of service is exactly the
    * moment not to keep talking to it on a session minted while it was in.

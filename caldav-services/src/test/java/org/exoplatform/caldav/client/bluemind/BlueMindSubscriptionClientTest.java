@@ -679,8 +679,8 @@ public class BlueMindSubscriptionClientTest {
    * <b>Over a session that is kept, and swapped under the call.</b> The other
    * fixtures of this class drive an unpooled session — one login, one call,
    * one logout — which is what an un-keyable endpoint still does but no
-   * longer what production does for this client (EXO-90397; review round 1
-   * asked for the pooled path to be covered too).
+   * longer what production does for this client, so the pooled path is
+   * covered here too.
    *
    * <p>
    * The sharp case is the one reuse created: the listing is asked for under

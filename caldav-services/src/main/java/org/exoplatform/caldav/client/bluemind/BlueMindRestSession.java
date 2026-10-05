@@ -49,9 +49,9 @@ import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
 /**
- * The one way eXo talks to BlueMind's own REST API: a short session opened
- * with the account's stored login and password, every call carrying the key
- * it answered, and the session always closed afterwards.
+ * The one way eXo talks to BlueMind's own REST API: a session opened with the
+ * account's stored login and password, kept per account for a short while
+ * (see {@code call}), every call carrying the key it answered.
  *
  * <p>
  * Extracted from {@code BlueMindAclClient} (EXO-90253) when a second
@@ -646,7 +646,7 @@ public class BlueMindRestSession {
      */
     private boolean              mine;
 
-    private BlueMindLogin                login;
+    private BlueMindLogin        login;
 
     /**
      * An open session.
@@ -679,7 +679,7 @@ public class BlueMindRestSession {
      * only of the endpoint that cannot be keyed at all: past
      * {@code maxAccounts} every call opens a session nothing will reuse, and
      * leaving each of those open until BlueMind expires it would leak one
-     * server-side session per call (EXO-90397, review round 1).
+     * server-side session per call.
      */
     private void closeIfMine() {
       if (mine) {

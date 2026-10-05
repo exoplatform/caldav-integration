@@ -41,10 +41,9 @@ import org.exoplatform.caldav.model.BlueMindLogin;
  * read this add-on makes paid it: the Share drawer's access list, the
  * subscription listing behind the calendar-owner witness, the ICS import
  * channel. With the technical-account provider it is worse than three,
- * because producing the account's credentials is itself two BlueMind calls
- * — the technical login, then the sudo — and that provider has no cache yet
- * (EXO-89647), so the login removed here also removes the credential
- * production that precedes it.
+ * because producing the account's credentials is itself up to two BlueMind
+ * calls — the technical login, then the sudo — on a miss of the provider's
+ * own store.
  *
  * <p>
  * <b>Why here, and not in a store.</b> A session key is a live credential

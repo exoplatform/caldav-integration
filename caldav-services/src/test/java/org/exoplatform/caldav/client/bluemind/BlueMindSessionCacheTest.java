@@ -26,8 +26,8 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
-import org.exoplatform.caldav.model.BlueMindLogin;
 import org.exoplatform.caldav.client.bluemind.BlueMindSessionCache.Key;
+import org.exoplatform.caldav.model.BlueMindLogin;
 
 /**
  * The store on its own, and in particular the answers it gives when two
@@ -38,8 +38,8 @@ import org.exoplatform.caldav.client.bluemind.BlueMindSessionCache.Key;
  * a real cache, which is what pins the key and the lifetime. It cannot reach
  * the lost-race answers: a call only mints a session after {@code held}
  * returned nothing, so single-threaded the slot is always empty when
- * {@code keep} runs and every race branch is dead (review round 1 measured
- * this — zero executions across the whole module's suite). Those branches
+ * {@code keep} runs and every race branch is dead: the module's suite never
+ * executes them. Those branches
  * decide <i>which</i> session a caller ends up holding and which one is left
  * open on BlueMind, so they are exercised here directly instead.
  */
