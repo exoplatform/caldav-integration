@@ -19,18 +19,24 @@ package org.exoplatform.caldav.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.function.BooleanSupplier;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -144,7 +150,7 @@ class CaldavManagedEnrollmentServiceTest {
 
     assertEquals(ManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
 
-    verify(caldavRelayService, never()).connectThroughProvider(anyLong(), anyString());
+    verify(caldavRelayService, never()).connectThroughProvider(anyLong(), anyString(), any());
   }
 
   /**
@@ -155,9 +161,32 @@ class CaldavManagedEnrollmentServiceTest {
   void attachesAUserWithoutAConfiguration() throws Exception {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
     configured(false);
-    when(caldavRelayService.connectThroughProvider(7L, USER)).thenReturn(probe(CaldavProbeResult.OK));
+    when(caldavRelayService.connectThroughProvider(eq(7L), eq(USER), any())).thenReturn(probe(CaldavProbeResult.OK));
 
     assertEquals(ManagedEnrollmentOutcome.ATTACHED, service.enrollOnLogin(USER));
+  }
+
+  /**
+   * Rule one, asked again at the write: the user configured an account while
+   * the probe ran. The connect is handed a check that now answers false, and
+   * its "recorded nothing" answer is the user's own configuration winning.
+   */
+  @Test
+  void leavesAloneAUserWhoConfiguredAnAccountDuringTheProbe() throws Exception {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
+    CaldavUserSetting none = new CaldavUserSetting();
+    CaldavUserSetting theirs = new CaldavUserSetting();
+    theirs.setUsername("mary@other.example.org");
+    // Read once by rule one, then by the check the connect runs before writing.
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(none, theirs);
+    when(caldavRelayService.connectThroughProvider(eq(7L), eq(USER), any())).thenAnswer(call -> {
+      BooleanSupplier stillWanted = call.getArgument(2);
+      return probe(stillWanted.getAsBoolean() ? CaldavProbeResult.OK : CaldavProbeResult.SUPERSEDED);
+    });
+
+    assertEquals(ManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
+
+    verify(caldavConnectorStorage, times(2)).getCaldavSetting(IDENTITY_ID);
   }
 
   /**
@@ -184,7 +213,7 @@ class CaldavManagedEnrollmentServiceTest {
   void leavesUnattachedAUserTheServerRefuses() throws Exception {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
     configured(false);
-    when(caldavRelayService.connectThroughProvider(7L, USER)).thenReturn(probe(CaldavProbeResult.CREDENTIALS));
+    when(caldavRelayService.connectThroughProvider(eq(7L), eq(USER), any())).thenReturn(probe(CaldavProbeResult.CREDENTIALS));
 
     assertEquals(ManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
   }
@@ -199,7 +228,7 @@ class CaldavManagedEnrollmentServiceTest {
   void leavesUnattachedAUserTheConnectRefuses(Exception refusal) throws Exception {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
     configured(false);
-    doThrow(refusal).when(caldavRelayService).connectThroughProvider(7L, USER);
+    doThrow(refusal).when(caldavRelayService).connectThroughProvider(eq(7L), eq(USER), any());
 
     assertEquals(ManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
   }
@@ -224,7 +253,7 @@ class CaldavManagedEnrollmentServiceTest {
     Exception transport = new java.nio.channels.ClosedChannelException();
     Exception unreachable = new IllegalStateException("caldav.relay.notConnected",
                                                       new RuntimeException("Cannot reach BlueMind on /api/auth/login", transport));
-    doThrow(unreachable).when(caldavRelayService).connectThroughProvider(7L, USER);
+    doThrow(unreachable).when(caldavRelayService).connectThroughProvider(eq(7L), eq(USER), any());
 
     try (LogRecorder log = new LogRecorder(CaldavManagedEnrollmentService.class)) {
       assertEquals(ManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
@@ -265,5 +294,40 @@ class CaldavManagedEnrollmentServiceTest {
     });
 
     assertFalse(service.scheduleEnrollment(USER));
+  }
+
+  /**
+   * A second login while the first attempt is still queued adds nothing; once
+   * that attempt has run, the next login queues again.
+   */
+  @Test
+  void queuesOneAttemptPerUserAtATime() {
+    List<Runnable> queued = new ArrayList<>();
+    service.setExecutor(queued::add);
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(null);
+
+    assertTrue(service.scheduleEnrollment(USER));
+    assertFalse(service.scheduleEnrollment(USER));
+    assertEquals(1, queued.size());
+
+    queued.get(0).run();
+
+    assertTrue(service.scheduleEnrollment(USER));
+    assertEquals(2, queued.size());
+  }
+
+  /** A dropped attempt does not hold the user's place: the next login queues. */
+  @Test
+  void aDroppedAttemptDoesNotBlockTheNextLogin() {
+    service.setExecutor(runnable -> {
+      throw new RejectedExecutionException("full");
+    });
+    assertFalse(service.scheduleEnrollment(USER));
+
+    List<Runnable> queued = new ArrayList<>();
+    service.setExecutor(queued::add);
+
+    assertTrue(service.scheduleEnrollment(USER));
+    assertEquals(1, queued.size());
   }
 }
