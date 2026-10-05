@@ -16,7 +16,9 @@
  */
 package org.exoplatform.caldav.service;
 
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
@@ -109,6 +111,15 @@ public class CaldavManagedEnrollmentService {
   private Executor                 executor    = newEnrollmentExecutor();
 
   /**
+   * The logins whose attempt is queued or running on this node: a second
+   * login of the same user while the first attempt is still pending adds
+   * nothing. Node-local, like the executor; two nodes may still each run one,
+   * and the write-time check of {@link #attach} is what keeps the second from
+   * overwriting the first.
+   */
+  private final Set<String>        inFlight    = ConcurrentHashMap.newKeySet();
+
+  /**
    * Queues the enrolment of a user who just logged in. Returns at once.
    *
    * @param username the eXo login of the user who logged in
@@ -118,10 +129,21 @@ public class CaldavManagedEnrollmentService {
     if (StringUtils.isBlank(username)) {
       return false;
     }
+    if (!inFlight.add(username)) {
+      LOG.debug("User {} not queued: an attachment attempt for them is already pending", username);
+      return false;
+    }
     try {
-      executor.execute(() -> enrollOnLogin(username));
+      executor.execute(() -> {
+        try {
+          enrollOnLogin(username);
+        } finally {
+          inFlight.remove(username);
+        }
+      });
       return true;
     } catch (RejectedExecutionException e) {
+      inFlight.remove(username);
       // The queue is full: this is a login storm, and the next login of this
       // user will try again. Blocking the login thread instead would turn a
       // slow CalDAV server into a slow platform.
@@ -162,7 +184,7 @@ public class CaldavManagedEnrollmentService {
         LOG.debug("User {} not enrolled: they already have a CalDAV configuration", username);
         return ManagedEnrollmentOutcome.ALREADY_CONFIGURED;
       }
-      return attach(serverId, username);
+      return attach(serverId, username, identityId);
     } catch (Exception e) {
       LOG.warn("Cannot attach user {} to the managed CalDAV server at login; their next login will try again", username, e);
       return ManagedEnrollmentOutcome.FAILED;
@@ -184,17 +206,30 @@ public class CaldavManagedEnrollmentService {
    * answer, or the connect refusing before probing - records nothing and is
    * retried at the next login; any other exception is the caller's failure.
    *
+   * <p>
+   * Rule one is asked again right before the connection is written: the probe
+   * can take as long as the server's timeout, and a configuration the user
+   * made meanwhile is theirs. The connect then records nothing and answers
+   * {@link CaldavProbeResult#SUPERSEDED}.
+   *
    * @param serverId the designated registration
    * @param username the eXo login of the user who logged in
-   * @return ATTACHED or REFUSED
+   * @param identityId the user's social identity
+   * @return ATTACHED, ALREADY_CONFIGURED or REFUSED
    * @throws Exception an unexpected failure, logged by the caller
    */
-  private ManagedEnrollmentOutcome attach(Long serverId, String username) throws Exception {
+  private ManagedEnrollmentOutcome attach(Long serverId, String username, long identityId) throws Exception {
     try {
-      CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(serverId, username);
+      CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(serverId,
+                                                                            username,
+                                                                            () -> !hasConfiguration(identityId));
       if (CaldavProbeResult.OK.equals(outcome.getResult())) {
         LOG.info("User {} attached to the managed CalDAV server {} at login", username, serverId);
         return ManagedEnrollmentOutcome.ATTACHED;
+      }
+      if (CaldavProbeResult.SUPERSEDED.equals(outcome.getResult())) {
+        LOG.debug("User {} not enrolled: they configured a CalDAV account during the attempt", username);
+        return ManagedEnrollmentOutcome.ALREADY_CONFIGURED;
       }
       // The server refused the user: no account there, or a server that does
       // not answer. Nothing is recorded, and the next login tries again - the

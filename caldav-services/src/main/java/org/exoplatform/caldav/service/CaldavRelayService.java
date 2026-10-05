@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -400,6 +401,30 @@ public class CaldavRelayService {
    */
   public CaldavProbeResult connectThroughProvider(Long serverId, String exoLogin) throws ObjectNotFoundException,
                                                                                   IllegalAccessException {
+    return connectThroughProvider(serverId, exoLogin, () -> true);
+  }
+
+  /**
+   * {@link #connectThroughProvider(Long, String)}, recording the connection only
+   * if {@code stillWanted} still answers true at the moment of the writes. The
+   * login-time attachment passes "the user still has no configuration": the
+   * probe can take as long as the server's timeout, and a connection the user
+   * made in that window is theirs, not something to overwrite.
+   *
+   * @param serverId registration to connect to, or null for the legacy one
+   * @param exoLogin the eXo login connecting
+   * @param stillWanted asked once, after a probe that passed and right before
+   *          anything is written
+   * @return the probe outcome, or {@link CaldavProbeResult#SUPERSEDED} when the
+   *         probe passed and {@code stillWanted} declined the writes
+   * @throws ObjectNotFoundException when no such registration is declared
+   * @throws IllegalAccessException when the registration is deactivated, when agenda has
+   *           switched its connector off, or when the provider named no account
+   */
+  public CaldavProbeResult connectThroughProvider(Long serverId,
+                                                  String exoLogin,
+                                                  BooleanSupplier stillWanted) throws ObjectNotFoundException,
+                                                                               IllegalAccessException {
     CaldavServer server = serverId == null ? caldavServerService.resolveServer(null)
                                            : caldavServerService.getServerById(serverId);
     if (server == null) {
@@ -437,6 +462,12 @@ public class CaldavRelayService {
     // OK against the latter is never true, and the connection would silently never be
     // recorded while the caller was told it succeeded.
     if (CaldavProbeResult.OK.equals(outcome.getResult())) {
+      if (!stillWanted.getAsBoolean()) {
+        LOG.debug("CalDAV server {} accepted the account of {}, which is configured meanwhile; nothing is recorded",
+                  server.getId(),
+                  exoLogin);
+        return new CaldavProbeResult(CaldavProbeResult.SUPERSEDED, outcome.getStatus());
+      }
       CaldavUserSetting setting = new CaldavUserSetting();
       setting.setUsername(account);
       setting.setServerId(server.getId());

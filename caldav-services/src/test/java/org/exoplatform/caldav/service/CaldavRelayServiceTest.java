@@ -692,6 +692,27 @@ public class CaldavRelayServiceTest {
   }
 
   /**
+   * The server accepted, but the caller no longer wants the connection - the
+   * login-time attachment, whose user configured an account during the probe.
+   * Nothing is written, and the answer says so rather than claiming success.
+   */
+  @Test
+  public void recordsNothingWhenTheConnectionIsNoLongerWanted() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
+    givenProbeAnswer(207);
+
+    CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME, () -> false);
+
+    assertEquals(CaldavProbeResult.SUPERSEDED, outcome.getResult());
+    assertEquals(207, outcome.getStatus());
+    org.mockito.Mockito.verifyNoInteractions(caldavConnectorService, agendaUserSettingsService);
+  }
+
+  /**
    * A connector that does expect typed credentials is refused here, and nothing is
    * sent: connecting it with no credentials at all would record an account nobody
    * proved anything about.
