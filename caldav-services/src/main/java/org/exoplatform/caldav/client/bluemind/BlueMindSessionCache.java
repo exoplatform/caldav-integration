@@ -211,12 +211,18 @@ public class BlueMindSessionCache {
     }
     Entry fresh = new Entry(session, clock.getAsLong() + ttlMillis);
     Entry existing = entries.putIfAbsent(key, fresh);
-    if (existing != null && existing.expiresAt() > clock.getAsLong()) {
-      return existing.login();
-    }
-    if (existing != null) {
-      // Expired under us: this session takes its place.
-      entries.put(key, fresh);
+    while (existing != null) {
+      if (existing.expiresAt() > clock.getAsLong()) {
+        return existing.login();
+      }
+      // Expired under us: this session takes its place, unless another caller
+      // that met the same expired entry got there first. Then that caller's
+      // session is the entry, and the next look answers it, so this caller
+      // closes its own instead of overwriting one the other believes kept.
+      if (entries.replace(key, existing, fresh)) {
+        break;
+      }
+      existing = entries.putIfAbsent(key, fresh);
     }
     bound(key);
     return null;

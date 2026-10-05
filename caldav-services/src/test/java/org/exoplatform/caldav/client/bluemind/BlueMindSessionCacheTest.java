@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 
@@ -115,6 +117,52 @@ class BlueMindSessionCacheTest {
     assertNull(cache.keep(KEY, fresh), "the expired entry is not answered; this session is now the entry");
     assertTrue(cache.holds(KEY, fresh));
     assertFalse(cache.holds(KEY, stale));
+    assertEquals(1, cache.size());
+  }
+
+  /**
+   * <b>Two callers that meet one expired entry end on one session.</b> Both
+   * found the expired entry; the first to replace it keeps its session and is
+   * told so, and the second, arriving after, is answered with the first one
+   * rather than overwriting it. Overwriting would leave the first caller
+   * holding a session it believes kept and that nothing keeps any more, open
+   * on BlueMind until BlueMind expires it. The clock is where the first
+   * caller is let in: it is read between the second caller's look and its
+   * write.
+   */
+  @Test
+  void twoCallersMeetingOneExpiredEntryEndOnOneSession() {
+    AtomicInteger readsBeforeTheOtherCaller = new AtomicInteger(Integer.MAX_VALUE);
+    AtomicReference<Runnable> otherCaller = new AtomicReference<>();
+    BlueMindSessionCache cache = new BlueMindSessionCache(300, 10, () -> {
+      if (readsBeforeTheOtherCaller.decrementAndGet() == 0) {
+        otherCaller.getAndSet(() -> {
+        }).run();
+      }
+      return now;
+    });
+    BlueMindLogin stale = session(ROOT, "key-stale");
+    BlueMindLogin first = session(ROOT, "key-first");
+    BlueMindLogin second = session(ROOT, "key-second");
+    assertNull(cache.keep(KEY, stale));
+    now += 301_000L;
+    AtomicReference<BlueMindLogin> firstAnswer = new AtomicReference<>(stale);
+    AtomicReference<Boolean> firstKept = new AtomicReference<>();
+    otherCaller.set(() -> {
+      firstAnswer.set(cache.keep(KEY, first));
+      firstKept.set(cache.holds(KEY, first));
+    });
+    // The second caller's first read stamps its entry; its second read, right
+    // after it found the expired one, is where the first caller runs.
+    readsBeforeTheOtherCaller.set(2);
+
+    BlueMindLogin secondAnswer = cache.keep(KEY, second);
+
+    assertNull(firstAnswer.get(), "the first caller's session became the entry");
+    assertTrue(firstKept.get(), "and the first caller was told it is kept");
+    assertSame(first, secondAnswer, "the second caller is told the first one is the entry");
+    assertTrue(cache.holds(KEY, first), "the first caller's session is still the one kept");
+    assertFalse(cache.holds(KEY, second), "the second caller's is not, so its opener closes it");
     assertEquals(1, cache.size());
   }
 
