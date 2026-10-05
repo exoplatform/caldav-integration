@@ -298,7 +298,7 @@ public class NormalisingServerMirrorTest {
     // the count only multiplied it.
     push.writeInto(USER, LOGIN, mirror, event(), EVENT);
     // What the server holds is not what eXo sent, and that is legitimate.
-    assertNotEquals(exoRender(), server.stored(HREF));
+    assertNotEquals(withoutStamp(exoRender()), withoutStamp(server.stored(HREF)));
 
     for (int pass = 0; pass < 4; pass++) {
       MirrorVerification result = verification.verify(USER, LOGIN);
@@ -342,7 +342,7 @@ public class NormalisingServerMirrorTest {
 
     ObjectSync mapping = push.writeInto(USER, LOGIN, mirror, event(), EVENT);
 
-    assertEquals(exoRender(), server.stored(HREF));
+    assertEquals(withoutStamp(exoRender()), withoutStamp(server.stored(HREF)));
     assertEquals(0, verification.verify(USER, LOGIN).altered());
     assertEquals(server.etag(HREF), mapping.getEtag());
   }
@@ -874,6 +874,19 @@ public class NormalisingServerMirrorTest {
    */
   private String exoRender() {
     return icsWriter.write(event());
+  }
+
+  /**
+   * An object with its {@code DTSTAMP} lines taken out. The writer stamps
+   * every render with the current second, so the object eXo sent and a later
+   * render of the same event differ there whenever the two straddle a second
+   * boundary; every other byte is what the comparison is about.
+   *
+   * @param ics an iCalendar object
+   * @return the same object without its {@code DTSTAMP} lines
+   */
+  private static String withoutStamp(String ics) {
+    return ics == null ? null : ics.replaceAll("(?m)^DTSTAMP[:;][^\\r\\n]*\\r?\\n", "");
   }
 
   /**
