@@ -41,6 +41,7 @@ import org.exoplatform.caldav.dao.CaldavObjectSyncDAO;
 import org.exoplatform.caldav.entity.CaldavCalendarSyncEntity;
 import org.exoplatform.caldav.entity.CaldavObjectSyncEntity;
 import org.exoplatform.caldav.model.CalendarSync;
+import org.exoplatform.caldav.model.CalendarSyncPauseReason;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
@@ -861,7 +862,20 @@ public class CaldavSyncStorage {
                             entity.getLastSyncEnd(),
                             entity.getConsecutiveFailures(),
                             entity.getCopySettingsApplied(),
-                            entity.getPauseReason());
+                            pauseReasonOf(entity.getStatus(), entity.getPauseReason()));
+  }
+
+  /**
+   * Why a pair is paused, kept only while it is: a pair that leaves
+   * {@link CalendarSyncStatus#PAUSED} by any path, a thaw or a status the
+   * sync pass writes, carries no reason, in either direction of the mapping.
+   *
+   * @param status the pair's status
+   * @param reason the reason the caller holds
+   * @return the reason for a paused pair, null otherwise
+   */
+  private static CalendarSyncPauseReason pauseReasonOf(CalendarSyncStatus status, CalendarSyncPauseReason reason) {
+    return status == CalendarSyncStatus.PAUSED ? reason : null;
   }
 
   /**
@@ -884,7 +898,7 @@ public class CaldavSyncStorage {
                                         pair.getLastSyncEnd(),
                                         pair.getConsecutiveFailures(),
                                         pair.getCopySettingsApplied(),
-                                        pair.getPauseReason());
+                                        pauseReasonOf(pair.getStatus(), pair.getPauseReason()));
   }
 
   /**
