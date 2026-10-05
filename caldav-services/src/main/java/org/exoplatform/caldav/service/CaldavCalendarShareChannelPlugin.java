@@ -209,16 +209,16 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
     return held == null || held == wanted ? null : held;
   }
 
-  @Override
   /**
    * Takes the colleague's access away on the server, whatever its level, as
-   * the share service does it. A colleague who holds no grant any more changes nothing
-   * and counts as withdrawn.
+   * the share service does it. A colleague who holds no grant any more
+   * changes nothing and counts as withdrawn.
    *
    * @param share the eXo record this channel carried
    * @param ownerUsername the owner's login
    * @return true when the grant is gone
    */
+  @Override
   public boolean withdraw(CalendarShare share, String ownerUsername) {
     if (share == null || StringUtils.isBlank(ownerUsername)) {
       return false;
