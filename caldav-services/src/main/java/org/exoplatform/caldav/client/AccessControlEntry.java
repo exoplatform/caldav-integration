@@ -72,7 +72,9 @@ public record AccessControlEntry(AcePrincipal principal,
    * {@code DAV:write}, the privilege a "can edit" share adds (EXO-90378).
    * RFC 3744 §3.12 aggregates {@code write-properties}, {@code write-content},
    * {@code bind} and {@code unbind} under it — changing an event, adding one
-   * and removing one, which is exactly what an edit share is for.
+   * and removing one, which is what an edit share is for. A server may map it
+   * to more: on Stalwart it also lets the principal delete or rename the
+   * collection itself, see {@link #EDIT_PRIVILEGES}.
    */
   public static final String      WRITE                     = clark(DAV_NS, "write");
 
@@ -107,9 +109,14 @@ public record AccessControlEntry(AcePrincipal principal,
    * <p>
    * Leaving those two out is what made a grant that <b>had</b> landed read
    * back as unrecognised, and eXo report a share it had really made as not
-   * applied. Nothing here widens what an edit share means: every member is
-   * part of {@code DAV:write} itself, so a principal holding this set holds
-   * neither more nor less than writing the calendar's events.
+   * applied. Nothing here widens eXo's own grant: every member is part of
+   * {@code DAV:write} itself. What {@code DAV:write} carries is the server's
+   * to say, though, and on Stalwart it is more than writing the calendar's
+   * events: the {@code Delete} and {@code Modify} it maps to also let the
+   * principal delete the collection itself, or change its name and
+   * properties ({@code crates/dav/src/calendar/delete.rs} and
+   * {@code proppatch.rs}, v0.16.0). That is accepted for a Can-edit share,
+   * because no Stalwart ACL grants deleting events without it.
    * {@code DAV:write-acl}, {@code DAV:read-acl}, {@code DAV:all},
    * {@code DAV:unlock}, scheduling and vendor privileges stay outside it.
    */
