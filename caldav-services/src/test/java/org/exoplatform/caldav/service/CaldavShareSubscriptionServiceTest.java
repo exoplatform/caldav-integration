@@ -346,7 +346,7 @@ public class CaldavShareSubscriptionServiceTest {
     verify(caldavPendingSubscriptionStorage, never()).refused(eq(1L), any());
     verify(caldavPendingSubscriptionStorage, never()).refused(eq(2L), any());
     verify(caldavPendingSubscriptionStorage, never()).abandoned(eq(4L), any(), anyInt());
-    assertEquals(4, infoLines().stream().filter(line -> line.startsWith("Owed BlueMind")).count(), infoLines().toString());
+    assertEquals(4, infoLines().stream().filter(line -> line.startsWith("Owed calendar")).count(), infoLines().toString());
   }
 
   /**

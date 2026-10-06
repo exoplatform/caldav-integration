@@ -51,21 +51,24 @@ import jakarta.annotation.PreDestroy;
  * (EXO-89653): the login-time attachment the board describes.
  *
  * <p>
- * Three rules, in the order the board states them and with one reordering
- * that changes no outcome: the user already has a CalDAV configuration -
- * whatever server it names - and nothing happens; the user is in a population
- * the administrator excluded and nothing happens; otherwise they are attached
- * to the designated server. The designation is read first here because it is
- * the cheapest read and the one that is null on every instance where managed
- * mode is off.
+ * Three rules: the user is in a population the administrator excluded, or
+ * nothing is designated, and nothing happens; the user already has a CalDAV
+ * configuration on the designated server and nothing happens; otherwise they are
+ * put on the designated server - attached when they have no configuration,
+ * switched when their account is on another server (EXO-90836). The designation
+ * is read first because it is the cheapest read and the one that is null on
+ * every instance where managed mode is off.
  *
  * <p>
- * Having no configuration and having removed one are the same case: a user
- * who disconnects is attached again at their next login, and disconnecting
- * stays useful because whoever connects elsewhere has a configuration, which
- * rule one leaves alone. The outcome itself is not stored - it is a function of
- * (user, designation, exclusions, the user's settings) and a stored outcome
- * would drift the moment an administrator changed one of them.
+ * A switch probes the designated server before it changes anything: a refusal
+ * leaves the user's account as it was, and the next login tries again. A user
+ * managed mode governs cannot disconnect, connect with typed credentials or
+ * connect another server themselves
+ * ({@link CaldavManagedModeService#checkUserMayChangeConnection(String, Long)}),
+ * so the server the instance designates is the only one they end up on. The
+ * outcome itself is not stored - it is a function of (user, designation,
+ * exclusions, the user's settings) and a stored outcome would drift the moment
+ * an administrator changed one of them.
  *
  * <p>
  * What is stored is who made the connection: an attachment is marked as made by
@@ -112,6 +115,9 @@ public class CaldavManagedEnrollmentService {
 
   @Autowired
   private CaldavConnectorStorage   caldavConnectorStorage;
+
+  @Autowired
+  private CaldavServerService      caldavServerService;
 
   @Autowired
   private IdentityManager          identityManager;
@@ -161,7 +167,7 @@ public class CaldavManagedEnrollmentService {
   }
 
   /**
-   * Applies the three rules for one user, on the executor's thread.
+   * Applies the rules for one user, on the executor's thread.
    *
    * <p>
    * {@code @ContainerTransactional} because this runs on a bare executor
@@ -199,11 +205,12 @@ public class CaldavManagedEnrollmentService {
         LOG.debug("User {} not enrolled: no managed CalDAV server applies to them", username);
         return ManagedEnrollmentOutcome.NOT_MANAGED;
       }
-      if (hasConfiguration(identityId)) {
-        LOG.debug("User {} not enrolled: they already have a CalDAV configuration", username);
+      CaldavUserSetting configuration = configuration(identityId);
+      if (configuration != null && caldavServerService.isOnServer(configuration, serverId)) {
+        LOG.debug("User {} not enrolled: they are already on the managed CalDAV server", username);
         return ManagedEnrollmentOutcome.ALREADY_CONFIGURED;
       }
-      return attach(serverId, username, identityId);
+      return attach(serverId, username, identityId, configuration != null);
     } catch (Exception e) {
       LOG.warn("Cannot attach user {} to the managed CalDAV server at login; their next login will try again", username, e);
       return ManagedEnrollmentOutcome.FAILED;
@@ -221,8 +228,9 @@ public class CaldavManagedEnrollmentService {
   }
 
   /**
-   * Rule three: the one-click connect, run for the user. A refusal - the probe's
-   * answer, or the connect refusing before probing - records nothing and is
+   * Rule three: the one-click connect, run for the user - an attachment when they have
+   * no configuration, a switch when their account is on another server. A refusal - the
+   * probe's answer, or the connect refusing before probing - records nothing and is
    * retried at the next login; any other exception is the caller's failure.
    *
    * <p>
@@ -234,16 +242,24 @@ public class CaldavManagedEnrollmentService {
    * @param serverId the designated registration
    * @param username the eXo login of the user who logged in
    * @param identityId the user's social identity
-   * @return ATTACHED, ALREADY_CONFIGURED or REFUSED
+   * @param switching true when the user's account is on another server
+   * @return ATTACHED, SWITCHED, ALREADY_CONFIGURED or REFUSED
    * @throws Exception an unexpected failure, logged by the caller
    */
-  private ManagedEnrollmentOutcome attach(Long serverId, String username, long identityId) throws Exception {
+  private ManagedEnrollmentOutcome attach(Long serverId, String username, long identityId, boolean switching) throws Exception {
     try {
-      CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(serverId,
-                                                                            username,
-                                                                            true,
-                                                                            () -> !hasConfiguration(identityId));
+      CaldavProbeResult outcome = switching ? caldavRelayService.switchThroughProvider(serverId,
+                                                                                      username,
+                                                                                      () -> !isOnServer(identityId, serverId))
+                                            : caldavRelayService.connectThroughProvider(serverId,
+                                                                                       username,
+                                                                                       true,
+                                                                                       () -> configuration(identityId) == null);
       if (CaldavProbeResult.OK.equals(outcome.getResult())) {
+        if (switching) {
+          LOG.info("User {} switched to the managed CalDAV server {} at login", username, serverId);
+          return ManagedEnrollmentOutcome.SWITCHED;
+        }
         LOG.info("User {} attached to the managed CalDAV server {} at login", username, serverId);
         return ManagedEnrollmentOutcome.ATTACHED;
       }
@@ -300,25 +316,35 @@ public class CaldavManagedEnrollmentService {
   }
 
   /**
-   * Rule one: whether the user already has a CalDAV configuration, whatever
-   * server it names. The username is what "credentials exist" survives as in
-   * the stored setting - the letter of the board's rule, and the predicate the
-   * personal credentials source reads. Deliberately not
-   * {@code CaldavServerService.isConnected}, which also asks whether the stored
-   * record can still authenticate: a record left behind by an administrator's
-   * change (a server switched to a provider that asks the user) reads as "has a
-   * configuration" here and as "reconnect" in the UI: such a record is the
+   * The user's CalDAV configuration, whatever server it names. The username is what
+   * "credentials exist" survives as in the stored setting - the letter of the board's
+   * rule, and the predicate the personal credentials source reads. Deliberately not
+   * {@code CaldavServerService.isConnected}, which also asks whether the stored record
+   * can still authenticate: a record on the designated server left behind by an
+   * administrator's change (a server switched to a provider that asks the user) is the
    * administrator's change to disconnect, never a reason to re-attach over it at
-   * login. A calendar connector of another kind - Google, Office 365, Exchange - is another
-   * population of connectors and plays no part here: its user is attached to
+   * login. A calendar connector of another kind - Google, Office 365, Exchange - is
+   * another population of connectors and plays no part here: its user is attached to
    * CalDAV as well, and agenda lists both (decision 2026-09-23).
    *
    * @param identityId the user's social identity
-   * @return true when a configuration exists
+   * @return the configuration, null when there is none
    */
-  private boolean hasConfiguration(long identityId) {
+  private CaldavUserSetting configuration(long identityId) {
     CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(identityId);
-    return setting != null && StringUtils.isNotBlank(setting.getUsername());
+    return setting != null && StringUtils.isNotBlank(setting.getUsername()) ? setting : null;
+  }
+
+  /**
+   * Whether the user's configuration, read again, is on the designated server.
+   *
+   * @param identityId the user's social identity
+   * @param serverId the designated registration
+   * @return true when the user is on that server
+   */
+  private boolean isOnServer(long identityId, Long serverId) {
+    CaldavUserSetting setting = configuration(identityId);
+    return setting != null && caldavServerService.isOnServer(setting, serverId);
   }
 
   /**

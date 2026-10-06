@@ -24,6 +24,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
@@ -90,6 +91,9 @@ class CaldavManagedEnrollmentServiceTest {
   private CaldavConnectorStorage         caldavConnectorStorage;
 
   @Mock
+  private CaldavServerService            caldavServerService;
+
+  @Mock
   private IdentityManager                identityManager;
 
   @InjectMocks
@@ -114,6 +118,13 @@ class CaldavManagedEnrollmentServiceTest {
   @AfterEach
   void forgetTheContainer() {
     containerContext.close();
+  }
+
+  private void configuredOn(Long serverId) {
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("mary@bm.example.org");
+    setting.setServerId(serverId);
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(setting);
   }
 
   private void configured(boolean hasConfiguration) {
@@ -205,6 +216,7 @@ class CaldavManagedEnrollmentServiceTest {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
     when(caldavManagedModeService.governingServerFor(USER)).thenReturn(7L);
     attachedByManagedModeTo(7L);
+    when(caldavServerService.isOnServer(any(CaldavUserSetting.class), eq(7L))).thenReturn(true);
 
     assertEquals(ManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
 
@@ -230,18 +242,48 @@ class CaldavManagedEnrollmentServiceTest {
   }
 
   /**
-   * Rule one: a configuration exists, whatever server it names - the user
-   * chose, or was attached before - and nothing happens. Disconnecting is what
-   * makes this false again.
+   * A user already on the designated server - they chose it, or were attached before -
+   * is left alone, whether managed mode marked the connection or not.
    */
   @Test
-  void leavesAloneAUserWhoAlreadyHasAConfiguration() throws Exception {
+  void leavesAloneAUserAlreadyOnTheDesignatedServer() throws Exception {
     when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
-    configured(true);
+    configuredOn(7L);
+    when(caldavServerService.isOnServer(any(CaldavUserSetting.class), eq(7L))).thenReturn(true);
 
     assertEquals(ManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
 
     verify(caldavRelayService, never()).connectThroughProvider(anyLong(), anyString(), anyBoolean(), any());
+    verify(caldavRelayService, never()).switchThroughProvider(anyLong(), anyString(), any());
+  }
+
+  /**
+   * EXO-90836. A governed user whose account is on another server is switched to the
+   * designated one, and nothing is disconnected first: the switch changes the account
+   * only once the designated server answered.
+   */
+  @Test
+  void switchesAtLoginAGovernedUserOnAnotherServer() throws Exception {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
+    configured(true);
+    when(caldavRelayService.switchThroughProvider(eq(7L), eq(USER), any())).thenReturn(probe(CaldavProbeResult.OK));
+
+    assertEquals(ManagedEnrollmentOutcome.SWITCHED, service.enrollOnLogin(USER));
+
+    verify(caldavRelayService, never()).disconnectForUser(anyLong(), anyString());
+    verify(caldavRelayService, never()).connectThroughProvider(anyLong(), anyString(), anyBoolean(), any());
+  }
+
+  /** EXO-90836. A switch the designated server refuses leaves the user's account as it was. */
+  @Test
+  void aRefusedSwitchLeavesTheUsersAccount() throws Exception {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
+    configured(true);
+    when(caldavRelayService.switchThroughProvider(eq(7L), eq(USER), any())).thenReturn(probe(CaldavProbeResult.CREDENTIALS));
+
+    assertEquals(ManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
+
+    verify(caldavRelayService, never()).disconnectForUser(anyLong(), anyString());
   }
 
   /**
@@ -457,5 +499,21 @@ class CaldavManagedEnrollmentServiceTest {
 
     assertTrue(service.scheduleEnrollment(USER));
     assertEquals(1, queued.size());
+  }
+
+  /**
+   * EXO-90836. An account connected through the legacy connector names no registration;
+   * when the one it resolves to is the designated server, the user is on it already,
+   * and nothing is switched over their account.
+   */
+  @Test
+  void leavesAloneALegacyAccountOnTheRegistrationItResolvesTo() throws Exception {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
+    configuredOn(null);
+    when(caldavServerService.isOnServer(any(CaldavUserSetting.class), eq(7L))).thenReturn(true);
+
+    assertEquals(ManagedEnrollmentOutcome.ALREADY_CONFIGURED, service.enrollOnLogin(USER));
+
+    verify(caldavRelayService, never()).switchThroughProvider(anyLong(), anyString(), any());
   }
 }
