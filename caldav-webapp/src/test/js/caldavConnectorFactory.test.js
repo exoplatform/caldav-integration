@@ -169,22 +169,6 @@ describe('createCaldavConnector', () => {
   });
 
   /**
-   * EXO-89652. Managed mode never takes connecting or disconnecting away:
-   * it designates the connector a user is attached to at login, and its
-   * exclusions say who is not attached - neither removes anyone's choice.
-   * Agenda hides its affordances on `connector.managed === true`, so the flag
-   * stays declared and is false on every descriptor shape, never undefined:
-   * `undefined` and `false` read alike right up to the day somebody writes
-   * `!== false`.
-   */
-  it('never declares a descriptor managed, and never leaves the flag undefined', () => {
-    expect(caldavConnector.managed).toBe(false);
-    expect(createCaldavConnector(seedServer, 0).managed).toBe(false);
-    expect(createCaldavConnector(declaredServer, 1, {'bluemind-sudo': false}).managed).toBe(false);
-    expect(createLegacyCaldavConnector().managed).toBe(false);
-  });
-
-  /**
    * The legacy fallback is a COPY: it is registered when the registry answers
    * nothing, and handing out the shared singleton would let a consumer mutate
    * the object every other descriptor is built from.

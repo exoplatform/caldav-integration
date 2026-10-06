@@ -27,9 +27,9 @@ import java.util.List;
  * {@code serverId}, {@code serverName} and {@code excludedGroups} say what the
  * <b>instance</b> decided — the administration screen renders them. {@code
  * managedForMe} says whether the decision applies to <b>the caller</b>: the
- * designation exists and the caller is in none of the excluded groups. No
- * screen acts on it today — managed mode takes no affordance away from anyone;
- * it is kept as the read contract of the login-time attachment (EXO-89653).
+ * designation exists and the caller is in none of the excluded groups. A
+ * governed caller is attached at login (EXO-89653) and can neither disconnect,
+ * connect with typed credentials nor connect another server (EXO-90836).
  *
  * @param serverId the registration the instance chose, null when managed mode
  *          is off

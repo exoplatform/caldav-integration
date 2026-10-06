@@ -34,6 +34,20 @@ public interface CaldavConnectorService {
   void createCaldavSetting(CaldavUserSetting caldavUserSetting, long userIdentityId) throws IllegalAccessException;
 
   /**
+   * Connects a user's CalDAV account with the credentials they typed, at their own
+   * request: {@link #createCaldavSetting(CaldavUserSetting, long)}, refused to a user
+   * managed mode governs, whom the instance keeps on the designated server.
+   *
+   * @param caldavUserSetting the account to connect
+   * @param userIdentityId identity of the user
+   * @param username the user's login, which the managed-mode verdict is asked for
+   * @throws IllegalAccessException as {@link #createCaldavSetting(CaldavUserSetting, long)}
+   *           does, or a {@code ManagedConnectionLockedException} when managed mode
+   *           governs the user or cannot tell whether it does
+   */
+  void connectCaldavSetting(CaldavUserSetting caldavUserSetting, long userIdentityId, String username) throws IllegalAccessException;
+
+  /**
    * Records a connection whose credentials the platform produces: no password was
    * typed and none is stored. The caller has verified that the configured provider
    * asks the user for nothing.
@@ -75,6 +89,18 @@ public interface CaldavConnectorService {
    *          removed
    */
   void deleteCaldavSetting(long userIdentityId, String username);
+
+  /**
+   * Disconnects a user's CalDAV account at their own request:
+   * {@link #deleteCaldavSetting(long, String)}, refused to a user managed mode governs.
+   * The platform's own disconnections call {@link #deleteCaldavSetting(long, String)}.
+   *
+   * @param userIdentityId identity of the user
+   * @param username the user's login
+   * @throws IllegalAccessException a {@code ManagedConnectionLockedException} when
+   *           managed mode governs the user or cannot tell whether it does
+   */
+  void disconnectCaldavSetting(long userIdentityId, String username) throws IllegalAccessException;
 
   /**
    * Saves the href of the mirror calendar of a user: the collection, on the

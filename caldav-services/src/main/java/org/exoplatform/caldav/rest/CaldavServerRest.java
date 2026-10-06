@@ -47,6 +47,7 @@ import org.exoplatform.caldav.model.CaldavServerProviderConfig;
 import org.exoplatform.caldav.model.ForeignWriter;
 import org.exoplatform.caldav.model.CaldavSyncTuning;
 import org.exoplatform.caldav.rest.model.CaldavDisconnectionPreview;
+import org.exoplatform.caldav.rest.model.CaldavManagedForUser;
 import org.exoplatform.caldav.rest.model.CaldavManagedModeRequest;
 import org.exoplatform.caldav.service.CaldavManagedDisconnectionService;
 import org.exoplatform.caldav.service.CaldavManagedModeService;
@@ -151,8 +152,8 @@ public class CaldavServerRest {
    * <p>
    * Administrators only: the exclusions and the server's name are the
    * administration screen's facts. The per-viewer {@code managedForMe} is
-   * kept in the payload for the login-time attachment (EXO-89653); no user
-   * page reads this today.
+   * kept in the payload for the login-time attachment (EXO-89653); the user's
+   * own pages read {@code GET /servers/managed/me}.
    *
    * @param request the HTTP request, carrying the authenticated user
    * @return the mode as it stands for the caller
@@ -165,6 +166,23 @@ public class CaldavServerRest {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled") })
   public CaldavManagedMode getManagedMode(HttpServletRequest request) {
     return caldavManagedModeService.getManagedMode(request.getRemoteUser());
+  }
+
+  /**
+   * Whether managed mode keeps the calling user on a server, and which: read by the
+   * user's own screens (EXO-90836), without the instance's exclusions.
+   *
+   * @param request the HTTP request, carrying the authenticated user
+   * @return the verdict for the caller
+   */
+  @GetMapping("/managed/me")
+  @Secured("users")
+  @Operation(summary = "Reads whether CalDAV managed mode governs the caller", method = "GET",
+      description = "Says whether managed mode keeps the calling user on a declared server, and which one.")
+  @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled") })
+  public CaldavManagedForUser getManagedModeForMe(HttpServletRequest request) {
+    Long serverId = caldavManagedModeService.designatedServerFor(request.getRemoteUser());
+    return new CaldavManagedForUser(serverId != null, serverId);
   }
 
   /**
