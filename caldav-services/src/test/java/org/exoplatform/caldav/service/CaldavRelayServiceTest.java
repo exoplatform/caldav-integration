@@ -26,8 +26,15 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -46,11 +53,17 @@ import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.agenda.model.RemoteProvider;
+import org.exoplatform.agenda.service.AgendaRemoteEventService;
+import org.exoplatform.agenda.service.AgendaUserSettingsService;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavRelayRequest;
 import org.exoplatform.caldav.model.CaldavRelayedResponse;
@@ -127,6 +140,12 @@ public class CaldavRelayServiceTest {
   @Mock
   private CaldavConnectorService    caldavConnectorService;
 
+  @Mock
+  private AgendaUserSettingsService agendaUserSettingsService;
+
+  @Mock
+  private AgendaRemoteEventService  agendaRemoteEventService;
+
   @InjectMocks
   private CaldavRelayService     caldavRelayService;
 
@@ -137,6 +156,12 @@ public class CaldavRelayServiceTest {
   @AfterEach
   public void restoreProperties() {
     System.clearProperty("exo.agenda.caldav.relay.maxBodyBytes");
+  }
+
+  /** Agenda's own switch for the server's connector, as its connector settings hold it. */
+  private void givenAgendaConnector(boolean enabled) {
+    when(agendaRemoteEventService.getRemoteProviders())
+                                 .thenReturn(List.of(new RemoteProvider(0, "agenda.caldavCalendar." + SERVER_ID, null, null, enabled, false)));
   }
 
   /**
@@ -593,6 +618,123 @@ public class CaldavRelayServiceTest {
     when(httpClient.send(any(), any())).thenReturn(response);
   }
 
+  private void givenOneClickConnection() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, USERNAME)).thenReturn(identity);
+    when(identity.getId()).thenReturn(String.valueOf(IDENTITY_ID));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
+    givenProbeAnswer(207);
+  }
+
+  /** A connection managed mode makes at login is marked as such. */
+  @Test
+  public void aConnectionManagedModeMakesIsMarked() throws Exception {
+    givenOneClickConnection();
+
+    caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME, true, () -> true);
+
+    verify(caldavConnectorStorage).markConnectedByManagedMode(IDENTITY_ID, true);
+  }
+
+  /** A one-click connection the user makes clears the mark: it is their own choice. */
+  @Test
+  public void aOneClickConnectionTheUserMakesClearsTheMark() throws Exception {
+    givenOneClickConnection();
+
+    caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
+
+    verify(caldavConnectorStorage).markConnectedByManagedMode(IDENTITY_ID, false);
+  }
+
+  /** A refused probe records nothing, and marks nothing. */
+  @Test
+  public void aRefusedConnectionMarksNothing() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
+    givenProbeAnswer(403);
+
+    caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME, true, () -> true);
+
+    verify(caldavConnectorStorage, never()).markConnectedByManagedMode(anyLong(), anyBoolean());
+  }
+
+  /**
+   * A disconnection on the platform's initiative removes agenda's record of
+   * the connection as well as caldav's, or "My calendars" would still show it.
+   */
+  @Test
+  public void aPlatformDisconnectionRemovesAgendasRecordThenCaldavs() {
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(SERVER_ID));
+    when(caldavServerService.resolveServer(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+
+    caldavRelayService.disconnectForUser(IDENTITY_ID, USERNAME);
+
+    InOrder order = inOrder(agendaUserSettingsService, caldavConnectorService);
+    order.verify(agendaUserSettingsService).removeUserConnector("agenda.caldavCalendar." + SERVER_ID, IDENTITY_ID);
+    order.verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
+  }
+
+  /**
+   * A setting naming a row that no longer exists resolves to the seed
+   * registration: agenda's record of another connector is left alone, and caldav's
+   * setting still goes.
+   */
+  @Test
+  public void aPlatformDisconnectionNeverRemovesAnotherConnectorsRecord() {
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(SERVER_ID));
+    when(caldavServerService.resolveServer(SERVER_ID)).thenReturn(server(1L, true));
+
+    caldavRelayService.disconnectForUser(IDENTITY_ID, USERNAME);
+
+    verify(agendaUserSettingsService, never()).removeUserConnector(anyString(), anyLong());
+    verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
+  }
+
+  /**
+   * A setting naming no server was made through the legacy connector, which agenda
+   * recorded under the seed row's provider name: that record goes too.
+   */
+  @Test
+  public void aPlatformDisconnectionOfALegacyConnectionRemovesTheSeedRowsRecord() {
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(null));
+    CaldavServer seed = new CaldavServer(1L, CaldavServerService.CALDAV_PROVIDER_NAME, "Stalwart", null, SERVER_URL, true, null,
+                                         null, null, null, true, null, null, null, null, null,
+                                         MirrorTargetKind.DEDICATED_CALENDAR, PROVIDER, null, null);
+    when(caldavServerService.resolveServer(null)).thenReturn(seed);
+
+    caldavRelayService.disconnectForUser(IDENTITY_ID, USERNAME);
+
+    InOrder order = inOrder(agendaUserSettingsService, caldavConnectorService);
+    order.verify(agendaUserSettingsService).removeUserConnector(CaldavServerService.CALDAV_PROVIDER_NAME, IDENTITY_ID);
+    order.verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
+  }
+
+  /** Agenda refusing to forget the connector does not keep caldav's setting. */
+  @Test
+  public void aPlatformDisconnectionDeletesCaldavsSettingEvenWhenAgendaFails() {
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(SERVER_ID));
+    when(caldavServerService.resolveServer(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    doThrow(new IllegalStateException("agenda unavailable")).when(agendaUserSettingsService)
+                                                            .removeUserConnector(anyString(), anyLong());
+
+    caldavRelayService.disconnectForUser(IDENTITY_ID, USERNAME);
+
+    verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
+  }
+
+  private CaldavUserSetting settingOn(Long serverId) {
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("mary@bm.example.org");
+    setting.setServerId(serverId);
+    return setting;
+  }
+
   /**
    * The one-click path end to end: the server is probed with what the <b>provider</b>
    * produces - never with typed credentials, since there are none - and the connection
@@ -606,34 +748,95 @@ public class CaldavRelayServiceTest {
     when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
     when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
     when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
     givenProbeAnswer(207);
 
     CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
 
     assertEquals(CaldavProbeResult.OK, outcome.getResult());
+    // Accepted material is the provider's to keep.
+    verify(caldavCredentialsResolver, never()).invalidate(any(), any(), any());
     ArgumentCaptor<CaldavUserSetting> recorded = ArgumentCaptor.forClass(CaldavUserSetting.class);
-    org.mockito.Mockito.verify(caldavConnectorService).createProviderBackedSetting(recorded.capture(), eq(IDENTITY_ID));
+    // Agenda's record too, under the connector's name: without it "My calendars"
+    // shows the account as not connected, whatever caldav stored (EXO-89653).
+    // And agenda first: it is the write that can still refuse, and a refusal
+    // after caldav's write would leave a half-connected account.
+    org.mockito.InOrder writes = org.mockito.Mockito.inOrder(agendaUserSettingsService, caldavConnectorService);
+    writes.verify(agendaUserSettingsService)
+          .saveUserConnector("agenda.caldavCalendar." + SERVER_ID, "eric@bm.example.org", IDENTITY_ID);
+    writes.verify(caldavConnectorService).createProviderBackedSetting(recorded.capture(), eq(IDENTITY_ID));
     assertEquals("eric@bm.example.org", recorded.getValue().getUsername());
     assertEquals(SERVER_ID, recorded.getValue().getServerId());
   }
 
   /**
-   * A refused probe records nothing. A stored connection that does not work is worse
-   * than a refused one: only the first looks right on screen, and the user discovers
-   * it through an empty calendar.
+   * Agenda's connector settings can switch the connector off on their own. The
+   * one-click connect then refuses before probing or writing anything: a refusal
+   * from agenda after caldav's setting was stored would leave a half-connected
+   * account that the login-time attachment's rule 1 never retries.
    */
   @Test
-  public void recordsNothingWhenTheServerRefusesTheServiceAccount() throws Exception {
+  public void refusesToConnectWhenAgendaHasSwitchedTheConnectorOff() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    givenAgendaConnector(false);
+
+    IllegalAccessException refusal = assertThrows(IllegalAccessException.class,
+                                                  () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME));
+
+    assertEquals(CaldavRelayService.PROVIDER_DISABLED_MESSAGE, refusal.getMessage());
+    org.mockito.Mockito.verifyNoInteractions(httpClient, caldavConnectorService, agendaUserSettingsService);
+  }
+
+  /**
+   * A refused probe records nothing. A stored connection that does not work is worse
+   * than a refused one: only the first looks right on screen, and the user discovers
+   * it through an empty calendar. The refused material was the provider's, so the
+   * provider is told, once per refused material: a caching provider would hand it
+   * out again otherwise. A 401 is probed once more on fresh material, and that
+   * refusal is told too; a 403 is the answer.
+   *
+   * @param status the server's refusal
+   */
+  @ParameterizedTest
+  @ValueSource(ints = { 401, 403 })
+  public void recordsNothingWhenTheServerRefusesTheServiceAccount(int status) throws Exception {
     when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
     when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
     when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
     when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
-    givenProbeAnswer(401);
+    givenAgendaConnector(true);
+    givenProbeAnswer(status);
 
     CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
 
     assertEquals(CaldavProbeResult.CREDENTIALS, outcome.getResult());
-    org.mockito.Mockito.verifyNoInteractions(caldavConnectorService);
+    int refusedMaterials = status == 401 ? 2 : 1;
+    verify(caldavCredentialsResolver, org.mockito.Mockito.times(refusedMaterials)).invalidate(SERVER_ID, PROVIDER, USERNAME);
+    verify(httpClient, org.mockito.Mockito.times(refusedMaterials)).send(any(), any());
+    org.mockito.Mockito.verifyNoInteractions(caldavConnectorService, agendaUserSettingsService);
+  }
+
+  /**
+   * The server accepted, but the caller no longer wants the connection - the
+   * login-time attachment, whose user configured an account during the probe.
+   * Nothing is written, and the answer says so rather than claiming success.
+   */
+  @Test
+  public void recordsNothingWhenTheConnectionIsNoLongerWanted() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
+    givenProbeAnswer(207);
+
+    CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME, false, () -> false);
+
+    assertEquals(CaldavProbeResult.SUPERSEDED, outcome.getResult());
+    assertEquals(207, outcome.getStatus());
+    org.mockito.Mockito.verifyNoInteractions(caldavConnectorService, agendaUserSettingsService);
   }
 
   /**
@@ -665,5 +868,95 @@ public class CaldavRelayServiceTest {
 
     assertThrows(IllegalArgumentException.class, () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME));
     org.mockito.Mockito.verifyNoInteractions(httpClient);
+  }
+
+  // ---- EXO-89649: one retry on fresh material after a 401 ----------------------
+
+  /**
+   * The relay: an upstream 401 on a refreshable provider's material is retried once on
+   * fresh material, and the browser sees the retry's answer.
+   */
+  @Test
+  @SuppressWarnings({ "unchecked", "rawtypes" })
+  public void relaysOnceMoreOnFreshMaterialAfterA401() throws Exception {
+    givenConnectedUser(SERVER_ID);
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavServerService.resolveServer(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.retriesAfterRefusal(PROVIDER)).thenReturn(true);
+    HttpResponse refused = org.mockito.Mockito.mock(HttpResponse.class);
+    when(refused.statusCode()).thenReturn(401);
+    when(refused.body()).thenReturn(new ByteArrayInputStream(new byte[0]));
+    HttpResponse answered = org.mockito.Mockito.mock(HttpResponse.class);
+    org.mockito.Mockito.lenient().when(answered.statusCode()).thenReturn(207);
+    org.mockito.Mockito.lenient().when(answered.body()).thenReturn(new ByteArrayInputStream("<multistatus/>".getBytes(StandardCharsets.UTF_8)));
+    org.mockito.Mockito.lenient().when(answered.headers()).thenReturn(HttpHeaders.of(Map.of(), (name, value) -> true));
+    when(httpClient.send(any(), any())).thenReturn(refused, answered);
+
+    CaldavRelayedResponse response = caldavRelayService.relay(relayRequest("PROPFIND", "/dav/cal/john/", Map.of()));
+
+    assertEquals(207, response.getStatus());
+    org.mockito.Mockito.verify(caldavCredentialsResolver, org.mockito.Mockito.times(1)).invalidate(SERVER_ID, PROVIDER, USERNAME);
+    org.mockito.Mockito.verify(httpClient, org.mockito.Mockito.times(2)).send(any(), any());
+  }
+
+  /** The relay never retries a provider that carries what the user typed, and tells it the refusal once. */
+  @Test
+  public void neverRelaysAgainForAProviderThatCannotRefreshItsMaterial() throws Exception {
+    givenConnectedUser(SERVER_ID);
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavServerService.resolveServer(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.retriesAfterRefusal(PROVIDER)).thenReturn(false);
+    givenUpstreamAnswer(401, Map.of(), new byte[0]);
+
+    assertEquals(403, caldavRelayService.relay(relayRequest("PROPFIND", "/dav/cal/john/", Map.of())).getStatus());
+
+    org.mockito.Mockito.verify(caldavCredentialsResolver, org.mockito.Mockito.times(1)).invalidate(SERVER_ID, PROVIDER, USERNAME);
+    org.mockito.Mockito.verify(httpClient, org.mockito.Mockito.times(1)).send(any(), any());
+  }
+
+  /**
+   * The one-click connect: a probe refused with 401 on material the provider kept is
+   * probed once more on fresh material, and connects.
+   */
+  @Test
+  @SuppressWarnings({ "unchecked", "rawtypes" })
+  public void probesOnceMoreOnFreshMaterialBeforeConnecting() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, USERNAME)).thenReturn(identity);
+    when(identity.getId()).thenReturn(String.valueOf(IDENTITY_ID));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
+    HttpResponse refused = org.mockito.Mockito.mock(HttpResponse.class);
+    when(refused.statusCode()).thenReturn(401);
+    HttpResponse accepted = org.mockito.Mockito.mock(HttpResponse.class);
+    when(accepted.statusCode()).thenReturn(207);
+    when(httpClient.send(any(), any())).thenReturn(refused, accepted);
+
+    assertEquals(CaldavProbeResult.OK, caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME).getResult());
+
+    org.mockito.Mockito.verify(caldavCredentialsResolver, org.mockito.Mockito.times(1)).invalidate(SERVER_ID, PROVIDER, USERNAME);
+    org.mockito.Mockito.verify(httpClient, org.mockito.Mockito.times(2)).send(any(), any());
+  }
+
+  /**
+   * The one-click probe retries on a 401 only - a 403 is the answer. Its material
+   * was refused all the same, so the provider is told, once.
+   */
+  @Test
+  @SuppressWarnings({ "rawtypes" })
+  public void neverProbesAgainOnA403() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
+    givenProbeAnswer(403);
+
+    assertEquals(CaldavProbeResult.CREDENTIALS, caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME).getResult());
+
+    org.mockito.Mockito.verify(caldavCredentialsResolver, org.mockito.Mockito.times(1)).invalidate(SERVER_ID, PROVIDER, USERNAME);
+    org.mockito.Mockito.verify(httpClient, org.mockito.Mockito.times(1)).send(any(), any());
   }
 }

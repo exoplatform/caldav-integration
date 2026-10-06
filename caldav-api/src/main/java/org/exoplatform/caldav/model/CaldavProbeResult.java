@@ -43,6 +43,12 @@ public class CaldavProbeResult {
 
   /** The URL reaches something that is not a CalDAV collection. */
   public static final String NOT_CALDAV  = "caldav.error.notCaldav";
+  /**
+   * The server accepted the account, but the connection was no longer wanted
+   * by the time it would have been recorded: the user configured one meanwhile.
+   * Nothing was recorded.
+   */
+  public static final String SUPERSEDED  = "caldav.connect.superseded";
 
   /** One of the stable outcome codes above. */
   private String  result;

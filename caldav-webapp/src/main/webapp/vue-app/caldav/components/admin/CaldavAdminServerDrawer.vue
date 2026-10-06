@@ -309,6 +309,18 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           {{ drawerButtonLabel }}
         </v-btn>
       </div>
+      <!--
+        Moving the server to another provider disconnects every user of it:
+        said, with how many, in the platform's confirmation before anything is
+        stored.
+      -->
+      <confirm-dialog
+        ref="disconnectionConfirm"
+        :title="$t('caldav.admin.servers.drawer.disconnection.title')"
+        :message="disconnectionConfirmMessage"
+        :ok-label="$t('caldav.admin.servers.drawer.disconnection.confirm')"
+        :cancel-label="$t('caldav.admin.servers.drawer.disconnection.cancel')"
+        @ok="saveServer(true)" />
     </template>
   </exo-drawer>
 </template>
@@ -320,6 +332,10 @@ import {DEFAULT_WRITE_CHANNEL, offersWriteChannel, writeChannelOf, writeChannelT
 
 export default {
   data: () => ({
+    /** The provider the server is stored with, as opened: what a change of provider is judged against. */
+    storedProviderName: '',
+    /** How many users the provider change being confirmed disconnects, for the confirmation's message. */
+    pendingDisconnections: 0,
     caldavServerDrawer: false,
     loading: false,
     /**
@@ -378,6 +394,13 @@ export default {
     providerConfigValid: true,
   }),
   computed: {
+    disconnectionConfirmMessage() {
+      const count = this.pendingDisconnections === 1
+        ? this.$t('caldav.admin.servers.drawer.disconnection.one')
+        : this.$t('caldav.admin.servers.drawer.disconnection.many', {0: this.pendingDisconnections});
+      const warning = this.$t('agenda.caldavCalendar.disconnect.warning', {0: this.server.name || ''});
+      return `${count} ${warning} ${this.$t('caldav.admin.servers.drawer.disconnection.question')}`;
+    },
     /**
      * Whether the write-channel radio is shown: a BlueMind-only choice
      * (EXO-90307), offered when the name says BlueMind or the row is already
@@ -466,6 +489,8 @@ export default {
       if (server) {
         this.server = { ...server };
       }
+      this.storedProviderName = server && server.id && server.authProviderName || '';
+      this.pendingDisconnections = 0;
       // Normalised on the way in, and remembered as it was stored. A row saved
       // before this control existed carries no destination at all; showing it
       // as three empty radios would let a save state a destination the
@@ -534,6 +559,8 @@ export default {
      * @returns {void}
      */
     close() {
+      this.storedProviderName = '';
+      this.pendingDisconnections = 0;
       this.presetUrlPlaceholder = null;
       this.server = {
         id: '',
@@ -592,6 +619,42 @@ export default {
       this.server = Object.assign({}, this.server, preset.values);
     },
     /**
+     * Whether saving would move an existing server to another provider: a blank
+     * provider keeps the stored one, as the server reads it.
+     *
+     * @returns {Boolean} true when the provider in force changes
+     */
+    changesProvider() {
+      const chosen = this.server.authProviderName || this.storedProviderName;
+      return !!this.server.id && !!this.storedProviderName && chosen !== this.storedProviderName;
+    },
+    /**
+     * Counts, before anything is stored, the users a provider change disconnects, and
+     * opens the confirmation when there are any: a provider change disconnects every
+     * user of the server, and the administrator is told how many first.
+     *
+     * @returns {Promise<Boolean>} true when the save waits for the administrator, or
+     *          stops because the count failed
+     */
+    async holdsForDisconnectionConfirm() {
+      this.loading = true;
+      try {
+        this.pendingDisconnections = await this.$agendaCaldavService.countConnectedUsers(this.server.id);
+      } catch (e) {
+        // Without the count the administrator cannot be told what the change
+        // costs: nothing is stored.
+        this.$root.$emit('alert-message', this.$t('caldav.admin.servers.drawer.disconnection.countFailed'), 'error');
+        return true;
+      } finally {
+        this.loading = false;
+      }
+      if (this.pendingDisconnections) {
+        this.$refs.disconnectionConfirm.open();
+        return true;
+      }
+      return false;
+    },
+    /**
      * Creates or updates the drawer's server, then refreshes the table and
      * tells the agenda apps that the connectors changed. A server whose
      * administrator chose neither a font icon nor an image is saved with
@@ -599,9 +662,16 @@ export default {
      * `serverIconIdentity.js` resolves it, and a plain rename can never
      * silently persist a glyph the administrator never picked.
      *
+     * @param {Boolean} confirmed true only from the disconnection confirmation's OK
      * @returns {Promise} resolves once saved and announced
      */
-    async saveServer() {
+    async saveServer(confirmed) {
+      // Only the confirmation's OK passes a provider change: the Save button hands in
+      // its click event, and a dialog dismissed any other way leaves nothing behind.
+      if (confirmed !== true && this.changesProvider() && await this.holdsForDisconnectionConfirm()) {
+        return;
+      }
+      this.pendingDisconnections = 0;
       this.loading = true;
       this.applyTicks();
       const isNew = !this.server.id;
@@ -637,14 +707,13 @@ export default {
         document.dispatchEvent(new CustomEvent('agenda-connectors-refresh'));
         this.close();
       } catch (e) {
-        // A refused configuration comes back as a message code the provider's
-        // own bundle translates, and a refused registration as one of this
-        // add-on's own (caldav.server.*). Showing the generic "error" instead
-        // would tell the administrator nothing about a form they can correct.
-        // A code this bundle does not carry keeps the generic message rather
-        // than showing its key.
-        if (e && e.messageCode && (e.messageCode.startsWith('connector.credentials.')
-            || e.messageCode.startsWith('caldav.server.') && this.$t(e.messageCode) !== e.messageCode)) {
+        // A refusal comes back as a message code: the provider's own bundle
+        // translates a refused configuration (connector.credentials.*), and this
+        // add-on's bundle a refused registration or a managed row that may not move
+        // to a provider asking the user. A translatable code beats the generic
+        // "error", which tells the administrator nothing about a form they can
+        // correct; a code no bundle carries keeps the generic message.
+        if (e && e.messageCode && (e.messageCode.startsWith('connector.credentials.') || this.$te(e.messageCode))) {
           this.$root.$emit('alert-message', this.$t(e.messageCode), 'error');
         } else if (isNew) {
           this.$root.$emit('alert-message', this.$t('caldav.admin.servers.drawer.add.error'), 'error');
