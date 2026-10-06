@@ -1,0 +1,350 @@
+/*
+ * Copyright (C) 2026 eXo Platform SAS.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+package org.exoplatform.caldav.service;
+
+import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.constant.ManagedEnrollmentOutcome;
+import org.exoplatform.caldav.model.CaldavProbeResult;
+import org.exoplatform.caldav.model.CaldavUserSetting;
+import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
+import org.exoplatform.social.core.identity.model.Identity;
+import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvider;
+import org.exoplatform.social.core.manager.IdentityManager;
+
+import io.meeds.common.ContainerTransactional;
+import jakarta.annotation.PreDestroy;
+
+/**
+ * Enrols a user on the CalDAV server managed mode designated, when they log in
+ * (EXO-89653): the login-time attachment the board describes.
+ *
+ * <p>
+ * Three rules, in the order the board states them and with one reordering
+ * that changes no outcome: the user already has a CalDAV configuration -
+ * whatever server it names - and nothing happens; the user is in a population
+ * the administrator excluded and nothing happens; otherwise they are attached
+ * to the designated server. The designation is read first here because it is
+ * the cheapest read and the one that is null on every instance where managed
+ * mode is off.
+ *
+ * <p>
+ * Having no configuration and having removed one are the same case: a user
+ * who disconnects is attached again at their next login, and disconnecting
+ * stays useful because whoever connects elsewhere has a configuration, which
+ * rule one leaves alone. The outcome itself is not stored - it is a function of
+ * (user, designation, exclusions, the user's settings) and a stored outcome
+ * would drift the moment an administrator changed one of them.
+ *
+ * <p>
+ * What is stored is who made the connection: an attachment is marked as made by
+ * managed mode ({@code CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY}),
+ * and the mark is checked first. A marked user managed mode no longer
+ * governs - they joined an excluded group, or an administrator's change could not
+ * disconnect them - is disconnected, then attached again when another server is
+ * designated for them.
+ *
+ * <p>
+ * The attachment is the one-click connect of EXO-90358: the server is probed
+ * with the material the provider produces and the connection is recorded only
+ * if that passed. A user the designated server does not know is left
+ * unattached, and tried again at their next login, rather than recorded as
+ * connected to a server that will not answer.
+ *
+ * <p>
+ * <b>In the background.</b> The login never waits for the remote server: the
+ * listener hands the user to a small bounded executor of this service and
+ * returns. The load spreads at the rate people arrive, which is why no
+ * staggering exists. A full queue drops the attempt with a WARN - the next
+ * login retries - rather than blocking the login thread.
+ *
+ * <p>
+ * Lives beside {@link CaldavManagedModeService} rather than inside it: the
+ * enrolment needs {@link CaldavRelayService}, which needs
+ * {@link CaldavServerService}, which needs the managed-mode service for its
+ * guards - injecting the relay into the managed-mode service would close that
+ * cycle.
+ */
+@Service
+public class CaldavManagedEnrollmentService {
+
+  /** Enrolments waiting for a thread: beyond this, a login's attempt is dropped and retried next time. */
+  static final int                 QUEUE_DEPTH = 256;
+
+  private static final Log         LOG         = ExoLogger.getLogger(CaldavManagedEnrollmentService.class);
+
+  @Autowired
+  private CaldavManagedModeService caldavManagedModeService;
+
+  @Autowired
+  private CaldavRelayService       caldavRelayService;
+
+  @Autowired
+  private CaldavConnectorStorage   caldavConnectorStorage;
+
+  @Autowired
+  private IdentityManager          identityManager;
+
+  private Executor                 executor    = newEnrollmentExecutor();
+
+  /**
+   * The logins whose attempt is queued or running on this node: a second
+   * login of the same user while the first attempt is still pending adds
+   * nothing. Node-local, like the executor; two nodes may still each run one,
+   * and the write-time check of {@link #attach} is what keeps the second from
+   * overwriting the first.
+   */
+  private final Set<String>        inFlight    = ConcurrentHashMap.newKeySet();
+
+  /**
+   * Queues the enrolment of a user who just logged in. Returns at once.
+   *
+   * @param username the eXo login of the user who logged in
+   * @return true when the attempt was queued, false when it was dropped
+   */
+  public boolean scheduleEnrollment(String username) {
+    if (StringUtils.isBlank(username)) {
+      return false;
+    }
+    if (!inFlight.add(username)) {
+      LOG.debug("User {} not queued: an attachment attempt for them is already pending", username);
+      return false;
+    }
+    try {
+      executor.execute(() -> {
+        try {
+          enrollOnLogin(username);
+        } finally {
+          inFlight.remove(username);
+        }
+      });
+      return true;
+    } catch (RejectedExecutionException e) {
+      inFlight.remove(username);
+      // The queue is full: this is a login storm, and the next login of this
+      // user will try again. Blocking the login thread instead would turn a
+      // slow CalDAV server into a slow platform.
+      LOG.warn("Too many CalDAV enrolments pending; user {} will be attached at their next login", username);
+      return false;
+    }
+  }
+
+  /**
+   * Applies the three rules for one user, on the executor's thread.
+   *
+   * <p>
+   * {@code @ContainerTransactional} because this runs on a bare executor
+   * thread: the aspect binds the portal container and a request lifecycle
+   * around the call, which the setting reads and the recorded connection need.
+   *
+   * @param username the eXo login of the user who logged in
+   * @return what happened, for the tests and the log
+   */
+  @ContainerTransactional
+  public ManagedEnrollmentOutcome enrollOnLogin(String username) {
+    try {
+      Long serverId = caldavManagedModeService.designatedServerFor(username);
+      Identity identity = identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, username);
+      if (identity == null) {
+        // Nothing to record a connection against, and nothing managed mode can
+        // have attached: agenda's own record refuses an identity it cannot name,
+        // so probing first would cost a request for nothing.
+        LOG.debug("User {} not enrolled: they have no social identity", username);
+        return serverId == null ? ManagedEnrollmentOutcome.NOT_MANAGED : ManagedEnrollmentOutcome.NO_IDENTITY;
+      }
+      long identityId = Long.parseLong(identity.getId());
+      if (isNoLongerGoverned(identityId, username)) {
+        // Managed mode attached this user and no longer governs them - they joined an
+        // excluded group since, or a disconnection an administrator's change asked for
+        // did not go through. Disconnected here, then attached again below
+        // when another server is designated for them.
+        caldavRelayService.disconnectForUser(identityId, username);
+        LOG.info("User {} disconnected from the CalDAV server managed mode attached them to: it no longer applies to them",
+                 username);
+        if (serverId == null) {
+          return ManagedEnrollmentOutcome.DETACHED;
+        }
+      } else if (serverId == null) {
+        LOG.debug("User {} not enrolled: no managed CalDAV server applies to them", username);
+        return ManagedEnrollmentOutcome.NOT_MANAGED;
+      }
+      if (hasConfiguration(identityId)) {
+        LOG.debug("User {} not enrolled: they already have a CalDAV configuration", username);
+        return ManagedEnrollmentOutcome.ALREADY_CONFIGURED;
+      }
+      return attach(serverId, username, identityId);
+    } catch (Exception e) {
+      LOG.warn("Cannot attach user {} to the managed CalDAV server at login; their next login will try again", username, e);
+      return ManagedEnrollmentOutcome.FAILED;
+    }
+  }
+
+  @PreDestroy
+  public void stop() {
+    if (executor instanceof ExecutorService service) {
+      // Drop what is queued rather than run it against a context being torn
+      // down; the probe already treats the interruption as "not reached", and
+      // the next login retries.
+      service.shutdownNow();
+    }
+  }
+
+  /**
+   * Rule three: the one-click connect, run for the user. A refusal - the probe's
+   * answer, or the connect refusing before probing - records nothing and is
+   * retried at the next login; any other exception is the caller's failure.
+   *
+   * <p>
+   * Rule one is asked again right before the connection is written: the probe
+   * can take as long as the server's timeout, and a configuration the user
+   * made meanwhile is theirs. The connect then records nothing and answers
+   * {@link CaldavProbeResult#SUPERSEDED}.
+   *
+   * @param serverId the designated registration
+   * @param username the eXo login of the user who logged in
+   * @param identityId the user's social identity
+   * @return ATTACHED, ALREADY_CONFIGURED or REFUSED
+   * @throws Exception an unexpected failure, logged by the caller
+   */
+  private ManagedEnrollmentOutcome attach(Long serverId, String username, long identityId) throws Exception {
+    try {
+      CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(serverId,
+                                                                            username,
+                                                                            true,
+                                                                            () -> !hasConfiguration(identityId));
+      if (CaldavProbeResult.OK.equals(outcome.getResult())) {
+        LOG.info("User {} attached to the managed CalDAV server {} at login", username, serverId);
+        return ManagedEnrollmentOutcome.ATTACHED;
+      }
+      if (CaldavProbeResult.SUPERSEDED.equals(outcome.getResult())) {
+        LOG.debug("User {} not enrolled: they configured a CalDAV account during the attempt", username);
+        return ManagedEnrollmentOutcome.ALREADY_CONFIGURED;
+      }
+      // The server refused the user: no account there, or a server that does
+      // not answer. Nothing is recorded, and the next login tries again - the
+      // administrator's remedy is a BlueMind account or an exclusion.
+      LOG.info("User {} left unattached: the managed CalDAV server {} answered {}", username, serverId, outcome.getResult());
+      return ManagedEnrollmentOutcome.REFUSED;
+    } catch (IllegalAccessException | IllegalArgumentException | IllegalStateException | CalDavException e) {
+      // The connect refused before probing: the server inactive, a provider that
+      // asks the user, names nobody or is not registered, or one that produced
+      // no credentials - a BlueMind that does not answer lands here, once per
+      // login, without a stack.
+      // The whole cause chain, not the outer code: a refusal from BlueMind is
+      // wrapped several times on its way here, and the message that says why
+      // is not always the innermost one.
+      LOG.info("User {} left unattached: the managed CalDAV server {} refused ({})", username, serverId, causeChain(e));
+      return ManagedEnrollmentOutcome.REFUSED;
+    }
+  }
+
+  /**
+   * Whether managed mode attached this user and no longer governs them: it designates
+   * nothing for them, or another server than the one they are on. A user who made their
+   * own connection is never concerned. Judged by the verdict that refuses a user whose
+   * identity cannot be resolved: that refusal fails the login's enrolment, and nothing
+   * is deleted.
+   *
+   * @param userIdentityId the identity of the user
+   * @param username the eXo login
+   * @return true when the user is to be disconnected
+   */
+  private boolean isNoLongerGoverned(long userIdentityId, String username) {
+    if (!caldavConnectorStorage.isConnectedByManagedMode(userIdentityId)) {
+      return false;
+    }
+    Long serverId = caldavManagedModeService.governingServerFor(username);
+    CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    return serverId == null || setting == null || !serverId.equals(setting.getServerId());
+  }
+
+  /**
+   * Rule one: whether the user already has a CalDAV configuration, whatever
+   * server it names. The username is what "credentials exist" survives as in
+   * the stored setting - the letter of the board's rule, and the predicate the
+   * personal credentials source reads. Deliberately not
+   * {@code CaldavServerService.isConnected}, which also asks whether the stored
+   * record can still authenticate: a record left behind by an administrator's
+   * change (a server switched to a provider that asks the user) reads as "has a
+   * configuration" here and as "reconnect" in the UI: such a record is the
+   * administrator's change to disconnect, never a reason to re-attach over it at
+   * login. A calendar connector of another kind - Google, Office 365, Exchange - is another
+   * population of connectors and plays no part here: its user is attached to
+   * CalDAV as well, and agenda lists both (decision 2026-09-23).
+   *
+   * @param identityId the user's social identity
+   * @return true when a configuration exists
+   */
+  private boolean hasConfiguration(long identityId) {
+    CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(identityId);
+    return setting != null && StringUtils.isNotBlank(setting.getUsername());
+  }
+
+  /**
+   * Two threads and a bounded queue: enough to absorb a morning's logins
+   * against a server that answers in a second, small enough that a server
+   * that does not answer cannot pile up threads.
+   *
+   * @return the executor the enrolments run on
+   */
+  private static ExecutorService newEnrollmentExecutor() {
+    return new ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(QUEUE_DEPTH), runnable -> {
+      Thread thread = new Thread(runnable, "caldav-managed-enrollment");
+      thread.setDaemon(true);
+      return thread;
+    });
+  }
+
+  /**
+   * Every non-blank message of a failure's cause chain, outermost first. The
+   * root alone is not enough: a transport failure's innermost exception usually
+   * carries no message, and the one that says what happened - "Cannot reach
+   * BlueMind on /api/auth/login" - sits a level above it. A throwable with no
+   * message is named by its class.
+   *
+   * @param failure the refusal as the connect threw it
+   * @return the chain, joined with {@code " <- "}
+   */
+  static String causeChain(Throwable failure) {
+    return ExceptionUtils.getThrowableList(failure)
+                         .stream()
+                         .map(cause -> StringUtils.isBlank(cause.getMessage()) ? cause.getClass().getSimpleName()
+                                                                               : cause.getMessage())
+                         .collect(Collectors.joining(" <- "));
+  }
+
+  /** For the tests: run the enrolments on the caller's thread. */
+  void setExecutor(Executor executor) {
+    this.executor = executor;
+  }
+}
