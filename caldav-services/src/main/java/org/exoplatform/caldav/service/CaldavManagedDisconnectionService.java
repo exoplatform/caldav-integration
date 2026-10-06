@@ -165,24 +165,77 @@ public class CaldavManagedDisconnectionService {
 
   /**
    * Selects, against the state now stored, the users managed mode attached and no
-   * longer governs, and disconnects them one by one.
+   * longer governs, and disconnects them one by one, each one checked again when their
+   * turn comes ({@link #isStillNoLongerManaged(long)}).
    *
    * @return the number of users disconnected
    */
   int reconcileNow() {
     List<Long> identities = identitiesNoLongerManaged(caldavManagedModeService.getManagedServerId(),
                                                       caldavManagedModeService.getExcludedGroups());
-    return (int) identities.stream().filter(this::disconnectNow).count();
+    return (int) identities.stream().filter(this::isStillNoLongerManaged).filter(this::disconnectNow).count();
   }
 
   /**
-   * Disconnects every user of a server one by one.
+   * Disconnects every user of a server one by one, each one checked again when their
+   * turn comes ({@link #isStillOn(long, long)}).
    *
    * @param serverId the server whose provider changed
    * @return the number of users disconnected
    */
   int disconnectAllNow(long serverId) {
-    return (int) caldavServerService.getUserIdentitiesOfServer(serverId).stream().filter(this::disconnectNow).count();
+    return (int) caldavServerService.getUserIdentitiesOfServer(serverId)
+                                    .stream()
+                                    .filter(identityId -> isStillOn(identityId, serverId))
+                                    .filter(this::disconnectNow)
+                                    .count();
+  }
+
+  /**
+   * Whether a user a run selected is still to be disconnected when their turn comes.
+   * The users are selected once, before the first disconnection, and a run lasts.
+   * Meanwhile a user may connect their own account, which clears the managed-mode mark,
+   * or log in and be attached to the server now designated. So the mark is read again,
+   * and the verdict is computed again against the designation and the exclusions read
+   * again. The time between this check and the disconnection remains: no lock is shared
+   * with the connect paths.
+   *
+   * @param userIdentityId the identity the run selected
+   * @return true when the user is still to be disconnected
+   */
+  boolean isStillNoLongerManaged(long userIdentityId) {
+    try {
+      return caldavConnectorStorage.isConnectedByManagedMode(userIdentityId)
+          && isNoLongerManaged(userIdentityId,
+                               caldavManagedModeService.getManagedServerId(),
+                               caldavManagedModeService.getExcludedGroups());
+    } catch (Exception e) {
+      LOG.warn("Cannot tell whether managed mode still governs user identity {}; left connected, their next login will decide",
+               userIdentityId,
+               e);
+      return false;
+    }
+  }
+
+  /**
+   * Whether a user of a server whose provider changed is still stored on it when their
+   * turn comes: a user who moved to another server, or disconnected, during the run is
+   * left alone. A user who connected to this same server again during the run cannot be
+   * told apart from one who did not, and is disconnected too: telling them apart needs a
+   * lock shared with the connect paths.
+   *
+   * @param userIdentityId the identity the run selected
+   * @param serverId the server whose provider changed
+   * @return true when the user is still to be disconnected
+   */
+  boolean isStillOn(long userIdentityId, long serverId) {
+    try {
+      CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+      return setting != null && Objects.equals(serverId, setting.getServerId());
+    } catch (Exception e) {
+      LOG.warn("Cannot read the CalDAV setting of user identity {}; left connected to server {}", userIdentityId, serverId, e);
+      return false;
+    }
   }
 
   /**

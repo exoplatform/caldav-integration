@@ -130,7 +130,14 @@ class CaldavManagedDisconnectionServiceTest {
       setting.setUsername("user" + identityId + "@bm.example.org");
       setting.setServerId(serverId);
       lenient().when(caldavConnectorStorage.getCaldavSetting(identityId)).thenReturn(setting);
+      lenient().when(caldavConnectorStorage.isConnectedByManagedMode(identityId)).thenReturn(true);
     }
+  }
+
+  private static CaldavUserSetting settingOn(Long serverId) {
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setServerId(serverId);
+    return setting;
   }
 
   private void named(long identityId, String username) {
@@ -339,11 +346,78 @@ class CaldavManagedDisconnectionServiceTest {
   @Test
   void aProviderChangeDisconnectsEveryUserOfTheServer() throws Exception {
     when(caldavServerService.getUserIdentitiesOfServer(3L)).thenReturn(List.of(41L, 43L));
+    when(caldavConnectorStorage.getCaldavSetting(41L)).thenReturn(settingOn(3L));
+    when(caldavConnectorStorage.getCaldavSetting(43L)).thenReturn(settingOn(3L));
 
     assertEquals(2, service.countUsersOf(3L, ADMIN));
     service.disconnectAllUsersOf(3L);
 
     verify(caldavRelayService).disconnectForUser(41L, "alice");
     verify(caldavRelayService).disconnectForUser(43L, "chloe");
+  }
+
+  /**
+   * Managed mode turned off: alice was selected, then connected her own account before
+   * her turn, which cleared the mark. Her connection is hers, and stays. Killed by the
+   * mutant that drops the mark from isStillNoLongerManaged.
+   */
+  @Test
+  void aUserWhoConnectedThemselvesDuringTheRunIsLeftConnected() {
+    attachedByManagedMode(3L, 41, 42);
+    inForce(null);
+    when(caldavConnectorStorage.isConnectedByManagedMode(41L)).thenReturn(false);
+
+    service.disconnectUsersNoLongerManaged();
+
+    verify(caldavRelayService, never()).disconnectForUser(eq(41L), any());
+    verify(caldavRelayService).disconnectForUser(42L, "bob");
+  }
+
+  /**
+   * The designation moved to 7: alice, on 5, was selected, then logged in before her
+   * turn and was attached to 7. That connection is the one managed mode now wants, and
+   * stays. Killed by the mutant that drops the verdict from isStillNoLongerManaged.
+   */
+  @Test
+  void aUserAttachedToTheDesignatedServerDuringTheRunIsLeftConnected() {
+    attachedByManagedMode(5L, 41);
+    inForce(7L);
+    when(caldavConnectorStorage.getCaldavSetting(41L)).thenReturn(settingOn(5L), settingOn(7L));
+
+    service.disconnectUsersNoLongerManaged();
+
+    verify(caldavRelayService, never()).disconnectForUser(anyLong(), any());
+  }
+
+  /**
+   * Managed mode was off when alice was selected, and designates her own server again
+   * before her turn: the verdict is computed against the designation read again, and she
+   * stays. Killed by the mutant that keeps the selection's designation.
+   */
+  @Test
+  void theDesignationIsReadAgainWhenAUsersTurnComes() {
+    attachedByManagedMode(3L, 41);
+    when(caldavManagedModeService.getManagedServerId()).thenReturn(null, 3L);
+    lenient().when(caldavManagedModeService.getExcludedGroups()).thenReturn(List.of());
+
+    service.disconnectUsersNoLongerManaged();
+
+    verify(caldavRelayService, never()).disconnectForUser(anyLong(), any());
+  }
+
+  /**
+   * A provider change on 3: chloe moved to server 4 before her turn, and that connection
+   * is not one the change touches. Killed by the mutant that drops isStillOn.
+   */
+  @Test
+  void aUserWhoMovedToAnotherServerDuringAProviderChangeIsLeftConnected() {
+    when(caldavServerService.getUserIdentitiesOfServer(3L)).thenReturn(List.of(41L, 43L));
+    when(caldavConnectorStorage.getCaldavSetting(41L)).thenReturn(settingOn(3L));
+    when(caldavConnectorStorage.getCaldavSetting(43L)).thenReturn(settingOn(4L));
+
+    service.disconnectAllUsersOf(3L);
+
+    verify(caldavRelayService).disconnectForUser(41L, "alice");
+    verify(caldavRelayService, never()).disconnectForUser(eq(43L), any());
   }
 }
