@@ -16,11 +16,14 @@
  */
 package org.exoplatform.caldav.storage;
 
+import java.util.List;
+
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
+import org.exoplatform.commons.api.settings.data.Scope;
 
 public class CaldavConnectorStorage {
 
@@ -80,6 +83,47 @@ public class CaldavConnectorStorage {
                             CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                             CaldavConnectorUtils.CALDAV_MIRROR_CALENDAR_KEY,
                             SettingValue.create(mirrorCalendarHref));
+  }
+
+  /**
+   * Forgets the href of the mirror calendar of a user, leaving the rest of
+   * their account alone (EXO-90398).
+   *
+   * <p>
+   * What a connection naming another account, or another server, calls: the
+   * collection recorded under the previous credentials is not this account's,
+   * and a reader of the record — the Share drawer, which warns when the
+   * calendar being shared is where the copies go — would otherwise be reading
+   * somebody else's destination. The same reasoning
+   * {@link #deleteCaldavSetting} states for a disconnection, applied to the
+   * one case that is not one: re-connecting over an account that was never
+   * disconnected.
+   *
+   * <p>
+   * <b>The account's half of the record, and deliberately only that half.</b>
+   * The Share drawer reads a union of this href and the mirror pair's
+   * {@code remoteHref}, and the pair — keyed on the user and the server — is
+   * left where it is. On a connection naming another <i>server</i> that costs
+   * nothing: the pairs of the server just left are not read for the one the
+   * account is now on. On another mailbox of the <i>same</i> server the pair
+   * survives and keeps naming the collection the previous account's copies went
+   * into, so the drawer warns about a calendar the new account may not even
+   * see. That is the cheap direction — a warning too many, not one too few —
+   * and the push repoints the pair on its next write, which is why nothing
+   * removes it here.
+   *
+   * <p>
+   * Never on its own: the connection re-establishes the destination in the
+   * same request, so the record is absent only for as long as that takes, and
+   * an absent record is asked of the server rather than read as "no copies
+   * here".
+   *
+   * @param userIdentityId technical identity identifier of the user
+   */
+  public void forgetMirrorCalendarHref(long userIdentityId) {
+    this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
+                               CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                               CaldavConnectorUtils.CALDAV_MIRROR_CALENDAR_KEY);
   }
 
   /**
@@ -149,5 +193,56 @@ public class CaldavConnectorStorage {
     this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
                                CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
+    // The managed-mode mark goes with the connection it marked.
+    markConnectedByManagedMode(userIdentityId, false);
+  }
+
+  /**
+   * Records, or clears, that managed mode made this user's CalDAV connection.
+   *
+   * @param userIdentityId technical identity identifier of the user
+   * @param byManagedMode true to mark the connection, false to clear the mark
+   */
+  public void markConnectedByManagedMode(long userIdentityId, boolean byManagedMode) {
+    if (byManagedMode) {
+      this.settingService.set(Context.USER.id(String.valueOf(userIdentityId)),
+                              CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                              CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY,
+                              SettingValue.create(Boolean.TRUE.toString()));
+    } else {
+      this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
+                                 CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                 CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY);
+    }
+  }
+
+  /**
+   * Whether managed mode made this user's CalDAV connection.
+   *
+   * @param userIdentityId technical identity identifier of the user
+   * @return true when managed mode made it and the user has not connected since
+   */
+  public boolean isConnectedByManagedMode(long userIdentityId) {
+    return this.settingService.get(Context.USER.id(String.valueOf(userIdentityId)),
+                                   CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                   CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY) != null;
+  }
+
+  /**
+   * The users whose CalDAV connection managed mode made, by one query on the mark - no
+   * user setting is read.
+   *
+   * @return their technical identity identifiers
+   */
+  public List<Long> getIdentitiesConnectedByManagedMode() {
+    return this.settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                       Scope.APPLICATION.getName(),
+                                                                       CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE.getId(),
+                                                                       CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY,
+                                                                       0,
+                                                                       Integer.MAX_VALUE)
+                              .stream()
+                              .map(context -> Long.valueOf(context.getId()))
+                              .toList();
   }
 }

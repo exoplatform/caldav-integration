@@ -17,9 +17,12 @@
 package org.exoplatform.caldav.model;
 
 /**
- * What a login answered and a session carries: the key, and who BlueMind
- * says the session belongs to.
+ * What a login answered and a session carries: the address it answered at,
+ * the key, and who BlueMind says the session belongs to. It is what
+ * {@code BlueMindSessionCache} keeps for an account.
  *
+ * @param apiRoot the REST root this session was opened at, which is the only
+ *          address its key may ever be sent to
  * @param key the session key, sent in {@code X-BM-ApiKey}
  * @param userUid the directory entry uid of the authenticated user
  *          ({@code LoginResponse.authUser.uid}), or null when the answer
@@ -28,15 +31,15 @@ package org.exoplatform.caldav.model;
  *          ({@code LoginResponse.authUser.domainUid}), or null when the
  *          answer named none
  */
-public record BlueMindLogin(String key, String userUid, String domainUid) {
+public record BlueMindLogin(String apiRoot, String key, String userUid, String domainUid) {
 
   /**
-   * Names who the session belongs to, never its key.
+   * Names where the session was opened and who it belongs to, never its key.
    *
-   * @return the user and domain uids
+   * @return the REST root and the user and domain uids
    */
   @Override
   public String toString() {
-    return "BlueMindLogin[userUid=" + userUid + ", domainUid=" + domainUid + "]";
+    return "BlueMindLogin[apiRoot=" + apiRoot + ", userUid=" + userUid + ", domainUid=" + domainUid + "]";
   }
 }

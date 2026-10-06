@@ -14,24 +14,22 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-package org.exoplatform.caldav.model;
+package org.exoplatform.caldav.event;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+/**
+ * Published when an administrator moves a CalDAV server to another credentials provider.
+ * Every user of that server is then disconnected: the authentication
+ * changed for all of them.
+ */
+public class CaldavServerProviderChangedEvent {
 
-import org.junit.jupiter.api.Test;
+  private final long serverId;
 
-class BlueMindLoginTest {
+  public CaldavServerProviderChangedEvent(long serverId) {
+    this.serverId = serverId;
+  }
 
-  /**
-   * A login logged or concatenated by mistake names who the session belongs
-   * to and never its key: the key opens the account until it expires.
-   */
-  @Test
-  void itsTextNamesTheUserAndNeverTheKey() {
-    String text = String.valueOf(new BlueMindLogin("https://bm.example.com", "bm-session-secret-key", "9F3C1A20", "bm.example.com"));
-
-    assertFalse(text.contains("bm-session-secret-key"), text);
-    assertTrue(text.contains("9F3C1A20") && text.contains("bm.example.com"), text);
+  public long getServerId() {
+    return serverId;
   }
 }

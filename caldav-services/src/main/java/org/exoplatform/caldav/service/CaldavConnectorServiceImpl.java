@@ -68,6 +68,12 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
 
   private CaldavServerOwnerService        caldavServerOwnerService;
 
+  /**
+   * The BlueMind REST sessions kept per account (EXO-90397), resolved lazily
+   * for the same reason as the engines above.
+   */
+  private BlueMindSessionService          blueMindSessionService;
+
   public CaldavConnectorServiceImpl(CaldavConnectorStorage caldavConnectorStorage) {
     String caldavUrl = System.getProperty("exo.agenda.caldav.connector.url");
     this.caldavConnectorStorage = caldavConnectorStorage;
@@ -79,6 +85,9 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     if (StringUtils.isNotBlank(caldavUserSetting.getPassword()) && StringUtils.isNotBlank(caldavUserSetting.getUsername())) {
       CaldavUserSetting previous = caldavConnectorStorage.getCaldavSetting(userIdentityId);
       caldavConnectorStorage.createCaldavSetting(caldavUserSetting, userIdentityId);
+      // A connection the user makes is their own choice, even on the server managed
+      // mode had attached them to.
+      caldavConnectorStorage.markConnectedByManagedMode(userIdentityId, false);
       afterConnect(caldavUserSetting, userIdentityId, previous);
     } else {
       throw new IllegalAccessException("username or password not be null");
@@ -99,8 +108,13 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     // it is now on, describes nobody (EXO-90347). It holds for a provider-backed
     // connection too - which account the connector serves can change there as well.
     forgetServerOwners(userIdentityId, caldavUserSetting.getServerId());
+    // And the REST session those credentials had opened: it authenticates the
+    // mailbox they named, which is not necessarily the one they name now
+    // (EXO-90397).
+    forgetBlueMindSession(userIdentityId, caldavUserSetting.getServerId());
     if (previous != null && !Objects.equals(serverKeyOf(previous.getServerId()), serverKeyOf(caldavUserSetting.getServerId()))) {
       forgetServerOwners(userIdentityId, previous.getServerId());
+      forgetBlueMindSession(userIdentityId, previous.getServerId());
       // The account moved to another server: the shares it carried to the
       // previous one are eXo's and stay, but their delivery stamp names a
       // server this account is no longer on, so it goes - as on a
@@ -116,6 +130,11 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     // It holds for a provider-backed connection too - what the account is
     // authenticated with changed there as well.
     forgetServerIdentity(userIdentityId);
+    // And so does the collection the copies were last written into, when the
+    // account this connection names is not the one the record was written for
+    // (EXO-90398). Gone before the destinations step below, which records this
+    // account's own.
+    forgetMirrorDestination(userIdentityId, caldavUserSetting, previous);
     // Disconnecting froze the bindings of the calendars eXo pushed out, so
     // that reconnecting would find its collections again. Reconnecting is
     // what thaws them: until it does, the account is connected while the
@@ -435,6 +454,57 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     // The account is gone; what was remembered of its calendars' owners has
     // nothing to describe (EXO-90347).
     forgetServerOwners(userIdentityId, settings == null ? null : settings.getServerId());
+    // And the REST session it held is closed rather than left open on the
+    // server until it expires (EXO-90397).
+    forgetBlueMindSession(userIdentityId, settings == null ? null : settings.getServerId());
+  }
+
+  /**
+   * Closes and drops the BlueMind REST session the account held, when the
+   * engine that keeps it is resolvable.
+   *
+   * @param userIdentityId the user
+   * @param serverId the declared server the account was on; null for the
+   *          legacy deployment property
+   */
+  private void forgetBlueMindSession(long userIdentityId, Long serverId) {
+    BlueMindSessionService sessionService = getBlueMindSessionService();
+    if (sessionService != null) {
+      try {
+        sessionService.forget(userIdentityId, serverId);
+      } catch (RuntimeException e) {
+        // Connecting and disconnecting must succeed; a session left behind
+        // expires on BlueMind's own clock within the entry's lifetime.
+        LOG.warn("The BlueMind session kept for user {} could not be dropped", userIdentityId, e);
+      }
+    }
+  }
+
+  /**
+   * The engine keeping each account's BlueMind REST session, resolved lazily
+   * as its siblings are.
+   *
+   * @return the engine, or null when it cannot be resolved
+   */
+  protected BlueMindSessionService getBlueMindSessionService() {
+    if (blueMindSessionService == null) {
+      try {
+        blueMindSessionService = ExoContainerContext.getService(BlueMindSessionService.class);
+      } catch (Exception | LinkageError e) {
+        LOG.debug("BlueMind session engine not resolvable; its sessions are left to expire on their own", e);
+      }
+    }
+    return blueMindSessionService;
+  }
+
+  /**
+   * The seam the tests use.
+   *
+   * @param blueMindSessionService the engine keeping each account's BlueMind
+   *          REST session
+   */
+  protected void setBlueMindSessionService(BlueMindSessionService blueMindSessionService) {
+    this.blueMindSessionService = blueMindSessionService;
   }
 
   /**
@@ -513,6 +583,46 @@ public class CaldavConnectorServiceImpl implements CaldavConnectorService {
     if (identityService != null) {
       identityService.forgetPrincipal(userIdentityId);
     }
+  }
+
+  /**
+   * Forgets where the copies of a user were last written, when this connection
+   * names an account the record was not written for (EXO-90398).
+   *
+   * <p>
+   * <b>Only when the account changed</b>, and that condition is the whole of
+   * it. Disconnecting already takes the record with the rest of the settings,
+   * so the ordinary disconnect-then-reconnect needs nothing here; what this
+   * covers is a connection written <i>over</i> a live one — another mailbox on
+   * the same server, or the same login moved to another registration — where
+   * the record survives and names a collection this account may not even see.
+   * Clearing it for a re-connection of the <i>same</i> account would be a loss
+   * rather than an invalidation: {@code CaldavPushService.ensureMirror} reads
+   * it to recognise a destination it adopted rather than created, and a server
+   * that cannot be reached on this connection would leave the account with no
+   * record at all.
+   *
+   * <p>
+   * The record is re-established a few lines later by the destinations step,
+   * in this same request, so nothing reads the absence for long — and a reader
+   * that does asks the server rather than concluding there are no copies.
+   *
+   * @param userIdentityId identity of the connecting user
+   * @param connected the account just connected
+   * @param previous the account as it stood before this connection, or null
+   *          when there was none
+   */
+  private void forgetMirrorDestination(long userIdentityId, CaldavUserSetting connected, CaldavUserSetting previous) {
+    if (previous == null || StringUtils.isBlank(previous.getMirrorCalendarHref())) {
+      return;
+    }
+    boolean sameAccount = StringUtils.equals(previous.getUsername(), connected.getUsername())
+        && serverKeyOf(previous.getServerId()) == serverKeyOf(connected.getServerId());
+    if (sameAccount) {
+      return;
+    }
+    LOG.info("User {} connected another CalDAV account; where their copies were last written is forgotten", userIdentityId);
+    caldavConnectorStorage.forgetMirrorCalendarHref(userIdentityId);
   }
 
   /**

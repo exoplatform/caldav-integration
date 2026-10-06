@@ -107,9 +107,21 @@ export const getCaldavServers = () => {
  */
 const refusal = (resp) => {
   return resp.text().then(body => {
-    const error = new Error(body || 'Response code indicates a server error');
-    error.messageCode = body || null;
+    // The code travels as the `message` of the controller's JSON error body
+    // (`onRefusal`), or as the bare body where a controller still lets Boot
+    // answer; both are read.
+    let code = body || '';
+    try {
+      const parsed = JSON.parse(body);
+      code = parsed && parsed.message || '';
+    } catch (e) {
+      // not JSON: the body is the code itself
+    }
+    const error = new Error(code || 'Response code indicates a server error');
+    error.messageCode = code || null;
     throw error;
+  }, () => {
+    throw new Error('Response code indicates a server error');
   });
 };
 
@@ -637,19 +649,27 @@ export const getManagedMode = () => {
 };
 
 /**
- * Points the whole instance at one declared server. Administrators only.
+ * Points the whole instance at one declared server, minus the excluded
+ * groups. Administrators only.
  *
- * A server that is unknown or deactivated is refused with a 400 whose body is
- * the message code the drawer shows, so the administrator is told why rather
- * than left with a switch that flicked back.
+ * One body for the two facts: they are applied by one click, and two requests
+ * would leave a moment where the designation stands without its exclusions.
+ * A server that is unknown, deactivated, or whose provider asks the user for
+ * something is refused with a 400 whose body is the message code the drawer
+ * shows, so the administrator is told why rather than left with a switch
+ * that flicked back.
  *
  * @param {Number} serverId technical identifier of the registration
+ * @param {Array<String>} excludedGroups eXo group ids the choice must not
+ *          reach, none by default
  * @returns {Promise<Object>} the mode now in force
  */
-export const saveManagedMode = serverId => {
-  return fetch(`${window.location.origin}/caldav/rest/servers/managed?serverId=${serverId}`, {
+export const saveManagedMode = (serverId, excludedGroups = []) => {
+  return fetch(`${window.location.origin}/caldav/rest/servers/managed`, {
     credentials: 'include',
     method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({serverId, excludedGroups}),
   }).then(resp => {
     if (resp && resp.ok) {
       return resp.json();
@@ -661,11 +681,53 @@ export const saveManagedMode = serverId => {
 };
 
 /**
+ * Counts, before anything is stored, the accounts a managed-mode change would
+ * disconnect: the users managed mode attached that the proposed state no longer
+ * governs. Administrators only.
+ *
+ * @param {Number} serverId the server the change designates, null to preview switching off
+ * @param {Array<String>} excludedGroups eXo group ids the change excludes
+ * @returns {Promise<Number>} the number of accounts the change would disconnect
+ */
+export const previewManagedMode = (serverId, excludedGroups = []) => {
+  return fetch(`${window.location.origin}/caldav/rest/servers/managed/preview`, {
+    credentials: 'include',
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({serverId, excludedGroups}),
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json().then(preview => preview.affectedAccounts);
+  });
+};
+
+/**
+ * Counts the users connected to a server: what moving it to another credentials
+ * provider would disconnect. Administrators only.
+ *
+ * @param {Number} serverId technical identifier of the registration
+ * @returns {Promise<Number>} the number of users connected to it
+ */
+export const countConnectedUsers = (serverId) => {
+  return fetch(`${window.location.origin}/caldav/rest/servers/${serverId}/connected-users/count`, {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json().then(preview => preview.affectedAccounts);
+  });
+};
+
+/**
  * Gives every user back the choice of their own CalDAV server. Administrators
  * only.
  *
- * Nothing is severed: the mode governs which affordances are offered, never
- * the connections that already exist.
+ * The users managed mode attached are disconnected in the background; the users
+ * who chose a server themselves keep it.
  *
  * @returns {Promise<Object>} the mode now in force, naming no server
  */
