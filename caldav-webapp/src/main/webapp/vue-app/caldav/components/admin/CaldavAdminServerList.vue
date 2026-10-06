@@ -37,13 +37,27 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         </span>
       </template>
       <template #[`item.active`]="{ item }">
-        <div class="d-flex justify-center">
-          <v-switch
-            v-model="item.active"
-            class="ma-0 pa-0"
-            hide-details
-            @change="activateItem(item)" />
-        </div>
+        <!--
+          The server managed mode points at can be neither deactivated nor deleted:
+          both are greyed out on its row, and the tooltip says why, before any
+          click.
+        -->
+        <v-tooltip :disabled="!isManaged(item)" bottom>
+          <template #activator="{on, attrs}">
+            <div
+              class="d-flex justify-center"
+              v-bind="attrs"
+              v-on="on">
+              <v-switch
+                v-model="item.active"
+                :disabled="isManaged(item)"
+                class="ma-0 pa-0"
+                hide-details
+                @change="activateItem(item)" />
+            </div>
+          </template>
+          <span>{{ $t('caldav.admin.servers.list.managedLocked') }}</span>
+        </v-tooltip>
       </template>
       <template #[`item.actions`]="{ item }">
         <v-btn
@@ -51,12 +65,23 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
           @click="editItem(item)">
           <v-icon size="20" class="icon-default-color">fa-edit</v-icon>
         </v-btn>
-        <v-btn
-          icon
-          color="error"
-          @click="openDeleteConfirmDialog(item)">
-          <v-icon size="20">fa-trash</v-icon>
-        </v-btn>
+        <v-tooltip :disabled="!isManaged(item)" bottom>
+          <template #activator="{on, attrs}">
+            <span
+              class="d-inline-block"
+              v-bind="attrs"
+              v-on="on">
+              <v-btn
+                :disabled="isManaged(item)"
+                icon
+                color="error"
+                @click="openDeleteConfirmDialog(item)">
+                <v-icon size="20">fa-trash</v-icon>
+              </v-btn>
+            </span>
+          </template>
+          <span>{{ $t('caldav.admin.servers.list.managedLocked') }}</span>
+        </v-tooltip>
       </template>
     </v-data-table>
     <confirm-dialog
@@ -77,6 +102,11 @@ export default {
       type: Array,
       default: () => [],
     },
+    /** The server managed mode points at, null when it is off. */
+    managedServerId: {
+      type: Number,
+      default: null,
+    },
   },
   data: () => ({
     headers: [],
@@ -91,6 +121,16 @@ export default {
     ];
   },
   methods: {
+    /**
+     * Whether this row is the server managed mode points at, which can be neither
+     * deactivated nor deleted.
+     *
+     * @param {Object} item a server row
+     * @returns {Boolean} true for the managed server
+     */
+    isManaged(item) {
+      return this.managedServerId != null && item.id === this.managedServerId;
+    },
     /**
      * Opens the drawer prefilled with the row to edit.
      *
