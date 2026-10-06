@@ -27,6 +27,7 @@ import java.util.concurrent.TimeUnit;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
@@ -178,17 +179,40 @@ public class CaldavManagedDisconnectionService {
 
   /**
    * Disconnects every user of a server one by one, each one checked again when their
-   * turn comes ({@link #isStillOn(long, long)}).
+   * turn comes ({@link #isStillOn(long, long, boolean)}).
    *
    * @param serverId the server whose provider changed
    * @return the number of users disconnected
    */
   int disconnectAllNow(long serverId) {
+    boolean seed = isSeedServer(serverId);
     return (int) caldavServerService.getUserIdentitiesOfServer(serverId)
                                     .stream()
-                                    .filter(identityId -> isStillOn(identityId, serverId))
+                                    .filter(identityId -> isStillOn(identityId, serverId, seed))
                                     .filter(this::disconnectNow)
                                     .count();
+  }
+
+  /**
+   * Whether a server is the seed registration, the one an account that stores no server
+   * id reads ({@link CaldavServerService#resolveServer(Long)} with null): the selection
+   * counts such accounts among the seed's users
+   * ({@link CaldavServerService#getUserIdentitiesOfServer(long)}).
+   *
+   * @param serverId the server whose provider changed
+   * @return true when it is the seed registration; false when that cannot be read, which
+   *         leaves the accounts that store no server id connected
+   */
+  private boolean isSeedServer(long serverId) {
+    try {
+      CaldavServer seed = caldavServerService.resolveServer(null);
+      return seed != null && seed.getId() == serverId;
+    } catch (Exception e) {
+      LOG.warn("Cannot read the seed CalDAV registration; the accounts storing no server id are left connected to server {}",
+               serverId,
+               e);
+      return false;
+    }
   }
 
   /**
@@ -220,18 +244,26 @@ public class CaldavManagedDisconnectionService {
   /**
    * Whether a user of a server whose provider changed is still stored on it when their
    * turn comes: a user who moved to another server, or disconnected, during the run is
-   * left alone. A user who connected to this same server again during the run cannot be
-   * told apart from one who did not, and is disconnected too: telling them apart needs a
-   * lock shared with the connect paths.
+   * left alone. An account that stores no server id is on the seed registration while it
+   * holds a login, as the selection reads it. A user who connected to this same server
+   * again during the run cannot be told apart from one who did not, and is disconnected
+   * too: telling them apart needs a lock shared with the connect paths.
    *
    * @param userIdentityId the identity the run selected
    * @param serverId the server whose provider changed
+   * @param seed whether that server is the seed registration
    * @return true when the user is still to be disconnected
    */
-  boolean isStillOn(long userIdentityId, long serverId) {
+  boolean isStillOn(long userIdentityId, long serverId, boolean seed) {
     try {
       CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(userIdentityId);
-      return setting != null && Objects.equals(serverId, setting.getServerId());
+      if (setting == null) {
+        return false;
+      }
+      if (setting.getServerId() == null) {
+        return seed && setting.getUsername() != null;
+      }
+      return serverId == setting.getServerId();
     } catch (Exception e) {
       LOG.warn("Cannot read the CalDAV setting of user identity {}; left connected to server {}", userIdentityId, serverId, e);
       return false;

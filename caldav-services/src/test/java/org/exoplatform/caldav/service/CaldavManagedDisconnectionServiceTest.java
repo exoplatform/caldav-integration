@@ -45,6 +45,7 @@ import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
@@ -415,5 +416,70 @@ class CaldavManagedDisconnectionServiceTest {
 
     verify(caldavRelayService).disconnectForUser(41L, "alice");
     verify(caldavRelayService, never()).disconnectForUser(eq(43L), any());
+  }
+
+  /**
+   * A provider change on the seed registration 3: chloe's legacy account stores no server
+   * id, reads the seed, and is selected among its users, so she is disconnected with
+   * alice. Killed by the mutant that compares the stored server id alone.
+   */
+  @Test
+  void aProviderChangeOnTheSeedServerDisconnectsItsLegacyAccounts() {
+    seedIs(3L);
+    when(caldavServerService.getUserIdentitiesOfServer(3L)).thenReturn(List.of(41L, 43L));
+    when(caldavConnectorStorage.getCaldavSetting(41L)).thenReturn(settingOn(3L));
+    when(caldavConnectorStorage.getCaldavSetting(43L)).thenReturn(legacyAccount("chloe@bm.example.org"));
+
+    service.disconnectAllUsersOf(3L);
+
+    verify(caldavRelayService).disconnectForUser(41L, "alice");
+    verify(caldavRelayService).disconnectForUser(43L, "chloe");
+  }
+
+  /**
+   * A provider change on 3 while the seed is 9: an account that stores no server id
+   * reads 9, not 3, and stays. Killed by the mutant that drops the seed condition.
+   */
+  @Test
+  void aLegacyAccountIsLeftConnectedWhenTheChangedServerIsNotTheSeed() {
+    seedIs(9L);
+    when(caldavServerService.getUserIdentitiesOfServer(3L)).thenReturn(List.of(41L, 43L));
+    when(caldavConnectorStorage.getCaldavSetting(41L)).thenReturn(settingOn(3L));
+    when(caldavConnectorStorage.getCaldavSetting(43L)).thenReturn(legacyAccount("chloe@bm.example.org"));
+
+    service.disconnectAllUsersOf(3L);
+
+    verify(caldavRelayService).disconnectForUser(41L, "alice");
+    verify(caldavRelayService, never()).disconnectForUser(eq(43L), any());
+  }
+
+  /**
+   * A provider change on the seed 3: chloe disconnected before her turn, so her setting
+   * holds neither a login nor a server id and she is not on the seed any more. Killed by
+   * the mutant that drops the login condition.
+   */
+  @Test
+  void aLegacyAccountDisconnectedDuringTheRunIsLeftAlone() {
+    seedIs(3L);
+    when(caldavServerService.getUserIdentitiesOfServer(3L)).thenReturn(List.of(41L, 43L));
+    when(caldavConnectorStorage.getCaldavSetting(41L)).thenReturn(settingOn(3L));
+    when(caldavConnectorStorage.getCaldavSetting(43L)).thenReturn(legacyAccount(null));
+
+    service.disconnectAllUsersOf(3L);
+
+    verify(caldavRelayService).disconnectForUser(41L, "alice");
+    verify(caldavRelayService, never()).disconnectForUser(eq(43L), any());
+  }
+
+  private void seedIs(long seedId) {
+    CaldavServer seed = new CaldavServer();
+    seed.setId(seedId);
+    when(caldavServerService.resolveServer(null)).thenReturn(seed);
+  }
+
+  private static CaldavUserSetting legacyAccount(String username) {
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername(username);
+    return setting;
   }
 }
