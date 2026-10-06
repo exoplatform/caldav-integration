@@ -111,6 +111,9 @@ class CaldavManagedDisconnectionServiceTest {
     ReflectionTestUtils.setField(service, "identityManager", identityManager);
     service.setExecutor(Runnable::run);
     lenient().when(caldavServerService.canEdit(ADMIN)).thenReturn(true);
+    named(41, "alice");
+    named(42, "bob");
+    named(43, "chloe");
   }
 
   @AfterEach
@@ -157,13 +160,6 @@ class CaldavManagedDisconnectionServiceTest {
       memberships.add(new MembershipEntry(group, "member"));
     }
     when(userAcl.getUserIdentity(user)).thenReturn(new org.exoplatform.services.security.Identity(user, memberships));
-  }
-
-  @BeforeEach
-  void names() {
-    named(41, "alice");
-    named(42, "bob");
-    named(43, "chloe");
   }
 
   /** A becomes B: the users managed mode attached to A are disconnected. */
