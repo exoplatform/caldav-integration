@@ -21,6 +21,7 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import org.exoplatform.caldav.client.CalDavProviderMissingException;
+import org.exoplatform.caldav.exception.ManagedConnectionLockedException;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.service.CaldavConnectorService;
@@ -55,6 +56,8 @@ public class CaldavConnectorRest implements ResourceContainer {
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
       @ApiResponse(responseCode = "400", description = "Invalid query input"),
       @ApiResponse(responseCode = "401", description = "Unauthorized operation"),
+      @ApiResponse(responseCode = "403", description = "caldav.managed.connectionLocked: managed mode keeps the caller on the "
+          + "designated server"),
       @ApiResponse(responseCode = "409", description = "The server's credentials provider is not installed; nothing stored"),
       @ApiResponse(responseCode = "500", description = "Internal server error") })
   public Response createCaldavSetting(@Parameter(description = "Caldav user setting object to create", required = true)
@@ -64,8 +67,10 @@ public class CaldavConnectorRest implements ResourceContainer {
     }
     long identityId = CaldavConnectorUtils.getCurrentUserIdentityId(identityManager);
     try {
-      caldavConnectorService.createCaldavSetting(caldavUserSetting, identityId);
+      caldavConnectorService.connectCaldavSetting(caldavUserSetting, identityId, CaldavConnectorUtils.getCurrentUser());
       return Response.ok().build();
+    } catch (ManagedConnectionLockedException e) {
+      return Response.status(Response.Status.FORBIDDEN).entity(e.getMessage()).build();
     } catch (CalDavProviderMissingException e) {
       // A state of the platform the connect drawer already reported, not an error
       // of this request: answered with the code it shows, without a stack.
@@ -134,12 +139,16 @@ public class CaldavConnectorRest implements ResourceContainer {
   @RolesAllowed("users")
   @Operation(summary = "Delete caldav user setting", method = "DELETE")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled"),
+      @ApiResponse(responseCode = "403", description = "caldav.managed.connectionLocked: managed mode keeps the caller on the "
+          + "designated server"),
       @ApiResponse(responseCode = "500", description = "Internal server error") })
   public Response deleteCaldavSetting() {
     long identityId = CaldavConnectorUtils.getCurrentUserIdentityId(identityManager);
     try {
-      caldavConnectorService.deleteCaldavSetting(identityId, CaldavConnectorUtils.getCurrentUser());
+      caldavConnectorService.disconnectCaldavSetting(identityId, CaldavConnectorUtils.getCurrentUser());
       return Response.ok().build();
+    } catch (ManagedConnectionLockedException e) {
+      return Response.status(Response.Status.FORBIDDEN).entity(e.getMessage()).build();
     } catch (Exception e) {
       LOG.error("Error when deleting caldav user setting for user with id '{}'", identityId, e);
       return Response.status(Response.Status.INTERNAL_SERVER_ERROR).build();
