@@ -44,6 +44,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.context.ApplicationEventPublisher;
 
+import org.exoplatform.caldav.exception.ManagedConnectionLockedException;
 import org.exoplatform.caldav.model.CaldavManagedMode;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
@@ -386,5 +387,51 @@ public class CaldavManagedModeServiceTest {
     caldavManagedModeService.clearManagedServer(ADMIN);
 
     verify(eventPublisher).publishEvent(any(CaldavManagedModeChangedEvent.class));
+  }
+
+  /** EXO-90836. A user managed mode does not govern changes their connection freely. */
+  @Test
+  public void aUserManagedModeDoesNotGovernMayChangeTheirConnection() throws Exception {
+    designated(700);
+    when(managedConnectorService.exclusionsOf(KIND)).thenReturn(List.of("/externals"));
+    when(managedConnectorService.designatedConnectorFor(700L, List.of("/externals"), USER)).thenReturn(null);
+
+    assertNull(caldavManagedModeService.checkUserMayChangeConnection(USER, null));
+    assertNull(caldavManagedModeService.checkUserMayChangeConnection(USER, 3L));
+  }
+
+  /**
+   * EXO-90836. A governed user may connect the designated registration in one click, and
+   * nothing else: the designated id is returned for the caller to mark the connection;
+   * a disconnection or a typed connection (no target) and any other registration are
+   * refused with the code carried in the 403 body.
+   */
+  @Test
+  public void aGovernedUserMayConnectTheDesignatedServerAndNothingElse() throws Exception {
+    designated(700);
+    when(managedConnectorService.designatedConnectorFor(700L, List.of(), USER)).thenReturn(700L);
+
+    assertEquals(700L, caldavManagedModeService.checkUserMayChangeConnection(USER, 700L));
+    ManagedConnectionLockedException refused = assertThrows(ManagedConnectionLockedException.class,
+                                                            () -> caldavManagedModeService.checkUserMayChangeConnection(USER, null));
+    assertEquals("caldav.managed.connectionLocked", refused.getMessage());
+    assertThrows(ManagedConnectionLockedException.class, () -> caldavManagedModeService.checkUserMayChangeConnection(USER, 3L));
+  }
+
+  /**
+   * EXO-90836. The verdict is the strict one: a user whose identity cannot be resolved,
+   * and a caller with no login, are refused rather than counted as excluded.
+   */
+  @Test
+  public void anUnresolvableOrAnonymousCallerIsRefused() {
+    designated(700);
+    when(managedConnectorService.exclusionsOf(KIND)).thenReturn(List.of("/externals"));
+    when(managedConnectorService.designatedConnectorFor(700L, List.of("/externals"), "unknown"))
+        .thenThrow(new IllegalStateException("no identity"));
+    when(managedConnectorService.designatedConnectorFor(700L, List.of("/externals"), null))
+        .thenThrow(new IllegalArgumentException("user required"));
+
+    assertThrows(ManagedConnectionLockedException.class, () -> caldavManagedModeService.checkUserMayChangeConnection("unknown", 700L));
+    assertThrows(ManagedConnectionLockedException.class, () -> caldavManagedModeService.checkUserMayChangeConnection(null, null));
   }
 }
