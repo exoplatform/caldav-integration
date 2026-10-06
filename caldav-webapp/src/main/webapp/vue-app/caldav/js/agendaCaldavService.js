@@ -37,7 +37,7 @@ export const createCaldavSetting = (caldavSettings) => {
       throw caldavError('caldav.error.serverNotUsable', 409);
     }
     if (!resp || !resp.ok) {
-      throw new Error('Response code indicates a server error', resp);
+      return rejectRefusal(resp);
     } else {
       return resp.status;
     }
@@ -90,13 +90,32 @@ export const getUnavailableProviders = () => {
 };
 
 /**
+ * Whether managed mode keeps the current user on a declared server, and which one
+ * (EXO-90836).
+ *
+ * @returns {Promise<Object>} `{managed, serverId}`
+ */
+export const getManagedModeForMe = () => {
+  return fetch('/caldav/rest/servers/managed/me', {
+    credentials: 'include',
+    method: 'GET',
+  }).then(resp => {
+    if (!resp || !resp.ok) {
+      throw new Error('Response code indicates a server error', resp);
+    }
+    return resp.json();
+  });
+};
+
+/**
  * Connects to a registration whose provider asks the user for nothing. The
  * server probes with the service account's own material and records the
  * connection only if that passed, so a resolved promise means tested — the same
  * promise the typed drawer makes.
  *
  * @param {Number} serverId the registration to connect to
- * @returns {Promise<Object>} the probe outcome, `result` being 'ok' on success
+ * @returns {Promise<Object>} the probe outcome, `result` being 'ok' on success; rejects
+ *          with the `caldav.managed.connectionLocked` code when managed mode refuses
  */
 export const connectThroughProvider = (serverId) => {
   const query = serverId ? `?serverId=${serverId}` : '';
@@ -105,7 +124,7 @@ export const connectThroughProvider = (serverId) => {
     method: 'POST',
   }).then(resp => {
     if (!resp || !resp.ok) {
-      throw new Error('Response code indicates a server error', resp);
+      return rejectRefusal(resp);
     }
     return resp.json();
   });
@@ -392,12 +411,39 @@ export const deleteCaldavSetting = () => {
     method: 'DELETE',
   }).then(resp => {
     if (!resp || !resp.ok) {
-      throw new Error('Response code indicates a server error', resp);
+      return rejectRefusal(resp);
     } else {
       return resp.status;
     }
   });
 };
+
+/**
+ * The message code a managed-mode refusal carries in its 403 body: the instance keeps
+ * the user on the designated registration.
+ */
+export const CONNECTION_LOCKED_CODE = 'caldav.managed.connectionLocked';
+
+/**
+ * Rejects for a connection change the server did not perform: with the managed-mode
+ * lock's code when the 403 names it - in its body for the settings endpoints, in the
+ * relay-code header for the one-click connect - a generic server error otherwise.
+ *
+ * @param {Response} resp the answer, absent when the request failed
+ * @returns {Promise} always rejected
+ */
+function rejectRefusal(resp) {
+  if (!resp || resp.status !== 403) {
+    return Promise.reject(new Error('Response code indicates a server error', resp));
+  }
+  const code = resp.headers && resp.headers.get('x-caldav-relay-code');
+  return resp.text().catch(() => '').then(message => {
+    if (code === CONNECTION_LOCKED_CODE || (message && message.includes(CONNECTION_LOCKED_CODE))) {
+      throw caldavError(CONNECTION_LOCKED_CODE, 403);
+    }
+    throw new Error('Response code indicates a server error', resp);
+  });
+}
 export function pad(n) {
   return n < 10 && `0${n}` || n;
 }

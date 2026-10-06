@@ -29,6 +29,8 @@ public enum ManagedEnrollmentOutcome {
   ALREADY_CONFIGURED,
   /** The user was attached to the managed server. */
   ATTACHED,
+  /** The user's account on another server was replaced by one on the managed server. */
+  SWITCHED,
   /** The server or the connect refused; the next login tries again. */
   REFUSED,
   /** An unexpected failure, logged; the next login tries again. */
