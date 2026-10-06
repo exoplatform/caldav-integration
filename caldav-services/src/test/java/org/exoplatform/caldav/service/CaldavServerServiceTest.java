@@ -35,9 +35,11 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -56,6 +58,7 @@ import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
@@ -90,6 +93,8 @@ import org.exoplatform.container.RootContainer.PortalContainerInitTask;
 import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.security.Identity;
+import org.exoplatform.caldav.event.CaldavServerProviderChangedEvent;
+import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 
 /**
  * The registry of CalDAV servers is an administration surface bridged into
@@ -176,6 +181,9 @@ public class CaldavServerServiceTest {
   private CaldavServerUrlValidator caldavServerUrlValidator =
                                                             new CaldavServerUrlValidator("https", "80,443", "", false,
                                                                                          CaldavServerServiceTest::resolve);
+
+  @Mock
+  private ApplicationEventPublisher eventPublisher;
 
   @InjectMocks
   private CaldavServerService      caldavServerService;
@@ -323,6 +331,88 @@ public class CaldavServerServiceTest {
     ArgumentCaptor<CaldavServer> written = ArgumentCaptor.forClass(CaldavServer.class);
     verify(caldavServerStorage).updateServer(written.capture());
     assertEquals(WriteChannel.CALDAV, written.getValue().getWriteChannel(), "stated to the storage, which keeps a null as-is");
+  }
+
+  /** Moving a server to another provider announces the disconnection of every user of it. */
+  @Test
+  public void aProviderChangeAnnouncesTheDisconnectionOfEveryUser() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Bluemind", null, SERVER_URL, true);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    CaldavServer posted = server(7, null, "Bluemind", null, SERVER_URL, true);
+    posted.setAuthProviderName("personal");
+
+    assertDoesNotThrow(() -> caldavServerService.updateServer(posted, ADMIN_USER));
+
+    ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
+    verify(eventPublisher).publishEvent(published.capture());
+    assertEquals(7L, ((CaldavServerProviderChangedEvent) published.getValue()).getServerId());
+  }
+
+  /** An edit that keeps the provider, or leaves it blank, disconnects nobody. */
+  @Test
+  public void anEditThatKeepsTheProviderDisconnectsNobody() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Bluemind", null, SERVER_URL, true);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    CaldavServer sameProvider = server(7, null, "Renamed", null, SERVER_URL, true);
+    sameProvider.setAuthProviderName("bluemind-sudo");
+    CaldavServer blankProvider = server(7, null, "Renamed", null, SERVER_URL, true);
+    blankProvider.setAuthProviderName(null);
+
+    assertDoesNotThrow(() -> caldavServerService.updateServer(sameProvider, ADMIN_USER));
+    assertDoesNotThrow(() -> caldavServerService.updateServer(blankProvider, ADMIN_USER));
+
+    verify(eventPublisher, never()).publishEvent(any());
+  }
+
+  /** The users of a server are the identities whose stored server id names it. */
+  @Test
+  public void listsTheIdentitiesConnectedToAServer() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(), anyInt()))
+        .thenReturn(List.of(Context.USER.id("41"), Context.USER.id("42"), Context.USER.id("43")));
+    doReturn(SettingValue.create("7")).when(settingService).get(eq(Context.USER.id("41")), any(), anyString());
+    doReturn(SettingValue.create("8")).when(settingService).get(eq(Context.USER.id("42")), any(), anyString());
+    when(settingService.get(eq(Context.USER.id("43")), any(), anyString())).thenReturn(null);
+
+    assertEquals(List.of(41L), caldavServerService.getUserIdentitiesOfServer(7L));
+  }
+
+  /**
+   * The row carrying the legacy provider name also counts the accounts that store no
+   * server id: connected before the server list existed, they resolve to that row.
+   */
+  @Test
+  public void theLegacyRowAlsoListsTheAccountsThatStoreNoServerId() {
+    CaldavServer legacyRow = mock(CaldavServer.class);
+    when(legacyRow.getId()).thenReturn(1L);
+    when(caldavServerStorage.getServerByProviderName(CaldavServerService.CALDAV_PROVIDER_NAME)).thenReturn(legacyRow);
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(),
+                                                                anyString(),
+                                                                anyString(),
+                                                                eq(CaldavConnectorUtils.CALDAV_SERVER_ID_KEY),
+                                                                anyInt(),
+                                                                anyInt()))
+        .thenReturn(List.of(Context.USER.id("41"), Context.USER.id("42")));
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(),
+                                                                anyString(),
+                                                                anyString(),
+                                                                eq(CaldavConnectorUtils.CALDAV_USERNAME_KEY),
+                                                                anyInt(),
+                                                                anyInt()))
+        .thenReturn(List.of(Context.USER.id("41"), Context.USER.id("42"), Context.USER.id("43")));
+    doReturn(SettingValue.create("1")).when(settingService).get(eq(Context.USER.id("41")), any(), anyString());
+    doReturn(SettingValue.create("8")).when(settingService).get(eq(Context.USER.id("42")), any(), anyString());
+    when(settingService.get(eq(Context.USER.id("43")), any(), anyString())).thenReturn(null);
+
+    // 41 names the row, 43 names no server and resolves to it; 42 is another server's.
+    assertEquals(List.of(41L, 43L), caldavServerService.getUserIdentitiesOfServer(1L));
+    // Another row never picks up the accounts without a server id.
+    assertEquals(List.of(42L), caldavServerService.getUserIdentitiesOfServer(8L));
   }
 
   /**
@@ -614,6 +704,65 @@ public class CaldavServerServiceTest {
 
     verify(caldavServerStorage, never()).updateServer(any());
     verifyNoInteractions(agendaRemoteEventService);
+  }
+
+  /**
+   * EXO-89652. Editing the managed row asks the managed-mode guard about the
+   * provider it would end up with - the effective one, since a blank provider
+   * in the payload keeps the stored one - and a refusal leaves the row
+   * unwritten. Any other row changes provider freely.
+   */
+  @Test
+  public void shouldRefuseMovingTheManagedRowToAnIneligibleProvider() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, "agenda.caldavCalendar.7", "BlueMind", null, SERVER_URL, true);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    doThrow(new IllegalArgumentException("caldav.managed.providerNotEligible")).when(caldavManagedModeService)
+                                                                              .checkProviderChangeAllowed(7, "personal");
+
+    CaldavServer toPersonal = server(7, "agenda.caldavCalendar.7", "BlueMind", null, SERVER_URL, true);
+    toPersonal.setAuthProviderName("personal");
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.updateServer(toPersonal, ADMIN_USER));
+    assertEquals("caldav.managed.providerNotEligible", refusal.getMessage());
+    verify(caldavServerStorage, never()).updateServer(any());
+
+    CaldavServer renamedOnly = server(7, "agenda.caldavCalendar.7", "BlueMind 2", null, SERVER_URL, true);
+    renamedOnly.setAuthProviderName(null);
+    assertDoesNotThrow(() -> caldavServerService.updateServer(renamedOnly, ADMIN_USER));
+    verify(caldavManagedModeService).checkProviderChangeAllowed(7, "bluemind-sudo");
+  }
+
+  /**
+   * EXO-89652. Editing the managed row with {@code active=false}
+   * is refused like the status toggle refuses it — the payload carries the flag
+   * and the storage writes it, so the edit must not be the way around the
+   * guard. An edit that keeps the row active asks nothing of that guard.
+   */
+  @Test
+  public void shouldRefuseDeactivatingTheManagedRowThroughAnEdit() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, "agenda.caldavCalendar.7", "BlueMind", null, SERVER_URL, true);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    doThrow(new IllegalArgumentException("caldav.managed.serverInUse")).when(caldavManagedModeService)
+                                                                       .checkServerNotManaged(7);
+
+    CaldavServer deactivated = server(7, "agenda.caldavCalendar.7", "BlueMind", null, SERVER_URL, false);
+    deactivated.setAuthProviderName("bluemind-sudo");
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.updateServer(deactivated, ADMIN_USER));
+    assertEquals("caldav.managed.serverInUse", refusal.getMessage());
+    verify(caldavServerStorage, never()).updateServer(any());
+
+    clearInvocations(caldavManagedModeService);
+    CaldavServer stillActive = server(7, "agenda.caldavCalendar.7", "BlueMind 2", null, SERVER_URL, true);
+    stillActive.setAuthProviderName("bluemind-sudo");
+    assertDoesNotThrow(() -> caldavServerService.updateServer(stillActive, ADMIN_USER));
+    verify(caldavManagedModeService, never()).checkServerNotManaged(anyLong());
   }
 
   /**

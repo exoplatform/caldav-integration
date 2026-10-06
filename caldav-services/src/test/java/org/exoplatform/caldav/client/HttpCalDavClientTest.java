@@ -16,6 +16,9 @@
  */
 package org.exoplatform.caldav.client;
 
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -209,6 +212,7 @@ public class HttpCalDavClientTest {
    */
   @Test
   void rejectedCredentialsAreInvalidatedOnceWithTheProvider() throws Exception {
+    lenient().when(connectorCredentialsService.requiresUserAction("personal")).thenReturn(true);
     givenStatusAnswers(401, "");
     CalDavEndpoint endpoint = client.endpoint(1L, USER);
     ArgumentCaptor<ConnectorCredentialsContext> context = ArgumentCaptor.forClass(ConnectorCredentialsContext.class);
@@ -1290,5 +1294,73 @@ END:VCALENDAR</A:calendar-data></D:prop>
       throw new IllegalStateException(e);
     }
     return service;
+  }
+
+  // ---- EXO-89649: one retry on fresh material after a 401 ----------------------
+
+  /**
+   * A 401 on material a refreshable provider produced: one invalidation, the same
+   * request once more with a freshly produced header, and its answer is the answer.
+   */
+  @Test
+  void retriesARefusedRequestOnceWithAFreshHeader() throws Exception {
+    lenient().when(connectorCredentialsService.requiresUserAction("personal")).thenReturn(false);
+    lenient().doReturn(new HttpConnectorCredentials("Basic stale", null), new HttpConnectorCredentials("Basic fresh", null))
+             .when(connectorCredentialsService).produce(any());
+    List<Integer> statuses = new ArrayList<>(List.of(401, 204));
+    when(transport.send(any(HttpRequest.class), any())).thenAnswer(invocation -> {
+      sent.add(invocation.getArgument(0));
+      return response(statuses.remove(0), Map.of(), "");
+    });
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    assertEquals(204, client.deleteObject(endpoint, BASE_PATH + "default/a.ics", null));
+
+    verify(connectorCredentialsService, times(1)).invalidate(any());
+    assertEquals(2, sent.size());
+    assertEquals("Basic fresh", sent.get(1).headers().firstValue("Authorization").orElse(null));
+    assertEquals(1, sent.get(1).headers().allValues("Authorization").size(), "the stale header is replaced, not doubled");
+  }
+
+  /** A second 401 is the answer: no third request, and each refused material is told once. */
+  @Test
+  void doesNotLoopOnAServerThatKeepsRefusing() throws Exception {
+    lenient().when(connectorCredentialsService.requiresUserAction("personal")).thenReturn(false);
+    givenStatusAnswers(401, "");
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    assertThrows(CalDavException.class, () -> client.deleteObject(endpoint, BASE_PATH + "default/a.ics", null));
+
+    assertEquals(2, sent.size());
+    verify(connectorCredentialsService, times(2)).invalidate(any());
+  }
+
+  /**
+   * A provider carrying what the user typed is never retried: same password, second
+   * refusal. The refusal is still told to it, once.
+   */
+  @Test
+  void neverRetriesWithAProviderThatCannotRefreshItsMaterial() throws Exception {
+    lenient().when(connectorCredentialsService.requiresUserAction("personal")).thenReturn(true);
+    givenStatusAnswers(401, "");
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    assertThrows(CalDavException.class, () -> client.deleteObject(endpoint, BASE_PATH + "default/a.ics", null));
+
+    assertEquals(1, sent.size());
+    verify(connectorCredentialsService, times(1)).invalidate(any());
+  }
+
+  /** Only a 401 counts: a 5xx invalidates nothing. */
+  @Test
+  void aServerErrorInvalidatesNothing() throws Exception {
+    lenient().when(connectorCredentialsService.requiresUserAction("personal")).thenReturn(false);
+    givenStatusAnswers(500, "");
+    CalDavEndpoint endpoint = client.endpoint(1L, USER);
+
+    assertThrows(CalDavException.class, () -> client.deleteObject(endpoint, BASE_PATH + "default/a.ics", null));
+
+    assertEquals(1, sent.size());
+    verify(connectorCredentialsService, never()).invalidate(any());
   }
 }

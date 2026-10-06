@@ -29,9 +29,11 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -39,6 +41,9 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import org.exoplatform.agenda.model.RemoteProvider;
+import org.exoplatform.agenda.service.AgendaRemoteEventService;
+import org.exoplatform.agenda.service.AgendaUserSettingsService;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavRelayRequest;
@@ -114,6 +119,9 @@ public class CaldavRelayService {
 
   /** The one-click path refusing a connector whose provider cannot name the account. */
   public static final String        PROVIDER_NAMES_NOBODY_MESSAGE = "caldav.connect.providerNamesNobody";
+
+  /** The one-click path refusing a server whose connector agenda has switched off. */
+  public static final String        PROVIDER_DISABLED_MESSAGE     = "caldav.relay.providerDisabled";
 
   /**
    * Response header carrying the relay's own machine-readable outcome code,
@@ -241,6 +249,12 @@ public class CaldavRelayService {
   @Autowired
   private CaldavConnectorService    caldavConnectorService;
 
+  @Autowired
+  private AgendaUserSettingsService agendaUserSettingsService;
+
+  @Autowired
+  private AgendaRemoteEventService  agendaRemoteEventService;
+
   /**
    * The JDK's own HTTP client, TLS trust from the platform truststore —
    * exactly the transport email-connector's CardDAV client rides. Redirects
@@ -308,7 +322,27 @@ public class CaldavRelayService {
                                                relayRequest.getHeaders(),
                                                relayRequest.getBody(),
                                                authorization(server, relayRequest.getUsername()));
-    return execute(request, upstreamBase, relayRequest.getRelayPrefix(), server, relayRequest.getUsername());
+    // The one retry the credentials contract allows (EXO-89649): a 401 on the
+    // provider's material means it went stale - a kept BlueMind session dropped by a
+    // BlueMind restart - and the same request, whose body is a replayable byte
+    // array, goes out once more on fresh material.
+    // Only for a provider that produces its material itself: one carrying what the
+    // user typed would hand the same password back, a second refusal against the
+    // user's account for nothing.
+    boolean refreshable = caldavCredentialsResolver.retriesAfterRefusal(server.getAuthProviderName());
+    return execute(request,
+                   upstreamBase,
+                   relayRequest.getRelayPrefix(),
+                   server,
+                   relayRequest.getUsername(),
+                   !refreshable ? null : () -> {
+      caldavCredentialsResolver.invalidate(server.getId(), server.getAuthProviderName(), relayRequest.getUsername());
+      return buildUpstreamRequest(target,
+                                  method,
+                                  relayRequest.getHeaders(),
+                                  relayRequest.getBody(),
+                                  authorization(server, relayRequest.getUsername()));
+    });
   }
 
   /**
@@ -382,11 +416,44 @@ public class CaldavRelayService {
    * @param exoLogin the eXo login connecting
    * @return the probe outcome; the connection is recorded only on {@link CaldavProbeResult#OK}
    * @throws ObjectNotFoundException when no such registration is declared
-   * @throws IllegalAccessException when the registration is deactivated, or the provider
-   *           named no account
+   * @throws IllegalAccessException when the registration is deactivated, when agenda has
+   *           switched its connector off, or when the provider named no account
    */
   public CaldavProbeResult connectThroughProvider(Long serverId, String exoLogin) throws ObjectNotFoundException,
                                                                                   IllegalAccessException {
+    return connectThroughProvider(serverId, exoLogin, false, () -> true);
+  }
+
+  /**
+   * Connects a user through the server's provider, as
+   * {@link #connectThroughProvider(Long, String)} does, and records who made the
+   * connection: managed mode at login, or the user themselves. Only a
+   * connection made by managed mode is marked; one the user makes clears the mark, since
+   * it is their own choice from then on.
+   *
+   * <p>
+   * The connection is recorded only if {@code stillWanted} still answers true at
+   * the moment of the writes. The login-time attachment passes "the user still has
+   * no configuration": the probe can take as long as the server's timeout, and a
+   * connection the user made in that window is theirs, not something to overwrite.
+   *
+   * @param serverId the server to connect to, null for the default one
+   * @param exoLogin the eXo login connecting
+   * @param byManagedMode true when managed mode makes the connection at login
+   * @param stillWanted asked once, after a probe that passed and right before
+   *          anything is written
+   * @return the probe's outcome, or {@link CaldavProbeResult#SUPERSEDED} when the
+   *         probe passed and {@code stillWanted} declined the writes; the
+   *         connection is recorded only when it is OK
+   * @throws ObjectNotFoundException when no server is declared
+   * @throws IllegalAccessException when the server is inactive, when agenda has
+   *           switched its connector off, or when the provider named no account
+   */
+  public CaldavProbeResult connectThroughProvider(Long serverId,
+                                                  String exoLogin,
+                                                  boolean byManagedMode,
+                                                  BooleanSupplier stillWanted) throws ObjectNotFoundException,
+                                                                               IllegalAccessException {
     CaldavServer server = serverId == null ? caldavServerService.resolveServer(null)
                                            : caldavServerService.getServerById(serverId);
     if (server == null) {
@@ -404,17 +471,101 @@ public class CaldavRelayService {
     if (StringUtils.isBlank(account)) {
       throw new IllegalArgumentException(PROVIDER_NAMES_NOBODY_MESSAGE);
     }
+    // Agenda keeps its own switch for this connector, in its connector settings,
+    // and an administrator can turn it off without touching this registry. Read
+    // before anything is probed or written: agenda's record of the connection
+    // refuses when it is off, and a refusal after caldav's setting was stored
+    // would leave a half-connected account that the login-time attachment's
+    // rule 1 then hides for good.
+    if (!agendaRemoteProviderEnabled(server.getProviderName())) {
+      throw new IllegalAccessException(PROVIDER_DISABLED_MESSAGE);
+    }
     CaldavProbeResult outcome = probe(server, account, authorization(server, exoLogin));
+    if (CaldavProbeResult.CREDENTIALS.equals(outcome.getResult())) {
+      // The material was the provider's, so the provider is told, once per
+      // refused material as the contract asks: a caching provider would
+      // otherwise hand it out again until it expires.
+      caldavCredentialsResolver.invalidate(server.getId(), server.getAuthProviderName(), exoLogin);
+      if (Integer.valueOf(401).equals(outcome.getStatus())) {
+        // The one retry the credentials contract allows (EXO-89649): material kept by
+        // the provider may have gone stale; one probe more on fresh material, and its
+        // answer is the answer.
+        outcome = probe(server, account, authorization(server, exoLogin));
+        if (CaldavProbeResult.CREDENTIALS.equals(outcome.getResult())) {
+          // The fresh material was refused too: told once more.
+          caldavCredentialsResolver.invalidate(server.getId(), server.getAuthProviderName(), exoLogin);
+        }
+      }
+    }
     // getResult() carries the classification, getStatus() the raw HTTP code: comparing
     // OK against the latter is never true, and the connection would silently never be
     // recorded while the caller was told it succeeded.
     if (CaldavProbeResult.OK.equals(outcome.getResult())) {
+      if (!stillWanted.getAsBoolean()) {
+        LOG.debug("CalDAV server {} accepted the account of {}, which is configured meanwhile; nothing is recorded",
+                  server.getId(),
+                  exoLogin);
+        return new CaldavProbeResult(CaldavProbeResult.SUPERSEDED, outcome.getStatus());
+      }
       CaldavUserSetting setting = new CaldavUserSetting();
       setting.setUsername(account);
       setting.setServerId(server.getId());
-      caldavConnectorService.createProviderBackedSetting(setting, getUserIdentityId(exoLogin));
+      long identityId = getUserIdentityId(exoLogin);
+      // Agenda's own record of the connection: what "My calendars" reads to show
+      // the connector as connected, and what the typed path leaves to the front.
+      // Written here so a connection nobody clicked - the login-time attachment
+      // of EXO-89653 - shows exactly as a clicked one; the front's own write on
+      // the one-click path repeats the same values. Agenda first: it is the
+      // write that can still refuse, and it refuses before storing anything,
+      // while caldav's can no longer refuse once the account is named.
+      agendaUserSettingsService.saveUserConnector(server.getProviderName(), account, identityId);
+      caldavConnectorService.createProviderBackedSetting(setting, identityId);
+      caldavConnectorStorage.markConnectedByManagedMode(identityId, byManagedMode);
     }
     return outcome;
+  }
+
+  /**
+   * Disconnects a user on the platform's initiative - an administrator's change, or
+   * the login that finds managed mode no longer governs them. The
+   * counterpart of {@link #connectThroughProvider(Long, String, boolean, BooleanSupplier)}: agenda's
+   * record of the connection goes as well as caldav's, or "My calendars" would still
+   * show a connector whose account is gone. A user's own disconnection goes through
+   * the front, which removes agenda's record itself.
+   *
+   * @param userIdentityId the identity to disconnect
+   * @param username the eXo login, null when the identity no longer names anybody
+   */
+  public void disconnectForUser(long userIdentityId, String username) {
+    CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    Long serverId = setting.getServerId();
+    CaldavServer server = caldavServerService.resolveServer(serverId);
+    // A setting naming a row recorded that row's connector - resolveServer falls back
+    // to the seed registration when the row is gone, hence the id check. A setting
+    // naming none was made through the legacy connector, which agenda recorded under
+    // the seed row's provider name: the row resolveServer(null) answers.
+    if (server != null && (serverId == null || serverId.longValue() == server.getId())) {
+      try {
+        agendaUserSettingsService.removeUserConnector(server.getProviderName(), userIdentityId);
+      } catch (RuntimeException e) {
+        LOG.warn("Agenda's record of the CalDAV connection of user identity {} could not be removed", userIdentityId, e);
+      }
+    }
+    caldavConnectorService.deleteCaldavSetting(userIdentityId, username);
+  }
+
+  /**
+   * Whether agenda still lists this server's connector as enabled. The registry
+   * sets that flag from the server's own {@code active} when it saves the server;
+   * agenda's connector settings can change it afterwards on their own.
+   *
+   * @param providerName the connector name the server is registered under in agenda
+   * @return true when agenda knows the connector and has it enabled
+   */
+  private boolean agendaRemoteProviderEnabled(String providerName) {
+    List<RemoteProvider> providers = agendaRemoteEventService.getRemoteProviders();
+    return providers != null
+           && providers.stream().anyMatch(provider -> StringUtils.equals(provider.getName(), providerName) && provider.isEnabled());
   }
 
   /**
@@ -472,10 +623,13 @@ public class CaldavRelayService {
       }
       return new CaldavProbeResult(CaldavProbeResult.OK, status);
     } catch (IOException e) {
-      // One line, at warning: this is the only request a refused connection
-      // makes, and until now it made none. An administrator whose users cannot
-      // connect had nothing whatsoever to read (EXO-89806).
-      LOG.warn("CalDAV server {} could not be reached while verifying the account {}", server.getId(), username, e);
+      // WARN, because an unreachable server is something an administrator must
+      // act on and this is the only request a refused connection makes. Without
+      // the stack: the probe also runs at every login of every unattached
+      // managed user during an outage, and the stack adds nothing to the line.
+      // It is logged at DEBUG.
+      LOG.warn("CalDAV server {} could not be reached while verifying the account {}: {}", server.getId(), username, e.getMessage());
+      LOG.debug("CalDAV server {} unreachable while verifying the account {}", server.getId(), username, e);
       return new CaldavProbeResult(CaldavProbeResult.CONNECTION, null);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -611,11 +765,26 @@ public class CaldavRelayService {
    * @param request the upstream request to send
    * @param upstreamBase the upstream base URI, for absolute-href matching
    * @param relayPrefix the relay prefix hrefs are rewritten onto
+   * @param server the registration whose provider is told of a refusal
+   * @param username the eXo user the request is relayed for
+   * @param retryOnFreshMaterial builds the same request on freshly produced material,
+   *          after telling the provider the first was refused; asked once, and only
+   *          on a 401; null when the provider's material cannot be refreshed
    * @return the response to hand the browser
    */
-  private CaldavRelayedResponse execute(HttpRequest request, URI upstreamBase, String relayPrefix, CaldavServer server, String username) {
+  private CaldavRelayedResponse execute(HttpRequest request,
+                                        URI upstreamBase,
+                                        String relayPrefix,
+                                        CaldavServer server,
+                                        String username,
+                                        java.util.function.Supplier<HttpRequest> retryOnFreshMaterial) {
     try {
       HttpResponse<InputStream> response = httpClient.send(request, BodyHandlers.ofInputStream());
+      if (response.statusCode() == 401 && retryOnFreshMaterial != null) {
+        response.body().close();
+        LOG.debug("CalDAV server refused the provider's material for {}; retrying once with fresh material", request.uri());
+        response = httpClient.send(retryOnFreshMaterial.get(), BodyHandlers.ofInputStream());
+      }
       byte[] body = readBounded(response.body());
       if (body == null) {
         LOG.warn("CalDAV relay response from server exceeded the configured cap of {} bytes", getMaxBodyBytes());
@@ -624,7 +793,7 @@ public class CaldavRelayService {
       int status = response.statusCode();
       if (status == 401 || status == 407) {
         // The provider's material was refused: told once, so a caching provider
-        // forgets it (Personal has nothing to forget); never retried from here.
+        // forgets it (Personal has nothing to forget).
         caldavCredentialsResolver.invalidate(server.getId(), server.getAuthProviderName(), username);
         // The STORED CalDAV credentials are refused: never let this travel
         // as a 401, which the platform and the browser both read as "the eXo

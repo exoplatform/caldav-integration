@@ -20,6 +20,7 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.stream.Collectors;
 import java.util.List;
@@ -31,6 +32,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
 
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
@@ -47,6 +49,7 @@ import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.caldav.utils.CopySettingsFingerprint;
+import org.exoplatform.caldav.event.CaldavServerProviderChangedEvent;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.data.Context;
@@ -234,6 +237,9 @@ public class CaldavServerService {
 
   @Autowired
   private CaldavServerStorage      caldavServerStorage;
+
+  @Autowired
+  private ApplicationEventPublisher eventPublisher;
 
   @Autowired
   private CaldavServerQuirkService caldavServerQuirkService;
@@ -992,11 +998,24 @@ public class CaldavServerService {
     if (!StringUtils.equals(stored.getServerUrl(), server.getServerUrl())) {
       caldavServerUrlValidator.validate(server.getServerUrl());
     }
+    // The managed row may not move to a provider that asks each user for
+    // something: designating it refused exactly that, and an edit must not be
+    // the way around the refusal. Judged on the effective provider - a blank
+    // one in the payload keeps the stored provider.
+    caldavManagedModeService.checkProviderChangeAllowed(stored.getId(),
+                                                        StringUtils.defaultIfBlank(server.getAuthProviderName(),
+                                                                                   stored.getAuthProviderName()));
+    // Nor may it be deactivated through the edit: the payload carries `active`
+    // and the storage writes it, so a PUT with active=false would do what the
+    // status toggle refuses. Same rule, same code.
+    if (!server.isActive()) {
+      caldavManagedModeService.checkServerNotManaged(stored.getId());
+    }
     checkWriteChannel(server, stored);
     // A body that states no channel keeps the stored one, and says so before the stamp is
     // taken: fingerprinted as null, it would move the stamp and send every mirror of the
     // server through a settings round that changes nothing.
-    if (server.getWriteChannel() == null && stored != null) {
+    if (server.getWriteChannel() == null) {
       server.setWriteChannel(stored.getWriteChannel());
     }
     stampCopySettings(server);
@@ -1013,6 +1032,11 @@ public class CaldavServerService {
     storeProviderConfig(updatedServer, server.getProviderConfig());
     saveAgendaRemoteProvider(updatedServer);
     forgetBlueMindSessions();
+    if (isProviderChange(stored, server)) {
+      // Every user of the server is disconnected, whoever made the connection: the
+      // authentication changed for all of them.
+      eventPublisher.publishEvent(new CaldavServerProviderChangedEvent(stored.getId()));
+    }
     return caldavServerQuirkService.decorate(updatedServer);
   }
 
@@ -1037,10 +1061,9 @@ public class CaldavServerService {
     checkCanEdit(username);
     CaldavServer server = getServerById(serverId);
     if (!active) {
-      // Deactivating the managed server would leave every user of the instance
-      // without a connect affordance — managed mode took it away — and with a
-      // server that no longer answers. The mode goes off first, one click
-      // above in the same screen.
+      // Deactivating the managed server would leave the users managed mode
+      // attaches to it on a server that no longer answers. The mode goes off
+      // first, one click above in the same screen.
       caldavManagedModeService.checkServerNotManaged(serverId);
     }
     if (active) {
@@ -1157,6 +1180,59 @@ public class CaldavServerService {
     } catch (RuntimeException e) {
       LOG.warn("The kept BlueMind sessions could not be dropped after a server registration was written", e);
     }
+  }
+
+  /**
+   * The users connected to a server, by their identity: what a change of its provider
+   * disconnects. The accounts whose stored server id names the row - and, for the row
+   * that carries {@link #CALDAV_PROVIDER_NAME}, also the accounts that store no server
+   * id: connected before the server list existed, every use resolves them to that row
+   * ({@link #resolveServer(Long)} with null), so they are its users too.
+   *
+   * @param serverId the server
+   * @return the technical identity identifiers of its users
+   */
+  public List<Long> getUserIdentitiesOfServer(long serverId) {
+    List<Context> contexts = settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                                    Scope.APPLICATION.getName(),
+                                                                                    CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE.getId(),
+                                                                                    CaldavConnectorUtils.CALDAV_SERVER_ID_KEY,
+                                                                                    0,
+                                                                                    Integer.MAX_VALUE);
+    List<Long> identities = new ArrayList<>(contexts.stream().filter(context -> {
+      SettingValue<?> value = settingService.get(context,
+                                                 CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                                 CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
+      return value != null && value.getValue() != null && String.valueOf(serverId).equals(value.getValue().toString());
+    }).map(context -> Long.valueOf(context.getId())).toList());
+    CaldavServer defaultRow = caldavServerStorage.getServerByProviderName(CALDAV_PROVIDER_NAME);
+    if (defaultRow != null && defaultRow.getId() == serverId) {
+      identities.addAll(identitiesWithoutServerId());
+    }
+    return identities.stream().distinct().toList();
+  }
+
+  /**
+   * The accounts that hold a CalDAV login and no server id.
+   *
+   * @return their technical identity identifiers
+   */
+  private List<Long> identitiesWithoutServerId() {
+    return settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                  Scope.APPLICATION.getName(),
+                                                                  CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE.getId(),
+                                                                  CaldavConnectorUtils.CALDAV_USERNAME_KEY,
+                                                                  0,
+                                                                  Integer.MAX_VALUE)
+                         .stream()
+                         .filter(context -> {
+                           SettingValue<?> value = settingService.get(context,
+                                                                      CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                                                      CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
+                           return value == null || value.getValue() == null;
+                         })
+                         .map(context -> Long.valueOf(context.getId()))
+                         .toList();
   }
 
   /**
