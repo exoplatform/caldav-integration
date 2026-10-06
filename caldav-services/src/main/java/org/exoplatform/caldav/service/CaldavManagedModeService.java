@@ -23,6 +23,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.context.ApplicationEventPublisher;
 
+import org.exoplatform.caldav.exception.ManagedConnectionLockedException;
 import org.exoplatform.caldav.model.CaldavManagedMode;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
@@ -138,6 +139,38 @@ public class CaldavManagedModeService {
    */
   public Long governingServerFor(String username) {
     return managedConnectorService.designatedConnectorFor(getManagedServerId(), getExcludedGroups(), username);
+  }
+
+  /**
+   * Refuses the connection changes managed mode takes away from the users it governs:
+   * disconnecting, connecting an account with typed credentials, and connecting any
+   * server but the designated one. A user managed mode does not govern changes their
+   * connection freely.
+   * <p>
+   * The verdict is {@link #governingServerFor(String)}'s: a user whose identity cannot
+   * be resolved, or a caller with no login, is refused rather than counted as excluded,
+   * since the change they ask for is one the instance may have taken from them.
+   *
+   * @param username the eXo login of the caller
+   * @param targetServerId the registration the caller asks to connect to in one click,
+   *          null for a disconnection or a connection with typed credentials
+   * @return the designated registration managed mode governs the caller with, null when
+   *         it does not govern them
+   * @throws ManagedConnectionLockedException when managed mode governs the caller, or
+   *           cannot tell whether it does, and the change is not a one-click connection
+   *           to the designated registration
+   */
+  public Long checkUserMayChangeConnection(String username, Long targetServerId) throws ManagedConnectionLockedException {
+    Long governing;
+    try {
+      governing = governingServerFor(username);
+    } catch (IllegalArgumentException | IllegalStateException e) {
+      throw new ManagedConnectionLockedException();
+    }
+    if (governing != null && !governing.equals(targetServerId)) {
+      throw new ManagedConnectionLockedException();
+    }
+    return governing;
   }
 
   /**

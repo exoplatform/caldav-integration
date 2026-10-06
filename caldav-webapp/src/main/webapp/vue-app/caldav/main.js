@@ -66,11 +66,8 @@ document.addEventListener('open-caldav-connector-settings-drawer',function(event
   });
 });
 
-// The managed mode is not read on the user's pages, on purpose (EXO-89652):
-// it designates the connector a user is attached to automatically at login,
-// and never takes connecting or disconnecting away from anyone - excluded or
-// not, a user may connect the server they want. So no row and no descriptor
-// below depends on it; the bundle is the only thing awaited.
+// The bundle is the only thing awaited before the sections; the descriptors also
+// carry the user's managed-mode verdict (EXO-90836), read below with the registry.
 const readyPromise = i18nPromise.catch(() => null);
 
 // The servers section waits, besides the bundle, for the server presets
@@ -170,8 +167,12 @@ readyPromise
     agendaCaldavService.getConnectionRequirements().catch(() => ({})),
     // Which providers are not installed, failing to none: the server then
     // refuses the connection itself, and only the drawer's warning is lost.
-    agendaCaldavService.getUnavailableProviders().catch(() => [])]))
-  .then(([servers, requirements, unavailableProviders]) => {
+    agendaCaldavService.getUnavailableProviders().catch(() => []),
+    // Whether managed mode keeps this user on the designated server, failing to
+    // not managed: the server then refuses the changes it locks, and only the
+    // hidden affordances are lost.
+    agendaCaldavService.getManagedModeForMe().catch(() => null)]))
+  .then(([servers, requirements, unavailableProviders, managedForMe]) => {
     // Not on a space's agenda (EXO-90383): a connector is the viewer's own
     // account, and a space's agenda shows the space's calendars alone
     if (!connectorsBelongOnThisPage()) {
@@ -179,13 +180,13 @@ readyPromise
     }
     const activeServers = (servers || []).filter(server => server.active);
     if (!activeServers.length) {
-      extensionRegistry.registerExtension('agenda', 'connectors', createLegacyCaldavConnector());
+      extensionRegistry.registerExtension('agenda', 'connectors', createLegacyCaldavConnector(managedForMe));
       return;
     }
     const labels = {};
     activeServers.forEach((server, index) => {
       extensionRegistry.registerExtension('agenda', 'connectors',
-        createCaldavConnector(server, index, requirements, unavailableProviders));
+        createCaldavConnector(server, index, requirements, unavailableProviders, managedForMe));
       labels[server.providerName] = server.name;
       // The secondary line of the connect-drawer row: the admin's words when
       // there are some, else the host — always present, and the thing that

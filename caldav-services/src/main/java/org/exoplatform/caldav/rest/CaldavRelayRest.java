@@ -36,6 +36,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+import org.exoplatform.caldav.exception.ManagedConnectionLockedException;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavRelayRequest;
 import org.exoplatform.caldav.model.CaldavRelayedResponse;
@@ -190,7 +191,8 @@ public class CaldavRelayRest {
           + "only when it answered as a calendar. Refuses a provider that expects the user to type credentials.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Probe performed, outcome in the body"),
       @ApiResponse(responseCode = "400", description = "The provider expects the user to supply something"),
-      @ApiResponse(responseCode = "403", description = "Server deactivated, or its connector switched off in agenda"),
+      @ApiResponse(responseCode = "403", description = "Server deactivated, or its connector switched off in agenda; "
+          + "caldav.managed.connectionLocked when managed mode keeps the user on another registration"),
       @ApiResponse(responseCode = "404", description = "Unknown server registration") })
   public CaldavProbeResult connect(HttpServletRequest request,
                                    @RequestParam(name = "serverId", required = false)
@@ -199,6 +201,8 @@ public class CaldavRelayRest {
       return caldavRelayService.connectThroughProvider(serverId, request.getRemoteUser());
     } catch (ObjectNotFoundException e) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+    } catch (ManagedConnectionLockedException e) {
+      throw refusal(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalAccessException e) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
     } catch (IllegalArgumentException e) {
@@ -208,8 +212,9 @@ public class CaldavRelayRest {
 
   /**
    * A relay refusal as a thrown status exception carrying its
-   * machine-readable code — both as the reason (so the JSON error body names
-   * it) and later surfaced to the browser.
+   * machine-readable code in the {@code x-caldav-relay-code} header, the one
+   * place the browser reads it, and as the reason, which the default error
+   * body leaves out.
    *
    * @param status HTTP status of the refusal
    * @param code machine-readable relay code
@@ -218,8 +223,8 @@ public class CaldavRelayRest {
   private ResponseStatusException refusal(HttpStatus status, String code) {
     // The class contract above promises the code in a header on every refusal, so the
     // browser can tell a relay verdict from an upstream answer. Putting it only in the
-    // exception reason did not honour that: the reason reaches the body, not the headers,
-    // and the connector reads the header. Spring copies getHeaders() onto the error
+    // exception reason did not honour that: Spring Boot's default error body
+    // leaves the reason out on this platform, and the connector reads the header. Spring copies getHeaders() onto the error
     // response, but ResponseStatusException pins that accessor to HttpHeaders.EMPTY, so
     // carrying the header takes overriding it.
     HttpHeaders headers = new HttpHeaders();

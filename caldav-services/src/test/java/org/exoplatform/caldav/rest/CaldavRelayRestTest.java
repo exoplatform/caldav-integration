@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -47,6 +48,7 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.server.ResponseStatusException;
 
+import org.exoplatform.caldav.exception.ManagedConnectionLockedException;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavRelayRequest;
 import org.exoplatform.caldav.model.CaldavRelayedResponse;
@@ -275,6 +277,28 @@ public class CaldavRelayRestTest {
                    .andExpect(MockMvcResultMatchers.header()
                                                    .string(CaldavRelayService.RELAY_CODE_HEADER,
                                                            "caldav.relay.unknownServer"));
+  }
+
+  /**
+   * EXO-90836. A one-click connect managed mode refuses answers 403 with the lock's code
+   * in the relay-code header, the one place the browser reads it: the default error body
+   * leaves the reason out.
+   *
+   * @throws Exception never, the service is mocked
+   */
+  @Test
+  public void shouldCarryTheManagedModeCodeOnARefusedConnect() throws Exception {
+    org.mockito.Mockito.doThrow(new ManagedConnectionLockedException())
+                       .when(caldavRelayService)
+                       .connectThroughProvider(eq(SERVER_ID), any());
+
+    MockMvcBuilders.standaloneSetup(caldavRelayRest)
+                   .build()
+                   .perform(MockMvcRequestBuilders.post("/connection/connect").param("serverId", String.valueOf(SERVER_ID)))
+                   .andExpect(MockMvcResultMatchers.status().isForbidden())
+                   .andExpect(MockMvcResultMatchers.header()
+                                                   .string(CaldavRelayService.RELAY_CODE_HEADER,
+                                                           ManagedConnectionLockedException.MESSAGE_CODE));
   }
 
   /**
