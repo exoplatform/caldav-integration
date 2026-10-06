@@ -21,11 +21,13 @@ import java.util.List;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
 
 import org.exoplatform.caldav.model.CaldavManagedMode;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
+import org.exoplatform.caldav.event.CaldavManagedModeChangedEvent;
 import org.exoplatform.services.connector.credentials.managed.ManagedConnectorService;
 
 /**
@@ -68,6 +70,9 @@ public class CaldavManagedModeService {
 
   @Autowired
   private CaldavServerStorage     caldavServerStorage;
+
+  @Autowired
+  private ApplicationEventPublisher eventPublisher;
 
   /**
    * The registration the instance points everybody at, when managed mode is
@@ -118,6 +123,21 @@ public class CaldavManagedModeService {
       return null;
     }
     return managedConnectorService.designatedConnectorFor(CaldavCredentialsResolver.CONNECTOR_KIND, username);
+  }
+
+  /**
+   * The registration managed mode governs this user with in the stored state, for a
+   * decision that disconnects them: the same rule as
+   * {@link #designatedServerFor(String)}, except that a user whose identity cannot be
+   * resolved is refused rather than counted as excluded.
+   *
+   * @param username the eXo login
+   * @return the designated registration's id, or null when managed mode does not apply
+   * @throws IllegalStateException when exclusions apply and the identity cannot be
+   *           resolved
+   */
+  public Long governingServerFor(String username) {
+    return managedConnectorService.designatedConnectorFor(getManagedServerId(), getExcludedGroups(), username);
   }
 
   /**
@@ -175,20 +195,23 @@ public class CaldavManagedModeService {
                                       server.getAuthProviderName(),
                                       excludedGroups,
                                       username);
+    // The users managed mode attached are checked against what was just stored: another
+    // server, or a newly excluded group, disconnects them.
+    eventPublisher.publishEvent(new CaldavManagedModeChangedEvent());
   }
 
   /**
    * Switches managed mode off: users choose their own server again, and the
-   * exclusions go with the designation they qualified. Accounts already
-   * connected are untouched — nobody is detached and nothing synchronised is
-   * removed by this; what an administrator's change does to the users it
-   * attached is EXO-89654's.
+   * exclusions go with the designation they qualified. The accounts managed
+   * mode attached are disconnected in the background; the accounts users
+   * connected themselves are untouched.
    *
    * @param username the eXo login of the caller
    * @throws IllegalAccessException when the caller is not an administrator
    */
   public void clearManagedServer(String username) throws IllegalAccessException {
     managedConnectorService.clearDesignation(CaldavCredentialsResolver.CONNECTOR_KIND, username);
+    eventPublisher.publishEvent(new CaldavManagedModeChangedEvent());
   }
 
   /**

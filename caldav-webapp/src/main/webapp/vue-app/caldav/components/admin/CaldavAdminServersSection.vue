@@ -91,7 +91,9 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
         <span class="text-none ms-2">{{ $t('caldav.admin.servers.add') }}</span>
       </v-btn>
     </div>
-    <caldav-admin-server-list :servers="servers" />
+    <caldav-admin-server-list
+      :servers="servers"
+      :managed-server-id="managed && managed.serverId || null" />
     <caldav-admin-server-drawer />
     <caldav-admin-sync-drawer @saved="tuning = $event" />
     <!--
@@ -105,6 +107,8 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
       :candidates="managedCandidates"
       :connection-requirements="connectionRequirements"
       :save="saveManagedMode"
+      :preview="previewManagedMode"
+      :disconnection-message="$t('agenda.caldavCalendar.disconnect.warning', {0: managed && managed.serverName || ''})"
       @saved="managedApplied"
       @cancelled="managedCancelled">
       <template #icon="{candidate}">
@@ -125,15 +129,14 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
     </managed-connector-drawer>
     <!--
       Off is not an ordinary flip either: it is an instance-wide change, so the
-      switch asks before it commits - and says what happens today: users choose
-      again, the accounts already connected keep syncing. What becomes of the
-      users managed mode attached is EXO-89654's, and its wording will change
-      when that lands.
+      switch asks before it commits - and says what it does: users choose again,
+      the accounts they connected themselves keep syncing, and the accounts
+      managed mode attached are disconnected, with how many.
     -->
     <confirm-dialog
       ref="managedOffConfirm"
       :title="$t('caldav.admin.managed.off.confirm.title')"
-      :message="$t('caldav.admin.managed.off.confirm.message', {0: managed && managed.serverName || ''})"
+      :message="managedOffMessage"
       :ok-label="$t('caldav.admin.managed.off.confirm.ok')"
       :cancel-label="$t('caldav.admin.managed.off.confirm.cancel')"
       @ok="clearManagedMode"
@@ -178,6 +181,8 @@ export default {
      * of them must leave the switch off.
      */
     managedOffConfirmed: false,
+    /** How many accounts switching managed mode off disconnects, counted when the switch is moved. */
+    offDisconnections: 0,
     /**
      * The switch's own state, which is deliberately NOT derived from
      * `managed`. Flipping it on is a request to choose a server, not the
@@ -187,6 +192,25 @@ export default {
     managedOn: false,
   }),
   computed: {
+    /**
+     * What the off confirmation says: always who keeps their account, and, when
+     * managed mode attached anybody, how many accounts are disconnected and what
+     * that removes from their agenda.
+     *
+     * @returns {String} the message of the confirmation
+     */
+    managedOffMessage() {
+      const serverName = this.managed && this.managed.serverName || '';
+      const kept = this.$t('caldav.admin.managed.off.confirm.message', {0: serverName});
+      const question = this.$t('caldav.admin.managed.off.confirm.question');
+      if (!this.offDisconnections) {
+        return `${kept} ${question}`;
+      }
+      const disconnected = this.offDisconnections === 1
+        ? this.$t('caldav.admin.managed.off.confirm.disconnect.one')
+        : this.$t('caldav.admin.managed.off.confirm.disconnect.many', {0: this.offDisconnections});
+      return `${disconnected} ${this.$t('agenda.caldavCalendar.disconnect.warning', {0: serverName})} ${kept} ${question}`;
+    },
     /**
      * The tuning in one line, in the order it matters: how often, how wide,
      * and how the background sweep behaves.
@@ -329,7 +353,7 @@ export default {
      * answers, and goes back if they decline.
      *
      * @param {Boolean} on the position the switch was moved to
-     * @returns {void}
+     * @returns {Promise|undefined} resolves once the off confirmation is open
      */
     flipManagedMode(on) {
       if (on) {
@@ -337,7 +361,29 @@ export default {
         return;
       }
       this.managedOffConfirmed = false;
-      this.$refs.managedOffConfirm.open();
+      this.offDisconnections = 0;
+      // Counted before asking, so that the question says how many accounts it
+      // disconnects; without the count nothing is asked and the mode stays on.
+      return caldavConnectorService.previewManagedMode(null, [])
+        .then(count => {
+          this.offDisconnections = count || 0;
+          this.$refs.managedOffConfirm.open();
+        })
+        .catch(error => {
+          console.error('cannot count the accounts switching managed mode off disconnects', error);
+          this.managedOn = true;
+          this.$root.$emit('alert-message', this.$t('caldav.admin.managed.off.countFailed'), 'error');
+        });
+    },
+    /**
+     * Counts, for the drawer, the accounts a choice would disconnect.
+     *
+     * @param {Number} serverId the chosen server
+     * @param {Array<String>} excludedGroups the eXo group ids the choice must not reach
+     * @returns {Promise<Number>} the number of accounts it disconnects
+     */
+    previewManagedMode(serverId, excludedGroups) {
+      return caldavConnectorService.previewManagedMode(serverId, excludedGroups);
     },
     /**
      * Switches managed mode off, once confirmed.
@@ -359,7 +405,9 @@ export default {
         });
     },
     /**
-     * Puts the switch back on when the off confirmation closed without OK.
+     * Puts the switch back on when the off confirmation closed without OK - by
+     * Cancel, the close icon, Esc or a click outside it: bound to
+     * {@code dialog-closed}, the one event every way of closing emits.
      *
      * @returns {void}
      */
