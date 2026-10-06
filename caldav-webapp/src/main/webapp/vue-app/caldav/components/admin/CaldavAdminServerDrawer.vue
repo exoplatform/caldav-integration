@@ -629,6 +629,32 @@ export default {
       return !!this.server.id && !!this.storedProviderName && chosen !== this.storedProviderName;
     },
     /**
+     * Counts, before anything is stored, the users a provider change disconnects, and
+     * opens the confirmation when there are any: a provider change disconnects every
+     * user of the server, and the administrator is told how many first.
+     *
+     * @returns {Promise<Boolean>} true when the save waits for the administrator, or
+     *          stops because the count failed
+     */
+    async holdsForDisconnectionConfirm() {
+      this.loading = true;
+      try {
+        this.pendingDisconnections = await this.$agendaCaldavService.countConnectedUsers(this.server.id);
+      } catch (e) {
+        // Without the count the administrator cannot be told what the change
+        // costs: nothing is stored.
+        this.$root.$emit('alert-message', this.$t('caldav.admin.servers.drawer.disconnection.countFailed'), 'error');
+        return true;
+      } finally {
+        this.loading = false;
+      }
+      if (this.pendingDisconnections) {
+        this.$refs.disconnectionConfirm.open();
+        return true;
+      }
+      return false;
+    },
+    /**
      * Creates or updates the drawer's server, then refreshes the table and
      * tells the agenda apps that the connectors changed. A server whose
      * administrator chose neither a font icon nor an image is saved with
@@ -642,24 +668,8 @@ export default {
     async saveServer(confirmed) {
       // Only the confirmation's OK passes a provider change: the Save button hands in
       // its click event, and a dialog dismissed any other way leaves nothing behind.
-      if (confirmed !== true && this.changesProvider()) {
-        // Counted before anything is stored: a provider change disconnects every
-        // user of the server, and the administrator is told how many first.
-        this.loading = true;
-        try {
-          this.pendingDisconnections = await this.$agendaCaldavService.countConnectedUsers(this.server.id);
-        } catch (e) {
-          // Without the count the administrator cannot be told what the change
-          // costs: nothing is stored.
-          this.$root.$emit('alert-message', this.$t('caldav.admin.servers.drawer.disconnection.countFailed'), 'error');
-          return;
-        } finally {
-          this.loading = false;
-        }
-        if (this.pendingDisconnections) {
-          this.$refs.disconnectionConfirm.open();
-          return;
-        }
+      if (confirmed !== true && this.changesProvider() && await this.holdsForDisconnectionConfirm()) {
+        return;
       }
       this.pendingDisconnections = 0;
       this.loading = true;
