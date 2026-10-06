@@ -64,15 +64,15 @@ const caldavConnector = {
   // day. Testing the name is not an option either — createCaldavConnector
   // overrides it with the declared server's providerName.
   isCaldav: true,
-  // Whether managed mode takes connecting and disconnecting away from this
-  // user. It never does (EXO-89652): managed mode designates the connector a
-  // user is ATTACHED to automatically when they log in, and its group
-  // exclusions say who is not attached - neither removes anyone's choice. A
-  // user, excluded or not, may disconnect and connect the server they want.
-  // Agenda still reads this flag (`connector.managed === true` hides its
-  // affordances), so it stays declared, false, on every descriptor shape,
-  // rather than becoming `undefined` on some of them.
+  // Whether managed mode keeps this user on the server the instance designated
+  // (EXO-90836): agenda then offers them neither managing nor disconnecting the
+  // account, and connects the designated server in one click. Per viewer,
+  // stamped by createCaldavConnector from the user's own verdict; declared
+  // false here so that no descriptor shape leaves it `undefined`.
   managed: false,
+  // Whether this descriptor is the server managed mode keeps the user on: the
+  // one agenda connects in one click for a managed user with no account yet.
+  designated: false,
   /**
    * Opens the settings drawer and resolves once the CalDAV server itself has
    * accepted the account. The drawer verifies the credentials against the
@@ -697,11 +697,18 @@ function isUnderAHome(path) {
  * @param {Object} requirements whether each provider asks its user for anything,
  *          keyed by provider name; anything but an explicit false means ask
  * @param {Array} unavailableProviders the provider names that are not installed
+ * @param {Object} managedForMe the user's managed-mode verdict, `{managed, serverId}`;
+ *          absent reads as not managed
  * @returns {Object} the connector descriptor to register under agenda/connectors
  */
-export function createCaldavConnector(server, index, requirements, unavailableProviders) {
+export function createCaldavConnector(server, index, requirements, unavailableProviders, managedForMe) {
   return Object.assign({}, caldavConnector, {
     name: server.providerName,
+    // Every CalDAV descriptor of a managed user says so: the user has one CalDAV
+    // account, and managed mode keeps it on the designated server, whichever row
+    // agenda shows.
+    managed: !!(managedForMe && managedForMe.managed),
+    designated: !!(managedForMe && managedForMe.managed && managedForMe.serverId === server.id),
     description: `${server.providerName}.description`,
     serverId: server.id,
     // Whether clicking "connect" opens a form or connects outright. Read as an
@@ -754,10 +761,16 @@ export function createCaldavConnector(server, index, requirements, unavailablePr
  * singleton itself, so nothing mutates the object every other descriptor is
  * built from.
  *
+ * @param {Object} managedForMe the user's managed-mode verdict, `{managed, serverId}`;
+ *          absent reads as not managed
  * @returns {Object} the fallback descriptor to register
  */
-export function createLegacyCaldavConnector() {
-  return Object.assign({}, caldavConnector);
+export function createLegacyCaldavConnector(managedForMe) {
+  // Never the designated one: it is registered when no active registration is
+  // listed, and its connect can only open the typed-credentials drawer, so
+  // offering it as the one-click connect would end on a refusal.
+  const managed = !!(managedForMe && managedForMe.managed);
+  return Object.assign({}, caldavConnector, {managed, designated: false});
 }
 
 /**
