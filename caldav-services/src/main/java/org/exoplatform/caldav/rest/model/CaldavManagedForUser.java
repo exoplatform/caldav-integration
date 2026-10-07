@@ -24,6 +24,9 @@ package org.exoplatform.caldav.rest.model;
  *
  * @param managed whether managed mode governs the caller
  * @param serverId the registration it keeps them on, null when it does not govern them
+ * @param refused whether the connection managed mode made for them on that registration
+ *          was refused because of their own account, and still would be: their screens
+ *          then offer no connection and say why (EXO-91017)
  */
-public record CaldavManagedForUser(boolean managed, Long serverId) {
+public record CaldavManagedForUser(boolean managed, Long serverId, boolean refused) {
 }

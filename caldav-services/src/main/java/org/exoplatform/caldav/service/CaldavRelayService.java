@@ -38,6 +38,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -46,6 +47,7 @@ import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.agenda.service.AgendaUserSettingsService;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavProviderMissingException;
+import org.exoplatform.caldav.model.CaldavManagedRefusal;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavRelayRequest;
 import org.exoplatform.caldav.model.CaldavRelayedResponse;
@@ -55,6 +57,7 @@ import org.exoplatform.caldav.service.CaldavConnectorService;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.services.connector.credentials.ConnectorTargetRefusedException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -553,6 +556,9 @@ public class CaldavRelayService {
     }
     String account = caldavCredentialsResolver.targetAccount(server.getId(), server.getAuthProviderName(), exoLogin);
     if (StringUtils.isBlank(account)) {
+      if (byManagedMode) {
+        recordManagedRefusal(exoLogin, server.getId(), account);
+      }
       throw new IllegalArgumentException(PROVIDER_NAMES_NOBODY_MESSAGE);
     }
     // Agenda keeps its own switch for this connector, in its connector settings,
@@ -564,7 +570,7 @@ public class CaldavRelayService {
     if (!agendaRemoteProviderEnabled(server.getProviderName())) {
       throw new IllegalAccessException(PROVIDER_DISABLED_MESSAGE);
     }
-    CaldavProbeResult outcome = probe(server, account, authorization(server, exoLogin));
+    CaldavProbeResult outcome = probe(server, account, authorization(server, exoLogin, account, byManagedMode));
     if (CaldavProbeResult.CREDENTIALS.equals(outcome.getResult())) {
       // The material was the provider's, so the provider is told, once per
       // refused material as the contract asks: a caching provider would
@@ -574,7 +580,7 @@ public class CaldavRelayService {
         // The one retry the credentials contract allows (EXO-89649): material kept by
         // the provider may have gone stale; one probe more on fresh material, and its
         // answer is the answer.
-        outcome = probe(server, account, authorization(server, exoLogin));
+        outcome = probe(server, account, authorization(server, exoLogin, account, byManagedMode));
         if (CaldavProbeResult.CREDENTIALS.equals(outcome.getResult())) {
           // The fresh material was refused too: told once more.
           caldavCredentialsResolver.invalidate(server.getId(), server.getAuthProviderName(), exoLogin);
@@ -611,6 +617,39 @@ public class CaldavRelayService {
       caldavConnectorStorage.markConnectedByManagedMode(identityId, byManagedMode);
     }
     return outcome;
+  }
+
+  /**
+   * Whether a connection managed mode made for this user on the designated registration
+   * was refused because of their own account, and still would be (EXO-91017): the
+   * refusal recorded names this registration, and the provider names the same account
+   * for them now - none, when it named none. Another designation, or another account
+   * resolved for the user, is worth a new attempt, so the connection is offered again.
+   * <p>
+   * Never throws: a registration gone or a provider that cannot answer reads as no
+   * refusal, and the connection stays offered.
+   *
+   * @param exoLogin the eXo login
+   * @param serverId the registration managed mode designates for the user
+   * @return true when the user's screens offer no connection and say why instead
+   */
+  public boolean isManagedRefused(String exoLogin, long serverId) {
+    long identityId = getUserIdentityId(exoLogin);
+    if (identityId == 0) {
+      return false;
+    }
+    CaldavManagedRefusal refusal = caldavConnectorStorage.getManagedRefusal(identityId);
+    if (refusal == null || refusal.serverId() != serverId) {
+      return false;
+    }
+    try {
+      CaldavServer server = caldavServerService.getServerById(serverId);
+      String account = caldavCredentialsResolver.targetAccount(serverId, server.getAuthProviderName(), exoLogin);
+      return StringUtils.defaultString(StringUtils.trimToNull(account)).equals(refusal.account());
+    } catch (ObjectNotFoundException | RuntimeException e) {
+      LOG.debug("The managed CalDAV refusal of {} could not be checked; the connection stays offered", exoLogin, e);
+      return false;
+    }
   }
 
   /**
@@ -839,6 +878,46 @@ public class CaldavRelayService {
       return caldavCredentialsResolver.authorization(server.getId(), server.getAuthProviderName(), username);
     } catch (CalDavException e) {
       throw new IllegalStateException(NOT_CONNECTED_MESSAGE, e);
+    }
+  }
+
+  /**
+   * The authorization of a one-click connect. When the provider says the remote
+   * authority refused the account it named for the user, and managed mode makes the
+   * connection, the refusal is recorded before the failure propagates.
+   *
+   * @param server the registration connected to
+   * @param username the eXo login connecting
+   * @param account the account the provider named
+   * @param byManagedMode whether managed mode makes the connection
+   * @return the header value to send
+   * @throws IllegalStateException when the provider produced no credentials
+   */
+  private String authorization(CaldavServer server, String username, String account, boolean byManagedMode) {
+    try {
+      return authorization(server, username);
+    } catch (IllegalStateException e) {
+      if (byManagedMode && ExceptionUtils.indexOfType(e, ConnectorTargetRefusedException.class) >= 0) {
+        recordManagedRefusal(username, server.getId(), account);
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Records a refused managed connection against the user's identity; a login that
+   * names no identity records nothing.
+   *
+   * @param exoLogin the eXo login
+   * @param serverId the designated registration
+   * @param account the account the provider named, blank when none
+   */
+  private void recordManagedRefusal(String exoLogin, long serverId, String account) {
+    long identityId = getUserIdentityId(exoLogin);
+    if (identityId != 0) {
+      caldavConnectorStorage.saveManagedRefusal(identityId,
+                                                new CaldavManagedRefusal(serverId,
+                                                                         StringUtils.defaultString(StringUtils.trimToNull(account))));
     }
   }
 

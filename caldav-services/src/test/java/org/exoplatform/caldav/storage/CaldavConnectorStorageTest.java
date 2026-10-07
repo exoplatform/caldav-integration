@@ -39,6 +39,7 @@ import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.exoplatform.caldav.model.CaldavManagedRefusal;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.commons.api.settings.SettingValue;
@@ -317,5 +318,67 @@ public class CaldavConnectorStorageTest {
 
     assertEquals(java.util.List.of(42L, 43L), caldavConnectorStorage.getIdentitiesConnectedByManagedMode());
     verify(settingService, never()).get(any(), any(), any());
+  }
+
+  /**
+   * EXO-91017. A refused managed connection is written in the user's connector scope as
+   * the registration and the account, and read back split at the first colon: the
+   * account may hold one, and an empty account is the provider having named none.
+   */
+  @Test
+  public void savesAndReadsTheManagedRefusal() {
+    caldavConnectorStorage.saveManagedRefusal(USER_IDENTITY_ID, new CaldavManagedRefusal(5L, "eric:x@bm.example.org"));
+
+    verify(settingService).set(eq(Context.USER.id("42")),
+                               eq(CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE),
+                               eq(CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY),
+                               settingValueCaptor.capture());
+    assertEquals("5:eric:x@bm.example.org", settingValueCaptor.getValue().getValue());
+
+    givenManagedRefusalStored("5:eric:x@bm.example.org");
+    assertEquals(new CaldavManagedRefusal(5L, "eric:x@bm.example.org"), caldavConnectorStorage.getManagedRefusal(USER_IDENTITY_ID));
+
+    givenManagedRefusalStored("5:");
+    assertEquals(new CaldavManagedRefusal(5L, ""), caldavConnectorStorage.getManagedRefusal(USER_IDENTITY_ID));
+  }
+
+  /** EXO-91017. No record, or one that cannot be read, is no refusal. */
+  @Test
+  public void readsNoManagedRefusalFromNothingOrAnUnreadableRecord() {
+    assertNull(caldavConnectorStorage.getManagedRefusal(USER_IDENTITY_ID));
+    for (String stored : java.util.List.of("", "eric@bm.example.org", ":eric@bm.example.org", "five:eric@bm.example.org")) {
+      givenManagedRefusalStored(stored);
+      assertNull(caldavConnectorStorage.getManagedRefusal(USER_IDENTITY_ID), stored);
+    }
+  }
+
+  /**
+   * EXO-91017. Storing a connection clears the refusal: a connection that is stored
+   * succeeded. A disconnection leaves it, since the user is not connected either way.
+   *
+   * @throws Exception never, the codec is mocked
+   */
+  @Test
+  public void aStoredConnectionClearsTheManagedRefusalAndADisconnectionKeepsIt() throws Exception {
+    CaldavUserSetting setting = new CaldavUserSetting();
+    setting.setUsername("root");
+    setting.setPassword("s3cret");
+    setting.setServerId(7L);
+
+    try (MockedStatic<CommonsUtils> commonsUtils = withReversibleCodec()) {
+      caldavConnectorStorage.createCaldavSetting(setting, USER_IDENTITY_ID);
+    }
+    caldavConnectorStorage.deleteCaldavSetting(USER_IDENTITY_ID);
+
+    verify(settingService).remove(Context.USER.id("42"),
+                                  CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                  CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY);
+  }
+
+  private void givenManagedRefusalStored(String stored) {
+    doReturn(SettingValue.create(stored)).when(settingService)
+                                         .get(Context.USER.id("42"),
+                                              CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                              CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY);
   }
 }

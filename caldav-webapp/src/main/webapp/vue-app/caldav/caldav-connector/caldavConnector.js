@@ -697,7 +697,7 @@ function isUnderAHome(path) {
  * @param {Object} requirements whether each provider asks its user for anything,
  *          keyed by provider name; anything but an explicit false means ask
  * @param {Array} unavailableProviders the provider names that are not installed
- * @param {Object} managedForMe the user's managed-mode verdict, `{managed, serverId}`;
+ * @param {Object} managedForMe the user's managed-mode verdict, `{managed, serverId, refused}`;
  *          absent reads as not managed
  * @returns {Object} the connector descriptor to register under agenda/connectors
  */
@@ -709,6 +709,10 @@ export function createCaldavConnector(server, index, requirements, unavailablePr
     // agenda shows.
     managed: !!(managedForMe && managedForMe.managed),
     designated: !!(managedForMe && managedForMe.managed && managedForMe.serverId === server.id),
+    // Whether the connection managed mode made on the designated server was refused
+    // because of the user's own account (EXO-91017): agenda then offers no connect
+    // button for it and says why instead.
+    managedRefused: !!(managedForMe && managedForMe.managed && managedForMe.serverId === server.id && managedForMe.refused),
     description: `${server.providerName}.description`,
     serverId: server.id,
     // Whether clicking "connect" opens a form or connects outright. Read as an

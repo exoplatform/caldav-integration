@@ -18,6 +18,9 @@ package org.exoplatform.caldav.storage;
 
 import java.util.List;
 
+import org.apache.commons.lang3.StringUtils;
+
+import org.exoplatform.caldav.model.CaldavManagedRefusal;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.commons.api.settings.SettingService;
@@ -67,6 +70,9 @@ public class CaldavConnectorStorage {
                                  CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                  CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
     }
+    // A connection that is stored is one that succeeded: a refusal recorded
+    // before it no longer describes this user.
+    clearManagedRefusal(userIdentityId);
   }
 
   /**
@@ -226,6 +232,55 @@ public class CaldavConnectorStorage {
     return this.settingService.get(Context.USER.id(String.valueOf(userIdentityId)),
                                    CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                    CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY) != null;
+  }
+
+  /**
+   * Records that a connection managed mode made for this user was refused because
+   * of their own account, replacing any previous record.
+   *
+   * @param userIdentityId technical identity identifier of the user
+   * @param refusal the designated registration and the account the provider named
+   */
+  public void saveManagedRefusal(long userIdentityId, CaldavManagedRefusal refusal) {
+    this.settingService.set(Context.USER.id(String.valueOf(userIdentityId)),
+                            CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                            CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY,
+                            SettingValue.create(refusal.serverId() + ":" + StringUtils.defaultString(refusal.account())));
+  }
+
+  /**
+   * Forgets the refusal recorded for this user, if any.
+   *
+   * @param userIdentityId technical identity identifier of the user
+   */
+  public void clearManagedRefusal(long userIdentityId) {
+    this.settingService.remove(Context.USER.id(String.valueOf(userIdentityId)),
+                               CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                               CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY);
+  }
+
+  /**
+   * The refusal recorded for this user. The value is split at its first colon: the
+   * registration id holds none, the account may.
+   *
+   * @param userIdentityId technical identity identifier of the user
+   * @return the refusal, or null when none is recorded or the record cannot be read
+   */
+  public CaldavManagedRefusal getManagedRefusal(long userIdentityId) {
+    SettingValue<?> value = this.settingService.get(Context.USER.id(String.valueOf(userIdentityId)),
+                                                    CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                                    CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY);
+    String stored = value == null || value.getValue() == null ? null : value.getValue().toString();
+    int separator = stored == null ? -1 : stored.indexOf(':');
+    if (separator <= 0) {
+      return null;
+    }
+    try {
+      return new CaldavManagedRefusal(Long.parseLong(stored.substring(0, separator)), stored.substring(separator + 1));
+    } catch (NumberFormatException e) {
+      // An unreadable record is no record: the connection is offered again.
+      return null;
+    }
   }
 
   /**
