@@ -44,9 +44,6 @@
     "roots": [
       "<rootDir>/src/test/js"
     ],
-    "setupFiles": [
-      "<rootDir>/src/test/js/setup/registerContributedPresets.js"
-    ],
     "transform": {
       "^.+\\.js$": [
         "babel-jest",
