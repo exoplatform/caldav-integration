@@ -30,6 +30,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.doReturn;
 
+import java.util.List;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -45,6 +47,7 @@ import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.commons.api.settings.SettingValue;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.data.Context;
+import org.exoplatform.commons.api.settings.data.Scope;
 import org.exoplatform.commons.utils.CommonsUtils;
 import org.exoplatform.web.security.codec.AbstractCodec;
 import org.exoplatform.web.security.codec.CodecInitializer;
@@ -375,9 +378,45 @@ public class CaldavConnectorStorageTest {
                                   CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY);
   }
 
+  /**
+   * EXO-91017. Forgetting the refusals of a registration removes the records that name
+   * it, and only those: a refusal on another registration and an unreadable record stay.
+   */
+  @Test
+  public void forgetsOnlyTheManagedRefusalsOfTheRegistration() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                Scope.APPLICATION.getName(),
+                                                                CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE.getId(),
+                                                                CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY,
+                                                                0,
+                                                                Integer.MAX_VALUE))
+        .thenReturn(List.of(Context.USER.id("41"), Context.USER.id("42"), Context.USER.id("43"), Context.USER.id("44")));
+    givenManagedRefusalStored("41", "5:eric@bm.example.org");
+    givenManagedRefusalStored("42", "6:eric@bm.example.org");
+    givenManagedRefusalStored("43", "5:");
+    givenManagedRefusalStored("44", "five:eric@bm.example.org");
+
+    assertEquals(2, caldavConnectorStorage.clearManagedRefusalsOn(5L));
+
+    for (String forgotten : List.of("41", "43")) {
+      verify(settingService).remove(Context.USER.id(forgotten),
+                                    CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                    CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY);
+    }
+    for (String kept : List.of("42", "44")) {
+      verify(settingService, never()).remove(Context.USER.id(kept),
+                                             CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                             CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY);
+    }
+  }
+
   private void givenManagedRefusalStored(String stored) {
+    givenManagedRefusalStored("42", stored);
+  }
+
+  private void givenManagedRefusalStored(String userIdentityId, String stored) {
     doReturn(SettingValue.create(stored)).when(settingService)
-                                         .get(Context.USER.id("42"),
+                                         .get(Context.USER.id(userIdentityId),
                                               CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                               CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY);
   }

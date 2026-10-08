@@ -99,6 +99,7 @@ import org.exoplatform.container.RootContainer.PortalContainerInitTask;
 import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.portal.config.UserACL;
 import org.exoplatform.services.security.Identity;
+import org.exoplatform.caldav.event.CaldavServerAuthenticationChangedEvent;
 import org.exoplatform.caldav.event.CaldavServerProviderChangedEvent;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 
@@ -351,7 +352,10 @@ public class CaldavServerServiceTest {
     assertEquals(WriteChannel.CALDAV, written.getValue().getWriteChannel(), "stated to the storage, which keeps a null as-is");
   }
 
-  /** Moving a server to another provider announces the disconnection of every user of it. */
+  /**
+   * Moving a server to another provider announces the disconnection of every user of it,
+   * and the change of its authentication, which forgets the managed refusals (EXO-91017).
+   */
   @Test
   public void aProviderChangeAnnouncesTheDisconnectionOfEveryUser() {
     withUser(ADMIN_USER, true);
@@ -365,8 +369,32 @@ public class CaldavServerServiceTest {
     assertDoesNotThrow(() -> caldavServerService.updateServer(posted, ADMIN_USER));
 
     ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
+    verify(eventPublisher, times(2)).publishEvent(published.capture());
+    assertEquals(7L, ((CaldavServerProviderChangedEvent) published.getAllValues().get(0)).getServerId());
+    assertEquals(7L, ((CaldavServerAuthenticationChangedEvent) published.getAllValues().get(1)).getServerId());
+  }
+
+  /**
+   * EXO-91017. A provider configuration written on the same provider - a corrected
+   * technical account - changes the server's authentication without disconnecting
+   * anybody: only the change of authentication is announced.
+   */
+  @Test
+  public void aConfigurationWrittenOnTheSameProviderAnnouncesOnlyTheAuthenticationChange() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Bluemind", null, SERVER_URL, true);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    CaldavServer posted = server(7, null, "Bluemind", null, SERVER_URL, true);
+    posted.setAuthProviderName("bluemind-sudo");
+    posted.setProviderConfig(Map.of("technicalLogin", "admin0@global.virt"));
+
+    assertDoesNotThrow(() -> caldavServerService.updateServer(posted, ADMIN_USER));
+
+    ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
     verify(eventPublisher).publishEvent(published.capture());
-    assertEquals(7L, ((CaldavServerProviderChangedEvent) published.getValue()).getServerId());
+    assertEquals(7L, ((CaldavServerAuthenticationChangedEvent) published.getValue()).getServerId());
   }
 
   /** An edit that keeps the provider, or leaves it blank, disconnects nobody. */

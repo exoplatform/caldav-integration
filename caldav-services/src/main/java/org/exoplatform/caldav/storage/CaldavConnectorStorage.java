@@ -260,6 +260,35 @@ public class CaldavConnectorStorage {
   }
 
   /**
+   * Forgets every refusal recorded on this registration, by one query on the key and a
+   * read of each record found. A refusal recorded on another registration, or one that
+   * cannot be read, is left alone.
+   *
+   * @param serverId the registration the refusals name
+   * @return how many refusals were forgotten
+   */
+  public int clearManagedRefusalsOn(long serverId) {
+    List<Long> refusedIdentities = this.settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                                               Scope.APPLICATION.getName(),
+                                                                                               CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE.getId(),
+                                                                                               CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY,
+                                                                                               0,
+                                                                                               Integer.MAX_VALUE)
+                                                      .stream()
+                                                      .map(context -> Long.valueOf(context.getId()))
+                                                      .toList();
+    int cleared = 0;
+    for (long userIdentityId : refusedIdentities) {
+      CaldavManagedRefusal refusal = getManagedRefusal(userIdentityId);
+      if (refusal != null && refusal.serverId() == serverId) {
+        clearManagedRefusal(userIdentityId);
+        cleared++;
+      }
+    }
+    return cleared;
+  }
+
+  /**
    * The refusal recorded for this user. The value is split at its first colon: the
    * registration id holds none, the account may.
    *

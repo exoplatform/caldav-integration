@@ -653,6 +653,21 @@ public class CaldavRelayService {
   }
 
   /**
+   * Forgets the managed refusals recorded on a registration whose provider, or whose
+   * provider configuration, an administrator just changed (EXO-91017). The refusal was
+   * the answer of the authentication now replaced: the users it names are offered the
+   * connection again instead of waiting for their next login to retry it.
+   *
+   * @param serverId the registration whose authentication changed
+   */
+  public void forgetManagedRefusalsOn(long serverId) {
+    int forgotten = caldavConnectorStorage.clearManagedRefusalsOn(serverId);
+    if (forgotten > 0) {
+      LOG.info("Forgot {} managed CalDAV refusal(s) on server {}: its authentication changed", forgotten, serverId);
+    }
+  }
+
+  /**
    * Disconnects a user on the platform's initiative - an administrator's change, or
    * the login that finds managed mode no longer governs them. The
    * counterpart of {@link #connectThroughProvider(Long, String, boolean, BooleanSupplier)}: agenda's

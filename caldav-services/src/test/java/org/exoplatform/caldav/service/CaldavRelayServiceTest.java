@@ -815,6 +815,20 @@ public class CaldavRelayServiceTest {
     assertFalse(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID));
   }
 
+  /**
+   * EXO-91017. A change of the registration's authentication forgets the refusals the
+   * storage holds on it, and only on it.
+   */
+  @Test
+  public void aChangedAuthenticationForgetsTheRefusalsOfThatRegistration() {
+    when(caldavConnectorStorage.clearManagedRefusalsOn(SERVER_ID)).thenReturn(2);
+
+    caldavRelayService.forgetManagedRefusalsOn(SERVER_ID);
+
+    verify(caldavConnectorStorage).clearManagedRefusalsOn(SERVER_ID);
+    verify(caldavConnectorStorage, never()).clearManagedRefusalsOn(SERVER_ID + 1);
+  }
+
   /** EXO-91017. A refusal that cannot be checked offers the connection again. */
   @Test
   public void aManagedRefusalThatCannotBeCheckedIsNone() throws Exception {
