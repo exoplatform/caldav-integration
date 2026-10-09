@@ -27,6 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Instant;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -167,6 +168,103 @@ public class IcsMergerAnswerTest {
     String unfolded = unfolded(rewrite.document());
     assertFalse(unfolded.contains("PARTSTAT=DECLINED"), unfolded);
     assertEquals(2, count(unfolded, "PARTSTAT=ACCEPTED"), unfolded);
+  }
+
+  /**
+   * An answer to one instance moves the override of that instance and leaves
+   * the master alone (EXO-90489): the master's line is what every other date of
+   * the series inherits.
+   */
+  @Test
+  public void anAnswerToOneInstanceMovesItsOverrideOnly() {
+    AnswerRewrite rewrite = merger.setAttendeeResponse(series("NEEDS-ACTION"),
+                                                       List.of("alice@stalwart.local"),
+                                                       "DECLINED",
+                                                       Instant.parse("2026-09-15T09:00:00Z"));
+
+    assertTrue(rewrite.attendeeNamed());
+    assertNotNull(rewrite.document());
+    String unfolded = unfolded(rewrite.document());
+    assertEquals(1, count(unfolded, "PARTSTAT=DECLINED"), unfolded);
+    assertEquals(1, count(unfolded, "PARTSTAT=NEEDS-ACTION"), unfolded);
+    String master = unfolded.substring(0, unfolded.indexOf("RECURRENCE-ID"));
+    assertTrue(master.contains("PARTSTAT=NEEDS-ACTION"), unfolded);
+  }
+
+  /**
+   * An override is found by the instant it amends, whatever zone its
+   * RECURRENCE-ID is written in: agenda names the occurrence by an instant.
+   */
+  @Test
+  public void anOverrideWrittenInAZoneIsFoundByItsInstant() {
+    String zoned = series("NEEDS-ACTION").replace("RECURRENCE-ID:20260915T090000Z",
+                                                  "RECURRENCE-ID;TZID=Europe/Paris:20260915T110000");
+
+    AnswerRewrite rewrite = merger.setAttendeeResponse(zoned,
+                                                       List.of("alice@stalwart.local"),
+                                                       "ACCEPTED",
+                                                       Instant.parse("2026-09-15T09:00:00Z"));
+
+    assertNotNull(rewrite.document());
+    assertEquals(1, count(unfolded(rewrite.document()), "PARTSTAT=ACCEPTED"), rewrite.document());
+    assertTrue(merger.holdsInstance(zoned, Instant.parse("2026-09-15T09:00:00Z")));
+  }
+
+  /**
+   * The override the writer renders for an all-day occurrence is the one the
+   * answer then looks for: agenda names that occurrence by its day at midnight
+   * UTC, and a series anchored west of Greenwich must not move it to the day
+   * before, or the answer lands on no override and the copy is never updated.
+   */
+  @Test
+  public void theWrittenOverrideOfAnAllDayOccurrenceIsTheOneTheAnswerFinds() {
+    String allDaySeries = String.join("\r\n",
+                                      "BEGIN:VCALENDAR",
+                                      "VERSION:2.0",
+                                      "PRODID:-//eXo//caldav//EN",
+                                      "BEGIN:VEVENT",
+                                      "UID:uid-1@example.test",
+                                      "DTSTAMP:20260826T150000Z",
+                                      "DTSTART;VALUE=DATE:20261005",
+                                      "DTEND;VALUE=DATE:20261006",
+                                      "RRULE:FREQ=WEEKLY;COUNT=4",
+                                      "SUMMARY:Weekly",
+                                      "END:VEVENT",
+                                      "END:VCALENDAR",
+                                      "");
+    org.exoplatform.caldav.model.IcsEvent occurrence = new org.exoplatform.caldav.model.IcsEvent();
+    occurrence.setUid("uid-1@example.test");
+    occurrence.setSummary("Weekly");
+    occurrence.setAllDay(true);
+    occurrence.setTimeZoneId("America/New_York");
+    occurrence.setStart(Instant.parse("2026-10-12T04:00:00Z"));
+    occurrence.setEnd(Instant.parse("2026-10-13T04:00:00Z"));
+    occurrence.setOccurrenceId("2026-10-12T00:00:00Z");
+
+    String merged = merger.merge(allDaySeries, new IcsWriter().write(occurrence), true);
+
+    assertTrue(merger.holdsInstance(merged, Instant.parse("2026-10-12T00:00:00Z")), merged);
+    assertTrue(merged.contains("RRULE:FREQ=WEEKLY"), merged);
+  }
+
+  /**
+   * An instance the object holds no override for names nobody, so nothing is
+   * written: the caller adds the override first, and the master is never the
+   * fallback.
+   */
+  @Test
+  public void anInstanceWithNoOverrideIsNotAnsweredOnTheMaster() {
+    Instant unamended = Instant.parse("2026-09-22T09:00:00Z");
+
+    AnswerRewrite rewrite = merger.setAttendeeResponse(series("NEEDS-ACTION"),
+                                                       List.of("alice@stalwart.local"),
+                                                       "ACCEPTED",
+                                                       unamended);
+
+    assertFalse(rewrite.attendeeNamed());
+    assertNull(rewrite.document());
+    assertFalse(merger.holdsInstance(series("NEEDS-ACTION"), unamended));
+    assertTrue(merger.holdsInstance(series("NEEDS-ACTION"), Instant.parse("2026-09-15T09:00:00Z")));
   }
 
   /**
