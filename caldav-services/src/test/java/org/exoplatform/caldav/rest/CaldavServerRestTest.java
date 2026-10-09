@@ -30,6 +30,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
@@ -57,6 +58,7 @@ import org.exoplatform.caldav.model.CaldavManagedMode;
 import org.exoplatform.caldav.rest.model.CaldavManagedModeRequest;
 import org.exoplatform.caldav.service.CaldavManagedDisconnectionService;
 import org.exoplatform.caldav.service.CaldavManagedModeService;
+import org.exoplatform.caldav.service.CaldavRelayService;
 import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.caldav.service.CaldavTuningService;
 import org.exoplatform.caldav.model.CaldavSyncTuning;
@@ -94,6 +96,9 @@ public class CaldavServerRestTest {
 
   @Mock
   private CaldavManagedDisconnectionService caldavManagedDisconnectionService;
+
+  @Mock
+  private CaldavRelayService caldavRelayService;
 
   @Mock
   private HttpServletRequest  request;
@@ -744,6 +749,7 @@ public class CaldavServerRestTest {
 
     assertTrue(governed.managed());
     assertEquals(7L, governed.serverId());
+    assertFalse(governed.refused());
 
     when(caldavManagedModeService.designatedServerFor("mary")).thenReturn(null);
 
@@ -751,5 +757,26 @@ public class CaldavServerRestTest {
 
     assertFalse(free.managed());
     assertNull(free.serverId());
+    assertFalse(free.refused());
+    // Asked for the governed read only: a user managed mode does not govern has no refusal.
+    verify(caldavRelayService).isManagedRefused("mary", 7L);
+    verifyNoMoreInteractions(caldavRelayService);
+  }
+
+  /**
+   * EXO-91017. A governed user whose managed connection was refused because of their
+   * own account reads it, for the designated registration.
+   */
+  @Test
+  public void aGovernedUserReadsThatTheirManagedConnectionWasRefused() {
+    when(request.getRemoteUser()).thenReturn("mary");
+    when(caldavManagedModeService.designatedServerFor("mary")).thenReturn(7L);
+    when(caldavRelayService.isManagedRefused("mary", 7L)).thenReturn(true);
+
+    CaldavManagedForUser governed = caldavServerRest.getManagedModeForMe(request);
+
+    assertTrue(governed.managed());
+    assertEquals(7L, governed.serverId());
+    assertTrue(governed.refused());
   }
 }

@@ -65,8 +65,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.exoplatform.agenda.model.RemoteProvider;
 import org.exoplatform.agenda.service.AgendaRemoteEventService;
 import org.exoplatform.agenda.service.AgendaUserSettingsService;
+import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.exception.ManagedConnectionLockedException;
+import org.exoplatform.caldav.model.CaldavManagedRefusal;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavRelayRequest;
 import org.exoplatform.caldav.model.CaldavRelayedResponse;
@@ -77,6 +79,8 @@ import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsException;
+import org.exoplatform.services.connector.credentials.ConnectorTargetRefusedException;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvider;
 import org.exoplatform.social.core.manager.IdentityManager;
@@ -697,6 +701,165 @@ public class CaldavRelayServiceTest {
     caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME, true, () -> true);
 
     verify(caldavConnectorStorage, never()).markConnectedByManagedMode(anyLong(), anyBoolean());
+  }
+
+  /**
+   * EXO-91017. A connection managed mode makes, whose provider says the remote
+   * authority refused the account it named for the user, records the refusal against
+   * the registration and that account, and still fails as before; nothing is probed.
+   */
+  @Test
+  public void aManagedConnectionWhoseTargetIsRefusedRecordsTheRefusal() throws Exception {
+    givenTargetRefusedByTheProvider();
+
+    assertThrows(IllegalStateException.class, () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME, true, () -> true));
+
+    verify(caldavConnectorStorage).saveManagedRefusal(IDENTITY_ID, new CaldavManagedRefusal(SERVER_ID, "eric@bm.example.org"));
+    verifyNoInteractions(httpClient);
+  }
+
+  /** EXO-91017. The click of a user managed mode governs is a connection managed mode makes. */
+  @Test
+  public void aGovernedUsersClickWhoseTargetIsRefusedRecordsTheRefusal() throws Exception {
+    givenTargetRefusedByTheProvider();
+    when(caldavManagedModeService.checkUserMayChangeConnection(USERNAME, SERVER_ID)).thenReturn(SERVER_ID);
+
+    assertThrows(IllegalStateException.class, () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME));
+
+    verify(caldavConnectorStorage).saveManagedRefusal(IDENTITY_ID, new CaldavManagedRefusal(SERVER_ID, "eric@bm.example.org"));
+  }
+
+  /** EXO-91017. A connection the user makes outside managed mode records no refusal. */
+  @Test
+  public void aConnectionOutsideManagedModeWhoseTargetIsRefusedRecordsNothing() throws Exception {
+    givenTargetRefusedByTheProvider();
+
+    assertThrows(IllegalStateException.class, () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME));
+
+    verify(caldavConnectorStorage, never()).saveManagedRefusal(anyLong(), any());
+  }
+
+  /**
+   * EXO-91017. Any other failure to produce credentials - an unreachable authority, a
+   * refused technical account - is the connector's, not this user's: nothing recorded.
+   */
+  @Test
+  public void aManagedConnectionWhoseCredentialsCannotBeProducedRecordsNothing() throws Exception {
+    givenOneClickTargetOnly();
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME))
+        .thenThrow(new CalDavException("The credentials provider could not produce credentials",
+                                       new ConnectorCredentialsException("BlueMind did not answer in time")));
+
+    assertThrows(IllegalStateException.class, () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME, true, () -> true));
+
+    verify(caldavConnectorStorage, never()).saveManagedRefusal(anyLong(), any());
+  }
+
+  /**
+   * EXO-91017. A provider that names no account for the user, on a connection managed
+   * mode makes, records a refusal with no account; outside managed mode, nothing.
+   */
+  @Test
+  public void aProviderNamingNobodyRecordsARefusalOnlyForManagedMode() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, USERNAME)).thenReturn(identity);
+    when(identity.getId()).thenReturn(String.valueOf(IDENTITY_ID));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn(" ");
+
+    assertThrows(IllegalArgumentException.class, () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME));
+    verify(caldavConnectorStorage, never()).saveManagedRefusal(anyLong(), any());
+
+    assertThrows(IllegalArgumentException.class, () -> caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME, true, () -> true));
+    verify(caldavConnectorStorage).saveManagedRefusal(IDENTITY_ID, new CaldavManagedRefusal(SERVER_ID, ""));
+  }
+
+  /**
+   * EXO-91017. The refusal holds for the designated registration while the provider
+   * names the same account for the user; another registration, another account, or
+   * none recorded, and the connection is offered again.
+   */
+  @Test
+  public void aManagedRefusalHoldsWhileTheServerAndTheAccountAreTheSame() throws Exception {
+    givenOneClickTargetOnly();
+    when(caldavConnectorStorage.getManagedRefusal(IDENTITY_ID)).thenReturn(new CaldavManagedRefusal(SERVER_ID, "eric@bm.example.org"));
+
+    assertTrue(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID));
+    // Another registration naming the same account: only the registration differs.
+    org.mockito.Mockito.lenient().when(caldavServerService.getServerById(SERVER_ID + 1)).thenReturn(server(SERVER_ID + 1, true));
+    org.mockito.Mockito.lenient()
+                      .when(caldavCredentialsResolver.targetAccount(SERVER_ID + 1, PROVIDER, USERNAME))
+                      .thenReturn("eric@bm.example.org");
+    assertFalse(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID + 1));
+
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric.new@bm.example.org");
+    assertFalse(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID));
+
+    when(caldavConnectorStorage.getManagedRefusal(IDENTITY_ID)).thenReturn(null);
+    assertFalse(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID));
+  }
+
+  /**
+   * EXO-91017. A refusal recorded because the provider named nobody holds while it
+   * still names nobody, and ends when it names someone.
+   */
+  @Test
+  public void aManagedRefusalForNoAccountHoldsWhileTheProviderNamesNobody() throws Exception {
+    givenOneClickTargetOnly();
+    when(caldavConnectorStorage.getManagedRefusal(IDENTITY_ID)).thenReturn(new CaldavManagedRefusal(SERVER_ID, ""));
+
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn(null);
+    assertTrue(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID));
+
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    assertFalse(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID));
+  }
+
+  /**
+   * EXO-91017. A change of the registration's authentication forgets the refusals the
+   * storage holds on it, and only on it.
+   */
+  @Test
+  public void aChangedAuthenticationForgetsTheRefusalsOfThatRegistration() {
+    when(caldavConnectorStorage.clearManagedRefusalsOn(SERVER_ID)).thenReturn(2);
+
+    caldavRelayService.forgetManagedRefusalsOn(SERVER_ID);
+
+    verify(caldavConnectorStorage).clearManagedRefusalsOn(SERVER_ID);
+    verify(caldavConnectorStorage, never()).clearManagedRefusalsOn(SERVER_ID + 1);
+  }
+
+  /** EXO-91017. A refusal that cannot be checked offers the connection again. */
+  @Test
+  public void aManagedRefusalThatCannotBeCheckedIsNone() throws Exception {
+    givenOneClickTargetOnly();
+    when(caldavConnectorStorage.getManagedRefusal(IDENTITY_ID)).thenReturn(new CaldavManagedRefusal(SERVER_ID, "eric@bm.example.org"));
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenThrow(new CalDavException("no provider"));
+
+    assertFalse(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID));
+
+    when(caldavServerService.getServerById(SERVER_ID)).thenThrow(new ObjectNotFoundException("gone"));
+    assertFalse(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID));
+  }
+
+  /** The registration, the user's identity and the account the provider names for them. */
+  private void givenOneClickTargetOnly() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    org.mockito.Mockito.lenient().when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, USERNAME)).thenReturn(identity);
+    org.mockito.Mockito.lenient().when(identity.getId()).thenReturn(String.valueOf(IDENTITY_ID));
+    org.mockito.Mockito.lenient().when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    org.mockito.Mockito.lenient().when(agendaRemoteEventService.getRemoteProviders())
+                      .thenReturn(List.of(new RemoteProvider(0, "agenda.caldavCalendar." + SERVER_ID, null, null, true, false)));
+  }
+
+  /** A one-click connection whose provider says the remote authority refused the account it named. */
+  private void givenTargetRefusedByTheProvider() throws Exception {
+    givenOneClickTargetOnly();
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME))
+        .thenThrow(new CalDavException("The credentials provider could not produce credentials",
+                                       new ConnectorTargetRefusedException("BlueMind refused to act as eric@bm.example.org: status Bad, no message",
+                                                                           null)));
   }
 
   /**
