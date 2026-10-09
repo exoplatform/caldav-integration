@@ -1,6 +1,10 @@
 import * as caldavConnectorService from '../js/agendaCaldavService.js';
 import {DEFAULT_SERVER_ICON, DEFAULT_SERVER_IMAGE} from '../js/serverIconIdentity.js';
 import {MIRROR_TARGET_MAIN_CALENDAR, mirrorTargetOf} from '../js/mirrorTargets.js';
+
+/** The message code a connect the designated server refused because of the user's account rejects with. */
+const MANAGED_REFUSED_CODE = 'caldav.managed.refused';
+
 /**
  * What deleting each calendar would do, kept from the moment agenda asks until
  * the deletion it precedes. Not a cache of remote state: it holds one answer
@@ -73,6 +77,10 @@ const caldavConnector = {
   // Whether this descriptor is the server managed mode keeps the user on: the
   // one agenda connects in one click for a managed user with no account yet.
   designated: false,
+  // Whether the designated server refused the account managed mode connected
+  // for the user (EXO-91017); declared here so that agenda observes it from the
+  // start, and a refusal met on a click changes what agenda shows at once.
+  managedRefused: false,
   /**
    * Opens the settings drawer and resolves once the CalDAV server itself has
    * accepted the account. The drawer verifies the credentials against the
@@ -99,7 +107,8 @@ const caldavConnector = {
           }
           return caldavConnectorService.getCaldavSetting();
         })
-        .then(setting => setting && setting.username || null);
+        .then(setting => setting && setting.username || null)
+        .catch(error => readManagedRefusal(this).then(refused => Promise.reject(refused ? managedRefusedError() : error)));
     }
     return new Promise((resolve, reject) => {
       // The drawer must know WHICH declared server this connector fronts:
@@ -697,7 +706,7 @@ function isUnderAHome(path) {
  * @param {Object} requirements whether each provider asks its user for anything,
  *          keyed by provider name; anything but an explicit false means ask
  * @param {Array} unavailableProviders the provider names that are not installed
- * @param {Object} managedForMe the user's managed-mode verdict, `{managed, serverId}`;
+ * @param {Object} managedForMe the user's managed-mode verdict, `{managed, serverId, refused}`;
  *          absent reads as not managed
  * @returns {Object} the connector descriptor to register under agenda/connectors
  */
@@ -709,6 +718,10 @@ export function createCaldavConnector(server, index, requirements, unavailablePr
     // agenda shows.
     managed: !!(managedForMe && managedForMe.managed),
     designated: !!(managedForMe && managedForMe.managed && managedForMe.serverId === server.id),
+    // Whether the connection managed mode made on the designated server was refused
+    // because of the user's own account (EXO-91017): agenda then offers no connect
+    // button for it and says why instead.
+    managedRefused: !!(managedForMe && managedForMe.managed && managedForMe.serverId === server.id && managedForMe.refused),
     description: `${server.providerName}.description`,
     serverId: server.id,
     // Whether clicking "connect" opens a form or connects outright. Read as an
@@ -753,6 +766,41 @@ export function createCaldavConnector(server, index, requirements, unavailablePr
     imageUrl: server.imageUrl || null,
     rank: caldavConnector.rank + (index || 0),
   });
+}
+
+/**
+ * After a one-click connect of the designated server failed, reads again whether
+ * the server refused the user's own account (EXO-91017) - the click itself may
+ * have recorded it - and stamps the descriptor, which agenda observes: its connect
+ * button then gives way to the message without a reload. A descriptor that is not
+ * the designated one, or a verdict that cannot be read, keeps what it had.
+ *
+ * @param {Object} connector the descriptor whose connect failed
+ * @returns {Promise<Boolean>} whether the designated server refused the account
+ */
+function readManagedRefusal(connector) {
+  if (!connector.managed || !connector.designated) {
+    return Promise.resolve(false);
+  }
+  return caldavConnectorService.getManagedModeForMe()
+    .then(managedForMe => {
+      connector.managedRefused = !!(managedForMe && managedForMe.managed
+        && managedForMe.serverId === connector.serverId && managedForMe.refused);
+      return connector.managedRefused;
+    })
+    .catch(() => !!connector.managedRefused);
+}
+
+/**
+ * The error a refused managed connect rejects with: its code is a key of this
+ * add-on's bundle, which agenda shows when it knows it.
+ *
+ * @returns {Error} the error to reject with
+ */
+function managedRefusedError() {
+  const error = new Error(MANAGED_REFUSED_CODE);
+  error.code = MANAGED_REFUSED_CODE;
+  return error;
 }
 
 /**
