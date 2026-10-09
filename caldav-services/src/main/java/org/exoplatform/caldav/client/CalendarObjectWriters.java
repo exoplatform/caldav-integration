@@ -20,7 +20,6 @@ import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.springframework.beans.factory.ObjectProvider;
@@ -77,15 +76,13 @@ public class CalendarObjectWriters {
 
   private final CalDavObjectWriter                        calDavObjectWriter;
 
-  /** Where the contributed doors are read from, once. */
-  private final Supplier<List<CalendarWriteChannelPlugin>> plugins;
-
   /**
-   * The contributed doors, by channel, read once on first use: contributions
-   * from another web application are only known once every context has
-   * published its beans.
+   * Where the contributed doors are read from, on each use, as the other
+   * registries read theirs: a contribution absent at a first read, because
+   * another web application had not published its beans yet or because it
+   * could not be created then, is found at the next.
    */
-  private final AtomicReference<Map<WriteChannel, CalendarObjectWriter>> contributed = new AtomicReference<>();
+  private final Supplier<List<CalendarWriteChannelPlugin>> plugins;
 
   /**
    * The resolver over the registry, the CalDAV door and every contributed one.
@@ -189,7 +186,7 @@ public class CalendarObjectWriters {
   }
 
   /**
-   * The contributed doors by channel, read on first use. The first
+   * The contributed doors by channel, read on each use. The first
    * contribution for a channel wins, in the contributions' declared order; a
    * later one for the same channel, and one claiming CalDAV, are ignored and
    * said so.
@@ -197,20 +194,15 @@ public class CalendarObjectWriters {
    * @return the doors, never null
    */
   private Map<WriteChannel, CalendarObjectWriter> contributed() {
-    Map<WriteChannel, CalendarObjectWriter> doors = contributed.get();
-    if (doors == null) {
-      Map<WriteChannel, CalendarObjectWriter> read = new EnumMap<>(WriteChannel.class);
-      for (CalendarWriteChannelPlugin plugin : plugins.get()) {
-        WriteChannel channel = plugin == null ? null : plugin.channel();
-        if (channel == null || channel == WriteChannel.CALDAV || plugin.writer() == null) {
-          LOG.warn("The write channel contribution {} names no channel eXo can hand over ({}); it is ignored", plugin, channel);
-        } else if (read.putIfAbsent(channel, plugin.writer()) != null) {
-          LOG.warn("The write channel {} is contributed twice; {} is ignored", channel, plugin);
-        }
+    Map<WriteChannel, CalendarObjectWriter> read = new EnumMap<>(WriteChannel.class);
+    for (CalendarWriteChannelPlugin plugin : plugins.get()) {
+      WriteChannel channel = plugin == null ? null : plugin.channel();
+      if (channel == null || channel == WriteChannel.CALDAV || plugin.writer() == null) {
+        LOG.warn("The write channel contribution {} names no channel eXo can hand over ({}); it is ignored", plugin, channel);
+      } else if (read.putIfAbsent(channel, plugin.writer()) != null) {
+        LOG.warn("The write channel {} is contributed twice; {} is ignored", channel, plugin);
       }
-      contributed.compareAndSet(null, Collections.unmodifiableMap(read));
-      doors = contributed.get();
     }
-    return doors;
+    return Collections.unmodifiableMap(read);
   }
 }

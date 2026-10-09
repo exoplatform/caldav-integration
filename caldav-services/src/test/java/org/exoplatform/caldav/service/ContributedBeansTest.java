@@ -37,6 +37,7 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 
 import org.exoplatform.caldav.client.CalDavObjectWriter;
+import org.exoplatform.caldav.client.CalendarObjectWriter;
 import org.exoplatform.caldav.client.CalendarObjectWriters;
 import org.exoplatform.caldav.client.DavOptions;
 import org.exoplatform.caldav.client.SharingMechanism;
@@ -168,6 +169,25 @@ public class ContributedBeansTest {
                                                               providerOf(brokenWriter));
     assertFalse(writers.serves(WriteChannel.BLUEMIND_IMPORT));
     assertTrue(writers.serves(WriteChannel.CALDAV));
+  }
+
+  /**
+   * A write-channel contribution that cannot be created at a first read is
+   * found at the next: the resolver reads the contributions on each use, as
+   * the other registries do, instead of keeping an empty first reading for
+   * the node's lifetime.
+   */
+  @Test
+  public void aWriteChannelContributionBrokenAtAFirstReadIsFoundAtTheNext() {
+    CalendarWriteChannelPlugin writer = mock(CalendarWriteChannelPlugin.class);
+    when(writer.channel()).thenThrow(new BeanCreationException("writer", "the proxied bean failed"))
+                          .thenReturn(WriteChannel.BLUEMIND_IMPORT);
+    when(writer.writer()).thenReturn(mock(CalendarObjectWriter.class));
+    CalendarObjectWriters writers = new CalendarObjectWriters(mock(CaldavServerService.class),
+                                                              mock(CalDavObjectWriter.class),
+                                                              providerOf(writer));
+    assertFalse(writers.serves(WriteChannel.BLUEMIND_IMPORT));
+    assertTrue(writers.serves(WriteChannel.BLUEMIND_IMPORT));
   }
 
   /**
