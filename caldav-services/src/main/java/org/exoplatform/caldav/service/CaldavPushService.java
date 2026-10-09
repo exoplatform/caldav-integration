@@ -62,6 +62,7 @@ import org.exoplatform.caldav.model.IcsEvent;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
+import org.exoplatform.caldav.plugin.MirrorCollection;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
@@ -84,7 +85,7 @@ import org.exoplatform.social.core.manager.IdentityManager;
 public class CaldavPushService {
 
   /** The collection eXo copies space events into, derived from this slug alone. */
-  public static final String     MIRROR_COLLECTION_SLUG = "exo-meetings";
+  public static final String     MIRROR_COLLECTION_SLUG = MirrorCollection.SLUG;
 
   /** How the collection presents itself in the user's own calendar client. */
   public static final String     MIRROR_DISPLAY_NAME    = "eXo Meetings";
@@ -163,6 +164,16 @@ public class CaldavPushService {
   public static final String     FORBIDDEN              = "caldav.error.forbidden";
 
   /**
+   * The server's registration declares a write channel no installed add-on
+   * serves — {@code BLUEMIND_IMPORT} without the add-on that speaks BlueMind's
+   * import API. A state of the platform, not of the attempt: the copy is not
+   * written through CalDAV instead, because the channel exists to keep that
+   * server from receiving a CalDAV write, and only installing the add-on or
+   * switching the registration back to CalDAV clears it.
+   */
+  public static final String     WRITE_CHANNEL_UNAVAILABLE = "caldav.error.writeChannelUnavailable";
+
+  /**
    * The name this add-on registers itself under as an agenda remote provider,
    * in caldav-configuration.xml. It has to match that declaration exactly:
    * agenda resolves the provider by name when it stores the mapping between
@@ -182,7 +193,11 @@ public class CaldavPushService {
    * failure, which is the safe default: a state nobody classified is exactly
    * the thing worth hearing about.
    */
-  private static final Set<String> KNOWN_STATE_CODES = Set.of(NOT_CONNECTED, MAIN_CALENDAR_UNKNOWN, FOREIGN_COPY, FORBIDDEN);
+  private static final Set<String> KNOWN_STATE_CODES = Set.of(NOT_CONNECTED,
+                                                              MAIN_CALENDAR_UNKNOWN,
+                                                              FOREIGN_COPY,
+                                                              FORBIDDEN,
+                                                              WRITE_CHANNEL_UNAVAILABLE);
 
   /**
    * The one name pattern this class knows, and only as a tie-break: BlueMind

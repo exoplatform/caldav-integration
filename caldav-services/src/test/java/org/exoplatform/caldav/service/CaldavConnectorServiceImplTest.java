@@ -34,6 +34,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.util.List;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -44,6 +46,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.stereotype.Service;
 
 import org.exoplatform.agenda.service.AgendaCalendarShareService;
+import org.exoplatform.caldav.client.bluemind.BlueMindServerFlavour;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -534,7 +537,7 @@ public class CaldavConnectorServiceImplTest {
   @Test
   public void connectingDropsTheKeptBlueMindSessionOnBothServers() throws Exception {
     caldavConnectorService.setCaldavSyncService(caldavSyncService);
-    caldavConnectorService.setBlueMindSessionService(blueMindSessionService);
+    caldavConnectorService.setCalendarServerFlavourRegistry(CalendarServerFlavourRegistry.of(List.of(new BlueMindServerFlavour(blueMindSessionService))));
     CaldavUserSetting previous = new CaldavUserSetting();
     previous.setServerId(1L);
     when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(previous);
@@ -555,7 +558,7 @@ public class CaldavConnectorServiceImplTest {
    */
   @Test
   public void disconnectingDropsTheKeptBlueMindSession() {
-    caldavConnectorService.setBlueMindSessionService(blueMindSessionService);
+    caldavConnectorService.setCalendarServerFlavourRegistry(CalendarServerFlavourRegistry.of(List.of(new BlueMindServerFlavour(blueMindSessionService))));
     CaldavUserSetting connected = new CaldavUserSetting();
     connected.setServerId(2L);
     when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(connected);
@@ -573,7 +576,7 @@ public class CaldavConnectorServiceImplTest {
    */
   @Test
   public void aSessionThatCannotBeDroppedDoesNotFailTheDisconnection() {
-    caldavConnectorService.setBlueMindSessionService(blueMindSessionService);
+    caldavConnectorService.setCalendarServerFlavourRegistry(CalendarServerFlavourRegistry.of(List.of(new BlueMindServerFlavour(blueMindSessionService))));
     CaldavUserSetting connected = new CaldavUserSetting();
     connected.setServerId(2L);
     when(caldavConnectorStorage.getCaldavSetting(USER_IDENTITY_ID)).thenReturn(connected);

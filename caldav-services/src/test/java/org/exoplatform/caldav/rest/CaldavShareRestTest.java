@@ -50,10 +50,11 @@ import org.exoplatform.caldav.model.CalendarShares.PublishedLinkMode;
 import org.exoplatform.caldav.model.CalendarShares.ShareAccess;
 import org.exoplatform.caldav.model.CalendarShares.ShareUser;
 import org.exoplatform.caldav.model.CalendarShares.ShareeKind;
+import org.exoplatform.caldav.plugin.CaldavShareException;
+import org.exoplatform.caldav.plugin.ShareRefusals;
 import org.exoplatform.caldav.rest.model.ShareCalendarRequest;
 import org.exoplatform.caldav.rest.model.ShareableCalendars;
 import org.exoplatform.caldav.service.CaldavCalendarShareService;
-import org.exoplatform.caldav.service.CaldavShareException;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.services.security.ConversationState;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -182,25 +183,25 @@ public class CaldavShareRestTest {
    */
   @Test
   public void aServerFailureKeepsItsCodeAndWhatTheServerSaid() {
-    ResponseEntity<Map<String, Object>> refused = caldavShareRest.onShareFailure(new CaldavShareException(CaldavCalendarShareService.SERVER_REFUSED,
+    ResponseEntity<Map<String, Object>> refused = caldavShareRest.onShareFailure(new CaldavShareException(ShareRefusals.SERVER_REFUSED,
                                                                                                           List.of("need-privileges"),
                                                                                                           List.of("write-acl"),
                                                                                                           null));
     assertEquals(HttpStatus.CONFLICT, refused.getStatusCode());
-    assertEquals(CaldavCalendarShareService.SERVER_REFUSED, refused.getBody().get("message"));
+    assertEquals(ShareRefusals.SERVER_REFUSED, refused.getBody().get("message"));
     assertEquals(List.of("need-privileges"), refused.getBody().get("preconditions"));
     assertEquals(List.of("write-acl"), refused.getBody().get("missingPrivileges"));
 
     for (String code : List.of(CaldavCalendarShareService.NOT_CONNECTED,
                                CaldavCalendarShareService.OWNER_UNKNOWN,
                                CaldavCalendarShareService.FOREIGN_ACCESS_NOT_PRESERVED,
-                               CaldavCalendarShareService.NOT_SUPPORTED,
-                               CaldavCalendarShareService.ACL_UNREADABLE,
+                               ShareRefusals.NOT_SUPPORTED,
+                               ShareRefusals.ACL_UNREADABLE,
                                CaldavCalendarShareService.ACL_NOT_UNDERSTOOD,
                                CaldavCalendarShareService.CREDENTIALS)) {
       assertEquals(HttpStatus.CONFLICT, caldavShareRest.onShareFailure(new CaldavShareException(code)).getStatusCode(), code);
     }
-    for (String code : List.of(CaldavCalendarShareService.NOT_APPLIED, CaldavCalendarShareService.SERVER_UNAVAILABLE)) {
+    for (String code : List.of(ShareRefusals.NOT_APPLIED, CaldavCalendarShareService.SERVER_UNAVAILABLE)) {
       ResponseEntity<Map<String, Object>> gateway = caldavShareRest.onShareFailure(new CaldavShareException(code));
       assertEquals(HttpStatus.BAD_GATEWAY, gateway.getStatusCode(), code);
       assertEquals(502, gateway.getBody().get("status"));

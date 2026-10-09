@@ -35,6 +35,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
@@ -63,6 +64,7 @@ import org.exoplatform.caldav.client.AccessControlEntry;
 import org.exoplatform.caldav.client.AccessControlEntry.AcePrincipal;
 import org.exoplatform.caldav.client.AclWriteResult;
 import org.exoplatform.caldav.client.bluemind.BlueMindAclClient;
+import org.exoplatform.caldav.client.bluemind.BlueMindShareChannel;
 import org.exoplatform.caldav.client.bluemind.BlueMindAclClient.BlueMindAce;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
@@ -86,6 +88,8 @@ import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.ShareeSubscription;
 import org.exoplatform.caldav.model.SyncOrigin;
+import org.exoplatform.caldav.plugin.CaldavShareException;
+import org.exoplatform.caldav.plugin.ShareRefusals;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
@@ -243,7 +247,7 @@ public class CaldavCalendarShareServiceTest {
                                              calDavClient,
                                              caldavConnectionIdentityService,
                                              identityManager,
-                                             blueMindAclClient,
+                                             CalendarShareChannelRegistry.of(List.of(new BlueMindShareChannel(blueMindAclClient, calDavClient))),
                                              caldavPushService,
                                              caldavShareSubscriptionService,
                                              caldavServerOwnerService,
@@ -375,7 +379,7 @@ public class CaldavCalendarShareServiceTest {
 
     CaldavShareException refused = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
 
-    assertEquals(CaldavCalendarShareService.NOT_SUPPORTED, refused.getCode());
+    assertEquals(ShareRefusals.NOT_SUPPORTED, refused.getCode());
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
   }
 
@@ -387,8 +391,8 @@ public class CaldavCalendarShareServiceTest {
     CaldavShareException refused = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
     CaldavShareException listing = assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR));
 
-    assertEquals(CaldavCalendarShareService.NOT_SUPPORTED, refused.getCode());
-    assertEquals(CaldavCalendarShareService.NOT_SUPPORTED, listing.getCode());
+    assertEquals(ShareRefusals.NOT_SUPPORTED, refused.getCode());
+    assertEquals(ShareRefusals.NOT_SUPPORTED, listing.getCode());
     verify(calDavClient, never()).readAcl(any(), anyString());
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
     verify(blueMindAclClient, never()).readAcl(any(), anyString());
@@ -396,6 +400,54 @@ public class CaldavCalendarShareServiceTest {
   }
 
   // ---------------------------------------------------------------- BlueMind
+  /**
+   * <b>Refused and reported without the BlueMind share channel (EXO-90730).</b>
+   * A BlueMind collection then selects Apple sharing, which eXo does not
+   * offer: every operation is refused with {@code NOT_SUPPORTED}, nothing is
+   * read through BlueMind's REST API and no {@code CS:share} is posted — a
+   * share nobody can confirm is never attempted.
+   */
+  @Test
+  public void withoutTheBlueMindChannelEveryShareOperationOnBlueMindIsRefused() {
+    onBlueMind();
+    CaldavCalendarShareService bare = withoutShareChannels();
+
+    CaldavShareException listing = assertThrows(CaldavShareException.class, () -> bare.listShares(ALICE, "alice", CALENDAR));
+    CaldavShareException grant = assertThrows(CaldavShareException.class, () -> bare.grant(ALICE, "alice", CALENDAR, "bob"));
+    CaldavShareException revoke = assertThrows(CaldavShareException.class, () -> bare.revoke(ALICE, "alice", CALENDAR, "bob"));
+    CaldavShareException candidates = assertThrows(CaldavShareException.class,
+                                                   () -> bare.candidates(ALICE, "alice", CALENDAR, null));
+
+    assertEquals(ShareRefusals.NOT_SUPPORTED, listing.getCode());
+    assertEquals(ShareRefusals.NOT_SUPPORTED, grant.getCode());
+    assertEquals(ShareRefusals.NOT_SUPPORTED, revoke.getCode());
+    assertEquals(ShareRefusals.NOT_SUPPORTED, candidates.getCode());
+    verifyNoInteractions(blueMindAclClient);
+    verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
+    verify(calDavClient, never()).writeAcl(any(), any(), anyList());
+    verify(caldavShareSubscriptionService, never()).subscribeSharee(any());
+  }
+
+  /**
+   * The same BlueMind calendar is offered "Share" with the channel installed
+   * and not offered without it: the menu never shows an entry every
+   * operation behind it would refuse.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aBlueMindCalendarIsOfferedWithTheChannelAndNotWithout() throws Exception {
+    onBlueMind();
+    CalendarSync bound = exoPair();
+    bound.setRemoteHref(BM_COLLECTION);
+    when(caldavSyncStorage.getPairsByOrigin(ALICE, STALWART, SyncOrigin.EXO)).thenReturn(List.of(bound));
+    when(agendaCalendarService.getCalendarsByOwnerIds(List.of(ALICE), "alice")).thenReturn(List.of(calendar(CALENDAR, ALICE, ANCHOR)));
+    when(blueMindAclClient.acceptsCredentials(endpoint)).thenReturn(true);
+
+    assertEquals(List.of(CALENDAR), service.shareableCalendarIds(ALICE, "alice"));
+    assertEquals(List.of(), withoutShareChannels().shareableCalendarIds(ALICE, "alice"));
+  }
+
 
   /**
    * On BlueMind a grant is one {@code CS:share} naming eric by the mailto his
@@ -535,10 +587,10 @@ public class CaldavCalendarShareServiceTest {
 
     org.mockito.Mockito.clearInvocations(calDavClient);
     when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "Manage")));
-    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY,
+    assertEquals(ShareRefusals.NOT_READ_ONLY,
                  assertThrows(IllegalArgumentException.class,
                               () -> service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE)).getMessage());
-    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY,
+    assertEquals(ShareRefusals.NOT_READ_ONLY,
                  assertThrows(IllegalArgumentException.class,
                               () -> service.revoke(ALICE, "alice", CALENDAR, "bob")).getMessage());
     verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
@@ -559,10 +611,10 @@ public class CaldavCalendarShareServiceTest {
     onBlueMind();
     when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenReturn(acl(owner(), expanded(ERIC_UID, "All")));
 
-    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY,
+    assertEquals(ShareRefusals.NOT_READ_ONLY,
                  assertThrows(IllegalArgumentException.class,
                               () -> service.grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.WRITE)).getMessage());
-    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY,
+    assertEquals(ShareRefusals.NOT_READ_ONLY,
                  assertThrows(IllegalArgumentException.class,
                               () -> service.revoke(ALICE, "alice", CALENDAR, "bob")).getMessage());
     verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
@@ -588,7 +640,7 @@ public class CaldavCalendarShareServiceTest {
 
     CaldavShareException refused = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
 
-    assertEquals(CaldavCalendarShareService.NOT_APPLIED, refused.getCode());
+    assertEquals(ShareRefusals.NOT_APPLIED, refused.getCode());
     verify(calDavClient).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(false), anyBoolean());
   }
 
@@ -616,9 +668,9 @@ public class CaldavCalendarShareServiceTest {
     IllegalArgumentException revoke = assertThrows(IllegalArgumentException.class, () -> service.revoke(ALICE, "alice", CALENDAR, "bob"));
     IllegalArgumentException freeBusy = assertThrows(IllegalArgumentException.class,
                                                      () -> service.revoke(ALICE, "alice", CALENDAR, "bob"));
-    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY, grant.getMessage());
-    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY, revoke.getMessage());
-    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY, freeBusy.getMessage());
+    assertEquals(ShareRefusals.NOT_READ_ONLY, grant.getMessage());
+    assertEquals(ShareRefusals.NOT_READ_ONLY, revoke.getMessage());
+    assertEquals(ShareRefusals.NOT_READ_ONLY, freeBusy.getMessage());
     verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
 
     CalendarShares shares = service.grant(ALICE, "alice", CALENDAR, "bob");
@@ -647,7 +699,7 @@ public class CaldavCalendarShareServiceTest {
 
     for (int attempt = 0; attempt < 2; attempt++) {
       IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
-      assertEquals(CaldavCalendarShareService.SHAREE_HAS_OTHER_ACCESS, refused.getMessage());
+      assertEquals(ShareRefusals.SHAREE_HAS_OTHER_ACCESS, refused.getMessage());
     }
     verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
   }
@@ -801,7 +853,7 @@ public class CaldavCalendarShareServiceTest {
 
     for (int attempt = 0; attempt < 4; attempt++) {
       CaldavShareException refused = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
-      assertEquals(CaldavCalendarShareService.SHAREE_ADDRESS_UNKNOWN, refused.getCode());
+      assertEquals(ShareRefusals.SHAREE_ADDRESS_UNKNOWN, refused.getCode());
     }
     verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
   }
@@ -827,7 +879,7 @@ public class CaldavCalendarShareServiceTest {
     CalendarShares nothing = service.revoke(ALICE, "alice", CALENDAR, "bob");
 
     assertTrue(revoked.sharees().isEmpty());
-    assertEquals(CaldavCalendarShareService.NOT_APPLIED, notApplied.getCode());
+    assertEquals(ShareRefusals.NOT_APPLIED, notApplied.getCode());
     assertTrue(nothing.sharees().isEmpty());
     verify(calDavClient, org.mockito.Mockito.times(2)).postCalendarServerShare(eq(endpoint), any(CalendarSync.class), eq(ERIC_ADDRESS), eq(true), anyBoolean());
   }
@@ -958,9 +1010,9 @@ public class CaldavCalendarShareServiceTest {
     when(blueMindAclClient.readAcl(endpoint, BM_CONTAINER)).thenThrow(new UnsupportedOperationException("not a login"),
                                                                        new CalDavForbiddenException("403"));
 
-    assertEquals(CaldavCalendarShareService.NOT_SUPPORTED,
+    assertEquals(ShareRefusals.NOT_SUPPORTED,
                  assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode());
-    assertEquals(CaldavCalendarShareService.ACL_UNREADABLE,
+    assertEquals(ShareRefusals.ACL_UNREADABLE,
                  assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob")).getCode());
     verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
   }
@@ -982,7 +1034,7 @@ public class CaldavCalendarShareServiceTest {
     assertEquals(CaldavCalendarShareService.SHAREE_REQUIRED, refusal(" "));
     assertEquals(CaldavCalendarShareService.SHAREE_UNKNOWN, refusal("ghost"));
     assertEquals(CaldavCalendarShareService.SHAREE_IS_OWNER, refusal("alice"));
-    assertEquals(CaldavCalendarShareService.SHAREE_NOT_CONNECTED, refusal("dave"));
+    assertEquals(ShareRefusals.SHAREE_NOT_CONNECTED, refusal("dave"));
     assertEquals(CaldavCalendarShareService.SAME_PRINCIPAL, refusal("alice2"));
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
   }
@@ -1399,7 +1451,7 @@ public class CaldavCalendarShareServiceTest {
 
     IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
 
-    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY, refused.getMessage());
+    assertEquals(ShareRefusals.NOT_READ_ONLY, refused.getMessage());
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
   }
 
@@ -1470,7 +1522,7 @@ public class CaldavCalendarShareServiceTest {
 
     CaldavShareException refused = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
 
-    assertEquals(CaldavCalendarShareService.NOT_APPLIED, refused.getCode());
+    assertEquals(ShareRefusals.NOT_APPLIED, refused.getCode());
   }
 
   /**
@@ -1481,7 +1533,7 @@ public class CaldavCalendarShareServiceTest {
     when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(), Set.of()), CollectionAcl.unreadable(Set.of()));
     when(calDavClient.writeAcl(eq(endpoint), any(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
 
-    assertEquals(CaldavCalendarShareService.NOT_APPLIED,
+    assertEquals(ShareRefusals.NOT_APPLIED,
                  assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob")).getCode());
   }
 
@@ -1496,7 +1548,7 @@ public class CaldavCalendarShareServiceTest {
 
     CaldavShareException refused = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
 
-    assertEquals(CaldavCalendarShareService.SERVER_REFUSED, refused.getCode());
+    assertEquals(ShareRefusals.SERVER_REFUSED, refused.getCode());
     assertEquals(List.of("need-privileges"), refused.getPreconditions());
     assertEquals(List.of("write-acl"), refused.getMissingPrivileges());
   }
@@ -1510,7 +1562,7 @@ public class CaldavCalendarShareServiceTest {
   public void aListThatCannotBeWrittenBackFaithfullyIsNotWritten() {
     when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.unreadable(Set.of("{DAV:}read", "{DAV:}write")));
     CaldavShareException unreadable = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
-    assertEquals(CaldavCalendarShareService.ACL_UNREADABLE, unreadable.getCode());
+    assertEquals(ShareRefusals.ACL_UNREADABLE, unreadable.getCode());
     assertEquals(List.of("read-acl"), unreadable.getMissingPrivileges());
 
     when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.notUnderstood(Set.of(), "an entry outside RFC 3744 grammar"));
@@ -1571,13 +1623,13 @@ public class CaldavCalendarShareServiceTest {
 
     IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> service.revoke(ALICE, "alice", CALENDAR, "bob"));
 
-    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY, refused.getMessage());
+    assertEquals(ShareRefusals.NOT_READ_ONLY, refused.getMessage());
 
     AccessControlEntry manages = new AccessControlEntry(AcePrincipal.href("/dav/pal/bob%40stalwart.local/"), false, false,
                                                         Set.of("{DAV:}read", "{DAV:}write", "{DAV:}write-acl"), false, null);
     when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(manages), Set.of()));
 
-    assertEquals(CaldavCalendarShareService.NOT_READ_ONLY,
+    assertEquals(ShareRefusals.NOT_READ_ONLY,
                  assertThrows(IllegalArgumentException.class, () -> service.revoke(ALICE, "alice", CALENDAR, "bob")).getMessage());
     verify(calDavClient, never()).writeAcl(any(), any(), anyList());
   }
@@ -1626,7 +1678,7 @@ public class CaldavCalendarShareServiceTest {
     when(calDavClient.readAcl(endpoint, COLLECTION)).thenReturn(CollectionAcl.of(List.of(bobs), Set.of()));
     when(calDavClient.writeAcl(eq(endpoint), any(), anyList())).thenReturn(new AclWriteResult(200, List.of(), List.of()));
 
-    assertEquals(CaldavCalendarShareService.NOT_APPLIED,
+    assertEquals(ShareRefusals.NOT_APPLIED,
                  assertThrows(CaldavShareException.class, () -> service.revoke(ALICE, "alice", CALENDAR, "bob")).getCode());
   }
 
@@ -1757,7 +1809,7 @@ public class CaldavCalendarShareServiceTest {
 
     CaldavShareException refused = assertThrows(CaldavShareException.class, () -> service.candidates(ALICE, "alice", CALENDAR, null));
 
-    assertEquals(CaldavCalendarShareService.NOT_SUPPORTED, refused.getCode());
+    assertEquals(ShareRefusals.NOT_SUPPORTED, refused.getCode());
     verify(caldavConnectionIdentityService, never()).principalsOn(anyLong());
   }
 
@@ -1904,7 +1956,7 @@ public class CaldavCalendarShareServiceTest {
 
       assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"));
       assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"));
-      assertEquals(CaldavCalendarShareService.NOT_SUPPORTED,
+      assertEquals(ShareRefusals.NOT_SUPPORTED,
                    assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode());
 
       List<ILoggingEvent> infos = logged.list.stream().filter(event -> event.getLevel() == Level.INFO).toList();
@@ -1998,7 +2050,7 @@ public class CaldavCalendarShareServiceTest {
 
       CaldavShareException notApplied = assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob"));
 
-      assertEquals(CaldavCalendarShareService.NOT_APPLIED, notApplied.getCode());
+      assertEquals(ShareRefusals.NOT_APPLIED, notApplied.getCode());
       assertTrue(logged.list.stream()
                             .anyMatch(event -> event.getLevel() == Level.WARN
                                 && event.getFormattedMessage().contains("differ after the change eXo asked for")),
@@ -2151,10 +2203,10 @@ public class CaldavCalendarShareServiceTest {
       lenient().when(calDavClient.listCalendars(endpoint, ALICE_HOME)).thenReturn(listed == null ? List.of() : List.of(listed));
 
       assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"), (String) kase[2]);
-      assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+      assertEquals(ShareRefusals.NOT_OWNED_ON_SERVER,
                    assertThrows(CaldavShareException.class, () -> service.candidates(ALICE, "alice", CALENDAR, null)).getCode(),
                    (String) kase[2]);
-      assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+      assertEquals(ShareRefusals.NOT_OWNED_ON_SERVER,
                    assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob")).getCode(),
                    (String) kase[2]);
     }
@@ -2166,7 +2218,7 @@ public class CaldavCalendarShareServiceTest {
     lenient().when(calDavClient.readCalendar(endpoint, STALWART_IMPORTED + "/"))
              .thenReturn(collection(ALICE_HOME + "default/", "/dav/pal/alice%40stalwart.local/", true));
     when(caldavConnectionIdentityService.principalOf(ALICE, STALWART)).thenReturn(null);
-    assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+    assertEquals(ShareRefusals.NOT_OWNED_ON_SERVER,
                  assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode(),
                  "no recorded principal");
     // An eXo-created calendar beside an import, and a listing that would offer the import had the principal been
@@ -2242,7 +2294,7 @@ public class CaldavCalendarShareServiceTest {
       lenient().when(blueMindAclClient.acceptsCredentials(endpoint)).thenReturn(true);
 
       assertEquals(List.of(), service.shareableCalendarIds(ALICE, "alice"), container);
-      assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+      assertEquals(ShareRefusals.NOT_OWNED_ON_SERVER,
                    assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode(),
                    container);
     }
@@ -2269,11 +2321,11 @@ public class CaldavCalendarShareServiceTest {
                                                         .thenReturn(acl(expanded(CAMILLE_UID, "All"), expanded(FRANCOIS_UID, "Read")))
                                                         .thenThrow(new CalDavForbiddenException("403"));
 
-    assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+    assertEquals(ShareRefusals.NOT_OWNED_ON_SERVER,
                  assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode());
-    assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+    assertEquals(ShareRefusals.NOT_OWNED_ON_SERVER,
                  assertThrows(CaldavShareException.class, () -> service.grant(ALICE, "alice", CALENDAR, "bob")).getCode());
-    assertEquals(CaldavCalendarShareService.NOT_OWNED_ON_SERVER,
+    assertEquals(ShareRefusals.NOT_OWNED_ON_SERVER,
                  assertThrows(CaldavShareException.class, () -> service.listShares(ALICE, "alice", CALENDAR)).getCode(),
                  "a subscriber's refused access-list read");
     verify(calDavClient, never()).postCalendarServerShare(any(), any(), anyString(), anyBoolean(), anyBoolean());
@@ -2483,13 +2535,35 @@ public class CaldavCalendarShareServiceTest {
                                           calDavClient,
                                           caldavConnectionIdentityService,
                                           identityManager,
-                                          blueMindAclClient,
+                                          CalendarShareChannelRegistry.of(List.of(new BlueMindShareChannel(blueMindAclClient, calDavClient))),
                                           caldavPushService,
                                           caldavShareSubscriptionService,
                                           caldavServerOwnerService,
                                           caldavServerService,
                                           Duration.ofSeconds(300),
                                           clock::get);
+  }
+
+  /**
+   * The service with no share channel installed — BlueMind's contribution
+   * removed (EXO-90730) — and no memo.
+   *
+   * @return the service
+   */
+  private CaldavCalendarShareService withoutShareChannels() {
+    return new CaldavCalendarShareService(agendaCalendarService,
+                                          caldavConnectorStorage,
+                                          caldavSyncStorage,
+                                          calDavClient,
+                                          caldavConnectionIdentityService,
+                                          identityManager,
+                                          CalendarShareChannelRegistry.of(List.of()),
+                                          caldavPushService,
+                                          caldavShareSubscriptionService,
+                                          caldavServerOwnerService,
+                                          caldavServerService,
+                                          Duration.ZERO,
+                                          System::nanoTime);
   }
 
   private String refusal(String login) {

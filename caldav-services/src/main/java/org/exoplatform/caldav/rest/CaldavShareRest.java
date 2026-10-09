@@ -42,10 +42,11 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 
 import org.exoplatform.caldav.model.CalendarShares;
 import org.exoplatform.caldav.model.CalendarShares.ShareUser;
+import org.exoplatform.caldav.plugin.CaldavShareException;
+import org.exoplatform.caldav.plugin.ShareRefusals;
 import org.exoplatform.caldav.rest.model.ShareCalendarRequest;
 import org.exoplatform.caldav.rest.model.ShareableCalendars;
 import org.exoplatform.caldav.service.CaldavCalendarShareService;
-import org.exoplatform.caldav.service.CaldavShareException;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.services.log.ExoLogger;
@@ -249,7 +250,7 @@ public class CaldavShareRest {
   @ExceptionHandler(CaldavShareException.class)
   public ResponseEntity<Map<String, Object>> onShareFailure(CaldavShareException failure) {
     HttpStatus status = switch (failure.getCode()) {
-    case CaldavCalendarShareService.SERVER_UNAVAILABLE, CaldavCalendarShareService.NOT_APPLIED -> HttpStatus.BAD_GATEWAY;
+    case CaldavCalendarShareService.SERVER_UNAVAILABLE, ShareRefusals.NOT_APPLIED -> HttpStatus.BAD_GATEWAY;
     default -> HttpStatus.CONFLICT;
     };
     Map<String, Object> body = new LinkedHashMap<>();

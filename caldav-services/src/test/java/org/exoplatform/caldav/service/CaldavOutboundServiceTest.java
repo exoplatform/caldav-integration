@@ -38,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.springframework.test.util.ReflectionTestUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -49,6 +50,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
+import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
 import org.exoplatform.caldav.client.CalendarHome;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
@@ -128,6 +130,10 @@ public class CaldavOutboundServiceTest {
 
   @BeforeEach
   public void connectAnAccount() {
+    // BlueMind's subscription channel is a contribution, registered here as
+    // the platform registers it.
+    ReflectionTestUtils.setField(service, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
+
     // The addon's single definition of "connected" now lives in CaldavServerService.
     // Reproducing here the rule these tests were written against - a username and a
     // password - keeps every assertion in this class measuring exactly what it

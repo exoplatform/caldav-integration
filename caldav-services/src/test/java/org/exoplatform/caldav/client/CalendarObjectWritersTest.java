@@ -25,11 +25,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.net.URI;
+import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import org.exoplatform.caldav.client.bluemind.BlueMindImportWriter;
+import org.exoplatform.caldav.client.bluemind.BlueMindWriteChannelPlugin;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.WriteChannel;
 import org.exoplatform.caldav.service.CaldavServerService;
@@ -56,7 +58,7 @@ public class CalendarObjectWritersTest {
     registry = mock(CaldavServerService.class);
     caldav = mock(CalDavObjectWriter.class);
     bluemind = mock(BlueMindImportWriter.class);
-    writers = new CalendarObjectWriters(registry, caldav, bluemind);
+    writers = CalendarObjectWriters.of(registry, caldav, List.of(new BlueMindWriteChannelPlugin(bluemind)));
   }
 
   /**

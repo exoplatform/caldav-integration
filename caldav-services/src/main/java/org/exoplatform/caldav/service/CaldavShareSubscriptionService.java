@@ -34,11 +34,8 @@ import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalDavNotFoundException;
+import org.exoplatform.caldav.client.CalDavSubjectMismatchException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
-import org.exoplatform.caldav.client.bluemind.BlueMindContainerNaming;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubjectMismatchException;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionClient;
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptions;
 import org.exoplatform.caldav.constant.SubscriptionOutcome;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncPauseReason;
@@ -47,6 +44,8 @@ import org.exoplatform.caldav.model.PendingSubscription;
 import org.exoplatform.caldav.model.PendingSubscriptionKind;
 import org.exoplatform.caldav.model.ShareeSubscription;
 import org.exoplatform.caldav.model.SubscriptionAttempt;
+import org.exoplatform.caldav.plugin.CalendarSubscriptionChannel;
+import org.exoplatform.caldav.plugin.SubscriptionEdits;
 import org.exoplatform.caldav.storage.CaldavPendingSubscriptionStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
@@ -218,8 +217,13 @@ public class CaldavShareSubscriptionService {
   @Value("${exo.agenda.caldav.push.maxAttempts:5}")
   private int                                      maxAttempts     = 5;
 
-  @Autowired
-  private BlueMindSubscriptionClient               blueMindSubscriptionClient;
+  /**
+   * The installed subscription channels (EXO-90730): BlueMind's REST
+   * subscription API among them. Optional: without one, a change eXo owes is
+   * given up with a reason at the next drain rather than retried.
+   */
+  @Autowired(required = false)
+  private CalendarSubscriptionChannelRegistry      calendarSubscriptionChannelRegistry;
 
   @Autowired
   private CaldavPendingSubscriptionStorage         caldavPendingSubscriptionStorage;
@@ -398,10 +402,10 @@ public class CaldavShareSubscriptionService {
       return giveUpAll(rows, "their eXo login cannot be resolved");
     }
     String principal = caldavConnectionIdentityService.principalOf(userIdentityId, serverId);
-    String shareeUid = BlueMindContainerNaming.userUidOf(principal);
+    CalendarSubscriptionChannel channel = channels().channelOf(principal);
+    String shareeUid = channel.userUidOf(principal);
     if (shareeUid == null) {
-      return giveUpAll(rows, principal == null ? "they are no longer connected to that server"
-                                               : "their recorded principal is not a BlueMind user");
+      return giveUpAll(rows, reasonNoUidFor(principal));
     }
     List<CalendarSync> pairs = caldavSyncStorage.getPairs(userIdentityId, serverId);
     if (pausedAccount(pairs)) {
@@ -424,7 +428,7 @@ public class CaldavShareSubscriptionService {
     }
     int[] landed = { 0 };
     try {
-      blueMindSubscriptionClient.asSharee(endpoint, shareeUid, edits -> {
+      channel.asSubscriber(endpoint, shareeUid, edits -> {
         for (PendingSubscription row : rows) {
           SubscriptionAttempt attempt = attemptUnderLock(edits, row);
           if (attempt == null) {
@@ -441,7 +445,7 @@ public class CaldavShareSubscriptionService {
         }
         return null;
       });
-    } catch (BlueMindSubjectMismatchException | UnsupportedOperationException e) {
+    } catch (CalDavSubjectMismatchException | UnsupportedOperationException e) {
       return giveUpAll(rows, e.getMessage());
     } catch (CalDavAuthenticationException e) {
       // The login itself was refused. Like the sync pass, the account is
@@ -493,8 +497,8 @@ public class CaldavShareSubscriptionService {
   private SubscriptionAttempt attempt(PendingSubscriptionKind kind, long serverId, String shareeUsername, String shareeUid, String containerUid) {
     try {
       CalDavEndpoint endpoint = endpointOf(serverId, shareeUsername);
-      return blueMindSubscriptionClient.asSharee(endpoint, shareeUid, edits -> attemptInSession(edits, kind, containerUid));
-    } catch (BlueMindSubjectMismatchException | UnsupportedOperationException e) {
+      return channels().primary().asSubscriber(endpoint, shareeUid, edits -> attemptInSession(edits, kind, containerUid));
+    } catch (CalDavSubjectMismatchException | UnsupportedOperationException e) {
       return new SubscriptionAttempt(SubscriptionOutcome.FINAL, e.getMessage(), false);
     } catch (CalDavException e) {
       return new SubscriptionAttempt(SubscriptionOutcome.RETRY, e.getMessage(), true);
@@ -521,7 +525,7 @@ public class CaldavShareSubscriptionService {
    * @param row the row as the drain read it
    * @return how it ended, or null when the row no longer asks for its change
    */
-  private SubscriptionAttempt attemptUnderLock(BlueMindSubscriptions edits, PendingSubscription row) {
+  private SubscriptionAttempt attemptUnderLock(SubscriptionEdits edits, PendingSubscription row) {
     Lock lock = lockOf(row.getUserIdentityId(), row.getServerId(), row.getContainerUid());
     lock.lock();
     try {
@@ -546,7 +550,7 @@ public class CaldavShareSubscriptionService {
    * @param containerUid the container
    * @return how it ended
    */
-  private static SubscriptionAttempt attemptInSession(BlueMindSubscriptions edits, PendingSubscriptionKind kind, String containerUid) {
+  private static SubscriptionAttempt attemptInSession(SubscriptionEdits edits, PendingSubscriptionKind kind, String containerUid) {
     try {
       if (kind == PendingSubscriptionKind.UNSUBSCRIBE) {
         edits.unsubscribe(containerUid);
@@ -725,5 +729,31 @@ public class CaldavShareSubscriptionService {
       created[i] = new ReentrantLock();
     }
     return created;
+  }
+
+  /**
+   * Why no uid can be read for a colleague's recorded principal: they are no
+   * longer connected, no subscription channel is installed, or the installed
+   * ones address no such principal.
+   *
+   * @param principal the recorded principal, may be null
+   * @return the reason, for the abandonment line
+   */
+  private String reasonNoUidFor(String principal) {
+    if (principal == null) {
+      return "they are no longer connected to that server";
+    }
+    return channels().isEmpty() ? "no subscription channel is installed for that server"
+                                : "their recorded principal is not a BlueMind user";
+  }
+
+  /**
+   * The installed subscription channels, or none.
+   *
+   * @return the registry, never null
+   */
+  private CalendarSubscriptionChannelRegistry channels() {
+    return calendarSubscriptionChannelRegistry == null ? CalendarSubscriptionChannelRegistry.of(List.of())
+                                                       : calendarSubscriptionChannelRegistry;
   }
 }
