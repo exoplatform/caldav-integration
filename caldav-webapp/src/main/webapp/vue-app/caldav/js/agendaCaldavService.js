@@ -90,10 +90,11 @@ export const getUnavailableProviders = () => {
 };
 
 /**
- * Whether managed mode keeps the current user on a declared server, and which one
- * (EXO-90836).
+ * Whether managed mode keeps the current user on a declared server, which one
+ * (EXO-90836), and whether the connection it made for them there was refused
+ * because of their own account (EXO-91017).
  *
- * @returns {Promise<Object>} `{managed, serverId}`
+ * @returns {Promise<Object>} `{managed, serverId, refused}`
  */
 export const getManagedModeForMe = () => {
   return fetch('/caldav/rest/servers/managed/me', {

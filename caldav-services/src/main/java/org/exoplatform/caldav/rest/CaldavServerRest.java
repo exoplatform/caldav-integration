@@ -52,6 +52,7 @@ import org.exoplatform.caldav.rest.model.CaldavManagedModeRequest;
 import org.exoplatform.caldav.service.CaldavManagedDisconnectionService;
 import org.exoplatform.caldav.service.CaldavManagedModeService;
 import org.exoplatform.caldav.service.CaldavMirrorReportService;
+import org.exoplatform.caldav.service.CaldavRelayService;
 import org.exoplatform.caldav.service.CaldavServerService;
 import org.exoplatform.caldav.service.CaldavTuningService;
 import org.exoplatform.caldav.service.MirrorPassReport;
@@ -96,6 +97,9 @@ public class CaldavServerRest {
 
   @Autowired
   private CaldavMirrorReportService caldavMirrorReportService;
+
+  @Autowired
+  private CaldavRelayService caldavRelayService;
 
   /**
    * How often and how widely eXo synchronises CalDAV accounts.
@@ -178,11 +182,15 @@ public class CaldavServerRest {
   @GetMapping("/managed/me")
   @Secured("users")
   @Operation(summary = "Reads whether CalDAV managed mode governs the caller", method = "GET",
-      description = "Says whether managed mode keeps the calling user on a declared server, and which one.")
+      description = "Says whether managed mode keeps the calling user on a declared server, which one, and whether "
+          + "the connection it made for them was refused because of their own account.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Request fulfilled") })
   public CaldavManagedForUser getManagedModeForMe(HttpServletRequest request) {
-    Long serverId = caldavManagedModeService.designatedServerFor(request.getRemoteUser());
-    return new CaldavManagedForUser(serverId != null, serverId);
+    String username = request.getRemoteUser();
+    Long serverId = caldavManagedModeService.designatedServerFor(username);
+    return new CaldavManagedForUser(serverId != null,
+                                    serverId,
+                                    serverId != null && caldavRelayService.isManagedRefused(username, serverId));
   }
 
   /**
