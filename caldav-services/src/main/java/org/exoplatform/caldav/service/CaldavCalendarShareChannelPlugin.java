@@ -38,6 +38,8 @@ import org.exoplatform.caldav.model.CalendarShares.CalendarSharee;
 import org.exoplatform.caldav.model.CalendarShares.ShareAccess;
 import org.exoplatform.caldav.model.CalendarShares.ShareUser;
 import org.exoplatform.caldav.model.CalendarShares.ShareeKind;
+import org.exoplatform.caldav.plugin.CaldavShareException;
+import org.exoplatform.caldav.plugin.ShareRefusals;
 import org.exoplatform.caldav.service.CaldavCalendarShareService.ServerShares;
 import org.exoplatform.caldav.service.CaldavCalendarShareService.SharedCollection;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
@@ -106,8 +108,8 @@ public class CaldavCalendarShareChannelPlugin implements CalendarShareChannelPlu
    */
   private static final Set<String> NOT_APPLICABLE   = Set.of(CaldavCalendarShareService.NOT_CONNECTED,
                                                              CaldavCalendarShareService.CALENDAR_NOT_ON_SERVER,
-                                                             CaldavCalendarShareService.NOT_SUPPORTED,
-                                                             CaldavCalendarShareService.SHAREE_NOT_CONNECTED);
+                                                             ShareRefusals.NOT_SUPPORTED,
+                                                             ShareRefusals.SHAREE_NOT_CONNECTED);
 
   @Autowired
   private CaldavCalendarShareService caldavCalendarShareService;

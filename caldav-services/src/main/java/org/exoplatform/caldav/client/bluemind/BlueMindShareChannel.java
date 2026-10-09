@@ -16,15 +16,15 @@
  */
 package org.exoplatform.caldav.client.bluemind;
 
-import static org.exoplatform.caldav.service.CaldavCalendarShareService.ACL_UNREADABLE;
-import static org.exoplatform.caldav.service.CaldavCalendarShareService.NOT_APPLIED;
-import static org.exoplatform.caldav.service.CaldavCalendarShareService.NOT_OWNED_ON_SERVER;
-import static org.exoplatform.caldav.service.CaldavCalendarShareService.NOT_READ_ONLY;
-import static org.exoplatform.caldav.service.CaldavCalendarShareService.NOT_SUPPORTED;
-import static org.exoplatform.caldav.service.CaldavCalendarShareService.SERVER_REFUSED;
-import static org.exoplatform.caldav.service.CaldavCalendarShareService.SHAREE_ADDRESS_UNKNOWN;
-import static org.exoplatform.caldav.service.CaldavCalendarShareService.SHAREE_HAS_OTHER_ACCESS;
-import static org.exoplatform.caldav.service.CaldavCalendarShareService.SHAREE_NOT_CONNECTED;
+import static org.exoplatform.caldav.plugin.ShareRefusals.ACL_UNREADABLE;
+import static org.exoplatform.caldav.plugin.ShareRefusals.NOT_APPLIED;
+import static org.exoplatform.caldav.plugin.ShareRefusals.NOT_OWNED_ON_SERVER;
+import static org.exoplatform.caldav.plugin.ShareRefusals.NOT_READ_ONLY;
+import static org.exoplatform.caldav.plugin.ShareRefusals.NOT_SUPPORTED;
+import static org.exoplatform.caldav.plugin.ShareRefusals.SERVER_REFUSED;
+import static org.exoplatform.caldav.plugin.ShareRefusals.SHAREE_ADDRESS_UNKNOWN;
+import static org.exoplatform.caldav.plugin.ShareRefusals.SHAREE_HAS_OTHER_ACCESS;
+import static org.exoplatform.caldav.plugin.ShareRefusals.SHAREE_NOT_CONNECTED;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -57,12 +57,12 @@ import org.exoplatform.caldav.model.CalendarShares.PublishedLinkMode;
 import org.exoplatform.caldav.model.CalendarShares.ShareAccess;
 import org.exoplatform.caldav.model.CalendarShares.ShareUser;
 import org.exoplatform.caldav.model.CalendarShares.ShareeKind;
+import org.exoplatform.caldav.plugin.CaldavShareException;
 import org.exoplatform.caldav.plugin.CalendarShareChannel;
+import org.exoplatform.caldav.plugin.MirrorCollection;
 import org.exoplatform.caldav.plugin.ShareHost;
 import org.exoplatform.caldav.plugin.ShareRecipient;
 import org.exoplatform.caldav.plugin.SharedCalendar;
-import org.exoplatform.caldav.service.CaldavPushService;
-import org.exoplatform.caldav.service.CaldavShareException;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 
@@ -835,7 +835,7 @@ public class BlueMindShareChannel implements CalendarShareChannel {
       return false;
     }
     String container = matcher.group(2);
-    if (container.equals(CaldavPushService.MIRROR_COLLECTION_SLUG)) {
+    if (container.equals(MirrorCollection.SLUG)) {
       return false;
     }
     if (!container.regionMatches(true, 0, "calendar:", 0, 9)) {

@@ -54,6 +54,8 @@ import org.exoplatform.caldav.model.CalendarShares.PublishedLinkMode;
 import org.exoplatform.caldav.model.CalendarShares.ShareAccess;
 import org.exoplatform.caldav.model.CalendarShares.ShareUser;
 import org.exoplatform.caldav.model.CalendarShares.ShareeKind;
+import org.exoplatform.caldav.plugin.CaldavShareException;
+import org.exoplatform.caldav.plugin.ShareRefusals;
 import org.exoplatform.caldav.service.CaldavCalendarShareService.ServerShares;
 import org.exoplatform.caldav.service.CaldavCalendarShareService.SharedCollection;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
@@ -187,10 +189,10 @@ public class CaldavCalendarShareChannelPluginTest {
     assertEquals(ChannelDelivery.Status.NOT_APPLICABLE, plugin.deliver(share(BOB), "alice").getStatus());
 
     doReturn(new SharedCollection(1L, COLLECTION)).when(shareService).sharedCollectionOf(ALICE, "alice", CALENDAR);
-    doThrow(new CaldavShareException(CaldavCalendarShareService.NOT_SUPPORTED)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
+    doThrow(new CaldavShareException(ShareRefusals.NOT_SUPPORTED)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
     assertEquals(ChannelDelivery.Status.NOT_APPLICABLE, plugin.deliver(share(BOB), "alice").getStatus());
 
-    doThrow(new IllegalArgumentException(CaldavCalendarShareService.SHAREE_NOT_CONNECTED)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
+    doThrow(new IllegalArgumentException(ShareRefusals.SHAREE_NOT_CONNECTED)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
     ChannelDelivery exoOnly = plugin.deliver(share(BOB), "alice");
     assertEquals(ChannelDelivery.Status.NOT_APPLICABLE, exoOnly.getStatus(), "a colleague without an account on the server is the eXo-only case");
     assertNull(exoOnly.getFailureCode());
@@ -210,10 +212,10 @@ public class CaldavCalendarShareChannelPluginTest {
     assertEquals(ChannelDelivery.Status.FAILED, delivery.getStatus());
     assertEquals("SERVER_UNREACHABLE", delivery.getFailureCode());
 
-    doThrow(new IllegalArgumentException(CaldavCalendarShareService.SHAREE_HAS_OTHER_ACCESS)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
+    doThrow(new IllegalArgumentException(ShareRefusals.SHAREE_HAS_OTHER_ACCESS)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
     assertEquals("SHAREE_HAS_OTHER_ACCESS", plugin.deliver(share(BOB), "alice").getFailureCode());
 
-    doThrow(new IllegalArgumentException(CaldavCalendarShareService.NOT_READ_ONLY)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
+    doThrow(new IllegalArgumentException(ShareRefusals.NOT_READ_ONLY)).when(shareService).grant(ALICE, "alice", CALENDAR, "bob", ShareAccess.READ);
     assertEquals("NOT_READ_ONLY", plugin.deliver(share(BOB), "alice").getFailureCode());
 
     assertEquals("FOREIGN_ACCESS_NOT_PRESERVED", CaldavCalendarShareChannelPlugin.codeOf(CaldavCalendarShareService.FOREIGN_ACCESS_NOT_PRESERVED));
@@ -378,7 +380,7 @@ public class CaldavCalendarShareChannelPluginTest {
     when(shareService.revoke(ALICE, "alice", CALENDAR, "bob")).thenReturn(new CalendarShares(CALENDAR, List.of()));
     assertTrue(plugin.removeExternalShare(CALENDAR, "bob", "alice"));
 
-    doThrow(new IllegalArgumentException(CaldavCalendarShareService.NOT_READ_ONLY)).when(shareService).revoke(ALICE, "alice", CALENDAR, "bob");
+    doThrow(new IllegalArgumentException(ShareRefusals.NOT_READ_ONLY)).when(shareService).revoke(ALICE, "alice", CALENDAR, "bob");
     assertFalse(plugin.removeExternalShare(CALENDAR, "bob", "alice"));
     assertFalse(plugin.removeExternalShare(CALENDAR, "", "alice"));
   }

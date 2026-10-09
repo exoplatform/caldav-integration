@@ -16,6 +16,16 @@
  */
 package org.exoplatform.caldav.service;
 
+import static org.exoplatform.caldav.plugin.ShareRefusals.ACL_UNREADABLE;
+import static org.exoplatform.caldav.plugin.ShareRefusals.NOT_APPLIED;
+import static org.exoplatform.caldav.plugin.ShareRefusals.NOT_OWNED_ON_SERVER;
+import static org.exoplatform.caldav.plugin.ShareRefusals.NOT_READ_ONLY;
+import static org.exoplatform.caldav.plugin.ShareRefusals.NOT_SUPPORTED;
+import static org.exoplatform.caldav.plugin.ShareRefusals.SERVER_REFUSED;
+import static org.exoplatform.caldav.plugin.ShareRefusals.SHAREE_ADDRESS_UNKNOWN;
+import static org.exoplatform.caldav.plugin.ShareRefusals.SHAREE_HAS_OTHER_ACCESS;
+import static org.exoplatform.caldav.plugin.ShareRefusals.SHAREE_NOT_CONNECTED;
+
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
@@ -63,9 +73,11 @@ import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.ShareeSubscription;
 import org.exoplatform.caldav.model.SyncOrigin;
+import org.exoplatform.caldav.plugin.CaldavShareException;
 import org.exoplatform.caldav.plugin.CalendarShareChannel;
 import org.exoplatform.caldav.plugin.ShareHost;
 import org.exoplatform.caldav.plugin.ShareRecipient;
+import org.exoplatform.caldav.plugin.ShareRefusals;
 import org.exoplatform.caldav.plugin.SharedCalendar;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
@@ -177,17 +189,6 @@ public class CaldavCalendarShareService {
   /** The calendar is bound to no collection eXo can share: none eXo created for it, and no active imported one. */
   public static final String      CALENDAR_NOT_ON_SERVER = "caldav.share.calendarNotOnServer";
 
-  /**
-   * The imported collection is not the caller's own on the server: another
-   * principal owns it, it is read-only for them, it lies outside their
-   * calendar home, it is a subscription to someone else's calendar, or the
-   * server gives them no right to manage who sees it.
-   */
-  public static final String      NOT_OWNED_ON_SERVER    = "caldav.share.notOwnedOnServer";
-
-  /** The server offers no way to grant access whose changes eXo can confirm. */
-  public static final String      NOT_SUPPORTED          = "caldav.share.notSupported";
-
   /** No sharee was named. */
   public static final String      SHAREE_REQUIRED        = "caldav.share.shareeRequired";
 
@@ -197,23 +198,11 @@ public class CaldavCalendarShareService {
   /** The sharee is the caller. */
   public static final String      SHAREE_IS_OWNER        = "caldav.share.shareeIsOwner";
 
-  /** The sharee has no recorded identity on the same server. */
-  public static final String      SHAREE_NOT_CONNECTED   = "caldav.share.shareeNotConnected";
-
   /** The sharee is connected to the server as the caller's own principal. */
   public static final String      SAME_PRINCIPAL         = "caldav.share.samePrincipal";
 
-  /** The sharee holds more than read access, granted outside eXo. */
-  public static final String      NOT_READ_ONLY          = "caldav.share.notReadOnly";
-
-  /** The server would not let the caller read the calendar's access list. */
-  public static final String      ACL_UNREADABLE         = "caldav.share.aclUnreadable";
-
   /** The access list holds an entry eXo cannot write back faithfully. */
   public static final String      ACL_NOT_UNDERSTOOD     = "caldav.share.aclNotUnderstood";
-
-  /** The server refused the change. */
-  public static final String      SERVER_REFUSED         = "caldav.share.serverRefused";
 
   /**
    * Neither the server nor eXo's record says which principal the caller is
@@ -223,26 +212,10 @@ public class CaldavCalendarShareService {
   public static final String      OWNER_UNKNOWN          = "caldav.share.ownerUnknown";
 
   /**
-   * The server named no mail address for the sharee's principal, which is the
-   * only way BlueMind's share handler finds a sharee.
-   */
-  public static final String      SHAREE_ADDRESS_UNKNOWN = "caldav.share.shareeAddressUnknown";
-
-  /**
-   * The colleague holds access below viewing given outside eXo — seeing when
-   * the owner is free, say — which a share from eXo would replace and a later
-   * stop would erase.
-   */
-  public static final String      SHAREE_HAS_OTHER_ACCESS = "caldav.share.shareeHasOtherAccess";
-
-  /**
    * Another principal holds access beyond seeing the calendar, which writing
    * the list back could change on the server.
    */
   public static final String      FOREIGN_ACCESS_NOT_PRESERVED = "caldav.share.foreignAccessNotPreserved";
-
-  /** The server accepted the change, and the list read back does not hold it. */
-  public static final String      NOT_APPLIED            = "caldav.share.notApplied";
 
   /** The server could not be reached or answered something unusable. */
   public static final String      SERVER_UNAVAILABLE     = "caldav.share.serverUnavailable";
@@ -786,8 +759,8 @@ public class CaldavCalendarShareService {
    * made or one made elsewhere — is left as they are and nothing is written.
    * On BlueMind that holds for plain view access only: its access list shows
    * a colleague holding more as reading too, and such a colleague is refused
-   * ({@link #NOT_READ_ONLY}) rather than rewritten, as is one holding only
-   * other access given outside eXo ({@link #SHAREE_HAS_OTHER_ACCESS}).
+   * ({@link ShareRefusals#NOT_READ_ONLY}) rather than rewritten, as is one holding only
+   * other access given outside eXo ({@link ShareRefusals#SHAREE_HAS_OTHER_ACCESS}).
    *
    * @param userIdentityId the caller
    * @param username the caller's login
@@ -823,7 +796,7 @@ public class CaldavCalendarShareService {
    * The refusal ladder is unchanged in shape, only in what it calls an eXo
    * grant: a sharee's own modifiable entry that is neither read-only nor
    * edit-only — a right given outside eXo, which on Stalwart reads back as a
-   * bare {@code DAV:write} — is still refused ({@link #NOT_READ_ONLY}) rather
+   * bare {@code DAV:write} — is still refused ({@link ShareRefusals#NOT_READ_ONLY}) rather
    * than rewritten, because writing it back would widen it.
    *
    * <p>

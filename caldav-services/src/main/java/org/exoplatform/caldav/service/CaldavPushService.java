@@ -62,6 +62,7 @@ import org.exoplatform.caldav.model.IcsEvent;
 import org.exoplatform.caldav.model.MirrorTargetKind;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
+import org.exoplatform.caldav.plugin.MirrorCollection;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
@@ -84,7 +85,7 @@ import org.exoplatform.social.core.manager.IdentityManager;
 public class CaldavPushService {
 
   /** The collection eXo copies space events into, derived from this slug alone. */
-  public static final String     MIRROR_COLLECTION_SLUG = "exo-meetings";
+  public static final String     MIRROR_COLLECTION_SLUG = MirrorCollection.SLUG;
 
   /** How the collection presents itself in the user's own calendar client. */
   public static final String     MIRROR_DISPLAY_NAME    = "eXo Meetings";
