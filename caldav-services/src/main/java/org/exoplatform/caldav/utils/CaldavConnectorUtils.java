@@ -48,6 +48,14 @@ public class CaldavConnectorUtils {
    */
   public static final String CALDAV_CONNECTED_BY_MANAGED_MODE_KEY = "connectedByManagedMode";
 
+  /**
+   * Records that a connection managed mode made for this user was refused because of
+   * the user's own account: the designated registration and the account the provider
+   * named, as {@code <serverId>:<account>} (EXO-91017). Kept when the user is not
+   * connected, removed by the next connection that succeeds.
+   */
+  public static final String CALDAV_MANAGED_REFUSED_KEY = "managedRefused";
+
   public static final String CALDAV_SERVER_URL_INIT_PARAM   = "exo.agenda.caldav.connector.url";
 
   private static final Log   LOG                            = ExoLogger.getLogger(CaldavConnectorUtils.class);

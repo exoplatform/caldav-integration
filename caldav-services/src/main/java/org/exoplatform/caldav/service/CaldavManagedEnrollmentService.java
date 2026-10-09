@@ -230,8 +230,11 @@ public class CaldavManagedEnrollmentService {
   /**
    * Rule three: the one-click connect, run for the user - an attachment when they have
    * no configuration, a switch when their account is on another server. A refusal - the
-   * probe's answer, or the connect refusing before probing - records nothing and is
-   * retried at the next login; any other exception is the caller's failure.
+   * probe's answer, or the connect refusing before probing - records no connection and is
+   * retried at the next login; any other exception is the caller's failure. The connect
+   * records one thing on a refusal: when the provider reports the user's account refused,
+   * or names no account, it stores the user's managed refusal (EXO-91017), which the next
+   * connection that succeeds clears.
    *
    * <p>
    * Rule one is asked again right before the connection is written: the probe
