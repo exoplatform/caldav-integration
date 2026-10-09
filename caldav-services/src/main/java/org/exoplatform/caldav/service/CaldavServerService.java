@@ -56,6 +56,7 @@ import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.storage.CaldavServerStorage;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
 import org.exoplatform.caldav.utils.CopySettingsFingerprint;
+import org.exoplatform.caldav.event.CaldavServerAuthenticationChangedEvent;
 import org.exoplatform.caldav.event.CaldavServerProviderChangedEvent;
 import org.exoplatform.commons.api.settings.SettingService;
 import org.exoplatform.commons.api.settings.SettingValue;
@@ -1117,6 +1118,12 @@ public class CaldavServerService {
       // Every user of the server is disconnected, whoever made the connection: the
       // authentication changed for all of them.
       eventPublisher.publishEvent(new CaldavServerProviderChangedEvent(stored.getId()));
+    }
+    if (isProviderChange(stored, server) || MapUtils.isNotEmpty(server.getProviderConfig())) {
+      // The users managed mode could not connect were refused by the authentication
+      // this save replaces - another provider, or another technical account: they are
+      // offered the connection again.
+      eventPublisher.publishEvent(new CaldavServerAuthenticationChangedEvent(stored.getId()));
     }
     return caldavServerQuirkService.decorate(updatedServer);
   }
