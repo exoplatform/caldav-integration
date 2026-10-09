@@ -143,8 +143,6 @@ public class BlueMindShareChannel implements CalendarShareChannel {
   private static final Set<String> BLUEMIND_WRITE_CLOSURE = Set.of(BLUEMIND_WRITE, BLUEMIND_READ, "Freebusy", "Invitation", "Visible");
 
   /** A BlueMind user principal: the segment is the directory entry uid. */
-  private static final Pattern     BLUEMIND_PRINCIPAL     = Pattern.compile("/dav/principals/__uids__/([^/]+)");
-
   /**
    * A BlueMind calendar collection: the first segment is its owner's directory
    * entry uid ({@code ResType.VSTUFF_CONTAINER}).
@@ -780,17 +778,14 @@ public class BlueMindShareChannel implements CalendarShareChannel {
   }
 
   /**
-   * The directory entry uid a BlueMind principal names.
+   * The directory entry uid a BlueMind principal names, read by the one
+   * parser the subscription drain reads it with.
    *
    * @param principal a principal path, any spelling, may be null
    * @return the uid, or null when the path is not a BlueMind user principal
    */
   private static String blueMindUidOf(String principal) {
-    if (StringUtils.isBlank(principal)) {
-      return null;
-    }
-    Matcher matcher = BLUEMIND_PRINCIPAL.matcher(CalendarCollection.principalPathOf(principal));
-    return matcher.matches() ? matcher.group(1) : null;
+    return BlueMindContainerNaming.userUidOf(principal);
   }
 
   /**
