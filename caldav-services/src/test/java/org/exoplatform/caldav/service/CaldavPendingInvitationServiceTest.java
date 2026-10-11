@@ -197,6 +197,32 @@ public class CaldavPendingInvitationServiceTest {
   }
 
   /**
+   * The meetings a user attends are read with an empty calendar list, never a
+   * null one (EXO-91169).
+   *
+   * <p>
+   * Agenda reads a null list as every calendar other users shared with the
+   * reader, whatever the response: their events are no meeting of this user,
+   * the push refuses them, and they would fill the {@code seedLimit} window on
+   * every pass, crowding the user's own meetings out. An empty list reads only
+   * what the user, or one of their spaces, attends. The assertion is on the
+   * filter agenda receives, since that is the whole of the fix.
+   *
+   * @throws Exception never — the mocks declare it
+   */
+  @Test
+  public void theMeetingsAttendedAreReadWithoutTheCalendarsSharedWithTheUser() throws Exception {
+    service.pushUpcomingMeetings(USER, LOGIN);
+
+    verify(agendaEventService).getEvents(argThat(filter -> filter != null
+        && filter.getAttendeeId() == USER
+        && filter.getCalendarIds() != null
+        && filter.getCalendarIds().isEmpty()),
+                                         any(),
+                                         eq(USER));
+  }
+
+  /**
    * The reported defect, EXO-89796: a future event a user made for themselves
    * alone, in their own calendar, before they connected an account.
    *
