@@ -268,9 +268,11 @@ public class CaldavPendingInvitationService {
    * <p>
    * The calendar list is empty, never null: agenda reads a null list as every
    * calendar other users shared with the reader, whatever the response
-   * (EXO-91169). Their events are not this user's meetings, the push refuses
-   * them, and they would be listed again on every pass and count against
-   * {@code seedLimit}, crowding the user's own meetings out of the window.
+   * (EXO-91169). The events of those calendars that do not invite this user
+   * are not their meetings: the push refuses them, and they would be listed
+   * again on every pass and count against {@code seedLimit}, crowding the
+   * user's own meetings out of the window. Those that invite the user are
+   * still read, through the attendee criteria.
    *
    * @param userIdentityId identity of the user
    * @param from start of the window
