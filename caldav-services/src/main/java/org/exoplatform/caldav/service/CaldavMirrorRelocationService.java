@@ -31,7 +31,6 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.client.PutResult;
-import org.exoplatform.caldav.client.CalendarObjectWriter;
 import org.exoplatform.caldav.client.CalendarObjectWriters;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
@@ -526,11 +525,15 @@ public class CaldavMirrorRelocationService {
    * The removal first, unlike a move: here nothing is written at the
    * destination, so a row pointed there before the old object is gone would
    * have the retry pass settle the removal against an empty calendar and leave
-   * the old copy for good. A removal that fails leaves the row on the old
-   * object, for the retry pass and the next pass of this change. The row is
-   * read again just before it is saved: a removal carried out meanwhile has
-   * cleared it, and is not written over. A row whose removal has already landed
-   * has nothing to move.
+   * the old copy for good. A removal refused on the version listed is made
+   * again without it, as the retry pass makes it, but only while the removal
+   * is still owed: the conflict may be the rewrite for a holder invited again
+   * since this copy's turn began, whose copy then stays, row and all, for the
+   * next pass to move. A removal that fails or is not made leaves the row on
+   * the old object, for the retry pass and the next pass of this change. The
+   * row is read again just before it is saved: a removal carried out
+   * meanwhile has cleared it, and is not written over. A row whose removal has
+   * already landed has nothing to move.
    *
    * @param userIdentityId identity of the user
    * @param settings the connected account
@@ -552,8 +555,14 @@ public class CaldavMirrorRelocationService {
     }
     String from = current.getRemoteHref();
     String guard = StringUtils.defaultIfBlank(etagOf(from, listingOf(from, endpoint, settings, listings)), current.getEtag());
-    if (!removeOwedCopy(userIdentityId, endpoint, settings, from, guard)) {
-      return Outcome.FAILED;
+    Integer status = removeOwedCopy(userIdentityId, endpoint, settings, from, guard);
+    if (status != null && status == PutResult.PRECONDITION_FAILED) {
+      status = CaldavMirrorVerificationService.isBeingRemoved(caldavPendingPushStorage, caldavSyncStorage, object)
+          ? removeOwedCopy(userIdentityId, endpoint, settings, from, null)
+          : null;
+    }
+    if (status == null || status == PutResult.PRECONDITION_FAILED) {
+      return Outcome.REFUSED;
     }
     current = caldavSyncStorage.getObjectByUid(object.getCalendarSyncId(), object.getIcsUid());
     if (current != null && StringUtils.isNotBlank(current.getRemoteHref())) {
@@ -566,29 +575,22 @@ public class CaldavMirrorRelocationService {
   }
 
   /**
-   * Removes a copy owed a removal, whatever version the server now holds: a
-   * conditional removal refused on a version that moved is made again without
-   * the condition, as the retry pass makes it, since the copy has to go.
+   * Asks the server to remove a copy owed a removal.
    *
    * @param userIdentityId identity of the user
    * @param endpoint where the account lives
    * @param settings the connected account
    * @param from the object's path
-   * @param guard the version to condition the first attempt on, may be null
-   * @return true when the object is no longer there
+   * @param guard the version to condition the removal on, may be null
+   * @return the server's answer, or null when the removal could not be made
    */
-  private boolean removeOwedCopy(long userIdentityId,
+  private Integer removeOwedCopy(long userIdentityId,
                                  CalDavEndpoint endpoint,
                                  CaldavUserSetting settings,
                                  String from,
                                  String guard) {
     try {
-      CalendarObjectWriter writer = calendarObjectWriters.writer(endpoint);
-      int status = writer.deleteObject(endpoint, from, guard);
-      if (status == PutResult.PRECONDITION_FAILED) {
-        status = writer.deleteObject(endpoint, from, null);
-      }
-      return status != PutResult.PRECONDITION_FAILED;
+      return calendarObjectWriters.writer(endpoint).deleteObject(endpoint, from, guard);
     } catch (RuntimeException | LinkageError e) {
       if (!isChannelUnavailable(e, settings)) {
         sayOnce(userIdentityId,
@@ -599,7 +601,7 @@ public class CaldavMirrorRelocationService {
                 from);
         LOG.debug("The removal of {} failed", from, e);
       }
-      return false;
+      return null;
     }
   }
 
@@ -876,7 +878,7 @@ public class CaldavMirrorRelocationService {
   private enum Outcome {
     /** Written into the destination and the old object removed. */
     MOVED,
-    /** Written into the destination; the server would not remove the old object. */
+    /** The server would not remove the old object, whether the copy was written into the destination or not. */
     REFUSED,
     /** Not written: eXo can render nothing for the row, and will not later. */
     UNMOVABLE,

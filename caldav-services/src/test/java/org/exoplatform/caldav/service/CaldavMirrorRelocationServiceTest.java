@@ -268,6 +268,28 @@ public class CaldavMirrorRelocationServiceTest {
     MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertFalse(relocation.complete());
+    assertEquals(1, relocation.refused());
+    assertEquals(0, relocation.failed());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  /**
+   * The conflict is the rewrite for a holder invited again since this copy's
+   * turn began: no removal is owed any more, so the copy is not removed
+   * without a version, and stays, row and all, for the next pass to move.
+   */
+  @Test
+  public void aConflictFromAHolderInvitedAgainDoesNotRemoveTheirCopy() {
+    ObjectSync owed = mapping(IN_DEDICATED, "\"etag-1\"", EVENT);
+    givenAnOwedRemoval(owed);
+    when(caldavPendingPushStorage.removalsOwed(List.of(1L))).thenReturn(Set.of(1L), Set.of());
+    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"")).thenReturn(PutResult.PRECONDITION_FAILED);
+
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+
+    assertFalse(relocation.complete());
+    assertEquals(1, relocation.refused());
+    verify(calDavClient, never()).deleteObject(endpoint, IN_DEDICATED, null);
     verify(caldavSyncStorage, never()).saveObject(any());
   }
 
