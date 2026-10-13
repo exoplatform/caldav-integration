@@ -273,6 +273,26 @@ public class CaldavMirrorRelocationServiceTest {
     verify(caldavSyncStorage, never()).saveObject(any());
   }
 
+  @Test
+  public void aRemovalOwedThatCannotBeReadAfterAConflictStopsTheMoveBeforeTheRemoval() {
+    ObjectSync owed = mapping(IN_DEDICATED, "\"etag-1\"", EVENT);
+    givenTheDestinationIsNow(MAIN);
+    givenThePairPointsAt(DEDICATED);
+    givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\""));
+    when(caldavSyncStorage.getObjects(eq(PAIR), eq(0), anyInt())).thenReturn(new PageImpl<>(List.of(owed)));
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(owed);
+    when(caldavPendingPushStorage.removalsOwed(List.of(1L))).thenReturn(Set.of(1L))
+                                                          .thenThrow(new IllegalStateException("database down"));
+    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"")).thenReturn(PutResult.PRECONDITION_FAILED);
+    CaldavUserSetting settings = settings();
+    CalendarSync mirror = mirror(DEDICATED);
+
+    assertThrows(IllegalStateException.class, () -> service.relocate(USER, LOGIN, settings, mirror));
+
+    verify(calDavClient, never()).deleteObject(endpoint, IN_DEDICATED, null);
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
   /**
    * The conflict is the rewrite for a holder invited again since this copy's
    * turn began: no removal is owed any more, so the copy is not removed
