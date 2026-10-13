@@ -62,7 +62,6 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.agenda.constant.AgendaEventModificationType;
-import org.exoplatform.agenda.constant.EventAccess;
 import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Event;
 import org.exoplatform.agenda.model.EventAttendee;
@@ -76,6 +75,7 @@ import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.PendingPush;
 import org.exoplatform.caldav.model.PendingPushKind;
+import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavPendingPushStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -111,6 +111,9 @@ public class CaldavEventPropagationServiceTest {
   private static final long                     ERIN      = 66L;
 
   private static final long                     FRANK     = 77L;
+
+  /** A space whose calendar holds the meeting. */
+  private static final long                     SPACE     = 88L;
 
   /**
    * An exceptional occurrence of the meeting. Its copy lives under the series'
@@ -401,7 +404,7 @@ public class CaldavEventPropagationServiceTest {
 
   /**
    * EXO-90518. The organiser removes Bob from a meeting Alice and Bob were
-   * invited to: Bob can no longer see it, so his copy is removed from his
+   * invited to: Bob is no longer invited, so his copy is removed from his
    * calendar, and Alice's is rewritten.
    */
   @Test
@@ -411,8 +414,8 @@ public class CaldavEventPropagationServiceTest {
                  mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
     givenPair(200L, BOB);
-    givenAccess(ALICE, EventAccess.FULL);
-    givenAccess(BOB, EventAccess.NONE);
+    givenStillInvited(ALICE, true);
+    givenStillInvited(BOB, false);
     when(caldavPushService.pushAgendaEvent(ALICE, login(ALICE), EVENT)).thenReturn(new ObjectSync());
 
     assertEquals(2, service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED));
@@ -432,7 +435,7 @@ public class CaldavEventPropagationServiceTest {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
-    givenAccess(BOB, EventAccess.NONE);
+    givenStillInvited(BOB, false);
     org.mockito.Mockito.doThrow(new IllegalStateException("server down"))
                        .when(caldavPushService)
                        .deleteEvent(BOB, login(BOB), "uid-8801");
@@ -452,7 +455,7 @@ public class CaldavEventPropagationServiceTest {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
-    givenAccess(BOB, EventAccess.NONE);
+    givenStillInvited(BOB, false);
     org.mockito.Mockito.doThrow(new IllegalStateException("server down"))
                        .when(caldavPushService)
                        .deleteEvent(BOB, login(BOB), "uid-8801");
@@ -468,7 +471,7 @@ public class CaldavEventPropagationServiceTest {
   /**
    * Nor does another attendee's answer: Alice's answer reaches Carol's copy,
    * and Bob's owed removal stays what is owed, with no answer written onto a
-   * copy he can no longer read.
+   * copy of a meeting he is no longer invited to.
    */
   @Test
   public void aFailedRemovalIsNotTurnedIntoARewriteByAnAnswer() {
@@ -477,8 +480,8 @@ public class CaldavEventPropagationServiceTest {
                  mapping(3L, 300L, "uid-8801", "/dav/carol/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
     givenPair(300L, CAROL);
-    givenAccess(BOB, EventAccess.NONE);
-    givenAccess(CAROL, EventAccess.FULL);
+    givenStillInvited(BOB, false);
+    givenStillInvited(CAROL, true);
     when(caldavPushService.pushAgendaEvent(CAROL, login(CAROL), EVENT)).thenReturn(new ObjectSync());
     org.mockito.Mockito.doThrow(new IllegalStateException("server down"))
                        .when(caldavPushService)
@@ -495,8 +498,8 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
-   * Bob, invited again after a removal that has not landed yet, can see the
-   * meeting: the next edit rewrites his copy, and the rewrite is what is owed.
+   * Bob, invited again after a removal that has not landed yet: the next edit
+   * rewrites his copy, and the rewrite is what is owed.
    */
   @Test
   public void aReinvitedHolderIsRewrittenRatherThanRemoved() {
@@ -505,7 +508,7 @@ public class CaldavEventPropagationServiceTest {
     givenHolders(bobs);
     givenPair(200L, BOB);
     caldavPendingPushStorage.owe(bobs.getId(), BOB, PendingPushKind.REMOVE, null, "uid-8801");
-    givenAccess(BOB, EventAccess.FULL);
+    givenStillInvited(BOB, true);
     when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenThrow(new IllegalStateException("server down"));
 
     service.propagateUpdate(EVENT, A_REAL_EDIT);
@@ -515,17 +518,171 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
-   * Carol is not invited, but the calendar the meeting lives in is shared with
-   * her, and her copy came from that share: she can still see the meeting, so
-   * removing somebody else keeps her copy.
+   * EXO-90518. Carol is removed from a meeting held in a space's calendar.
+   * She still reads it there as a member of the space, but she is no longer
+   * invited: her meeting copy is removed, not rewritten as an event she does
+   * not attend. Whether she can read it is not asked.
    */
   @Test
-  public void aHolderTheCalendarIsSharedWithKeepsTheCopy() {
+  public void aHolderWhoStillReadsTheMeetingButIsNoLongerInvitedLosesTheCopy() {
     givenAMeetingCreatedBy(AUTHOR);
+    givenTheMeetingLivesInTheCalendarOf(SPACE);
     givenHolders(mapping(3L, 300L, "uid-8801", "/dav/carol/mirror/uid-8801.ics"));
     givenPair(300L, CAROL);
-    givenAccess(CAROL, EventAccess.SHARED);
-    when(caldavPushService.pushAgendaEvent(CAROL, login(CAROL), EVENT)).thenReturn(new ObjectSync());
+    givenStillInvited(CAROL, false);
+
+    assertEquals(1, service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED));
+
+    verify(caldavPushService).deleteEvent(CAROL, login(CAROL), "uid-8801");
+    verify(caldavPushService, never()).pushAgendaEvent(eq(CAROL), anyString(), anyLong());
+    verify(agendaEventService, never()).getEventAccess(any(), anyLong());
+  }
+
+  /**
+   * A removal already owed to Bob is not cancelled when the calendar cannot be
+   * read at the next edit: his copy is left out of the rewrite, and the
+   * removal stays what is owed, for the retry pass.
+   */
+  @Test
+  public void anOwedRemovalStandsWhenTheCalendarCannotBeRead() {
+    givenAMeetingCreatedBy(AUTHOR);
+    ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
+    givenHolders(bobs);
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(bobs.getId(), BOB, PendingPushKind.REMOVE, null, "uid-8801");
+    when(agendaCalendarService.getCalendarById(anyLong())).thenThrow(new IllegalStateException("agenda down"));
+
+    assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPushService, never()).pushAgendaEvent(eq(BOB), anyString(), anyLong());
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
+    assertEquals(PendingPushKind.REMOVE, onlyObligationOf(BOB).getKind());
+  }
+
+  /**
+   * Nor when the collection Bob's copy lives in cannot be read back.
+   */
+  @Test
+  public void anOwedRemovalStandsWhenTheCollectionCannotBeRead() {
+    givenAMeetingCreatedBy(AUTHOR);
+    ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
+    givenHolders(bobs);
+    givenPair(200L, BOB);
+    CalendarSync pair = caldavSyncStorage.getPair(200L);
+    // Read once to collect the holders, then unreadable.
+    when(caldavSyncStorage.getPair(200L)).thenReturn(pair).thenThrow(new IllegalStateException("database down"));
+    caldavPendingPushStorage.owe(bobs.getId(), BOB, PendingPushKind.REMOVE, null, "uid-8801");
+
+    assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPushService, never()).pushAgendaEvent(eq(BOB), anyString(), anyLong());
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
+    assertEquals(PendingPushKind.REMOVE, onlyObligationOf(BOB).getKind());
+  }
+
+  /**
+   * Nor when agenda cannot say whether Bob is invited again.
+   */
+  @Test
+  public void anOwedRemovalStandsWhenTheInvitationCannotBeRead() {
+    givenAMeetingCreatedBy(AUTHOR);
+    ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
+    givenHolders(bobs);
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(bobs.getId(), BOB, PendingPushKind.REMOVE, null, "uid-8801");
+    when(agendaEventAttendeeService.isEventAttendee(EVENT, BOB)).thenThrow(new IllegalStateException("agenda down"));
+
+    assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPushService, never()).pushAgendaEvent(eq(BOB), anyString(), anyLong());
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
+    assertEquals(PendingPushKind.REMOVE, onlyObligationOf(BOB).getKind());
+  }
+
+  /**
+   * Bob, removed from the attendee list, is still a member of a space invited
+   * to the meeting: agenda counts him invited, and his copy is rewritten.
+   */
+  @Test
+  public void aMemberOfAnInvitedSpaceKeepsTheCopy() {
+    givenAMeetingCreatedBy(AUTHOR);
+    givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(200L, BOB);
+    givenStillInvited(BOB, true);
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED));
+
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
+  }
+
+  /**
+   * The meeting lives in Erin's personal calendar and she is not among its
+   * attendees: it is her own event, and removing somebody else keeps her copy.
+   */
+  @Test
+  public void theOwnerOfTheCalendarKeepsTheirCopy() {
+    givenAMeetingCreatedBy(AUTHOR);
+    givenTheMeetingLivesInTheCalendarOf(ERIN);
+    givenHolders(mapping(6L, 600L, "uid-8801", "/dav/erin/mirror/uid-8801.ics"));
+    givenPair(600L, ERIN);
+    lenient().when(agendaEventAttendeeService.isEventAttendee(EVENT, ERIN)).thenReturn(false);
+    when(caldavPushService.pushAgendaEvent(ERIN, login(ERIN), EVENT)).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED));
+
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
+  }
+
+  /**
+   * Bob's copy lives in a calendar he synchronises, not in his meeting copies:
+   * it follows that calendar, and an attendee removal leaves it alone.
+   */
+  @Test
+  public void aCopyInACalendarTheHolderSynchronisesIsKept() {
+    givenAMeetingCreatedBy(AUTHOR);
+    givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/team/uid-8801.ics"));
+    givenPair(200L, BOB, SyncOrigin.EXO);
+    lenient().when(agendaEventAttendeeService.isEventAttendee(EVENT, BOB)).thenReturn(false);
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED));
+
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
+  }
+
+  /**
+   * When agenda cannot say whose calendar the meeting lives in, the owner
+   * cannot be told apart from the others: nobody's copy is removed.
+   */
+  @Test
+  public void aCalendarThatCannotBeReadRemovesNoCopy() {
+    givenAMeetingCreatedBy(AUTHOR);
+    when(agendaCalendarService.getCalendarById(anyLong())).thenThrow(new IllegalStateException("agenda down"));
+    givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(200L, BOB);
+    lenient().when(agendaEventAttendeeService.isEventAttendee(EVENT, BOB)).thenReturn(false);
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED));
+
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
+  }
+
+  /**
+   * When the collection a copy lives in cannot be read back, nothing says it is
+   * a meeting copy: it is kept.
+   */
+  @Test
+  public void aCopyWhoseCollectionCannotBeReadIsKept() {
+    givenAMeetingCreatedBy(AUTHOR);
+    givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(200L, BOB);
+    CalendarSync bobs = caldavSyncStorage.getPair(200L);
+    // Read once to collect the holders, then unreadable.
+    when(caldavSyncStorage.getPair(200L)).thenReturn(bobs).thenThrow(new IllegalStateException("database down"));
+    lenient().when(agendaEventAttendeeService.isEventAttendee(EVENT, BOB)).thenReturn(false);
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenReturn(new ObjectSync());
 
     assertEquals(1, service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED));
 
@@ -534,14 +691,14 @@ public class CaldavEventPropagationServiceTest {
 
   /**
    * The creator of the meeting keeps their copy, whatever agenda answers about
-   * their access.
+   * their invitation.
    */
   @Test
   public void theCreatorKeepsTheirCopy() {
     givenAMeetingCreatedBy(DAVE);
     givenHolders(mapping(4L, 400L, "uid-8801", "/dav/dave/mirror/uid-8801.ics"));
     givenPair(400L, DAVE);
-    lenient().when(agendaEventService.getEventAccess(any(Event.class), eq(DAVE))).thenReturn(EventAccess.NONE);
+    lenient().when(agendaEventAttendeeService.isEventAttendee(EVENT, DAVE)).thenReturn(false);
     when(caldavPushService.pushAgendaEvent(DAVE, login(DAVE), EVENT)).thenReturn(new ObjectSync());
 
     assertEquals(1, service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED));
@@ -551,14 +708,14 @@ public class CaldavEventPropagationServiceTest {
 
   /**
    * Not knowing is not a reason to delete: when agenda cannot say whether Bob
-   * can still see the meeting, his copy is rewritten.
+   * is still invited, his copy is rewritten.
    */
   @Test
-  public void aHolderWhoseAccessCannotBeReadKeepsTheCopy() {
+  public void aHolderWhoseInvitationCannotBeReadKeepsTheCopy() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
-    when(agendaEventService.getEventAccess(any(Event.class), eq(BOB))).thenThrow(new IllegalStateException("agenda down"));
+    when(agendaEventAttendeeService.isEventAttendee(EVENT, BOB)).thenThrow(new IllegalStateException("agenda down"));
     when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenReturn(new ObjectSync());
 
     assertEquals(1, service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED));
@@ -581,7 +738,34 @@ public class CaldavEventPropagationServiceTest {
     givenNoHoldersFor(OCCURRENCE);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
-    lenient().when(agendaEventService.getEventAccess(any(Event.class), eq(BOB))).thenReturn(EventAccess.NONE);
+    lenient().when(agendaEventAttendeeService.isEventAttendee(anyLong(), eq(BOB))).thenReturn(false);
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), OCCURRENCE)).thenReturn(new ObjectSync());
+
+    assertEquals(1, service.propagateUpdate(OCCURRENCE, AN_ATTENDEE_REMOVED));
+
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
+  }
+
+  /**
+   * A copy filed under one date of a repeating meeting, as the push filed it
+   * before it filed copies under the series: Bob, removed from that date only,
+   * is still invited to the series, and the series' copy the row names is
+   * rewritten, not removed.
+   */
+  @Test
+  public void aRemovalFromOneDateKeepsACopyFiledUnderThatDate() {
+    Event occurrence = new Event();
+    occurrence.setId(OCCURRENCE);
+    occurrence.setParentId(EVENT);
+    occurrence.setCreatorId(AUTHOR);
+    when(agendaEventService.getEventById(OCCURRENCE)).thenReturn(occurrence);
+    ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
+    bobs.setLocalEventId(OCCURRENCE);
+    givenHoldersFor(OCCURRENCE, bobs);
+    givenNoHolders();
+    givenPair(200L, BOB);
+    when(agendaEventAttendeeService.isEventAttendee(OCCURRENCE, BOB)).thenReturn(false);
+    when(agendaEventAttendeeService.isEventAttendee(EVENT, BOB)).thenReturn(true);
     when(caldavPushService.pushAgendaEvent(BOB, login(BOB), OCCURRENCE)).thenReturn(new ObjectSync());
 
     assertEquals(1, service.propagateUpdate(OCCURRENCE, AN_ATTENDEE_REMOVED));
@@ -615,10 +799,11 @@ public class CaldavEventPropagationServiceTest {
 
   /**
    * An edit that removes nobody, to a holder owed nothing, asks agenda
-   * nothing about access: only a removal needs the lookup.
+   * nothing about invitations nor reads the calendar: only a removal needs
+   * the lookups.
    */
   @Test
-  public void anEditThatRemovesNobodyDoesNotAskWhoCanSeeIt() {
+  public void anEditThatRemovesNobodyDoesNotAskWhoIsInvited() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
@@ -626,7 +811,8 @@ public class CaldavEventPropagationServiceTest {
 
     assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
 
-    verify(agendaEventService, never()).getEventAccess(any(), anyLong());
+    verify(agendaEventAttendeeService, never()).isEventAttendee(anyLong(), anyLong());
+    verify(agendaCalendarService, never()).getCalendarById(anyLong());
     verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
   }
 
@@ -1066,6 +1252,26 @@ public class CaldavEventPropagationServiceTest {
     assertEquals(1, service.propagateUpdate(EVENT, A_REAL_EDIT));
 
     verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
+  }
+
+  /**
+   * Nor is a removal already owed to Bob cancelled by an edit of an event agenda
+   * could not answer for: his copy is left out of the rewrite, and the removal
+   * stays what is owed.
+   */
+  @Test
+  public void anOwedRemovalStandsWhenTheEventCannotBeRead() {
+    when(agendaEventService.getEventById(EVENT)).thenThrow(new IllegalStateException("agenda is unavailable"));
+    ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
+    givenHolders(bobs);
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(bobs.getId(), BOB, PendingPushKind.REMOVE, null, "uid-8801");
+
+    assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPushService, never()).pushAgendaEvent(eq(BOB), anyString(), anyLong());
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
+    assertEquals(PendingPushKind.REMOVE, onlyObligationOf(BOB).getKind());
   }
 
   /**
@@ -2937,13 +3143,25 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
-   * Declares what agenda lets one user do with the edited meeting.
+   * Declares whether agenda counts one user among the edited meeting's
+   * attendees, directly or as a member of an invited space.
    *
    * @param userIdentityId the holder of a copy
-   * @param access what agenda answers for them
+   * @param invited what agenda answers for them
    */
-  private void givenAccess(long userIdentityId, EventAccess access) {
-    when(agendaEventService.getEventAccess(any(Event.class), eq(userIdentityId))).thenReturn(access);
+  private void givenStillInvited(long userIdentityId, boolean invited) {
+    when(agendaEventAttendeeService.isEventAttendee(EVENT, userIdentityId)).thenReturn(invited);
+  }
+
+  /**
+   * Declares whose calendar the edited meeting lives in.
+   *
+   * @param ownerIdentityId the user or the space owning that calendar
+   */
+  private void givenTheMeetingLivesInTheCalendarOf(long ownerIdentityId) {
+    Calendar calendar = new Calendar();
+    calendar.setOwnerId(ownerIdentityId);
+    when(agendaCalendarService.getCalendarById(anyLong())).thenReturn(calendar);
   }
 
   /**
@@ -3068,15 +3286,30 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
-   * Declares which user a collection belongs to.
+   * Declares which user a collection belongs to: their meeting copies'
+   * collection, where the copies of the meetings they are invited to live.
    *
    * @param pairId the collection pair
    * @param userIdentityId its owner
    */
   private void givenPair(long pairId, long userIdentityId) {
+    givenPair(pairId, userIdentityId, SyncOrigin.MIRROR);
+  }
+
+  /**
+   * Declares which user a collection belongs to, and which side made it.
+   *
+   * @param pairId the collection pair
+   * @param userIdentityId its owner
+   * @param origin {@link SyncOrigin#MIRROR} for their meeting copies,
+   *          {@link SyncOrigin#EXO} or {@link SyncOrigin#REMOTE} for a calendar
+   *          they synchronise
+   */
+  private void givenPair(long pairId, long userIdentityId, SyncOrigin origin) {
     CalendarSync pair = new CalendarSync();
     pair.setId(pairId);
     pair.setUserIdentityId(userIdentityId);
+    pair.setOrigin(origin);
     lenient().when(caldavSyncStorage.getPair(pairId)).thenReturn(pair);
     // The user behind the binding exists, so their login resolves: the
     // propagation reads it per user to reach their own account.
