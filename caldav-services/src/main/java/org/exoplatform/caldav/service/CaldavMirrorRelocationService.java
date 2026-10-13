@@ -529,14 +529,16 @@ public class CaldavMirrorRelocationService {
    * again without it, as the retry pass makes it, but only while the removal
    * is still owed: the conflict may be the rewrite for a holder invited again
    * since this copy's turn began, whose copy then stays, row and all, for the
-   * next pass to move. The window left is from that second ask to the
-   * removal: a rewrite landing in it is removed with the old object, and the
-   * row is pointed at the new calendar with nothing there, until the
-   * verification pass finds it missing and writes it again. A removal that fails or is not made leaves the row on
-   * the old object, for the retry pass and the next pass of this change. The
-   * row is read again just before it is saved: a removal carried out
-   * meanwhile has cleared it, and is not written over. A row whose removal has
-   * already landed has nothing to move.
+   * next pass to move. The window left runs to the removal from that second
+   * ask, or, for a copy whose collection is listed at its own turn, from the
+   * first ask, since that listing already carries a rewrite's version and no
+   * conflict follows: a rewrite landing in it is removed with the old object,
+   * and the row is pointed at the new calendar with nothing there, until the
+   * verification pass finds it missing and writes it again. A removal that
+   * fails or is not made leaves the row on the old object, for the retry pass
+   * and the next pass of this change. The row is read again just before it is
+   * saved: a removal carried out meanwhile has cleared it, and is not written
+   * over. A row whose removal has already landed has nothing to move.
    *
    * @param userIdentityId identity of the user
    * @param settings the connected account

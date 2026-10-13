@@ -675,7 +675,7 @@ public class CaldavMirrorVerificationService {
    * Asked at the copy's turn rather than once for the page: a removal
    * recorded, or carried out, while the pass walked the copies before it
    * would otherwise be written over. The window left is from these reads to
-   * the write. A read that fails ends the round, as any read of the mapping
+   * the write, or to the removal the relocation carries out instead. A read that fails ends the round, as any read of the mapping
    * rows does, before the copy is written.
    *
    * @param pendingPushes the record of the writes and removals owed
