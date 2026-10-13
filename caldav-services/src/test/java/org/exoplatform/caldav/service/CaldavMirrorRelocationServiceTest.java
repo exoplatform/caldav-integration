@@ -20,8 +20,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -33,8 +35,11 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -64,6 +69,7 @@ import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
+import org.exoplatform.caldav.storage.CaldavPendingPushStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 
 /**
@@ -135,6 +141,13 @@ public class CaldavMirrorRelocationServiceTest {
   @Mock
   private CaldavSyncStorage                  caldavSyncStorage;
 
+  /**
+   * Asked which copies are owed a removal. Unstubbed it answers that none is,
+   * the case every scenario but the owed-removal ones is about.
+   */
+  @Mock
+  private CaldavPendingPushStorage           caldavPendingPushStorage;
+
   @Mock
   private CaldavPushService                  caldavPushService;
 
@@ -190,6 +203,93 @@ public class CaldavMirrorRelocationServiceTest {
     assertTrue(relocation.complete(), "nothing failed, so the change may be recorded as applied");
     verify(calDavClient).overwriteObject(endpoint, IN_MAIN, ICS);
     verify(calDavClient).deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"");
+  }
+
+  /**
+   * A copy owed a removal is not moved: written into the new calendar as its
+   * holder, who may still read the meeting (a member of the space whose
+   * calendar holds a meeting they were removed from), it would come back after
+   * they deleted it, and stay once the removal is abandoned.
+   */
+  @Test
+  public void aCopyOwedARemovalIsNotMovedIntoTheNewCalendar() {
+    givenTheDestinationIsNow(MAIN);
+    givenThePairPointsAt(DEDICATED);
+    givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
+    when(caldavPendingPushStorage.removalsOwed(List.of(1L))).thenReturn(Set.of(1L));
+    // Lenient: the write this test says never happens would otherwise fail on
+    // its own null answer rather than on the assertion below.
+    lenient().when(calDavClient.overwriteObject(endpoint, IN_MAIN, ICS)).thenReturn(new PutResult(201, "\"etag-9\"", null));
+
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+
+    assertEquals(0, relocation.moved());
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  @Test
+  public void aCopyRemovedWhileTheMoveWalkedIsNotMovedIntoTheNewCalendar() {
+    givenTheDestinationIsNow(MAIN);
+    givenThePairPointsAt(DEDICATED);
+    givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(mapping(null, null, EVENT));
+    // Lenient: the write this test says never happens would otherwise fail on
+    // its own null answer rather than on the assertion below.
+    lenient().when(calDavClient.overwriteObject(endpoint, IN_MAIN, ICS)).thenReturn(new PutResult(201, "\"etag-9\"", null));
+
+    service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  /**
+   * The removal is recorded while the move walks the page, after it read the
+   * page and before this copy's turn: the organiser removes the holder from the
+   * second meeting while the first copy is being moved.
+   */
+  @Test
+  public void aRemovalRecordedWhileTheMoveWalkedLeavesThatCopyWhereItIs() {
+    ObjectSync second = mapping(DEDICATED + "evt-2.ics", "\"etag-2\"", 6L);
+    second.setId(2L);
+    second.setIcsUid("evt-2");
+    givenTheDestinationIsNow(MAIN);
+    givenThePairPointsAt(DEDICATED);
+    givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\"", DEDICATED + "evt-2.ics", "\"etag-2\""));
+    givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT), second);
+    AtomicBoolean recorded = new AtomicBoolean();
+    when(calDavClient.overwriteObject(endpoint, IN_MAIN, ICS)).thenAnswer(invocation -> {
+      recorded.set(true);
+      return new PutResult(201, "\"etag-9\"", null);
+    });
+    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"")).thenReturn(204);
+    when(caldavPendingPushStorage.removalsOwed(anyCollection()))
+        .thenAnswer(invocation -> recorded.get() && ((Collection<?>) invocation.getArgument(0)).contains(2L) ? Set.of(2L)
+                                                                                                               : Set.of());
+    // Lenient: the move this test says never happens would otherwise fail on
+    // its own missing answers rather than on the assertion below.
+    lenient().when(caldavPushService.renderAgendaEvent(USER, 6L, "evt-2")).thenReturn(ICS);
+    lenient().when(calDavClient.overwriteObject(endpoint, MAIN + "evt-2.ics", ICS))
+             .thenReturn(new PutResult(201, "\"etag-8\"", null));
+
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+
+    assertEquals(1, relocation.moved());
+    verify(calDavClient, never()).overwriteObject(endpoint, MAIN + "evt-2.ics", ICS);
+  }
+
+  @Test
+  public void aRemovalOwedThatCannotBeReadStopsTheMoveBeforeTheWrite() {
+    givenTheDestinationIsNow(MAIN);
+    givenThePairPointsAt(DEDICATED);
+    when(caldavSyncStorage.getObjects(eq(PAIR), eq(0), anyInt()))
+        .thenReturn(new PageImpl<>(List.of(mapping(IN_DEDICATED, "\"etag-1\"", EVENT))));
+    when(caldavPendingPushStorage.removalsOwed(anyCollection())).thenThrow(new IllegalStateException("database down"));
+
+    assertThrows(IllegalStateException.class, () -> service.relocate(USER, LOGIN, settings(), mirror(DEDICATED)));
+
+    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString());
   }
 
   @Test

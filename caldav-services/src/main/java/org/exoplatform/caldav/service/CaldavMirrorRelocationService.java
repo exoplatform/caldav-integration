@@ -35,6 +35,7 @@ import org.exoplatform.caldav.client.CalendarObjectWriters;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.ObjectSync;
+import org.exoplatform.caldav.storage.CaldavPendingPushStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -134,6 +135,9 @@ public class CaldavMirrorRelocationService {
 
   @Autowired
   private CaldavSyncStorage       caldavSyncStorage;
+
+  @Autowired
+  private CaldavPendingPushStorage caldavPendingPushStorage;
 
   @Autowired
   private CaldavPushService       caldavPushService;
@@ -386,6 +390,15 @@ public class CaldavMirrorRelocationService {
                                CaldavSyncStorage.canonicalHref(to))) {
           // Already where it belongs. The converged account is entirely made of
           // these, and it must cost nothing.
+          continue;
+        }
+        if (CaldavMirrorVerificationService.isBeingRemoved(caldavPendingPushStorage, caldavSyncStorage, object)) {
+          // To be removed, or just removed: moved, the meeting would be
+          // written into the new calendar as its holder, who may still read
+          // it. It stays where it is, for its removal, and the change is still
+          // recorded as applied: should a rewrite replace that removal (the
+          // holder invited again), the copy is rewritten where it is, in the
+          // calendar the copies left.
           continue;
         }
         switch (moveOne(userIdentityId, settings, endpoint, object, to, listings)) {

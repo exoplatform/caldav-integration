@@ -43,6 +43,7 @@ import org.exoplatform.caldav.model.MirrorVerification;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.caldav.storage.CaldavPendingPushStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -189,6 +190,9 @@ public class CaldavMirrorVerificationService {
 
   @Autowired
   private CaldavSyncStorage            caldavSyncStorage;
+
+  @Autowired
+  private CaldavPendingPushStorage     caldavPendingPushStorage;
 
   @Autowired
   private CaldavPushService            caldavPushService;
@@ -599,6 +603,14 @@ public class CaldavMirrorVerificationService {
         if (assessment.verdict() == Verdict.UNTOUCHED) {
           continue;
         }
+        if (isBeingRemoved(caldavPendingPushStorage, caldavSyncStorage, object)) {
+          // The copy is to be removed, or has just been: the retry pass's
+          // work, or done. Its holder may still read the meeting (a member of
+          // the space whose calendar holds a meeting they were removed from),
+          // and a repair writes as the holder: it would put back the copy the
+          // removal takes away.
+          continue;
+        }
         if (assessment.verdict() == Verdict.MISSING) {
           missing++;
         } else {
@@ -657,6 +669,40 @@ public class CaldavMirrorVerificationService {
                held);
     }
     return new MirrorVerification(checked, missing, altered, adopted, repaired, abandoned);
+  }
+
+  /**
+   * Whether a copy about to be written again is owed a removal, or has been
+   * removed since its page was read (its row now has no href). Asked by the
+   * repair here and by the move of {@link CaldavMirrorRelocationService}: both
+   * write as the holder, who may still read a meeting they were removed from
+   * (a member of the space whose calendar holds it), so either would put back
+   * the copy the removal takes away.
+   *
+   * <p>
+   * Asked at the copy's turn rather than once for the page: a removal
+   * recorded, or carried out, while the pass walked the copies before it
+   * would otherwise be written over. The window left is from these reads to
+   * the write. A read that fails ends the round, as any read of the mapping
+   * rows does, before the copy is written.
+   *
+   * @param pendingPushes the record of the writes and removals owed
+   * @param syncs the mapping rows
+   * @param object the mapping row, as the page read it
+   * @return true when the copy must not be written again
+   */
+  static boolean isBeingRemoved(CaldavPendingPushStorage pendingPushes, CaldavSyncStorage syncs, ObjectSync object) {
+    if (object.getId() == null || object.getId() <= 0) {
+      return false;
+    }
+    if (!pendingPushes.removalsOwed(List.of(object.getId())).isEmpty()) {
+      return true;
+    }
+    if (StringUtils.isBlank(object.getIcsUid())) {
+      return false;
+    }
+    ObjectSync current = syncs.getObjectByUid(object.getCalendarSyncId(), object.getIcsUid());
+    return current != null && StringUtils.isBlank(current.getRemoteHref());
   }
 
   /**

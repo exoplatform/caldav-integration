@@ -43,7 +43,9 @@ public enum PendingPushKind {
    * is no longer invited to it (removed from the meeting). For a destroyed
    * event and for a removed invitee, nothing but this record will ever remove
    * the object; a poll's copy in the meeting copies' collection is also
-   * retired by the verification pass.
+   * retired by the verification pass. While this record stands, the
+   * verification pass does not repair the copy: a removed invitee may still
+   * read the meeting, and a repair, written as them, would put the copy back.
    */
   REMOVE
 

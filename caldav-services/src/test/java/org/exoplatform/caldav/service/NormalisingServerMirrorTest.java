@@ -267,6 +267,11 @@ public class NormalisingServerMirrorTest {
     ReflectionTestUtils.setField(verification,
                                  "caldavMirrorAnswerService",
                                  org.mockito.Mockito.mock(CaldavMirrorAnswerService.class));
+    // Asked which copies are owed a removal. Mocked and never stubbed: no copy
+    // here is, which is the case this class is about.
+    ReflectionTestUtils.setField(verification,
+                                 "caldavPendingPushStorage",
+                                 org.mockito.Mockito.mock(org.exoplatform.caldav.storage.CaldavPendingPushStorage.class));
     ReflectionTestUtils.setField(icsEquivalence, "ignoredProperties", "");
     ReflectionTestUtils.setField(verification, "maxRepairs", 3);
     // EXO-89681 gave the pass an answer-adoption collaborator that did not exist

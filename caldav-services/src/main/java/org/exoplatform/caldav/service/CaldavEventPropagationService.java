@@ -812,12 +812,14 @@ public class CaldavEventPropagationService {
    *
    * <p>
    * Invited is agenda's {@code isEventAttendee} on the edited event or its
-   * series, as the push asks it: a date edited alone can hold a copy filed
-   * under its own identifier, written before copies were filed under the
-   * series, and somebody removed from that date is still invited to the
-   * others. It counts whoever may view an invited space, its members and the
-   * platform's space administrators; a declined attendee is still
-   * invited, and their copy carries their answer. Three holders keep their
+   * series: a date edited alone can hold a copy filed under its own
+   * identifier, written before copies were filed under the series, and
+   * somebody removed from that date is still invited to the others. It counts
+   * whoever may view an invited space, its members and the platform's space
+   * administrators. A declined attendee is still invited here and keeps their
+   * copy, which carries their answer; for a meeting held in another user's
+   * personal calendar, the push itself writes no copy for an attendee who
+   * declined. Three holders keep their
    * copy whatever the attendee list says: the creator, as the author of the
    * meeting; the owner of the calendar it lives in, whose own event it is; and
    * a holder whose copy lives in a calendar they synchronise rather than in
@@ -842,11 +844,10 @@ public class CaldavEventPropagationService {
    * which {@code saveEventAttendees} adds exactly when it deletes one), and
    * for a holder still owed a removal whatever the edit: a rewrite recorded
    * over it would cancel the removal and keep a copy of a meeting they are no
-   * longer invited to. Any
-   * other holder of any other edit costs no lookup. The calendar is read once
-   * per edit that may remove a copy, and each holder such an edit may remove
-   * costs a read of the collection their copy lives in and of their
-   * invitation.
+   * longer invited to. Any other holder of any other edit costs no lookup. The
+   * calendar is read once per edit that may remove a copy, and each holder
+   * such an edit may remove costs a read of the collection their copy lives in
+   * and of their invitation.
    *
    * <p>
    * Only a mapping filed under the edited event itself is removed from here.
