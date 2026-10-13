@@ -603,14 +603,6 @@ public class CaldavMirrorVerificationService {
         if (assessment.verdict() == Verdict.UNTOUCHED) {
           continue;
         }
-        if (isBeingRemoved(caldavPendingPushStorage, caldavSyncStorage, object)) {
-          // The copy is to be removed, or has just been: the retry pass's
-          // work, or done. Its holder may still read the meeting (a member of
-          // the space whose calendar holds a meeting they were removed from),
-          // and a repair writes as the holder: it would put back the copy the
-          // removal takes away.
-          continue;
-        }
         if (assessment.verdict() == Verdict.MISSING) {
           missing++;
         } else {
@@ -968,6 +960,39 @@ public class CaldavMirrorVerificationService {
   }
 
   /**
+   * The verdict on one copy, except for a copy that is to be removed, or has
+   * just been: that one is reported untouched, so that nothing reads an answer
+   * off it or writes it again. Its holder may still read the meeting (a member
+   * of the space whose calendar holds a meeting they were removed from), and a
+   * repair writes as the holder: it would put back the copy the removal takes
+   * away. Asked only of a copy the comparison found missing or altered, so a
+   * mirror whose copies all match costs no read.
+   *
+   * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
+   * @param object the mapping row
+   * @param settings the connected account
+   * @param etags what the server currently holds, by href
+   * @param settingsRound whether the ETag gate is lifted for this round
+   * @param server the registration the account is connected through, may be
+   *          null
+   * @return the verdict, untouched for a copy being removed
+   */
+  private Assessment judge(long userIdentityId, String username,
+                           ObjectSync object,
+                           CaldavUserSetting settings,
+                           Map<String, String> etags,
+                           boolean settingsRound,
+                           CaldavServer server) {
+    Assessment assessment = compare(userIdentityId, username, object, settings, etags, settingsRound, server);
+    if (assessment.verdict() != Verdict.UNTOUCHED && isBeingRemoved(caldavPendingPushStorage, caldavSyncStorage, object)) {
+      return new Assessment(Verdict.UNTOUCHED, null, false);
+    }
+    return assessment;
+  }
+
+  /**
    * What the server's listing says about one copy.
    *
    * <p>
@@ -997,12 +1022,12 @@ public class CaldavMirrorVerificationService {
    *          null
    * @return the verdict, carrying the fetched copy when there is one to act on
    */
-  private Assessment judge(long userIdentityId, String username,
-                           ObjectSync object,
-                           CaldavUserSetting settings,
-                           Map<String, String> etags,
-                           boolean settingsRound,
-                           CaldavServer server) {
+  private Assessment compare(long userIdentityId, String username,
+                             ObjectSync object,
+                             CaldavUserSetting settings,
+                             Map<String, String> etags,
+                             boolean settingsRound,
+                             CaldavServer server) {
     String etag = etagOf(object.getRemoteHref(), etags);
     if (etag == null) {
       return new Assessment(Verdict.MISSING, null, false);

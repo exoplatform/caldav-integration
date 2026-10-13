@@ -392,19 +392,13 @@ public class CaldavMirrorRelocationService {
           // these, and it must cost nothing.
           continue;
         }
-        if (CaldavMirrorVerificationService.isBeingRemoved(caldavPendingPushStorage, caldavSyncStorage, object)) {
-          // To be removed, or just removed: moved, the meeting would be
-          // written into the new calendar as its holder, who may still read
-          // it. It stays where it is, for its removal, and the change is still
-          // recorded as applied: should a rewrite replace that removal (the
-          // holder invited again), the copy is rewritten where it is, in the
-          // calendar the copies left.
-          continue;
-        }
         switch (moveOne(userIdentityId, settings, endpoint, object, to, listings)) {
         case MOVED -> moved++;
         case REFUSED -> refused++;
         case UNMOVABLE -> unmovable++;
+        case LEFT -> {
+          // Removed rather than moved: not a copy of the new calendar.
+        }
         default -> failed++;
         }
       }
@@ -435,6 +429,10 @@ public class CaldavMirrorRelocationService {
    * row still named the old href would leave the user's meeting nowhere — the
    * same reason the per-event move deletes last.
    *
+   * <p>
+   * A copy owed a removal, or just removed, is not moved: the removal is
+   * carried out instead ({@link #removeInsteadOfMoving}).
+   *
    * @param userIdentityId identity of the user
    * @param settings the connected account
    * @param endpoint where the account lives
@@ -449,6 +447,11 @@ public class CaldavMirrorRelocationService {
                           ObjectSync object,
                           String to,
                           Map<String, Map<String, String>> listings) {
+    if (CaldavMirrorVerificationService.isBeingRemoved(caldavPendingPushStorage, caldavSyncStorage, object)) {
+      // To be removed, or just removed: moved, the meeting would be written
+      // into the new calendar as its holder, who may still read it.
+      return removeInsteadOfMoving(userIdentityId, settings, endpoint, object, to, listings);
+    }
     String from = object.getRemoteHref();
     String listed = etagOf(from, listingOf(from, endpoint, settings, listings));
     // The version this pass will guard the removal with. It starts as the one
@@ -508,6 +511,47 @@ public class CaldavMirrorRelocationService {
     object.setLastSync(new Date());
     caldavSyncStorage.saveObject(object);
     return removeOldCopy(userIdentityId, endpoint, settings, from, guard) ? Outcome.MOVED : Outcome.REFUSED;
+  }
+
+  /**
+   * Carries out the removal owed for a copy instead of moving it: points the
+   * row at the new calendar without writing anything there, then removes the
+   * old object. A removal still being retried then finds nothing there and
+   * settles; an abandoned one stays recorded, and the verification pass leaves
+   * the row alone. A rewrite that replaces it (the holder invited again)
+   * writes the copy into the new calendar. The row moves first, as in a move,
+   * and right after it is read again: a removal carried out between that read
+   * and the save would be written over, a window of one database write. An
+   * old object the server will not remove stays where it is, reported once,
+   * and the next pass finds the row already at the destination. A row whose
+   * removal has already landed has nothing to move.
+   *
+   * @param userIdentityId identity of the user
+   * @param settings the connected account
+   * @param endpoint where the account lives
+   * @param object the mapping row, as the page read it
+   * @param to where the copy would have gone
+   * @param listings the collection listings read so far this pass
+   * @return what happened to this copy
+   */
+  private Outcome removeInsteadOfMoving(long userIdentityId,
+                                        CaldavUserSetting settings,
+                                        CalDavEndpoint endpoint,
+                                        ObjectSync object,
+                                        String to,
+                                        Map<String, Map<String, String>> listings) {
+    String listed = etagOf(object.getRemoteHref(), listingOf(object.getRemoteHref(), endpoint, settings, listings));
+    ObjectSync current = caldavSyncStorage.getObjectByUid(object.getCalendarSyncId(), object.getIcsUid());
+    if (current == null || StringUtils.isBlank(current.getRemoteHref())) {
+      return Outcome.LEFT;
+    }
+    String from = current.getRemoteHref();
+    String guard = StringUtils.defaultIfBlank(listed, current.getEtag());
+    current.setRemoteHref(to);
+    current.setEtag(null);
+    current.setLastSync(new Date());
+    caldavSyncStorage.saveObject(current);
+    return removeOldCopy(userIdentityId, endpoint, settings, from, guard) ? Outcome.LEFT : Outcome.REFUSED;
   }
 
   /**
@@ -783,11 +827,13 @@ public class CaldavMirrorRelocationService {
   private enum Outcome {
     /** Written into the destination and the old object removed. */
     MOVED,
-    /** Written into the destination; the server would not remove the old object. */
+    /** The server would not remove the old object, once the row was moved. */
     REFUSED,
     /** Not written: eXo can render nothing for the row, and will not later. */
     UNMOVABLE,
     /** Not written, or its answer not recorded; the next pass tries again. */
-    FAILED
+    FAILED,
+    /** Not written: the copy was owed a removal, carried out instead, or had already been removed. */
+    LEFT
   }
 }
