@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.time.Instant;
@@ -73,6 +74,7 @@ import org.exoplatform.caldav.model.MirrorVerification;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.caldav.storage.CaldavPendingPushStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 
 /**
@@ -267,6 +269,11 @@ public class NormalisingServerMirrorTest {
     ReflectionTestUtils.setField(verification,
                                  "caldavMirrorAnswerService",
                                  org.mockito.Mockito.mock(CaldavMirrorAnswerService.class));
+    // Asked which copies are owed a removal. Mocked and never stubbed: no copy
+    // here is, which is the case this class is about.
+    ReflectionTestUtils.setField(verification,
+                                 "caldavPendingPushStorage",
+                                 mock(CaldavPendingPushStorage.class));
     ReflectionTestUtils.setField(icsEquivalence, "ignoredProperties", "");
     ReflectionTestUtils.setField(verification, "maxRepairs", 3);
     // EXO-89681 gave the pass an answer-adoption collaborator that did not exist

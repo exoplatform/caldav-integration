@@ -43,6 +43,7 @@ import org.exoplatform.caldav.model.MirrorVerification;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.caldav.storage.CaldavPendingPushStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -189,6 +190,9 @@ public class CaldavMirrorVerificationService {
 
   @Autowired
   private CaldavSyncStorage            caldavSyncStorage;
+
+  @Autowired
+  private CaldavPendingPushStorage     caldavPendingPushStorage;
 
   @Autowired
   private CaldavPushService            caldavPushService;
@@ -660,6 +664,40 @@ public class CaldavMirrorVerificationService {
   }
 
   /**
+   * Whether a copy about to be written again is owed a removal, or has been
+   * removed since its page was read (its row now has no href). Asked by the
+   * repair here and by the move of {@link CaldavMirrorRelocationService}: both
+   * write as the holder, who may still read a meeting they were removed from
+   * (a member of the space whose calendar holds it), so either would put back
+   * the copy the removal takes away.
+   *
+   * <p>
+   * Asked at the copy's turn rather than once for the page: a removal
+   * recorded, or carried out, while the pass walked the copies before it
+   * would otherwise be written over. The window left is from these reads to
+   * the write, or to the removal the relocation carries out instead. A read that fails ends the round, as any read of the mapping
+   * rows does, before the copy is written.
+   *
+   * @param pendingPushes the record of the writes and removals owed
+   * @param syncs the mapping rows
+   * @param object the mapping row, as the page read it
+   * @return true when the copy must not be written again
+   */
+  static boolean isBeingRemoved(CaldavPendingPushStorage pendingPushes, CaldavSyncStorage syncs, ObjectSync object) {
+    if (object.getId() == null || object.getId() <= 0) {
+      return false;
+    }
+    if (!pendingPushes.removalsOwed(List.of(object.getId())).isEmpty()) {
+      return true;
+    }
+    if (StringUtils.isBlank(object.getIcsUid())) {
+      return false;
+    }
+    ObjectSync current = syncs.getObjectByUid(object.getCalendarSyncId(), object.getIcsUid());
+    return current != null && StringUtils.isBlank(current.getRemoteHref());
+  }
+
+  /**
    * Takes away a copy standing for an event that may no longer hold one, before
    * anything compares or repairs it.
    *
@@ -922,6 +960,39 @@ public class CaldavMirrorVerificationService {
   }
 
   /**
+   * The verdict on one copy, except for a copy that is to be removed, or has
+   * just been: that one is reported untouched, so that nothing reads an answer
+   * off it or writes it again. Its holder may still read the meeting (a member
+   * of the space whose calendar holds a meeting they were removed from), and a
+   * repair writes as the holder: it would put back the copy the removal takes
+   * away. Asked only of a copy the comparison found missing or altered, so a
+   * mirror whose copies all match costs no read.
+   *
+   * @param userIdentityId identity of the user
+   * @param username their eXo login, which the credentials provider maps to
+   *          their account on the server
+   * @param object the mapping row
+   * @param settings the connected account
+   * @param etags what the server currently holds, by href
+   * @param settingsRound whether the ETag gate is lifted for this round
+   * @param server the registration the account is connected through, may be
+   *          null
+   * @return the verdict, untouched for a copy being removed
+   */
+  private Assessment judge(long userIdentityId, String username,
+                           ObjectSync object,
+                           CaldavUserSetting settings,
+                           Map<String, String> etags,
+                           boolean settingsRound,
+                           CaldavServer server) {
+    Assessment assessment = compare(userIdentityId, username, object, settings, etags, settingsRound, server);
+    if (assessment.verdict() != Verdict.UNTOUCHED && isBeingRemoved(caldavPendingPushStorage, caldavSyncStorage, object)) {
+      return new Assessment(Verdict.UNTOUCHED, null, false);
+    }
+    return assessment;
+  }
+
+  /**
    * What the server's listing says about one copy.
    *
    * <p>
@@ -951,12 +1022,12 @@ public class CaldavMirrorVerificationService {
    *          null
    * @return the verdict, carrying the fetched copy when there is one to act on
    */
-  private Assessment judge(long userIdentityId, String username,
-                           ObjectSync object,
-                           CaldavUserSetting settings,
-                           Map<String, String> etags,
-                           boolean settingsRound,
-                           CaldavServer server) {
+  private Assessment compare(long userIdentityId, String username,
+                             ObjectSync object,
+                             CaldavUserSetting settings,
+                             Map<String, String> etags,
+                             boolean settingsRound,
+                             CaldavServer server) {
     String etag = etagOf(object.getRemoteHref(), etags);
     if (etag == null) {
       return new Assessment(Verdict.MISSING, null, false);

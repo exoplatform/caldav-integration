@@ -35,6 +35,7 @@ import org.exoplatform.caldav.client.CalendarObjectWriters;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.ObjectSync;
+import org.exoplatform.caldav.storage.CaldavPendingPushStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
@@ -134,6 +135,9 @@ public class CaldavMirrorRelocationService {
 
   @Autowired
   private CaldavSyncStorage       caldavSyncStorage;
+
+  @Autowired
+  private CaldavPendingPushStorage caldavPendingPushStorage;
 
   @Autowired
   private CaldavPushService       caldavPushService;
@@ -392,6 +396,9 @@ public class CaldavMirrorRelocationService {
         case MOVED -> moved++;
         case REFUSED -> refused++;
         case UNMOVABLE -> unmovable++;
+        case LEFT -> {
+          // Removed rather than moved: not a copy of the new calendar.
+        }
         default -> failed++;
         }
       }
@@ -422,6 +429,10 @@ public class CaldavMirrorRelocationService {
    * row still named the old href would leave the user's meeting nowhere — the
    * same reason the per-event move deletes last.
    *
+   * <p>
+   * A copy owed a removal, or just removed, is not moved: the removal is
+   * carried out instead ({@link #removeInsteadOfMoving}), old object first.
+   *
    * @param userIdentityId identity of the user
    * @param settings the connected account
    * @param endpoint where the account lives
@@ -436,6 +447,11 @@ public class CaldavMirrorRelocationService {
                           ObjectSync object,
                           String to,
                           Map<String, Map<String, String>> listings) {
+    if (CaldavMirrorVerificationService.isBeingRemoved(caldavPendingPushStorage, caldavSyncStorage, object)) {
+      // To be removed, or just removed: moved, the meeting would be written
+      // into the new calendar as its holder, who may still read it.
+      return removeInsteadOfMoving(userIdentityId, settings, endpoint, object, to, listings);
+    }
     String from = object.getRemoteHref();
     String listed = etagOf(from, listingOf(from, endpoint, settings, listings));
     // The version this pass will guard the removal with. It starts as the one
@@ -495,6 +511,103 @@ public class CaldavMirrorRelocationService {
     object.setLastSync(new Date());
     caldavSyncStorage.saveObject(object);
     return removeOldCopy(userIdentityId, endpoint, settings, from, guard) ? Outcome.MOVED : Outcome.REFUSED;
+  }
+
+  /**
+   * Carries out the removal owed for a copy instead of moving it: removes the
+   * old object, then points the row at the new calendar without writing
+   * anything there. A removal still being retried then finds nothing there and
+   * settles; an abandoned one stays recorded, and the verification pass leaves
+   * the row alone. A rewrite that replaces it (the holder invited again)
+   * writes the copy into the new calendar.
+   *
+   * <p>
+   * The removal first, unlike a move: here nothing is written at the
+   * destination, so a row pointed there before the old object is gone would
+   * have the retry pass settle the removal against an empty calendar and leave
+   * the old copy for good. A removal refused on the version listed is made
+   * again without it, as the retry pass makes it, but only while the removal
+   * is still owed: the conflict may be the rewrite for a holder invited again
+   * since this copy's turn began, whose copy then stays, row and all, for the
+   * next pass to move. The window left runs to the removal from that second
+   * ask, or, for a copy whose collection is listed at its own turn, from the
+   * first ask, since that listing already carries a rewrite's version and no
+   * conflict follows: a rewrite landing in it is removed with the old object,
+   * and the row is pointed at the new calendar with nothing there, until the
+   * verification pass finds it missing and writes it again. A removal that
+   * fails or is not made leaves the row on the old object, for the retry pass
+   * and the next pass of this change. The row is read again just before it is
+   * saved: a removal carried out meanwhile has cleared it, and is not written
+   * over. A row whose removal has already landed has nothing to move.
+   *
+   * @param userIdentityId identity of the user
+   * @param settings the connected account
+   * @param endpoint where the account lives
+   * @param object the mapping row, as the page read it
+   * @param to where the copy would have gone
+   * @param listings the collection listings read so far this pass
+   * @return what happened to this copy
+   */
+  private Outcome removeInsteadOfMoving(long userIdentityId,
+                                        CaldavUserSetting settings,
+                                        CalDavEndpoint endpoint,
+                                        ObjectSync object,
+                                        String to,
+                                        Map<String, Map<String, String>> listings) {
+    ObjectSync current = caldavSyncStorage.getObjectByUid(object.getCalendarSyncId(), object.getIcsUid());
+    if (current == null || StringUtils.isBlank(current.getRemoteHref())) {
+      return Outcome.LEFT;
+    }
+    String from = current.getRemoteHref();
+    String guard = StringUtils.defaultIfBlank(etagOf(from, listingOf(from, endpoint, settings, listings)), current.getEtag());
+    Integer status = removeOwedCopy(userIdentityId, endpoint, settings, from, guard);
+    if (status != null && status == PutResult.PRECONDITION_FAILED) {
+      status = CaldavMirrorVerificationService.isBeingRemoved(caldavPendingPushStorage, caldavSyncStorage, object)
+          ? removeOwedCopy(userIdentityId, endpoint, settings, from, null)
+          : null;
+    }
+    if (status == null || status == PutResult.PRECONDITION_FAILED) {
+      return Outcome.REFUSED;
+    }
+    current = caldavSyncStorage.getObjectByUid(object.getCalendarSyncId(), object.getIcsUid());
+    if (current != null && StringUtils.isNotBlank(current.getRemoteHref())) {
+      current.setRemoteHref(to);
+      current.setEtag(null);
+      current.setLastSync(new Date());
+      caldavSyncStorage.saveObject(current);
+    }
+    return Outcome.LEFT;
+  }
+
+  /**
+   * Asks the server to remove a copy owed a removal.
+   *
+   * @param userIdentityId identity of the user
+   * @param endpoint where the account lives
+   * @param settings the connected account
+   * @param from the object's path
+   * @param guard the version to condition the removal on, may be null
+   * @return the server's answer, or null when the removal could not be made
+   */
+  private Integer removeOwedCopy(long userIdentityId,
+                                 CalDavEndpoint endpoint,
+                                 CaldavUserSetting settings,
+                                 String from,
+                                 String guard) {
+    try {
+      return calendarObjectWriters.writer(endpoint).deleteObject(endpoint, from, guard);
+    } catch (RuntimeException | LinkageError e) {
+      if (!isChannelUnavailable(e, settings)) {
+        sayOnce(userIdentityId,
+                from,
+                "The copy user {} is owed the removal of, at {}, could not be removed when their meetings moved; it stays, "
+                    + "and the change is not recorded as applied",
+                userIdentityId,
+                from);
+        LOG.debug("The removal of {} failed", from, e);
+      }
+      return null;
+    }
   }
 
   /**
@@ -770,11 +883,13 @@ public class CaldavMirrorRelocationService {
   private enum Outcome {
     /** Written into the destination and the old object removed. */
     MOVED,
-    /** Written into the destination; the server would not remove the old object. */
+    /** The server would not remove the old object, whether the copy was written into the destination or not. */
     REFUSED,
     /** Not written: eXo can render nothing for the row, and will not later. */
     UNMOVABLE,
     /** Not written, or its answer not recorded; the next pass tries again. */
-    FAILED
+    FAILED,
+    /** Not written: the copy was owed a removal, carried out instead, or had already been removed. */
+    LEFT
   }
 }

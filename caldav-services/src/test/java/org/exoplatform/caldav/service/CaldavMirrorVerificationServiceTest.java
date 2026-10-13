@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyList;
@@ -37,8 +38,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.ZonedDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -72,6 +76,7 @@ import org.exoplatform.caldav.model.MirrorVerification;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.caldav.storage.CaldavPendingPushStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 
 import ch.qos.logback.classic.Level;
@@ -186,6 +191,13 @@ public class CaldavMirrorVerificationServiceTest {
 
   @Mock
   private CaldavSyncStorage                  caldavSyncStorage;
+
+  /**
+   * Asked which copies of a page are owed a removal. Unstubbed it answers that
+   * none is, the case every scenario but the owed-removal ones is about.
+   */
+  @Mock
+  private CaldavPendingPushStorage           caldavPendingPushStorage;
 
   @Mock
   private CaldavPushService                  caldavPushService;
@@ -303,6 +315,103 @@ public class CaldavMirrorVerificationServiceTest {
     assertEquals(1, result.missing());
     assertEquals(1, result.repaired());
     verify(caldavPushService).rewriteAgendaEvent(USER, LOGIN, 5L);
+  }
+
+  /**
+   * A copy owed a removal is the retry pass's, whatever the server shows. Its
+   * holder may still read the meeting (a member of the space whose calendar
+   * holds a meeting they were removed from), and a repair writes as the
+   * holder: it would put back the copy the removal is to take away.
+   */
+  @Test
+  public void aCopyOwedARemovalIsNotWrittenBackOnceDeletedFromTheServer() {
+    givenServerHolds(Map.of());
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    givenRemovalsOwed(1L);
+
+    MirrorVerification result = service.verify(USER, LOGIN);
+
+    assertEquals(1, result.checked());
+    assertEquals(0, result.missing());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
+  }
+
+  @Test
+  public void aCopyOwedARemovalIsNotRepairedNorItsAnswerAdoptedOnceAClientChangedIt() {
+    givenServerHolds(Map.of(HREF, "\"etag-2\""));
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(calDavClient.fetchObject(any(), eq(HREF))).thenReturn(new CalendarObject(HREF, "\"etag-2\"", HIJACKED));
+    givenRemovalsOwed(1L);
+
+    MirrorVerification result = service.verify(USER, LOGIN);
+
+    assertEquals(0, result.altered());
+    verify(caldavAnswerAdoptionService, never()).adoptAnswer(anyLong(), anyLong(), anyString());
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
+  }
+
+  /**
+   * The removal landed while the pass walked the copies before this one: the
+   * row it read still names the copy, the row as it now stands does not.
+   */
+  @Test
+  public void aCopyRemovedWhileThePassWalkedIsNotWrittenBack() {
+    givenServerHolds(Map.of());
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L));
+    when(caldavSyncStorage.getObjectByUid(3L, UID)).thenReturn(mapping(null, null, 5L));
+
+    service.verify(USER, LOGIN);
+
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
+  }
+
+  /**
+   * The removal is recorded while the pass walks the page, after it read the
+   * page and before this copy's turn: the organiser removes the holder from the
+   * second meeting while the first copy is being written again.
+   */
+  @Test
+  public void aRemovalRecordedWhileThePassWalkedIsNotRepairedOver() {
+    ObjectSync second = mapping("/dav/calendars/john/exo-meetings/two.ics", "\"etag-2\"", 6L);
+    second.setId(2L);
+    second.setIcsUid("evt-2");
+    givenServerHolds(Map.of());
+    givenMappings(mapping(HREF, "\"etag-1\"", 5L), second);
+    AtomicBoolean recorded = new AtomicBoolean();
+    when(caldavPushService.rewriteAgendaEvent(USER, LOGIN, 5L)).thenAnswer(invocation -> {
+      recorded.set(true);
+      return null;
+    });
+    when(caldavPendingPushStorage.removalsOwed(anyCollection()))
+        .thenAnswer(invocation -> recorded.get() && ((Collection<?>) invocation.getArgument(0)).contains(2L) ? Set.of(2L)
+                                                                                                               : Set.of());
+
+    service.verify(USER, LOGIN);
+
+    verify(caldavPushService).rewriteAgendaEvent(USER, LOGIN, 5L);
+    verify(caldavPushService, never()).rewriteAgendaEvent(USER, LOGIN, 6L);
+  }
+
+  @Test
+  public void aRemovalOwedThatCannotBeReadEndsTheRoundBeforeTheRepair() {
+    givenServerHolds(Map.of());
+    givenTheFirstPageHolds(mapping(HREF, "\"etag-1\"", 5L));
+    when(caldavPendingPushStorage.removalsOwed(anyCollection())).thenThrow(new IllegalStateException("database down"));
+
+    assertThrows(IllegalStateException.class, () -> service.verify(USER, LOGIN));
+
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
+  }
+
+  @Test
+  public void aRowThatCannotBeReadAgainEndsTheRoundBeforeTheRepair() {
+    givenServerHolds(Map.of());
+    givenTheFirstPageHolds(mapping(HREF, "\"etag-1\"", 5L));
+    when(caldavSyncStorage.getObjectByUid(3L, UID)).thenThrow(new IllegalStateException("database down"));
+
+    assertThrows(IllegalStateException.class, () -> service.verify(USER, LOGIN));
+
+    verify(caldavPushService, never()).rewriteAgendaEvent(anyLong(), anyString(), anyLong());
   }
 
   // ------------------------------------------------- date polls (EXO-89863)
@@ -1417,6 +1526,22 @@ public class CaldavMirrorVerificationServiceTest {
                                                                             .thenReturn(new CalendarObject(HREF,
                                                                                                            "\"etag-2\"",
                                                                                                            HIJACKED));
+  }
+
+  /**
+   * @param objectSyncIds the mapping rows owed a removal
+   */
+  private void givenRemovalsOwed(Long... objectSyncIds) {
+    when(caldavPendingPushStorage.removalsOwed(anyCollection())).thenReturn(Set.of(objectSyncIds));
+  }
+
+  /**
+   * The first page of the mapping rows, for a round that ends on it.
+   *
+   * @param objects the mapping rows of the page
+   */
+  private void givenTheFirstPageHolds(ObjectSync... objects) {
+    when(caldavSyncStorage.getObjects(eq(3L), eq(0), anyInt())).thenReturn(new PageImpl<>(List.of(objects)));
   }
 
   /**
