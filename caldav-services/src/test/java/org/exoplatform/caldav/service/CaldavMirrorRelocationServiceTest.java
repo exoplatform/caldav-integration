@@ -229,37 +229,63 @@ public class CaldavMirrorRelocationServiceTest {
     assertEquals(0, relocation.moved());
     verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString());
     ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
-    InOrder order = inOrder(caldavSyncStorage, calDavClient);
-    order.verify(caldavSyncStorage).saveObject(saved.capture());
+    InOrder order = inOrder(calDavClient, caldavSyncStorage);
     order.verify(calDavClient).deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"");
+    order.verify(caldavSyncStorage).saveObject(saved.capture());
     assertEquals(IN_MAIN, saved.getValue().getRemoteHref());
   }
 
   /**
-   * An old object the server will not remove stays where it is for this pass,
-   * and the row is already at the destination, so the next pass has nothing
-   * left to retry: a removal refused for good never turns every later pass
-   * into a settings round.
+   * The copy changed since it was listed: it is removed all the same, as the
+   * retry pass removes it, since it has to go whatever version it holds.
    */
   @Test
-  public void anOwedRemovalTheServerRefusesIsNotRetriedOnEveryPass() {
+  public void anOwedRemovalRefusedOnItsVersionIsMadeWithoutIt() {
     ObjectSync owed = mapping(IN_DEDICATED, "\"etag-1\"", EVENT);
-    givenTheDestinationIsNow(MAIN);
-    givenThePairPointsAt(DEDICATED);
-    givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\""));
-    givenMappings(owed);
-    when(caldavPendingPushStorage.removalsOwed(List.of(1L))).thenReturn(Set.of(1L));
-    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(owed);
+    givenAnOwedRemoval(owed);
     when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"")).thenReturn(PutResult.PRECONDITION_FAILED);
+    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, null)).thenReturn(204);
+
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+
+    assertTrue(relocation.complete());
+    ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
+    verify(caldavSyncStorage).saveObject(saved.capture());
+    assertEquals(IN_MAIN, saved.getValue().getRemoteHref());
+  }
+
+  /**
+   * A removal that fails leaves the row on the old object: pointed at the new
+   * calendar, the retry pass would settle the removal against an empty
+   * calendar and the old copy would stay for good.
+   */
+  @Test
+  public void aFailedOwedRemovalLeavesTheRowOnTheOldObject() {
+    ObjectSync owed = mapping(IN_DEDICATED, "\"etag-1\"", EVENT);
+    givenAnOwedRemoval(owed);
+    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"")).thenThrow(new IllegalStateException("server down"));
 
     MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
 
     assertFalse(relocation.complete());
-    assertEquals(1, relocation.refused());
-    verify(calDavClient, never()).overwriteObject(any(), anyString(), anyString());
-    ArgumentCaptor<ObjectSync> saved = ArgumentCaptor.forClass(ObjectSync.class);
-    verify(caldavSyncStorage).saveObject(saved.capture());
-    assertEquals(IN_MAIN, saved.getValue().getRemoteHref());
+    verify(caldavSyncStorage, never()).saveObject(any());
+  }
+
+  /**
+   * The propagation carried the removal out while this pass was removing the
+   * old object: the row it cleared is not written over.
+   */
+  @Test
+  public void aRemovalLandedWhileTheOldObjectWasRemovedIsNotWrittenOver() {
+    ObjectSync owed = mapping(IN_DEDICATED, "\"etag-1\"", EVENT);
+    givenAnOwedRemoval(owed);
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(owed, mapping(null, null, EVENT));
+    when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"")).thenReturn(404);
+
+    MirrorRelocation relocation = service.relocate(USER, LOGIN, settings(), mirror(DEDICATED));
+
+    assertTrue(relocation.complete());
+    verify(caldavSyncStorage, never()).saveObject(any());
   }
 
   @Test
@@ -919,6 +945,21 @@ public class CaldavMirrorRelocationServiceTest {
    */
   private void givenTheWriteSucceeds(String href, String etag) {
     when(calDavClient.overwriteObject(endpoint, href, ICS)).thenReturn(new PutResult(201, etag, null));
+  }
+
+  /**
+   * A copy owed a removal while the copies move from the dedicated calendar to
+   * the main one.
+   *
+   * @param owed its mapping row
+   */
+  private void givenAnOwedRemoval(ObjectSync owed) {
+    givenTheDestinationIsNow(MAIN);
+    givenThePairPointsAt(DEDICATED);
+    givenTheOldCollectionHolds(DEDICATED, Map.of(IN_DEDICATED, "\"etag-1\""));
+    givenMappings(owed);
+    when(caldavPendingPushStorage.removalsOwed(List.of(1L))).thenReturn(Set.of(1L));
+    lenient().when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(owed);
   }
 
   /**
