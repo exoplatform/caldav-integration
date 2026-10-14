@@ -20,6 +20,7 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -264,15 +265,24 @@ public class CaldavPendingInvitationService {
    * would be listed, refused, and listed again on every pass for as long as it
    * stays in the window, never converging.
    *
+   * <p>
+   * The calendar list is empty, never null: agenda reads a null list as every
+   * calendar other users shared with the reader, whatever the response
+   * (EXO-91169). The events of those calendars that do not invite this user
+   * are not their meetings: the push refuses them, and they would be listed
+   * again on every pass and count against {@code seedLimit}, crowding the
+   * user's own meetings out of the window. Those that invite the user are
+   * still read, through the attendee criteria.
+   *
    * @param userIdentityId identity of the user
    * @param from start of the window
    * @param to end of the window
    * @return what agenda answers, or nothing when it could not be asked
    */
   private List<Event> attendedBy(long userIdentityId, ZonedDateTime from, ZonedDateTime to) {
-    return listed(userIdentityId,
-                  new EventFilter(userIdentityId, null, NOT_DECLINED, from, to, seedLimit),
-                  "the meetings they attend");
+    EventFilter filter = new EventFilter(userIdentityId, null, NOT_DECLINED, from, to, seedLimit);
+    filter.setCalendarIds(Collections.emptyList());
+    return listed(userIdentityId, filter, "the meetings they attend");
   }
 
   /**
