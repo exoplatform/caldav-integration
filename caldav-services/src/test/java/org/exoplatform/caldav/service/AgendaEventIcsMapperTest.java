@@ -23,8 +23,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.ZoneId;
@@ -105,6 +108,9 @@ public class AgendaEventIcsMapperTest {
   private static final String               SERIES_LINK = "http://localhost:8080/portal/dw/agenda?eventId=77";
 
   private static final long                 SPACE_OWNER = 77L;
+
+  /** A space invited to a meeting as a whole. */
+  private static final long                 INVITED_SPACE = 88L;
 
   @Mock
   private AgendaEventAttendeeService         agendaEventAttendeeService;
@@ -511,6 +517,116 @@ public class AgendaEventIcsMapperTest {
     givenAttendees(attendee(SOMEONE, EventAttendeeResponse.NEEDS_ACTION));
 
     assertTrue(mapper.toIcsEvent(event(), "uid-1", PUSHER).getAttendees().isEmpty());
+  }
+
+  /**
+   * A member invited through a space is named on their own copy, unanswered,
+   * by the address their account answers to (EXO-91031). Without the line the
+   * copy names nobody but the organizer, and no client offers to answer it.
+   */
+  @Test
+  public void aMemberInvitedThroughASpaceIsNamedOnTheirOwnCopy() {
+    givenAMeetingOfAColleagueInvitingASpace();
+    givenAccountAddress("john.doe@calendar.test");
+    when(agendaEventAttendeeService.isEventAttendee(1L, PUSHER)).thenReturn(true);
+
+    List<org.exoplatform.caldav.model.IcsPerson> attendees = mapper.toIcsEvent(eventCreatedBy(SOMEONE), "uid-1", PUSHER)
+                                                                   .getAttendees();
+
+    assertEquals(List.of("jane@example.test", "john.doe@calendar.test"), emailsOf(attendees));
+    assertEquals("NEEDS_ACTION", attendees.get(1).getResponse());
+  }
+
+  /**
+   * A member whose account states no address of its own is named by their
+   * profile address, unanswered, as anybody on the roster is.
+   */
+  @Test
+  public void aMemberWhoseAccountStatesNoAddressIsNamedByTheirProfileAddress() {
+    givenAMeetingOfAColleagueInvitingASpace();
+    when(agendaEventAttendeeService.isEventAttendee(1L, PUSHER)).thenReturn(true);
+
+    List<org.exoplatform.caldav.model.IcsPerson> attendees = mapper.toIcsEvent(eventCreatedBy(SOMEONE), "uid-1", PUSHER)
+                                                                   .getAttendees();
+
+    assertEquals(List.of("jane@example.test", "john@example.test"), emailsOf(attendees));
+    assertEquals("NEEDS_ACTION", attendees.get(1).getResponse());
+  }
+
+  /**
+   * Somebody agenda does not count invited is not named, whatever space is on
+   * the roster.
+   */
+  @Test
+  public void somebodyNotInvitedIsNotNamed() {
+    givenAMeetingOfAColleagueInvitingASpace();
+    when(agendaEventAttendeeService.isEventAttendee(1L, PUSHER)).thenReturn(false);
+
+    assertEquals(List.of("jane@example.test"),
+                 emailsOf(mapper.toIcsEvent(eventCreatedBy(SOMEONE), "uid-1", PUSHER).getAttendees()));
+  }
+
+  /**
+   * The person who called the meeting is its organizer, and is not named a
+   * second time as one of its attendees, even when they belong to the space.
+   */
+  @Test
+  public void theCreatorIsNotNamedBesideTheOrganizer() {
+    givenAMeetingOfAColleagueInvitingASpace();
+    lenient().when(agendaEventAttendeeService.isEventAttendee(1L, PUSHER)).thenReturn(true);
+
+    assertEquals(List.of("jane@example.test"),
+                 emailsOf(mapper.toIcsEvent(eventCreatedBy(PUSHER), "uid-1", PUSHER).getAttendees()));
+  }
+
+  /**
+   * A person the roster names keeps their own line and its answer, once, and
+   * the question of a space is not asked.
+   */
+  @Test
+  public void somebodyTheRosterNamesIsNamedOnce() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenIdentity(SOMEONE, "Jane Roe", "jane@example.test");
+    givenIdentity(INVITED_SPACE, "Marketing Team", null);
+    givenAttendees(attendee(SOMEONE, EventAttendeeResponse.ACCEPTED),
+                   attendee(PUSHER, EventAttendeeResponse.TENTATIVE),
+                   attendee(INVITED_SPACE, EventAttendeeResponse.NEEDS_ACTION));
+
+    List<org.exoplatform.caldav.model.IcsPerson> attendees = mapper.toIcsEvent(eventCreatedBy(SOMEONE), "uid-1", PUSHER)
+                                                                   .getAttendees();
+
+    assertEquals(List.of("jane@example.test", "john@example.test"), emailsOf(attendees));
+    assertEquals("TENTATIVE", attendees.get(1).getResponse());
+    verify(agendaEventAttendeeService, never()).isEventAttendee(anyLong(), anyLong());
+  }
+
+  /**
+   * Asked on the rendered event, not on its series: somebody taken off one
+   * date is not named on the copy of that date, though the series invites
+   * them.
+   */
+  @Test
+  public void aDateTheMemberWasTakenOffDoesNotNameThem() {
+    givenAMeetingOfAColleagueInvitingASpace();
+    Event date = eventCreatedBy(SOMEONE);
+    date.setParentId(77L);
+    when(agendaEventAttendeeService.isEventAttendee(1L, PUSHER)).thenReturn(false);
+    lenient().when(agendaEventAttendeeService.isEventAttendee(77L, PUSHER)).thenReturn(true);
+
+    assertEquals(List.of("jane@example.test"), emailsOf(mapper.toIcsEvent(date, "uid-1", PUSHER).getAttendees()));
+  }
+
+  /**
+   * Agenda failing to answer leaves the line off and the copy written as it
+   * would have been without it.
+   */
+  @Test
+  public void anUnanswerableInvitationLeavesTheLineOff() {
+    givenAMeetingOfAColleagueInvitingASpace();
+    when(agendaEventAttendeeService.isEventAttendee(1L, PUSHER)).thenThrow(new IllegalStateException("down"));
+
+    assertEquals(List.of("jane@example.test"),
+                 emailsOf(mapper.toIcsEvent(eventCreatedBy(SOMEONE), "uid-1", PUSHER).getAttendees()));
   }
 
   @Test
@@ -1271,6 +1387,45 @@ public class AgendaEventIcsMapperTest {
   private void givenAMeeting() {
     givenAttendees(attendee(PUSHER, EventAttendeeResponse.ACCEPTED),
                    attendee(SOMEONE, EventAttendeeResponse.NEEDS_ACTION));
+  }
+
+  /**
+   * A meeting Jane called, with the space the pusher belongs to invited and the
+   * pusher absent from the roster.
+   */
+  private void givenAMeetingOfAColleagueInvitingASpace() {
+    givenIdentity(PUSHER, "John Doe", "john@example.test");
+    givenIdentity(SOMEONE, "Jane Roe", "jane@example.test");
+    givenIdentity(INVITED_SPACE, "Marketing Team", null);
+    givenAttendees(attendee(SOMEONE, EventAttendeeResponse.ACCEPTED),
+                   attendee(INVITED_SPACE, EventAttendeeResponse.NEEDS_ACTION));
+  }
+
+  /**
+   * @param address the address the pusher's account answers to
+   */
+  private void givenAccountAddress(String address) {
+    CaldavUserSetting account = new CaldavUserSetting();
+    account.setUsername(address);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(PUSHER)).thenReturn(account);
+  }
+
+  /**
+   * @param creatorIdentityId who called the meeting
+   * @return the event of {@link #event()}, created by them
+   */
+  private Event eventCreatedBy(long creatorIdentityId) {
+    Event event = event();
+    event.setCreatorId(creatorIdentityId);
+    return event;
+  }
+
+  /**
+   * @param people the attendees of a copy
+   * @return their addresses, in order
+   */
+  private static List<String> emailsOf(List<org.exoplatform.caldav.model.IcsPerson> people) {
+    return people.stream().map(org.exoplatform.caldav.model.IcsPerson::getEmail).toList();
   }
 
   /**

@@ -178,7 +178,7 @@ public class AgendaEventIcsMapper {
                    .updated(instantOf(event.getUpdated()))
                    .organizer(organizer)
                    .organizerIsPusher(event.getCreatorId() == pusherIdentityId)
-                   .attendees(attendees(roster, pusherIdentityId, pusherAccountAddress))
+                   .attendees(attendees(event, roster, pusherIdentityId, pusherAccountAddress))
                    .recurrenceRule(event.getRecurrence() == null ? null : event.getRecurrence().getRrule())
                    .occurrenceId(occurrenceId(event))
                    .reminders(reminders(event.getId(), pusherIdentityId))
@@ -795,6 +795,26 @@ public class AgendaEventIcsMapper {
   /**
    * The roster, with the people whose address is not visible left off.
    *
+   * <p>
+   * <b>A person invited through a space is named on their own copy</b>
+   * (EXO-91031). A space on the roster is one row standing for its members: it
+   * has no address and is left off, and a member has no row of their own until
+   * they answer. Their copy would then name nobody but the organizer, and no
+   * client offers to answer an invitation that does not name its owner. So when
+   * the person the copy is written for has no row, did not create the meeting,
+   * and agenda counts them invited ({@code isEventAttendee}, which resolves the
+   * spaces they may view), their own line is added, unanswered, spelled with
+   * their account's address. Agenda takes an answer from them, and records it
+   * on a row of their own. The other members are not listed: a copy names the
+   * people agenda names, and the space stands for them.
+   *
+   * <p>
+   * Asked on the rendered event, not on its series: somebody taken off one
+   * date of a series is not invited to it, and their copy of that date does not
+   * name them. When agenda cannot answer, the line is left off and the copy is
+   * written as it would have been without it.
+   *
+   * @param event the agenda event being copied
    * @param attendees the event's attendees as agenda holds them
    * @param pusherIdentityId the person this copy is being written for: theirs is
    *          the one line spelled the way their own account spells it
@@ -803,9 +823,14 @@ public class AgendaEventIcsMapper {
    *          itself rather than to a stranger. Left alone when blank.
    * @return the attendees that can be named truthfully
    */
-  private List<IcsPerson> attendees(List<EventAttendee> attendees, long pusherIdentityId, String pusherAccountAddress) {
+  private List<IcsPerson> attendees(Event event,
+                                    List<EventAttendee> attendees,
+                                    long pusherIdentityId,
+                                    String pusherAccountAddress) {
     List<IcsPerson> people = new ArrayList<>();
+    boolean pusherOnRoster = false;
     for (EventAttendee attendee : attendees) {
+      pusherOnRoster |= attendee.getIdentityId() == pusherIdentityId;
       IcsPerson person = personOf(attendee.getIdentityId());
       if (person != null && attendee.getIdentityId() == pusherIdentityId
           && StringUtils.isNotBlank(pusherAccountAddress)) {
@@ -817,7 +842,40 @@ public class AgendaEventIcsMapper {
         people.add(person);
       }
     }
+    if (!pusherOnRoster && invitedThroughASpace(event, pusherIdentityId)) {
+      IcsPerson pusher = personOf(pusherIdentityId);
+      if (pusher != null) {
+        if (StringUtils.isNotBlank(pusherAccountAddress)) {
+          pusher.setEmail(pusherAccountAddress);
+        }
+        pusher.setResponse(EventAttendeeResponse.NEEDS_ACTION.name());
+        people.add(pusher);
+      }
+    }
     return people;
+  }
+
+  /**
+   * Whether the person a copy is written for, absent from the roster, is
+   * invited to the event all the same: through a space they may view.
+   *
+   * @param event the agenda event being copied
+   * @param pusherIdentityId the person the copy is written for
+   * @return true when agenda counts them invited and they did not create it
+   */
+  private boolean invitedThroughASpace(Event event, long pusherIdentityId) {
+    if (pusherIdentityId <= 0 || pusherIdentityId == event.getCreatorId()) {
+      return false;
+    }
+    try {
+      return agendaEventAttendeeService.isEventAttendee(event.getId(), pusherIdentityId);
+    } catch (RuntimeException e) {
+      LOG.debug("Whether user {} is invited to event {} could not be read; their copy does not name them",
+                pusherIdentityId,
+                event.getId(),
+                e);
+      return false;
+    }
   }
 
   /**

@@ -188,6 +188,18 @@ public class CaldavSyncStorage {
   }
 
   /**
+   * The users holding a binding in a state, once each, after a given one.
+   *
+   * @param status the binding state that counts
+   * @param after the last identity already read, 0 to start
+   * @param limit how many users to read
+   * @return the user identities above {@code after}, in ascending order
+   */
+  public List<Long> getAccountsAfter(CalendarSyncStatus status, long after, int limit) {
+    return calendarSyncDAO.findAccountsAfter(status, after, PageRequest.of(0, limit));
+  }
+
+  /**
    * One binding by its identifier, whoever it belongs to.
    *
    * <p>
