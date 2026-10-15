@@ -66,7 +66,10 @@ import org.exoplatform.services.log.Log;
  * the work stays on <i>this</i> thread. Nothing below here may start a thread
  * of its own: a fan-out onto an executor would leave the container behind and
  * reintroduce exactly the silent failure. The fan-out is therefore sequential,
- * on this thread, by design and not by omission.
+ * on this thread, by design and not by omission. The one exception is the
+ * walk over the members of an invited space, handed to the add-on's outward
+ * thread, which sets up a container of its own
+ * ({@code CaldavEventPropagationService#seedSpaceMembersInContainer}).
  */
 public abstract class AgendaEventPropagationListener extends Listener<AgendaEventModification, Object> {
 

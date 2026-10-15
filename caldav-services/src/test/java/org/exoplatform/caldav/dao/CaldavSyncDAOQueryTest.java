@@ -106,6 +106,34 @@ public class CaldavSyncDAOQueryTest {
   private static final String   SHARED_UID    = "485e6afe-c5f5-4026-ae51-8c1ad905c45c";
 
   // ---------------------------------------------------------------------
+  // EXO-91031 - the accounts a space invitation reaches at once.
+  // ---------------------------------------------------------------------
+
+  /**
+   * The accounts holding a binding in a state, once each, in identity order,
+   * after the one given: a user with two bindings is read once, a user whose
+   * bindings are all in another state is not read, and the read starts
+   * strictly after the identity given.
+   *
+   * <p>
+   * Run on this test's engine only: whether MySQL serves the status filter and
+   * the identity range from an index is not verified here.
+   */
+  @Test
+  public void theAccountsAreReadOnceEachInIdentityOrderAfterTheOneGiven() {
+    persistCalendarSync(30L, "carols", CalendarSyncStatus.ACTIVE, null);
+    persistCalendarSync(10L, "alices-1", CalendarSyncStatus.ACTIVE, null);
+    persistCalendarSyncOn(10L, 2L, "alices-2", CalendarSyncStatus.ACTIVE, null);
+    persistCalendarSync(20L, "bobs-paused", CalendarSyncStatus.PAUSED, null);
+    persistCalendarSync(40L, "daves", CalendarSyncStatus.ACTIVE, null);
+
+    assertEquals(List.of(10L, 30L, 40L), calendarSyncDAO.findAccountsAfter(CalendarSyncStatus.ACTIVE, 0L, PageRequest.of(0, 10)));
+    assertEquals(List.of(10L, 30L), calendarSyncDAO.findAccountsAfter(CalendarSyncStatus.ACTIVE, 0L, PageRequest.of(0, 2)));
+    assertEquals(List.of(40L), calendarSyncDAO.findAccountsAfter(CalendarSyncStatus.ACTIVE, 30L, PageRequest.of(0, 10)));
+    assertEquals(List.of(20L), calendarSyncDAO.findAccountsAfter(CalendarSyncStatus.PAUSED, 0L, PageRequest.of(0, 10)));
+  }
+
+  // ---------------------------------------------------------------------
   // EXO-90277 - the subscription changes eXo owes colleagues on BlueMind.
   // ---------------------------------------------------------------------
 
