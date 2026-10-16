@@ -258,7 +258,7 @@ DTEND:${toUTCString(event.end)}Z
       if (event.allDay) {
         iCalString += `RECURRENCE-ID;VALUE=DATE:${toIcsDate(event.occurrence.id)}\n`;
       } else {
-        iCalString += `RECURRENCE-ID:${event.occurrence.id.replace(/[-:]|\.\d{3}/g, '')}Z\n`;
+        iCalString += `RECURRENCE-ID:${toUTCString(event.occurrence.id)}Z\n`;
       }
     } else if (event.recurrence?.rrule) {
       let rruleValue = event.recurrence.rrule.trim();
