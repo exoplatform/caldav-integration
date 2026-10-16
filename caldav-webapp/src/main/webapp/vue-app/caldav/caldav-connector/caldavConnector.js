@@ -43,31 +43,15 @@ export default {
   async getCalendar(clientCaldav){
     const calendars = await clientCaldav.fetchCalendars({headersToExclude: ['If-None-Match']});
     if (calendars.length === 0) {
-      console.error('No calendar found');
-      return null;
-    } else {
-      return calendars[0];
+      throw caldavError('caldav.error.noCalendar');
     }
+    return calendars[0];
   },
   async retrieveEvents(settings, periodStartDate, periodEndDate) {
     const start = caldavConnectorService.toRFC3339(periodStartDate, false, true);
     const end = caldavConnectorService.toRFC3339(periodEndDate, false, true);
-    const clientCaldav = await tsdav.createDAVClient({
-      serverUrl: settings.caldavUrl.replace('{username}',settings.username),
-      credentials: {
-        username: settings.username,
-        password: settings.password,
-      },
-      authMethod: 'Basic',
-      defaultAccountType: 'caldav',
-    }).catch(() => {
-      console.error('cant connect to caldav client check username and password');
-    });
-    //get calendar
+    const clientCaldav = await createClient(settings);
     const calendar = await this.getCalendar(clientCaldav);
-    if (!calendar) {
-      return Promise.all(null);
-    }
     const events = await clientCaldav.fetchCalendarObjects({
       calendar,
       expand: true,
@@ -208,113 +192,57 @@ export default {
     });
   },
   async removeEvent(event, settings) {
-    const clientCaldav = await tsdav.createDAVClient({
-      serverUrl: settings.caldavUrl.replace('{username}',settings.username),
-      credentials: {
-        username: settings.username,
-        password: settings.password,
+    const clientCaldav = await createClient(settings);
+    await this.getCalendar(clientCaldav);
+    return clientCaldav.deleteCalendarObject({
+      calendarObject: {
+        url: event.url,
+        etag: event.etag,
       },
-      authMethod: 'Basic',
-      defaultAccountType: 'caldav',
-    }).catch(() => {
-      console.error('cant connect to caldav client check username and password');
+      headersToExclude: ['If-None-Match']
     });
-    //get calendar
-    const calendar = await this.getCalendar(clientCaldav);
-    if (!calendar) {
-      return Promise.all(null);
-    } else {
-      return clientCaldav.deleteCalendarObject({
-        calendarObject: {
-          url: event.url,
-          etag: event.etag,
-        },
-        headersToExclude: ['If-None-Match']
-      });
-    }
   },
   async saveEvent(event, settings) {
-    const clientCaldav = await tsdav.createDAVClient({
-      serverUrl: settings.caldavUrl.replace('{username}',settings.username),
-      credentials: {
-        username: settings.username,
-        password: settings.password,
-      },
-      authMethod: 'Basic',
-      defaultAccountType: 'caldav',
-    }).catch((e) => {
-      console.error('cant connect to caldav client check username and password', e);
-      return null;
-    });
-    //get calendar
-    const calendar = clientCaldav ? await this.getCalendar(clientCaldav) : null;
-    if (!calendar) {
-      return Promise.all(null);
-    }
+    const clientCaldav = await createClient(settings);
+    const calendar = await this.getCalendar(clientCaldav);
     const isOccurrence = !!event.occurrence;
     const icalUID = isOccurrence ? event.parent.remoteId : event.remoteId || crypto.randomUUID();
     const filename = `${icalUID}.ics`;
 
-    let start = toUTCString(event.start);
-    let end = toUTCString(event.end);
     const dtStamp = new Date().toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', 'Z');
 
     let iCalString = `BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Exo Platform//NONSGML v1.0//EN
 BEGIN:VEVENT
-SUMMARY:${event.summary}
+SUMMARY:${escapeText(event.summary)}
 UID:${icalUID}
 DTSTAMP:${dtStamp}
 `;
     if (event.allDay) {
-      start = start.substring(0, 8);
-      end = end.substring(0, 8);
-      iCalString += `DTSTART;VALUE=DATE:${start}
-DTEND;VALUE=DATE:${end}
+      iCalString += `DTSTART;VALUE=DATE:${toIcsDate(event.start)}
+DTEND;VALUE=DATE:${toIcsEndDate(event.end)}
 `;
     } else {
-      iCalString += `DTSTART:${start}Z
-DTEND:${end}Z
+      iCalString += `DTSTART:${toUTCString(event.start)}Z
+DTEND:${toUTCString(event.end)}Z
 `;
     }
     if (event.location) {
-      iCalString += `LOCATION:${event.location}\n`;
+      iCalString += `LOCATION:${escapeText(event.location)}\n`;
     }
-    let description = '';
+    const descriptionParts = [];
     if (event.description) {
-      description += `${event.description.replace(/\n/g, '\\n')}\\n`;
+      descriptionParts.push(htmlToText(event.description));
     }
-    if (event.conferences?.length > 0) {
-      description += event.conferences[0]?.url;
+    if (event.conferences?.length > 0 && event.conferences[0]?.url) {
+      descriptionParts.push(event.conferences[0].url);
     }
-    if (description !== '') {
-      iCalString += `DESCRIPTION:${description}\n`;
+    if (descriptionParts.length > 0) {
+      iCalString += `DESCRIPTION:${escapeText(descriptionParts.join('\n\n'))}\n`;
     }
-    if (isOccurrence) {
-      const recurrenceId = event.occurrence.id.replace(/[-:]|\.\d{3}/g, '');
-      const isTimePresent = event.occurrence.id.includes('T');
-      if (isTimePresent) {
-        iCalString += `RECURRENCE-ID:${recurrenceId}Z\n`; // Add Z for UTC if current time
-        iCalString += `RECURRENCE-ID;VALUE=DATE:${recurrenceId}\n`;
-      }
-    } else if (event.recurrence?.rrule) {
-      let rruleValue = event.recurrence.rrule.trim();
-      rruleValue = rruleValue.replace(/COUNT=0;?/, '');
-      if (rruleValue.length > 0) {
-        iCalString += `RRULE:${rruleValue}\n`;
-      }
-    }
-    if (!isOccurrence && event.recurrence?.exceptions && event.recurrence.exceptions.length > 0) {
-      event.recurrence.exceptions.forEach(exdate => {
-        const exDateFormatted = exdate.date.replace(/[-:]|\.\d{3}/g, '');
-        if (exDateFormatted.includes('T')) {
-          iCalString += `EXDATE:${exDateFormatted}Z\n`;
-        } else {
-          iCalString += `EXDATE;VALUE=DATE:${exDateFormatted}\n`;
-        }
-      });
-    }
+    iCalString += recurrenceProperties(event);
+    iCalString += buildAlarms(event);
     iCalString += `END:VEVENT
 END:VCALENDAR
 `;
@@ -325,12 +253,262 @@ END:VCALENDAR
       });
       return {id: icalUID};
     } catch (e) {
-      console.error('Error creating/updating CalDAV:', e, 'Contenu iCalString:', iCalString);
-      throw e;
+      console.error('Error creating/updating CalDAV:', e, 'iCalString:', iCalString);
+      throw caldavError('caldav.error.save', e);
     }
   }
 };
 
+/**
+ * Opens a DAV client for the connected account.
+ *
+ * Rejects rather than resolving null when the connection cannot be made.
+ *
+ * @param {Object} settings connector settings holding the URL and credentials
+ * @returns {Promise<Object>} a connected tsdav client
+ */
+async function createClient(settings) {
+  try {
+    return await tsdav.createDAVClient({
+      serverUrl: settings.caldavUrl.replace('{username}', settings.username),
+      credentials: {
+        username: settings.username,
+        password: settings.password,
+      },
+      authMethod: 'Basic',
+      defaultAccountType: 'caldav',
+    });
+  } catch (e) {
+    console.error('cannot connect to the CalDAV server, check the URL and credentials', e);
+    throw caldavError('caldav.error.connection', e);
+  }
+}
+
+/**
+ * Builds the error the connector rejects with: a stable code for the kind of
+ * failure, and the HTTP status when the cause carries one. Both are for
+ * diagnostics; agenda does not read them.
+ *
+ * @param {String} code stable identifier for the kind of failure
+ * @param {Object} cause underlying error, kept for logging and for its status
+ * @returns {Error} the error to reject with
+ */
+function caldavError(code, cause) {
+  const error = new Error(code);
+  error.code = code;
+  error.status = cause?.status || cause?.response?.status;
+  error.cause = cause;
+  return error;
+}
+
+/**
+ * Escapes a value for an iCalendar TEXT property, per RFC 5545 section
+ * 3.3.11. Unescaped, a comma or a semicolon is read as a value separator, and
+ * a newline ends the property, so the rest of the text would be read as
+ * properties of its own.
+ *
+ * The backslash is replaced first, otherwise it would escape the escapes
+ * added afterwards.
+ *
+ * @param {String} value raw text destined for a TEXT property
+ * @returns {String} the escaped value, safe to concatenate into an ICS
+ */
+function escapeText(value) {
+  if (!value) {
+    return '';
+  }
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,')
+    .replace(/\r\n|\r|\n/g, '\\n');
+}
+
+/**
+ * Reduces the rich text agenda stores as a description to the plain text an
+ * iCalendar DESCRIPTION can carry. Calendar clients render the property
+ * literally, so markup left in place is shown as markup on the phone.
+ *
+ * The markup is parsed into a document of its own: the description can be
+ * another user's text, and an element of the live page would load its images
+ * and run their handlers, where nothing in a DOMParser document loads or runs.
+ * For the same reason the break pattern never scans past the next '<' or '>',
+ * which keeps its cost linear in the length of the description.
+ *
+ * @param {String} html description as agenda supplies it
+ * @returns {String} the same content as plain text, block tags becoming breaks
+ */
+function htmlToText(html) {
+  if (!html) {
+    return '';
+  }
+  const withBreaks = String(html)
+    .replace(/<br\b[^<>]*>/gi, '\n')
+    .replace(/<\s*\/\s*(p|div|li|tr|h[1-6])\s*>/gi, '\n');
+  const body = new DOMParser().parseFromString(withBreaks, 'text/html').body;
+  return (body.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * The calendar day an all-day value stands for.
+ *
+ * Agenda hands an all-day day as midnight UTC of that day: its REST layer
+ * formats the date as yyyy-MM-dd, which a Date reads as midnight UTC, and
+ * AgendaUtils.toRFC3339 rewrites that instant as a local date-time. Read in
+ * the user's zone, that instant falls on the day before anywhere west of UTC.
+ * The local rewrite can also move it by a daylight-saving change, when the
+ * local time it produces exists twice (Europe/Chisinau falls back at midnight
+ * UTC). So the day is the one whose midnight UTC is nearest to the value.
+ *
+ * @param {String} value date or instant as agenda supplies it
+ * @returns {Object} the year, month and day
+ */
+function allDayDateParts(value) {
+  const halfDay = 12 * 60 * 60 * 1000;
+  const nearestMidnight = new Date(new Date(value).getTime() + halfDay);
+  return {
+    year: nearestMidnight.getUTCFullYear(),
+    month: nearestMidnight.getUTCMonth() + 1,
+    day: nearestMidnight.getUTCDate(),
+  };
+}
+
+/**
+ * Formats an all-day value for a VALUE=DATE property.
+ *
+ * @param {String} value date or instant as agenda supplies it
+ * @returns {String} the date as YYYYMMDD
+ */
+function toIcsDate(value) {
+  const {year, month, day} = allDayDateParts(value);
+  return `${year}${pad(month)}${pad(day)}`;
+}
+
+/**
+ * The DTEND of an all-day event, which RFC 5545 defines as exclusive: a
+ * one-day event ends on the day after it. Agenda holds the last day the event
+ * covers, so a day is added here.
+ *
+ * The arithmetic is done at midday UTC so that no daylight-saving transition
+ * can move the result onto a neighbouring day.
+ *
+ * @param {String} value last day the event covers, a date or an instant
+ * @returns {String} the exclusive end date as YYYYMMDD
+ */
+function toIcsEndDate(value) {
+  const {year, month, day} = allDayDateParts(value);
+  const date = new Date(Date.UTC(year, month - 1, day, 12));
+  date.setUTCDate(date.getUTCDate() + 1);
+  return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}`;
+}
+
+/**
+ * The properties that place the pushed event in its series: the
+ * RECURRENCE-ID of an occurrence, or the RRULE and EXDATEs of a series.
+ *
+ * @param {Object} event agenda event being pushed
+ * @returns {String} the property lines, empty for an event outside a series
+ */
+function recurrenceProperties(event) {
+  if (event.occurrence) {
+    // One RECURRENCE-ID, which RFC 5545 allows at most once and requires in
+    // the value type of the series' DTSTART. Its form therefore follows
+    // event.allDay, as DTSTART does, and not the shape of the occurrence
+    // id: agenda identifies an all-day occurrence by an instant too.
+    if (event.allDay) {
+      return `RECURRENCE-ID;VALUE=DATE:${toIcsDate(event.occurrence.id)}\n`;
+    }
+    return `RECURRENCE-ID:${toUTCString(event.occurrence.id)}Z\n`;
+  }
+  let properties = '';
+  if (event.recurrence?.rrule) {
+    let rruleValue = event.recurrence.rrule.trim();
+    rruleValue = rruleValue.replace(/COUNT=0;?/, '');
+    if (rruleValue.length > 0) {
+      properties += `RRULE:${rruleValue}\n`;
+    }
+  }
+  if (event.recurrence?.exceptions && event.recurrence.exceptions.length > 0) {
+    event.recurrence.exceptions.forEach(exdate => {
+      const exDateFormatted = exdate.date.replace(/[-:]|\.\d{3}/g, '');
+      if (exDateFormatted.includes('T')) {
+        properties += `EXDATE:${exDateFormatted}Z\n`;
+      } else {
+        properties += `EXDATE;VALUE=DATE:${exDateFormatted}\n`;
+      }
+    });
+  }
+  return properties;
+}
+
+/**
+ * Builds one VALARM per reminder the event carries, so that a mirrored
+ * meeting alerts on the device the way it does in eXo. Without them the copy
+ * is silent, which is the difference between an entry in a calendar and a
+ * reminder to attend the thing.
+ *
+ * @param {Object} event agenda event being pushed
+ * @returns {String} the VALARM components, empty when the event has none
+ */
+function buildAlarms(event) {
+  if (!event.reminders?.length) {
+    return '';
+  }
+  return event.reminders.map(reminder => {
+    const minutes = reminderMinutes(reminder);
+    if (minutes === null) {
+      return '';
+    }
+    return `BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:${escapeText(event.summary)}
+TRIGGER:-PT${minutes}M
+END:VALARM
+`;
+  }).join('');
+}
+
+/**
+ * Converts one agenda reminder into minutes before the event.
+ *
+ * @param {Object} reminder reminder as agenda holds it, a quantity and a unit
+ * @returns {Number} minutes before the start, or null when unusable
+ */
+function reminderMinutes(reminder) {
+  const before = Number(reminder?.before);
+  if (!Number.isFinite(before) || before < 0) {
+    return null;
+  }
+  switch (String(reminder.beforePeriodType || '').toLowerCase()) {
+  case 'hour':
+    return before * 60;
+  case 'day':
+    return before * 60 * 24;
+  case 'week':
+    return before * 60 * 24 * 7;
+  default:
+    return before;
+  }
+}
+
+/**
+ * Pads a number to two digits, for the date formats above.
+ *
+ * @param {Number} value number to pad
+ * @returns {String} the value as at least two characters
+ */
+function pad(value) {
+  return value < 10 ? `0${value}` : `${value}`;
+}
+
+/**
+ * Formats a timed value as an iCalendar UTC date-time, without the trailing
+ * Z, which the callers add. Only used for events that carry a time; all-day
+ * values go through toIcsDate.
+ *
+ * @param {String} dateStr date-time as agenda supplies it
+ * @returns {String} the value as YYYYMMDDTHHMMSS in UTC
+ */
 function toUTCString(dateStr) {
   const d = new Date(dateStr);
   return d.toISOString().replace(/[-:]|\.\d{3}/g, '').replace('Z', '');
