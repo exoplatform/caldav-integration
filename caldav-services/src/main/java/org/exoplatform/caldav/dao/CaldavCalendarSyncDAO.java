@@ -130,6 +130,26 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
                              Pageable pageable);
 
   /**
+   * The users holding at least one binding in a state, once each, after a
+   * given one: the accounts the sweep visits, read in identity order.
+   *
+   * <p>
+   * Keyed on the last identity read rather than on an offset, so that an
+   * account changing state between two reads does not shift the next one past
+   * a user who has not been read yet. A {@link List} and not a page: no caller
+   * reads a total, and a page whose content fills the request would cost a
+   * count query over a grouped select.
+   *
+   * @param status the binding state that counts
+   * @param after the last identity already read, 0 to start
+   * @param pageable how many users to read; required, this set spans every user
+   * @return the user identities above {@code after}, in ascending order
+   */
+  @Query("SELECT p.userIdentityId FROM CaldavCalendarSyncEntity p WHERE p.status = :status"
+      + " AND p.userIdentityId > :after GROUP BY p.userIdentityId ORDER BY p.userIdentityId ASC")
+  List<Long> findAccountsAfter(@Param("status") CalendarSyncStatus status, @Param("after") long after, Pageable pageable);
+
+  /**
    * Every pair on one server, paginated. Used when a registration is
    * deactivated or removed and its bindings have to be dealt with.
    *
