@@ -220,8 +220,8 @@ UID:${icalUID}
 DTSTAMP:${dtStamp}
 `;
     if (event.allDay) {
-      iCalString += `DTSTART;VALUE=DATE:${toIcsDate(event.start, event.timeZoneId)}
-DTEND;VALUE=DATE:${toIcsEndDate(event.end, event.timeZoneId)}
+      iCalString += `DTSTART;VALUE=DATE:${toIcsDate(event.start)}
+DTEND;VALUE=DATE:${toIcsEndDate(event.end)}
 `;
     } else {
       iCalString += `DTSTART:${toUTCString(event.start)}Z
@@ -256,7 +256,7 @@ DTEND:${toUTCString(event.end)}Z
       // off the identifier wrote a date-time reference into a date-valued
       // series, which matches no instance at all.
       if (event.allDay) {
-        iCalString += `RECURRENCE-ID;VALUE=DATE:${toIcsDate(event.occurrence.id, event.timeZoneId)}\n`;
+        iCalString += `RECURRENCE-ID;VALUE=DATE:${toIcsDate(event.occurrence.id)}\n`;
       } else {
         iCalString += `RECURRENCE-ID:${event.occurrence.id.replace(/[-:]|\.\d{3}/g, '')}Z\n`;
       }
@@ -386,50 +386,37 @@ function htmlToText(html) {
 }
 
 /**
- * The calendar date of a value, as seen in the event's own time zone.
+ * The calendar day an all-day value stands for.
  *
- * Neither of the obvious shortcuts works. Converting to UTC and truncating
- * moves the day for every user east of Greenwich — midnight in Tunis is 23:00
- * UTC the day before. Reading the leading YYYY-MM-DD off the string has the
- * same fault whenever the value is an instant rather than a plain date, and
- * agenda supplies both: an all-day event arrives with a date for its start and
- * an instant for its end, so the two were resolving to different days and the
- * event came out with no duration at all.
- *
- * The zone is therefore explicit, and the parts come from the formatter rather
- * than from any string slicing.
+ * Agenda hands an all-day day as midnight UTC of that day: its REST layer
+ * formats the date as yyyy-MM-dd, which a Date reads as midnight UTC, and
+ * AgendaUtils.toRFC3339 rewrites that instant as a local date-time. Read in
+ * the user's zone, that instant falls on the day before anywhere west of UTC.
+ * The local rewrite can also move it by a daylight-saving change, when the
+ * local time it produces exists twice (Europe/Chisinau falls back at midnight
+ * UTC). So the day is the one whose midnight UTC is nearest to the value.
  *
  * @param {String} value date or instant as agenda supplies it
- * @param {String} timeZoneId the event's zone; the runtime's own zone if absent
- * @returns {Object} the year, month and day in that zone
+ * @returns {Object} the year, month and day
  */
-function datePartsInZone(value, timeZoneId) {
-  const options = {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  };
-  if (timeZoneId) {
-    options.timeZone = timeZoneId;
-  }
-  const parts = new Intl.DateTimeFormat('en-US', options).formatToParts(new Date(value));
-  const read = type => parts.find(part => part.type === type).value;
+function allDayDateParts(value) {
+  const halfDay = 12 * 60 * 60 * 1000;
+  const nearestMidnight = new Date(new Date(value).getTime() + halfDay);
   return {
-    year: Number(read('year')),
-    month: Number(read('month')),
-    day: Number(read('day')),
+    year: nearestMidnight.getUTCFullYear(),
+    month: nearestMidnight.getUTCMonth() + 1,
+    day: nearestMidnight.getUTCDate(),
   };
 }
 
 /**
- * Formats the date part of a value for a VALUE=DATE property.
+ * Formats an all-day value for a VALUE=DATE property.
  *
  * @param {String} value date or instant as agenda supplies it
- * @param {String} timeZoneId the event's zone
  * @returns {String} the date as YYYYMMDD
  */
-function toIcsDate(value, timeZoneId) {
-  const {year, month, day} = datePartsInZone(value, timeZoneId);
+function toIcsDate(value) {
+  const {year, month, day} = allDayDateParts(value);
   return `${year}${pad(month)}${pad(day)}`;
 }
 
@@ -444,11 +431,10 @@ function toIcsDate(value, timeZoneId) {
  * can move the result onto a neighbouring day.
  *
  * @param {String} value last day the event covers, a date or an instant
- * @param {String} timeZoneId the event's zone, in which that day is read
  * @returns {String} the exclusive end date as YYYYMMDD
  */
-function toIcsEndDate(value, timeZoneId) {
-  const {year, month, day} = datePartsInZone(value, timeZoneId);
+function toIcsEndDate(value) {
+  const {year, month, day} = allDayDateParts(value);
   const date = new Date(Date.UTC(year, month - 1, day, 12));
   date.setUTCDate(date.getUTCDate() + 1);
   return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}`;
