@@ -38,10 +38,14 @@ public enum PendingPushKind {
   REWRITE,
 
   /**
-   * The copy has to go: the eXo event behind it was destroyed. This is the case
-   * with no other safety net at all — a destroyed event renders to nothing, and
-   * the verification pass deliberately refuses to conclude anything from an
-   * empty render, so nothing but this record will ever remove the object.
+   * The copy has to go: the eXo event behind it was destroyed, or it still
+   * exists but may no longer hold a copy (it became a date poll) or its holder
+   * is no longer invited to it (removed from the meeting). For a destroyed
+   * event and for a removed invitee, nothing but this record will ever remove
+   * the object; a poll's copy in the meeting copies' collection is also
+   * retired by the verification pass. While this record stands, the
+   * verification pass does not repair the copy: a removed invitee may still
+   * read the meeting, and a repair, written as them, would put the copy back.
    */
   REMOVE
 

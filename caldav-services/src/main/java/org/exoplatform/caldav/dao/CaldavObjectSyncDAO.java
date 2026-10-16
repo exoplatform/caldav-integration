@@ -134,13 +134,8 @@ public interface CaldavObjectSyncDAO extends JpaRepository<CaldavObjectSyncEntit
    * others, who were then skipped and never got their copy.
    *
    * <p>
-   * Only a row that still names an object counts. The tombstone a removal
-   * leaves — the row kept with its href cleared — is not a copy, and counting
-   * it meant a date poll switched back to a meeting never reached the invitees
-   * whose copies were retired while it was a poll: the seeding read their
-   * tombstones as copies they already held. Tested as {@code IS NOT NULL}
-   * alone: a clearing sets null, and Oracle reads an empty string as null, so
-   * a {@code <> ''} would drop every row there.
+   * A tombstone (href cleared) is not a copy. {@code IS NOT NULL} alone: on
+   * Oracle a {@code <> ''} would drop every row.
    *
    * @param userIdentityId the user whose copies are asked about
    * @param localEventIds the eXo events to ask about

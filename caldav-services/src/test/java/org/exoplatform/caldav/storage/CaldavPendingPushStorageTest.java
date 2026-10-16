@@ -29,10 +29,12 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 
 import jakarta.persistence.EntityManager;
@@ -458,6 +460,36 @@ public class CaldavPendingPushStorageTest {
   public void anAccountThatIsOwedNothingSaysSo() {
     assertEquals(0, storage.owed(ALICE));
     assertTrue(storage.attemptable(ALICE, 5, 10).isEmpty());
+  }
+
+  /**
+   * A removal owed to one copy is told apart from a rewrite owed to it and from
+   * nothing owed, and only for that copy (EXO-90518): an edit reads it before
+   * recording a rewrite over the same row.
+   */
+  @Test
+  public void aRemovalOwedIsToldApartFromARewriteAndFromNothing() {
+    inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REMOVE, null, "uid-8801"));
+    inTransaction(() -> storage.owe(BOB_COPY, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801"));
+
+    assertEquals(Set.of(ALICE_COPY), storage.removalsOwed(List.of(ALICE_COPY, BOB_COPY, ALICE_OTHER_COPY)));
+    assertTrue(storage.removalsOwed(List.of()).isEmpty());
+  }
+
+  /**
+   * A list longer than one {@code IN} chunk is asked in full: a removal owed
+   * past the first chunk is still found.
+   */
+  @Test
+  public void aRemovalOwedPastTheFirstChunkIsFound() {
+    inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REMOVE, null, "uid-8801"));
+    List<Long> ids = new ArrayList<>();
+    for (long id = 100_000L; id < 101_200L; id++) {
+      ids.add(id);
+    }
+    ids.add(ALICE_COPY);
+
+    assertEquals(Set.of(ALICE_COPY), storage.removalsOwed(ids));
   }
 
   // ---------------------------------------------------------------- fixtures
