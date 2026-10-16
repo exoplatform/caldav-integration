@@ -136,8 +136,9 @@ public interface CaldavCalendarSyncDAO extends JpaRepository<CaldavCalendarSyncE
    * <p>
    * Keyed on the last identity read rather than on an offset, so that an
    * account changing state between two reads does not shift the next one past
-   * a user who has not been read yet. A {@link List} and not a page, for the
-   * reason {@link #findDueAccounts} gives.
+   * a user who has not been read yet. A {@link List} and not a page: no caller
+   * reads a total, and a page whose content fills the request would cost a
+   * count query over a grouped select.
    *
    * @param status the binding state that counts
    * @param after the last identity already read, 0 to start
