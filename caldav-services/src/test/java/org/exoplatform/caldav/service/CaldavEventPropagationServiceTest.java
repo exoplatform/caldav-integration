@@ -858,6 +858,50 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
+   * When the removals owed cannot be read, none is known to be owed and an
+   * edit still reaches every holder: both rewrites are recorded as owed and
+   * attempted, rather than the failed read ending the fan-out before any
+   * obligation is recorded.
+   */
+  @Test
+  void anEditStillReachesEveryHolderWhenTheRemovalsOwedCannotBeRead() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    doThrow(new IllegalStateException("database down")).when(caldavPendingPushStorage).removalsOwed(any());
+    when(caldavPushService.pushAgendaEvent(anyLong(), anyString(), eq(EVENT)))
+                                                                .thenThrow(new IllegalStateException("server down"));
+
+    assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPushService).pushAgendaEvent(ALICE, login(ALICE), EVENT);
+    verify(caldavPushService).pushAgendaEvent(BOB, login(BOB), EVENT);
+    assertEquals(PendingPushKind.REWRITE, onlyObligationOf(ALICE).getKind());
+    assertEquals(PendingPushKind.REWRITE, onlyObligationOf(BOB).getKind());
+  }
+
+  /**
+   * Nor does it stop an answer: when the removals owed cannot be read, the
+   * answer still reaches the other holders.
+   */
+  @Test
+  void anAnswerStillReachesTheOtherHoldersWhenTheRemovalsOwedCannotBeRead() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+    doThrow(new IllegalStateException("database down")).when(caldavPendingPushStorage).removalsOwed(any());
+
+    assertEquals(2, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), any(), eq("ACCEPTED"), anyLong());
+    verify(caldavPushService).pushAnswerOnto(eq(BOB), anyString(), any(), any(), eq("ACCEPTED"), anyLong());
+  }
+
+  /**
    * A mapping with no href is the tombstone a removal leaves, not a copy.
    * Writing to it would re-create on the server the object somebody deleted.
    */
