@@ -1607,7 +1607,8 @@ public class CaldavEventPropagationServiceTest {
     assertEquals(0L, service.owedCopies(0L), "no user, no count, and no query");
 
     for (int refusal = 0; refusal < MAX_ATTEMPTS; refusal++) {
-      caldavPendingPushStorage.refused(caldavPendingPushStorage.attemptable(ALICE, MAX_ATTEMPTS, 10).get(0).getId());
+      caldavPendingPushStorage.refused(caldavPendingPushStorage.attemptable(ALICE, MAX_ATTEMPTS, 10).get(0).getId(),
+                                       PendingPushKind.REWRITE);
     }
 
     assertEquals(1L, service.owedCopies(ALICE), "a copy eXo gave up on is not somebody waiting for one");
@@ -1946,6 +1947,65 @@ public class CaldavEventPropagationServiceTest {
     verify(caldavPushService, never()).pushAgendaEvent(BOB, login(BOB), otherMeeting);
     assertEquals(1, landed);
     assertEquals(PendingPushKind.REMOVE, onlyObligationOf(BOB).getKind());
+  }
+
+  /**
+   * The last refusal of Bob's owed rewrite, refused while a removal is
+   * recorded in its place, is not counted against the removal: the removal
+   * keeps its own attempts, and nothing is said to be given up on.
+   */
+  @Test
+  void aRefusedRetryIsNotCountedAgainstARemovalRecordedDuringIt() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    for (int refusal = 1; refusal < MAX_ATTEMPTS; refusal++) {
+      caldavPendingPushStorage.refused(onlyObligationOf(BOB).getId(), PendingPushKind.REWRITE);
+    }
+    whenTheRetriedRewriteOfBobIsRefused(CaldavPushService.SAVE);
+
+    List<ILoggingEvent> givenUp;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      assertEquals(0, service.retryOwedPushes(BOB));
+      givenUp = log.events().stream().filter(recorded -> recorded.getFormattedMessage().contains("stops")).toList();
+    }
+
+    PendingPush owed = onlyObligationOf(BOB);
+    assertEquals(PendingPushKind.REMOVE, owed.getKind());
+    assertEquals(0, owed.getAttempts(), "the rewrite's refusal is not counted against the removal");
+    assertTrue(givenUp.isEmpty(), "nothing was given up on: " + givenUp);
+  }
+
+  /**
+   * Nor does a retried rewrite the server forbids give up on the removal
+   * recorded in its place while it was written.
+   */
+  @Test
+  void aForbiddenRetryDoesNotGiveUpOnARemovalRecordedDuringIt() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    whenTheRetriedRewriteOfBobIsRefused(CaldavPushService.FORBIDDEN);
+
+    assertEquals(0, service.retryOwedPushes(BOB));
+
+    PendingPush owed = onlyObligationOf(BOB);
+    assertEquals(PendingPushKind.REMOVE, owed.getKind());
+    assertEquals(0, owed.getAttempts(), "the removal is not given up on");
+  }
+
+  /**
+   * Nor one refused as another user's copy.
+   */
+  @Test
+  void aRetryRefusedAsAForeignCopyDoesNotGiveUpOnARemovalRecordedDuringIt() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    whenTheRetriedRewriteOfBobIsRefused(CaldavPushService.FOREIGN_COPY);
+
+    assertEquals(0, service.retryOwedPushes(BOB));
+
+    PendingPush owed = onlyObligationOf(BOB);
+    assertEquals(PendingPushKind.REMOVE, owed.getKind());
+    assertEquals(0, owed.getAttempts(), "the removal is not given up on");
   }
 
   /**
@@ -2454,9 +2514,9 @@ public class CaldavEventPropagationServiceTest {
     caldavPendingPushStorage.owe(1L, ALICE, PendingPushKind.REWRITE, EVENT, "uid-a");
     caldavPendingPushStorage.owe(2L, ALICE, PendingPushKind.REWRITE, 9902L, "uid-b");
     org.mockito.Mockito.doThrow(new IllegalStateException("the database is unhappy"))
-                       .doNothing()
+                       .doReturn(true)
                        .when(caldavPendingPushStorage)
-                       .refused(anyLong());
+                       .refused(anyLong(), any());
     when(caldavPushService.pushAgendaEvent(anyLong(), anyString(), anyLong()))
                                                                 .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
                                                                                                    "the server is down"));
@@ -3349,6 +3409,19 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
+   * Makes the retry pass's rewrite of Bob's copy fail with one refusal, after
+   * an edit has recorded a removal in its place while it was being written.
+   *
+   * @param code the refusal's {@link CaldavPushException} code
+   */
+  private void whenTheRetriedRewriteOfBobIsRefused(String code) {
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenAnswer(write -> {
+      caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REMOVE, null, "uid-8801");
+      throw new CaldavPushException(code, "PUT /dav/bob/mirror/uid-8801.ics was refused");
+    });
+  }
+
+  /**
    * Changes the store once, right after the retry pass has read its batch for
    * one account and before it carries out the first obligation: what an edit
    * on agenda's listener thread does while the pass runs.
@@ -3644,26 +3717,42 @@ public class CaldavEventPropagationServiceTest {
      * {@inheritDoc}
      */
     @Override
-    public void refused(long id) {
-      byObject.replaceAll((objectSyncId, pending) -> {
-        if (pending.getId() != null && pending.getId() == id) {
-          pending.setAttempts(pending.getAttempts() + 1);
-        }
-        return pending;
-      });
+    public boolean refused(long id, PendingPushKind kind) {
+      PendingPush pending = byId(id, kind);
+      if (pending == null) {
+        return false;
+      }
+      pending.setAttempts(pending.getAttempts() + 1);
+      return true;
     }
 
     /**
      * {@inheritDoc}
      */
     @Override
-    public void abandoned(long id, int maxAttempts) {
-      byObject.replaceAll((objectSyncId, pending) -> {
-        if (pending.getId() != null && pending.getId() == id) {
-          pending.setAttempts(maxAttempts);
-        }
-        return pending;
-      });
+    public boolean abandoned(long id, PendingPushKind kind, int maxAttempts) {
+      PendingPush pending = byId(id, kind);
+      if (pending == null) {
+        return false;
+      }
+      pending.setAttempts(maxAttempts);
+      return true;
+    }
+
+    /**
+     * The stored obligation of one identifier, while it is of one kind, as the
+     * statements behind {@link #refused} and {@link #abandoned} select it.
+     *
+     * @param id the obligation
+     * @param kind the kind it must still be of
+     * @return the stored obligation, null when there is none of that kind
+     */
+    private PendingPush byId(long id, PendingPushKind kind) {
+      return byObject.values()
+                     .stream()
+                     .filter(pending -> pending.getId() != null && pending.getId() == id && pending.getKind() == kind)
+                     .findFirst()
+                     .orElse(null);
     }
 
     /**

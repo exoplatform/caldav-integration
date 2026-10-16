@@ -142,25 +142,31 @@ public class CaldavPendingPushStorage {
   }
 
   /**
-   * Records that one more attempt was refused.
+   * Records that one more attempt was refused, unless the obligation has been
+   * settled or replaced with the other kind since it was read.
    *
    * @param id the obligation
+   * @param kind the kind of write that was refused
+   * @return true when the refusal was counted
    */
   @Transactional
-  public void refused(long id) {
-    pendingPushDAO.recordAttempt(id);
+  public boolean refused(long id, PendingPushKind kind) {
+    return pendingPushDAO.recordAttempt(id, kind) > 0;
   }
 
   /**
    * Records that an obligation is given up on, without counting toward the
-   * bound first.
+   * bound first, unless it has been settled or replaced with the other kind
+   * since it was read.
    *
    * @param id the obligation
+   * @param kind the kind of write given up on
    * @param maxAttempts the configured bound, written whole
+   * @return true when the obligation was given up on
    */
   @Transactional
-  public void abandoned(long id, int maxAttempts) {
-    pendingPushDAO.spendBudget(id, maxAttempts);
+  public boolean abandoned(long id, PendingPushKind kind, int maxAttempts) {
+    return pendingPushDAO.spendBudget(id, kind, maxAttempts) > 0;
   }
 
   /**

@@ -19,6 +19,7 @@
 package org.exoplatform.caldav.storage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -536,6 +537,27 @@ public class CaldavPendingPushStorageTest {
     assertTrue(storage.owedTo(BOB_COPY).isEmpty(), "a copy nothing was owed to");
   }
 
+  /**
+   * A refusal is counted, and an obligation given up on, only while the row
+   * still asks for the write that was refused (EXO-90518): an edit replaces
+   * the kind on the same row, under the same identifier, and the old
+   * instruction's refusal is not written against the new one.
+   */
+  @Test
+  void aRefusalOfTheOtherKindIsNeitherCountedNorGivenUpOn() {
+    long id = inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REWRITE, EVENT, "uid-8801")).getId();
+    inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REMOVE, null, "uid-8801"));
+
+    assertFalse(inTransaction(() -> storage.refused(id, PendingPushKind.REWRITE)), "the rewrite no longer stands");
+    assertFalse(inTransaction(() -> storage.abandoned(id, PendingPushKind.REWRITE, 5)), "nor is it given up on");
+    assertEquals(0, rowCount("SELECT ATTEMPTS FROM CALDAV_PENDING_PUSH WHERE ID = " + id));
+
+    assertTrue(inTransaction(() -> storage.refused(id, PendingPushKind.REMOVE)));
+    assertEquals(1, rowCount("SELECT ATTEMPTS FROM CALDAV_PENDING_PUSH WHERE ID = " + id));
+    assertTrue(inTransaction(() -> storage.abandoned(id, PendingPushKind.REMOVE, 5)));
+    assertEquals(5, rowCount("SELECT ATTEMPTS FROM CALDAV_PENDING_PUSH WHERE ID = " + id));
+  }
+
   // ---------------------------------------------------------------- fixtures
 
   /**
@@ -574,13 +596,14 @@ public class CaldavPendingPushStorageTest {
   }
 
   /**
-   * Counts one refusal, as a value the transaction helper can carry.
+   * Counts one refusal of a rewrite, as a value the transaction helper can
+   * carry.
    *
    * @param id the obligation
    * @return nothing meaningful
    */
   private Object refuse(long id) {
-    storage.refused(id);
+    storage.refused(id, PendingPushKind.REWRITE);
     return null;
   }
 

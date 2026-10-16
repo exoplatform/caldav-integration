@@ -1997,8 +1997,9 @@ public class CaldavEventPropagationService {
    * the kind read; settled or replaced since, it is left to whoever recorded
    * what stands. The window left is the call to the server itself: an
    * obligation of the other kind recorded during it stands, since settling
-   * forgets only the kind carried out, but one recorded and carried out
-   * entirely during it is undone by this write, and nothing is owed after it.
+   * forgets, and a refusal counts or gives up on, only the kind attempted; but
+   * one recorded and carried out entirely during it is undone by this write,
+   * and nothing is owed after it.
    *
    * @param userIdentityId whose calendar the copy sits in
    * @param username their eXo login, which the credentials provider maps to
@@ -2157,12 +2158,17 @@ public class CaldavEventPropagationService {
       abandonOnForbiddenWrite(userIdentityId, pending, reason);
       return;
     }
+    boolean counted;
     try {
-      caldavPendingPushStorage.refused(pending.getId());
+      counted = caldavPendingPushStorage.refused(pending.getId(), pending.getKind());
     } catch (Exception | LinkageError e) {
       LOG.warn("A refused write owed to mapping {} could not be counted; it will be attempted again",
                pending.getObjectSyncId(),
                e);
+      return;
+    }
+    if (!counted) {
+      leftUncounted(userIdentityId, pending);
       return;
     }
     if (pending.getAttempts() + 1 < maxPushAttempts) {
@@ -2194,6 +2200,24 @@ public class CaldavEventPropagationService {
                maxPushAttempts);
     }
   }
+
+  /**
+   * Says, at debug, that a refusal was not counted: the obligation it was
+   * refused for was settled, or replaced with the other kind, while it was
+   * attempted, and what stands now is another instruction, attempted on its
+   * own count.
+   *
+   * @param userIdentityId whose calendar the copy sits in, for the log
+   * @param pending the obligation as it was attempted
+   */
+  private void leftUncounted(long userIdentityId, PendingPush pending) {
+    LOG.debug("The {} owed to the copy of user {} at mapping {} was refused, but was settled or replaced while it was"
+        + " attempted; the refusal is not counted against what stands now",
+              pending.getKind(),
+              userIdentityId,
+              pending.getObjectSyncId());
+  }
+
   /**
    * Gives up on an obligation the first time it is refused as another user's
    * copy, rather than counting it toward the bound.
@@ -2218,12 +2242,17 @@ public class CaldavEventPropagationService {
    * @param pending the obligation given up on
    */
   private void abandonOnForeignCopy(long userIdentityId, PendingPush pending) {
+    boolean abandoned;
     try {
-      caldavPendingPushStorage.abandoned(pending.getId(), maxPushAttempts);
+      abandoned = caldavPendingPushStorage.abandoned(pending.getId(), pending.getKind(), maxPushAttempts);
     } catch (Exception | LinkageError e) {
       LOG.warn("What eXo owes the copy of user {} could not be given up on; it will be attempted again",
                pending.getObjectSyncId(),
                e);
+      return;
+    }
+    if (!abandoned) {
+      leftUncounted(userIdentityId, pending);
       return;
     }
     // Once, at WARN, and phrased as an instruction rather than a failure: this
@@ -2265,12 +2294,17 @@ public class CaldavEventPropagationService {
    *          null when it named nothing
    */
   private void abandonOnForbiddenWrite(long userIdentityId, PendingPush pending, String reason) {
+    boolean abandoned;
     try {
-      caldavPendingPushStorage.abandoned(pending.getId(), maxPushAttempts);
+      abandoned = caldavPendingPushStorage.abandoned(pending.getId(), pending.getKind(), maxPushAttempts);
     } catch (Exception | LinkageError e) {
       LOG.warn("What eXo owes the copy of user {} could not be given up on; it will be attempted again",
                pending.getObjectSyncId(),
                e);
+      return;
+    }
+    if (!abandoned) {
+      leftUncounted(userIdentityId, pending);
       return;
     }
     // Once, at WARN, naming the target: this is the one notice anybody gets
