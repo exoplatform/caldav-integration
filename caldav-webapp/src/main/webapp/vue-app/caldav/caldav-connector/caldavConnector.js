@@ -370,6 +370,10 @@ function escapeText(value) {
  * iCalendar DESCRIPTION can carry. Calendar clients render the property
  * literally, so markup left in place is shown as markup on the phone.
  *
+ * The markup is parsed into a document of its own: the description can be
+ * another user's text, and an element of the live page would load its images
+ * and run their handlers, where nothing in a DOMParser document loads or runs.
+ *
  * @param {String} html description as agenda supplies it
  * @returns {String} the same content as plain text, block tags becoming breaks
  */
@@ -380,9 +384,8 @@ function htmlToText(html) {
   const withBreaks = String(html)
     .replace(/<\s*br\s*\/?\s*>/gi, '\n')
     .replace(/<\s*\/\s*(p|div|li|tr|h[1-6])\s*>/gi, '\n');
-  const element = document.createElement('div');
-  element.innerHTML = withBreaks;
-  return (element.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+  const body = new DOMParser().parseFromString(withBreaks, 'text/html').body;
+  return (body.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 /**
