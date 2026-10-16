@@ -160,4 +160,22 @@ public interface CaldavPendingPushDAO extends JpaRepository<CaldavPendingPushEnt
   @Query("UPDATE CaldavPendingPushEntity q SET q.attempts = :attempts WHERE q.id = :id")
   int spendBudget(@Param("id") long id, @Param("attempts") int attempts);
 
+  /**
+   * Deletes the obligation recorded against one mapping row when it is of one
+   * kind.
+   *
+   * <p>
+   * The kind is in the statement rather than checked on a row read first: an
+   * obligation of the other kind recorded by another thread after that read
+   * would otherwise be the row deleted.
+   *
+   * @param objectSyncId the mapping row
+   * @param kind the kind of obligation to delete
+   * @return how many rows were deleted; zero when nothing of that kind is owed
+   */
+  @Modifying(flushAutomatically = true)
+  @Transactional
+  @Query("DELETE FROM CaldavPendingPushEntity q WHERE q.objectSyncId = :objectSyncId AND q.kind = :kind")
+  int deleteOwed(@Param("objectSyncId") long objectSyncId, @Param("kind") PendingPushKind kind);
+
 }

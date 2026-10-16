@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -1458,7 +1459,7 @@ public class CaldavEventPropagationService {
                                                                                 response,
                                                                                 eventId);
       if (outcome.settles()) {
-        settled(copy.getId());
+        settled(copy.getId(), PendingPushKind.REWRITE);
       }
       return outcome == CaldavPushService.AnswerOutcome.WRITTEN;
     } catch (CaldavPushException e) {
@@ -1469,7 +1470,7 @@ public class CaldavEventPropagationService {
                   holderIdentityId,
                   answererIdentityId,
                   e);
-        settled(copy.getId());
+        settled(copy.getId(), PendingPushKind.REWRITE);
       } else if (CaldavPushService.isKnownState(e.getCode())) {
         // A state of the holder rather than a failure of this write: they have
         // no connected account, none that names a destination, or the object
@@ -1640,7 +1641,7 @@ public class CaldavEventPropagationService {
     try {
       boolean written = caldavPushService.pushAgendaEvent(userIdentityId, username, eventId) != null;
       if (written) {
-        settled(objectSyncId);
+        settled(objectSyncId, PendingPushKind.REWRITE);
       }
       return written ? Settlement.WRITE_LANDED : Settlement.refused(null);
     } catch (CaldavPushException e) {
@@ -1656,7 +1657,7 @@ public class CaldavEventPropagationService {
                   eventId,
                   userIdentityId,
                   e);
-        settled(objectSyncId);
+        settled(objectSyncId, PendingPushKind.REWRITE);
       } else if (CaldavPushService.isKnownState(e.getCode())) {
         // A state of the holder rather than a failure of this write: they have
         // no connected account, none that names a destination, or the object
@@ -1719,7 +1720,7 @@ public class CaldavEventPropagationService {
     }
     try {
       caldavPushService.deleteEvent(userIdentityId, username, icsUid);
-      settled(objectSyncId);
+      settled(objectSyncId, PendingPushKind.REMOVE);
       return Settlement.WRITE_LANDED;
     } catch (Exception | LinkageError e) {
       if (e instanceof CaldavPushException refusal && CaldavPushService.isKnownState(refusal.getCode())) {
@@ -1795,15 +1796,21 @@ public class CaldavEventPropagationService {
    * nothing. That is the cheaper of the two mistakes, and the reason this is a
    * warning rather than a failure.
    *
+   * <p>
+   * Only an obligation of the kind carried out is forgotten: one of the other
+   * kind, recorded while the write was being made, stands
+   * ({@link CaldavPendingPushStorage#settled(long, PendingPushKind)}).
+   *
    * @param objectSyncId the mapping row whose copy was written; null when the
    *          caller had no row, in which case there is nothing to forget
+   * @param kind the kind of write that landed
    */
-  private void settled(Long objectSyncId) {
+  private void settled(Long objectSyncId, PendingPushKind kind) {
     if (objectSyncId == null || objectSyncId <= 0) {
       return;
     }
     try {
-      caldavPendingPushStorage.settled(objectSyncId);
+      caldavPendingPushStorage.settled(objectSyncId, kind);
     } catch (Exception | LinkageError e) {
       LOG.warn("The write owed to mapping {} landed but could not be struck off; the next sweep writes it again",
                objectSyncId,
@@ -1925,13 +1932,32 @@ public class CaldavEventPropagationService {
    * says the copy has to go rather than be rewritten, so it is carried out as
    * recorded.
    *
+   * <p>
+   * As recorded now, not as the batch read it. An edit carried out on agenda's
+   * listener thread while this pass runs replaces the kind (a removal for a
+   * holder taken off the meeting, a rewrite for one invited again) and carries
+   * it out itself, so a batch read before it names an instruction that no
+   * longer stands: carried out, a stale rewrite puts back the copy of a
+   * removed invitee who still reads the meeting, and a stale removal deletes
+   * the copy of a holder invited again. The obligation is read again just
+   * before the call to the server and carried out only while it is still of
+   * the kind read; settled or replaced since, it is left to whoever recorded
+   * what stands. The window left is the call to the server itself: an
+   * obligation of the other kind recorded during it stands, since settling
+   * forgets only the kind carried out, but one recorded and carried out
+   * entirely during it is undone by this write, and nothing is owed after it.
+   *
    * @param userIdentityId whose calendar the copy sits in
    * @param username their eXo login, which the credentials provider maps to
    *          their account on the server
-   * @param pending what is owed to it
+   * @param read what the batch read as owed to it
    * @return true when the write landed
    */
-  private boolean settleOwed(long userIdentityId, String username, PendingPush pending) {
+  private boolean settleOwed(long userIdentityId, String username, PendingPush read) {
+    PendingPush pending = stillOwed(userIdentityId, read);
+    if (pending == null) {
+      return false;
+    }
     Settlement settlement;
     if (pending.getKind() == PendingPushKind.REMOVE) {
       settlement = removeOne(userIdentityId, username, pending.getIcsUid(), pending.getObjectSyncId(), null);
@@ -1949,6 +1975,42 @@ public class CaldavEventPropagationService {
       refuse(userIdentityId, pending, settlement.code(), settlement.reason());
     }
     return settlement.landed();
+  }
+
+  /**
+   * The obligation a batch read, read again, when it still asks for the same
+   * write.
+   *
+   * <p>
+   * An obligation that cannot be read again is not carried out on the batch's
+   * reading of it: the next pass reads it afresh, and nothing is counted
+   * against it meanwhile.
+   *
+   * @param userIdentityId whose calendar the copy sits in, for the log
+   * @param read what the batch read as owed to the copy
+   * @return the obligation as it stands now; null when it was settled since,
+   *         is now of the other kind, or cannot be read
+   */
+  private PendingPush stillOwed(long userIdentityId, PendingPush read) {
+    Optional<PendingPush> current;
+    try {
+      current = caldavPendingPushStorage.owedTo(read.getObjectSyncId());
+    } catch (Exception | LinkageError e) {
+      LOG.warn("What eXo owes the copy of user {} at mapping {} could not be read again; it is left to the next round",
+               userIdentityId,
+               read.getObjectSyncId(),
+               e);
+      return null;
+    }
+    if (current.isEmpty() || current.get().getKind() != read.getKind()) {
+      LOG.debug("The {} owed to the copy of user {} at mapping {} was settled or replaced since this round read it;"
+          + " it is left to what stands now",
+                read.getKind(),
+                userIdentityId,
+                read.getObjectSyncId());
+      return null;
+    }
+    return current.get();
   }
 
   /**
