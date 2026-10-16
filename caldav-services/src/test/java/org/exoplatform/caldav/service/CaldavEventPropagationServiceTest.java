@@ -1949,8 +1949,8 @@ public class CaldavEventPropagationServiceTest {
 
   /**
    * A server that two members' writes found unable to answer is asked nothing
-   * more for the meeting, as the sweep leaves such a server out: a CalDAV
-   * server may ban an address that keeps asking. Its other members are left to
+   * more for the meeting: a CalDAV server may ban an address that keeps
+   * asking. Its other members are left to
    * the sweep, and the silence is said without a stack trace per member but
    * with the transport failure that says why.
    */

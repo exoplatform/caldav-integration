@@ -204,9 +204,9 @@ public class CaldavEventPropagationService {
 
   /**
    * How many members' writes must meet a calendar server unable to answer
-   * before the walk of an invited space asks it nothing more. Two and not one,
-   * as for the sweep ({@code CaldavSyncService}): one account whose own home
-   * times out would otherwise hold back every other member of its server.
+   * before the walk of an invited space asks it nothing more. Two and not one:
+   * one account whose own home times out would otherwise hold back every other
+   * member of its server.
    */
   private static final int                                     UNANSWERED_WRITES_BEFORE_LEAVING_OUT = 2;
 
@@ -806,8 +806,8 @@ public class CaldavEventPropagationService {
    * <p>
    * A calendar server that does not answer is asked nothing more for this
    * meeting once {@value #UNANSWERED_WRITES_BEFORE_LEAVING_OUT} members' writes
-   * have met its silence, as the sweep leaves it out: a CalDAV server may ban
-   * an address that keeps asking ({@link CalDavUnreachableException}). Its
+   * have met its silence: a CalDAV server may ban an address that keeps asking
+   * ({@link CalDavUnreachableException}). Its
    * other members are left to the sweep, which writes their copies once it
    * answers and the meeting is within its window ({@code seedDays}). The
    * silence counted is the one met by the discovery of the member's calendar,
