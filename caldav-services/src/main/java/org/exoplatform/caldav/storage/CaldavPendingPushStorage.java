@@ -107,8 +107,11 @@ public class CaldavPendingPushStorage {
    * <p>
    * By the mapping row rather than by the obligation's own identifier: the
    * caller settling a copy knows which copy it settled, and an obligation of
-   * the same kind renewed in the meantime goes too, since the write that just
-   * landed carries what it was about.
+   * the same kind renewed in the meantime goes too. A rewrite renders the
+   * event as agenda holds it when the write reads it, so it carries every edit
+   * agenda saved before that read; one saved after it is not carried, and is
+   * left to that edit's own write, which this write overwrites when that one
+   * lands before this one reads the copy's version.
    *
    * <p>
    * Only of that kind. A rewrite landing while a removal was recorded for the

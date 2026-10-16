@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.inOrder;
@@ -1973,6 +1974,87 @@ public class CaldavEventPropagationServiceTest {
     assertEquals(PendingPushKind.REMOVE, owed.getKind());
     assertEquals(0, owed.getAttempts(), "the rewrite's refusal is not counted against the removal");
     assertTrue(givenUp.isEmpty(), "nothing was given up on: " + givenUp);
+  }
+
+  /**
+   * A rewrite renewed by an edit while its last retry is refused takes the
+   * refusal as its first attempt: it is still attempted, and nothing is said
+   * to be given up on.
+   */
+  @Test
+  void aRewriteRenewedDuringItsLastRefusedRetryIsNotSaidToBeGivenUpOn() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    for (int refusal = 1; refusal < MAX_ATTEMPTS; refusal++) {
+      caldavPendingPushStorage.refused(onlyObligationOf(BOB).getId(), PendingPushKind.REWRITE);
+    }
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenAnswer(write -> {
+      caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+      throw new CaldavPushException(CaldavPushService.SAVE, "PUT /dav/bob/mirror/uid-8801.ics was refused");
+    });
+
+    List<ILoggingEvent> givenUp;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      assertEquals(0, service.retryOwedPushes(BOB));
+      givenUp = log.events().stream().filter(recorded -> recorded.getFormattedMessage().contains("stops")).toList();
+    }
+
+    assertEquals(1, onlyObligationOf(BOB).getAttempts(), "the renewed rewrite counts the refusal as its first");
+    assertTrue(givenUp.isEmpty(), "the renewed rewrite is still attempted: " + givenUp);
+  }
+
+  /**
+   * When the stored count cannot be read again after the last refusal, the
+   * abandonment is still said: a copy eXo stops putting right is the one state
+   * an operator has to hear about.
+   */
+  @Test
+  void theAbandonmentIsSaidWhenTheStoredCountCannotBeReadAgain() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    for (int refusal = 1; refusal < MAX_ATTEMPTS; refusal++) {
+      caldavPendingPushStorage.refused(onlyObligationOf(BOB).getId(), PendingPushKind.REWRITE);
+    }
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT))
+                                                                .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                                   "bob's server is down"));
+    // Read once before the write, then unreadable when the count is read again.
+    doCallRealMethod().doThrow(new IllegalStateException("database down")).when(caldavPendingPushStorage).owedTo(2L);
+
+    List<ILoggingEvent> givenUp;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      service.retryOwedPushes(BOB);
+      givenUp = log.events().stream().filter(recorded -> recorded.getFormattedMessage().contains("stops")).toList();
+    }
+
+    assertEquals(1, givenUp.size(), "the abandonment is said once: " + givenUp);
+    assertEquals(Level.WARN, givenUp.get(0).getLevel());
+  }
+
+  /**
+   * Nor when the obligation is settled between its last refusal and the second
+   * read of its count: nothing is left to give up on.
+   */
+  @Test
+  void anObligationSettledAfterItsLastRefusalIsNotSaidToBeGivenUpOn() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    for (int refusal = 1; refusal < MAX_ATTEMPTS; refusal++) {
+      caldavPendingPushStorage.refused(onlyObligationOf(BOB).getId(), PendingPushKind.REWRITE);
+    }
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT))
+                                                                .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                                   "bob's server is down"));
+    // Read once before the write, then gone when the count is read again.
+    doCallRealMethod().doReturn(Optional.empty()).when(caldavPendingPushStorage).owedTo(2L);
+
+    List<ILoggingEvent> givenUp;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      service.retryOwedPushes(BOB);
+      givenUp = log.events().stream().filter(recorded -> recorded.getFormattedMessage().contains("stops")).toList();
+    }
+
+    assertTrue(givenUp.isEmpty(), "nothing is left to give up on: " + givenUp);
   }
 
   /**

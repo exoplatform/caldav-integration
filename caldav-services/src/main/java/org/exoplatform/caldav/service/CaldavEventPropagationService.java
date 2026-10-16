@@ -1995,11 +1995,18 @@ public class CaldavEventPropagationService {
    * the copy of a holder invited again. The obligation is read again just
    * before the call to the server and carried out only while it is still of
    * the kind read; settled or replaced since, it is left to whoever recorded
-   * what stands. The window left is the call to the server itself: an
+   * what stands. The window left is the call to the server itself. An
    * obligation of the other kind recorded during it stands, since settling
    * forgets, and a refusal counts or gives up on, only the kind attempted; but
    * one recorded and carried out entirely during it is undone by this write,
-   * and nothing is owed after it.
+   * and nothing is owed after it. An obligation of the same kind renewed during
+   * it takes a refusal as its first attempt, and is given up on with it when
+   * the server forbids the write or the copy is another user's; a rewrite that
+   * lands settles it, though it does not carry an edit agenda saved after this
+   * write read the event. That edit is left to its own write, which carries it
+   * unless it lands before this write reads the copy's version, and this write
+   * then overwrites it. When that write fails, or lands that early, the copy
+   * keeps the meeting as it was before that edit, with nothing owed.
    *
    * @param userIdentityId whose calendar the copy sits in
    * @param username their eXo login, which the credentials provider maps to
@@ -2171,7 +2178,7 @@ public class CaldavEventPropagationService {
       leftUncounted(userIdentityId, pending);
       return;
     }
-    if (pending.getAttempts() + 1 < maxPushAttempts) {
+    if (pending.getAttempts() + 1 < maxPushAttempts || !hasReachedTheBound(pending)) {
       return;
     }
     // Once, on the attempt that reaches the bound, and never again: the next
@@ -2198,6 +2205,30 @@ public class CaldavEventPropagationService {
                userIdentityId,
                pending.getObjectSyncId(),
                maxPushAttempts);
+    }
+  }
+
+  /**
+   * Whether an obligation's stored count has reached the bound, read again once
+   * the refusal that should reach it was counted.
+   *
+   * <p>
+   * The count read just before the write is not enough: an edit that renewed
+   * the same kind while the refused write was being made reset the count, so
+   * the refusal was this obligation's first, and it is still attempted.
+   *
+   * @param pending the obligation as it was attempted
+   * @return true when the stored count reached the bound, and when it cannot
+   *         be read again, so that the abandonment is not left unsaid
+   */
+  private boolean hasReachedTheBound(PendingPush pending) {
+    try {
+      return caldavPendingPushStorage.owedTo(pending.getObjectSyncId())
+                                     .map(current -> current.getAttempts() >= maxPushAttempts)
+                                     .orElse(false);
+    } catch (Exception | LinkageError e) {
+      LOG.debug("The count of the write owed to mapping {} could not be read again", pending.getObjectSyncId(), e);
+      return true;
     }
   }
 
