@@ -856,7 +856,7 @@ public class CaldavEventPropagationService {
       after = accounts.get(accounts.size() - 1);
     }
     written += writeForMembers(eventId, busy, new LinkedHashMap<>(), unanswered);
-    LOG.info("Event {} invites {} space(s); a copy was written for {} of their {} member(s) with an account",
+    LOG.info("Event {} invites {} space(s); a copy was written for {} of the {} member(s) with an account left to this walk",
              eventId,
              spaces.size(),
              written,
