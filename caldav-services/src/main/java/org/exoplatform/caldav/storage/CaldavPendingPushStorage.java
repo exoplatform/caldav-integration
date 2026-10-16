@@ -186,8 +186,9 @@ public class CaldavPendingPushStorage {
    *
    * <p>
    * Asked once per edit or answer, before a rewrite is recorded over the same
-   * rows, in chunks of {@value #IN_CHUNK} to stay under Oracle's limit on an
-   * {@code IN} list.
+   * rows, in chunks of {@value #IN_CHUNK}. The bound is this class's own, not
+   * an engine's: the holders of a meeting are not bounded, and no statement
+   * carries more bound parameters than that, however many there are.
    *
    * @param objectSyncIds the mapping rows
    * @return the mapping rows among them owed a removal, empty when none are
