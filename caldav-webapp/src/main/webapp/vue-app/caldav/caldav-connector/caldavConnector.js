@@ -241,33 +241,7 @@ DTEND:${toUTCString(event.end)}Z
     if (descriptionParts.length > 0) {
       iCalString += `DESCRIPTION:${escapeText(descriptionParts.join('\n\n'))}\n`;
     }
-    if (isOccurrence) {
-      // One RECURRENCE-ID, which RFC 5545 allows at most once and requires in
-      // the value type of the series' DTSTART. Its form therefore follows
-      // event.allDay, as DTSTART does, and not the shape of the occurrence
-      // id: agenda identifies an all-day occurrence by an instant too.
-      if (event.allDay) {
-        iCalString += `RECURRENCE-ID;VALUE=DATE:${toIcsDate(event.occurrence.id)}\n`;
-      } else {
-        iCalString += `RECURRENCE-ID:${toUTCString(event.occurrence.id)}Z\n`;
-      }
-    } else if (event.recurrence?.rrule) {
-      let rruleValue = event.recurrence.rrule.trim();
-      rruleValue = rruleValue.replace(/COUNT=0;?/, '');
-      if (rruleValue.length > 0) {
-        iCalString += `RRULE:${rruleValue}\n`;
-      }
-    }
-    if (!isOccurrence && event.recurrence?.exceptions && event.recurrence.exceptions.length > 0) {
-      event.recurrence.exceptions.forEach(exdate => {
-        const exDateFormatted = exdate.date.replace(/[-:]|\.\d{3}/g, '');
-        if (exDateFormatted.includes('T')) {
-          iCalString += `EXDATE:${exDateFormatted}Z\n`;
-        } else {
-          iCalString += `EXDATE;VALUE=DATE:${exDateFormatted}\n`;
-        }
-      });
-    }
+    iCalString += recurrenceProperties(event);
     iCalString += buildAlarms(event);
     iCalString += `END:VEVENT
 END:VCALENDAR
@@ -426,6 +400,45 @@ function toIcsEndDate(value) {
   const date = new Date(Date.UTC(year, month - 1, day, 12));
   date.setUTCDate(date.getUTCDate() + 1);
   return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}`;
+}
+
+/**
+ * The properties that place the pushed event in its series: the
+ * RECURRENCE-ID of an occurrence, or the RRULE and EXDATEs of a series.
+ *
+ * @param {Object} event agenda event being pushed
+ * @returns {String} the property lines, empty for an event outside a series
+ */
+function recurrenceProperties(event) {
+  if (event.occurrence) {
+    // One RECURRENCE-ID, which RFC 5545 allows at most once and requires in
+    // the value type of the series' DTSTART. Its form therefore follows
+    // event.allDay, as DTSTART does, and not the shape of the occurrence
+    // id: agenda identifies an all-day occurrence by an instant too.
+    if (event.allDay) {
+      return `RECURRENCE-ID;VALUE=DATE:${toIcsDate(event.occurrence.id)}\n`;
+    }
+    return `RECURRENCE-ID:${toUTCString(event.occurrence.id)}Z\n`;
+  }
+  let properties = '';
+  if (event.recurrence?.rrule) {
+    let rruleValue = event.recurrence.rrule.trim();
+    rruleValue = rruleValue.replace(/COUNT=0;?/, '');
+    if (rruleValue.length > 0) {
+      properties += `RRULE:${rruleValue}\n`;
+    }
+  }
+  if (event.recurrence?.exceptions && event.recurrence.exceptions.length > 0) {
+    event.recurrence.exceptions.forEach(exdate => {
+      const exDateFormatted = exdate.date.replace(/[-:]|\.\d{3}/g, '');
+      if (exDateFormatted.includes('T')) {
+        properties += `EXDATE:${exDateFormatted}Z\n`;
+      } else {
+        properties += `EXDATE;VALUE=DATE:${exDateFormatted}\n`;
+      }
+    });
+  }
+  return properties;
 }
 
 /**
