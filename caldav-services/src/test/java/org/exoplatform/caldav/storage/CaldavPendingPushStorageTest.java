@@ -19,6 +19,7 @@
 package org.exoplatform.caldav.storage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -296,7 +297,7 @@ public class CaldavPendingPushStorageTest {
     inTransaction(() -> storage.owe(ALICE_OTHER_COPY, ALICE, PendingPushKind.REWRITE, EVENT, "uid-b"));
     inTransaction(() -> storage.owe(BOB_COPY, BOB, PendingPushKind.REWRITE, EVENT, "uid-c"));
 
-    inTransaction(() -> settled(ALICE_COPY));
+    inTransaction(() -> settled(ALICE_COPY, PendingPushKind.REWRITE));
 
     assertEquals(1, storage.owed(ALICE), "only the copy that was written is struck off");
     assertEquals(1, storage.owed(BOB), "and nobody else's arrears are touched");
@@ -312,7 +313,7 @@ public class CaldavPendingPushStorageTest {
    */
   @Test
   public void strikingOffACopyThatOwedNothingIsQuiet() {
-    inTransaction(() -> settled(ALICE_COPY));
+    inTransaction(() -> settled(ALICE_COPY, PendingPushKind.REWRITE));
 
     assertEquals(0, storage.owed(ALICE));
   }
@@ -468,7 +469,7 @@ public class CaldavPendingPushStorageTest {
    * recording a rewrite over the same row.
    */
   @Test
-  public void aRemovalOwedIsToldApartFromARewriteAndFromNothing() {
+  void aRemovalOwedIsToldApartFromARewriteAndFromNothing() {
     inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REMOVE, null, "uid-8801"));
     inTransaction(() -> storage.owe(BOB_COPY, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801"));
 
@@ -481,7 +482,7 @@ public class CaldavPendingPushStorageTest {
    * past the first chunk is still found.
    */
   @Test
-  public void aRemovalOwedPastTheFirstChunkIsFound() {
+  void aRemovalOwedPastTheFirstChunkIsFound() {
     inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REMOVE, null, "uid-8801"));
     List<Long> ids = new ArrayList<>();
     for (long id = 100_000L; id < 101_200L; id++) {
@@ -490,6 +491,71 @@ public class CaldavPendingPushStorageTest {
     ids.add(ALICE_COPY);
 
     assertEquals(Set.of(ALICE_COPY), storage.removalsOwed(ids));
+  }
+
+  /**
+   * A write that landed strikes off only an obligation of its own kind
+   * (EXO-90518): a removal recorded while a rewrite was being written, or a
+   * rewrite while a removal was, stands. Read past the persistence context,
+   * since the statement is a bulk deletion.
+   */
+  @Test
+  void strikingOffOneKindLeavesTheOtherKindStanding() {
+    inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REMOVE, null, "uid-8801"));
+    inTransaction(() -> storage.owe(BOB_COPY, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801"));
+
+    inTransaction(() -> settled(ALICE_COPY, PendingPushKind.REWRITE));
+    inTransaction(() -> settled(BOB_COPY, PendingPushKind.REMOVE));
+
+    assertEquals(1, rowCount("SELECT COUNT(*) FROM CALDAV_PENDING_PUSH WHERE OBJECT_SYNC_ID = " + ALICE_COPY
+        + " AND KIND = 'REMOVE'"), "the removal still stands");
+    assertEquals(1, rowCount("SELECT COUNT(*) FROM CALDAV_PENDING_PUSH WHERE OBJECT_SYNC_ID = " + BOB_COPY
+        + " AND KIND = 'REWRITE'"), "the rewrite still stands");
+
+    inTransaction(() -> settled(ALICE_COPY, PendingPushKind.REMOVE));
+    inTransaction(() -> settled(BOB_COPY, PendingPushKind.REWRITE));
+
+    assertEquals(0, rowCount("SELECT COUNT(*) FROM CALDAV_PENDING_PUSH"), "each is struck off by a write of its kind");
+  }
+
+  /**
+   * What is owed to a copy is read as it stands now: the kind recorded last,
+   * and nothing once it is struck off.
+   */
+  @Test
+  void whatIsOwedToACopyIsReadAsItStandsNow() {
+    inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REWRITE, EVENT, "uid-8801"));
+    assertEquals(PendingPushKind.REWRITE, storage.owedTo(ALICE_COPY).orElseThrow().getKind());
+
+    inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REMOVE, null, "uid-8801"));
+    PendingPush now = storage.owedTo(ALICE_COPY).orElseThrow();
+    assertEquals(PendingPushKind.REMOVE, now.getKind());
+    assertEquals(ALICE_COPY, now.getObjectSyncId());
+
+    inTransaction(() -> settled(ALICE_COPY, PendingPushKind.REMOVE));
+    assertTrue(storage.owedTo(ALICE_COPY).isEmpty());
+    assertTrue(storage.owedTo(BOB_COPY).isEmpty(), "a copy nothing was owed to");
+  }
+
+  /**
+   * A refusal is counted, and an obligation given up on, only while the row
+   * still asks for the write that was refused (EXO-90518): an edit replaces
+   * the kind on the same row, under the same identifier, and the old
+   * instruction's refusal is not written against the new one.
+   */
+  @Test
+  void aRefusalOfTheOtherKindIsNeitherCountedNorGivenUpOn() {
+    long id = inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REWRITE, EVENT, "uid-8801")).getId();
+    inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REMOVE, null, "uid-8801"));
+
+    assertFalse(inTransaction(() -> storage.refused(id, PendingPushKind.REWRITE)), "the rewrite no longer stands");
+    assertFalse(inTransaction(() -> storage.abandoned(id, PendingPushKind.REWRITE, 5)), "nor is it given up on");
+    assertEquals(0, rowCount("SELECT ATTEMPTS FROM CALDAV_PENDING_PUSH WHERE ID = " + id));
+
+    assertTrue(inTransaction(() -> storage.refused(id, PendingPushKind.REMOVE)));
+    assertEquals(1, rowCount("SELECT ATTEMPTS FROM CALDAV_PENDING_PUSH WHERE ID = " + id));
+    assertTrue(inTransaction(() -> storage.abandoned(id, PendingPushKind.REMOVE, 5)));
+    assertEquals(5, rowCount("SELECT ATTEMPTS FROM CALDAV_PENDING_PUSH WHERE ID = " + id));
   }
 
   // ---------------------------------------------------------------- fixtures
@@ -530,13 +596,14 @@ public class CaldavPendingPushStorageTest {
   }
 
   /**
-   * Counts one refusal, as a value the transaction helper can carry.
+   * Counts one refusal of a rewrite, as a value the transaction helper can
+   * carry.
    *
    * @param id the obligation
    * @return nothing meaningful
    */
   private Object refuse(long id) {
-    storage.refused(id);
+    storage.refused(id, PendingPushKind.REWRITE);
     return null;
   }
 
@@ -544,10 +611,11 @@ public class CaldavPendingPushStorageTest {
    * Strikes one copy off, as a value the transaction helper can carry.
    *
    * @param objectSyncId the mapping row whose copy was written
+   * @param kind the kind of write that landed
    * @return nothing meaningful
    */
-  private Object settled(long objectSyncId) {
-    storage.settled(objectSyncId);
+  private Object settled(long objectSyncId, PendingPushKind kind) {
+    storage.settled(objectSyncId, kind);
     return null;
   }
 

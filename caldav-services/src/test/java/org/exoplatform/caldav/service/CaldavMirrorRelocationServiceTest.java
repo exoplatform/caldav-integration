@@ -213,7 +213,7 @@ public class CaldavMirrorRelocationServiceTest {
    * row at the new calendar, so a later rewrite lands there.
    */
   @Test
-  public void aCopyOwedARemovalIsRemovedRatherThanMoved() {
+  void aCopyOwedARemovalIsRemovedRatherThanMoved() {
     ObjectSync owed = mapping(IN_DEDICATED, "\"etag-1\"", EVENT);
     givenTheDestinationIsNow(MAIN);
     givenThePairPointsAt(DEDICATED);
@@ -240,7 +240,7 @@ public class CaldavMirrorRelocationServiceTest {
    * retry pass removes it, since it has to go whatever version it holds.
    */
   @Test
-  public void anOwedRemovalRefusedOnItsVersionIsMadeWithoutIt() {
+  void anOwedRemovalRefusedOnItsVersionIsMadeWithoutIt() {
     ObjectSync owed = mapping(IN_DEDICATED, "\"etag-1\"", EVENT);
     givenAnOwedRemoval(owed);
     when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"")).thenReturn(PutResult.PRECONDITION_FAILED);
@@ -260,7 +260,7 @@ public class CaldavMirrorRelocationServiceTest {
    * calendar and the old copy would stay for good.
    */
   @Test
-  public void aFailedOwedRemovalLeavesTheRowOnTheOldObject() {
+  void aFailedOwedRemovalLeavesTheRowOnTheOldObject() {
     ObjectSync owed = mapping(IN_DEDICATED, "\"etag-1\"", EVENT);
     givenAnOwedRemoval(owed);
     when(calDavClient.deleteObject(endpoint, IN_DEDICATED, "\"etag-1\"")).thenThrow(new IllegalStateException("server down"));
@@ -274,7 +274,7 @@ public class CaldavMirrorRelocationServiceTest {
   }
 
   @Test
-  public void aRemovalOwedThatCannotBeReadAfterAConflictStopsTheMoveBeforeTheRemoval() {
+  void aRemovalOwedThatCannotBeReadAfterAConflictStopsTheMoveBeforeTheRemoval() {
     ObjectSync owed = mapping(IN_DEDICATED, "\"etag-1\"", EVENT);
     givenTheDestinationIsNow(MAIN);
     givenThePairPointsAt(DEDICATED);
@@ -299,7 +299,7 @@ public class CaldavMirrorRelocationServiceTest {
    * without a version, and stays, row and all, for the next pass to move.
    */
   @Test
-  public void aConflictFromAHolderInvitedAgainDoesNotRemoveTheirCopy() {
+  void aConflictFromAHolderInvitedAgainDoesNotRemoveTheirCopy() {
     ObjectSync owed = mapping(IN_DEDICATED, "\"etag-1\"", EVENT);
     givenAnOwedRemoval(owed);
     when(caldavPendingPushStorage.removalsOwed(List.of(1L))).thenReturn(Set.of(1L), Set.of());
@@ -318,7 +318,7 @@ public class CaldavMirrorRelocationServiceTest {
    * old object: the row it cleared is not written over.
    */
   @Test
-  public void aRemovalLandedWhileTheOldObjectWasRemovedIsNotWrittenOver() {
+  void aRemovalLandedWhileTheOldObjectWasRemovedIsNotWrittenOver() {
     ObjectSync owed = mapping(IN_DEDICATED, "\"etag-1\"", EVENT);
     givenAnOwedRemoval(owed);
     when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(owed, mapping(null, null, EVENT));
@@ -331,7 +331,7 @@ public class CaldavMirrorRelocationServiceTest {
   }
 
   @Test
-  public void aCopyRemovedWhileTheMoveWalkedIsNotMovedIntoTheNewCalendar() {
+  void aCopyRemovedWhileTheMoveWalkedIsNotMovedIntoTheNewCalendar() {
     givenTheDestinationIsNow(MAIN);
     givenThePairPointsAt(DEDICATED);
     givenMappings(mapping(IN_DEDICATED, "\"etag-1\"", EVENT));
@@ -354,7 +354,7 @@ public class CaldavMirrorRelocationServiceTest {
    * second meeting while the first copy is being moved.
    */
   @Test
-  public void aRemovalRecordedWhileTheMoveWalkedIsCarriedOutRatherThanMoved() {
+  void aRemovalRecordedWhileTheMoveWalkedIsCarriedOutRatherThanMoved() {
     ObjectSync second = mapping(DEDICATED + "evt-2.ics", "\"etag-2\"", 6L);
     second.setId(2L);
     second.setIcsUid("evt-2");
@@ -386,7 +386,7 @@ public class CaldavMirrorRelocationServiceTest {
   }
 
   @Test
-  public void aRemovalOwedThatCannotBeReadStopsTheMoveBeforeTheWrite() {
+  void aRemovalOwedThatCannotBeReadStopsTheMoveBeforeTheWrite() {
     givenTheDestinationIsNow(MAIN);
     givenThePairPointsAt(DEDICATED);
     when(caldavSyncStorage.getObjects(eq(PAIR), eq(0), anyInt()))

@@ -714,9 +714,20 @@ public class CaldavSyncStorage {
   }
 
   /**
-   * Which of these eXo events already carry a live copy for this user, asked
-   * for the whole list at once. Unlike {@link #isEventMapped(long)}, a
-   * tombstone (href cleared) does not count.
+   * Which of these eXo events already carry a live copy for this user.
+   *
+   * <p>
+   * Asked for the whole list at once: the seeding pass asks it about the
+   * user's whole upcoming window on every sweep, and in its steady state every
+   * one of those meetings is already copied, so asking one event at a time
+   * would spend a query per meeting to learn there is nothing to do.
+   *
+   * <p>
+   * Not the batch form of {@link #isEventMapped(long)}, which counts any row:
+   * here a cleared row, the tombstone a removal leaves, is not a copy. Counted
+   * as one, it would keep the seeding from writing again the copies retired
+   * while a meeting was a date poll, once the poll is switched back to a
+   * meeting.
    *
    * @param userIdentityId the identity whose mappings count, so the copy made
    *          for the first attendee does not answer for every other attendee
