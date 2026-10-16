@@ -879,10 +879,33 @@ public class CaldavSyncDAOQueryTest {
     objectSyncDAO.save(entity);
   }
 
+  /**
+   * One binding on server 1.
+   *
+   * @param userIdentityId the user holding it
+   * @param uid the local anchor, also the collection's name
+   * @param status the binding's state
+   * @param lastSyncEnd when it was last synchronised, or null for never
+   * @return the binding's identifier
+   */
   private long persistCalendarSync(long userIdentityId, String uid, CalendarSyncStatus status, Date lastSyncEnd) {
+    return persistCalendarSyncOn(userIdentityId, 1L, uid, status, lastSyncEnd);
+  }
+
+  /**
+   * One binding on a given server.
+   *
+   * @param userIdentityId the user holding it
+   * @param serverId the server key
+   * @param uid the local anchor, also the collection's name
+   * @param status the binding's state
+   * @param lastSyncEnd when it was last synchronised, or null for never
+   * @return the binding's identifier
+   */
+  private long persistCalendarSyncOn(long userIdentityId, long serverId, String uid, CalendarSyncStatus status, Date lastSyncEnd) {
     CaldavCalendarSyncEntity entity = new CaldavCalendarSyncEntity();
     entity.setUserIdentityId(userIdentityId);
-    entity.setServerId(1L);
+    entity.setServerId(serverId);
     entity.setLocalCalendarSyncUid(uid);
     entity.setRemoteHref("/calendars/" + uid + "/");
     entity.setOrigin(SyncOrigin.EXO);
