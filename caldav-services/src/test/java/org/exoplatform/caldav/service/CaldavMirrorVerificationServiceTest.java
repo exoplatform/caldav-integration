@@ -324,7 +324,7 @@ public class CaldavMirrorVerificationServiceTest {
    * holder: it would put back the copy the removal is to take away.
    */
   @Test
-  public void aCopyOwedARemovalIsNotWrittenBackOnceDeletedFromTheServer() {
+  void aCopyOwedARemovalIsNotWrittenBackOnceDeletedFromTheServer() {
     givenServerHolds(Map.of());
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     givenRemovalsOwed(1L);
@@ -337,7 +337,7 @@ public class CaldavMirrorVerificationServiceTest {
   }
 
   @Test
-  public void aCopyOwedARemovalIsNotRepairedNorItsAnswerAdoptedOnceAClientChangedIt() {
+  void aCopyOwedARemovalIsNotRepairedNorItsAnswerAdoptedOnceAClientChangedIt() {
     givenServerHolds(Map.of(HREF, "\"etag-2\""));
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(calDavClient.fetchObject(any(), eq(HREF))).thenReturn(new CalendarObject(HREF, "\"etag-2\"", HIJACKED));
@@ -355,7 +355,7 @@ public class CaldavMirrorVerificationServiceTest {
    * row it read still names the copy, the row as it now stands does not.
    */
   @Test
-  public void aCopyRemovedWhileThePassWalkedIsNotWrittenBack() {
+  void aCopyRemovedWhileThePassWalkedIsNotWrittenBack() {
     givenServerHolds(Map.of());
     givenMappings(mapping(HREF, "\"etag-1\"", 5L));
     when(caldavSyncStorage.getObjectByUid(3L, UID)).thenReturn(mapping(null, null, 5L));
@@ -371,7 +371,7 @@ public class CaldavMirrorVerificationServiceTest {
    * second meeting while the first copy is being written again.
    */
   @Test
-  public void aRemovalRecordedWhileThePassWalkedIsNotRepairedOver() {
+  void aRemovalRecordedWhileThePassWalkedIsNotRepairedOver() {
     ObjectSync second = mapping("/dav/calendars/john/exo-meetings/two.ics", "\"etag-2\"", 6L);
     second.setId(2L);
     second.setIcsUid("evt-2");
@@ -393,7 +393,7 @@ public class CaldavMirrorVerificationServiceTest {
   }
 
   @Test
-  public void aRemovalOwedThatCannotBeReadEndsTheRoundBeforeTheRepair() {
+  void aRemovalOwedThatCannotBeReadEndsTheRoundBeforeTheRepair() {
     givenServerHolds(Map.of());
     givenTheFirstPageHolds(mapping(HREF, "\"etag-1\"", 5L));
     when(caldavPendingPushStorage.removalsOwed(anyCollection())).thenThrow(new IllegalStateException("database down"));
@@ -404,7 +404,7 @@ public class CaldavMirrorVerificationServiceTest {
   }
 
   @Test
-  public void aRowThatCannotBeReadAgainEndsTheRoundBeforeTheRepair() {
+  void aRowThatCannotBeReadAgainEndsTheRoundBeforeTheRepair() {
     givenServerHolds(Map.of());
     givenTheFirstPageHolds(mapping(HREF, "\"etag-1\"", 5L));
     when(caldavSyncStorage.getObjectByUid(3L, UID)).thenThrow(new IllegalStateException("database down"));

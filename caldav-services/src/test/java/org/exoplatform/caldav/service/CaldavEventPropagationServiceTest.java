@@ -412,7 +412,7 @@ public class CaldavEventPropagationServiceTest {
    * calendar, and Alice's is rewritten.
    */
   @Test
-  public void aRemovedInviteeLosesTheCopyTheOtherInviteeKeeps() {
+  void aRemovedInviteeLosesTheCopyTheOtherInviteeKeeps() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
                  mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
@@ -435,14 +435,12 @@ public class CaldavEventPropagationServiceTest {
    * deletes the copy later instead of leaving it on his calendar.
    */
   @Test
-  public void aRemovalThatFailsStaysOwedAsARemoval() {
+  void aRemovalThatFailsStaysOwedAsARemoval() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
     givenStillInvited(BOB, false);
-    org.mockito.Mockito.doThrow(new IllegalStateException("server down"))
-                       .when(caldavPushService)
-                       .deleteEvent(BOB, login(BOB), "uid-8801");
+    doThrow(new IllegalStateException("server down")).when(caldavPushService).deleteEvent(BOB, login(BOB), "uid-8801");
 
     assertEquals(0, service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED));
 
@@ -455,14 +453,12 @@ public class CaldavEventPropagationServiceTest {
    * again, and the removal stays what is owed.
    */
   @Test
-  public void aFailedRemovalIsNotTurnedIntoARewriteByTheNextEdit() {
+  void aFailedRemovalIsNotTurnedIntoARewriteByTheNextEdit() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
     givenStillInvited(BOB, false);
-    org.mockito.Mockito.doThrow(new IllegalStateException("server down"))
-                       .when(caldavPushService)
-                       .deleteEvent(BOB, login(BOB), "uid-8801");
+    doThrow(new IllegalStateException("server down")).when(caldavPushService).deleteEvent(BOB, login(BOB), "uid-8801");
     service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED);
 
     assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
@@ -478,7 +474,7 @@ public class CaldavEventPropagationServiceTest {
    * copy of a meeting he is no longer invited to.
    */
   @Test
-  public void aFailedRemovalIsNotTurnedIntoARewriteByAnAnswer() {
+  void aFailedRemovalIsNotTurnedIntoARewriteByAnAnswer() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"),
                  mapping(3L, 300L, "uid-8801", "/dav/carol/mirror/uid-8801.ics"));
@@ -487,9 +483,7 @@ public class CaldavEventPropagationServiceTest {
     givenStillInvited(BOB, false);
     givenStillInvited(CAROL, true);
     when(caldavPushService.pushAgendaEvent(CAROL, login(CAROL), EVENT)).thenReturn(new ObjectSync());
-    org.mockito.Mockito.doThrow(new IllegalStateException("server down"))
-                       .when(caldavPushService)
-                       .deleteEvent(BOB, login(BOB), "uid-8801");
+    doThrow(new IllegalStateException("server down")).when(caldavPushService).deleteEvent(BOB, login(BOB), "uid-8801");
     service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED);
     lenient().when(caldavPushService.addressesNaming(ALICE)).thenReturn(List.of("alice@stalwart.local"));
     givenEveryCopyAcceptsTheAnswer();
@@ -506,7 +500,7 @@ public class CaldavEventPropagationServiceTest {
    * rewrites his copy, and the rewrite is what is owed.
    */
   @Test
-  public void aReinvitedHolderIsRewrittenRatherThanRemoved() {
+  void aReinvitedHolderIsRewrittenRatherThanRemoved() {
     givenAMeetingCreatedBy(AUTHOR);
     ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
     givenHolders(bobs);
@@ -528,7 +522,7 @@ public class CaldavEventPropagationServiceTest {
    * not attend. Whether she can read it is not asked.
    */
   @Test
-  public void aHolderWhoStillReadsTheMeetingButIsNoLongerInvitedLosesTheCopy() {
+  void aHolderWhoStillReadsTheMeetingButIsNoLongerInvitedLosesTheCopy() {
     givenAMeetingCreatedBy(AUTHOR);
     givenTheMeetingLivesInTheCalendarOf(SPACE);
     givenHolders(mapping(3L, 300L, "uid-8801", "/dav/carol/mirror/uid-8801.ics"));
@@ -548,7 +542,7 @@ public class CaldavEventPropagationServiceTest {
    * removal stays what is owed, for the retry pass.
    */
   @Test
-  public void anOwedRemovalStandsWhenTheCalendarCannotBeRead() {
+  void anOwedRemovalStandsWhenTheCalendarCannotBeRead() {
     givenAMeetingCreatedBy(AUTHOR);
     ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
     givenHolders(bobs);
@@ -567,7 +561,7 @@ public class CaldavEventPropagationServiceTest {
    * Nor when the collection Bob's copy lives in cannot be read back.
    */
   @Test
-  public void anOwedRemovalStandsWhenTheCollectionCannotBeRead() {
+  void anOwedRemovalStandsWhenTheCollectionCannotBeRead() {
     givenAMeetingCreatedBy(AUTHOR);
     ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
     givenHolders(bobs);
@@ -588,7 +582,7 @@ public class CaldavEventPropagationServiceTest {
    * Nor when agenda cannot say whether Bob is invited again.
    */
   @Test
-  public void anOwedRemovalStandsWhenTheInvitationCannotBeRead() {
+  void anOwedRemovalStandsWhenTheInvitationCannotBeRead() {
     givenAMeetingCreatedBy(AUTHOR);
     ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
     givenHolders(bobs);
@@ -608,7 +602,7 @@ public class CaldavEventPropagationServiceTest {
    * to the meeting: agenda counts him invited, and his copy is rewritten.
    */
   @Test
-  public void aMemberOfAnInvitedSpaceKeepsTheCopy() {
+  void aMemberOfAnInvitedSpaceKeepsTheCopy() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
@@ -625,7 +619,7 @@ public class CaldavEventPropagationServiceTest {
    * attendees: it is her own event, and removing somebody else keeps her copy.
    */
   @Test
-  public void theOwnerOfTheCalendarKeepsTheirCopy() {
+  void theOwnerOfTheCalendarKeepsTheirCopy() {
     givenAMeetingCreatedBy(AUTHOR);
     givenTheMeetingLivesInTheCalendarOf(ERIN);
     givenHolders(mapping(6L, 600L, "uid-8801", "/dav/erin/mirror/uid-8801.ics"));
@@ -643,7 +637,7 @@ public class CaldavEventPropagationServiceTest {
    * it follows that calendar, and an attendee removal leaves it alone.
    */
   @Test
-  public void aCopyInACalendarTheHolderSynchronisesIsKept() {
+  void aCopyInACalendarTheHolderSynchronisesIsKept() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/team/uid-8801.ics"));
     givenPair(200L, BOB, SyncOrigin.EXO);
@@ -660,7 +654,7 @@ public class CaldavEventPropagationServiceTest {
    * cannot be told apart from the others: nobody's copy is removed.
    */
   @Test
-  public void aCalendarThatCannotBeReadRemovesNoCopy() {
+  void aCalendarThatCannotBeReadRemovesNoCopy() {
     givenAMeetingCreatedBy(AUTHOR);
     when(agendaCalendarService.getCalendarById(anyLong())).thenThrow(new IllegalStateException("agenda down"));
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
@@ -678,7 +672,7 @@ public class CaldavEventPropagationServiceTest {
    * a meeting copy: it is kept.
    */
   @Test
-  public void aCopyWhoseCollectionCannotBeReadIsKept() {
+  void aCopyWhoseCollectionCannotBeReadIsKept() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
@@ -698,7 +692,7 @@ public class CaldavEventPropagationServiceTest {
    * their invitation.
    */
   @Test
-  public void theCreatorKeepsTheirCopy() {
+  void theCreatorKeepsTheirCopy() {
     givenAMeetingCreatedBy(DAVE);
     givenHolders(mapping(4L, 400L, "uid-8801", "/dav/dave/mirror/uid-8801.ics"));
     givenPair(400L, DAVE);
@@ -715,7 +709,7 @@ public class CaldavEventPropagationServiceTest {
    * is still invited, his copy is rewritten.
    */
   @Test
-  public void aHolderWhoseInvitationCannotBeReadKeepsTheCopy() {
+  void aHolderWhoseInvitationCannotBeReadKeepsTheCopy() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
@@ -733,7 +727,7 @@ public class CaldavEventPropagationServiceTest {
    * not removed.
    */
   @Test
-  public void aRemovalFromOneDateLeavesTheSeriesCopy() {
+  void aRemovalFromOneDateLeavesTheSeriesCopy() {
     Event occurrence = new Event();
     occurrence.setId(OCCURRENCE);
     occurrence.setParentId(EVENT);
@@ -757,7 +751,7 @@ public class CaldavEventPropagationServiceTest {
    * rewritten, not removed.
    */
   @Test
-  public void aRemovalFromOneDateKeepsACopyFiledUnderThatDate() {
+  void aRemovalFromOneDateKeepsACopyFiledUnderThatDate() {
     Event occurrence = new Event();
     occurrence.setId(OCCURRENCE);
     occurrence.setParentId(EVENT);
@@ -783,7 +777,7 @@ public class CaldavEventPropagationServiceTest {
    * the retry pass still removes it.
    */
   @Test
-  public void anOwedRemovalOfTheSeriesCopySurvivesAnEditOfOneDate() {
+  void anOwedRemovalOfTheSeriesCopySurvivesAnEditOfOneDate() {
     Event occurrence = new Event();
     occurrence.setId(OCCURRENCE);
     occurrence.setParentId(EVENT);
@@ -807,7 +801,7 @@ public class CaldavEventPropagationServiceTest {
    * the lookups.
    */
   @Test
-  public void anEditThatRemovesNobodyDoesNotAskWhoIsInvited() {
+  void anEditThatRemovesNobodyDoesNotAskWhoIsInvited() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
@@ -825,7 +819,7 @@ public class CaldavEventPropagationServiceTest {
    * once per holder.
    */
   @Test
-  public void anEditAsksWhichRemovalsAreOwedOnceForEveryHolder() {
+  void anEditAsksWhichRemovalsAreOwedOnceForEveryHolder() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
                  mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"),
@@ -844,7 +838,7 @@ public class CaldavEventPropagationServiceTest {
    * An answer reaching several holders asks which removals are owed once.
    */
   @Test
-  public void anAnswerAsksWhichRemovalsAreOwedOnceForEveryHolder() {
+  void anAnswerAsksWhichRemovalsAreOwedOnceForEveryHolder() {
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
                  mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
@@ -1308,7 +1302,7 @@ public class CaldavEventPropagationServiceTest {
    * stays what is owed.
    */
   @Test
-  public void anOwedRemovalStandsWhenTheEventCannotBeRead() {
+  void anOwedRemovalStandsWhenTheEventCannotBeRead() {
     when(agendaEventService.getEventById(EVENT)).thenThrow(new IllegalStateException("agenda is unavailable"));
     ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
     givenHolders(bobs);

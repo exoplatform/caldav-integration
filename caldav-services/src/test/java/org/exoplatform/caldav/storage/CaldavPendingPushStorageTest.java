@@ -468,7 +468,7 @@ public class CaldavPendingPushStorageTest {
    * recording a rewrite over the same row.
    */
   @Test
-  public void aRemovalOwedIsToldApartFromARewriteAndFromNothing() {
+  void aRemovalOwedIsToldApartFromARewriteAndFromNothing() {
     inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REMOVE, null, "uid-8801"));
     inTransaction(() -> storage.owe(BOB_COPY, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801"));
 
@@ -481,7 +481,7 @@ public class CaldavPendingPushStorageTest {
    * past the first chunk is still found.
    */
   @Test
-  public void aRemovalOwedPastTheFirstChunkIsFound() {
+  void aRemovalOwedPastTheFirstChunkIsFound() {
     inTransaction(() -> storage.owe(ALICE_COPY, ALICE, PendingPushKind.REMOVE, null, "uid-8801"));
     List<Long> ids = new ArrayList<>();
     for (long id = 100_000L; id < 101_200L; id++) {
