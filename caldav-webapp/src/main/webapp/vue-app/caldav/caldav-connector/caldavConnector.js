@@ -373,6 +373,8 @@ function escapeText(value) {
  * The markup is parsed into a document of its own: the description can be
  * another user's text, and an element of the live page would load its images
  * and run their handlers, where nothing in a DOMParser document loads or runs.
+ * For the same reason the break pattern never scans past the next '<' or '>',
+ * which keeps its cost linear in the length of the description.
  *
  * @param {String} html description as agenda supplies it
  * @returns {String} the same content as plain text, block tags becoming breaks
@@ -382,7 +384,7 @@ function htmlToText(html) {
     return '';
   }
   const withBreaks = String(html)
-    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<br\b[^<>]*>/gi, '\n')
     .replace(/<\s*\/\s*(p|div|li|tr|h[1-6])\s*>/gi, '\n');
   const body = new DOMParser().parseFromString(withBreaks, 'text/html').body;
   return (body.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
