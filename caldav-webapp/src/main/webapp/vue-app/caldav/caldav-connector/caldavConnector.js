@@ -242,19 +242,10 @@ DTEND:${toUTCString(event.end)}Z
       iCalString += `DESCRIPTION:${escapeText(descriptionParts.join('\n\n'))}\n`;
     }
     if (isOccurrence) {
-      // Exactly one RECURRENCE-ID, and always one. Both writes used to sit
-      // under the same condition, so a timed occurrence carried the property
-      // twice — it may occur at most once — while an all-day occurrence
-      // carried none at all and, having no anchor, replaced the master event
-      // instead of amending the single instance it was meant to.
-      //
-      // The form follows event.allDay, matching how DTSTART above decides, and
-      // not whether the occurrence identifier happens to contain a time. RFC
-      // 5545 requires this property to carry the same value type as the
-      // DTSTART of the series it points into, and agenda identifies an
-      // occurrence of an all-day event by an instant all the same — so keying
-      // off the identifier wrote a date-time reference into a date-valued
-      // series, which matches no instance at all.
+      // One RECURRENCE-ID, which RFC 5545 allows at most once and requires in
+      // the value type of the series' DTSTART. Its form therefore follows
+      // event.allDay, as DTSTART does, and not the shape of the occurrence
+      // id: agenda identifies an all-day occurrence by an instant too.
       if (event.allDay) {
         iCalString += `RECURRENCE-ID;VALUE=DATE:${toIcsDate(event.occurrence.id)}\n`;
       } else {
@@ -297,12 +288,7 @@ END:VCALENDAR
 /**
  * Opens a DAV client for the connected account.
  *
- * Rejects rather than resolving null when the connection cannot be made. The
- * previous behaviour logged and returned null, which the caller turned into a
- * blank remote identifier, which agenda then read as "this event has no
- * remote counterpart, drop the link". A failed push therefore did not merely
- * fail: it erased the record that anything was ever meant to sync, leaving a
- * later retry with nothing to retry from.
+ * Rejects rather than resolving null when the connection cannot be made.
  *
  * @param {Object} settings connector settings holding the URL and credentials
  * @returns {Promise<Object>} a connected tsdav client
@@ -325,10 +311,9 @@ async function createClient(settings) {
 }
 
 /**
- * Builds an error carrying a stable code, so that agenda can turn a failure
- * into a message the user can act on — check your credentials, this calendar
- * is read-only, try again — without parsing text or reaching into tsdav's
- * own error shapes.
+ * Builds the error the connector rejects with: a stable code for the kind of
+ * failure, and the HTTP status when the cause carries one. Both are for
+ * diagnostics; agenda does not read them.
  *
  * @param {String} code stable identifier for the kind of failure
  * @param {Object} cause underlying error, kept for logging and for its status
@@ -344,9 +329,9 @@ function caldavError(code, cause) {
 
 /**
  * Escapes a value for an iCalendar TEXT property, per RFC 5545 section
- * 3.3.11. Nothing was escaped before: a title holding a comma or a semicolon
- * was read by the server as several values, and one holding a newline
- * injected a line into the object, corrupting everything after it.
+ * 3.3.11. Unescaped, a comma or a semicolon is read as a value separator, and
+ * a newline ends the property, so the rest of the text would be read as
+ * properties of its own.
  *
  * The backslash is replaced first, otherwise it would escape the escapes
  * added afterwards.
@@ -428,9 +413,7 @@ function toIcsDate(value) {
 /**
  * The DTEND of an all-day event, which RFC 5545 defines as exclusive: a
  * one-day event ends on the day after it. Agenda holds the last day the event
- * covers, so a day is added here — the same adjustment the Google connector
- * already makes from the same source value, and its absence is why an
- * all-day event pushed to CalDAV came out a day short.
+ * covers, so a day is added here.
  *
  * The arithmetic is done at midday UTC so that no daylight-saving transition
  * can move the result onto a neighbouring day.
