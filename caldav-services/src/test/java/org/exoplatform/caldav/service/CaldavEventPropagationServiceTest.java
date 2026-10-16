@@ -1925,6 +1925,30 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
+   * Each obligation of a batch is read again at its own turn, not all of them
+   * before the first write: Bob's second copy is owed a removal from the
+   * moment the pass writes his first one, and the pass does not rewrite it.
+   */
+  @Test
+  void eachObligationOfABatchIsReadAgainAtItsOwnTurn() {
+    long otherMeeting = 8803L;
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    caldavPendingPushStorage.owe(3L, BOB, PendingPushKind.REWRITE, otherMeeting, "uid-8803");
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenAnswer(write -> {
+      caldavPendingPushStorage.owe(3L, BOB, PendingPushKind.REMOVE, null, "uid-8803");
+      return new ObjectSync();
+    });
+    lenient().when(caldavPushService.pushAgendaEvent(BOB, login(BOB), otherMeeting)).thenReturn(new ObjectSync());
+
+    int landed = service.retryOwedPushes(BOB);
+
+    verify(caldavPushService, never()).pushAgendaEvent(BOB, login(BOB), otherMeeting);
+    assertEquals(1, landed);
+    assertEquals(PendingPushKind.REMOVE, onlyObligationOf(BOB).getKind());
+  }
+
+  /**
    * A removal recorded while the retry pass writes Bob's owed rewrite stands
    * once the rewrite lands: settling forgets the rewrite only.
    */
