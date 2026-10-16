@@ -768,6 +768,21 @@ public class CaldavEventPropagationService {
         carried++;
       }
     }
+    int removed = removeUninvited(uninvited, eventId);
+    logEdit(eventId, carried, holders.size() + skipped, removed, uninvited.size());
+    return carried + removed;
+  }
+
+  /**
+   * Removes the copy of every holder no longer invited to an edited meeting,
+   * one account at a time.
+   *
+   * @param uninvited the holders whose copy has to go, by user, each already
+   *          recorded as owed a removal
+   * @param eventId the agenda event that was edited
+   * @return how many copies were removed
+   */
+  private int removeUninvited(Map<Long, ObjectSync> uninvited, long eventId) {
     int removed = 0;
     for (Map.Entry<Long, ObjectSync> holder : uninvited.entrySet()) {
       ObjectSync mapping = holder.getValue();
@@ -780,17 +795,30 @@ public class CaldavEventPropagationService {
         removed++;
       }
     }
-    if (uninvited.isEmpty()) {
-      LOG.info("Event {} was edited; its copy was rewritten for {} of {} holders", eventId, carried, holders.size() + skipped);
+    return removed;
+  }
+
+  /**
+   * Says what an edit did to the copies of a meeting, naming the removals only
+   * when it had some to make.
+   *
+   * @param eventId the agenda event that was edited
+   * @param carried how many copies were rewritten
+   * @param holders how many holders the edit reached, its origin included
+   * @param removed how many copies were removed
+   * @param uninvited how many holders are no longer invited
+   */
+  private void logEdit(long eventId, int carried, int holders, int removed, int uninvited) {
+    if (uninvited == 0) {
+      LOG.info("Event {} was edited; its copy was rewritten for {} of {} holders", eventId, carried, holders);
     } else {
       LOG.info("Event {} was edited; its copy was rewritten for {} of {} holders and removed for {} of {} no longer invited",
                eventId,
                carried,
-               holders.size() + skipped,
+               holders,
                removed,
-               uninvited.size());
+               uninvited);
     }
-    return carried + removed;
   }
 
   /**
@@ -878,40 +906,65 @@ public class CaldavEventPropagationService {
     boolean attendeeRemoved = modificationTypes != null
         && modificationTypes.contains(AgendaEventModificationType.ATTENDEE_DELETED);
     long calendarOwnerId = attendeeRemoved || !owed.isEmpty() ? calendarOwnerOf(event) : 0;
-    holders.entrySet().removeIf(holder -> {
-      long userIdentityId = holder.getKey();
-      ObjectSync mapping = holder.getValue();
-      Long mappedEventId = mapping.getLocalEventId();
-      if (mappedEventId == null || mappedEventId != eventId) {
-        // The series' copy, reached from an occurrence edited alone: left out
-        // of the rewrite when it is owed a removal, which the retry pass
-        // carries out, and never removed from here.
-        return isOwed(owed, mapping);
-      }
-      boolean owedRemoval = isOwed(owed, mapping);
-      if (userIdentityId == event.getCreatorId() || !(attendeeRemoved || owedRemoval)
-          || userIdentityId == calendarOwnerId) {
+    holders.entrySet()
+           .removeIf(holder -> isTakenOut(holder, event, eventId, calendarOwnerId, attendeeRemoved, owed, uninvited));
+    return uninvited;
+  }
+
+  /**
+   * Decides one holder's turn in {@link #takeUninvited}: kept in the rewrite,
+   * left out of it for an owed removal to stand, or taken out to have the copy
+   * removed.
+   *
+   * @param holder the holder and their mapping
+   * @param event the edited event, as agenda holds it now
+   * @param eventId the agenda event
+   * @param calendarOwnerId the owner of the calendar the meeting lives in, 0
+   *          when not read, {@link #UNKNOWN_OWNER} when it cannot be
+   * @param attendeeRemoved whether agenda says an attendee was removed
+   * @param owed the mappings owed a removal
+   * @param uninvited the holders whose copy must be removed, which this adds
+   *          the holder to when theirs must
+   * @return true when the holder is taken out of the rewrite
+   */
+  private boolean isTakenOut(Map.Entry<Long, ObjectSync> holder,
+                             Event event,
+                             long eventId,
+                             long calendarOwnerId,
+                             boolean attendeeRemoved,
+                             Set<Long> owed,
+                             Map<Long, ObjectSync> uninvited) {
+    long userIdentityId = holder.getKey();
+    ObjectSync mapping = holder.getValue();
+    Long mappedEventId = mapping.getLocalEventId();
+    if (mappedEventId == null || mappedEventId != eventId) {
+      // The series' copy, reached from an occurrence edited alone: left out
+      // of the rewrite when it is owed a removal, which the retry pass
+      // carries out, and never removed from here.
+      return isOwed(owed, mapping);
+    }
+    boolean owedRemoval = isOwed(owed, mapping);
+    if (userIdentityId == event.getCreatorId() || !(attendeeRemoved || owedRemoval)
+        || userIdentityId == calendarOwnerId) {
+      return false;
+    }
+    if (calendarOwnerId == UNKNOWN_OWNER) {
+      return owedRemoval;
+    }
+    try {
+      if (!isMeetingCopy(mapping) || isStillInvited(event, userIdentityId)) {
         return false;
       }
-      if (calendarOwnerId == UNKNOWN_OWNER) {
-        return owedRemoval;
-      }
-      try {
-        if (!isMeetingCopy(mapping) || isStillInvited(event, userIdentityId)) {
-          return false;
-        }
-      } catch (Exception | LinkageError e) {
-        LOG.warn("Whether user {} is still to hold a copy of event {} could not be told; {}",
-                 userIdentityId,
-                 eventId,
-                 owedRemoval ? "the removal known to be owed to them stands" : "their copy is kept",
-                 e);
-        return owedRemoval;
-      }
-      uninvited.put(userIdentityId, mapping);
-      return true;
-    });
-    return uninvited;
+    } catch (Exception | LinkageError e) {
+      LOG.warn("Whether user {} is still to hold a copy of event {} could not be told; {}",
+               userIdentityId,
+               eventId,
+               owedRemoval ? "the removal known to be owed to them stands" : "their copy is kept",
+               e);
+      return owedRemoval;
+    }
+    uninvited.put(userIdentityId, mapping);
+    return true;
   }
 
   /**
