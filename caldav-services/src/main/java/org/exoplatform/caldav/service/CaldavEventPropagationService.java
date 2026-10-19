@@ -28,12 +28,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.stereotype.Service;
+
+import io.meeds.common.ContainerTransactional;
 
 import org.exoplatform.agenda.constant.AgendaEventModificationType;
 import org.exoplatform.agenda.model.Event;
@@ -43,20 +46,28 @@ import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventService;
+import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.ics.IcsText;
+import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.PendingPush;
 import org.exoplatform.caldav.model.PendingPushKind;
 import org.exoplatform.caldav.model.SyncOrigin;
+import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavPendingPushStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.caldav.utils.CaldavConnectorUtils;
+import org.exoplatform.container.ExoContainer;
+import org.exoplatform.container.ExoContainerContext;
+import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.services.log.ExoLogger;
 import org.exoplatform.services.log.Log;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.manager.IdentityManager;
+import org.exoplatform.social.core.space.model.Space;
+import org.exoplatform.social.core.space.spi.SpaceService;
 
 /**
  * Carries what happens to a meeting in eXo out to the calendars of the people
@@ -115,7 +126,10 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * It runs on the listener's asynchronous thread and fans out on that same
  * thread, deliberately: a thread of its own would leave the kernel's container
  * behind, and the transactional write that records what was pushed would then
- * fail as a warning nobody reads.
+ * fail as a warning nobody reads. The one exception is the members of an
+ * invited space, whose number follows the space rather than the roster: they
+ * are handed to a thread of this add-on's own, whose task establishes the
+ * container itself ({@link #seedSpaceMembersInContainer}).
  *
  * <h2>What happens when a write does not land (EXO-89773)</h2>
  *
@@ -182,6 +196,20 @@ public class CaldavEventPropagationService {
    * minutes away.
    */
   private static final int                                     RETRY_BATCH         = 200;
+
+  /**
+   * How many accounts one read hands to the search for the members of an
+   * invited space who have one.
+   */
+  private static final int                                     ACCOUNTS_PAGE_SIZE  = 200;
+
+  /**
+   * How many members' writes must meet a calendar server unable to answer
+   * before the walk of an invited space asks it nothing more. Two and not one:
+   * one account whose own home times out would otherwise hold back every other
+   * member of its server.
+   */
+  private static final int                                     UNANSWERED_WRITES_BEFORE_LEAVING_OUT = 2;
 
   /**
    * The owner a calendar read answers when agenda cannot say whose calendar a
@@ -283,8 +311,27 @@ public class CaldavEventPropagationService {
   @Autowired
   private IdentityManager                                      identityManager;
 
+  /** Tells whether a user is a member of a space invited to a meeting. */
+  @Autowired
+  private SpaceService                                         spaceService;
+
+  /**
+   * The thread the copies of the members of an invited space are written
+   * from, and the claims that keep it off an account somebody else is writing
+   * to ({@link #handOffSpaceMembers}).
+   */
+  @Autowired
+  private CaldavOutboundWork                                   caldavOutboundWork;
+
   @Autowired
   private CaldavPendingInvitationService                       caldavPendingInvitationService;
+
+  /**
+   * Where a member's account says which calendar server it is on, read only
+   * once a server has failed to answer the walk ({@link #writeForMembers}).
+   */
+  @Autowired
+  private CaldavConnectorStorage                               caldavConnectorStorage;
 
   @Autowired
   private CaldavCopyPolicy                                     caldavCopyPolicy;
@@ -419,12 +466,12 @@ public class CaldavEventPropagationService {
    *
    * <p>
    * The asymmetry with {@link #propagateUpdate} is the whole point of having a
-   * second method rather than one. An edit writes only where a copy already
-   * exists — the set is read from the mapping table, so that editing a meeting
-   * never hands a copy to somebody who has never had one. A creation is the one
-   * moment where handing out a copy <i>is</i> the instruction, so the set is
-   * read from agenda's attendee list instead, and it is bounded by construction:
-   * one meeting, the people invited to it, once.
+   * second method rather than one. An edit rewrites where a copy already
+   * exists — the set is read from the mapping table — and hands a first copy
+   * only to the people it invites. A creation is the one moment where handing
+   * out a copy <i>is</i> the whole instruction, so the set is read from
+   * agenda's attendee list instead, and it is bounded by construction: one
+   * meeting, the people invited to it, once.
    *
    * <p>
    * The decision about each of them is not taken here. It belongs to
@@ -449,13 +496,15 @@ public class CaldavEventPropagationService {
    * the mirror — so the shared decision no longer duplicates it.
    *
    * <p>
-   * Only the attendees that are <b>users</b> are considered. A space invited to
-   * a meeting is one attendee row standing for its members, and expanding it
-   * here would turn one creation into as many settings reads and writes as the
-   * space has members — for people this add-on does not even name on the copy it
-   * writes. They are reached by the background seeding pass, which resolves
-   * space membership through agenda's own query and costs one pass per user
-   * rather than one fan-out per event.
+   * <b>A space invited to a meeting reaches the members who have an account</b>
+   * (EXO-91031). A space is one attendee row standing for its members, and the
+   * copy of each member names them ({@link AgendaEventIcsMapper}). The seeding
+   * pass alone reaches a member only when the sweep reaches their account, so
+   * their copies are handed to this add-on's own thread
+   * ({@link #handOffSpaceMembers}), which reads the accounts the sweep visits
+   * and writes for those whose user is a member of an invited space: the cost
+   * follows the number of connected accounts, not the size of the space, is
+   * paid only when a space is on the roster, and never on the listener thread.
    *
    * <b>The author's own copy is not written here, and that is the double push.</b>
    *
@@ -504,7 +553,8 @@ public class CaldavEventPropagationService {
     if (eventId <= 0) {
       return 0;
     }
-    Set<Long> invited = invitedUsers(eventId);
+    List<EventAttendee> attendees = attendeesOf(eventId);
+    Set<Long> invited = usersOn(attendees);
     invited.remove(authorIdentityId);
     // An event a colleague created in somebody else's personal calendar
     // (EXO-90378) is carried out by that calendar's owner, whether or not they
@@ -516,6 +566,9 @@ public class CaldavEventPropagationService {
     if (ownerToCarry > 0) {
       invited.add(ownerToCarry);
     }
+    Set<Long> writtenHere = new LinkedHashSet<>(invited);
+    writtenHere.add(authorIdentityId);
+    handOffSpaceMembers(eventId, readEvent(eventId), attendees, writtenHere);
     if (invited.isEmpty()) {
       LOG.debug("Event {} was created with nobody this add-on has to copy it to; nothing is written", eventId);
       return 0;
@@ -573,7 +626,7 @@ public class CaldavEventPropagationService {
   }
 
   /**
-   * Everybody invited to a meeting who is a user, once each.
+   * The meeting's roster as agenda holds it now.
    *
    * <p>
    * Read from agenda at the moment this runs rather than from the broadcast:
@@ -583,43 +636,395 @@ public class CaldavEventPropagationService {
    * rather than trusting a payload keeps that true if the order ever changes.
    *
    * @param eventId the agenda event
-   * @return the identities of the invited users, in the order agenda lists them
+   * @return the attendees, empty when agenda cannot list them
    */
-  private Set<Long> invitedUsers(long eventId) {
-    Set<Long> invited = new LinkedHashSet<>();
+  private List<EventAttendee> attendeesOf(long eventId) {
     EventAttendeeList attendeeList;
     try {
       attendeeList = agendaEventAttendeeService.getEventAttendees(eventId);
     } catch (Exception | LinkageError e) {
-      LOG.warn("The attendees of the new event {} could not be listed; no copy is written for it", eventId, e);
-      return invited;
+      LOG.warn("The attendees of event {} could not be listed; no copy is written for it", eventId, e);
+      return List.of();
     }
     List<EventAttendee> attendees = attendeeList == null ? null : attendeeList.getEventAttendees();
-    if (attendees == null) {
-      return invited;
-    }
-    for (EventAttendee attendee : attendees) {
-      long identityId = attendee.getIdentityId();
-      if (identityId > 0 && isUser(identityId)) {
-        invited.add(identityId);
-      }
-    }
-    return invited;
+    return attendees == null ? List.of() : attendees;
   }
 
   /**
-   * Whether an attendee identity is a person rather than a space.
+   * Everybody on a roster who is a user, once each.
+   *
+   * @param attendees the roster
+   * @return the identities of the users, in the order agenda lists them
+   */
+  private Set<Long> usersOn(List<EventAttendee> attendees) {
+    Set<Long> users = new LinkedHashSet<>();
+    for (EventAttendee attendee : attendees) {
+      long identityId = attendee.getIdentityId();
+      Identity identity = identityId > 0 ? attendeeIdentity(identityId) : null;
+      if (identity != null && identity.isUser()) {
+        users.add(identityId);
+      }
+    }
+    return users;
+  }
+
+  /**
+   * The spaces on a roster, each standing for its members.
+   *
+   * @param attendees the roster
+   * @return the spaces that could be read, in the order agenda lists them
+   */
+  private List<Space> spacesOn(List<EventAttendee> attendees) {
+    List<Space> spaces = new ArrayList<>();
+    for (EventAttendee attendee : attendees) {
+      long identityId = attendee.getIdentityId();
+      Identity identity = identityId > 0 ? attendeeIdentity(identityId) : null;
+      if (identity == null || !identity.isSpace()) {
+        continue;
+      }
+      try {
+        Space space = spaceService.getSpaceByPrettyName(identity.getRemoteId());
+        if (space != null) {
+          spaces.add(space);
+        }
+      } catch (RuntimeException e) {
+        LOG.debug("Space {} could not be read; its members are left to the sweep", identity.getRemoteId(), e);
+      }
+    }
+    return spaces;
+  }
+
+  /**
+   * Hands the copies of the members of an invited space to this add-on's own
+   * thread (EXO-91031).
+   *
+   * <p>
+   * A space on the roster is one row standing for its members, so their
+   * copies are not among those a creation or an edit writes on the listener
+   * thread, which agenda's broadcasts share with every other add-on. Writing
+   * them there would hold it for one round trip to a calendar server per
+   * member. They are written on the thread outward copies are written from
+   * ({@link CaldavOutboundWork}), one task per meeting, by
+   * {@link #seedSpaceMembers}. The users this broadcast writes on
+   * the listener thread, or leaves to their own browser, are left out of its
+   * task, and the task claims each member's account before writing to it, so
+   * it never writes alongside a sweep, a burst or another invitation of that
+   * account. An edit writing on the listener thread for a user added to the
+   * roster directly takes no claim: should that user also be a member, and the
+   * two writes meet, the push refuses the second as a conflict.
+   *
+   * <p>
+   * Nothing is handed over for one date of a series: agenda broadcasts the
+   * creation of an amended date with the series' roster, while the series is
+   * copied as one object filed under the series, so a member's copy of it is
+   * left to the seeding pass. Nor for a meeting no copy may be written for
+   * where none exists ({@link CaldavCopyPolicy#maySeedCopy}): a cancelled
+   * meeting an edit adds an attendee to, or a date poll, whose members are
+   * handed over once it is confirmed ({@link #seedConfirmedPoll}).
+   * Nor when the event cannot be read. When the
+   * queue is full the members are left to the sweep, which reaches them when it
+   * reaches their account, for a meeting within its window ({@code seedDays}).
+   *
+   * @param eventId the agenda event
+   * @param event the event, as agenda holds it now; null when it could not be
+   *          read
+   * @param attendees its roster
+   * @param writtenHere the users whose copy is written, or left to their own
+   *          browser, on the listener thread
+   */
+  private void handOffSpaceMembers(long eventId, Event event, List<EventAttendee> attendees, Set<Long> writtenHere) {
+    if (event == null || event.getParentId() > 0 || !caldavCopyPolicy.maySeedCopy(event)) {
+      return;
+    }
+    if (spacesOn(attendees).isEmpty()) {
+      return;
+    }
+    Set<Long> leftOut = Set.copyOf(writtenHere);
+    try {
+      caldavOutboundWork.execute(() -> seedSpaceMembersInContainer(eventId, leftOut));
+    } catch (RejectedExecutionException e) {
+      LOG.debug("The members of the spaces invited to event {} are left to the sweep; too much outward work is waiting its turn",
+                eventId);
+    } catch (RuntimeException e) {
+      LOG.warn("The copies of the members of the spaces invited to event {} could not be started; the sweep writes them",
+               eventId,
+               e);
+    }
+  }
+
+  /**
+   * Writes the copies of the members of the spaces invited to a meeting, on
+   * the thread they were handed to, within a container.
+   *
+   * @param eventId the agenda event
+   * @param leftOut the users whose copy is not this task's to write
+   */
+  @ContainerTransactional
+  public void seedSpaceMembersInContainer(long eventId, Set<Long> leftOut) {
+    seedSpaceMembers(eventId, leftOut);
+  }
+
+  /**
+   * Writes a copy for each account the sweep visits whose user is a member of
+   * one of the spaces invited to a meeting.
+   *
+   * <p>
+   * The roster and the spaces are read when the task runs, not when it was
+   * handed over, and read again at each member's turn, the question asked
+   * being the same: a space taken off the meeting, or a member taken off the
+   * space, before that turn is not written for. A change landing during the
+   * write itself is not seen; such a copy stays until an edit removes an
+   * attendee, whose removal pass reaches it.
+   *
+   * <p>
+   * Each member's turn reads in a persistence context of its own
+   * ({@link #renewContext}). The walk runs in one request lifecycle, whose
+   * EntityManager would otherwise hand a later turn the event as an earlier
+   * turn loaded it: a copy of the meeting as it stood before an edit or a
+   * cancellation, put back into agenda's event cache by that read.
+   *
+   * <p>
+   * A member's account is claimed for the write
+   * ({@link CaldavOutboundWork#claimMemberWrite}).
+   * One already claimed is held by a sweep at work or by a burst queued
+   * behind this task, and is tried once more after the walk, which reaches a
+   * sweep that has finished by then. One still claimed — always so for a
+   * burst, which runs on the same thread after this task — is left to that
+   * pass and to the sweep, which seed the meeting once it is within their
+   * window ({@code seedDays}).
+   *
+   * <p>
+   * Membership is what the seeding pass reaches a member through: it lists a
+   * user's meetings with agenda's attendee filter, which reads the spaces they
+   * are a member of. Agenda's {@code isEventAttendee} counts more people, the
+   * platform's administrators among them, and is not the question here.
+   *
+   * <p>
+   * The accounts are the users holding an active binding, read a page at a
+   * time, so the cost follows the number of connected accounts and not the
+   * size of the space. Each copy is written by the seeding decision a creation
+   * uses ({@link #seedOne}). A page that cannot be read ends the walk with
+   * what was written: the sweep reaches the others.
+   *
+   * <p>
+   * A calendar server that does not answer is asked nothing more for this
+   * meeting once {@value #UNANSWERED_WRITES_BEFORE_LEAVING_OUT} members' writes
+   * have met its silence: a CalDAV server may ban an address that keeps asking
+   * ({@link CalDavUnreachableException}). Its
+   * other members are left to the sweep, which writes their copies once it
+   * answers and the meeting is within its window ({@code seedDays}). The
+   * silence counted is the one met by the discovery of the member's calendar,
+   * which every write starts with. A server that answers it but fails the
+   * write itself is reported as a refused write, and asked again for each
+   * member, as the sweep's seeding pass asks it.
+   *
+   * @param eventId the agenda event
+   * @param leftOut the users whose copy is not this task's to write
+   * @return how many copies were written
+   */
+  int seedSpaceMembers(long eventId, Set<Long> leftOut) {
+    List<Space> spaces = spacesOn(attendeesOf(eventId));
+    if (spaces.isEmpty()) {
+      return 0;
+    }
+    int members = 0;
+    int written = 0;
+    Map<Long, String> busy = new LinkedHashMap<>();
+    // How many members' writes met each server unable to answer.
+    Map<Long, Integer> unanswered = new LinkedHashMap<>();
+    long after = 0;
+    while (true) {
+      List<Long> accounts;
+      try {
+        accounts = caldavSyncStorage.getAccountsAfter(CalendarSyncStatus.ACTIVE, after, ACCOUNTS_PAGE_SIZE);
+      } catch (RuntimeException e) {
+        LOG.warn("The accounts of the members invited to event {} through a space could not all be listed; the sweep writes the others",
+                 eventId,
+                 e);
+        break;
+      }
+      Map<Long, String> pageMembers = new LinkedHashMap<>();
+      for (Long account : accounts) {
+        String login = leftOut.contains(account) ? null : resolvableLogin(account);
+        if (login != null && isMemberOfAny(spaces, login)) {
+          pageMembers.put(account, login);
+        }
+      }
+      members += pageMembers.size();
+      written += writeForMembers(eventId, pageMembers, busy, unanswered);
+      if (accounts.size() < ACCOUNTS_PAGE_SIZE) {
+        break;
+      }
+      after = accounts.get(accounts.size() - 1);
+    }
+    written += writeForMembers(eventId, busy, new LinkedHashMap<>(), unanswered);
+    LOG.info("Event {} invites {} space(s); a copy was written for {} of the {} member(s) with an account left to this walk",
+             eventId,
+             spaces.size(),
+             written,
+             members);
+    return written;
+  }
+
+  /**
+   * Writes a copy for each member whose account nobody else is writing to, and
+   * whose server has not been left out for not answering.
+   *
+   * <p>
+   * A member's server is read only once a write has met a server unable to
+   * answer: until then, nothing is left out and nothing needs it.
+   *
+   * @param eventId the agenda event
+   * @param members the members to write for, their login by identity
+   * @param busy where a member whose account is claimed elsewhere is put
+   * @param unanswered how many members' writes met each server unable to
+   *          answer, updated
+   * @return how many copies were written
+   */
+  private int writeForMembers(long eventId,
+                              Map<Long, String> members,
+                              Map<Long, String> busy,
+                              Map<Long, Integer> unanswered) {
+    int written = 0;
+    for (Map.Entry<Long, String> member : members.entrySet()) {
+      long account = member.getKey();
+      String login = member.getValue();
+      Long server = unanswered.isEmpty() ? null : serverOf(account);
+      if (server != null && unanswered.getOrDefault(server, 0) >= UNANSWERED_WRITES_BEFORE_LEAVING_OUT) {
+        continue;
+      }
+      if (!caldavOutboundWork.claimMemberWrite(account)) {
+        busy.put(account, login);
+        continue;
+      }
+      try {
+        if (renewContext() && isMemberOfAny(spacesOn(attendeesOf(eventId)), login) && seedMember(account, login, eventId)) {
+          written++;
+        }
+      } catch (CalDavUnreachableException e) {
+        noteUnanswered(eventId, account, server == null ? serverOf(account) : server, unanswered, e);
+      } finally {
+        caldavOutboundWork.releaseMemberWrite(account);
+      }
+    }
+    return written;
+  }
+
+  /**
+   * Closes the walk's persistence context and opens a fresh one, so a member's
+   * turn reads the meeting, its roster and the spaces as they are now.
+   *
+   * <p>
+   * {@code RequestLifeCycle.restartTransaction}, not an {@code end()} and a
+   * {@code begin()}: only the outermost level of the lifecycle holds the
+   * EntityManager, and a nested pair closes nothing
+   * ({@code CaldavInboundService#restartContext} says how that was measured).
+   * Safe between turns: the walk keeps ids, logins and the spaces read from
+   * social across them, never a managed entity. Without a container, a unit
+   * test, there is no context to renew.
+   *
+   * <p>
+   * A renewal that fails leaves the lifecycle in a state nothing here can
+   * vouch for, so the member's turn does not run: their copy is left to the
+   * sweep.
+   *
+   * @return true when the turn may read, in a renewed context or with none to
+   *         renew; false when the renewal failed
+   */
+  private boolean renewContext() {
+    ExoContainer container = ExoContainerContext.getCurrentContainerIfPresent();
+    if (container == null) {
+      return true;
+    }
+    try {
+      RequestLifeCycle.restartTransaction(container);
+      return true;
+    } catch (RuntimeException e) {
+      LOG.debug("The persistence context could not be renewed before a member's turn; their copy is left to the sweep", e);
+      return false;
+    }
+  }
+
+  /**
+   * Counts a member's write that met a server unable to answer, and says when
+   * that server is left out of the rest of the walk.
+   *
+   * <p>
+   * Without the stack trace, which one line per member would bury the log
+   * under, and with the transport failure it wraps, which says why the server
+   * could not be reached, as the sweep names it (EXO-90446).
+   *
+   * @param eventId the agenda event
+   * @param userIdentityId the member whose write met the silence
+   * @param serverId their server, zero for the legacy property
+   * @param unanswered how many members' writes met each server unable to
+   *          answer, updated
+   * @param e what the client threw, for the sentence it carries
+   */
+  private void noteUnanswered(long eventId,
+                              long userIdentityId,
+                              long serverId,
+                              Map<Long, Integer> unanswered,
+                              CalDavUnreachableException e) {
+    int writes = unanswered.merge(serverId, 1, Integer::sum);
+    if (writes >= UNANSWERED_WRITES_BEFORE_LEAVING_OUT) {
+      LOG.warn("CalDAV server {} could not be reached for {} members invited to event {} through a space; its other members"
+          + " are left to the sweep: {}{}", serverId, writes, eventId, e.getMessage(), CaldavSyncService.because(e));
+    } else {
+      LOG.warn("CalDAV server {} could not be reached to copy event {} for user {}; the sweep writes it: {}{}",
+               serverId,
+               eventId,
+               userIdentityId,
+               e.getMessage(),
+               CaldavSyncService.because(e));
+    }
+  }
+
+  /**
+   * The calendar server a member's account is on.
+   *
+   * @param userIdentityId the member
+   * @return the server's registration id, or 0 for a legacy account
+   *         referencing none, or whose account cannot be read
+   */
+  private long serverOf(long userIdentityId) {
+    try {
+      CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+      return settings == null || settings.getServerId() == null ? 0L : settings.getServerId();
+    } catch (RuntimeException e) {
+      LOG.debug("The server of the CalDAV account of user {} could not be read", userIdentityId, e);
+      return 0L;
+    }
+  }
+
+  /**
+   * Whether a user is a member of one of the spaces.
+   *
+   * @param spaces the spaces invited to a meeting
+   * @param login the user's eXo login
+   * @return true when they are a member of one; false when social cannot tell
+   */
+  private boolean isMemberOfAny(List<Space> spaces, String login) {
+    try {
+      return spaces.stream().anyMatch(space -> spaceService.isMember(space, login));
+    } catch (RuntimeException e) {
+      LOG.debug("Whether {} is a member of the invited spaces could not be read; no copy is written for them here", login, e);
+      return false;
+    }
+  }
+
+  /**
+   * The identity an attendee row names, a person or a space.
    *
    * @param identityId the social identity an attendee row names
-   * @return true when it is a user identity
+   * @return the identity, or null when it cannot be read
    */
-  private boolean isUser(long identityId) {
+  private Identity attendeeIdentity(long identityId) {
     try {
-      Identity identity = identityManager.getIdentity(String.valueOf(identityId));
-      return identity != null && identity.isUser();
+      return identityManager.getIdentity(String.valueOf(identityId));
     } catch (Exception | LinkageError e) {
-      LOG.debug("Identity {} could not be read; it is not offered a copy of the new meeting", identityId, e);
-      return false;
+      LOG.debug("Identity {} could not be read; it is not offered a copy of the meeting", identityId, e);
+      return null;
     }
   }
 
@@ -658,14 +1063,47 @@ public class CaldavEventPropagationService {
    */
   private boolean seedOne(long userIdentityId, String username, long eventId) {
     try {
-      return caldavPendingInvitationService.seedMeeting(userIdentityId, username, eventId);
-    } catch (Exception | LinkageError e) {
-      LOG.warn("The new event {} could not be copied into the calendar of user {}; the seeding pass will retry",
-               eventId,
-               userIdentityId,
-               e);
-      return false;
+      return seedMember(userIdentityId, username, eventId);
+    } catch (CalDavUnreachableException e) {
+      return notSeeded(eventId, userIdentityId, e);
     }
+  }
+
+  /**
+   * Writes one member's copy as {@link #seedOne} does, but lets a server that
+   * does not answer through, so the walk of an invited space can stop asking
+   * it ({@link #writeForMembers}).
+   *
+   * @param userIdentityId the member
+   * @param username their eXo login
+   * @param eventId the agenda event
+   * @return true when a copy was written
+   * @throws CalDavUnreachableException when their server did not answer
+   */
+  private boolean seedMember(long userIdentityId, String username, long eventId) {
+    try {
+      return caldavPendingInvitationService.seedMeeting(userIdentityId, username, eventId);
+    } catch (CalDavUnreachableException e) {
+      throw e;
+    } catch (Exception | LinkageError e) {
+      return notSeeded(eventId, userIdentityId, e);
+    }
+  }
+
+  /**
+   * Says that one user's copy of a new event was not written.
+   *
+   * @param eventId the agenda event
+   * @param userIdentityId the user
+   * @param e what refused it
+   * @return false, the copy not being written
+   */
+  private boolean notSeeded(long eventId, long userIdentityId, Throwable e) {
+    LOG.warn("The new event {} could not be copied into the calendar of user {}; the seeding pass will retry",
+             eventId,
+             userIdentityId,
+             e);
+    return false;
   }
 
   /**
@@ -715,6 +1153,13 @@ public class CaldavEventPropagationService {
    * {@link #seedConfirmedPoll(long, Event)} for what it is keyed on, which is
    * the one detail in this whole change that fails silently if it is got wrong.
    *
+   * <h4>And an edit can invite somebody who holds no copy</h4>
+   *
+   * <p>
+   * An attendee or a space added by the edit is invited now, and their first
+   * copy is written once the holders are dealt with, by
+   * {@link #seedNewlyInvited}, rather than at the next sweep of their account.
+   *
    * @param eventId the agenda event that was edited
    * @param modificationTypes what agenda says moved, as the broadcast carried
    *          it; null or empty is treated as "something did"
@@ -743,9 +1188,13 @@ public class CaldavEventPropagationService {
           && modificationTypes.contains(AgendaEventModificationType.SWITCHED_DATE_POLL_TO_EVENT)) {
         return seedConfirmedPoll(eventId, event);
       }
-      LOG.debug("Event {} was edited but nobody holds a copy of it; nothing to carry out", eventId);
-      return 0;
+      int seeded = seedNewlyInvited(eventId, event, Set.of(), modificationTypes);
+      if (seeded == 0) {
+        LOG.debug("Event {} was edited but nobody holds a copy of it; nothing to carry out", eventId);
+      }
+      return seeded;
     }
+    Set<Long> holding = Set.copyOf(holders.keySet());
     int skipped = leaveOrigin(holders, origin, eventId);
     Map<Long, ObjectSync> uninvited = takeUninvited(holders, event, eventId, modificationTypes);
     // Every obligation first, then every write. Not interleaved, deliberately:
@@ -770,7 +1219,7 @@ public class CaldavEventPropagationService {
     }
     int removed = removeUninvited(uninvited, eventId);
     logEdit(eventId, carried, holders.size() + skipped, removed, uninvited.size());
-    return carried + removed;
+    return carried + removed + seedNewlyInvited(eventId, event, holding, modificationTypes);
   }
 
   /**
@@ -819,6 +1268,69 @@ public class CaldavEventPropagationService {
                removed,
                uninvited);
     }
+  }
+
+  /**
+   * Writes a first copy, at an edit that adds an attendee, for every user on
+   * the roster who holds none, who would otherwise wait for the sweep of their
+   * account (EXO-91031): the people the edit invites, and an earlier invitee
+   * whose copy was never written, which is then written whatever its date.
+   *
+   * <p>
+   * Only when agenda says the edit added an attendee ({@code ATTENDEE_ADDED}),
+   * and only for a single event or a series: the users on the roster are
+   * written to here, and the members of an invited space are handed to this
+   * add-on's own thread as a creation hands them ({@link #handOffSpaceMembers}).
+   * Those who held a copy before the edit are left out of both, a copy owed a
+   * removal included. Who made the edit is left out, as the author
+   * of a creation is: agenda's connector panel pushes the copy of whoever saves
+   * an event, an edit as a creation ({@code agenda-event-saved}), and a second
+   * writer would race it. Each copy is written by the seeding decision a
+   * creation uses, which refuses a copy to whoever declined.
+   *
+   * <p>
+   * An edit of one date of a series writes nothing here. A series is copied as
+   * one object, filed under the series, and somebody invited to one date only
+   * is not invited to the others; their copy is left to the seeding pass.
+   *
+   * @param eventId the agenda event that was edited
+   * @param event the edited event, as agenda holds it now; null when it could
+   *          not be read
+   * @param holding the users holding a copy before this edit
+   * @param modificationTypes what agenda says moved
+   * @return how many copies were written
+   */
+  private int seedNewlyInvited(long eventId,
+                               Event event,
+                               Set<Long> holding,
+                               Set<AgendaEventModificationType> modificationTypes) {
+    if (event == null || event.getParentId() > 0 || modificationTypes == null
+        || !modificationTypes.contains(AgendaEventModificationType.ATTENDEE_ADDED)) {
+      return 0;
+    }
+    List<EventAttendee> attendees = attendeesOf(eventId);
+    Set<Long> invited = usersOn(attendees);
+    Set<Long> writtenHere = new LinkedHashSet<>(invited);
+    writtenHere.addAll(holding);
+    writtenHere.add(event.getModifierId());
+    handOffSpaceMembers(eventId, event, attendees, writtenHere);
+    invited.removeAll(holding);
+    invited.remove(event.getModifierId());
+    if (invited.isEmpty()) {
+      return 0;
+    }
+    int written = 0;
+    for (Long userIdentityId : invited) {
+      String login = resolvableLogin(userIdentityId);
+      if (login != null && seedOne(userIdentityId, login, eventId)) {
+        written++;
+      }
+    }
+    LOG.info("Event {} was edited; a copy was written for {} of the {} invited user(s) who held none",
+             eventId,
+             written,
+             invited.size());
+    return written;
   }
 
   /**

@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -30,12 +31,16 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.net.ConnectException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -47,17 +52,25 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.LongStream;
+
+import io.meeds.common.ContainerTransactional;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Page;
@@ -66,6 +79,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import org.exoplatform.caldav.LogRecorder;
+import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.agenda.constant.AgendaEventModificationType;
 import org.exoplatform.agenda.constant.EventStatus;
 import org.exoplatform.agenda.model.Event;
@@ -75,18 +89,25 @@ import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.model.Calendar;
 import org.exoplatform.agenda.service.AgendaCalendarService;
 import org.exoplatform.agenda.service.AgendaEventService;
+import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
+import org.exoplatform.container.ExoContainer;
+import org.exoplatform.container.ExoContainerContext;
+import org.exoplatform.container.component.RequestLifeCycle;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.PendingPush;
 import org.exoplatform.caldav.model.PendingPushKind;
 import org.exoplatform.caldav.model.SyncOrigin;
+import org.exoplatform.caldav.storage.CaldavConnectorStorage;
 import org.exoplatform.caldav.storage.CaldavPendingPushStorage;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvider;
 import org.exoplatform.social.core.identity.provider.SpaceIdentityProvider;
 import org.exoplatform.social.core.manager.IdentityManager;
+import org.exoplatform.social.core.space.model.Space;
+import org.exoplatform.social.core.space.spi.SpaceService;
 
 /**
  * What happens to a meeting in eXo — created, edited, cancelled, destroyed —
@@ -142,6 +163,12 @@ public class CaldavEventPropagationServiceTest {
    */
   private static final long                     AUTHOR    = 44L;
 
+  /** A member of an invited space, read past the first page of accounts. */
+  private static final long                     MEMBER    = 1300L;
+
+  /** The series one edited date belongs to. */
+  private static final long                     SERIES_OF_THE_DATE = 8800L;
+
   /** How many refusals the retry argues with before it gives up, under test. */
   private static final int                      MAX_ATTEMPTS = 3;
 
@@ -176,6 +203,11 @@ public class CaldavEventPropagationServiceTest {
                                                                     EnumSet.of(AgendaEventModificationType.UPDATED,
                                                                                AgendaEventModificationType.START_DATE_UPDATED);
 
+  /** What agenda broadcasts when an edit adds an attendee, a person or a space. */
+  private static final Set<AgendaEventModificationType> ATTENDEES_ADDED =
+                                                                        EnumSet.of(AgendaEventModificationType.UPDATED,
+                                                                                   AgendaEventModificationType.ATTENDEE_ADDED);
+
   /**
    * What agenda broadcasts when the organiser removes an invitee:
    * {@code saveEventAttendees} adds {@code ATTENDEE_DELETED} exactly when it
@@ -206,6 +238,25 @@ public class CaldavEventPropagationServiceTest {
 
   @Mock
   private CaldavPendingInvitationService        caldavPendingInvitationService;
+
+  @Mock
+  private SpaceService                          spaceService;
+
+  @Mock
+  private CaldavConnectorStorage                caldavConnectorStorage;
+
+  @Mock
+  private ExoContainer                          container;
+
+  /** The thread and the claims, real: the claims are what the space tests are about. */
+  @Spy
+  private CaldavOutboundWork                    caldavOutboundWork = new CaldavOutboundWork();
+
+  /** Keeps the copies of the members of an invited space until a test runs them. */
+  private RecordingExecutor                     spaceInvitations;
+
+  /** The container the woven aspect reads while a handed-over task runs. */
+  private MockedStatic<ExoContainerContext>     containerContext;
 
   /**
    * A real store rather than a mock, and that is the point of these tests.
@@ -255,6 +306,7 @@ public class CaldavEventPropagationServiceTest {
     Event event = new Event();
     event.setId(EVENT);
     event.setParentId(0);
+    event.setStatus(EventStatus.CONFIRMED);
     lenient().when(agendaEventService.getEventById(EVENT)).thenReturn(event);
     // The property is @Value-injected in production and zero here, which would
     // make every obligation look already abandoned.
@@ -262,6 +314,22 @@ public class CaldavEventPropagationServiceTest {
     // Likewise zero when not injected, which would expire every announcement
     // before the broadcast that consumes it.
     ReflectionTestUtils.setField(service, "fromServerSeconds", 300L);
+    // A real thread would run the woven @ContainerTransactional task outside
+    // any test's control.
+    spaceInvitations = new RecordingExecutor();
+    caldavOutboundWork.executor = spaceInvitations;
+  }
+
+  /**
+   * Takes the stated container away again: a static left mocked would be read
+   * by whatever runs next in this fork.
+   */
+  @AfterEach
+  public void forgetTheContainer() {
+    if (containerContext != null) {
+      containerContext.close();
+      containerContext = null;
+    }
   }
 
   /**
@@ -1688,20 +1756,540 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
-   * A space invited to a meeting is one attendee row standing for its members.
-   * Expanding it here would turn one creation into as many settings reads and
-   * writes as the space has members — for people the copy does not even name.
-   * They are reached by the background seeding pass, which resolves space
-   * membership through agenda's own query.
+   * A space invited to a meeting reaches, at its creation, the members who have
+   * an account (EXO-91031), on this add-on's own thread: the creation hands one
+   * task over and walks no account on the listener thread, which agenda's
+   * broadcasts share with every other add-on. The users the roster names are
+   * written on the listener thread.
    */
   @Test
-  public void aSpaceAmongTheAttendeesIsLeftToTheSeedingPass() {
-    givenInvited(user(ALICE), space(CAROL));
+  public void aCreationHandsTheSpaceMembersToItsOwnThread() {
+    givenInvited(user(ALICE), space(SPACE));
+    givenTheSpace(SPACE);
     when(caldavPendingInvitationService.seedMeeting(ALICE, login(ALICE), EVENT)).thenReturn(true);
 
     assertEquals(1, service.propagateCreation(EVENT, AUTHOR));
 
+    assertEquals(1, spaceInvitations.queued());
+    verify(caldavSyncStorage, never()).getAccountsAfter(any(), anyLong(), anyInt());
+  }
+
+  /**
+   * A meeting that invites no space hands nothing over.
+   */
+  @Test
+  public void aMeetingInvitingNoSpaceHandsNothingOver() {
+    givenInvited(user(ALICE));
+    when(caldavPendingInvitationService.seedMeeting(ALICE, login(ALICE), EVENT)).thenReturn(true);
+
+    assertEquals(1, service.propagateCreation(EVENT, AUTHOR));
+
+    assertEquals(0, spaceInvitations.queued());
+  }
+
+  /**
+   * The creation of an amended date hands nothing over: agenda broadcasts it
+   * with the series' roster, and the series is copied as one object, so the
+   * members' copy of it is the seeding pass's.
+   */
+  @Test
+  public void theCreationOfAnAmendedDateHandsNothingOver() {
+    givenAnEditMadeBy(AUTHOR, SERIES_OF_THE_DATE);
+    givenInvited(user(ALICE), space(SPACE));
+    lenient().when(spaceService.getSpaceByPrettyName(login(SPACE))).thenReturn(new Space());
+    when(caldavPendingInvitationService.seedMeeting(ALICE, login(ALICE), EVENT)).thenReturn(true);
+
+    service.propagateCreation(EVENT, AUTHOR);
+
+    assertEquals(0, spaceInvitations.queued());
+  }
+
+  /**
+   * A date poll inviting a space hands nothing over: no copy may be written
+   * for it, so the walk would claim every member's account and hold the
+   * outward thread for nothing. A poll's own creation is broadcast under a
+   * name this add-on does not listen to; this is a meeting turned into a poll
+   * between agenda's creation broadcast and its read. A confirmed poll is
+   * handed over by {@code seedConfirmedPoll}.
+   */
+  @Test
+  public void aDatePollInvitingASpaceHandsNothingOver() {
+    givenTheEventIs(EventStatus.TENTATIVE);
+    givenInvited(space(SPACE));
+    lenient().when(spaceService.getSpaceByPrettyName(login(SPACE))).thenReturn(new Space());
+
+    service.propagateCreation(EVENT, AUTHOR);
+
+    assertEquals(0, spaceInvitations.queued());
+  }
+
+  /**
+   * A cancelled meeting an edit adds a space to hands nothing over: it keeps
+   * the copies it has and is given no new one, so the walk would claim every
+   * member's account for nothing.
+   */
+  @Test
+  public void aCancelledMeetingAnEditInvitesASpaceToHandsNothingOver() {
+    givenTheEventIs(EventStatus.CANCELLED);
+    givenNoHolders();
+    givenInvited(space(SPACE));
+    lenient().when(spaceService.getSpaceByPrettyName(login(SPACE))).thenReturn(new Space());
+
+    service.propagateUpdate(EVENT, ATTENDEES_ADDED);
+
+    assertEquals(0, spaceInvitations.queued());
+  }
+
+  /**
+   * A full queue costs the members their copy at once, not the creation: they
+   * are left to the sweep, and the users the roster names keep theirs. A full
+   * queue is an ordinary busy moment and is said at debug, not as a warning
+   * with a stack trace.
+   */
+  @Test
+  public void aFullQueueLeavesTheMembersToTheSweep() {
+    caldavOutboundWork.executor = new RefusingExecutor();
+    givenInvited(user(ALICE), space(SPACE));
+    givenTheSpace(SPACE);
+    when(caldavPendingInvitationService.seedMeeting(ALICE, login(ALICE), EVENT)).thenReturn(true);
+
+    List<ILoggingEvent> warned;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      assertEquals(1, service.propagateCreation(EVENT, AUTHOR));
+      warned = log.events().stream().filter(recorded -> recorded.getLevel() == Level.WARN).toList();
+    }
+
+    assertTrue(warned.isEmpty(), "a full queue is not a failure");
+  }
+
+  /**
+   * The task writes for the members of the invited space who have an account,
+   * and for nobody else (EXO-91031). A platform administrator whom agenda
+   * counts invited without being a member is not one: the seeding pass reaches
+   * a member through their membership, and so does this. The users the
+   * listener thread wrote for, and the author, are left out, so no copy is
+   * written twice.
+   */
+  @Test
+  public void theTaskWritesForTheMembersWithAnAccountOnly() {
+    givenInvited(user(ALICE), space(SPACE));
+    Space invited = givenTheSpace(SPACE);
+    when(caldavPendingInvitationService.seedMeeting(ALICE, login(ALICE), EVENT)).thenReturn(true);
+    service.propagateCreation(EVENT, AUTHOR);
+    givenAccounts(0L, ALICE, BOB, DAVE, AUTHOR);
+    lenient().when(spaceService.isMember(eq(invited), anyString())).thenReturn(true);
+    when(spaceService.isMember(invited, login(DAVE))).thenReturn(false);
+    // Agenda counts everybody invited, a non-member administrator included:
+    // membership alone decides who the task writes for.
+    lenient().when(agendaEventAttendeeService.isEventAttendee(eq(EVENT), anyLong())).thenReturn(true);
+    when(caldavPendingInvitationService.seedMeeting(BOB, login(BOB), EVENT)).thenReturn(true);
+
+    runTheHandedOverTasks();
+
+    verify(caldavPendingInvitationService).seedMeeting(BOB, login(BOB), EVENT);
+    verify(caldavPendingInvitationService, never()).seedMeeting(eq(DAVE), anyString(), anyLong());
+    verify(caldavPendingInvitationService, never()).seedMeeting(eq(AUTHOR), anyString(), anyLong());
+    verify(caldavPendingInvitationService, times(1)).seedMeeting(ALICE, login(ALICE), EVENT);
+    // A non-member's account is never claimed: a claim defers a sweep of it.
+    verify(caldavOutboundWork, never()).claimMemberWrite(DAVE);
+  }
+
+  /**
+   * The task runs on a thread of the add-on's own, and only the woven
+   * {@code @ContainerTransactional} gives it a container there; without one the
+   * write recording a copy fails. A test calling the method by hand cannot see
+   * the annotation removed, so this one reads it.
+   */
+  @Test
+  public void theTaskEstablishesItsOwnContainer() throws Exception {
+    assertTrue(CaldavEventPropagationService.class.getMethod("seedSpaceMembersInContainer", long.class, Set.class)
+                                                  .isAnnotationPresent(ContainerTransactional.class));
+  }
+
+  /**
+   * A member past the first page of accounts is found: a full page is
+   * followed by a read after its last identity, and a short one ends the walk.
+   */
+  @Test
+  public void aMemberPastAFullPageOfAccountsIsFound() {
+    long member = user(MEMBER);
+    givenInvited(space(SPACE));
+    Space invited = givenTheSpace(SPACE);
+    givenAccounts(0L, LongStream.rangeClosed(1L, 200L).toArray());
+    givenAccounts(200L, member);
+    when(spaceService.isMember(invited, login(member))).thenReturn(true);
+    when(caldavPendingInvitationService.seedMeeting(member, login(member), EVENT)).thenReturn(true);
+
+    assertEquals(1, assertTimeoutPreemptively(Duration.ofSeconds(10), () -> service.seedSpaceMembers(EVENT, Set.of())));
+  }
+
+  /**
+   * Accounts that cannot be listed end the task with what was written: the
+   * sweep writes the others.
+   */
+  @Test
+  public void accountsThatCannotBeListedEndTheTaskQuietly() {
+    givenInvited(space(SPACE));
+    givenTheSpace(SPACE);
+    when(caldavSyncStorage.getAccountsAfter(CalendarSyncStatus.ACTIVE, 0L, 200)).thenThrow(new IllegalStateException("down"));
+
+    assertEquals(0, service.seedSpaceMembers(EVENT, Set.of()));
+  }
+
+  /**
+   * The task reads the roster when it runs: a space taken off the meeting
+   * after the task was handed over is not written for.
+   */
+  @Test
+  public void aSpaceTakenOffBeforeTheTaskRunsIsNotWrittenFor() {
+    givenInvited(user(ALICE), space(SPACE));
+    givenTheSpace(SPACE);
+    when(caldavPendingInvitationService.seedMeeting(ALICE, login(ALICE), EVENT)).thenReturn(true);
+    service.propagateCreation(EVENT, AUTHOR);
+    givenInvited(user(ALICE));
+
+    runTheHandedOverTasks();
+
+    verify(caldavSyncStorage, never()).getAccountsAfter(any(), anyLong(), anyInt());
+    verify(caldavPendingInvitationService, times(1)).seedMeeting(anyLong(), anyString(), anyLong());
+  }
+
+  /**
+   * The membership is asked again at each member's turn, on the roster and the
+   * spaces read again: a space taken off the meeting while the task walks is
+   * not written for, since nothing would remove such a copy before an edit
+   * removes an attendee.
+   */
+  @Test
+  public void aSpaceTakenOffDuringTheWalkIsNotWrittenFor() {
+    long space = space(SPACE);
+    Space invited = givenTheSpace(SPACE);
+    when(agendaEventAttendeeService.getEventAttendees(EVENT)).thenReturn(roster(space), roster());
+    givenAccounts(0L, BOB);
+    when(spaceService.isMember(invited, login(BOB))).thenReturn(true);
+
+    assertEquals(0, service.seedSpaceMembers(EVENT, Set.of()));
+
+    verify(caldavPendingInvitationService, never()).seedMeeting(anyLong(), anyString(), anyLong());
+  }
+
+  /**
+   * The membership itself is asked again at each member's turn, the roster
+   * unchanged: a member taken off the space while the task walks is not
+   * written for. Their copy would not name them, and would stay until an edit
+   * removes an attendee.
+   */
+  @Test
+  public void aMemberTakenOffTheSpaceDuringTheWalkIsNotWrittenFor() {
+    givenInvited(space(SPACE));
+    Space invited = givenTheSpace(SPACE);
+    givenAccounts(0L, BOB);
+    when(spaceService.isMember(invited, login(BOB))).thenReturn(true, false);
+
+    assertEquals(0, service.seedSpaceMembers(EVENT, Set.of()));
+
+    verify(caldavPendingInvitationService, never()).seedMeeting(anyLong(), anyString(), anyLong());
+  }
+
+  /**
+   * A server that two members' writes found unable to answer is asked nothing
+   * more for the meeting: a CalDAV server may ban an address that keeps
+   * asking. Its other members are left to
+   * the sweep, and the silence is said without a stack trace per member but
+   * with the transport failure that says why.
+   */
+  @Test
+  public void aServerTwoMembersFoundSilentIsAskedNothingMore() {
+    givenInvited(space(SPACE));
+    Space invited = givenTheSpace(SPACE);
+    givenAccounts(0L, BOB, CAROL, DAVE);
+    givenMembersOn(invited, 7L, BOB, CAROL, DAVE);
+    when(caldavPendingInvitationService.seedMeeting(anyLong(), anyString(), eq(EVENT)))
+                                                                                 .thenThrow(new CalDavUnreachableException("PROPFIND timed out",
+                                                                                                                           new ConnectException("Connection refused")));
+
+    List<ILoggingEvent> warned;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      assertEquals(0, service.seedSpaceMembers(EVENT, Set.of()));
+      warned = log.events().stream().filter(recorded -> recorded.getLevel() == Level.WARN).toList();
+    }
+
+    verify(caldavPendingInvitationService, never()).seedMeeting(DAVE, login(DAVE), EVENT);
+    verify(caldavOutboundWork, never()).claimMemberWrite(DAVE);
+    assertEquals(2, warned.size(), "one line per member who met the silence, none for the members left out");
+    assertTrue(warned.stream().allMatch(recorded -> recorded.getThrowableProxy() == null),
+               "one trace per member would bury the log");
+    assertTrue(warned.stream().allMatch(recorded -> recorded.getFormattedMessage().contains("ConnectException: Connection refused")),
+               "the transport failure says why the server could not be reached");
+    assertTrue(warned.get(1).getFormattedMessage().contains("left to the sweep"));
+  }
+
+  /**
+   * A server left out for not answering holds back its own members only.
+   */
+  @Test
+  public void aSilentServerLeavesTheMembersOfAnotherServerTheirCopy() {
+    givenInvited(space(SPACE));
+    Space invited = givenTheSpace(SPACE);
+    givenAccounts(0L, BOB, CAROL, DAVE);
+    givenMembersOn(invited, 7L, BOB, CAROL);
+    givenMembersOn(invited, 8L, DAVE);
+    when(caldavPendingInvitationService.seedMeeting(anyLong(), anyString(), eq(EVENT)))
+                                                                                 .thenThrow(new CalDavUnreachableException("PROPFIND timed out"));
+    doReturn(true).when(caldavPendingInvitationService).seedMeeting(DAVE, login(DAVE), EVENT);
+
+    assertEquals(1, service.seedSpaceMembers(EVENT, Set.of()));
+  }
+
+  /**
+   * A member whose account was busy at their turn, held by a burst or by
+   * another meeting's walk, is not tried after the walk on a server the walk
+   * has left out since: the retry would spend the requests the walk stopped
+   * making.
+   */
+  @Test
+  public void aBusyMemberOfASilentServerIsNotAskedAgainAfterTheWalk() {
+    givenInvited(space(SPACE));
+    Space invited = givenTheSpace(SPACE);
+    givenAccounts(0L, DAVE, BOB, CAROL);
+    givenMembersOn(invited, 7L, DAVE, BOB, CAROL);
+    when(caldavPendingInvitationService.seedMeeting(anyLong(), anyString(), eq(EVENT)))
+                                                                                 .thenThrow(new CalDavUnreachableException("PROPFIND timed out"));
+    doReturn(false).doCallRealMethod().when(caldavOutboundWork).claimMemberWrite(DAVE);
+
+    assertEquals(0, service.seedSpaceMembers(EVENT, Set.of()));
+
+    verify(caldavPendingInvitationService, never()).seedMeeting(DAVE, login(DAVE), EVENT);
+  }
+
+  /**
+   * One member's write meeting the silence does not leave their server out:
+   * that one account's home may be what times out.
+   */
+  @Test
+  public void oneMemberFindingTheirServerSilentDoesNotStopTheWalk() {
+    givenInvited(space(SPACE));
+    Space invited = givenTheSpace(SPACE);
+    givenAccounts(0L, BOB, CAROL);
+    givenMembersOn(invited, 7L, BOB, CAROL);
+    when(caldavPendingInvitationService.seedMeeting(BOB, login(BOB), EVENT))
+                                                                     .thenThrow(new CalDavUnreachableException("PROPFIND timed out"));
+    when(caldavPendingInvitationService.seedMeeting(CAROL, login(CAROL), EVENT)).thenReturn(true);
+
+    assertEquals(1, service.seedSpaceMembers(EVENT, Set.of()));
+  }
+
+  /**
+   * Each member's turn reads in a persistence context of its own, renewed
+   * before the turn: the walk runs in one request lifecycle, whose
+   * EntityManager would otherwise hand a later turn the meeting as an earlier
+   * turn loaded it, before an edit or a cancellation.
+   */
+  @Test
+  public void eachMembersTurnReadsInAPersistenceContextOfItsOwn() {
+    givenInvited(space(SPACE));
+    Space invited = givenTheSpace(SPACE);
+    givenAccounts(0L, BOB, CAROL);
+    when(spaceService.isMember(invited, login(BOB))).thenReturn(true);
+    when(spaceService.isMember(invited, login(CAROL))).thenReturn(true);
+    List<String> happened = new ArrayList<>();
+    when(caldavPendingInvitationService.seedMeeting(anyLong(), anyString(), eq(EVENT))).thenAnswer(invocation -> {
+      happened.add("write " + invocation.getArgument(0));
+      return true;
+    });
+    containerContext = mockStatic(ExoContainerContext.class);
+    containerContext.when(ExoContainerContext::getCurrentContainerIfPresent).thenReturn(container);
+
+    try (MockedStatic<RequestLifeCycle> lifeCycle = mockStatic(RequestLifeCycle.class)) {
+      lifeCycle.when(() -> RequestLifeCycle.restartTransaction(container)).thenAnswer(invocation -> happened.add("renew"));
+
+      assertEquals(2, service.seedSpaceMembers(EVENT, Set.of()));
+    }
+
+    assertEquals(List.of("renew", "write " + BOB, "renew", "write " + CAROL), happened);
+  }
+
+  /**
+   * A member whose turn cannot get a renewed persistence context is not
+   * written for: the turn would read in whatever the failed renewal left, the
+   * stale context the renewal exists to replace. The sweep writes the copy.
+   */
+  @Test
+  public void aTurnWhoseContextCannotBeRenewedWritesNoCopy() {
+    givenInvited(space(SPACE));
+    Space invited = givenTheSpace(SPACE);
+    givenAccounts(0L, BOB);
+    when(spaceService.isMember(invited, login(BOB))).thenReturn(true);
+    containerContext = mockStatic(ExoContainerContext.class);
+    containerContext.when(ExoContainerContext::getCurrentContainerIfPresent).thenReturn(container);
+
+    try (MockedStatic<RequestLifeCycle> lifeCycle = mockStatic(RequestLifeCycle.class)) {
+      lifeCycle.when(() -> RequestLifeCycle.restartTransaction(container)).thenThrow(new IllegalStateException("unwound"));
+
+      assertEquals(0, service.seedSpaceMembers(EVENT, Set.of()));
+    }
+
+    verify(caldavPendingInvitationService, never()).seedMeeting(anyLong(), anyString(), anyLong());
+    verify(caldavOutboundWork).releaseMemberWrite(BOB);
+  }
+
+  /**
+   * A roster that cannot be read at a member's turn writes no copy for them:
+   * the sweep writes it once agenda answers.
+   */
+  @Test
+  public void aRosterUnreadableAtAMembersTurnWritesNoCopy() {
+    long space = space(SPACE);
+    Space invited = givenTheSpace(SPACE);
+    when(agendaEventAttendeeService.getEventAttendees(EVENT)).thenReturn(roster(space))
+                                                             .thenThrow(new IllegalStateException("down"));
+    givenAccounts(0L, BOB);
+    when(spaceService.isMember(invited, login(BOB))).thenReturn(true);
+
+    assertEquals(0, service.seedSpaceMembers(EVENT, Set.of()));
+
+    verify(caldavPendingInvitationService, never()).seedMeeting(anyLong(), anyString(), anyLong());
+  }
+
+  /**
+   * An account a sweep or a burst is writing to is passed over: two writers on
+   * one account would each read "no copy yet" and write the meeting twice. The
+   * claim is given back after a write, so the next writer is not shut out.
+   */
+  @Test
+  public void aBusyAccountIsPassedOverAndAClaimIsGivenBack() {
+    givenInvited(space(SPACE));
+    Space invited = givenTheSpace(SPACE);
+    givenAccounts(0L, BOB, DAVE);
+    lenient().when(spaceService.isMember(eq(invited), anyString())).thenReturn(true);
+    when(caldavPendingInvitationService.seedMeeting(DAVE, login(DAVE), EVENT)).thenReturn(true);
+    caldavOutboundWork.claim(BOB);
+
+    assertEquals(1, service.seedSpaceMembers(EVENT, Set.of()));
+
+    verify(caldavPendingInvitationService, never()).seedMeeting(eq(BOB), anyString(), anyLong());
+    assertTrue(caldavOutboundWork.claim(DAVE), "the task gives the account back once its copy is written");
+  }
+
+  /**
+   * An account busy at its turn is tried once more after the walk: the sweep
+   * holding it seeds only the meetings within its window, so a member of a
+   * meeting further out would otherwise wait for it to come within reach.
+   */
+  @Test
+  public void aBusyAccountIsTriedAgainAfterTheWalk() {
+    givenInvited(space(SPACE));
+    Space invited = givenTheSpace(SPACE);
+    givenAccounts(0L, BOB);
+    when(spaceService.isMember(invited, login(BOB))).thenReturn(true);
+    when(caldavPendingInvitationService.seedMeeting(BOB, login(BOB), EVENT)).thenReturn(true);
+    doReturn(false).doCallRealMethod().when(caldavOutboundWork).claimMemberWrite(BOB);
+
+    assertEquals(1, service.seedSpaceMembers(EVENT, Set.of()));
+
+    verify(caldavPendingInvitationService).seedMeeting(BOB, login(BOB), EVENT);
+  }
+
+  /**
+   * A space added to a meeting nobody holds a copy of yet reaches its members
+   * at the edit, not at the next sweep of their account (EXO-91031), on this
+   * add-on's own thread.
+   */
+  @Test
+  public void aSpaceAddedByAnEditIsHandedToItsOwnThread() {
+    givenAnEditMadeBy(AUTHOR, 0L);
+    givenNoHolders();
+    givenInvited(user(AUTHOR), space(SPACE));
+    givenTheSpace(SPACE);
+
+    assertEquals(0, service.propagateUpdate(EVENT, ATTENDEES_ADDED));
+
+    assertEquals(1, spaceInvitations.queued());
+  }
+
+  /**
+   * The task of an edit leaves out the holders, whose copy the edit rewrites,
+   * the users the roster names and the person who made the edit, who is a
+   * member of the space without being named.
+   */
+  @Test
+  public void theTaskOfAnEditLeavesOutTheHoldersTheNamedAndTheEditor() {
+    long editor = user(ERIN);
+    givenAnEditMadeBy(editor, 0L);
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, login(ALICE), EVENT)).thenReturn(new ObjectSync());
+    givenInvited(user(CAROL), user(DAVE), space(SPACE));
+    Space invited = givenTheSpace(SPACE);
+    when(caldavPendingInvitationService.seedMeeting(CAROL, login(CAROL), EVENT)).thenReturn(true);
+    when(caldavPendingInvitationService.seedMeeting(DAVE, login(DAVE), EVENT)).thenReturn(true);
+    service.propagateUpdate(EVENT, ATTENDEES_ADDED);
+    givenAccounts(0L, ALICE, BOB, CAROL, DAVE, editor);
+    lenient().when(spaceService.isMember(eq(invited), anyString())).thenReturn(true);
+    lenient().when(agendaEventAttendeeService.isEventAttendee(eq(EVENT), anyLong())).thenReturn(true);
+    when(caldavPendingInvitationService.seedMeeting(BOB, login(BOB), EVENT)).thenReturn(true);
+
+    runTheHandedOverTasks();
+
+    verify(caldavPendingInvitationService).seedMeeting(BOB, login(BOB), EVENT);
+    verify(caldavPendingInvitationService, never()).seedMeeting(eq(ALICE), anyString(), anyLong());
+    verify(caldavPendingInvitationService, never()).seedMeeting(eq(editor), anyString(), anyLong());
+    verify(caldavPendingInvitationService, times(1)).seedMeeting(CAROL, login(CAROL), EVENT);
+    verify(caldavPendingInvitationService, times(1)).seedMeeting(DAVE, login(DAVE), EVENT);
+  }
+
+  /**
+   * An edit that adds an attendee writes a first copy for every user on the
+   * roster who holds none, the people it invites as an earlier invitee whose
+   * copy was never written, and leaves out the holders, whose copy the edit
+   * rewrites, and the person who made it.
+   */
+  @Test
+  public void anEditWritesAFirstCopyForEveryRosterUserWhoHoldsNone() {
+    givenAnEditMadeBy(CAROL, 0L);
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    when(caldavPushService.pushAgendaEvent(ALICE, login(ALICE), EVENT)).thenReturn(new ObjectSync());
+    givenInvited(user(ALICE), user(CAROL), user(BOB));
+    when(caldavPendingInvitationService.seedMeeting(BOB, login(BOB), EVENT)).thenReturn(true);
+
+    assertEquals(2, service.propagateUpdate(EVENT, ATTENDEES_ADDED));
+
+    verify(caldavPendingInvitationService).seedMeeting(BOB, login(BOB), EVENT);
+    verify(caldavPendingInvitationService, never()).seedMeeting(eq(ALICE), anyString(), anyLong());
     verify(caldavPendingInvitationService, never()).seedMeeting(eq(CAROL), anyString(), anyLong());
+  }
+
+  /**
+   * An edit that adds nobody writes no first copy, whoever the roster names.
+   */
+  @Test
+  public void anEditThatAddsNobodyWritesNoFirstCopy() {
+    givenAnEditMadeBy(CAROL, 0L);
+    givenNoHolders();
+    givenInvitedWhateverIsAsked(user(BOB));
+
+    assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPendingInvitationService, never()).seedMeeting(anyLong(), anyString(), anyLong());
+  }
+
+  /**
+   * An edit of one date of a series writes no first copy and hands nothing
+   * over: the series is copied as one object, and somebody invited to that
+   * date only is not invited to the others.
+   */
+  @Test
+  public void anEditOfOneDateWritesNoFirstCopy() {
+    givenAnEditMadeBy(CAROL, SERIES_OF_THE_DATE);
+    givenNoHolders();
+    givenNoHoldersFor(SERIES_OF_THE_DATE);
+    givenInvitedWhateverIsAsked(user(BOB));
+
+    assertEquals(0, service.propagateUpdate(EVENT, ATTENDEES_ADDED));
+
+    verify(caldavPendingInvitationService, never()).seedMeeting(anyLong(), anyString(), anyLong());
+    assertEquals(0, spaceInvitations.queued());
   }
 
   /**
@@ -1715,6 +2303,22 @@ public class CaldavEventPropagationServiceTest {
     when(caldavPendingInvitationService.seedMeeting(ALICE, login(ALICE), EVENT))
                                                                  .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
                                                                                                     "alice's server is down"));
+    when(caldavPendingInvitationService.seedMeeting(BOB, login(BOB), EVENT)).thenReturn(true);
+
+    assertEquals(1, service.propagateCreation(EVENT, AUTHOR));
+
+    verify(caldavPendingInvitationService).seedMeeting(BOB, login(BOB), EVENT);
+  }
+
+  /**
+   * A server that does not answer is absorbed on the listener thread like any
+   * other refusal: the other attendees still get their copy.
+   */
+  @Test
+  public void anAttendeeWhoseServerDoesNotAnswerLeavesTheOthersTheirCopy() {
+    givenInvited(user(ALICE), user(BOB));
+    when(caldavPendingInvitationService.seedMeeting(ALICE, login(ALICE), EVENT))
+                                                                 .thenThrow(new CalDavUnreachableException("PROPFIND timed out"));
     when(caldavPendingInvitationService.seedMeeting(BOB, login(BOB), EVENT)).thenReturn(true);
 
     assertEquals(1, service.propagateCreation(EVENT, AUTHOR));
@@ -3557,6 +4161,101 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
+   * @param after the last identity the read starts after
+   * @param accounts the accounts the sweep visits, as that read answers
+   */
+  private void givenAccounts(long after, long... accounts) {
+    when(caldavSyncStorage.getAccountsAfter(CalendarSyncStatus.ACTIVE, after, 200)).thenReturn(LongStream.of(accounts)
+                                                                                                        .boxed()
+                                                                                                        .toList());
+  }
+
+  /**
+   * Declares members of an invited space whose accounts are on one server.
+   *
+   * @param invited the space
+   * @param serverId the server their accounts name
+   * @param members the members
+   */
+  private void givenMembersOn(Space invited, long serverId, long... members) {
+    CaldavUserSetting settings = new CaldavUserSetting();
+    settings.setServerId(serverId);
+    for (long member : members) {
+      when(spaceService.isMember(invited, login(member))).thenReturn(true);
+      lenient().when(caldavConnectorStorage.getCaldavSetting(member)).thenReturn(settings);
+    }
+  }
+
+  /**
+   * Declares a space invited to the meeting, as social reads it.
+   *
+   * @param spaceIdentityId the space's identity, declared with {@link #space(long)}
+   * @return the space
+   */
+  private Space givenTheSpace(long spaceIdentityId) {
+    Space invited = new Space();
+    invited.setPrettyName(login(spaceIdentityId));
+    when(spaceService.getSpaceByPrettyName(login(spaceIdentityId))).thenReturn(invited);
+    return invited;
+  }
+
+  /**
+   * Runs what was handed to this add-on's own thread, with a container the
+   * woven {@code @ContainerTransactional} aspect can work with.
+   */
+  private void runTheHandedOverTasks() {
+    containerContext = mockStatic(ExoContainerContext.class);
+    containerContext.when(ExoContainerContext::getCurrentContainer).thenReturn(container);
+    spaceInvitations.runQueued();
+  }
+
+  /**
+   * @param identityIds who agenda lists
+   * @return the roster, as agenda answers it
+   */
+  private EventAttendeeList roster(long... identityIds) {
+    List<EventAttendee> attendees = new ArrayList<>();
+    for (long identityId : identityIds) {
+      EventAttendee attendee = new EventAttendee();
+      attendee.setEventId(EVENT);
+      attendee.setIdentityId(identityId);
+      attendees.add(attendee);
+    }
+    return new EventAttendeeList(attendees);
+  }
+
+  /**
+   * The roster, for a test that expects nobody to ask for it.
+   *
+   * @param identityIds who agenda lists
+   */
+  private void givenInvitedWhateverIsAsked(long... identityIds) {
+    List<EventAttendee> attendees = new ArrayList<>();
+    for (long identityId : identityIds) {
+      EventAttendee attendee = new EventAttendee();
+      attendee.setEventId(EVENT);
+      attendee.setIdentityId(identityId);
+      attendees.add(attendee);
+    }
+    lenient().when(agendaEventAttendeeService.getEventAttendees(EVENT)).thenReturn(new EventAttendeeList(attendees));
+    lenient().when(caldavPendingInvitationService.seedMeeting(anyLong(), anyString(), anyLong())).thenReturn(true);
+  }
+
+  /**
+   * @param modifierIdentityId who made the edit
+   * @param seriesId the series the edited event is a date of, 0 for none
+   */
+  private void givenAnEditMadeBy(long modifierIdentityId, long seriesId) {
+    Event event = new Event();
+    event.setId(EVENT);
+    event.setParentId(seriesId);
+    event.setCreatorId(AUTHOR);
+    event.setModifierId(modifierIdentityId);
+    event.setStatus(EventStatus.CONFIRMED);
+    when(agendaEventService.getEventById(EVENT)).thenReturn(event);
+  }
+
+  /**
    * Declares one identity as a person, and answers with it.
    *
    * @param identityId the social identity
@@ -3882,6 +4581,90 @@ public class CaldavEventPropagationServiceTest {
                      .filter(pending -> pending.getUserIdentityId() == userIdentityId)
                      .filter(pending -> pending.getAttempts() < maxAttempts)
                      .count();
+    }
+  }
+
+  /**
+   * An executor that keeps what it is handed until a test asks for it to run.
+   */
+  private static final class RecordingExecutor extends AbstractExecutorService {
+
+    private final List<Runnable> handedOver = new ArrayList<>();
+
+    @Override
+    public void execute(Runnable command) {
+      handedOver.add(command);
+    }
+
+    int queued() {
+      return handedOver.size();
+    }
+
+    void runQueued() {
+      List<Runnable> pending = new ArrayList<>(handedOver);
+      handedOver.clear();
+      pending.forEach(Runnable::run);
+    }
+
+    @Override
+    public void shutdown() {
+      // nothing runs on its own
+    }
+
+    @Override
+    public List<Runnable> shutdownNow() {
+      return List.of();
+    }
+
+    @Override
+    public boolean isShutdown() {
+      return false;
+    }
+
+    @Override
+    public boolean isTerminated() {
+      return false;
+    }
+
+    @Override
+    public boolean awaitTermination(long timeout, TimeUnit unit) {
+      return true;
+    }
+  }
+
+  /**
+   * An executor whose queue is full.
+   */
+  private static final class RefusingExecutor extends AbstractExecutorService {
+
+    @Override
+    public void execute(Runnable command) {
+      throw new RejectedExecutionException("full");
+    }
+
+    @Override
+    public void shutdown() {
+      // nothing to stop
+    }
+
+    @Override
+    public List<Runnable> shutdownNow() {
+      return List.of();
+    }
+
+    @Override
+    public boolean isShutdown() {
+      return false;
+    }
+
+    @Override
+    public boolean isTerminated() {
+      return false;
+    }
+
+    @Override
+    public boolean awaitTermination(long timeout, TimeUnit unit) {
+      return true;
     }
   }
 }

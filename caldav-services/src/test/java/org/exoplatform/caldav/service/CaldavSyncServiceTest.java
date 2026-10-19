@@ -19,7 +19,6 @@
 package org.exoplatform.caldav.service;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -56,7 +55,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -81,6 +79,7 @@ import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.springframework.data.domain.Page;
@@ -203,6 +202,10 @@ public class CaldavSyncServiceTest {
   @Mock
   private ExoContainer               container;
 
+  /** The thread and the claims, real: the claims are what the tests below are about. */
+  @Spy
+  private CaldavOutboundWork         caldavOutboundWork = new CaldavOutboundWork();
+
   @InjectMocks
   private CaldavSyncService          service;
 
@@ -211,12 +214,6 @@ public class CaldavSyncServiceTest {
    * {@link #establishAContainer()}.
    */
   private MockedStatic<ExoContainerContext> containerContext;
-
-  /**
-   * How deep the seeding queue is, mirrored from the engine so the bound is
-   * asserted rather than assumed.
-   */
-  private static final int           SEEDING_QUEUE_DEPTH = 64;
 
   @BeforeEach
   public void connectAnAccount() {
@@ -3427,28 +3424,6 @@ public class CaldavSyncServiceTest {
   }
 
   /**
-   * The burst is written from one thread, and there is a bound on how many
-   * accounts may be waiting for it.
-   *
-   * <p>
-   * The pacing, asserted rather than described. Twenty people connecting after
-   * a migration, each on a thread of their own, is what a calendar server reads
-   * as an attack — the rig's own proxy was banned by Stalwart's fail2ban for
-   * exactly that, and the ban outlives a container restart. Serialised, twenty
-   * connects cost the server the same instantaneous rate as one.
-   */
-  @Test
-  public void theSeedingIsWrittenFromOneBoundedThread() throws Exception {
-    ThreadPoolExecutor executor = assertInstanceOf(ThreadPoolExecutor.class, service.outboundExecutor);
-
-    assertEquals(1, executor.getCorePoolSize(), "one thread, so bursts queue behind each other rather than pile on");
-    assertEquals(1, executor.getMaximumPoolSize(), "and it must stay one under load, which is when it matters");
-    assertEquals(SEEDING_QUEUE_DEPTH,
-                 executor.getQueue().remainingCapacity(),
-                 "the queue is bounded: an account turned away is seeded by the sweep, an unbounded queue is never bounded at all");
-  }
-
-  /**
    * Pressing the button twice is one burst, not two.
    *
    * <p>
@@ -3534,6 +3509,66 @@ public class CaldavSyncServiceTest {
     establishAContainer();
     burst.runQueued();
     verify(caldavMirrorVerificationService, times(1)).verify(USER, LOGIN);
+  }
+
+  /**
+   * A burst asked for while a space invitation writes one member's copy to the
+   * account is queued, not dropped (EXO-91031).
+   *
+   * <p>
+   * The write is made by a task on the outward thread, the one the burst is
+   * queued on, so the burst runs once that task has ended and never alongside
+   * the write. Turned away, a connection or a <i>Synchronise now</i> would lose
+   * its owed rewrites and removals, its seeding and its verification until the
+   * sweep finds the account due.
+   */
+  @Test
+  void aBurstAskedForDuringAMembersWriteIsQueuedAndNotDropped() throws Exception {
+    RecordingExecutor burst = recordSeeding();
+    givenServerCalendars();
+    assertTrue(caldavOutboundWork.claimMemberWrite(USER));
+
+    service.syncNowAndWait(USER, LOGIN);
+
+    assertEquals(1, burst.queued(), "the burst is queued behind the write rather than dropped");
+    verify(caldavEventPropagationService, never()).retryOwedPushes(anyLong());
+
+    caldavOutboundWork.releaseMemberWrite(USER);
+    establishAContainer();
+    burst.runQueued();
+    verify(caldavEventPropagationService).retryOwedPushes(USER);
+    verify(caldavPendingInvitationService).pushUpcomingMeetings(USER, LOGIN);
+    verify(caldavMirrorVerificationService).verify(USER, LOGIN);
+  }
+
+  /**
+   * A sweep still leaves alone an account a space invitation is writing one
+   * member's copy to (EXO-91031), and does its outward work once the write has
+   * given the account back.
+   *
+   * <p>
+   * The sweep runs on its own job's thread, beside the outward thread, so
+   * doing its outward work during the write would be two writers on one
+   * account, each reading "no copy yet".
+   */
+  @Test
+  void aSweepLeavesAloneAnAccountAMembersWriteHolds() throws Exception {
+    givenServerCalendars();
+    assertTrue(caldavOutboundWork.claimMemberWrite(USER));
+
+    service.syncInBackground(USER, LOGIN);
+
+    // That the sweep's pass ran, so the absences below are its choice.
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+    verify(caldavEventPropagationService, never()).retryOwedPushes(anyLong());
+    verify(caldavPendingInvitationService, never()).pushUpcomingMeetings(anyLong(), anyString());
+    verify(caldavMirrorVerificationService, never()).verify(anyLong(), anyString());
+
+    caldavOutboundWork.releaseMemberWrite(USER);
+    service.syncInBackground(USER, LOGIN);
+
+    verify(caldavEventPropagationService).retryOwedPushes(USER);
+    verify(caldavMirrorVerificationService).verify(USER, LOGIN);
   }
 
   /**
@@ -3632,7 +3667,7 @@ public class CaldavSyncServiceTest {
    */
   private RecordingExecutor recordSeeding() {
     RecordingExecutor executor = new RecordingExecutor();
-    service.outboundExecutor = executor;
+    caldavOutboundWork.executor = executor;
     return executor;
   }
 
