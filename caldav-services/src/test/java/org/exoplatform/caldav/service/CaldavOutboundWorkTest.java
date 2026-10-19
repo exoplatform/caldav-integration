@@ -143,6 +143,35 @@ public class CaldavOutboundWorkTest {
   }
 
   /**
+   * A burst queued while a member's write holds the account gives its claim
+   * back without freeing the member's (EXO-91031): the two claims are kept
+   * apart, so a sweep stays refused until the write ends too.
+   */
+  @Test
+  void aSweepStaysRefusedWhenTheQueuedBurstIsGivenBackButTheMembersWriteStillHoldsTheAccount() {
+    assertTrue(work.claimMemberWrite(1L));
+    assertTrue(work.claimForQueue(1L), "a burst asked for during a member's write is queued");
+
+    work.release(1L);
+
+    assertFalse(work.claim(1L), "the member's write still holds the account against a sweep");
+  }
+
+  /**
+   * The member's write gives its claim back without freeing the queued
+   * burst's (EXO-91031): a sweep stays refused until the burst has run.
+   */
+  @Test
+  void aSweepStaysRefusedWhenTheMembersWriteIsGivenBackButTheQueuedBurstStillHoldsTheAccount() {
+    assertTrue(work.claimMemberWrite(1L));
+    assertTrue(work.claimForQueue(1L), "a burst asked for during a member's write is queued");
+
+    work.releaseMemberWrite(1L);
+
+    assertFalse(work.claim(1L), "the queued burst still holds the account against a sweep");
+  }
+
+  /**
    * The thread is stopped by the container, through {@code @PreDestroy}. A test
    * calling {@code stop()} by hand cannot see the annotation removed, so this
    * one reads it.
