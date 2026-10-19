@@ -131,13 +131,20 @@ public interface CaldavPendingPushDAO extends JpaRepository<CaldavPendingPushEnt
    * counter bounds how hard eXo argues with one server, and two passes racing
    * must not both write "attempt 3".
    *
+   * <p>
+   * Only while the row still asks for the write that was refused: an edit
+   * replaces the kind on the same row, and the refusal of the old instruction
+   * is not counted against the new one.
+   *
    * @param id the obligation
-   * @return how many rows were updated; zero when it has since been settled
+   * @param kind the kind of write that was refused
+   * @return how many rows were updated; zero when it has since been settled or
+   *         replaced with the other kind
    */
   @Modifying(flushAutomatically = true)
   @Transactional
-  @Query("UPDATE CaldavPendingPushEntity q SET q.attempts = q.attempts + 1 WHERE q.id = :id")
-  int recordAttempt(@Param("id") long id);
+  @Query("UPDATE CaldavPendingPushEntity q SET q.attempts = q.attempts + 1 WHERE q.id = :id AND q.kind = :kind")
+  int recordAttempt(@Param("id") long id, @Param("kind") PendingPushKind kind);
 
   /**
    * Spends an obligation's whole attempt budget at once, so it is never read
@@ -151,13 +158,37 @@ public interface CaldavPendingPushDAO extends JpaRepository<CaldavPendingPushEnt
    * rather than incremented, so the row leaves the attemptable set on the
    * first refusal whatever it had counted before.
    *
+   * <p>
+   * Only while the row still asks for the write given up on, for the reason
+   * {@link #recordAttempt(long, PendingPushKind)} gives.
+   *
    * @param id the obligation
+   * @param kind the kind of write given up on
    * @param attempts the bound to write, which is the configured maximum
-   * @return how many rows were updated; zero when it has since been settled
+   * @return how many rows were updated; zero when it has since been settled or
+   *         replaced with the other kind
    */
   @Modifying(flushAutomatically = true)
   @Transactional
-  @Query("UPDATE CaldavPendingPushEntity q SET q.attempts = :attempts WHERE q.id = :id")
-  int spendBudget(@Param("id") long id, @Param("attempts") int attempts);
+  @Query("UPDATE CaldavPendingPushEntity q SET q.attempts = :attempts WHERE q.id = :id AND q.kind = :kind")
+  int spendBudget(@Param("id") long id, @Param("kind") PendingPushKind kind, @Param("attempts") int attempts);
+
+  /**
+   * Deletes the obligation recorded against one mapping row when it is of one
+   * kind.
+   *
+   * <p>
+   * The kind is in the statement rather than checked on a row read first: an
+   * obligation of the other kind recorded by another thread after that read
+   * would otherwise be the row deleted.
+   *
+   * @param objectSyncId the mapping row
+   * @param kind the kind of obligation to delete
+   * @return how many rows were deleted; zero when nothing of that kind is owed
+   */
+  @Modifying(flushAutomatically = true)
+  @Transactional
+  @Query("DELETE FROM CaldavPendingPushEntity q WHERE q.objectSyncId = :objectSyncId AND q.kind = :kind")
+  int deleteOwed(@Param("objectSyncId") long objectSyncId, @Param("kind") PendingPushKind kind);
 
 }

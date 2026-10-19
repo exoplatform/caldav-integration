@@ -26,6 +26,9 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doCallRealMethod;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
@@ -42,7 +45,9 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -408,7 +413,7 @@ public class CaldavEventPropagationServiceTest {
    * calendar, and Alice's is rewritten.
    */
   @Test
-  public void aRemovedInviteeLosesTheCopyTheOtherInviteeKeeps() {
+  void aRemovedInviteeLosesTheCopyTheOtherInviteeKeeps() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
                  mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
@@ -431,14 +436,12 @@ public class CaldavEventPropagationServiceTest {
    * deletes the copy later instead of leaving it on his calendar.
    */
   @Test
-  public void aRemovalThatFailsStaysOwedAsARemoval() {
+  void aRemovalThatFailsStaysOwedAsARemoval() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
     givenStillInvited(BOB, false);
-    org.mockito.Mockito.doThrow(new IllegalStateException("server down"))
-                       .when(caldavPushService)
-                       .deleteEvent(BOB, login(BOB), "uid-8801");
+    doThrow(new IllegalStateException("server down")).when(caldavPushService).deleteEvent(BOB, login(BOB), "uid-8801");
 
     assertEquals(0, service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED));
 
@@ -451,14 +454,12 @@ public class CaldavEventPropagationServiceTest {
    * again, and the removal stays what is owed.
    */
   @Test
-  public void aFailedRemovalIsNotTurnedIntoARewriteByTheNextEdit() {
+  void aFailedRemovalIsNotTurnedIntoARewriteByTheNextEdit() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
     givenStillInvited(BOB, false);
-    org.mockito.Mockito.doThrow(new IllegalStateException("server down"))
-                       .when(caldavPushService)
-                       .deleteEvent(BOB, login(BOB), "uid-8801");
+    doThrow(new IllegalStateException("server down")).when(caldavPushService).deleteEvent(BOB, login(BOB), "uid-8801");
     service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED);
 
     assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
@@ -474,7 +475,7 @@ public class CaldavEventPropagationServiceTest {
    * copy of a meeting he is no longer invited to.
    */
   @Test
-  public void aFailedRemovalIsNotTurnedIntoARewriteByAnAnswer() {
+  void aFailedRemovalIsNotTurnedIntoARewriteByAnAnswer() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"),
                  mapping(3L, 300L, "uid-8801", "/dav/carol/mirror/uid-8801.ics"));
@@ -483,9 +484,7 @@ public class CaldavEventPropagationServiceTest {
     givenStillInvited(BOB, false);
     givenStillInvited(CAROL, true);
     when(caldavPushService.pushAgendaEvent(CAROL, login(CAROL), EVENT)).thenReturn(new ObjectSync());
-    org.mockito.Mockito.doThrow(new IllegalStateException("server down"))
-                       .when(caldavPushService)
-                       .deleteEvent(BOB, login(BOB), "uid-8801");
+    doThrow(new IllegalStateException("server down")).when(caldavPushService).deleteEvent(BOB, login(BOB), "uid-8801");
     service.propagateUpdate(EVENT, AN_ATTENDEE_REMOVED);
     lenient().when(caldavPushService.addressesNaming(ALICE)).thenReturn(List.of("alice@stalwart.local"));
     givenEveryCopyAcceptsTheAnswer();
@@ -502,7 +501,7 @@ public class CaldavEventPropagationServiceTest {
    * rewrites his copy, and the rewrite is what is owed.
    */
   @Test
-  public void aReinvitedHolderIsRewrittenRatherThanRemoved() {
+  void aReinvitedHolderIsRewrittenRatherThanRemoved() {
     givenAMeetingCreatedBy(AUTHOR);
     ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
     givenHolders(bobs);
@@ -524,7 +523,7 @@ public class CaldavEventPropagationServiceTest {
    * not attend. Whether she can read it is not asked.
    */
   @Test
-  public void aHolderWhoStillReadsTheMeetingButIsNoLongerInvitedLosesTheCopy() {
+  void aHolderWhoStillReadsTheMeetingButIsNoLongerInvitedLosesTheCopy() {
     givenAMeetingCreatedBy(AUTHOR);
     givenTheMeetingLivesInTheCalendarOf(SPACE);
     givenHolders(mapping(3L, 300L, "uid-8801", "/dav/carol/mirror/uid-8801.ics"));
@@ -544,7 +543,7 @@ public class CaldavEventPropagationServiceTest {
    * removal stays what is owed, for the retry pass.
    */
   @Test
-  public void anOwedRemovalStandsWhenTheCalendarCannotBeRead() {
+  void anOwedRemovalStandsWhenTheCalendarCannotBeRead() {
     givenAMeetingCreatedBy(AUTHOR);
     ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
     givenHolders(bobs);
@@ -563,7 +562,7 @@ public class CaldavEventPropagationServiceTest {
    * Nor when the collection Bob's copy lives in cannot be read back.
    */
   @Test
-  public void anOwedRemovalStandsWhenTheCollectionCannotBeRead() {
+  void anOwedRemovalStandsWhenTheCollectionCannotBeRead() {
     givenAMeetingCreatedBy(AUTHOR);
     ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
     givenHolders(bobs);
@@ -584,7 +583,7 @@ public class CaldavEventPropagationServiceTest {
    * Nor when agenda cannot say whether Bob is invited again.
    */
   @Test
-  public void anOwedRemovalStandsWhenTheInvitationCannotBeRead() {
+  void anOwedRemovalStandsWhenTheInvitationCannotBeRead() {
     givenAMeetingCreatedBy(AUTHOR);
     ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
     givenHolders(bobs);
@@ -604,7 +603,7 @@ public class CaldavEventPropagationServiceTest {
    * to the meeting: agenda counts him invited, and his copy is rewritten.
    */
   @Test
-  public void aMemberOfAnInvitedSpaceKeepsTheCopy() {
+  void aMemberOfAnInvitedSpaceKeepsTheCopy() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
@@ -621,7 +620,7 @@ public class CaldavEventPropagationServiceTest {
    * attendees: it is her own event, and removing somebody else keeps her copy.
    */
   @Test
-  public void theOwnerOfTheCalendarKeepsTheirCopy() {
+  void theOwnerOfTheCalendarKeepsTheirCopy() {
     givenAMeetingCreatedBy(AUTHOR);
     givenTheMeetingLivesInTheCalendarOf(ERIN);
     givenHolders(mapping(6L, 600L, "uid-8801", "/dav/erin/mirror/uid-8801.ics"));
@@ -639,7 +638,7 @@ public class CaldavEventPropagationServiceTest {
    * it follows that calendar, and an attendee removal leaves it alone.
    */
   @Test
-  public void aCopyInACalendarTheHolderSynchronisesIsKept() {
+  void aCopyInACalendarTheHolderSynchronisesIsKept() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/team/uid-8801.ics"));
     givenPair(200L, BOB, SyncOrigin.EXO);
@@ -656,7 +655,7 @@ public class CaldavEventPropagationServiceTest {
    * cannot be told apart from the others: nobody's copy is removed.
    */
   @Test
-  public void aCalendarThatCannotBeReadRemovesNoCopy() {
+  void aCalendarThatCannotBeReadRemovesNoCopy() {
     givenAMeetingCreatedBy(AUTHOR);
     when(agendaCalendarService.getCalendarById(anyLong())).thenThrow(new IllegalStateException("agenda down"));
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
@@ -674,7 +673,7 @@ public class CaldavEventPropagationServiceTest {
    * a meeting copy: it is kept.
    */
   @Test
-  public void aCopyWhoseCollectionCannotBeReadIsKept() {
+  void aCopyWhoseCollectionCannotBeReadIsKept() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
@@ -694,7 +693,7 @@ public class CaldavEventPropagationServiceTest {
    * their invitation.
    */
   @Test
-  public void theCreatorKeepsTheirCopy() {
+  void theCreatorKeepsTheirCopy() {
     givenAMeetingCreatedBy(DAVE);
     givenHolders(mapping(4L, 400L, "uid-8801", "/dav/dave/mirror/uid-8801.ics"));
     givenPair(400L, DAVE);
@@ -711,7 +710,7 @@ public class CaldavEventPropagationServiceTest {
    * is still invited, his copy is rewritten.
    */
   @Test
-  public void aHolderWhoseInvitationCannotBeReadKeepsTheCopy() {
+  void aHolderWhoseInvitationCannotBeReadKeepsTheCopy() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
@@ -729,7 +728,7 @@ public class CaldavEventPropagationServiceTest {
    * not removed.
    */
   @Test
-  public void aRemovalFromOneDateLeavesTheSeriesCopy() {
+  void aRemovalFromOneDateLeavesTheSeriesCopy() {
     Event occurrence = new Event();
     occurrence.setId(OCCURRENCE);
     occurrence.setParentId(EVENT);
@@ -753,7 +752,7 @@ public class CaldavEventPropagationServiceTest {
    * rewritten, not removed.
    */
   @Test
-  public void aRemovalFromOneDateKeepsACopyFiledUnderThatDate() {
+  void aRemovalFromOneDateKeepsACopyFiledUnderThatDate() {
     Event occurrence = new Event();
     occurrence.setId(OCCURRENCE);
     occurrence.setParentId(EVENT);
@@ -779,7 +778,7 @@ public class CaldavEventPropagationServiceTest {
    * the retry pass still removes it.
    */
   @Test
-  public void anOwedRemovalOfTheSeriesCopySurvivesAnEditOfOneDate() {
+  void anOwedRemovalOfTheSeriesCopySurvivesAnEditOfOneDate() {
     Event occurrence = new Event();
     occurrence.setId(OCCURRENCE);
     occurrence.setParentId(EVENT);
@@ -803,7 +802,7 @@ public class CaldavEventPropagationServiceTest {
    * the lookups.
    */
   @Test
-  public void anEditThatRemovesNobodyDoesNotAskWhoIsInvited() {
+  void anEditThatRemovesNobodyDoesNotAskWhoIsInvited() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(200L, BOB);
@@ -821,7 +820,7 @@ public class CaldavEventPropagationServiceTest {
    * once per holder.
    */
   @Test
-  public void anEditAsksWhichRemovalsAreOwedOnceForEveryHolder() {
+  void anEditAsksWhichRemovalsAreOwedOnceForEveryHolder() {
     givenAMeetingCreatedBy(AUTHOR);
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
                  mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"),
@@ -840,7 +839,7 @@ public class CaldavEventPropagationServiceTest {
    * An answer reaching several holders asks which removals are owed once.
    */
   @Test
-  public void anAnswerAsksWhichRemovalsAreOwedOnceForEveryHolder() {
+  void anAnswerAsksWhichRemovalsAreOwedOnceForEveryHolder() {
     givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
                  mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
     givenPair(100L, ALICE);
@@ -851,6 +850,50 @@ public class CaldavEventPropagationServiceTest {
     assertEquals(2, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
 
     verify(caldavPendingPushStorage, times(1)).removalsOwed(any());
+  }
+
+  /**
+   * When the removals owed cannot be read, none is known to be owed and an
+   * edit still reaches every holder: both rewrites are recorded as owed and
+   * attempted, rather than the failed read ending the fan-out before any
+   * obligation is recorded.
+   */
+  @Test
+  void anEditStillReachesEveryHolderWhenTheRemovalsOwedCannotBeRead() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    doThrow(new IllegalStateException("database down")).when(caldavPendingPushStorage).removalsOwed(any());
+    when(caldavPushService.pushAgendaEvent(anyLong(), anyString(), eq(EVENT)))
+                                                                .thenThrow(new IllegalStateException("server down"));
+
+    assertEquals(0, service.propagateUpdate(EVENT, A_REAL_EDIT));
+
+    verify(caldavPushService).pushAgendaEvent(ALICE, login(ALICE), EVENT);
+    verify(caldavPushService).pushAgendaEvent(BOB, login(BOB), EVENT);
+    assertEquals(PendingPushKind.REWRITE, onlyObligationOf(ALICE).getKind());
+    assertEquals(PendingPushKind.REWRITE, onlyObligationOf(BOB).getKind());
+  }
+
+  /**
+   * Nor does it stop an answer: when the removals owed cannot be read, the
+   * answer still reaches the other holders.
+   */
+  @Test
+  void anAnswerStillReachesTheOtherHoldersWhenTheRemovalsOwedCannotBeRead() {
+    givenHolders(mapping(1L, 100L, "uid-8801", "/dav/alice/mirror/uid-8801.ics"),
+                 mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics"));
+    givenPair(100L, ALICE);
+    givenPair(200L, BOB);
+    givenTheAnswererIsNamed(CAROL);
+    givenEveryCopyAcceptsTheAnswer();
+    doThrow(new IllegalStateException("database down")).when(caldavPendingPushStorage).removalsOwed(any());
+
+    assertEquals(2, service.propagateAnswer(EVENT, CAROL, "ACCEPTED"));
+
+    verify(caldavPushService).pushAnswerOnto(eq(ALICE), anyString(), any(), any(), eq("ACCEPTED"), anyLong());
+    verify(caldavPushService).pushAnswerOnto(eq(BOB), anyString(), any(), any(), eq("ACCEPTED"), anyLong());
   }
 
   /**
@@ -1260,7 +1303,7 @@ public class CaldavEventPropagationServiceTest {
    * stays what is owed.
    */
   @Test
-  public void anOwedRemovalStandsWhenTheEventCannotBeRead() {
+  void anOwedRemovalStandsWhenTheEventCannotBeRead() {
     when(agendaEventService.getEventById(EVENT)).thenThrow(new IllegalStateException("agenda is unavailable"));
     ObjectSync bobs = mapping(2L, 200L, "uid-8801", "/dav/bob/mirror/uid-8801.ics");
     givenHolders(bobs);
@@ -1565,7 +1608,8 @@ public class CaldavEventPropagationServiceTest {
     assertEquals(0L, service.owedCopies(0L), "no user, no count, and no query");
 
     for (int refusal = 0; refusal < MAX_ATTEMPTS; refusal++) {
-      caldavPendingPushStorage.refused(caldavPendingPushStorage.attemptable(ALICE, MAX_ATTEMPTS, 10).get(0).getId());
+      caldavPendingPushStorage.refused(caldavPendingPushStorage.attemptable(ALICE, MAX_ATTEMPTS, 10).get(0).getId(),
+                                       PendingPushKind.REWRITE);
     }
 
     assertEquals(1L, service.owedCopies(ALICE), "a copy eXo gave up on is not somebody waiting for one");
@@ -1816,6 +1860,288 @@ public class CaldavEventPropagationServiceTest {
     // nothing at all: the removal was attempted again, and no rewrite was.
     verify(caldavPushService, times(2)).deleteEvent(ALICE, login(ALICE), "uid-8801");
     verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
+  }
+
+  /**
+   * EXO-90518. Bob is taken off the meeting after the retry pass has read his
+   * owed rewrite, and the edit records his removal and carries it out. The
+   * pass writes nothing: carried out, the rewrite would put the copy back on
+   * the calendar of an invitee who may still read the meeting, with nothing
+   * owed to take it away again.
+   */
+  @Test
+  void aRetryDoesNotPutBackACopyRemovedSinceItsBatchWasRead() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    lenient().when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenReturn(new ObjectSync());
+    afterTheBatchIsRead(BOB, () -> {
+      caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REMOVE, null, "uid-8801");
+      caldavPendingPushStorage.settled(2L, PendingPushKind.REMOVE);
+    });
+
+    int landed = service.retryOwedPushes(BOB);
+
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
+    assertEquals(0, landed);
+    assertEquals(0, caldavPendingPushStorage.owed(BOB));
+  }
+
+  /**
+   * Nor when the removal recorded since the batch was read has not been
+   * carried out yet: it stands, uncounted, for the next pass.
+   */
+  @Test
+  void aRetryLeavesARemovalRecordedSinceItsBatchWasRead() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    lenient().when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenReturn(new ObjectSync());
+    afterTheBatchIsRead(BOB, () -> caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REMOVE, null, "uid-8801"));
+
+    int landed = service.retryOwedPushes(BOB);
+
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
+    assertEquals(0, landed);
+    PendingPush owed = onlyObligationOf(BOB);
+    assertEquals(PendingPushKind.REMOVE, owed.getKind());
+    assertEquals(0, owed.getAttempts(), "an obligation this pass did not carry out is not counted against");
+  }
+
+  /**
+   * EXO-90518. Bob is invited again after the retry pass has read his owed
+   * removal, and the edit records a rewrite in its place. The pass removes
+   * nothing: carried out, the removal would delete the copy of a holder who
+   * is invited again.
+   */
+  @Test
+  void aRetryDoesNotRemoveTheCopyOfAHolderInvitedAgainSinceItsBatchWasRead() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REMOVE, null, "uid-8801");
+    afterTheBatchIsRead(BOB, () -> caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801"));
+
+    int landed = service.retryOwedPushes(BOB);
+
+    verify(caldavPushService, never()).deleteEvent(anyLong(), anyString(), anyString());
+    assertEquals(0, landed);
+    assertEquals(PendingPushKind.REWRITE, onlyObligationOf(BOB).getKind());
+  }
+
+  /**
+   * Each obligation of a batch is read again at its own turn, not all of them
+   * before the first write: Bob's second copy is owed a removal from the
+   * moment the pass writes his first one, and the pass does not rewrite it.
+   */
+  @Test
+  void eachObligationOfABatchIsReadAgainAtItsOwnTurn() {
+    long otherMeeting = 8803L;
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    caldavPendingPushStorage.owe(3L, BOB, PendingPushKind.REWRITE, otherMeeting, "uid-8803");
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenAnswer(write -> {
+      caldavPendingPushStorage.owe(3L, BOB, PendingPushKind.REMOVE, null, "uid-8803");
+      return new ObjectSync();
+    });
+    lenient().when(caldavPushService.pushAgendaEvent(BOB, login(BOB), otherMeeting)).thenReturn(new ObjectSync());
+
+    int landed = service.retryOwedPushes(BOB);
+
+    verify(caldavPushService, never()).pushAgendaEvent(BOB, login(BOB), otherMeeting);
+    assertEquals(1, landed);
+    assertEquals(PendingPushKind.REMOVE, onlyObligationOf(BOB).getKind());
+  }
+
+  /**
+   * The last refusal of Bob's owed rewrite, refused while a removal is
+   * recorded in its place, is not counted against the removal: the removal
+   * keeps its own attempts, and nothing is said to be given up on.
+   */
+  @Test
+  void aRefusedRetryIsNotCountedAgainstARemovalRecordedDuringIt() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    for (int refusal = 1; refusal < MAX_ATTEMPTS; refusal++) {
+      caldavPendingPushStorage.refused(onlyObligationOf(BOB).getId(), PendingPushKind.REWRITE);
+    }
+    whenTheRetriedRewriteOfBobIsRefused(CaldavPushService.SAVE);
+
+    List<ILoggingEvent> givenUp;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      assertEquals(0, service.retryOwedPushes(BOB));
+      givenUp = log.events().stream().filter(recorded -> recorded.getFormattedMessage().contains("stops")).toList();
+    }
+
+    PendingPush owed = onlyObligationOf(BOB);
+    assertEquals(PendingPushKind.REMOVE, owed.getKind());
+    assertEquals(0, owed.getAttempts(), "the rewrite's refusal is not counted against the removal");
+    assertTrue(givenUp.isEmpty(), "nothing was given up on: " + givenUp);
+  }
+
+  /**
+   * A rewrite renewed by an edit while its last retry is refused takes the
+   * refusal as its first attempt: it is still attempted, and nothing is said
+   * to be given up on.
+   */
+  @Test
+  void aRewriteRenewedDuringItsLastRefusedRetryIsNotSaidToBeGivenUpOn() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    for (int refusal = 1; refusal < MAX_ATTEMPTS; refusal++) {
+      caldavPendingPushStorage.refused(onlyObligationOf(BOB).getId(), PendingPushKind.REWRITE);
+    }
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenAnswer(write -> {
+      caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+      throw new CaldavPushException(CaldavPushService.SAVE, "PUT /dav/bob/mirror/uid-8801.ics was refused");
+    });
+
+    List<ILoggingEvent> givenUp;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      assertEquals(0, service.retryOwedPushes(BOB));
+      givenUp = log.events().stream().filter(recorded -> recorded.getFormattedMessage().contains("stops")).toList();
+    }
+
+    assertEquals(1, onlyObligationOf(BOB).getAttempts(), "the renewed rewrite counts the refusal as its first");
+    assertTrue(givenUp.isEmpty(), "the renewed rewrite is still attempted: " + givenUp);
+  }
+
+  /**
+   * When the stored count cannot be read again after the last refusal, the
+   * abandonment is still said: a copy eXo stops putting right is the one state
+   * an operator has to hear about.
+   */
+  @Test
+  void theAbandonmentIsSaidWhenTheStoredCountCannotBeReadAgain() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    for (int refusal = 1; refusal < MAX_ATTEMPTS; refusal++) {
+      caldavPendingPushStorage.refused(onlyObligationOf(BOB).getId(), PendingPushKind.REWRITE);
+    }
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT))
+                                                                .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                                   "bob's server is down"));
+    // Read once before the write, then unreadable when the count is read again.
+    doCallRealMethod().doThrow(new IllegalStateException("database down")).when(caldavPendingPushStorage).owedTo(2L);
+
+    List<ILoggingEvent> givenUp;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      service.retryOwedPushes(BOB);
+      givenUp = log.events().stream().filter(recorded -> recorded.getFormattedMessage().contains("stops")).toList();
+    }
+
+    assertEquals(1, givenUp.size(), "the abandonment is said once: " + givenUp);
+    assertEquals(Level.WARN, givenUp.get(0).getLevel());
+  }
+
+  /**
+   * Nor when the obligation is settled between its last refusal and the second
+   * read of its count: nothing is left to give up on.
+   */
+  @Test
+  void anObligationSettledAfterItsLastRefusalIsNotSaidToBeGivenUpOn() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    for (int refusal = 1; refusal < MAX_ATTEMPTS; refusal++) {
+      caldavPendingPushStorage.refused(onlyObligationOf(BOB).getId(), PendingPushKind.REWRITE);
+    }
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT))
+                                                                .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
+                                                                                                   "bob's server is down"));
+    // Read once before the write, then gone when the count is read again.
+    doCallRealMethod().doReturn(Optional.empty()).when(caldavPendingPushStorage).owedTo(2L);
+
+    List<ILoggingEvent> givenUp;
+    try (LogRecorder log = new LogRecorder(CaldavEventPropagationService.class)) {
+      service.retryOwedPushes(BOB);
+      givenUp = log.events().stream().filter(recorded -> recorded.getFormattedMessage().contains("stops")).toList();
+    }
+
+    assertTrue(givenUp.isEmpty(), "nothing is left to give up on: " + givenUp);
+  }
+
+  /**
+   * Nor does a retried rewrite the server forbids give up on the removal
+   * recorded in its place while it was written.
+   */
+  @Test
+  void aForbiddenRetryDoesNotGiveUpOnARemovalRecordedDuringIt() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    whenTheRetriedRewriteOfBobIsRefused(CaldavPushService.FORBIDDEN);
+
+    assertEquals(0, service.retryOwedPushes(BOB));
+
+    PendingPush owed = onlyObligationOf(BOB);
+    assertEquals(PendingPushKind.REMOVE, owed.getKind());
+    assertEquals(0, owed.getAttempts(), "the removal is not given up on");
+  }
+
+  /**
+   * Nor one refused as another user's copy.
+   */
+  @Test
+  void aRetryRefusedAsAForeignCopyDoesNotGiveUpOnARemovalRecordedDuringIt() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    whenTheRetriedRewriteOfBobIsRefused(CaldavPushService.FOREIGN_COPY);
+
+    assertEquals(0, service.retryOwedPushes(BOB));
+
+    PendingPush owed = onlyObligationOf(BOB);
+    assertEquals(PendingPushKind.REMOVE, owed.getKind());
+    assertEquals(0, owed.getAttempts(), "the removal is not given up on");
+  }
+
+  /**
+   * A removal recorded while the retry pass writes Bob's owed rewrite stands
+   * once the rewrite lands: settling forgets the rewrite only.
+   */
+  @Test
+  void aRemovalRecordedWhileARetriedRewriteIsWrittenStands() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenAnswer(write -> {
+      caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REMOVE, null, "uid-8801");
+      return new ObjectSync();
+    });
+
+    assertEquals(1, service.retryOwedPushes(BOB));
+
+    assertEquals(PendingPushKind.REMOVE, onlyObligationOf(BOB).getKind());
+  }
+
+  /**
+   * A rewrite recorded while the retry pass makes Bob's owed removal stands
+   * once the removal lands: settling forgets the removal only.
+   */
+  @Test
+  void aRewriteRecordedWhileARetriedRemovalIsMadeStands() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REMOVE, null, "uid-8801");
+    doAnswer(removal -> {
+      caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+      return null;
+    }).when(caldavPushService).deleteEvent(BOB, login(BOB), "uid-8801");
+
+    assertEquals(1, service.retryOwedPushes(BOB));
+
+    assertEquals(PendingPushKind.REWRITE, onlyObligationOf(BOB).getKind());
+  }
+
+  /**
+   * An obligation that cannot be read again is not carried out on the batch's
+   * reading of it, nor counted against: the next pass reads it afresh.
+   */
+  @Test
+  void anObligationThatCannotBeReadAgainIsLeftToTheNextPass() {
+    givenPair(200L, BOB);
+    caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REWRITE, EVENT, "uid-8801");
+    doThrow(new IllegalStateException("database down")).when(caldavPendingPushStorage).owedTo(2L);
+
+    assertEquals(0, service.retryOwedPushes(BOB));
+
+    verify(caldavPushService, never()).pushAgendaEvent(anyLong(), anyString(), anyLong());
+    PendingPush owed = onlyObligationOf(BOB);
+    assertEquals(PendingPushKind.REWRITE, owed.getKind());
+    assertEquals(0, owed.getAttempts(), "a read that failed is not a refusal");
   }
 
   /**
@@ -2249,7 +2575,7 @@ public class CaldavEventPropagationServiceTest {
     givenPair(200L, BOB);
     org.mockito.Mockito.doThrow(new IllegalStateException("the database is unhappy"))
                        .when(caldavPendingPushStorage)
-                       .settled(anyLong());
+                       .settled(anyLong(), any());
     when(caldavPushService.pushAgendaEvent(anyLong(), anyString(), eq(EVENT))).thenReturn(new ObjectSync());
 
     assertEquals(2, service.propagateUpdate(EVENT, A_REAL_EDIT), "both copies were written");
@@ -2270,9 +2596,9 @@ public class CaldavEventPropagationServiceTest {
     caldavPendingPushStorage.owe(1L, ALICE, PendingPushKind.REWRITE, EVENT, "uid-a");
     caldavPendingPushStorage.owe(2L, ALICE, PendingPushKind.REWRITE, 9902L, "uid-b");
     org.mockito.Mockito.doThrow(new IllegalStateException("the database is unhappy"))
-                       .doNothing()
+                       .doReturn(true)
                        .when(caldavPendingPushStorage)
-                       .refused(anyLong());
+                       .refused(anyLong(), any());
     when(caldavPushService.pushAgendaEvent(anyLong(), anyString(), anyLong()))
                                                                 .thenThrow(new CaldavPushException(CaldavPushService.SAVE,
                                                                                                    "the server is down"));
@@ -3165,6 +3491,38 @@ public class CaldavEventPropagationServiceTest {
   }
 
   /**
+   * Makes the retry pass's rewrite of Bob's copy fail with one refusal, after
+   * an edit has recorded a removal in its place while it was being written.
+   *
+   * @param code the refusal's {@link CaldavPushException} code
+   */
+  private void whenTheRetriedRewriteOfBobIsRefused(String code) {
+    when(caldavPushService.pushAgendaEvent(BOB, login(BOB), EVENT)).thenAnswer(write -> {
+      caldavPendingPushStorage.owe(2L, BOB, PendingPushKind.REMOVE, null, "uid-8801");
+      throw new CaldavPushException(code, "PUT /dav/bob/mirror/uid-8801.ics was refused");
+    });
+  }
+
+  /**
+   * Changes the store once, right after the retry pass has read its batch for
+   * one account and before it carries out the first obligation: what an edit
+   * on agenda's listener thread does while the pass runs.
+   *
+   * @param userIdentityId the account whose batch is read
+   * @param meanwhile what the edit does to the store
+   */
+  private void afterTheBatchIsRead(long userIdentityId, Runnable meanwhile) {
+    AtomicBoolean done = new AtomicBoolean();
+    doAnswer(read -> {
+      Object batch = read.callRealMethod();
+      if (done.compareAndSet(false, true)) {
+        meanwhile.run();
+      }
+      return batch;
+    }).when(caldavPendingPushStorage).attemptable(eq(userIdentityId), anyInt(), anyInt());
+  }
+
+  /**
    * Declares who agenda says was invited to the created event.
    *
    * @param identityIds the attendee identities, as agenda lists them
@@ -3389,8 +3747,37 @@ public class CaldavEventPropagationServiceTest {
      * {@inheritDoc}
      */
     @Override
-    public void settled(long objectSyncId) {
-      byObject.remove(objectSyncId);
+    public void settled(long objectSyncId, PendingPushKind kind) {
+      PendingPush pending = byObject.get(objectSyncId);
+      if (pending != null && pending.getKind() == kind) {
+        byObject.remove(objectSyncId);
+      }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public Optional<PendingPush> owedTo(long objectSyncId) {
+      return Optional.ofNullable(byObject.get(objectSyncId)).map(InMemoryPendingPushStorage::snapshot);
+    }
+
+    /**
+     * A copy of a stored obligation, as the real storage maps one off its row:
+     * a later change to the store does not reach it.
+     *
+     * @param pending the stored obligation
+     * @return the copy
+     */
+    private static PendingPush snapshot(PendingPush pending) {
+      return new PendingPush(pending.getId(),
+                             pending.getObjectSyncId(),
+                             pending.getUserIdentityId(),
+                             pending.getKind(),
+                             pending.getLocalEventId(),
+                             pending.getIcsUid(),
+                             pending.getAttempts(),
+                             pending.getSince());
     }
 
     /**
@@ -3412,26 +3799,42 @@ public class CaldavEventPropagationServiceTest {
      * {@inheritDoc}
      */
     @Override
-    public void refused(long id) {
-      byObject.replaceAll((objectSyncId, pending) -> {
-        if (pending.getId() != null && pending.getId() == id) {
-          pending.setAttempts(pending.getAttempts() + 1);
-        }
-        return pending;
-      });
+    public boolean refused(long id, PendingPushKind kind) {
+      PendingPush pending = byId(id, kind);
+      if (pending == null) {
+        return false;
+      }
+      pending.setAttempts(pending.getAttempts() + 1);
+      return true;
     }
 
     /**
      * {@inheritDoc}
      */
     @Override
-    public void abandoned(long id, int maxAttempts) {
-      byObject.replaceAll((objectSyncId, pending) -> {
-        if (pending.getId() != null && pending.getId() == id) {
-          pending.setAttempts(maxAttempts);
-        }
-        return pending;
-      });
+    public boolean abandoned(long id, PendingPushKind kind, int maxAttempts) {
+      PendingPush pending = byId(id, kind);
+      if (pending == null) {
+        return false;
+      }
+      pending.setAttempts(maxAttempts);
+      return true;
+    }
+
+    /**
+     * The stored obligation of one identifier, while it is of one kind, as the
+     * statements behind {@link #refused} and {@link #abandoned} select it.
+     *
+     * @param id the obligation
+     * @param kind the kind it must still be of
+     * @return the stored obligation, null when there is none of that kind
+     */
+    private PendingPush byId(long id, PendingPushKind kind) {
+      return byObject.values()
+                     .stream()
+                     .filter(pending -> pending.getId() != null && pending.getId() == id && pending.getKind() == kind)
+                     .findFirst()
+                     .orElse(null);
     }
 
     /**

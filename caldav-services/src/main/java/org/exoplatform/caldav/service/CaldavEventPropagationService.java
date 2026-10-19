@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -767,6 +768,21 @@ public class CaldavEventPropagationService {
         carried++;
       }
     }
+    int removed = removeUninvited(uninvited, eventId);
+    logEdit(eventId, carried, holders.size() + skipped, removed, uninvited.size());
+    return carried + removed;
+  }
+
+  /**
+   * Removes the copy of every holder no longer invited to an edited meeting,
+   * one account at a time.
+   *
+   * @param uninvited the holders whose copy has to go, by user, each already
+   *          recorded as owed a removal
+   * @param eventId the agenda event that was edited
+   * @return how many copies were removed
+   */
+  private int removeUninvited(Map<Long, ObjectSync> uninvited, long eventId) {
     int removed = 0;
     for (Map.Entry<Long, ObjectSync> holder : uninvited.entrySet()) {
       ObjectSync mapping = holder.getValue();
@@ -779,17 +795,30 @@ public class CaldavEventPropagationService {
         removed++;
       }
     }
-    if (uninvited.isEmpty()) {
-      LOG.info("Event {} was edited; its copy was rewritten for {} of {} holders", eventId, carried, holders.size() + skipped);
+    return removed;
+  }
+
+  /**
+   * Says what an edit did to the copies of a meeting, naming the removals only
+   * when it had some to make.
+   *
+   * @param eventId the agenda event that was edited
+   * @param carried how many copies were rewritten
+   * @param holders how many holders the edit reached, its origin included
+   * @param removed how many copies were removed
+   * @param uninvited how many holders are no longer invited
+   */
+  private void logEdit(long eventId, int carried, int holders, int removed, int uninvited) {
+    if (uninvited == 0) {
+      LOG.info("Event {} was edited; its copy was rewritten for {} of {} holders", eventId, carried, holders);
     } else {
       LOG.info("Event {} was edited; its copy was rewritten for {} of {} holders and removed for {} of {} no longer invited",
                eventId,
                carried,
-               holders.size() + skipped,
+               holders,
                removed,
-               uninvited.size());
+               uninvited);
     }
-    return carried + removed;
   }
 
   /**
@@ -877,40 +906,65 @@ public class CaldavEventPropagationService {
     boolean attendeeRemoved = modificationTypes != null
         && modificationTypes.contains(AgendaEventModificationType.ATTENDEE_DELETED);
     long calendarOwnerId = attendeeRemoved || !owed.isEmpty() ? calendarOwnerOf(event) : 0;
-    holders.entrySet().removeIf(holder -> {
-      long userIdentityId = holder.getKey();
-      ObjectSync mapping = holder.getValue();
-      Long mappedEventId = mapping.getLocalEventId();
-      if (mappedEventId == null || mappedEventId != eventId) {
-        // The series' copy, reached from an occurrence edited alone: left out
-        // of the rewrite when it is owed a removal, which the retry pass
-        // carries out, and never removed from here.
-        return isOwed(owed, mapping);
-      }
-      boolean owedRemoval = isOwed(owed, mapping);
-      if (userIdentityId == event.getCreatorId() || !(attendeeRemoved || owedRemoval)
-          || userIdentityId == calendarOwnerId) {
+    holders.entrySet()
+           .removeIf(holder -> isTakenOut(holder, event, eventId, calendarOwnerId, attendeeRemoved, owed, uninvited));
+    return uninvited;
+  }
+
+  /**
+   * Decides one holder's turn in {@link #takeUninvited}: kept in the rewrite,
+   * left out of it for an owed removal to stand, or taken out to have the copy
+   * removed.
+   *
+   * @param holder the holder and their mapping
+   * @param event the edited event, as agenda holds it now
+   * @param eventId the agenda event
+   * @param calendarOwnerId the owner of the calendar the meeting lives in, 0
+   *          when not read, {@link #UNKNOWN_OWNER} when it cannot be
+   * @param attendeeRemoved whether agenda says an attendee was removed
+   * @param owed the mappings owed a removal
+   * @param uninvited the holders whose copy must be removed, which this adds
+   *          the holder to when theirs must
+   * @return true when the holder is taken out of the rewrite
+   */
+  private boolean isTakenOut(Map.Entry<Long, ObjectSync> holder,
+                             Event event,
+                             long eventId,
+                             long calendarOwnerId,
+                             boolean attendeeRemoved,
+                             Set<Long> owed,
+                             Map<Long, ObjectSync> uninvited) {
+    long userIdentityId = holder.getKey();
+    ObjectSync mapping = holder.getValue();
+    Long mappedEventId = mapping.getLocalEventId();
+    if (mappedEventId == null || mappedEventId != eventId) {
+      // The series' copy, reached from an occurrence edited alone: left out
+      // of the rewrite when it is owed a removal, which the retry pass
+      // carries out, and never removed from here.
+      return isOwed(owed, mapping);
+    }
+    boolean owedRemoval = isOwed(owed, mapping);
+    if (userIdentityId == event.getCreatorId() || !(attendeeRemoved || owedRemoval)
+        || userIdentityId == calendarOwnerId) {
+      return false;
+    }
+    if (calendarOwnerId == UNKNOWN_OWNER) {
+      return owedRemoval;
+    }
+    try {
+      if (!isMeetingCopy(mapping) || isStillInvited(event, userIdentityId)) {
         return false;
       }
-      if (calendarOwnerId == UNKNOWN_OWNER) {
-        return owedRemoval;
-      }
-      try {
-        if (!isMeetingCopy(mapping) || isStillInvited(event, userIdentityId)) {
-          return false;
-        }
-      } catch (Exception | LinkageError e) {
-        LOG.warn("Whether user {} is still to hold a copy of event {} could not be told; {}",
-                 userIdentityId,
-                 eventId,
-                 owedRemoval ? "the removal known to be owed to them stands" : "their copy is kept",
-                 e);
-        return owedRemoval;
-      }
-      uninvited.put(userIdentityId, mapping);
-      return true;
-    });
-    return uninvited;
+    } catch (Exception | LinkageError e) {
+      LOG.warn("Whether user {} is still to hold a copy of event {} could not be told; {}",
+               userIdentityId,
+               eventId,
+               owedRemoval ? "the removal known to be owed to them stands" : "their copy is kept",
+               e);
+      return owedRemoval;
+    }
+    uninvited.put(userIdentityId, mapping);
+    return true;
   }
 
   /**
@@ -1458,7 +1512,7 @@ public class CaldavEventPropagationService {
                                                                                 response,
                                                                                 eventId);
       if (outcome.settles()) {
-        settled(copy.getId());
+        settled(copy.getId(), PendingPushKind.REWRITE);
       }
       return outcome == CaldavPushService.AnswerOutcome.WRITTEN;
     } catch (CaldavPushException e) {
@@ -1469,7 +1523,7 @@ public class CaldavEventPropagationService {
                   holderIdentityId,
                   answererIdentityId,
                   e);
-        settled(copy.getId());
+        settled(copy.getId(), PendingPushKind.REWRITE);
       } else if (CaldavPushService.isKnownState(e.getCode())) {
         // A state of the holder rather than a failure of this write: they have
         // no connected account, none that names a destination, or the object
@@ -1640,7 +1694,7 @@ public class CaldavEventPropagationService {
     try {
       boolean written = caldavPushService.pushAgendaEvent(userIdentityId, username, eventId) != null;
       if (written) {
-        settled(objectSyncId);
+        settled(objectSyncId, PendingPushKind.REWRITE);
       }
       return written ? Settlement.WRITE_LANDED : Settlement.refused(null);
     } catch (CaldavPushException e) {
@@ -1656,7 +1710,7 @@ public class CaldavEventPropagationService {
                   eventId,
                   userIdentityId,
                   e);
-        settled(objectSyncId);
+        settled(objectSyncId, PendingPushKind.REWRITE);
       } else if (CaldavPushService.isKnownState(e.getCode())) {
         // A state of the holder rather than a failure of this write: they have
         // no connected account, none that names a destination, or the object
@@ -1719,7 +1773,7 @@ public class CaldavEventPropagationService {
     }
     try {
       caldavPushService.deleteEvent(userIdentityId, username, icsUid);
-      settled(objectSyncId);
+      settled(objectSyncId, PendingPushKind.REMOVE);
       return Settlement.WRITE_LANDED;
     } catch (Exception | LinkageError e) {
       if (e instanceof CaldavPushException refusal && CaldavPushService.isKnownState(refusal.getCode())) {
@@ -1795,15 +1849,21 @@ public class CaldavEventPropagationService {
    * nothing. That is the cheaper of the two mistakes, and the reason this is a
    * warning rather than a failure.
    *
+   * <p>
+   * Only an obligation of the kind carried out is forgotten: one of the other
+   * kind, recorded while the write was being made, stands
+   * ({@link CaldavPendingPushStorage#settled(long, PendingPushKind)}).
+   *
    * @param objectSyncId the mapping row whose copy was written; null when the
    *          caller had no row, in which case there is nothing to forget
+   * @param kind the kind of write that landed
    */
-  private void settled(Long objectSyncId) {
+  private void settled(Long objectSyncId, PendingPushKind kind) {
     if (objectSyncId == null || objectSyncId <= 0) {
       return;
     }
     try {
-      caldavPendingPushStorage.settled(objectSyncId);
+      caldavPendingPushStorage.settled(objectSyncId, kind);
     } catch (Exception | LinkageError e) {
       LOG.warn("The write owed to mapping {} landed but could not be struck off; the next sweep writes it again",
                objectSyncId,
@@ -1925,13 +1985,40 @@ public class CaldavEventPropagationService {
    * says the copy has to go rather than be rewritten, so it is carried out as
    * recorded.
    *
+   * <p>
+   * As recorded now, not as the batch read it. An edit carried out on agenda's
+   * listener thread while this pass runs replaces the kind (a removal for a
+   * holder taken off the meeting, a rewrite for one invited again) and carries
+   * it out itself, so a batch read before it names an instruction that no
+   * longer stands: carried out, a stale rewrite puts back the copy of a
+   * removed invitee who still reads the meeting, and a stale removal deletes
+   * the copy of a holder invited again. The obligation is read again just
+   * before the call to the server and carried out only while it is still of
+   * the kind read; settled or replaced since, it is left to whoever recorded
+   * what stands. The window left is the call to the server itself. An
+   * obligation of the other kind recorded during it stands, since settling
+   * forgets, and a refusal counts or gives up on, only the kind attempted; but
+   * one recorded and carried out entirely during it is undone by this write,
+   * and nothing is owed after it. An obligation of the same kind renewed during
+   * it takes a refusal as its first attempt, and is given up on with it when
+   * the server forbids the write or the copy is another user's; a rewrite that
+   * lands settles it, though it does not carry an edit agenda saved after this
+   * write read the event. That edit is left to its own write, which carries it
+   * unless it lands before this write reads the copy's version, and this write
+   * then overwrites it. When that write fails, or lands that early, the copy
+   * keeps the meeting as it was before that edit, with nothing owed.
+   *
    * @param userIdentityId whose calendar the copy sits in
    * @param username their eXo login, which the credentials provider maps to
    *          their account on the server
-   * @param pending what is owed to it
+   * @param read what the batch read as owed to it
    * @return true when the write landed
    */
-  private boolean settleOwed(long userIdentityId, String username, PendingPush pending) {
+  private boolean settleOwed(long userIdentityId, String username, PendingPush read) {
+    PendingPush pending = stillOwed(userIdentityId, read);
+    if (pending == null) {
+      return false;
+    }
     Settlement settlement;
     if (pending.getKind() == PendingPushKind.REMOVE) {
       settlement = removeOne(userIdentityId, username, pending.getIcsUid(), pending.getObjectSyncId(), null);
@@ -1949,6 +2036,42 @@ public class CaldavEventPropagationService {
       refuse(userIdentityId, pending, settlement.code(), settlement.reason());
     }
     return settlement.landed();
+  }
+
+  /**
+   * The obligation a batch read, read again, when it still asks for the same
+   * write.
+   *
+   * <p>
+   * An obligation that cannot be read again is not carried out on the batch's
+   * reading of it: the next pass reads it afresh, and nothing is counted
+   * against it meanwhile.
+   *
+   * @param userIdentityId whose calendar the copy sits in, for the log
+   * @param read what the batch read as owed to the copy
+   * @return the obligation as it stands now; null when it was settled since,
+   *         is now of the other kind, or cannot be read
+   */
+  private PendingPush stillOwed(long userIdentityId, PendingPush read) {
+    Optional<PendingPush> current;
+    try {
+      current = caldavPendingPushStorage.owedTo(read.getObjectSyncId());
+    } catch (Exception | LinkageError e) {
+      LOG.warn("What eXo owes the copy of user {} at mapping {} could not be read again; it is left to the next round",
+               userIdentityId,
+               read.getObjectSyncId(),
+               e);
+      return null;
+    }
+    if (current.isEmpty() || current.get().getKind() != read.getKind()) {
+      LOG.debug("The {} owed to the copy of user {} at mapping {} was settled or replaced since this round read it;"
+          + " it is left to what stands now",
+                read.getKind(),
+                userIdentityId,
+                read.getObjectSyncId());
+      return null;
+    }
+    return current.get();
   }
 
   /**
@@ -2042,15 +2165,20 @@ public class CaldavEventPropagationService {
       abandonOnForbiddenWrite(userIdentityId, pending, reason);
       return;
     }
+    boolean counted;
     try {
-      caldavPendingPushStorage.refused(pending.getId());
+      counted = caldavPendingPushStorage.refused(pending.getId(), pending.getKind());
     } catch (Exception | LinkageError e) {
       LOG.warn("A refused write owed to mapping {} could not be counted; it will be attempted again",
                pending.getObjectSyncId(),
                e);
       return;
     }
-    if (pending.getAttempts() + 1 < maxPushAttempts) {
+    if (!counted) {
+      leftUncounted(userIdentityId, pending);
+      return;
+    }
+    if (pending.getAttempts() + 1 < maxPushAttempts || !hasReachedTheBound(pending)) {
       return;
     }
     // Once, on the attempt that reaches the bound, and never again: the next
@@ -2079,6 +2207,48 @@ public class CaldavEventPropagationService {
                maxPushAttempts);
     }
   }
+
+  /**
+   * Whether an obligation's stored count has reached the bound, read again once
+   * the refusal that should reach it was counted.
+   *
+   * <p>
+   * The count read just before the write is not enough: an edit that renewed
+   * the same kind while the refused write was being made reset the count, so
+   * the refusal was this obligation's first, and it is still attempted.
+   *
+   * @param pending the obligation as it was attempted
+   * @return true when the stored count reached the bound, and when it cannot
+   *         be read again, so that the abandonment is not left unsaid
+   */
+  private boolean hasReachedTheBound(PendingPush pending) {
+    try {
+      return caldavPendingPushStorage.owedTo(pending.getObjectSyncId())
+                                     .map(current -> current.getAttempts() >= maxPushAttempts)
+                                     .orElse(false);
+    } catch (Exception | LinkageError e) {
+      LOG.debug("The count of the write owed to mapping {} could not be read again", pending.getObjectSyncId(), e);
+      return true;
+    }
+  }
+
+  /**
+   * Says, at debug, that a refusal was not counted: the obligation it was
+   * refused for was settled, or replaced with the other kind, while it was
+   * attempted, and what stands now is another instruction, attempted on its
+   * own count.
+   *
+   * @param userIdentityId whose calendar the copy sits in, for the log
+   * @param pending the obligation as it was attempted
+   */
+  private void leftUncounted(long userIdentityId, PendingPush pending) {
+    LOG.debug("The {} owed to the copy of user {} at mapping {} was refused, but was settled or replaced while it was"
+        + " attempted; the refusal is not counted against what stands now",
+              pending.getKind(),
+              userIdentityId,
+              pending.getObjectSyncId());
+  }
+
   /**
    * Gives up on an obligation the first time it is refused as another user's
    * copy, rather than counting it toward the bound.
@@ -2103,12 +2273,17 @@ public class CaldavEventPropagationService {
    * @param pending the obligation given up on
    */
   private void abandonOnForeignCopy(long userIdentityId, PendingPush pending) {
+    boolean abandoned;
     try {
-      caldavPendingPushStorage.abandoned(pending.getId(), maxPushAttempts);
+      abandoned = caldavPendingPushStorage.abandoned(pending.getId(), pending.getKind(), maxPushAttempts);
     } catch (Exception | LinkageError e) {
       LOG.warn("What eXo owes the copy of user {} could not be given up on; it will be attempted again",
                pending.getObjectSyncId(),
                e);
+      return;
+    }
+    if (!abandoned) {
+      leftUncounted(userIdentityId, pending);
       return;
     }
     // Once, at WARN, and phrased as an instruction rather than a failure: this
@@ -2150,12 +2325,17 @@ public class CaldavEventPropagationService {
    *          null when it named nothing
    */
   private void abandonOnForbiddenWrite(long userIdentityId, PendingPush pending, String reason) {
+    boolean abandoned;
     try {
-      caldavPendingPushStorage.abandoned(pending.getId(), maxPushAttempts);
+      abandoned = caldavPendingPushStorage.abandoned(pending.getId(), pending.getKind(), maxPushAttempts);
     } catch (Exception | LinkageError e) {
       LOG.warn("What eXo owes the copy of user {} could not be given up on; it will be attempted again",
                pending.getObjectSyncId(),
                e);
+      return;
+    }
+    if (!abandoned) {
+      leftUncounted(userIdentityId, pending);
       return;
     }
     // Once, at WARN, naming the target: this is the one notice anybody gets
