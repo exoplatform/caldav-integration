@@ -784,7 +784,8 @@ public class CaldavEventPropagationService {
    * cancellation, put back into agenda's event cache by that read.
    *
    * <p>
-   * A member's account is claimed for the write ({@link CaldavOutboundWork}).
+   * A member's account is claimed for the write
+   * ({@link CaldavOutboundWork#claimMemberWrite}).
    * One already claimed is being written to by a sweep or a burst, and is
    * tried once more after the walk, which reaches a sweep that has finished by
    * then. One still claimed — always so for a burst, which runs on the same
@@ -891,7 +892,7 @@ public class CaldavEventPropagationService {
       if (server != null && unanswered.getOrDefault(server, 0) >= UNANSWERED_WRITES_BEFORE_LEAVING_OUT) {
         continue;
       }
-      if (!caldavOutboundWork.claim(account)) {
+      if (!caldavOutboundWork.claimMemberWrite(account)) {
         busy.put(account, login);
         continue;
       }
@@ -902,7 +903,7 @@ public class CaldavEventPropagationService {
       } catch (CalDavUnreachableException e) {
         noteUnanswered(eventId, account, server == null ? serverOf(account) : server, unanswered, e);
       } finally {
-        caldavOutboundWork.release(account);
+        caldavOutboundWork.releaseMemberWrite(account);
       }
     }
     return written;

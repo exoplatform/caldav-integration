@@ -81,6 +81,68 @@ public class CaldavOutboundWorkTest {
   }
 
   /**
+   * A burst and a sweep keep each other out, whichever claims first: the same
+   * outward work on one account, which run together would list one collection
+   * twice (EXO-89821).
+   */
+  @Test
+  void aBurstAndASweepKeepEachOtherOut() {
+    assertTrue(work.claimForQueue(1L));
+    assertFalse(work.claim(1L), "a sweep leaves an account whose burst is queued or running");
+    assertFalse(work.claimForQueue(1L), "a second burst joins the first");
+
+    assertTrue(work.claim(2L));
+    assertFalse(work.claimForQueue(2L), "a burst is not queued while a sweep does the account's outward work");
+  }
+
+  /**
+   * A burst asked for while a space invitation writes one member's copy is
+   * queued, not turned away (EXO-91031): that write is made by a task on the
+   * outward thread, so the burst queued now runs once it has ended. Turned
+   * away, the burst would lose its owed removals until the sweep finds the
+   * account due.
+   */
+  @Test
+  void aBurstIsQueuedWhileAMembersWriteHoldsTheAccount() {
+    assertTrue(work.claimMemberWrite(1L));
+
+    assertTrue(work.claimForQueue(1L), "a burst asked for during a member's write is queued");
+  }
+
+  /**
+   * A sweep leaves an account a space invitation is writing one member's copy
+   * to, and claims it once the write gives it back (EXO-91031): the sweep runs
+   * beside the outward thread, so it would write alongside.
+   */
+  @Test
+  void aSweepLeavesAnAccountAMembersWriteHolds() {
+    assertTrue(work.claimMemberWrite(1L));
+
+    assertFalse(work.claim(1L), "a sweep leaves an account held for a member's write");
+
+    work.releaseMemberWrite(1L);
+
+    assertTrue(work.claim(1L), "given back, the account is the sweep's again");
+  }
+
+  /**
+   * A member's write is not made while a burst is queued or running for the
+   * account, a sweep does its outward work, or another member's write holds
+   * it (EXO-91031).
+   */
+  @Test
+  void aMembersWriteWaitsForEveryOtherClaim() {
+    assertTrue(work.claimForQueue(1L));
+    assertFalse(work.claimMemberWrite(1L), "not while a burst is queued or running for the account");
+    work.release(1L);
+    assertTrue(work.claimMemberWrite(1L), "the burst gone, the write may claim the account");
+    assertFalse(work.claimMemberWrite(1L), "not while another member's write holds it");
+
+    assertTrue(work.claim(2L));
+    assertFalse(work.claimMemberWrite(2L), "not while a sweep does the account's outward work");
+  }
+
+  /**
    * The thread is stopped by the container, through {@code @PreDestroy}. A test
    * calling {@code stop()} by hand cannot see the annotation removed, so this
    * one reads it.

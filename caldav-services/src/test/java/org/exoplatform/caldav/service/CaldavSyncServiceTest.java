@@ -3512,6 +3512,66 @@ public class CaldavSyncServiceTest {
   }
 
   /**
+   * A burst asked for while a space invitation writes one member's copy to the
+   * account is queued, not dropped (EXO-91031).
+   *
+   * <p>
+   * The write is made by a task on the outward thread, the one the burst is
+   * queued on, so the burst runs once that task has ended and never alongside
+   * the write. Turned away, a connection or a <i>Synchronise now</i> would lose
+   * its owed rewrites and removals, its seeding and its verification until the
+   * sweep finds the account due.
+   */
+  @Test
+  void aBurstAskedForDuringAMembersWriteIsQueuedAndNotDropped() throws Exception {
+    RecordingExecutor burst = recordSeeding();
+    givenServerCalendars();
+    assertTrue(caldavOutboundWork.claimMemberWrite(USER));
+
+    service.syncNowAndWait(USER, LOGIN);
+
+    assertEquals(1, burst.queued(), "the burst is queued behind the write rather than dropped");
+    verify(caldavEventPropagationService, never()).retryOwedPushes(anyLong());
+
+    caldavOutboundWork.releaseMemberWrite(USER);
+    establishAContainer();
+    burst.runQueued();
+    verify(caldavEventPropagationService).retryOwedPushes(USER);
+    verify(caldavPendingInvitationService).pushUpcomingMeetings(USER, LOGIN);
+    verify(caldavMirrorVerificationService).verify(USER, LOGIN);
+  }
+
+  /**
+   * A sweep still leaves alone an account a space invitation is writing one
+   * member's copy to (EXO-91031), and does its outward work once the write has
+   * given the account back.
+   *
+   * <p>
+   * The sweep runs on its own job's thread, beside the outward thread, so
+   * doing its outward work during the write would be two writers on one
+   * account, each reading "no copy yet".
+   */
+  @Test
+  void aSweepLeavesAloneAnAccountAMembersWriteHolds() throws Exception {
+    givenServerCalendars();
+    assertTrue(caldavOutboundWork.claimMemberWrite(USER));
+
+    service.syncInBackground(USER, LOGIN);
+
+    // That the sweep's pass ran, so the absences below are its choice.
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+    verify(caldavEventPropagationService, never()).retryOwedPushes(anyLong());
+    verify(caldavPendingInvitationService, never()).pushUpcomingMeetings(anyLong(), anyString());
+    verify(caldavMirrorVerificationService, never()).verify(anyLong(), anyString());
+
+    caldavOutboundWork.releaseMemberWrite(USER);
+    service.syncInBackground(USER, LOGIN);
+
+    verify(caldavEventPropagationService).retryOwedPushes(USER);
+    verify(caldavMirrorVerificationService).verify(USER, LOGIN);
+  }
+
+  /**
    * Opening the agenda seeds nothing.
    *
    * <p>

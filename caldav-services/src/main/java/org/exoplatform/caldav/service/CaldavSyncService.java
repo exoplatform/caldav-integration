@@ -614,11 +614,11 @@ public class CaldavSyncService {
     if (!connected(caldavConnectorStorage.getCaldavSetting(userIdentityId))) {
       return;
     }
-    if (!caldavOutboundWork.claim(userIdentityId)) {
-      // Already queued, already running, being done right now by a sweep, or
-      // held for one write by the copy of a meeting inviting one of the
-      // user's spaces, in which case a later sweep run that finds the account
-      // due brings it up to date.
+    if (!caldavOutboundWork.claimForQueue(userIdentityId)) {
+      // Already queued, already running, or being done right now by a sweep.
+      // A write held by the copy of a meeting inviting one of the user's
+      // spaces does not turn the burst away: that write runs on the thread
+      // the burst is queued on, so the burst runs after it.
       // Pressing the button twice is one burst, not two: the second would find
       // every copy of the first already mapped and write nothing, having asked
       // the server about all of them first — and would list every collection a
@@ -1200,16 +1200,20 @@ public class CaldavSyncService {
    * would have done is exactly what is being done.
    *
    * <p>
-   * The key is also held, for the length of one write, by the copy of a
-   * meeting that invites a space the user is a member of (EXO-91031). A sweep
-   * arriving during that write leaves all three of this account's outward
-   * phases — the owed rewrites and removals it would have retried, the
-   * upcoming meetings it would have seeded, the verification of the copies —
-   * to a later run that finds the account due: the next one for an account
-   * holding a meeting-copies pair, which no sync stamps, otherwise once
-   * {@code staleMinutes} have passed. An owed removal, the copy of an invitee
-   * taken off a meeting among them, waits that run too: an accepted delay of
-   * one run, for a window of one write.
+   * The account is also held, for the length of one write, by the copy of a
+   * meeting that invites a space the user is a member of (EXO-91031), under a
+   * claim of its own ({@link CaldavOutboundWork#claimMemberWrite}) that only
+   * this pass honours. A sweep arriving during that write leaves all three of
+   * this account's outward phases — the owed rewrites and removals it would
+   * have retried, the upcoming meetings it would have seeded, the verification
+   * of the copies — to a later run that finds the account due: the next one
+   * for an account holding a meeting-copies pair, which no sync stamps,
+   * otherwise once {@code staleMinutes} have passed. An owed removal, the copy
+   * of an invitee taken off a meeting among them, waits that run too: an
+   * accepted delay of one run, for a window of one write. A burst asked for
+   * during that write is not turned away
+   * ({@link CaldavOutboundWork#claimForQueue}): it is queued on the thread the
+   * write is made from, and runs once the write's task has ended.
    *
    * <p>
    * Nothing waits, here or anywhere else on this key. A sweep that finds an

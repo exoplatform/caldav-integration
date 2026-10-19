@@ -1891,7 +1891,7 @@ public class CaldavEventPropagationServiceTest {
     verify(caldavPendingInvitationService, never()).seedMeeting(eq(AUTHOR), anyString(), anyLong());
     verify(caldavPendingInvitationService, times(1)).seedMeeting(ALICE, login(ALICE), EVENT);
     // A non-member's account is never claimed: a claim defers a sweep of it.
-    verify(caldavOutboundWork, never()).claim(DAVE);
+    verify(caldavOutboundWork, never()).claimMemberWrite(DAVE);
   }
 
   /**
@@ -2015,7 +2015,7 @@ public class CaldavEventPropagationServiceTest {
     }
 
     verify(caldavPendingInvitationService, never()).seedMeeting(DAVE, login(DAVE), EVENT);
-    verify(caldavOutboundWork, never()).claim(DAVE);
+    verify(caldavOutboundWork, never()).claimMemberWrite(DAVE);
     assertEquals(2, warned.size(), "one line per member who met the silence, none for the members left out");
     assertTrue(warned.stream().allMatch(recorded -> recorded.getThrowableProxy() == null),
                "one trace per member would bury the log");
@@ -2055,7 +2055,7 @@ public class CaldavEventPropagationServiceTest {
     givenMembersOn(invited, 7L, DAVE, BOB, CAROL);
     when(caldavPendingInvitationService.seedMeeting(anyLong(), anyString(), eq(EVENT)))
                                                                                  .thenThrow(new CalDavUnreachableException("PROPFIND timed out"));
-    doReturn(false).doCallRealMethod().when(caldavOutboundWork).claim(DAVE);
+    doReturn(false).doCallRealMethod().when(caldavOutboundWork).claimMemberWrite(DAVE);
 
     assertEquals(0, service.seedSpaceMembers(EVENT, Set.of()));
 
@@ -2130,7 +2130,7 @@ public class CaldavEventPropagationServiceTest {
     }
 
     verify(caldavPendingInvitationService, never()).seedMeeting(anyLong(), anyString(), anyLong());
-    verify(caldavOutboundWork).release(BOB);
+    verify(caldavOutboundWork).releaseMemberWrite(BOB);
   }
 
   /**
@@ -2183,7 +2183,7 @@ public class CaldavEventPropagationServiceTest {
     givenAccounts(0L, BOB);
     when(spaceService.isMember(invited, login(BOB))).thenReturn(true);
     when(caldavPendingInvitationService.seedMeeting(BOB, login(BOB), EVENT)).thenReturn(true);
-    doReturn(false).doCallRealMethod().when(caldavOutboundWork).claim(BOB);
+    doReturn(false).doCallRealMethod().when(caldavOutboundWork).claimMemberWrite(BOB);
 
     assertEquals(1, service.seedSpaceMembers(EVENT, Set.of()));
 
