@@ -786,11 +786,12 @@ public class CaldavEventPropagationService {
    * <p>
    * A member's account is claimed for the write
    * ({@link CaldavOutboundWork#claimMemberWrite}).
-   * One already claimed is being written to by a sweep or a burst, and is
-   * tried once more after the walk, which reaches a sweep that has finished by
-   * then. One still claimed — always so for a burst, which runs on the same
-   * thread after this task — is left to that pass and to the sweep, which seed
-   * the meeting once it is within their window ({@code seedDays}).
+   * One already claimed is held by a sweep at work or by a burst queued
+   * behind this task, and is tried once more after the walk, which reaches a
+   * sweep that has finished by then. One still claimed — always so for a
+   * burst, which runs on the same thread after this task — is left to that
+   * pass and to the sweep, which seed the meeting once it is within their
+   * window ({@code seedDays}).
    *
    * <p>
    * Membership is what the seeding pass reaches a member through: it lists a
