@@ -68,6 +68,7 @@ import java.net.UnknownHostException;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.springframework.test.util.ReflectionTestUtils;
