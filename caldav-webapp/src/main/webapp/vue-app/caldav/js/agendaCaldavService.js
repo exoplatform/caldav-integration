@@ -840,10 +840,13 @@ export const getCalendarSyncStates = () => {
  * Reads back the provider configuration stored for a declared server.
  *
  * Secret values are never in the answer: the endpoint omits them, so a secret
- * field opens empty and an unrelated save leaves the stored one untouched.
+ * field opens empty and an unrelated save leaves the stored one untouched. It
+ * says instead which secret fields have a value stored.
  *
  * @param {number} serverId technical id of the registration
- * @returns {Promise<Object>} the stored values, keyed by descriptor field
+ * @returns {Promise<Object>} {values, storedSecretKeys}: the stored non-secret
+ *          values keyed by descriptor field, and the keys of the stored secret
+ *          fields
  */
 export const getCaldavServerProviderConfig = (serverId) => {
   return fetch(`/caldav/rest/servers/${serverId}/provider-config`, {

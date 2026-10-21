@@ -68,11 +68,13 @@ import java.net.UnknownHostException;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CaldavServer;
+import org.exoplatform.caldav.model.CaldavServerProviderConfig;
 import org.exoplatform.caldav.model.ServerQuirk;
 import org.exoplatform.caldav.model.ServerQuirkEffect;
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
@@ -89,6 +91,7 @@ import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.caldav.client.bluemind.BlueMindServerFlavour;
+import org.exoplatform.caldav.client.bluemind.BlueMindServerSeed;
 import org.exoplatform.container.PortalContainer;
 import org.exoplatform.container.RootContainer.PortalContainerInitTask;
 import org.exoplatform.container.component.RequestLifeCycle;
@@ -234,6 +237,11 @@ public class CaldavServerServiceTest {
     ReflectionTestUtils.setField(caldavServerService,
                                  "calendarServerFlavourRegistry",
                                  CalendarServerFlavourRegistry.of(List.of(new BlueMindServerFlavour(blueMindSessionService))));
+    // So is the BlueMind row a fresh install receives, since EXO-90737: the
+    // seeding pins below measure the built-in seed, as installed today.
+    ReflectionTestUtils.setField(caldavServerService,
+                                 "calendarServerSeedRegistry",
+                                 CalendarServerSeedRegistry.of(List.of(new BlueMindServerSeed())));
   }
 
   /**
@@ -1977,16 +1985,35 @@ public class CaldavServerServiceTest {
 
   /**
    * What the drawer reads back: everything but the secret, on a path that never
-   * decrypts one.
+   * decrypts one, and which secrets are stored - so the drawer asks for a missing
+   * one instead of guessing it is there because the server exists.
    */
   @Test
   public void shouldReadTheProviderConfigurationWithoutTheSecret() throws Exception {
     withUser(ADMIN_USER, true);
     when(caldavServerStorage.getServerById(7L)).thenReturn(sudoServer(7L, null));
     when(providerConfigStorage.readWithoutSecrets(any())).thenReturn(Map.of("technicalLogin", "svc"));
+    when(providerConfigStorage.readStoredSecretKeys(argThat(context -> context.getConnectorId() == 7L
+        && "bluemind-sudo".equals(context.getConnectorCredentialsProviderName())))).thenReturn(Set.of("technicalSecret"));
 
-    assertEquals(Map.of("technicalLogin", "svc"), caldavServerService.getProviderConfig(7L, ADMIN_USER));
+    assertEquals(new CaldavServerProviderConfig(Map.of("technicalLogin", "svc"), Set.of("technicalSecret")),
+                 caldavServerService.getProviderConfig(7L, ADMIN_USER));
     verify(providerConfigStorage, never()).readDecrypted(any());
+  }
+
+  /**
+   * A server with no provider has nothing stored for any: an empty answer, and
+   * no read for a provider named by nobody.
+   */
+  @Test
+  public void shouldAnswerAnEmptyProviderConfigurationForAServerWithNoProvider() throws Exception {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = sudoServer(7L, null);
+    stored.setAuthProviderName(null);
+    when(caldavServerStorage.getServerById(7L)).thenReturn(stored);
+
+    assertEquals(CaldavServerProviderConfig.EMPTY, caldavServerService.getProviderConfig(7L, ADMIN_USER));
+    verify(providerConfigStorage, never()).readStoredSecretKeys(any());
   }
 
   /** Reading a technical account is an administration act. */
