@@ -28,9 +28,9 @@ import org.exoplatform.caldav.model.WriteChannel;
  * row an administrator edits into their own server.
  *
  * <p>
- * <b>When it is read.</b> While the host's context finishes, on every boot,
- * before the contributor's own context: a seed holds values only, and no
- * collaborator.
+ * <b>When it is read.</b> While the host's context finishes, on every boot: a
+ * contributor whose web application starts after the host's has not finished
+ * its own context yet, so a seed holds values only, and no collaborator.
  * <p>
  * <b>How it is found.</b> {@code CalendarServerSeedRegistry} collects every
  * bean implementing this interface, across web applications: a contributor
