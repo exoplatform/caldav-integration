@@ -41,6 +41,8 @@ import java.util.List;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.function.BooleanSupplier;
 
+import ch.qos.logback.classic.Level;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -56,6 +58,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.exoplatform.caldav.LogRecorder;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.constant.ManagedEnrollmentOutcome;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.model.CaldavProbeResult;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
@@ -334,6 +337,28 @@ class CaldavManagedEnrollmentServiceTest {
     doThrow(refusal).when(caldavRelayService).connectThroughProvider(eq(7L), eq(USER), eq(true), any());
 
     assertEquals(ManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
+  }
+
+  /**
+   * A designated server whose credentials provider is not installed - an add-on's,
+   * not installed or not started yet - leaves the user unattached as a refusal does,
+   * but says nothing at INFO or above and carries no stack: it is met at every login
+   * of every governed user, and the resolver has said it once for the provider's name.
+   */
+  @Test
+  void leavesUnattachedQuietlyAUserWhoseServersProviderIsNotInstalled() throws Exception {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
+    configured(false);
+    doThrow(CalDavProviderMissingException.named("bluemind-sudo")).when(caldavRelayService)
+                                                                 .connectThroughProvider(eq(7L), eq(USER), eq(true), any());
+
+    try (LogRecorder log = new LogRecorder(CaldavManagedEnrollmentService.class)) {
+      assertEquals(ManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
+
+      assertTrue(log.events().stream().noneMatch(event -> event.getLevel().isGreaterOrEqual(Level.INFO)),
+                 log.events().toString());
+      assertTrue(log.events().stream().noneMatch(event -> event.getThrowableProxy() != null), log.events().toString());
+    }
   }
 
   /** The refusals the connect throws before probing, one per type the catch names. */

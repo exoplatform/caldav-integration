@@ -154,7 +154,7 @@ public class CaldavPendingSubscriptionStorage {
   @Transactional
   public void settledIfStillAsking(long userIdentityId, long serverId, String containerUid, PendingSubscriptionKind kind) {
     if (pendingSubscriptionDAO.deleteAsking(userIdentityId, serverId, containerUid, kind) == 0) {
-      LOG.debug("A drained BlueMind {} landed for user {} and container {} on server {}, but no row asks for it any more;"
+      LOG.debug("A drained calendar {} landed for user {} and container {} on server {}, but no row asks for it any more;"
           + " whatever stands is left for the next drain", kind, userIdentityId, containerUid, serverId);
     }
   }
@@ -198,14 +198,16 @@ public class CaldavPendingSubscriptionStorage {
   }
 
   /**
-   * What is owed to anybody and still worth attempting, oldest first.
+   * One page of what is owed to anybody and still worth attempting, oldest first:
+   * what lets a drain look past rows it has to leave where they are.
    *
    * @param maxAttempts how many refusals are argued with before stopping
-   * @param limit how many to take in one pass
-   * @return the obligations to attempt now, possibly none
+   * @param page the zero-based page, in the same oldest-first order
+   * @param limit the page size
+   * @return the obligations of that page, possibly none
    */
-  public List<PendingSubscription> attemptable(int maxAttempts, int limit) {
-    return pendingSubscriptionDAO.findAttemptable(maxAttempts, oldestFirst(limit)).stream().map(this::fromEntity).toList();
+  public List<PendingSubscription> attemptable(int maxAttempts, int page, int limit) {
+    return pendingSubscriptionDAO.findAttemptable(maxAttempts, oldestFirst(page, limit)).stream().map(this::fromEntity).toList();
   }
 
   /**
@@ -216,8 +218,8 @@ public class CaldavPendingSubscriptionStorage {
    * @param limit how many to take in one pass
    * @return the obligations to attempt now, possibly none
    */
-  public List<PendingSubscription> attemptable(long userIdentityId, int maxAttempts, int limit) {
-    return pendingSubscriptionDAO.findAttemptableOf(userIdentityId, maxAttempts, oldestFirst(limit))
+  public List<PendingSubscription> attemptableOf(long userIdentityId, int maxAttempts, int limit) {
+    return pendingSubscriptionDAO.findAttemptableOf(userIdentityId, maxAttempts, oldestFirst(0, limit))
                                  .stream()
                                  .map(this::fromEntity)
                                  .toList();
@@ -226,11 +228,12 @@ public class CaldavPendingSubscriptionStorage {
   /**
    * A page in insertion order: a backlog is drained, not shuffled.
    *
+   * @param page the zero-based page
    * @param limit the page size
    * @return the page request
    */
-  private static Pageable oldestFirst(int limit) {
-    return PageRequest.of(0, limit, Sort.by(Sort.Direction.ASC, "id"));
+  private static Pageable oldestFirst(int page, int limit) {
+    return PageRequest.of(page, limit, Sort.by(Sort.Direction.ASC, "id"));
   }
 
   /**

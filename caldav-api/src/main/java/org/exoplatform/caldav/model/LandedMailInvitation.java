@@ -16,22 +16,18 @@
  */
 package org.exoplatform.caldav.model;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
-import org.junit.jupiter.api.Test;
-
-class BlueMindLoginTest {
-
-  /**
-   * A login logged or concatenated by mistake names who the session belongs
-   * to and never its key: the key opens the account until it expires.
-   */
-  @Test
-  void itsTextNamesTheUserAndNeverTheKey() {
-    String text = String.valueOf(new BlueMindLogin("https://bm.example.com", "bm-session-secret-key", "9F3C1A20", "bm.example.com"));
-
-    assertFalse(text.contains("bm-session-secret-key"), text);
-    assertTrue(text.contains("9F3C1A20") && text.contains("bm.example.com"), text);
-  }
+/**
+ * What this add-on did with a mail invitation in the user's calendar
+ * (EXO-90848).
+ *
+ * @param eventId the agenda event the invitation stands for
+ * @param link where the event is read in the platform, built from the
+ *          platform's own domain; null when removed, or when no page could be
+ *          named
+ * @param removed true when the event was removed — its organiser cancelled it
+ *          — rather than put there
+ * @param alreadyHeld true when nothing was written because the event is one
+ *          of this deployment's own meetings, in agenda already
+ */
+public record LandedMailInvitation(long eventId, String link, boolean removed, boolean alreadyHeld) {
 }

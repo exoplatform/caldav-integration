@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.longThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.atLeastOnce;
@@ -42,6 +43,7 @@ import static org.mockito.Mockito.when;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.Date;
 import java.util.Arrays;
 import java.util.List;
@@ -73,7 +75,7 @@ import org.mockito.ArgumentCaptor;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 
-import org.exoplatform.caldav.client.bluemind.BlueMindSubscriptionChannel;
+import org.exoplatform.caldav.plugin.ContainerNamingSubscriptionChannel;
 import org.exoplatform.caldav.LogRecorder;
 import org.mockito.InOrder;
 import org.mockito.InjectMocks;
@@ -82,8 +84,6 @@ import org.mockito.MockedStatic;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
 import org.exoplatform.container.ExoContainer;
 import org.exoplatform.container.ExoContainerContext;
 import org.exoplatform.social.core.identity.model.Identity;
@@ -94,6 +94,7 @@ import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarHome;
@@ -121,6 +122,9 @@ public class CaldavSyncServiceTest {
   private static final long          USER   = 42L;
 
   private static final long          SERVER = 7L;
+
+  /** A second server, whose accounts wait longer than the one on {@link #SERVER}. */
+  private static final long          OTHER_SERVER = 9L;
 
   private static final String        LOGIN  = "john";
 
@@ -217,9 +221,9 @@ public class CaldavSyncServiceTest {
 
   @BeforeEach
   public void connectAnAccount() {
-    // BlueMind's subscription channel is a contribution, registered here as
-    // the platform registers it.
-    ReflectionTestUtils.setField(caldavOutboundService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new BlueMindSubscriptionChannel(null))));
+    // A server-specific subscription channel is a contribution, registered here
+    // as the platform registers one.
+    ReflectionTestUtils.setField(caldavOutboundService, "calendarSubscriptionChannelRegistry", CalendarSubscriptionChannelRegistry.of(List.of(new ContainerNamingSubscriptionChannel(null))));
 
     // The addon's single definition of "connected" now lives in CaldavServerService.
     // Reproducing here the rule these tests were written against - a username and a
@@ -2585,11 +2589,231 @@ public class CaldavSyncServiceTest {
    */
   @Test
   public void aSweepWithNothingDueDoesNoWork() {
-    when(caldavSyncStorage.getDueAccounts(eq(CalendarSyncStatus.ACTIVE), any(), anyInt(), anyInt()))
-                                                                                                .thenReturn(Page.empty());
+    when(caldavSyncStorage.getDueAccounts(eq(CalendarSyncStatus.ACTIVE), any(), any(), any(), anyInt()))
+                                                                                                .thenReturn(List.of());
 
     assertEquals(0, service.sweepDueAccounts(30L, 50));
     verify(caldavConnectorStorage, never()).getCaldavSetting(anyLong());
+  }
+
+  /**
+   * Sixty accounts on a server whose credentials provider is not installed,
+   * all waiting longer than a healthy account, no longer take the batch from
+   * it (EXO-90803).
+   *
+   * <p>
+   * Those accounts never stamp {@code lastSyncEnd}, so they stay at the head
+   * of the due queue: read as one batch of fifty, they used to fill it, and
+   * the healthy account behind them was never swept in the background. The
+   * server is recognised from its registration before any pass, its accounts
+   * take no place in the batch, and the head is read again without it.
+   */
+  @Test
+  public void accountsOnAServerMissingItsProviderDoNotStarveTheOthers() {
+    givenDueQueue(waitingAccounts(60, OTHER_SERVER), USER);
+    when(caldavServerService.missingProviderOf(OTHER_SERVER)).thenReturn("bluemind-sudo");
+    givenServerCalendars();
+    givenNoKnownPairs();
+
+    assertEquals(1, service.sweepDueAccounts(30L, 50));
+
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+    verify(caldavOutboundService, never()).bindPersonalCalendars(longThat(id -> id != USER), anyString());
+    verify(caldavServerService, times(1)).missingProviderOf(OTHER_SERVER);
+    ArgumentCaptor<Collection<Long>> excluded = ArgumentCaptor.captor();
+    ArgumentCaptor<Collection<Long>> visited = ArgumentCaptor.captor();
+    verify(caldavSyncStorage, times(2)).getDueAccounts(eq(CalendarSyncStatus.ACTIVE),
+                                                       any(),
+                                                       excluded.capture(),
+                                                       visited.capture(),
+                                                       anyInt());
+    assertEquals(Set.of(), Set.copyOf(excluded.getAllValues().get(0)), "nothing is known to wait before the first read");
+    assertEquals(Set.of(OTHER_SERVER), Set.copyOf(excluded.getAllValues().get(1)), "the second read leaves the server out");
+    // The run's one set of served accounts, read once the run is over: the
+    // skipped accounts are left out by their server, not one by one, so the
+    // list the query binds stays within one batch.
+    assertEquals(Set.of(USER), Set.copyOf(visited.getValue()), "only the served account is excluded by its id");
+  }
+
+  /**
+   * The server is left out of the reads, not read past one account at a
+   * time: with a batch of two, sixty waiting accounts would take thirty
+   * reads, more than one run makes, and the healthy account would still never
+   * be reached.
+   */
+  @Test
+  public void aServerMissingItsProviderIsLeftOutOfTheReadsRatherThanReadPast() {
+    givenDueQueue(waitingAccounts(60, OTHER_SERVER), USER);
+    when(caldavServerService.missingProviderOf(OTHER_SERVER)).thenReturn("bluemind-sudo");
+    givenServerCalendars();
+    givenNoKnownPairs();
+
+    assertEquals(1, service.sweepDueAccounts(30L, 2));
+
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+    verify(caldavSyncStorage, times(2)).getDueAccounts(eq(CalendarSyncStatus.ACTIVE), any(), any(), any(), anyInt());
+  }
+
+  /**
+   * An account on the legacy property, whose stored setting names no server,
+   * is checked against the seed registration's provider: the key zero the
+   * bindings carry is never sent to the registry as a server id.
+   */
+  @Test
+  public void aLegacyAccountIsCheckedAgainstTheSeedRegistration() {
+    long legacy = 500L;
+    CaldavUserSetting legacySetting = settings();
+    legacySetting.setServerId(null);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(legacy)).thenReturn(legacySetting);
+    givenDueQueue(List.of(new long[] { legacy, 0L }), USER);
+    when(caldavServerService.missingProviderOf(null)).thenReturn("bluemind-sudo");
+    givenServerCalendars();
+    givenNoKnownPairs();
+
+    assertEquals(1, service.sweepDueAccounts(30L, 1));
+
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+    verify(caldavOutboundService, never()).bindPersonalCalendars(eq(legacy), anyString());
+  }
+
+  /**
+   * Sixty accounts on a server that does not answer cost two passes, not the
+   * batch (EXO-90803).
+   *
+   * <p>
+   * An unreachable server stops a pass before anything is stamped, so its
+   * accounts stay at the head of the due queue exactly as those of a server
+   * missing its provider do. The passes of its first two accounts are what
+   * find the silence — and, on a later run, what find the server back — and
+   * the rest of its accounts are left for a later run.
+   */
+  @Test
+  public void accountsOnAnUnreachableServerCostTwoPassesAndDoNotStarveTheOthers() {
+    givenDueQueue(waitingAccounts(60, OTHER_SERVER), USER);
+    doThrow(new CalDavUnreachableException("The calendar server answered 502 for PROPFIND"))
+                                                                                          .when(caldavOutboundService)
+                                                                                          .bindPersonalCalendars(longThat(id -> id != USER),
+                                                                                                                 anyString());
+    givenServerCalendars();
+    givenNoKnownPairs();
+
+    assertEquals(3, service.sweepDueAccounts(30L, 50));
+
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+    verify(caldavOutboundService, times(2)).bindPersonalCalendars(longThat(id -> id != USER), anyString());
+  }
+
+  /**
+   * Passes that find the provider missing although the registration said it
+   * was installed — it went away between the two — leave the server's other
+   * accounts for a later run, as an unreachable server does.
+   */
+  @Test
+  public void aProviderFoundMissingByAPassLeavesTheServerForALaterRun() {
+    givenDueQueue(waitingAccounts(60, OTHER_SERVER), USER);
+    doThrow(new CalDavProviderMissingException("The credentials provider bluemind-sudo is not installed"))
+                                                                                                         .when(caldavOutboundService)
+                                                                                                         .bindPersonalCalendars(longThat(id -> id != USER),
+                                                                                                                                anyString());
+    givenServerCalendars();
+    givenNoKnownPairs();
+
+    assertEquals(3, service.sweepDueAccounts(30L, 50));
+
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+    verify(caldavOutboundService, times(2)).bindPersonalCalendars(longThat(id -> id != USER), anyString());
+  }
+
+  /**
+   * One account whose own pass meets an unreachable server, while the rest of
+   * that server answers — a gateway timing out on one large home — does not
+   * hold back the other accounts of its server, although it is always that
+   * server's oldest.
+   */
+  @Test
+  public void oneUnreachableAccountDoesNotHoldBackItsServer() {
+    List<long[]> ahead = waitingAccounts(2, SERVER);
+    givenDueQueue(ahead, USER);
+    long failing = ahead.get(0)[0];
+    long healthyNeighbour = ahead.get(1)[0];
+    doThrow(new CalDavUnreachableException("The calendar server answered 504 for PROPFIND"))
+                                                                                          .when(caldavOutboundService)
+                                                                                          .bindPersonalCalendars(eq(failing), anyString());
+    givenServerCalendars();
+    givenNoKnownPairs();
+
+    assertEquals(3, service.sweepDueAccounts(30L, 50));
+
+    verify(caldavOutboundService).bindPersonalCalendars(healthyNeighbour, LOGIN);
+    verify(caldavOutboundService).bindPersonalCalendars(USER, LOGIN);
+  }
+
+  /**
+   * However the reads answer, one run reads the head of the queue a bounded
+   * number of times: a queue that keeps handing back accounts the run leaves
+   * out cannot hold the scheduler thread.
+   */
+  @Test
+  public void oneRunReadsTheDueAccountsABoundedNumberOfTimes() {
+    CaldavUserSetting waiting = settings();
+    waiting.setServerId(OTHER_SERVER);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(anyLong())).thenReturn(waiting);
+    when(caldavSyncStorage.getDueAccounts(eq(CalendarSyncStatus.ACTIVE), any(), any(), any(), anyInt()))
+                                                                                                     .thenReturn(List.of(1000L));
+    when(caldavServerService.missingProviderOf(OTHER_SERVER)).thenReturn("bluemind-sudo");
+
+    assertEquals(0, service.sweepDueAccounts(30L, 1));
+
+    verify(caldavSyncStorage, times(20)).getDueAccounts(eq(CalendarSyncStatus.ACTIVE), any(), any(), any(), anyInt());
+  }
+
+  /**
+   * Accounts of one server, each with its own stored setting naming that
+   * server, in the order the due queue holds them.
+   *
+   * @param count how many
+   * @param serverId the server they are on
+   * @return the queue rows, user then server
+   */
+  private List<long[]> waitingAccounts(int count, long serverId) {
+    List<long[]> rows = new ArrayList<>();
+    for (int i = 0; i < count; i++) {
+      long userIdentityId = 1000L + i;
+      CaldavUserSetting setting = settings();
+      setting.setServerId(serverId);
+      lenient().when(caldavConnectorStorage.getCaldavSetting(userIdentityId)).thenReturn(setting);
+      rows.add(new long[] { userIdentityId, serverId });
+    }
+    return rows;
+  }
+
+  /**
+   * Declares the due queue as the storage reads it: the given rows first, the
+   * healthy account on {@link #SERVER} last, each read answering the head of
+   * the queue with the excluded servers and accounts left out, as the query
+   * does on its engine ({@code CaldavSyncDAOQueryTest} runs it there).
+   *
+   * @param ahead the rows waiting longer than the healthy account, user then
+   *          server
+   * @param healthy the account behind them, on {@link #SERVER}
+   */
+  private void givenDueQueue(List<long[]> ahead, long healthy) {
+    List<long[]> queue = new ArrayList<>(ahead);
+    queue.add(new long[] { healthy, SERVER });
+    when(caldavSyncStorage.getDueAccounts(eq(CalendarSyncStatus.ACTIVE), any(), any(), any(), anyInt())).thenAnswer(call -> {
+      Collection<Long> excludedServers = call.getArgument(2);
+      Collection<Long> excludedAccounts = call.getArgument(3);
+      int limit = call.getArgument(4);
+      return queue.stream()
+                  .filter(row -> !excludedServers.contains(row[1]) && !excludedAccounts.contains(row[0]))
+                  .map(row -> row[0])
+                  .distinct()
+                  .limit(limit)
+                  .toList();
+    });
+    Identity identity = new Identity(String.valueOf(USER));
+    identity.setRemoteId(LOGIN);
+    lenient().when(identityManager.getIdentity(anyString())).thenReturn(identity);
   }
 
   /**
@@ -2605,8 +2829,8 @@ public class CaldavSyncServiceTest {
                                 .map(CalendarSync::getUserIdentityId)
                                 .distinct()
                                 .toList();
-    when(caldavSyncStorage.getDueAccounts(eq(CalendarSyncStatus.ACTIVE), any(), anyInt(), anyInt()))
-                                                                                                   .thenReturn(new PageImpl<>(accounts));
+    when(caldavSyncStorage.getDueAccounts(eq(CalendarSyncStatus.ACTIVE), any(), any(), any(), anyInt()))
+                                                                                                   .thenReturn(accounts);
     Identity identity = new Identity(String.valueOf(USER));
     identity.setRemoteId(LOGIN);
     lenient().when(identityManager.getIdentity(anyString())).thenReturn(identity);
@@ -2927,6 +3151,70 @@ public class CaldavSyncServiceTest {
     }
 
     assertTrue(said.isEmpty(), "nothing came back that had been seen to go: " + said);
+  }
+
+  /**
+   * A server whose credentials provider is not installed — an add-on's, while
+   * the add-on is not, or has not started yet — stops the pass where its
+   * endpoint is minted, quietly: the resolver has said it once for the
+   * provider's name, so the pass says nothing at WARN and carries no stack,
+   * however many passes meet it. Nothing is recorded either — no binding is
+   * paused, no unreachable spell is begun, no throttle is stamped — so the
+   * first throttled pass after the provider appears runs in full.
+   */
+  @Test
+  public void aMissingCredentialsProviderStopsEveryPassQuietlyAndRecordsNothing() {
+    givenServerCalendars();
+    givenNoKnownPairs();
+    doThrow(CalDavProviderMissingException.named("bluemind-sudo"))
+        .doThrow(CalDavProviderMissingException.named("bluemind-sudo"))
+        .doReturn(List.of())
+        .when(caldavOutboundService)
+        .bindPersonalCalendars(USER, LOGIN);
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      service.syncIfDue(USER, LOGIN);
+      service.syncIfDue(USER, LOGIN);
+      verify(calDavClient, never()).discoverHome(any());
+      // The provider is installed now: the very next throttled pass runs.
+      service.syncIfDue(USER, LOGIN);
+      // And that pass, being the first to succeed, is the first the throttle
+      // counts: the one after it waits.
+      service.syncIfDue(USER, LOGIN);
+      said = log.events();
+    }
+
+    assertTrue(said.stream().noneMatch(event -> event.getLevel().isGreaterOrEqual(Level.WARN)), said.toString());
+    assertTrue(said.stream().noneMatch(event -> event.getThrowableProxy() != null), "said without a stack: " + said);
+    assertTrue(said.stream().noneMatch(event -> event.getFormattedMessage().contains("is answering again")),
+               "no unreachable spell was begun: " + said);
+    verify(caldavSyncStorage, never()).savePair(any());
+    verify(caldavOutboundService, times(3)).bindPersonalCalendars(USER, LOGIN);
+    verify(calDavClient).discoverHome(endpoint);
+  }
+
+  /**
+   * Connecting an account on a server whose credentials provider is not
+   * installed asks nothing more of the server once the first step met that
+   * absence, and says nothing at WARN: the resolver has said it once for the
+   * provider's name.
+   */
+  @Test
+  public void aMissingCredentialsProviderOnConnectIsNotAskedASecondTime() {
+    givenConnectedIdentity();
+    doThrow(CalDavProviderMissingException.named("bluemind-sudo"))
+        .when(caldavOutboundService)
+        .bindPersonalCalendars(USER, LOGIN);
+
+    List<ILoggingEvent> said;
+    try (LogRecorder log = new LogRecorder(CaldavSyncService.class)) {
+      assertDoesNotThrow(() -> service.establishDestinations(USER));
+      said = log.events();
+    }
+
+    verify(caldavPushService, never()).ensureMirror(anyLong(), anyString());
+    assertTrue(said.stream().noneMatch(event -> event.getLevel().isGreaterOrEqual(Level.WARN)), said.toString());
   }
 
   /**

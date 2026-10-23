@@ -43,6 +43,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -72,6 +73,9 @@ import java.util.Set;
 
 import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.exoplatform.caldav.plugin.CalendarServerFlavour;
+import org.exoplatform.caldav.plugin.TestServerFlavour;
+import org.exoplatform.caldav.plugin.TestServerSeed;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavServerProviderConfig;
@@ -90,8 +94,6 @@ import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.file.model.FileItem;
 import org.exoplatform.commons.file.services.FileService;
 import org.exoplatform.container.ExoContainerContext;
-import org.exoplatform.caldav.client.bluemind.BlueMindServerFlavour;
-import org.exoplatform.caldav.client.bluemind.BlueMindServerSeed;
 import org.exoplatform.container.PortalContainer;
 import org.exoplatform.container.RootContainer.PortalContainerInitTask;
 import org.exoplatform.container.component.RequestLifeCycle;
@@ -168,11 +170,11 @@ public class CaldavServerServiceTest {
 
 
   /**
-   * The BlueMind sessions kept per account (EXO-90397). Optional in
-   * production for the same reason as the resolver above.
+   * The flavour of the recorded transcripts' server, contributed as an
+   * add-on contributes one, spied on for the sessions it is asked to drop
+   * (EXO-90397).
    */
-  @Mock
-  private BlueMindSessionService   blueMindSessionService;
+  private CalendarServerFlavour    blueMindFlavour;
 
   /**
    * The address check, REAL rather than mocked, so these tests keep measuring
@@ -232,16 +234,18 @@ public class CaldavServerServiceTest {
     lenient().when(caldavCredentialsResolver.knowsProvider(anyString())).thenReturn(true);
     previousUrlProperty = System.getProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY);
     previousEnabledProperty = System.getProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY);
-    // BlueMind is a contributed flavour, registered here as the platform
-    // registers it, over this class's session engine mock.
+    // A server-specific flavour is a contribution, registered here as the
+    // platform registers one: it recognises the BlueMind-named rows and
+    // allows the import channel.
+    blueMindFlavour = spy(new TestServerFlavour("bluemind", "bluemind", Set.of(WriteChannel.BLUEMIND_IMPORT)));
     ReflectionTestUtils.setField(caldavServerService,
                                  "calendarServerFlavourRegistry",
-                                 CalendarServerFlavourRegistry.of(List.of(new BlueMindServerFlavour(blueMindSessionService))));
-    // So is the BlueMind row a fresh install receives, since EXO-90737: the
-    // seeding pins below measure the built-in seed, as installed today.
+                                 CalendarServerFlavourRegistry.of(List.of(blueMindFlavour)));
+    // So is the product row a fresh install receives, since EXO-90737: the
+    // seeding pins below measure a contributed seed stating every field.
     ReflectionTestUtils.setField(caldavServerService,
                                  "calendarServerSeedRegistry",
-                                 CalendarServerSeedRegistry.of(List.of(new BlueMindServerSeed())));
+                                 CalendarServerSeedRegistry.of(List.of(TestServerSeed.product())));
   }
 
   /**
@@ -540,7 +544,7 @@ public class CaldavServerServiceTest {
 
     assertDoesNotThrow(() -> caldavServerService.updateServer(server(7, null, "Bluemind", null, SERVER_URL, true), ADMIN_USER));
 
-    verify(blueMindSessionService, never()).forgetAll();
+    verify(blueMindFlavour, never()).forgetAllSessions();
   }
 
   /**
@@ -692,7 +696,7 @@ public class CaldavServerServiceTest {
 
     assertDoesNotThrow(() -> caldavServerService.updateServer(renamed, ADMIN_USER));
 
-    verify(blueMindSessionService).forgetAll();
+    verify(blueMindFlavour).forgetAllSessions();
   }
 
   /**
@@ -711,7 +715,7 @@ public class CaldavServerServiceTest {
 
     assertDoesNotThrow(() -> caldavServerService.setServerActive(7, false, ADMIN_USER));
 
-    verify(blueMindSessionService).forgetAll();
+    verify(blueMindFlavour).forgetAllSessions();
   }
 
   /**
@@ -727,7 +731,7 @@ public class CaldavServerServiceTest {
 
     assertThrows(IllegalArgumentException.class, () -> caldavServerService.updateServer(moved, ADMIN_USER));
 
-    verify(blueMindSessionService, never()).forgetAll();
+    verify(blueMindFlavour, never()).forgetAllSessions();
   }
 
   /**
@@ -743,7 +747,7 @@ public class CaldavServerServiceTest {
     CaldavServer renamed = server(7, null, "Internal renamed", null, "https://10.1.2.3/dav/", true);
     when(caldavServerStorage.updateServer(renamed)).thenReturn(renamed);
     when(caldavServerQuirkService.decorate(renamed)).thenReturn(renamed);
-    doThrow(new IllegalStateException("down")).when(blueMindSessionService).forgetAll();
+    doThrow(new IllegalStateException("down")).when(blueMindFlavour).forgetAllSessions();
 
     assertDoesNotThrow(() -> caldavServerService.updateServer(renamed, ADMIN_USER));
 
@@ -1052,7 +1056,7 @@ public class CaldavServerServiceTest {
     System.setProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY, "false");
     when(caldavServerStorage.countServers()).thenReturn(0L);
     CaldavServer createdBluemind = server(2, "agenda.caldavCalendar.2", "Bluemind", null,
-                                          CaldavServerService.DEFAULT_BLUEMIND_URL, false);
+                                          TestServerSeed.PRODUCT_URL, false);
     when(caldavServerStorage.createServer(any(), eq(CaldavServerService.CALDAV_PROVIDER_NAME))).thenReturn(createdBluemind);
 
     caldavServerService.seedDefaultServers();
@@ -1066,7 +1070,7 @@ public class CaldavServerServiceTest {
     ArgumentCaptor<CaldavServer> bluemind = ArgumentCaptor.forClass(CaldavServer.class);
     verify(caldavServerStorage).createServer(bluemind.capture(), eq(CaldavServerService.CALDAV_PROVIDER_NAME));
     assertEquals("Bluemind", bluemind.getValue().getName());
-    assertEquals(CaldavServerService.DEFAULT_BLUEMIND_URL, bluemind.getValue().getServerUrl());
+    assertEquals(TestServerSeed.PRODUCT_URL, bluemind.getValue().getServerUrl());
     assertEquals(false, bluemind.getValue().isActive());
 
     // BOTH providers are pushed: Stalwart's explicitly (the kernel plugin
@@ -1104,7 +1108,7 @@ public class CaldavServerServiceTest {
     System.setProperty(CaldavServerService.CALDAV_ENABLED_PROPERTY, "false");
     when(caldavServerStorage.countServers()).thenReturn(0L);
     CaldavServer createdBluemind = server(2, "agenda.caldavCalendar.2", "Bluemind", null,
-                                          CaldavServerService.DEFAULT_BLUEMIND_URL, false);
+                                          TestServerSeed.PRODUCT_URL, false);
     when(caldavServerStorage.createServer(any(), eq(CaldavServerService.CALDAV_PROVIDER_NAME))).thenReturn(createdBluemind);
 
     caldavServerService.seedDefaultServers();
@@ -1148,7 +1152,7 @@ public class CaldavServerServiceTest {
     assertEquals("X-MICROSOFT-*,X-MOZ-*,X-ALT-DESC,PRIORITY", ignored);
     assertEquals("CONFERENCE", dropped);
     // The seed lists are the catalogue's, not a second spelling of it.
-    for (ServerQuirk quirk : CaldavServerService.BLUEMIND_SEED_QUIRKS) {
+    for (ServerQuirk quirk : TestServerSeed.PRODUCT_QUIRKS) {
       for (String pattern : quirk.getPatterns()) {
         assertTrue(ServerQuirk.listMatches(ignored + "," + dropped, pattern), pattern);
       }
@@ -1187,7 +1191,7 @@ public class CaldavServerServiceTest {
    * only ever asked for the two tolerance columns; the seed passes
    * {@code null} for {@code omittedProperties}. So an {@link
    * ServerQuirkEffect#OMIT} entry added to {@link
-   * CaldavServerService#BLUEMIND_SEED_QUIRKS} would be dropped by that filter
+   * TestServerSeed#PRODUCT_QUIRKS} would be dropped by that filter
    * with nothing routing it anywhere else: the constant would name a behaviour
    * the seed does not write, <b>with no compile error and no test failure</b>
    * — the row would simply arrive missing it, on every fresh install, and the
@@ -1204,7 +1208,7 @@ public class CaldavServerServiceTest {
    */
   @Test
   public void shouldSeedNoEntryThatWouldBeWrittenNowhere() {
-    for (ServerQuirk quirk : CaldavServerService.BLUEMIND_SEED_QUIRKS) {
+    for (ServerQuirk quirk : TestServerSeed.PRODUCT_QUIRKS) {
       assertNotEquals(ServerQuirkEffect.OMIT,
                       quirk.getEffect(),
                       quirk.name() + " is an OMIT entry: the seed writes it nowhere. Route OMIT entries to"
@@ -1253,7 +1257,7 @@ public class CaldavServerServiceTest {
     when(caldavServerStorage.countServers()).thenReturn(0L);
     when(caldavServerStorage.createServer(any(), anyString()))
                                                               .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null,
-                                                                                 CaldavServerService.DEFAULT_BLUEMIND_URL,
+                                                                                 TestServerSeed.PRODUCT_URL,
                                                                                  false));
 
     caldavServerService.seedDefaultServers();
@@ -1294,7 +1298,7 @@ public class CaldavServerServiceTest {
     when(caldavServerStorage.countServers()).thenReturn(0L);
     when(caldavServerStorage.createServer(any(), anyString()))
                                                               .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null,
-                                                                                 CaldavServerService.DEFAULT_BLUEMIND_URL,
+                                                                                 TestServerSeed.PRODUCT_URL,
                                                                                  false));
 
     caldavServerService.seedDefaultServers();
@@ -1324,7 +1328,7 @@ public class CaldavServerServiceTest {
     when(caldavServerStorage.countServers()).thenReturn(0L);
     when(caldavServerStorage.createServer(any(), anyString()))
                                                               .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null,
-                                                                                 CaldavServerService.DEFAULT_BLUEMIND_URL,
+                                                                                 TestServerSeed.PRODUCT_URL,
                                                                                  false));
 
     caldavServerService.seedDefaultServers();
@@ -1359,7 +1363,7 @@ public class CaldavServerServiceTest {
     when(caldavServerStorage.countServers()).thenReturn(0L);
     when(caldavServerStorage.createServer(any(), anyString()))
                                                               .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null,
-                                                                                 CaldavServerService.DEFAULT_BLUEMIND_URL,
+                                                                                 TestServerSeed.PRODUCT_URL,
                                                                                  false));
 
     caldavServerService.seedDefaultServers();
@@ -1392,7 +1396,7 @@ public class CaldavServerServiceTest {
     when(caldavServerStorage.countServers()).thenReturn(0L);
     when(caldavServerStorage.createServer(any(), anyString()))
                                                               .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null,
-                                                                                 CaldavServerService.DEFAULT_BLUEMIND_URL,
+                                                                                 TestServerSeed.PRODUCT_URL,
                                                                                  false));
 
     caldavServerService.seedDefaultServers();
@@ -1436,7 +1440,7 @@ public class CaldavServerServiceTest {
   public void shouldNeverJudgeStoredRowsWhenTheRegistryIsAlreadyFilled() {
     System.setProperty(CaldavServerService.CALDAV_SERVER_URL_PROPERTY, RIG_URL);
     lenient().when(caldavServerStorage.createServer(any(), anyString()))
-             .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null, CaldavServerService.DEFAULT_BLUEMIND_URL,
+             .thenReturn(server(2, "agenda.caldavCalendar.2", "Bluemind", null, TestServerSeed.PRODUCT_URL,
                                 false));
     when(caldavServerStorage.countServers()).thenReturn(2L);
 
@@ -1524,7 +1528,7 @@ public class CaldavServerServiceTest {
     assertEquals("agenda.caldavCalendar.7", provider.getValue().getName());
     assertEquals(false, provider.getValue().isEnabled());
     verify(caldavServerStorage).deleteServer(7);
-    verify(blueMindSessionService).forgetAll();
+    verify(blueMindFlavour).forgetAllSessions();
   }
 
   /**
@@ -2196,6 +2200,66 @@ public class CaldavServerServiceTest {
     assertEquals(Boolean.TRUE, caldavServerService.connectionRequirements().get("bluemind-sudo"));
   }
 
+  /**
+   * A declared provider that is not installed — an add-on's, while the add-on
+   * is not — sends the user to the form rather than failing the whole
+   * listing, and nobody asks it whether it needs anything; the installed ones
+   * beside it are answered as before.
+   */
+  @Test
+  public void asksTheUserForAProviderThatIsNotInstalledWithoutFailingTheListing() {
+    CaldavServer typed = server(1L, "personal");
+    CaldavServer missing = server(2L, "bluemind-sudo");
+    when(caldavServerStorage.getServers()).thenReturn(List.of(typed, missing));
+    when(caldavServerQuirkService.decorate(any())).thenAnswer(call -> call.getArgument(0));
+    when(caldavCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(true);
+    when(caldavCredentialsResolver.isProviderMissing("personal")).thenReturn(false);
+    when(caldavCredentialsResolver.requiresUserAction("personal")).thenReturn(false);
+
+    Map<String, Boolean> requirements = caldavServerService.connectionRequirements();
+
+    assertEquals(Boolean.TRUE, requirements.get("bluemind-sudo"));
+    assertEquals(Boolean.FALSE, requirements.get("personal"));
+    verify(caldavCredentialsResolver, never()).requiresUserAction("bluemind-sudo");
+  }
+
+  /**
+   * A provider that is not installed is told apart from one that asks: it is
+   * listed as unavailable, and the installed ones beside it are not, whether they
+   * ask the user or not. A blank provider name is never listed.
+   */
+  @Test
+  public void listsAsUnavailableOnlyTheDeclaredProvidersThatAreNotInstalled() {
+    CaldavServer typed = server(1L, "personal");
+    CaldavServer missing = server(2L, "bluemind-sudo");
+    CaldavServer legacy = server(3L, null);
+    when(caldavServerStorage.getServers()).thenReturn(List.of(typed, missing, legacy));
+    when(caldavServerQuirkService.decorate(any())).thenAnswer(call -> call.getArgument(0));
+    when(caldavCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(true);
+    when(caldavCredentialsResolver.isProviderMissing("personal")).thenReturn(false);
+
+    assertEquals(Set.of("bluemind-sudo"), caldavServerService.unavailableProviders());
+    verify(caldavCredentialsResolver, never()).isProviderMissing(null);
+  }
+
+  /**
+   * The provider an account's registration names is reported missing only when it
+   * is not installed; an installed one, and a registration that resolves to
+   * nothing, report none.
+   */
+  @Test
+  public void namesTheMissingProviderOfARegistrationOnlyWhenItIsNotInstalled() {
+    when(caldavServerQuirkService.decorate(any())).thenAnswer(call -> call.getArgument(0));
+    when(caldavServerStorage.getServerById(2L)).thenReturn(server(2L, "bluemind-sudo"));
+    when(caldavServerStorage.getServerById(1L)).thenReturn(server(1L, "personal"));
+    when(caldavCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(true);
+    when(caldavCredentialsResolver.isProviderMissing("personal")).thenReturn(false);
+
+    assertEquals("bluemind-sudo", caldavServerService.missingProviderOf(2L));
+    assertNull(caldavServerService.missingProviderOf(1L));
+    assertNull(caldavServerService.missingProviderOf(null), "no seed row declared");
+  }
+
   private CaldavServer server(long id, String providerName) {
     CaldavServer server = new CaldavServer();
     server.setId(id);
@@ -2239,6 +2303,21 @@ public class CaldavServerServiceTest {
     when(caldavCredentialsResolver.requiresUserAction("bluemind-sudo")).thenReturn(false);
 
     assertTrue(caldavServerService.isConnected(providerBacked(7L)));
+  }
+
+  /**
+   * No password, and a provider that would produce the material but is not
+   * installed: not connected, and the provider is never asked. The user is
+   * sent to reconnect, which is what puts it right once the add-on is back.
+   */
+  @Test
+  public void refusesAProviderBackedAccountWhoseProviderIsNotInstalled() throws Exception {
+    when(caldavServerStorage.getServerById(7L)).thenReturn(server(7L, "bluemind-sudo"));
+    when(caldavServerQuirkService.decorate(any())).thenAnswer(call -> call.getArgument(0));
+    when(caldavCredentialsResolver.isProviderMissing("bluemind-sudo")).thenReturn(true);
+
+    assertFalse(caldavServerService.isConnected(providerBacked(7L)));
+    verify(caldavCredentialsResolver, never()).requiresUserAction(anyString());
   }
 
   /**

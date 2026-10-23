@@ -30,6 +30,7 @@ import org.exoplatform.caldav.client.CalDavAuthenticationException;
 import org.exoplatform.caldav.client.CalDavClient;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
+import org.exoplatform.caldav.client.CalDavProviderMissingException;
 import org.exoplatform.caldav.client.CalDavUnreachableException;
 import org.exoplatform.caldav.client.CalendarCollection;
 import org.exoplatform.caldav.client.CalendarHome;
@@ -137,6 +138,8 @@ public class CaldavOutboundService {
    * @throws CalDavAuthenticationException when the server refused the stored
    *           credentials
    * @throws CalDavUnreachableException when the server could not be reached
+   * @throws CalDavProviderMissingException when the server's credentials
+   *           provider is not installed; nothing was asked of the server
    */
   public List<CalendarSync> bindPersonalCalendars(long userIdentityId, String username) {
     CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
@@ -739,7 +742,9 @@ public class CaldavOutboundService {
    * calendar, a pool vehicle, a room — under the user's own home with the
    * user as owner and the full privilege set, so neither server signal fires;
    * the container uid it names the collection by carries the owner instead
-   * ({@code BlueMindContainerNaming}). A uid other than the account's own is
+   * (read by the installed subscription channel,
+   * {@link org.exoplatform.caldav.plugin.CalendarSubscriptionChannel#subscriptionOf}).
+   * A uid other than the account's own is
    * {@link CollectionOwnership#SUBSCRIBED_PERSON} or
    * {@link CollectionOwnership#SUBSCRIBED_RESOURCE}. Before the server's two
    * signals, so that a resource is told from a person wherever both could
