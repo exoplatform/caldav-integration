@@ -38,6 +38,8 @@ import org.exoplatform.agenda.service.AgendaEventAttendeeService;
 import org.exoplatform.agenda.service.AgendaEventService;
 import org.exoplatform.agenda.util.EventIcsBuilder;
 import org.exoplatform.caldav.client.CalDavClient;
+import org.exoplatform.caldav.client.CalDavDeadline;
+import org.exoplatform.caldav.client.CalDavDeadlineException;
 import org.exoplatform.caldav.client.CalDavEndpoint;
 import org.exoplatform.caldav.client.CalDavException;
 import org.exoplatform.caldav.client.CalendarObject;
@@ -153,9 +155,16 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * <p>
  * This runs on the request thread, after the REPLY left when there was one: at
  * most one default-calendar discovery, two reads of the collection's window,
- * one write of the object, and the answer's read and write, each bounded by
- * the client's request timeout — minutes on a server that does not answer,
- * which the user then sees as a failed update. A message about one occurrence
+ * one write of the object, and the answer's read and write. They share one
+ * budget ({@link #LANDING_BUDGET_PROPERTY}, {@value #DEFAULT_LANDING_BUDGET}
+ * seconds by default): each request is sent with the smaller of the client's
+ * own timeout and the time left, none is sent once it is spent, and the
+ * landing then fails — told to the user as a calendar that could not be
+ * updated. What a spent budget leaves on the server is what any failed step
+ * already could: an object written whose import did not follow, which the
+ * next sweep brings in. A writer another add-on contributes for the account
+ * ({@link CalendarObjectWriters}) is bounded only if it sends through this
+ * add-on's client. A message about one occurrence
  * of a series (a lone RECURRENCE-ID) is refused: landing it means splicing an
  * override into a copy and answering an instance, which this path does not do
  * yet. A newer revision of an event the user holds is written over the
@@ -186,6 +195,20 @@ import org.exoplatform.social.core.manager.IdentityManager;
  */
 @Service
 public class CaldavInvitationLandingService {
+
+  /** Deployment property: the seconds one landing's CalDAV calls may take altogether. */
+  public static final String      LANDING_BUDGET_PROPERTY = "exo.agenda.caldav.invitation.landingBudgetSeconds";
+
+  /**
+   * The default of {@link #LANDING_BUDGET_PROPERTY}: twenty seconds, well
+   * above the few round trips a landing makes on a server that answers, and
+   * below the client's own 30-second request timeout, so a server that stops
+   * answering holds the user's click no longer than one of its requests would.
+   */
+  public static final int         DEFAULT_LANDING_BUDGET  = 20;
+
+  /** The longest budget an administrator may set: two minutes. */
+  static final int                MAX_LANDING_BUDGET      = 120;
 
   private static final Log        LOG           = ExoLogger.getLogger(CaldavInvitationLandingService.class);
 
@@ -282,87 +305,16 @@ public class CaldavInvitationLandingService {
    *           occurrence only, naming no organiser where one is needed, naming a
    *           meeting this deployment wrote, or touching a copy of another
    *           organiser's
-   * @throws IllegalStateException when the landing was attempted and failed
+   * @throws IllegalStateException when the landing was attempted and failed,
+   *           its budget spent included
    */
   public LandedMailInvitation land(MailInvitation invitation) {
-    long userIdentityId = identityOf(invitation.username());
-    if (userIdentityId <= 0) {
-      return null;
+    try (CalDavDeadline deadline = CalDavDeadline.start(Duration.ofSeconds(landingBudget()))) {
+      return land(invitation, deadline);
+    } catch (CalDavDeadlineException e) {
+      throw new IllegalStateException("The landing of " + invitation.uid() + " for user " + invitation.username()
+          + " did not finish within " + landingBudget() + " seconds", e);
     }
-    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
-    if (!caldavServerService.isConnected(settings)) {
-      return null;
-    }
-    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
-    List<CalendarSync> bindings = bindingsOf(userIdentityId, serverId);
-    if (bindings.isEmpty()) {
-      LOG.debug("The invitation of user {} is not landed: no calendar is bound on their account", userIdentityId);
-      return null;
-    }
-    IcsEvent master = masterOf(invitation);
-    String uid = master.getUid();
-    Long ownMeeting = ownAgendaEventOf(uid);
-    if (ownMeeting != null) {
-      return heldInAgenda(ownMeeting, userIdentityId, invitation, master);
-    }
-    Long mirrored = caldavSyncStorage.getMirrorEventIdOnServer(serverId, uid);
-    if (mirrored != null && mirrored > 0) {
-      throw new IllegalArgumentException("The invitation names a meeting this deployment wrote (" + uid
-          + "); it is answered in agenda, not landed from a mail");
-    }
-    String username = invitation.username();
-    CalDavEndpoint endpoint = calDavClient.endpoint(serverId, username);
-    List<String> addresses = addressesOf(userIdentityId, settings, invitation.attendeeAddress());
-    String partStat = invitation.response() == null ? null : IcsText.partStat(invitation.response().name());
-    CalendarSync binding = bindingHolding(bindings, uid);
-    ObjectSync known = binding == null ? null : caldavSyncStorage.getObjectByUid(binding.getId(), uid);
-    if (invitation.isCancellation()) {
-      return known == null ? nothingHeld(invitation, "cancellation")
-                           : remove(endpoint, userIdentityId, username, known, master, addresses);
-    }
-    if (binding == null) {
-      binding = homeBinding(bindings, endpoint);
-    }
-    Calendar calendar = calendarOf(binding, userIdentityId, username);
-    String served = null;
-    if (known == null) {
-      // The sweep's own read first: an object the server filed itself is
-      // found by its UID, whatever the server named it — and takes a decline
-      // too, which would otherwise come in accepted on the next sweep.
-      importAround(userIdentityId, username, binding, calendar, master);
-      known = caldavSyncStorage.getObjectByUid(binding.getId(), uid);
-      if (known == null) {
-        if (invitation.response() == EventAttendeeResponse.DECLINED) {
-          return nothingHeld(invitation, "decline");
-        }
-        file(endpoint, binding, invitation, uid, addresses, partStat);
-        importAround(userIdentityId, username, binding, calendar, master);
-        known = caldavSyncStorage.getObjectByUid(binding.getId(), uid);
-      }
-    } else {
-      String recorded = known.getEtag();
-      served = refreshIfNewer(endpoint, known, invitation, master, addresses, partStat);
-      // What the server holds now — the organiser's update the mail server
-      // filed, a phone's edit, the revision just written — comes into eXo the
-      // way every change made on the server does.
-      importAround(userIdentityId, username, binding, calendar, master);
-      known = caldavSyncStorage.getObjectByUid(binding.getId(), uid);
-      if (known != null && !StringUtils.equals(known.getEtag(), recorded)) {
-        // The import recorded a version of its own, read after this call's:
-        // the later read wins.
-        served = null;
-      }
-    }
-    if (known == null || known.getLocalEventId() == null) {
-      throw new IllegalStateException("The invitation " + uid + " is on the server and was not imported into calendar "
-          + calendar.getId() + " of user " + userIdentityId);
-    }
-    if (invitation.response() != null) {
-      answer(userIdentityId, invitation, asServed(known, served), addresses);
-    }
-    long eventId = known.getLocalEventId();
-    LOG.debug("The invitation {} of user {} landed as event {} in calendar {}", uid, userIdentityId, eventId, calendar.getId());
-    return new LandedMailInvitation(eventId, linkOf(eventId), false, false);
   }
 
   /**
@@ -434,6 +386,115 @@ public class CaldavInvitationLandingService {
       return null;
     }
     return new HeldMailInvitation(eventId, linkOf(eventId), responseOf(master, addresses), master.getSequence());
+  }
+
+  /**
+   * The seconds one landing may take ({@link #LANDING_BUDGET_PROPERTY}), read
+   * at every landing.
+   *
+   * @return the budget, the default when the property is not a positive
+   *         number, at most {@link #MAX_LANDING_BUDGET}
+   */
+  static int landingBudget() {
+    try {
+      int value = Integer.parseInt(StringUtils.trim(System.getProperty(LANDING_BUDGET_PROPERTY, String.valueOf(DEFAULT_LANDING_BUDGET))));
+      return value > 0 ? Math.min(value, MAX_LANDING_BUDGET) : DEFAULT_LANDING_BUDGET;
+    } catch (NumberFormatException e) {
+      return DEFAULT_LANDING_BUDGET;
+    }
+  }
+
+  /**
+   * Lands the invitation within the budget open for it.
+   *
+   * @param invitation the invitation, the user and what they asked
+   * @param deadline the landing's budget, checked between the steps whose
+   *          reads swallow a failed request
+   * @return what was done, or null
+   */
+  private LandedMailInvitation land(MailInvitation invitation, CalDavDeadline deadline) {
+    long userIdentityId = identityOf(invitation.username());
+    if (userIdentityId <= 0) {
+      return null;
+    }
+    CaldavUserSetting settings = caldavConnectorStorage.getCaldavSetting(userIdentityId);
+    if (!caldavServerService.isConnected(settings)) {
+      return null;
+    }
+    long serverId = settings.getServerId() == null ? 0L : settings.getServerId();
+    List<CalendarSync> bindings = bindingsOf(userIdentityId, serverId);
+    if (bindings.isEmpty()) {
+      LOG.debug("The invitation of user {} is not landed: no calendar is bound on their account", userIdentityId);
+      return null;
+    }
+    IcsEvent master = masterOf(invitation);
+    String uid = master.getUid();
+    Long ownMeeting = ownAgendaEventOf(uid);
+    if (ownMeeting != null) {
+      return heldInAgenda(ownMeeting, userIdentityId, invitation, master);
+    }
+    Long mirrored = caldavSyncStorage.getMirrorEventIdOnServer(serverId, uid);
+    if (mirrored != null && mirrored > 0) {
+      throw new IllegalArgumentException("The invitation names a meeting this deployment wrote (" + uid
+          + "); it is answered in agenda, not landed from a mail");
+    }
+    String username = invitation.username();
+    CalDavEndpoint endpoint = calDavClient.endpoint(serverId, username);
+    List<String> addresses = addressesOf(userIdentityId, settings, invitation.attendeeAddress());
+    String partStat = invitation.response() == null ? null : IcsText.partStat(invitation.response().name());
+    CalendarSync binding = bindingHolding(bindings, uid);
+    ObjectSync known = binding == null ? null : caldavSyncStorage.getObjectByUid(binding.getId(), uid);
+    if (invitation.isCancellation()) {
+      return known == null ? nothingHeld(invitation, "cancellation")
+                           : remove(endpoint, userIdentityId, username, known, master, addresses);
+    }
+    if (binding == null) {
+      binding = homeBinding(bindings, endpoint);
+    }
+    Calendar calendar = calendarOf(binding, userIdentityId, username);
+    String served = null;
+    if (known == null) {
+      // The sweep's own read first: an object the server filed itself is
+      // found by its UID, whatever the server named it — and takes a decline
+      // too, which would otherwise come in accepted on the next sweep.
+      importAround(userIdentityId, username, binding, calendar, master);
+      // A read the budget cut found nothing it can vouch for: no object is
+      // created on the strength of it.
+      deadline.checkNotSpent("the landing of " + uid);
+      known = caldavSyncStorage.getObjectByUid(binding.getId(), uid);
+      if (known == null) {
+        if (invitation.response() == EventAttendeeResponse.DECLINED) {
+          return nothingHeld(invitation, "decline");
+        }
+        file(endpoint, binding, invitation, uid, addresses, partStat);
+        importAround(userIdentityId, username, binding, calendar, master);
+        known = caldavSyncStorage.getObjectByUid(binding.getId(), uid);
+      }
+    } else {
+      String recorded = known.getEtag();
+      served = refreshIfNewer(endpoint, known, invitation, master, addresses, partStat);
+      // What the server holds now — the organiser's update the mail server
+      // filed, a phone's edit, the revision just written — comes into eXo the
+      // way every change made on the server does.
+      importAround(userIdentityId, username, binding, calendar, master);
+      known = caldavSyncStorage.getObjectByUid(binding.getId(), uid);
+      if (known != null && !StringUtils.equals(known.getEtag(), recorded)) {
+        // The import recorded a version of its own, read after this call's:
+        // the later read wins.
+        served = null;
+      }
+    }
+    deadline.checkNotSpent("the landing of " + uid);
+    if (known == null || known.getLocalEventId() == null) {
+      throw new IllegalStateException("The invitation " + uid + " is on the server and was not imported into calendar "
+          + calendar.getId() + " of user " + userIdentityId);
+    }
+    if (invitation.response() != null) {
+      answer(userIdentityId, invitation, asServed(known, served), addresses);
+    }
+    long eventId = known.getLocalEventId();
+    LOG.debug("The invitation {} of user {} landed as event {} in calendar {}", uid, userIdentityId, eventId, calendar.getId());
+    return new LandedMailInvitation(eventId, linkOf(eventId), false, false);
   }
 
   /**
