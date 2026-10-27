@@ -35,8 +35,13 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.net.InetSocketAddress;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -46,8 +51,12 @@ import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.MockedStatic;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import com.sun.net.httpserver.HttpServer;
 
 import org.exoplatform.agenda.constant.EventAttendeeResponse;
 import org.exoplatform.agenda.constant.EventStatus;
@@ -64,9 +73,11 @@ import org.exoplatform.caldav.client.CalDavForbiddenException;
 import org.exoplatform.caldav.client.CalendarObject;
 import org.exoplatform.caldav.client.CalendarObjectWriter;
 import org.exoplatform.caldav.client.CalendarObjectWriters;
+import org.exoplatform.caldav.client.HttpCalDavClient;
 import org.exoplatform.caldav.client.PutResult;
 import org.exoplatform.caldav.ics.IcsMerger;
 import org.exoplatform.caldav.ics.IcsParser;
+import org.exoplatform.caldav.model.CaldavServer;
 import org.exoplatform.caldav.model.CaldavUserSetting;
 import org.exoplatform.caldav.model.CalendarSync;
 import org.exoplatform.caldav.model.CalendarSyncStatus;
@@ -76,9 +87,12 @@ import org.exoplatform.caldav.model.MailInvitation;
 import org.exoplatform.caldav.model.ObjectSync;
 import org.exoplatform.caldav.model.SyncOrigin;
 import org.exoplatform.caldav.storage.CaldavConnectorStorage;
+import org.exoplatform.caldav.provider.CaldavCredentialsResolver;
 import org.exoplatform.caldav.storage.CaldavSyncStorage;
 import org.exoplatform.commons.exception.ObjectNotFoundException;
 import org.exoplatform.commons.utils.CommonsUtils;
+import org.exoplatform.services.connector.credentials.ConnectorCredentialsService;
+import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
 import org.exoplatform.social.core.identity.model.Identity;
 import org.exoplatform.social.core.identity.provider.OrganizationIdentityProvider;
 import org.exoplatform.social.core.manager.IdentityManager;
@@ -976,6 +990,106 @@ public class CaldavInvitationLandingServiceTest {
     event.setStatus(EventStatus.CONFIRMED);
     lenient().when(agendaEventService.getEventById(EVENT)).thenReturn(event);
     lenient().when(calDavClient.fetchObject(endpoint, HREF)).thenReturn(new CalendarObject(HREF, "\"e9\"", copy));
+  }
+
+  /**
+   * A landing holds the user's click for its budget at most, whatever the
+   * server does: against a server that never answers, the read of the copy
+   * the user holds ends when the budget runs out — not at the client's
+   * 30-second request timeout — the landing fails, and nothing is written,
+   * imported or answered.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aLandingAgainstASilentServerFailsAtItsBudgetAndWritesNothing() throws Exception {
+    CountDownLatch release = new CountDownLatch(1);
+    HttpServer silent = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    ExecutorService handlers = Executors.newCachedThreadPool();
+    silent.createContext("/", exchange -> {
+      try {
+        release.await(30, TimeUnit.SECONDS);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+      exchange.close();
+    });
+    silent.setExecutor(handlers);
+    silent.start();
+    System.setProperty(CaldavInvitationLandingService.LANDING_BUDGET_PROPERTY, "1");
+    try {
+      when(caldavServerService.resolveServer(SERVER)).thenReturn(new CaldavServer(SERVER, "agenda.caldavCalendar", "Silent", null,
+                                                                                   "http://127.0.0.1:" + silent.getAddress().getPort() + "/dav/",
+                                                                                   true, null, null, null, null, true, null, null, null,
+                                                                                   null, null, null, "personal", null, null));
+      ConnectorCredentialsService credentials = Mockito.mock(ConnectorCredentialsService.class);
+      Mockito.doReturn(new HttpConnectorCredentials("Basic am9objpzZWNyZXQ=", null)).when(credentials).produce(any());
+      ReflectionTestUtils.setField(service, "calDavClient", new HttpCalDavClient(caldavServerService, new CaldavCredentialsResolver(credentials)));
+      when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(mapping(HREF));
+
+      long started = System.nanoTime();
+      assertThrows(IllegalStateException.class, () -> service.land(invitation(EventAttendeeResponse.ACCEPTED)));
+      long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+      assertTrue(elapsed >= 900 && elapsed < 10000, "held for the budget only: " + elapsed + " ms");
+      verify(calendarObjectWriters, never()).writer(any());
+      verify(caldavInboundService, never()).importInto(anyLong(), anyString(), any(), any(), any(), any());
+      verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
+      verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any(), Mockito.anyBoolean());
+    } finally {
+      System.clearProperty(CaldavInvitationLandingService.LANDING_BUDGET_PROPERTY);
+      release.countDown();
+      silent.stop(0);
+      handlers.shutdownNow();
+    }
+  }
+
+  /**
+   * The collection read that comes first leaves a slice it could not read as
+   * it is; when the budget ran out during it, finding nothing proves nothing,
+   * so no object is created on the strength of it and the landing fails.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aReadTheBudgetCutCreatesNothing() throws Exception {
+    System.setProperty(CaldavInvitationLandingService.LANDING_BUDGET_PROPERTY, "1");
+    try {
+      when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(null);
+      Mockito.doAnswer(call -> {
+        Thread.sleep(1200);
+        return 0;
+      }).when(caldavInboundService).importInto(anyLong(), anyString(), any(), any(), any(), any());
+
+      assertThrows(IllegalStateException.class, () -> service.land(invitation(EventAttendeeResponse.ACCEPTED)));
+
+      verify(writer, never()).putObject(any(), anyString(), anyString());
+      verify(caldavInboundService, times(1)).importInto(anyLong(), anyString(), any(), any(), any(), any());
+      verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any(), Mockito.anyBoolean());
+    } finally {
+      System.clearProperty(CaldavInvitationLandingService.LANDING_BUDGET_PROPERTY);
+    }
+  }
+
+  /**
+   * The budget is configurable, positive and bounded; anything else is the
+   * default.
+   */
+  @Test
+  public void theLandingBudgetIsConfigurable() {
+    try {
+      assertEquals(CaldavInvitationLandingService.DEFAULT_LANDING_BUDGET, CaldavInvitationLandingService.landingBudget());
+      System.setProperty(CaldavInvitationLandingService.LANDING_BUDGET_PROPERTY, "45");
+      assertEquals(45, CaldavInvitationLandingService.landingBudget());
+      System.setProperty(CaldavInvitationLandingService.LANDING_BUDGET_PROPERTY, "100000");
+      assertEquals(CaldavInvitationLandingService.MAX_LANDING_BUDGET, CaldavInvitationLandingService.landingBudget());
+      System.setProperty(CaldavInvitationLandingService.LANDING_BUDGET_PROPERTY, "0");
+      assertEquals(CaldavInvitationLandingService.DEFAULT_LANDING_BUDGET, CaldavInvitationLandingService.landingBudget());
+      System.setProperty(CaldavInvitationLandingService.LANDING_BUDGET_PROPERTY, "soon");
+      assertEquals(CaldavInvitationLandingService.DEFAULT_LANDING_BUDGET, CaldavInvitationLandingService.landingBudget());
+    } finally {
+      System.clearProperty(CaldavInvitationLandingService.LANDING_BUDGET_PROPERTY);
+    }
   }
 
   /**
