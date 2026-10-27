@@ -155,6 +155,16 @@ public class CaldavServerService {
    */
   public static final String       WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE = "caldav.server.writeChannelUnavailable";
 
+  /**
+   * The refusal of a write channel an installed add-on offers, on a
+   * registration that add-on does not recognise as one of its servers, as the
+   * save would leave it: the channel exists, so the refusal does not send the
+   * administrator to standard CalDAV, which would bring back the duplicates
+   * the channel avoids. The add-on alone knows what makes a registration its
+   * own (BlueMind's: its name), so the sentence names no rule.
+   */
+  public static final String       WRITE_CHANNEL_NOT_RECOGNISED_MESSAGE = "caldav.server.writeChannelNotRecognised";
+
   private static final Log         LOG                           = ExoLogger.getLogger(CaldavServerService.class);
 
   @Autowired
@@ -800,7 +810,10 @@ public class CaldavServerService {
    *
    * <p>
    * Two shapes of payload, two answers. A payload that <b>states</b> a
-   * channel the flavour does not allow is refused with
+   * channel the flavour does not allow is refused — with
+   * {@value #WRITE_CHANNEL_NOT_RECOGNISED_MESSAGE} when an installed add-on
+   * offers that channel and does not recognise this registration as its own
+   * (a BlueMind registration renamed), else with
    * {@value #WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE}: the administrator asked
    * for something this server cannot do, and a 400 they can read beats a row
    * silently written otherwise. A payload that states <b>nothing</b> — a
@@ -834,7 +847,8 @@ public class CaldavServerService {
         warnKeptWithoutAddOn(server, stated);
         return;
       }
-      throw new IllegalArgumentException(WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE);
+      boolean offeredByAnAddOn = stated != null && stated != WriteChannel.CALDAV && !noAddOnServes(stated);
+      throw new IllegalArgumentException(offeredByAnAddOn ? WRITE_CHANNEL_NOT_RECOGNISED_MESSAGE : WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE);
     }
     if (stated == null && stored != null && !acceptsWriteChannel(server, stored.getWriteChannel())) {
       if (noAddOnServes(stored.getWriteChannel())) {
