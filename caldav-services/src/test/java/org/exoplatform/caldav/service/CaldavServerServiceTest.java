@@ -289,14 +289,14 @@ public class CaldavServerServiceTest {
 
     IllegalArgumentException created = assertThrows(IllegalArgumentException.class,
                                                     () -> caldavServerService.createServer(stalwart, ADMIN_USER));
-    assertEquals(CaldavServerService.WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE, created.getMessage());
+    assertEquals(CaldavServerService.WRITE_CHANNEL_NOT_RECOGNISED_MESSAGE, created.getMessage());
 
     when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, "Other", null, SERVER_URL, true));
     CaldavServer other = server(7, null, "Other", null, SERVER_URL, true);
     other.setWriteChannel(WriteChannel.BLUEMIND_IMPORT);
     IllegalArgumentException updated = assertThrows(IllegalArgumentException.class,
                                                     () -> caldavServerService.updateServer(other, ADMIN_USER));
-    assertEquals(CaldavServerService.WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE, updated.getMessage());
+    assertEquals(CaldavServerService.WRITE_CHANNEL_NOT_RECOGNISED_MESSAGE, updated.getMessage());
 
     verify(caldavServerStorage, never()).createServer(any(), anyString());
     verify(caldavServerStorage, never()).updateServer(any());
@@ -513,7 +513,9 @@ public class CaldavServerServiceTest {
   /**
    * With the BlueMind flavour installed, the stored import channel stated back
    * on a row renamed away from BlueMind is still refused: an add-on knows the
-   * channel, and this registration is no longer one that speaks it.
+   * channel, and this registration is no longer one that speaks it. The refusal
+   * says so ({@code caldav.server.writeChannelNotRecognised}), never "choose
+   * standard CalDAV", the sentence for a channel no installed add-on offers.
    */
   @Test
   public void withTheBlueMindFlavourAStatedStoredImportChannelOnARowLeavingBlueMindIsRefused() {
@@ -527,7 +529,9 @@ public class CaldavServerServiceTest {
     IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                                                     () -> caldavServerService.updateServer(renamed, ADMIN_USER));
 
-    assertEquals(CaldavServerService.WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE, refused.getMessage());
+    // The channel exists: the refusal says the add-on does not recognise the
+    // server, and does not send the administrator to standard CalDAV.
+    assertEquals(CaldavServerService.WRITE_CHANNEL_NOT_RECOGNISED_MESSAGE, refused.getMessage());
     verify(caldavServerStorage, never()).updateServer(any());
   }
 
