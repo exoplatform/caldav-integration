@@ -124,6 +124,43 @@ public class IcsInvitationObjectTest {
   }
 
   /**
+   * The sender's alarms are not stored, on the series nor on an override: they
+   * would ring on every device of the user, and an email alarm mails whoever the
+   * sender lists on it. The rest of the event is stored as the sender wrote it.
+   */
+  @Test
+  public void theStoredObjectCarriesNoneOfTheSendersAlarms() {
+    String displayAlarm = "BEGIN:VALARM\r\n"
+        + "ACTION:DISPLAY\r\n"
+        + "DESCRIPTION:Reminder\r\n"
+        + "TRIGGER:-PT15M\r\n"
+        + "END:VALARM\r\n";
+    String emailAlarm = "BEGIN:VALARM\r\n"
+        + "ACTION:EMAIL\r\n"
+        + "SUMMARY:Reminder\r\n"
+        + "DESCRIPTION:Weekly sync starts soon\r\n"
+        + "TRIGGER:-PT1H\r\n"
+        + "ATTENDEE:mailto:someone@outside.example\r\n"
+        + "END:VALARM\r\n";
+    String withAlarms = REQUEST.replace("ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:john@acme.com\r\nEND:VEVENT\r\n",
+                                        "ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:john@acme.com\r\n" + displayAlarm + emailAlarm
+                                            + "END:VEVENT\r\n")
+                               .replace("SUMMARY:Weekly sync (moved)\r\nEND:VEVENT\r\n",
+                                        "SUMMARY:Weekly sync (moved)\r\n" + displayAlarm + "END:VEVENT\r\n");
+    assertEquals(3, withAlarms.split("BEGIN:VALARM", -1).length - 1, "the fixture carries the alarms: " + withAlarms);
+
+    String stored = merger.storedObject(withAlarms, "weekly-sync@google.com").replace("\r\n ", "");
+
+    assertFalse(stored.contains("VALARM"), stored);
+    assertFalse(stored.contains("TRIGGER"), stored);
+    assertFalse(stored.contains("someone@outside.example"), stored);
+    assertTrue(stored.contains("SUMMARY:Weekly sync (moved)"), stored);
+    assertTrue(stored.contains("ATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:john@acme.com"), stored);
+    assertTrue(stored.contains("RRULE:FREQ=WEEKLY;BYDAY=MO"), stored);
+    assertEquals(2, stored.split("UID:weekly-sync@google.com", -1).length - 1, "the master and its override: " + stored);
+  }
+
+  /**
    * A message that is not iCalendar, or that carries no event with the UID
    * answered, cannot be stored.
    */
