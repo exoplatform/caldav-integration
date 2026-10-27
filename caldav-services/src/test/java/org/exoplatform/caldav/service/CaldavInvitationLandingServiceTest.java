@@ -682,6 +682,37 @@ public class CaldavInvitationLandingServiceTest {
   }
 
   /**
+   * A mail the reader did not establish as its organiser's changes and removes no
+   * copy the user holds, whatever the ORGANIZER line says: a newer revision is
+   * refused before anything is written, and so is a cancellation, the copy and the
+   * eXo event staying. A first copy is still created.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aMailNotFromItsOrganiserChangesNoCopyTheUserHolds() throws Exception {
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenAnswer(call -> mapping(HREF));
+    when(calDavClient.fetchObject(endpoint, HREF)).thenReturn(new CalendarObject(HREF, "\"e5\"", COPY.replace("SEQUENCE:2", "SEQUENCE:1")));
+
+    assertThrows(IllegalArgumentException.class,
+                 () -> service.land(new MailInvitation(LOGIN, MAILBOX, "REQUEST", UID, 2, null, REQUEST, false)));
+    assertThrows(IllegalArgumentException.class,
+                 () -> service.land(new MailInvitation(LOGIN, MAILBOX, "REQUEST", UID, 2, EventAttendeeResponse.ACCEPTED, REQUEST, false)));
+    String cancel = REQUEST.replace("METHOD:REQUEST", "METHOD:CANCEL");
+    assertThrows(IllegalArgumentException.class,
+                 () -> service.land(new MailInvitation(LOGIN, MAILBOX, "CANCEL", UID, 2, null, cancel, false)));
+    verify(writer, never()).updateObject(any(), anyString(), anyString(), anyString());
+    verify(writer, never()).deleteObject(any(), anyString(), anyString());
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
+
+    // Nothing held: a first copy is created whoever sent the mail.
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(null, null, mapping(HREF));
+    assertNotNull(service.land(new MailInvitation(LOGIN, MAILBOX, "REQUEST", UID, 2, null, REQUEST, false)));
+    verify(writer).putObject(eq(endpoint), anyString(), anyString());
+  }
+
+  /**
    * The PARTSTAT of the master's attendee line naming an address.
    *
    * @param object the calendar object
@@ -890,7 +921,7 @@ public class CaldavInvitationLandingServiceTest {
     verify(writer, never()).putObject(any(), anyString(), anyString());
 
     assertThrows(IllegalArgumentException.class,
-                 () -> service.land(new MailInvitation(LOGIN, MAILBOX, "PUBLISH", UID, 3, null, published.replace("SEQUENCE:2", "SEQUENCE:3"))));
+                 () -> service.land(new MailInvitation(LOGIN, MAILBOX, "PUBLISH", UID, 3, null, published.replace("SEQUENCE:2", "SEQUENCE:3"), true)));
     verify(writer, never()).updateObject(any(), anyString(), anyString(), anyString());
 
     // Each under a UID the user holds nothing of, so that only the method can
@@ -1177,7 +1208,7 @@ public class CaldavInvitationLandingServiceTest {
   }
 
   /**
-   * An invitation of a given kind.
+   * An invitation of a given kind, from its organiser as the reader established it.
    *
    * @param method the iTIP method
    * @param response the answer given, null to add or remove without one
@@ -1186,7 +1217,7 @@ public class CaldavInvitationLandingServiceTest {
    * @return the invitation
    */
   private static MailInvitation invitation(String method, EventAttendeeResponse response, String uid, String icalendar) {
-    return new MailInvitation(LOGIN, MAILBOX, method, uid, 2, response, icalendar);
+    return new MailInvitation(LOGIN, MAILBOX, method, uid, 2, response, icalendar, true);
   }
 
   /**

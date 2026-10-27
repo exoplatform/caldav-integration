@@ -43,6 +43,9 @@ import org.exoplatform.agenda.constant.EventAttendeeResponse;
  * @param response the answer, as agenda holds it; null to add or remove the
  *          event without answering
  * @param icalendar the message's iCalendar object, as received
+ * @param fromOrganizer whether the reader established that the mail is from the
+ *          event's organiser (its From is the ORGANIZER's address alone): without
+ *          it, a copy the user holds is never changed or removed
  */
 public record MailInvitation(String username,
                              String attendeeAddress,
@@ -50,7 +53,8 @@ public record MailInvitation(String username,
                              String uid,
                              int sequence,
                              EventAttendeeResponse response,
-                             String icalendar) {
+                             String icalendar,
+                             boolean fromOrganizer) {
 
   /** The method of an organiser's cancellation. */
   public static final String CANCEL = "CANCEL";
@@ -65,6 +69,7 @@ public record MailInvitation(String username,
    * @param sequence the SEQUENCE
    * @param response the answer, or null
    * @param icalendar the object
+   * @param fromOrganizer whether the mail is from the event's organiser
    * @throws IllegalArgumentException without a user, a UID or an object, or
    *           with an answer that is none
    */
