@@ -55,7 +55,7 @@ export const DEFAULT_WRITE_CHANNEL = WRITE_CHANNEL_CALDAV;
 const CALDAV_OPTION = {
   value: WRITE_CHANNEL_CALDAV,
   labelKey: 'caldav.admin.servers.writeChannel.caldav.label',
-  consequenceKey: 'caldav.admin.servers.writeChannel.caldav.consequence',
+  consequenceKey: 'caldav.admin.servers.writeChannel.caldav.consequenceAnyServer',
 };
 
 /**

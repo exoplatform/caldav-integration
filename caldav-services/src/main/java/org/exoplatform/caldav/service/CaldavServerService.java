@@ -153,7 +153,7 @@ public class CaldavServerService {
    * speak (EXO-90307): {@code BLUEMIND_IMPORT} calls BlueMind's own REST
    * endpoints and is offered to a BlueMind registration only.
    */
-  public static final String       WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE = "caldav.server.writeChannelNotSupported";
+  public static final String       WRITE_CHANNEL_NOT_SUPPORTED_MESSAGE = "caldav.server.writeChannelUnavailable";
 
   private static final Log         LOG                           = ExoLogger.getLogger(CaldavServerService.class);
 
