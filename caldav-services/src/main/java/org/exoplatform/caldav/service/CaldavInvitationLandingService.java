@@ -95,7 +95,10 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * <p>
  * An invitation accepted or tentatively accepted, or added without an answer,
  * lands: created, or the copy the user holds rewritten by its organiser's newer
- * revision. A decline creates nothing — a meeting the user turned down and
+ * revision. Added without an answer, the copy's line for the user says
+ * NEEDS-ACTION, or keeps the answer the copy they held carried: the PARTSTAT
+ * the sender wrote on that line is the sender's word, and {@link #held} reads
+ * the stored line back as the user's answer. A decline creates nothing — a meeting the user turned down and
  * never added does not belong in their calendar — and sets the answer on a
  * copy they do hold, found by the same read first (a copy the mail server
  * filed and the sweep has not mapped yet takes the decline too, or the next
@@ -700,8 +703,8 @@ public class CaldavInvitationLandingService {
    * @param invitation the invitation
    * @param uid the event's UID
    * @param addresses the addresses the user's line may carry
-   * @param partStat the answer as a PARTSTAT token, null to store the object as
-   *          sent
+   * @param partStat the answer as a PARTSTAT token, null when the user gave
+   *          none: their line then says NEEDS-ACTION
    * @throws IllegalStateException when the server refused the write
    */
   private void file(CalDavEndpoint endpoint,
@@ -733,8 +736,8 @@ public class CaldavInvitationLandingService {
    * @param invitation the invitation
    * @param master the message's event
    * @param addresses the addresses the user's line may carry
-   * @param partStat the answer as a PARTSTAT token, null to write the object as
-   *          sent
+   * @param partStat the answer as a PARTSTAT token, null when the user gave
+   *          none: their line then keeps the answer the copy held
    * @return the ETag the copy carries now — the one just read, or the one the
    *         rewrite produced; null when the copy is not served, or served
    *         without a version and left as it is
@@ -781,7 +784,10 @@ public class CaldavInvitationLandingService {
       PutResult result = calendarObjectWriters.writer(endpoint)
                                               .updateObject(endpoint,
                                                             known.getRemoteHref(),
-                                                            withAnswer(invitation, master.getUid(), addresses, partStat),
+                                                            withAnswer(invitation,
+                                                                       master.getUid(),
+                                                                       addresses,
+                                                                       partStat == null ? heldPartStat(copy, addresses) : partStat),
                                                             existing.etag());
       if (result.preconditionFailed()) {
         throw new IllegalStateException("The copy of " + master.getUid() + " at " + known.getRemoteHref()
@@ -1019,31 +1025,45 @@ public class CaldavInvitationLandingService {
   }
 
   /**
-   * The object to store: the message's event with METHOD gone and, when an
-   * answer was given, the user's answer on their own attendee line.
+   * The object to store: the message's event with METHOD gone and the user's
+   * own attendee line carrying their answer, NEEDS-ACTION when they gave none.
+   * The PARTSTAT the sender wrote on that line is the sender's word, never the
+   * user's: stored, {@link #held} would read it back as their answer.
    *
    * @param invitation the invitation
    * @param uid the event's UID
    * @param addresses the addresses the user's line may carry
-   * @param partStat the answer as a PARTSTAT token, null to store the object as
-   *          sent
+   * @param partStat the answer as a PARTSTAT token, null when the user gave
+   *          none
    * @return the object
    * @throws IllegalArgumentException when the message cannot be turned into one
    */
   private String withAnswer(MailInvitation invitation, String uid, List<String> addresses, String partStat) {
     try {
       String stored = icsMerger.storedObject(invitation.icalendar(), uid);
-      if (partStat == null) {
-        return stored;
-      }
-      IcsMerger.AnswerRewrite rewrite = icsMerger.setAttendeeResponse(stored, addresses, partStat);
-      if (!rewrite.attendeeNamed()) {
+      IcsMerger.AnswerRewrite rewrite = icsMerger.setAttendeeResponse(stored,
+                                                                      addresses,
+                                                                      partStat == null ? IcsText.NEEDS_ACTION : partStat);
+      if (partStat != null && !rewrite.attendeeNamed()) {
         LOG.debug("The invitation {} names none of {}; it is stored as sent, and the answer is carried by agenda", uid, addresses);
       }
       return rewrite.hasChange() ? rewrite.document() : stored;
     } catch (IcsParseException e) {
       throw new IllegalArgumentException("The invitation cannot be stored as a calendar object", e);
     }
+  }
+
+  /**
+   * The answer a copy the user holds carries on their line, as a PARTSTAT
+   * token: what a newer revision written without an answer keeps.
+   *
+   * @param held the master of the copy the user holds, null when unreadable
+   * @param addresses the addresses the user's line may carry
+   * @return the token, NEEDS-ACTION when the copy holds no answer of theirs
+   */
+  private static String heldPartStat(IcsEvent held, List<String> addresses) {
+    EventAttendeeResponse response = held == null ? null : responseOf(held, addresses);
+    return response == null ? IcsText.NEEDS_ACTION : IcsText.partStat(response.name());
   }
 
   /**

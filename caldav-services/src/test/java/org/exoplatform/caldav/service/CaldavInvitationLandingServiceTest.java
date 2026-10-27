@@ -638,6 +638,68 @@ public class CaldavInvitationLandingServiceTest {
   }
 
   /**
+   * A copy added without an answer carries no answer of the user's: the PARTSTAT the
+   * sender wrote on their line is the sender's word. A new copy says NEEDS-ACTION on it,
+   * so {@code held} reports no answer and an Accept is not refused as given; a newer
+   * revision keeps the answer the copy they hold carried. Every other attendee's line
+   * stays as sent.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aCopyAddedWithoutAnAnswerCarriesNoneOfTheSendersPartStat() throws Exception {
+    String acceptedForTheUser = REQUEST.replace("PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:" + MAILBOX, "PARTSTAT=ACCEPTED;RSVP=TRUE:mailto:" + MAILBOX);
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(null, null, mapping(HREF));
+
+    assertNotNull(service.land(invitation("REQUEST", null, UID, acceptedForTheUser)));
+
+    ArgumentCaptor<String> stored = ArgumentCaptor.forClass(String.class);
+    verify(writer).putObject(eq(endpoint), anyString(), stored.capture());
+    assertEquals("NEEDS-ACTION", partStatOf(stored.getValue(), MAILBOX), stored.getValue());
+    assertEquals("ACCEPTED", partStatOf(stored.getValue(), "bob@partner.example"), stored.getValue());
+    givenTheMappedCopy(stored.getValue());
+    assertEquals(EventAttendeeResponse.NEEDS_ACTION, held(ORGANISER).response(), "no answer of the user's is held");
+
+    // A newer revision written without an answer keeps the one the held copy carried.
+    String older = COPY.replace("SEQUENCE:2", "SEQUENCE:1")
+                       .replace("PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:" + MAILBOX, "PARTSTAT=DECLINED:mailto:" + MAILBOX);
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenAnswer(call -> mapping(HREF));
+    when(calDavClient.fetchObject(endpoint, HREF)).thenReturn(new CalendarObject(HREF, "\"e5\"", older));
+    assertNotNull(service.land(invitation("REQUEST", null, UID, acceptedForTheUser)));
+    ArgumentCaptor<String> rewritten = ArgumentCaptor.forClass(String.class);
+    verify(writer).updateObject(eq(endpoint), eq(HREF), rewritten.capture(), eq("\"e5\""));
+    assertTrue(rewritten.getValue().contains("SEQUENCE:2"), rewritten.getValue());
+    assertEquals("DECLINED", partStatOf(rewritten.getValue(), MAILBOX), rewritten.getValue());
+
+    // A held copy with no answer of theirs: NEEDS-ACTION, not the sender's.
+    when(calDavClient.fetchObject(endpoint, HREF)).thenReturn(new CalendarObject(HREF, "\"e6\"", COPY.replace("SEQUENCE:2", "SEQUENCE:1")));
+    assertNotNull(service.land(invitation("REQUEST", null, UID, acceptedForTheUser)));
+    verify(writer).updateObject(eq(endpoint), eq(HREF), rewritten.capture(), eq("\"e6\""));
+    assertEquals("NEEDS-ACTION", partStatOf(rewritten.getValue(), MAILBOX), rewritten.getValue());
+
+    verify(caldavPushService, never()).pushAnswerOnto(anyLong(), anyString(), any(), any(), anyString(), anyLong());
+    verify(agendaEventAttendeeService, never()).sendEventResponse(anyLong(), anyLong(), any(), eq(false));
+  }
+
+  /**
+   * The PARTSTAT of the master's attendee line naming an address.
+   *
+   * @param object the calendar object
+   * @param address the attendee's address
+   * @return the token, null when no line names the address or carries none
+   */
+  private static String partStatOf(String object, String address) {
+    String unfolded = object.replace("\r\n ", "");
+    for (String line : unfolded.split("\r\n")) {
+      if (line.startsWith("ATTENDEE") && line.toLowerCase().endsWith("mailto:" + address.toLowerCase())) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("PARTSTAT=([A-Z-]+)").matcher(line);
+        return matcher.find() ? matcher.group(1) : null;
+      }
+    }
+    return null;
+  }
+
+  /**
    * A decline creates nothing: a meeting the user turned down and never added
    * does not belong in their calendar. The collection is still read first, so
    * a copy the mail server filed takes the decline instead of coming in
