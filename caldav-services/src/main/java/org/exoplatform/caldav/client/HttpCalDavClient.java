@@ -38,6 +38,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Future;
 import java.util.regex.Pattern;
 
 import javax.xml.XMLConstants;
@@ -1185,7 +1186,16 @@ public class HttpCalDavClient implements CalDavClient {
       long max = longProperty(MAX_BODY_BYTES_PROPERTY, DEFAULT_MAX_BODY_BYTES);
       byte[] bytes;
       try (InputStream stream = response.body()) {
-        bytes = stream.readNBytes((int) Math.min(max + 1, Integer.MAX_VALUE));
+        // The request timeout ends with the response's headers; an open
+        // budget bounds the body read too.
+        Future<?> watch = CalDavDeadline.closeWhenSpent(stream);
+        try {
+          bytes = stream.readNBytes((int) Math.min(max + 1, Integer.MAX_VALUE));
+        } finally {
+          if (watch != null) {
+            watch.cancel(false);
+          }
+        }
       }
       if (bytes.length > max) {
         throw new CalDavException(String.format("The calendar server answered more than %s bytes for %s %s",
@@ -1205,6 +1215,11 @@ public class HttpCalDavClient implements CalDavClient {
       }
       return new DavResponse(status, response, new String(bytes, StandardCharsets.UTF_8));
     } catch (IOException e) {
+      if (CalDavDeadline.ranOut()) {
+        // Cut by the caller's budget, not given up by the transport: the
+        // server may well be there.
+        throw new CalDavDeadlineException("No time was left to finish " + request.method() + " " + request.uri(), e);
+      }
       // Unreachable, not merely failed: this is the transport itself giving
       // up, which every later step of the same sequence would repeat. See
       // CalDavUnreachableException for why one attempt is the whole answer.
@@ -1657,7 +1672,8 @@ public class HttpCalDavClient implements CalDavClient {
    * @return the timeout to send with
    */
   private Duration requestTimeout() {
-    return Duration.ofSeconds(intProperty(REQUEST_TIMEOUT_PROPERTY, DEFAULT_REQUEST_TIMEOUT));
+    return CalDavDeadline.bound(Duration.ofSeconds(intProperty(REQUEST_TIMEOUT_PROPERTY, DEFAULT_REQUEST_TIMEOUT)),
+                                "a request to the calendar server");
   }
 
   /**
