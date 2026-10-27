@@ -28,6 +28,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
 
 import net.fortuna.ical4j.model.Calendar;
+import net.fortuna.ical4j.model.ComponentList;
 import net.fortuna.ical4j.model.Date;
 import net.fortuna.ical4j.model.DateTime;
 import net.fortuna.ical4j.model.DateList;
@@ -334,7 +335,11 @@ public class IcsMerger {
    * zones and the same components of one event, with the message's METHOD gone —
    * a calendar object resource must not carry one (RFC 4791 section 4.1) — and
    * every other component dropped: a REQUEST is about one event, and anything
-   * else in it is the sender's to keep, not the user's calendar's.
+   * else in it is the sender's to keep, not the user's calendar's. The sender's
+   * alarms are dropped too, from the series and from every override: they would
+   * ring on every device of the user, and an email alarm mails the attendees
+   * the sender lists on it; the user's own alarm settings apply instead.
+   * Otherwise the event is stored as the sender wrote it.
    *
    * @param scheduling the message's iCalendar object, as received
    * @param uid the UID of the event the message is about
@@ -357,7 +362,9 @@ public class IcsMerger {
     for (Object component : source.getComponents(net.fortuna.ical4j.model.Component.VEVENT)) {
       VEvent event = (VEvent) component;
       if (event.getUid() != null && StringUtils.equals(StringUtils.trim(event.getUid().getValue()), uid)) {
-        stored.getComponents().add(event);
+        // The same properties without the sub-components: ical4j hands out
+        // the alarms as a copy, so they cannot be removed from the event.
+        stored.getComponents().add(new VEvent(event.getProperties(), new ComponentList<>()));
         named = true;
       }
     }
