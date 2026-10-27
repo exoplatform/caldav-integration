@@ -109,6 +109,28 @@ public final class CalDavDeadline implements AutoCloseable {
   }
 
   /**
+   * The time left of the budget open on the current thread, for a write
+   * channel that does not send through {@link HttpCalDavClient} — one another
+   * add-on contributes for an account ({@code CalendarObjectWriters}) — so
+   * that it bounds its own calls by it.
+   *
+   * @return the time left, {@link Duration#ZERO} once it has run out (the
+   *         budget is then spent), null when no budget is open
+   */
+  public static Duration remaining() {
+    CalDavDeadline deadline = CURRENT.get();
+    if (deadline == null) {
+      return null;
+    }
+    long left = deadline.endNanos - System.nanoTime();
+    if (left <= 0) {
+      deadline.spent = true;
+      return Duration.ZERO;
+    }
+    return Duration.ofNanos(left);
+  }
+
+  /**
    * Whether the open budget has run out: a failed request then failed for it.
    *
    * @return false when no budget is open

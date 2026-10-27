@@ -167,7 +167,8 @@ import org.exoplatform.social.core.manager.IdentityManager;
  * already could: an object written whose import did not follow, which the
  * next sweep brings in. A writer another add-on contributes for the account
  * ({@link CalendarObjectWriters}) is bounded only if it sends through this
- * add-on's client. A message about one occurrence
+ * add-on's client, or bounds its own calls by
+ * {@link org.exoplatform.caldav.client.CalDavDeadline#remaining()}. A message about one occurrence
  * of a series (a lone RECURRENCE-ID) is refused: landing it means splicing an
  * override into a copy and answering an instance, which this path does not do
  * yet. A newer revision of an event the user holds is written over the
