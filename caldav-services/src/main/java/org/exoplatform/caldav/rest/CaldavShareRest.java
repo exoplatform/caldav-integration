@@ -115,7 +115,8 @@ public class CaldavShareRest {
           + "`EXO_USERS` with the eXo users connected as it, `OUTSIDE_EXO` named by the server, `EVERYONE`, or "
           + "`PUBLISHED_LINK` for a link the server's calendar publishing gave out, as a share channel reports it, with `publishedLink` `PRIVATE` or `PUBLIC` "
           + "and never the link's secret, which is its access entry's subject; a published link is never removable. "
-          + "`access` is `READ` for a view-only grant and `MORE` for one made outside eXo; `removable` says whether "
+          + "`access` is `READ` for a view-only grant, `WRITE` for a grant to see and edit the events as eXo writes it, and `MORE` "
+          + "for anything else, granted outside eXo; `removable` says whether "
           + "eXo may take it away. `subscriptionRequired` is true where a colleague sees a shared calendar only after "
           + "subscribing to it on the server itself, as the calendar's share channel reports. `meetingCopies` is true when the calendar is also where "
           + "eXo writes the copies of the user's eXo meetings: the drawer then asks before sharing. Sharing and "
@@ -192,8 +193,8 @@ public class CaldavShareRest {
           + "the access list the channel reads back. A colleague holding more, granted outside eXo, is refused rather "
           + "than partly removed. A colleague with no grant changes nothing and succeeds.")
   @ApiResponses(value = { @ApiResponse(responseCode = "200", description = "Removed; the sharees as read back"),
-      @ApiResponse(responseCode = "400", description = "Unknown colleague, not connected, the user themself, holding more "
-          + "than view access, or a calendar bound to no collection eXo can share (created by eXo, or imported and active; never the meetings mirror)"),
+      @ApiResponse(responseCode = "400", description = "Unknown colleague, not connected, the user themself, holding a grant "
+          + "made outside eXo (more than view or edit access), or a calendar bound to no collection eXo can share (created by eXo, or imported and active; never the meetings mirror)"),
       @ApiResponse(responseCode = "403", description = "Not the user's calendar"),
       @ApiResponse(responseCode = "404", description = "No such calendar"),
       @ApiResponse(responseCode = "409", description = "No account, not offered, access list unusable, an imported calendar the user does not "
