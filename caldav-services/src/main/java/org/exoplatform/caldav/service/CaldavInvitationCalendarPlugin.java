@@ -91,7 +91,8 @@ public class CaldavInvitationCalendarPlugin implements InvitationCalendarPlugin 
                                                                                        landing.answer() == null ? null
                                                                                                                 : EventAttendeeResponse.valueOf(landing.answer()
                                                                                                                                                        .name()),
-                                                                                       landing.icalendar()));
+                                                                                       landing.icalendar(),
+                                                                                       landing.fromOrganizer()));
     return landed == null ? null : new LandedInvitation(landed.eventId(), landed.link(), landed.removed(), landed.alreadyHeld());
   }
 

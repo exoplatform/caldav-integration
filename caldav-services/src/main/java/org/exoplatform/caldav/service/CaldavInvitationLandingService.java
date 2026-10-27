@@ -324,7 +324,10 @@ public class CaldavInvitationLandingService {
   /**
    * The copy of an invitation the user's calendar holds, for the mail reader to
    * say so when it shows the invitation: the mapped copy, read once from the
-   * server, with the user's answer on it and its SEQUENCE. Reads only.
+   * server, with the user's answer on it and its SEQUENCE. Reads only. What it
+   * answers never licenses a change: {@link #land} changes or removes a copy
+   * the user holds only for a mail the reader established as its organiser's
+   * ({@link MailInvitation#fromOrganizer()}), whatever this answered.
    *
    * @param username the user's eXo login, the reader's authenticated user
    * @param attendeeAddress the user's mailbox address, possibly null
@@ -449,8 +452,11 @@ public class CaldavInvitationLandingService {
     CalendarSync binding = bindingHolding(bindings, uid);
     ObjectSync known = binding == null ? null : caldavSyncStorage.getObjectByUid(binding.getId(), uid);
     if (invitation.isCancellation()) {
-      return known == null ? nothingHeld(invitation, "cancellation")
-                           : remove(endpoint, userIdentityId, username, known, master, addresses);
+      if (known == null) {
+        return nothingHeld(invitation, "cancellation");
+      }
+      refuseUnlessFromItsOrganiser(invitation, "cancellation");
+      return remove(endpoint, userIdentityId, username, known, master, addresses);
     }
     if (binding == null) {
       binding = homeBinding(bindings, endpoint);
@@ -776,6 +782,7 @@ public class CaldavInvitationLandingService {
       if (!newer) {
         return existing.etag();
       }
+      refuseUnlessFromItsOrganiser(invitation, "newer revision");
       if (StringUtils.isBlank(existing.etag())) {
         // No version to condition the rewrite on: the server's shortcoming,
         // not the sender's, and the client refuses an unconditional write.
@@ -1022,6 +1029,23 @@ public class CaldavInvitationLandingService {
     }
     if (copyOrganiser == null || !copyOrganiser.equals(organiserOf(master))) {
       throw new IllegalArgumentException("The invitation " + master.getUid() + " is not from the organiser of the copy the user holds");
+    }
+  }
+
+  /**
+   * Refuses to change or remove a copy the user holds on the strength of a mail
+   * the reader did not establish as its organiser's: the ORGANIZER line is the
+   * sender's own claim, and every attendee knows it. Applied whatever
+   * {@link #held} answered for the mail.
+   *
+   * @param invitation the invitation
+   * @param what what the mail would do, for the refusal
+   * @throws IllegalArgumentException when the mail is not from its organiser
+   */
+  private static void refuseUnlessFromItsOrganiser(MailInvitation invitation, String what) {
+    if (!invitation.fromOrganizer()) {
+      throw new IllegalArgumentException("The " + what + " of " + invitation.uid()
+          + " is not from its organiser's address; the copy the user holds is left as it is");
     }
   }
 
