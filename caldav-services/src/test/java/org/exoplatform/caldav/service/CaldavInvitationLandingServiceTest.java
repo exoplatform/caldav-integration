@@ -650,6 +650,33 @@ public class CaldavInvitationLandingServiceTest {
   }
 
   /**
+   * Updates and cancellations follow SEQUENCE: a cancellation older than the revision
+   * the user's copy holds -- the meeting restored since under the same UID -- removes
+   * nothing, on the server or in eXo; one of the same revision removes the copy.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aCancellationOlderThanTheCopyRemovesNothing() throws Exception {
+    String cancel = REQUEST.replace("METHOD:REQUEST", "METHOD:CANCEL");
+    ObjectSync held = mapping(FILED_HREF);
+    held.setId(5L);
+    when(caldavSyncStorage.getObjectByUid(PAIR, UID)).thenReturn(held);
+    when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF,
+                                                                                       "\"e5\"",
+                                                                                       COPY.replace("SEQUENCE:2", "SEQUENCE:3")));
+
+    assertThrows(IllegalArgumentException.class, () -> service.land(invitation("CANCEL", null, UID, cancel)));
+    verify(writer, never()).deleteObject(any(), anyString(), anyString());
+    verify(agendaEventService, never()).deleteEventById(anyLong(), anyLong());
+    verify(caldavSyncStorage, never()).deleteObject(anyLong());
+
+    when(calDavClient.fetchObject(endpoint, FILED_HREF)).thenReturn(new CalendarObject(FILED_HREF, "\"e6\"", COPY));
+    when(writer.deleteObject(endpoint, FILED_HREF, "\"e6\"")).thenReturn(204);
+    assertTrue(service.land(invitation("CANCEL", null, UID, cancel)).removed(), "the same revision's cancellation removes it");
+  }
+
+  /**
    * The organiser's cancellation removes the copy the user holds — the object
    * on the server under the version just read, the mapping, the eXo event, in
    * that order — and nothing when they hold none. From the organiser only.
