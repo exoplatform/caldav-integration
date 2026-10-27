@@ -757,7 +757,8 @@ public class CaldavInvitationLandingService {
    * @param addresses the user's own addresses
    * @return what was removed
    * @throws IllegalArgumentException when the cancellation is not the copy's
-   *           organiser's, or the user organises the copy
+   *           organiser's, is older than the revision the copy holds (a meeting
+   *           restored since under the same UID), or the user organises the copy
    * @throws IllegalStateException when the copy is not served, or the server
    *           or agenda refused the removal
    */
@@ -774,7 +775,13 @@ public class CaldavInvitationLandingService {
         throw new IllegalStateException("The copy of " + master.getUid() + " at " + known.getRemoteHref()
             + " is not served; the sweep decides what became of it");
       }
-      refuseUnlessItsOrganiser(master, masterOfCopy(existing.calendarData()), addresses);
+      IcsEvent copy = masterOfCopy(existing.calendarData());
+      refuseUnlessItsOrganiser(master, copy, addresses);
+      if (copy != null && master.getSequence() < copy.getSequence()) {
+        // Updates and cancellations follow SEQUENCE: an old cancellation does
+        // not call off the revision the organiser sent since.
+        throw new IllegalArgumentException("The cancellation of " + master.getUid() + " is older than the revision the user holds");
+      }
       int status = calendarObjectWriters.writer(endpoint).deleteObject(endpoint, known.getRemoteHref(), existing.etag());
       if (status == PutResult.PRECONDITION_FAILED) {
         throw new IllegalStateException("The copy of " + master.getUid() + " at " + known.getRemoteHref()
