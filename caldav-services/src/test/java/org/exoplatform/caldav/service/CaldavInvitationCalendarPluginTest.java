@@ -64,7 +64,8 @@ public class CaldavInvitationCalendarPluginTest {
                                                                             null,
                                                                             2,
                                                                             InvitationAnswer.TENTATIVE,
-                                                                            ICS);
+                                                                            ICS,
+                                                                            true);
 
   private static final InvitationLanding ADDED      = new InvitationLanding("john",
                                                                             "john@acme.com",
@@ -81,7 +82,8 @@ public class CaldavInvitationCalendarPluginTest {
                                                                          "weekly-sync@google.com",
                                                                          2,
                                                                          EventAttendeeResponse.TENTATIVE,
-                                                                         ICS);
+                                                                         ICS,
+                                                                         true);
 
   private static final MailInvitation    PUBLISHED  = new MailInvitation("john",
                                                                          "john@acme.com",
@@ -89,7 +91,8 @@ public class CaldavInvitationCalendarPluginTest {
                                                                          "weekly-sync@google.com",
                                                                          0,
                                                                          null,
-                                                                         ICS);
+                                                                         ICS,
+                                                                         false);
 
   @Mock
   private CaldavInvitationLandingService caldavInvitationLandingService;
