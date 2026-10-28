@@ -443,8 +443,9 @@ public class IcsMerger {
   }
 
   /**
-   * A calendar user address stripped of its scheme and case, so that the same
-   * person written by two clients compares equal.
+   * A calendar user address stripped of its scheme and of its ASCII case only
+   * ({@link IcsText#bareAddress}), so that the same person written by two
+   * clients compares equal.
    *
    * <p>
    * RFC 5545 makes the value a URI, and clients differ on the case of the
