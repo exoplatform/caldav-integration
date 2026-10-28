@@ -110,10 +110,14 @@ public final class IcsText {
 
   /**
    * A CAL-ADDRESS reduced to what two spellings of one person compare as: the
-   * {@code mailto:} scheme gone, trimmed, lower-cased. RFC 5545 makes the value
-   * a URI, and clients differ on the case of the scheme; the local part of a
-   * mailbox is technically case-sensitive, but no calendar server this
-   * connector talks to treats it as such.
+   * {@code mailto:} scheme gone, trimmed, its ASCII letters lower-cased and every
+   * other character kept. RFC 5545 makes the value a URI, and clients differ on
+   * the case of the scheme; the local part of a mailbox is technically
+   * case-sensitive, but no calendar server this connector talks to treats it as
+   * such. A full lower-casing turns some non-ASCII letters into ASCII ones (the
+   * Kelvin sign into {@code k}), so a look-alike ORGANIZER would compare equal
+   * to the held copy's: the mail reader folds the {@code From} it checks against
+   * the ORGANIZER the same way.
    *
    * @param value a CAL-ADDRESS or a bare mail address, may be null
    * @return the comparable address, or null when there is none
@@ -126,7 +130,14 @@ public final class IcsText {
     if (StringUtils.startsWithIgnoreCase(trimmed, "mailto:")) {
       trimmed = StringUtils.trimToNull(trimmed.substring("mailto:".length()));
     }
-    return trimmed == null ? null : trimmed.toLowerCase();
+    if (trimmed == null) {
+      return null;
+    }
+    StringBuilder bare = new StringBuilder(trimmed.length());
+    for (char character : trimmed.toCharArray()) {
+      bare.append(character >= 'A' && character <= 'Z' ? (char) (character + ('a' - 'A')) : character);
+    }
+    return bare.toString();
   }
 
   /**
