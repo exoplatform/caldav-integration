@@ -38,6 +38,19 @@ import org.exoplatform.caldav.model.IcsReminder;
  */
 public class IcsTextTest {
 
+  /**
+   * An address compares with its ASCII letters lower-cased and every other
+   * character kept: the Kelvin sign is not {@code k}, nor {@code İ} an
+   * {@code i}.
+   */
+  @Test
+  public void anAddressFoldsItsAsciiCaseOnly() {
+    assertEquals("kim@partner.example", IcsText.bareAddress(" MAILTO:Kim@Partner.Example "));
+    assertEquals("\u212Aim@partner.example", IcsText.bareAddress("mailto:\u212AIM@partner.example"));
+    assertEquals("k\u0130m@partner.example", IcsText.bareAddress("K\u0130M@partner.example"));
+    assertNull(IcsText.bareAddress(" mailto: "));
+  }
+
   @Test
   public void htmlBecomesTextWithItsLineBreaksKept() {
     assertEquals("First line\nSecond line", IcsText.htmlToText("First line<br>Second line"));
