@@ -1152,7 +1152,9 @@ public class HttpCalDavClient implements CalDavClient {
    * server then answers is the answer: never a loop. Only a 401 counts - a 407 is
    * a proxy and a 403 is a refusal the verb policies already classify - and an
    * unreachable server proves nothing about the material. The request bodies of
-   * this client are strings or empty, so the copy replays the same body.
+   * this client are strings or empty, so the copy replays the same body. The copy
+   * takes the time left of an open budget, not the first request's timeout, and
+   * does not leave once that budget is spent.
    *
    * @param request the request to send, carrying the provider's header
    * @param endpoint the account the request addresses
@@ -1168,6 +1170,7 @@ public class HttpCalDavClient implements CalDavClient {
     caldavCredentialsResolver.invalidate(endpoint.getServerId(), endpoint.getAuthProviderName(), endpoint.getExoLogin());
     HttpRequest retry = HttpRequest.newBuilder(request, (name, value) -> !AUTHORIZATION_HEADER.equalsIgnoreCase(name))
                                    .header(AUTHORIZATION_HEADER, authorization(endpoint))
+                                   .timeout(requestTimeout())
                                    .build();
     return exchange(retry);
   }
