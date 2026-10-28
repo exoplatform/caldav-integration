@@ -1050,6 +1050,39 @@ public class CaldavInvitationLandingServiceTest {
   }
 
   /**
+   * The organiser is compared with its ASCII letters lower-cased only: an
+   * ORGANIZER matching the copy's once lower-cased beyond ASCII -- the Kelvin
+   * sign for {@code k}, {@code İ} for {@code i} -- is another organiser, told
+   * nothing of the copy and refused before anything is written.
+   *
+   * @throws Exception never
+   */
+  @Test
+  public void aLookAlikeOrganiserIsAnotherOrganiser() throws Exception {
+    String kim = "kim@partner.example";
+    givenTheMappedCopy(COPY.replace("mailto:" + ORGANISER, "mailto:" + kim));
+    assertNotNull(held("KIM@partner.example"), "ASCII case aside");
+    assertNull(held("\u212Aim@partner.example"), "the Kelvin sign is not k");
+    assertNull(held("k\u0130m@partner.example"), "İ is not i");
+
+    givenTheMappedCopy(COPY.replace("SEQUENCE:2", "SEQUENCE:1").replace("mailto:" + ORGANISER, "mailto:" + kim));
+    assertThrows(IllegalArgumentException.class,
+                 () -> service.land(invitation(EventAttendeeResponse.ACCEPTED,
+                                               UID,
+                                               REQUEST.replace("mailto:" + ORGANISER, "mailto:\u212Aim@partner.example"))));
+    assertThrows(IllegalArgumentException.class,
+                 () -> service.land(invitation(EventAttendeeResponse.ACCEPTED,
+                                               UID,
+                                               REQUEST.replace("mailto:" + ORGANISER, "mailto:k\u0130m@partner.example"))));
+    verify(writer, never()).updateObject(any(), anyString(), anyString(), anyString());
+    verify(writer, never()).putObject(any(), anyString(), anyString());
+
+    // Her own newer revision, in another ASCII case, rewrites it.
+    assertNotNull(service.land(invitation(EventAttendeeResponse.ACCEPTED, UID, REQUEST.replace("mailto:" + ORGANISER, "mailto:KIM@partner.example"))));
+    verify(writer).updateObject(eq(endpoint), eq(HREF), anyString(), eq("\"e9\""));
+  }
+
+  /**
    * A mapped copy the server would not serve is a failure the reader logs and
    * shows nothing for, not "not held".
    */
