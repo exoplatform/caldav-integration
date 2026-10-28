@@ -338,8 +338,9 @@ public class IcsMerger {
    * else in it is the sender's to keep, not the user's calendar's. The sender's
    * alarms are dropped too, from the series and from every override: they would
    * ring on every device of the user, and an email alarm mails the attendees
-   * the sender lists on it; the user's own alarm settings apply instead.
-   * Otherwise the event is stored as the sender wrote it.
+   * the sender lists on it. The copy is stored without alarms: an invitation
+   * landed from a mail carries no reminder unless the user's client adds its
+   * default one. Otherwise the event is stored as the sender wrote it.
    *
    * @param scheduling the message's iCalendar object, as received
    * @param uid the UID of the event the message is about
