@@ -1154,7 +1154,8 @@ public class HttpCalDavClient implements CalDavClient {
    * unreachable server proves nothing about the material. The request bodies of
    * this client are strings or empty, so the copy replays the same body. The copy
    * takes the time left of an open budget, not the first request's timeout, and
-   * does not leave once that budget is spent.
+   * neither fresh material is asked for nor the copy leaves once that budget is
+   * spent.
    *
    * @param request the request to send, carrying the provider's header
    * @param endpoint the account the request addresses
@@ -1168,9 +1169,10 @@ public class HttpCalDavClient implements CalDavClient {
     }
     LOG.debug("The calendar server refused the credentials of user {}; retrying once with fresh ones", endpoint.getExoLogin());
     caldavCredentialsResolver.invalidate(endpoint.getServerId(), endpoint.getAuthProviderName(), endpoint.getExoLogin());
+    Duration timeout = requestTimeout();
     HttpRequest retry = HttpRequest.newBuilder(request, (name, value) -> !AUTHORIZATION_HEADER.equalsIgnoreCase(name))
+                                   .timeout(timeout)
                                    .header(AUTHORIZATION_HEADER, authorization(endpoint))
-                                   .timeout(requestTimeout())
                                    .build();
     return exchange(retry);
   }
