@@ -56,6 +56,10 @@ import org.exoplatform.services.connector.credentials.HttpConnectorCredentials;
  */
 class HttpCalDavClientDeadlineTest {
 
+  private static final long BUDGET_MS        = 1000;
+
+  private static final long REFUSAL_DELAY_MS = 800;
+
   private HttpServer      server;
 
   private ExecutorService handlers;
@@ -92,6 +96,16 @@ class HttpCalDavClientDeadlineTest {
         body.write("BEGIN:VCALENDAR".getBytes(StandardCharsets.UTF_8));
         body.flush();
         awaitRelease();
+      }
+    });
+    server.createContext("/dav/refuse-late/", exchange -> {
+      if (requests.incrementAndGet() == 1) {
+        pause(REFUSAL_DELAY_MS);
+        exchange.sendResponseHeaders(401, -1);
+        exchange.close();
+      } else {
+        awaitRelease();
+        exchange.close();
       }
     });
     handlers = Executors.newCachedThreadPool();
@@ -164,6 +178,23 @@ class HttpCalDavClientDeadlineTest {
   }
 
   /**
+   * The one retry after a 401 is bounded by the time left of the budget, not by
+   * the first request's timeout: a server that refuses late and then never
+   * answers holds the landing for the budget only.
+   */
+  @Test
+  void theRetryAfterA401EndsWithTheBudget() {
+    long started = System.nanoTime();
+    try (CalDavDeadline deadline = CalDavDeadline.start(Duration.ofMillis(BUDGET_MS))) {
+      assertThrows(CalDavDeadlineException.class, () -> client.fetchObject(endpoint, "/dav/refuse-late/a.ics"));
+    }
+    long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+    assertEquals(2, requests.get(), "the refused request and its one retry");
+    assertTrue(elapsed >= BUDGET_MS - 100 && elapsed < BUDGET_MS + REFUSAL_DELAY_MS / 2,
+               "the retry ends with the budget: " + elapsed + " ms");
+  }
+
+  /**
    * Without a budget a request keeps its own timeout; within one, the smaller
    * of the two; and a budget opened inside another never outlives it.
    */
@@ -180,6 +211,19 @@ class HttpCalDavClientDeadlineTest {
       assertTrue(CalDavDeadline.bound(own, "a request").compareTo(Duration.ofSeconds(2)) <= 0);
     }
     assertSame(own, CalDavDeadline.bound(own, "a request"), "closed: no budget left on the thread");
+  }
+
+  /**
+   * Holds a handler for a while, the server taking its time to refuse.
+   *
+   * @param millis how long
+   */
+  private static void pause(long millis) {
+    try {
+      Thread.sleep(millis);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   /**
