@@ -23,7 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -72,6 +75,8 @@ class HttpCalDavClientDeadlineTest {
 
   private CalDavEndpoint  endpoint;
 
+  private ConnectorCredentialsService credentials;
+
   /**
    * A loopback server with a handler that never answers (/silent/), one that
    * sends its headers and a few bytes of a longer body and stops (/trickle/),
@@ -116,7 +121,7 @@ class HttpCalDavClientDeadlineTest {
              .thenReturn(new CaldavServer(1L, "agenda.caldavCalendar", "Loopback", null,
                                           "http://127.0.0.1:" + server.getAddress().getPort() + "/dav/", true, null, null,
                                           null, null, true, null, null, null, null, null, null, "personal", null, null));
-    ConnectorCredentialsService credentials = mock(ConnectorCredentialsService.class);
+    credentials = mock(ConnectorCredentialsService.class);
     doReturn(new HttpConnectorCredentials("Basic YWxpY2U6c2VjcmV0", null)).when(credentials).produce(any());
     client = new HttpCalDavClient(HttpClient.newHttpClient(), caldavServerService, new CaldavCredentialsResolver(credentials));
     endpoint = client.endpoint(1L, "alice");
@@ -192,6 +197,26 @@ class HttpCalDavClientDeadlineTest {
     assertEquals(2, requests.get(), "the refused request and its one retry");
     assertTrue(elapsed >= BUDGET_MS - 100 && elapsed < BUDGET_MS + REFUSAL_DELAY_MS / 2,
                "the retry ends with the budget: " + elapsed + " ms");
+  }
+
+  /**
+   * A budget spent while the provider forgets the refused material sends no
+   * retry and asks the provider for no fresh material: the one production is
+   * the first request's.
+   *
+   * @throws Exception never
+   */
+  @Test
+  void aBudgetSpentBeforeTheRetryAsksTheProviderForNothingMore() throws Exception {
+    doAnswer(invocation -> {
+      pause(BUDGET_MS);
+      return null;
+    }).when(credentials).invalidate(any());
+    try (CalDavDeadline deadline = CalDavDeadline.start(Duration.ofMillis(BUDGET_MS))) {
+      assertThrows(CalDavDeadlineException.class, () -> client.fetchObject(endpoint, "/dav/refuse-late/a.ics"));
+    }
+    assertEquals(1, requests.get(), "no retry left");
+    verify(credentials, times(1)).produce(any());
   }
 
   /**
