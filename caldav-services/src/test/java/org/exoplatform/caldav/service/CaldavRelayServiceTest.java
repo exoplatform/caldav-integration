@@ -863,6 +863,19 @@ public class CaldavRelayServiceTest {
     assertFalse(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID));
   }
 
+  /** EXO-91017. An identity or a refusal record that cannot be read is no refusal either. */
+  @Test
+  public void aManagedRefusalWhoseRecordCannotBeReadIsNone() {
+    when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, USERNAME)).thenReturn(identity);
+    when(identity.getId()).thenReturn(String.valueOf(IDENTITY_ID));
+    when(caldavConnectorStorage.getManagedRefusal(IDENTITY_ID)).thenThrow(new IllegalStateException("settings store unavailable"));
+
+    assertFalse(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID));
+
+    when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, USERNAME)).thenThrow(new IllegalStateException("no social"));
+    assertFalse(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID));
+  }
+
   /** The registration, the user's identity and the account the provider names for them. */
   private void givenOneClickTargetOnly() throws Exception {
     when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));

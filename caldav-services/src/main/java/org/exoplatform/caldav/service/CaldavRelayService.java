@@ -626,23 +626,23 @@ public class CaldavRelayService {
    * for them now - none, when it named none. Another designation, or another account
    * resolved for the user, is worth a new attempt, so the connection is offered again.
    * <p>
-   * Never throws: a registration gone or a provider that cannot answer reads as no
-   * refusal, and the connection stays offered.
+   * Never throws: an identity or a record that cannot be read, a registration gone or
+   * a provider that cannot answer reads as no refusal, and the connection stays offered.
    *
    * @param exoLogin the eXo login
    * @param serverId the registration managed mode designates for the user
    * @return true when the user's screens offer no connection and say why instead
    */
   public boolean isManagedRefused(String exoLogin, long serverId) {
-    long identityId = getUserIdentityId(exoLogin);
-    if (identityId == 0) {
-      return false;
-    }
-    CaldavManagedRefusal refusal = caldavConnectorStorage.getManagedRefusal(identityId);
-    if (refusal == null || refusal.serverId() != serverId) {
-      return false;
-    }
     try {
+      long identityId = getUserIdentityId(exoLogin);
+      if (identityId == 0) {
+        return false;
+      }
+      CaldavManagedRefusal refusal = caldavConnectorStorage.getManagedRefusal(identityId);
+      if (refusal == null || refusal.serverId() != serverId) {
+        return false;
+      }
       CaldavServer server = caldavServerService.getServerById(serverId);
       String account = caldavCredentialsResolver.targetAccount(serverId, server.getAuthProviderName(), exoLogin);
       return StringUtils.defaultString(StringUtils.trimToNull(account)).equals(refusal.account());
