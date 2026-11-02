@@ -397,6 +397,30 @@ public class CaldavServerServiceTest {
     assertEquals(7L, ((CaldavServerAuthenticationChangedEvent) published.getValue()).getServerId());
   }
 
+  /**
+   * EXO-91017. The drawer posts the stored configuration back with every save, so a
+   * rename that changes no value of it still announces a change of authentication, and
+   * nobody is disconnected: the refusals are forgotten, and one that still holds is
+   * recorded again by the user's next attempt.
+   */
+  @Test
+  public void aSaveThatPostsTheStoredConfigurationBackAnnouncesOnlyTheAuthenticationChange() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Bluemind", null, SERVER_URL, true);
+    stored.setAuthProviderName("bluemind-sudo");
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    when(caldavServerStorage.updateServer(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    CaldavServer renamed = server(7, null, "Renamed", null, SERVER_URL, true);
+    renamed.setAuthProviderName("bluemind-sudo");
+    renamed.setProviderConfig(Map.of("technicalLogin", "admin0@global.virt"));
+
+    assertDoesNotThrow(() -> caldavServerService.updateServer(renamed, ADMIN_USER));
+
+    ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
+    verify(eventPublisher).publishEvent(published.capture());
+    assertEquals(7L, ((CaldavServerAuthenticationChangedEvent) published.getValue()).getServerId());
+  }
+
   /** An edit that keeps the provider, or leaves it blank, disconnects nobody. */
   @Test
   public void anEditThatKeepsTheProviderDisconnectsNobody() {
