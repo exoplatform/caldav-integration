@@ -274,6 +274,57 @@ class CaldavManagedEnrollmentServiceTest {
     verify(caldavRelayService, never()).connectThroughProvider(anyLong(), anyString(), anyBoolean(), any());
   }
 
+  /**
+   * EXO-90836. The switch disconnects the account the user is on, so it asks again, right
+   * before the write, whether managed mode still governs them with the designated
+   * server: managed mode turned off, another server designated or the user's group
+   * excluded during the probe leaves their account where it is.
+   */
+  @Test
+  void aSwitchWhoseVerdictChangedDuringTheProbeWritesNothing() throws Exception {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
+    configured(true);
+    when(caldavManagedModeService.governingServerFor(USER)).thenReturn(null);
+    when(caldavRelayService.switchThroughProvider(eq(7L), eq(USER), any())).thenAnswer(call -> {
+      BooleanSupplier stillWanted = call.getArgument(2);
+      return probe(stillWanted.getAsBoolean() ? CaldavProbeResult.OK : CaldavProbeResult.SUPERSEDED);
+    });
+
+    assertEquals(ManagedEnrollmentOutcome.NOT_MANAGED, service.enrollOnLogin(USER));
+
+    verify(caldavRelayService, never()).disconnectForUser(anyLong(), anyString());
+  }
+
+  /** EXO-90836. A switch whose verdict cannot be read at the write writes nothing either. */
+  @Test
+  void aSwitchWhoseVerdictCannotBeReadAtTheWriteWritesNothing() throws Exception {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
+    configured(true);
+    when(caldavManagedModeService.governingServerFor(USER)).thenThrow(new IllegalStateException("no identity"));
+    when(caldavRelayService.switchThroughProvider(eq(7L), eq(USER), any())).thenAnswer(call -> {
+      BooleanSupplier stillWanted = call.getArgument(2);
+      return probe(stillWanted.getAsBoolean() ? CaldavProbeResult.OK : CaldavProbeResult.SUPERSEDED);
+    });
+
+    assertEquals(ManagedEnrollmentOutcome.REFUSED, service.enrollOnLogin(USER));
+
+    verify(caldavRelayService, never()).disconnectForUser(anyLong(), anyString());
+  }
+
+  /** EXO-90836. A switch whose verdict still holds at the write is written. */
+  @Test
+  void aSwitchWhoseVerdictHoldsAtTheWriteIsWritten() throws Exception {
+    when(caldavManagedModeService.designatedServerFor(USER)).thenReturn(7L);
+    configured(true);
+    when(caldavManagedModeService.governingServerFor(USER)).thenReturn(7L);
+    when(caldavRelayService.switchThroughProvider(eq(7L), eq(USER), any())).thenAnswer(call -> {
+      BooleanSupplier stillWanted = call.getArgument(2);
+      return probe(stillWanted.getAsBoolean() ? CaldavProbeResult.OK : CaldavProbeResult.SUPERSEDED);
+    });
+
+    assertEquals(ManagedEnrollmentOutcome.SWITCHED, service.enrollOnLogin(USER));
+  }
+
   /** EXO-90836. A switch the designated server refuses leaves the user's account as it was. */
   @Test
   void aRefusedSwitchLeavesTheUsersAccount() throws Exception {

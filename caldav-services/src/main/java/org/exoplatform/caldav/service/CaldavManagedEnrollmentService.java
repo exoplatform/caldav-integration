@@ -240,7 +240,10 @@ public class CaldavManagedEnrollmentService {
    * Rule one is asked again right before the connection is written: the probe
    * can take as long as the server's timeout, and a configuration the user
    * made meanwhile is theirs. The connect then records nothing and answers
-   * {@link CaldavProbeResult#SUPERSEDED}.
+   * {@link CaldavProbeResult#SUPERSEDED}. A switch, which disconnects the account the
+   * user is on, also asks again whether managed mode still governs them with this
+   * server: an administrator who turned managed mode off, designated another server or
+   * excluded the user's group during the probe leaves that account where it is.
    *
    * @param serverId the designated registration
    * @param username the eXo login of the user who logged in
@@ -253,7 +256,7 @@ public class CaldavManagedEnrollmentService {
     try {
       CaldavProbeResult outcome = switching ? caldavRelayService.switchThroughProvider(serverId,
                                                                                       username,
-                                                                                      () -> !isOnServer(identityId, serverId))
+                                                                                      () -> isStillToSwitch(identityId, username, serverId))
                                             : caldavRelayService.connectThroughProvider(serverId,
                                                                                        username,
                                                                                        true,
@@ -267,6 +270,10 @@ public class CaldavManagedEnrollmentService {
         return ManagedEnrollmentOutcome.ATTACHED;
       }
       if (CaldavProbeResult.SUPERSEDED.equals(outcome.getResult())) {
+        if (switching && !isOnServer(identityId, serverId)) {
+          LOG.debug("User {} not switched: managed mode no longer designates server {} for them", username, serverId);
+          return ManagedEnrollmentOutcome.NOT_MANAGED;
+        }
         LOG.debug("User {} not enrolled: they configured a CalDAV account during the attempt", username);
         return ManagedEnrollmentOutcome.ALREADY_CONFIGURED;
       }
@@ -336,6 +343,22 @@ public class CaldavManagedEnrollmentService {
   private CaldavUserSetting configuration(long identityId) {
     CaldavUserSetting setting = caldavConnectorStorage.getCaldavSetting(identityId);
     return setting != null && StringUtils.isNotBlank(setting.getUsername()) ? setting : null;
+  }
+
+  /**
+   * Whether the login-time switch is still to be written once the designated server
+   * answered: the user is not on that server yet, and managed mode still governs them
+   * with it. Judged by the verdict that refuses a user whose identity cannot be
+   * resolved, as the disconnection at login is: the switch disconnects the account the
+   * user is on, so a verdict that cannot be read writes nothing.
+   *
+   * @param identityId the user's social identity
+   * @param username the eXo login
+   * @param serverId the registration the switch connects
+   * @return true when the switch is to be written
+   */
+  private boolean isStillToSwitch(long identityId, String username, Long serverId) {
+    return !isOnServer(identityId, serverId) && serverId.equals(caldavManagedModeService.governingServerFor(username));
   }
 
   /**
