@@ -653,10 +653,11 @@ public class CaldavRelayService {
   }
 
   /**
-   * Forgets the managed refusals recorded on a registration whose provider, or whose
-   * provider configuration, an administrator just changed (EXO-91017). The refusal was
-   * the answer of the authentication now replaced: the users it names are offered the
-   * connection again instead of waiting for their next login to retry it.
+   * Forgets the managed refusals recorded on a registration whose provider an
+   * administrator just changed, or whose provider configuration a save just wrote
+   * (EXO-91017). The refusal may have been the answer of the authentication now
+   * replaced: the users it names are offered the connection again instead of waiting
+   * for their next login to retry it.
    *
    * @param serverId the registration whose authentication changed
    */

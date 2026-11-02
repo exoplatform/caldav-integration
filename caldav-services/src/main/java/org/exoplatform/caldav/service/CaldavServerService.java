@@ -1134,9 +1134,12 @@ public class CaldavServerService {
       eventPublisher.publishEvent(new CaldavServerProviderChangedEvent(stored.getId()));
     }
     if (isProviderChange(stored, server) || MapUtils.isNotEmpty(server.getProviderConfig())) {
-      // The users managed mode could not connect were refused by the authentication
-      // this save replaces - another provider, or another technical account: they are
-      // offered the connection again.
+      // The users managed mode could not connect may have been refused by the
+      // authentication this save replaces - another provider, or a configuration
+      // written: they are offered the connection again. Any save that carries a
+      // configuration counts, a rename included, since the drawer posts the stored
+      // values back with every save; a refusal that still holds is recorded again by
+      // the user's next attempt.
       eventPublisher.publishEvent(new CaldavServerAuthenticationChangedEvent(stored.getId()));
     }
     return caldavServerQuirkService.decorate(updatedServer);

@@ -17,9 +17,10 @@
 package org.exoplatform.caldav.event;
 
 /**
- * Published when an administrator's save changes how a CalDAV server authenticates its
- * users: another credentials provider, or a provider configuration written. The managed
- * refusals recorded on that server are then forgotten (EXO-91017).
+ * Published when an administrator's save may have changed how a CalDAV server
+ * authenticates its users: another credentials provider, or any save that carries a
+ * provider configuration, whether or not its values differ from the stored ones. The
+ * managed refusals recorded on that server are then forgotten (EXO-91017).
  */
 public class CaldavServerAuthenticationChangedEvent {
 
