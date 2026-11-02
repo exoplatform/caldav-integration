@@ -19,6 +19,7 @@ package org.exoplatform.caldav.storage;
 import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.math.NumberUtils;
 
 import org.exoplatform.caldav.model.CaldavManagedRefusal;
 import org.exoplatform.caldav.model.CaldavUserSetting;
@@ -268,17 +269,8 @@ public class CaldavConnectorStorage {
    * @return how many refusals were forgotten
    */
   public int clearManagedRefusalsOn(long serverId) {
-    List<Long> refusedIdentities = this.settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
-                                                                                               Scope.APPLICATION.getName(),
-                                                                                               CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE.getId(),
-                                                                                               CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY,
-                                                                                               0,
-                                                                                               Integer.MAX_VALUE)
-                                                      .stream()
-                                                      .map(context -> Long.valueOf(context.getId()))
-                                                      .toList();
     int cleared = 0;
-    for (long userIdentityId : refusedIdentities) {
+    for (long userIdentityId : identitiesHolding(CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY)) {
       CaldavManagedRefusal refusal = getManagedRefusal(userIdentityId);
       if (refusal != null && refusal.serverId() == serverId) {
         clearManagedRefusal(userIdentityId);
@@ -319,14 +311,30 @@ public class CaldavConnectorStorage {
    * @return their technical identity identifiers
    */
   public List<Long> getIdentitiesConnectedByManagedMode() {
+    return identitiesHolding(CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY);
+  }
+
+  /**
+   * The social identities whose user context holds this key in the connector scope, by
+   * one query on the key. This storage writes under the identity id only, but a user
+   * can write any key of their own context through the platform's generic settings
+   * REST, whose id is their username: a context whose id is not a number is no identity
+   * this storage wrote for, and is skipped.
+   *
+   * @param key the setting name
+   * @return the technical identity identifiers
+   */
+  private List<Long> identitiesHolding(String key) {
     return this.settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
                                                                        Scope.APPLICATION.getName(),
                                                                        CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE.getId(),
-                                                                       CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY,
+                                                                       key,
                                                                        0,
                                                                        Integer.MAX_VALUE)
                               .stream()
-                              .map(context -> Long.valueOf(context.getId()))
+                              .map(Context::getId)
+                              .filter(NumberUtils::isDigits)
+                              .map(Long::valueOf)
                               .toList();
   }
 }

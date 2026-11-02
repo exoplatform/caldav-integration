@@ -16,9 +16,11 @@
  */
 package org.exoplatform.caldav.listener;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 
 import org.junit.jupiter.api.Test;
@@ -47,6 +49,17 @@ public class CaldavManagedRefusalListenerTest {
     listener.handleAuthenticationChanged(new CaldavServerAuthenticationChangedEvent(7L));
 
     verify(caldavRelayService).forgetManagedRefusalsOn(7L);
+  }
+
+  /**
+   * EXO-91017. Run inline by the administrator's save, which has already stored the
+   * change, a failure to forget the refusals is logged and never fails that save.
+   */
+  @Test
+  public void aFailureToForgetTheRefusalsDoesNotFailTheSave() {
+    doThrow(new IllegalStateException("settings store unavailable")).when(caldavRelayService).forgetManagedRefusalsOn(7L);
+
+    assertDoesNotThrow(() -> listener.handleAuthenticationChanged(new CaldavServerAuthenticationChangedEvent(7L)));
   }
 
   /**
