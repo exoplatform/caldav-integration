@@ -410,6 +410,46 @@ public class CaldavConnectorStorageTest {
     }
   }
 
+  /**
+   * EXO-91017. A user can write the refusal key in their own context through the generic
+   * settings REST, under their username: such a context is no identity this storage
+   * wrote for, and the walk skips it instead of failing for every user.
+   */
+  @Test
+  public void forgettingTheRefusalsSkipsAContextKeyedByAUsername() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(Context.USER.getName(),
+                                                                Scope.APPLICATION.getName(),
+                                                                CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE.getId(),
+                                                                CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY,
+                                                                0,
+                                                                Integer.MAX_VALUE))
+        .thenReturn(List.of(Context.USER.id("mary"), Context.USER.id("41")));
+    givenManagedRefusalStored("41", "5:eric@bm.example.org");
+
+    assertEquals(1, caldavConnectorStorage.clearManagedRefusalsOn(5L));
+
+    verify(settingService).remove(Context.USER.id("41"),
+                                  CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                  CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY);
+    verify(settingService, never()).get(Context.USER.id("mary"),
+                                        CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
+                                        CaldavConnectorUtils.CALDAV_MANAGED_REFUSED_KEY);
+  }
+
+  /** The managed-mode mark walk skips a context keyed by a username the same way. */
+  @Test
+  public void theUsersManagedModeAttachedSkipAContextKeyedByAUsername() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName("USER",
+                                                                "APPLICATION",
+                                                                "CaldavAgendaConnector",
+                                                                CaldavConnectorUtils.CALDAV_CONNECTED_BY_MANAGED_MODE_KEY,
+                                                                0,
+                                                                Integer.MAX_VALUE))
+        .thenReturn(List.of(Context.USER.id("42"), Context.USER.id("mary"), Context.USER.id("-1")));
+
+    assertEquals(List.of(42L), caldavConnectorStorage.getIdentitiesConnectedByManagedMode());
+  }
+
   private void givenManagedRefusalStored(String stored) {
     givenManagedRefusalStored("42", stored);
   }

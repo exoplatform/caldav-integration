@@ -23,22 +23,35 @@ import org.springframework.transaction.event.TransactionalEventListener;
 
 import org.exoplatform.caldav.event.CaldavServerAuthenticationChangedEvent;
 import org.exoplatform.caldav.service.CaldavRelayService;
+import org.exoplatform.services.log.ExoLogger;
+import org.exoplatform.services.log.Log;
 
 /**
  * Hands a change of a server's authentication to
  * {@link CaldavRelayService#forgetManagedRefusalsOn(long)}.
  * <p>
  * After the commit, with {@code fallbackExecution}: the refusals are forgotten once the
- * change is stored, and a server edit may run without a Spring transaction.
+ * change is stored, and a server edit may run without a Spring transaction. Run that
+ * way, the handler is called inline by the administrator's save, which has already
+ * stored the change: a failure to forget is logged, and never fails the save. The
+ * refusals left are retried by each user's next login.
  */
 @Component
 public class CaldavManagedRefusalListener {
+
+  private static final Log   LOG = ExoLogger.getLogger(CaldavManagedRefusalListener.class);
 
   @Autowired
   private CaldavRelayService caldavRelayService;
 
   @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
   public void handleAuthenticationChanged(CaldavServerAuthenticationChangedEvent event) {
-    caldavRelayService.forgetManagedRefusalsOn(event.getServerId());
+    try {
+      caldavRelayService.forgetManagedRefusalsOn(event.getServerId());
+    } catch (RuntimeException e) {
+      LOG.warn("The managed CalDAV refusals on server {} could not be forgotten; each user's next login retries",
+               event.getServerId(),
+               e);
+    }
   }
 }
