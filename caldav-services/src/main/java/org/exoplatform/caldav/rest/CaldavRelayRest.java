@@ -222,11 +222,11 @@ public class CaldavRelayRest {
    */
   private ResponseStatusException refusal(HttpStatus status, String code) {
     // The class contract above promises the code in a header on every refusal, so the
-    // browser can tell a relay verdict from an upstream answer. Putting it only in the
-    // exception reason did not honour that: Spring Boot's default error body
-    // leaves the reason out on this platform, and the connector reads the header. Spring copies getHeaders() onto the error
-    // response, but ResponseStatusException pins that accessor to HttpHeaders.EMPTY, so
-    // carrying the header takes overriding it.
+    // browser can tell a relay verdict from an upstream answer: Spring Boot's default
+    // error body leaves the reason out on this platform, and the connector reads the
+    // header. Spring copies getHeaders() onto the error response, but
+    // ResponseStatusException pins that accessor to HttpHeaders.EMPTY, so carrying the
+    // header takes overriding it.
     HttpHeaders headers = new HttpHeaders();
     headers.set(CaldavRelayService.RELAY_CODE_HEADER, code);
     return new ResponseStatusException(status, code, null) {
