@@ -1232,11 +1232,41 @@ public class CaldavRelayServiceTest {
   @Test
   public void aGovernedUsersConnectionToTheDesignatedServerIsMarked() throws Exception {
     when(caldavManagedModeService.checkUserMayChangeConnection(USERNAME, SERVER_ID)).thenReturn(SERVER_ID);
+    when(caldavManagedModeService.governingServerFor(USERNAME)).thenReturn(SERVER_ID);
     givenOneClickConnection();
 
     caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
 
     verify(caldavConnectorStorage).markConnectedByManagedMode(IDENTITY_ID, true);
+  }
+
+  /**
+   * EXO-90836. A governed user's click asks again, right before the write, whether
+   * managed mode still governs them with that registration: turned off or the user
+   * excluded during the probe, or a verdict that cannot be read, records nothing and
+   * leaves the account they have on another server.
+   */
+  @Test
+  public void aGovernedUsersConnectWhoseVerdictChangedDuringTheProbeWritesNothing() throws Exception {
+    when(caldavManagedModeService.checkUserMayChangeConnection(USERNAME, SERVER_ID)).thenReturn(SERVER_ID);
+    when(caldavManagedModeService.governingServerFor(USERNAME)).thenReturn(null)
+                                                               .thenThrow(new IllegalStateException("no identity"));
+    // The connection up to the probe, which passes; nothing after it is reached.
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
+    givenProbeAnswer(207);
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+      assertEquals(CaldavProbeResult.SUPERSEDED, caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME).getResult());
+    }
+
+    verify(agendaUserSettingsService, never()).removeUserConnector(anyString(), anyLong());
+    verify(caldavConnectorService, never()).deleteCaldavSetting(anyLong(), any());
+    verify(caldavConnectorService, never()).createProviderBackedSetting(any(), anyLong());
+    verify(caldavConnectorStorage, never()).markConnectedByManagedMode(anyLong(), anyBoolean());
   }
 
   /**
@@ -1247,6 +1277,7 @@ public class CaldavRelayServiceTest {
   @Test
   public void aGovernedUsersConnectDisconnectsTheAccountOnAnotherServer() throws Exception {
     when(caldavManagedModeService.checkUserMayChangeConnection(USERNAME, SERVER_ID)).thenReturn(SERVER_ID);
+    when(caldavManagedModeService.governingServerFor(USERNAME)).thenReturn(SERVER_ID);
     givenOneClickConnection();
     when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(99L));
     when(caldavServerService.resolveServer(99L)).thenReturn(server(99L, true));
