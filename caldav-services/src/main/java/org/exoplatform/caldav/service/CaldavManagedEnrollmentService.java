@@ -249,7 +249,7 @@ public class CaldavManagedEnrollmentService {
    * @param username the eXo login of the user who logged in
    * @param identityId the user's social identity
    * @param switching true when the user's account is on another server
-   * @return ATTACHED, SWITCHED, ALREADY_CONFIGURED or REFUSED
+   * @return ATTACHED, SWITCHED, ALREADY_CONFIGURED, NOT_MANAGED or REFUSED
    * @throws Exception an unexpected failure, logged by the caller
    */
   private ManagedEnrollmentOutcome attach(Long serverId, String username, long identityId, boolean switching) throws Exception {
