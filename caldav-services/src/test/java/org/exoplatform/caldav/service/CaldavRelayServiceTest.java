@@ -35,6 +35,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -686,6 +687,26 @@ public class CaldavRelayServiceTest {
     caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
 
     verify(caldavConnectorStorage).markConnectedByManagedMode(IDENTITY_ID, false);
+  }
+
+  /**
+   * EXO-90836. A user managed mode does not govern who connects another server in one
+   * click has nothing disconnected first: agenda's record of their account on another
+   * server and their setting are not removed by the platform, as they are for a
+   * connection managed mode governs; the new connection then overwrites the setting.
+   */
+  @Test
+  public void aOneClickConnectionOutsideManagedModeDisconnectsNothingFirst() throws Exception {
+    givenOneClickConnection();
+    lenient().when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(99L));
+    lenient().when(caldavServerService.resolveServer(99L)).thenReturn(server(99L, true));
+
+    CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
+
+    assertEquals(CaldavProbeResult.OK, outcome.getResult());
+    verify(agendaUserSettingsService, never()).removeUserConnector(anyString(), anyLong());
+    verify(caldavConnectorService, never()).deleteCaldavSetting(anyLong(), any());
+    verify(caldavConnectorService).createProviderBackedSetting(any(), eq(IDENTITY_ID));
   }
 
   /** A refused probe records nothing, and marks nothing. */
