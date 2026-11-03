@@ -63,6 +63,8 @@ class HttpCalDavClientDeadlineTest {
 
   private static final long REFUSAL_DELAY_MS = 800;
 
+  private static final long RETRY_BUDGET_MS  = 3000;
+
   private HttpServer      server;
 
   private ExecutorService handlers;
@@ -185,17 +187,19 @@ class HttpCalDavClientDeadlineTest {
   /**
    * The one retry after a 401 is bounded by the time left of the budget, not by
    * the first request's timeout: a server that refuses late and then never
-   * answers holds the landing for the budget only.
+   * answers holds the landing for the budget only. The budget leaves the retry
+   * most of its time after the refusal, so a loaded build with the coverage
+   * agent still sends it before the budget is spent.
    */
   @Test
   void theRetryAfterA401EndsWithTheBudget() {
     long started = System.nanoTime();
-    try (CalDavDeadline deadline = CalDavDeadline.start(Duration.ofMillis(BUDGET_MS))) {
+    try (CalDavDeadline deadline = CalDavDeadline.start(Duration.ofMillis(RETRY_BUDGET_MS))) {
       assertThrows(CalDavDeadlineException.class, () -> client.fetchObject(endpoint, "/dav/refuse-late/a.ics"));
     }
     long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
     assertEquals(2, requests.get(), "the refused request and its one retry");
-    assertTrue(elapsed >= BUDGET_MS - 100 && elapsed < BUDGET_MS + REFUSAL_DELAY_MS / 2,
+    assertTrue(elapsed >= RETRY_BUDGET_MS - 100 && elapsed < RETRY_BUDGET_MS + REFUSAL_DELAY_MS / 2,
                "the retry ends with the budget: " + elapsed + " ms");
   }
 
