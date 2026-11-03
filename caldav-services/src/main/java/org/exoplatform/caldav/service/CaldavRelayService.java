@@ -434,7 +434,10 @@ public class CaldavRelayService {
    * A user managed mode governs may connect the designated registration only (EXO-90836).
    * That connect replaces an account the user has on another server, as the login-time
    * switch does - agenda's record of it removed, its calendars tidied - and is marked as
-   * made by managed mode.
+   * made by managed mode. As the switch does, it asks again right before the write
+   * whether managed mode still governs the user with that registration: managed mode
+   * turned off, or the user excluded, during the probe records nothing and answers
+   * {@link CaldavProbeResult#SUPERSEDED}, so the user's account stays where it is.
    *
    * @param serverId registration to connect to, or null for the legacy one
    * @param exoLogin the eXo login connecting
@@ -448,7 +451,25 @@ public class CaldavRelayService {
   public CaldavProbeResult connectThroughProvider(Long serverId, String exoLogin) throws ObjectNotFoundException,
                                                                                   IllegalAccessException {
     Long governing = caldavManagedModeService.checkUserMayChangeConnection(exoLogin, serverId);
-    return connectThroughProvider(serverId, exoLogin, governing != null, governing != null, () -> true);
+    BooleanSupplier stillWanted = governing == null ? () -> true : () -> isStillGovernedBy(exoLogin, governing);
+    return connectThroughProvider(serverId, exoLogin, governing != null, governing != null, stillWanted);
+  }
+
+  /**
+   * Whether managed mode still governs the user with this registration, by the strict
+   * verdict the guard reads: a verdict that cannot be read is no longer governing, and
+   * the connect that replaces the user's account writes nothing.
+   *
+   * @param exoLogin the eXo login
+   * @param serverId the registration the guard found governing the user
+   * @return true when the strict verdict still names that registration
+   */
+  private boolean isStillGovernedBy(String exoLogin, Long serverId) {
+    try {
+      return serverId.equals(caldavManagedModeService.governingServerFor(exoLogin));
+    } catch (IllegalArgumentException | IllegalStateException e) {
+      return false;
+    }
   }
 
   /**
