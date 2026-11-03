@@ -453,6 +453,41 @@ public class CaldavServerServiceTest {
   }
 
   /**
+   * EXO-91017. A context keyed by a username, which a user can write through the generic
+   * settings REST, is no account of the server: the walk skips it, for the server ids
+   * and for the legacy row's accounts that store none, instead of failing the
+   * disconnection a provider change runs.
+   */
+  @Test
+  public void theUsersOfAServerSkipAContextKeyedByAUsername() {
+    CaldavServer legacyRow = mock(CaldavServer.class);
+    when(legacyRow.getId()).thenReturn(7L);
+    when(caldavServerStorage.getServerByProviderName(CaldavServerService.CALDAV_PROVIDER_NAME)).thenReturn(legacyRow);
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(),
+                                                                anyString(),
+                                                                anyString(),
+                                                                eq(CaldavConnectorUtils.CALDAV_SERVER_ID_KEY),
+                                                                anyInt(),
+                                                                anyInt()))
+        .thenReturn(List.of(Context.USER.id("mary"), Context.USER.id("41")));
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(),
+                                                                anyString(),
+                                                                anyString(),
+                                                                eq(CaldavConnectorUtils.CALDAV_USERNAME_KEY),
+                                                                anyInt(),
+                                                                anyInt()))
+        .thenReturn(List.of(Context.USER.id("john"), Context.USER.id("42")));
+    doReturn(SettingValue.create("7")).when(settingService).get(eq(Context.USER.id("41")), any(), anyString());
+    when(settingService.get(eq(Context.USER.id("42")), any(), anyString())).thenReturn(null);
+    // What the username contexts would hold if read: a server id that matches, and no
+    // server id. Never read once skipped.
+    lenient().doReturn(SettingValue.create("7")).when(settingService).get(eq(Context.USER.id("mary")), any(), anyString());
+    lenient().doReturn(null).when(settingService).get(eq(Context.USER.id("john")), any(), anyString());
+
+    assertEquals(List.of(41L, 42L), caldavServerService.getUserIdentitiesOfServer(7L));
+  }
+
+  /**
    * The row carrying the legacy provider name also counts the accounts that store no
    * server id: connected before the server list existed, they resolve to that row.
    */

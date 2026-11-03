@@ -33,6 +33,7 @@ import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.MapUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.math.NumberUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -1293,7 +1294,10 @@ public class CaldavServerService {
    * disconnects. The accounts whose stored server id names the row - and, for the row
    * that carries {@link #CALDAV_PROVIDER_NAME}, also the accounts that store no server
    * id: connected before the server list existed, every use resolves them to that row
-   * ({@link #resolveServer(Long)} with null), so they are its users too.
+   * ({@link #resolveServer(Long)} with null), so they are its users too. Only the
+   * contexts keyed by an identity id are read: a user can write any key of their own
+   * context, keyed by their username, through the platform's generic settings REST, and
+   * such a context is no account this registry stored.
    *
    * @param serverId the server
    * @return the technical identity identifiers of its users
@@ -1305,7 +1309,7 @@ public class CaldavServerService {
                                                                                     CaldavConnectorUtils.CALDAV_SERVER_ID_KEY,
                                                                                     0,
                                                                                     Integer.MAX_VALUE);
-    List<Long> identities = new ArrayList<>(contexts.stream().filter(context -> {
+    List<Long> identities = new ArrayList<>(contexts.stream().filter(context -> NumberUtils.isDigits(context.getId())).filter(context -> {
       SettingValue<?> value = settingService.get(context,
                                                  CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                                  CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
@@ -1331,6 +1335,7 @@ public class CaldavServerService {
                                                                   0,
                                                                   Integer.MAX_VALUE)
                          .stream()
+                         .filter(context -> NumberUtils.isDigits(context.getId()))
                          .filter(context -> {
                            SettingValue<?> value = settingService.get(context,
                                                                       CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
