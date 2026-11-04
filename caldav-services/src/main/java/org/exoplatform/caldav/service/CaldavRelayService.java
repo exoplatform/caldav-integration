@@ -539,8 +539,9 @@ public class CaldavRelayService {
    * recorded the new one, the write that can still refuse, and before caldav's: agenda
    * keeps one record per connector, so the previous one is still there when the new one
    * is refused, and the user keeps their account. The writes share no transaction: a
-   * failure after agenda's record leaves it beside the previous account until the next
-   * click or login connects the user again.
+   * failure before the previous account is disconnected leaves agenda's new record beside
+   * it; a failure after it leaves that record alone, until the next click or login connects
+   * the user again.
    *
    * @param serverId registration to connect to, or null for the legacy one
    * @param exoLogin the eXo login connecting
