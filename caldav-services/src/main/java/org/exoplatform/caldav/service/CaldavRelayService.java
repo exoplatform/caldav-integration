@@ -535,15 +535,17 @@ public class CaldavRelayService {
    * login-time switch: the server is probed before anything is written, and only an OK
    * answer records the connection.
    * <p>
-   * With {@code replacing}, an account on another server is disconnected before the new
-   * one is recorded, and the writes share no transaction: a failure between the two
-   * leaves the user with no account until their next click or login, which attaches them
-   * again.
+   * With {@code replacing}, an account on another server is disconnected once agenda has
+   * recorded the new one, the write that can still refuse, and before caldav's: agenda
+   * keeps one record per connector, so the previous one is still there when the new one
+   * is refused, and the user keeps their account. The writes share no transaction: a
+   * failure after agenda's record leaves it beside the previous account until the next
+   * click or login connects the user again.
    *
    * @param serverId registration to connect to, or null for the legacy one
    * @param exoLogin the eXo login connecting
    * @param byManagedMode whether the connection is marked as made by managed mode
-   * @param replacing whether an account on another server is disconnected first
+   * @param replacing whether an account the user has on another server is disconnected
    * @param stillWanted asked again right before anything is written; false records nothing
    * @return the probe outcome; the connection is recorded only on {@link CaldavProbeResult#OK}
    * @throws ObjectNotFoundException when no such registration is declared
@@ -623,17 +625,19 @@ public class CaldavRelayService {
       setting.setServerId(server.getId());
       long identityId = getUserIdentityId(exoLogin);
       CaldavUserSetting previous = replacing ? caldavConnectorStorage.getCaldavSetting(identityId) : null;
-      if (previous != null && StringUtils.isNotBlank(previous.getUsername()) && !caldavServerService.isOnServer(previous, server.getId())) {
-        disconnectForUser(identityId, exoLogin);
-      }
       // Agenda's own record of the connection: what "My calendars" reads to show
       // the connector as connected, and what the typed path leaves to the front.
       // Written here so a connection nobody clicked - the login-time attachment
       // of EXO-89653 - shows exactly as a clicked one; the front's own write on
       // the one-click path repeats the same values. Agenda first: it is the
       // write that can still refuse, and it refuses before storing anything,
-      // while caldav's can no longer refuse once the account is named.
+      // while caldav's can no longer refuse once the account is named. Before the
+      // previous account is disconnected too, so a refusal leaves it as it was:
+      // agenda keeps it under the previous registration's connector name.
       agendaUserSettingsService.saveUserConnector(server.getProviderName(), account, identityId);
+      if (previous != null && StringUtils.isNotBlank(previous.getUsername()) && !caldavServerService.isOnServer(previous, server.getId())) {
+        disconnectForUser(identityId, exoLogin);
+      }
       caldavConnectorService.createProviderBackedSetting(setting, identityId);
       caldavConnectorStorage.markConnectedByManagedMode(identityId, byManagedMode);
     }
