@@ -164,7 +164,7 @@ public class CaldavRelayServiceTest {
    */
   @BeforeEach
   void managedModeGovernsNobodyByDefault() throws Exception {
-    org.mockito.Mockito.lenient().when(caldavManagedModeService.checkUserMayChangeConnection(any(), any())).thenReturn(null);
+    lenient().when(caldavManagedModeService.checkUserMayChangeConnection(any(), any())).thenReturn(null);
   }
 
   @InjectMocks
@@ -807,7 +807,7 @@ public class CaldavRelayServiceTest {
 
     assertTrue(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID));
     // Another registration naming the same account: only the registration differs.
-    org.mockito.Mockito.lenient().when(caldavServerService.getServerById(SERVER_ID + 1)).thenReturn(server(SERVER_ID + 1, true));
+    lenient().when(caldavServerService.getServerById(SERVER_ID + 1)).thenReturn(server(SERVER_ID + 1, true));
     org.mockito.Mockito.lenient()
                       .when(caldavCredentialsResolver.targetAccount(SERVER_ID + 1, PROVIDER, USERNAME))
                       .thenReturn("eric@bm.example.org");
@@ -879,11 +879,11 @@ public class CaldavRelayServiceTest {
   /** The registration, the user's identity and the account the provider names for them. */
   private void givenOneClickTargetOnly() throws Exception {
     when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
-    org.mockito.Mockito.lenient().when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, USERNAME)).thenReturn(identity);
-    org.mockito.Mockito.lenient().when(identity.getId()).thenReturn(String.valueOf(IDENTITY_ID));
-    org.mockito.Mockito.lenient().when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    lenient().when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, USERNAME)).thenReturn(identity);
+    lenient().when(identity.getId()).thenReturn(String.valueOf(IDENTITY_ID));
+    lenient().when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
     when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
-    org.mockito.Mockito.lenient().when(agendaRemoteEventService.getRemoteProviders())
+    lenient().when(agendaRemoteEventService.getRemoteProviders())
                       .thenReturn(List.of(new RemoteProvider(0, "agenda.caldavCalendar." + SERVER_ID, null, null, true, false)));
   }
 
