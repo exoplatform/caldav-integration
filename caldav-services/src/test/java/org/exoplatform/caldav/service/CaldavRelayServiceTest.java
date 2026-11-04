@@ -826,9 +826,8 @@ public class CaldavRelayServiceTest {
     assertTrue(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID));
     // Another registration naming the same account: only the registration differs.
     lenient().when(caldavServerService.getServerById(SERVER_ID + 1)).thenReturn(server(SERVER_ID + 1, true));
-    org.mockito.Mockito.lenient()
-                      .when(caldavCredentialsResolver.targetAccount(SERVER_ID + 1, PROVIDER, USERNAME))
-                      .thenReturn("eric@bm.example.org");
+    lenient().when(caldavCredentialsResolver.targetAccount(SERVER_ID + 1, PROVIDER, USERNAME))
+             .thenReturn("eric@bm.example.org");
     assertFalse(caldavRelayService.isManagedRefused(USERNAME, SERVER_ID + 1));
 
     when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric.new@bm.example.org");
