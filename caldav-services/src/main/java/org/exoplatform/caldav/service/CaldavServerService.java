@@ -1351,7 +1351,10 @@ public class CaldavServerService {
    * contexts holding a CaldavServerId setting whose value is this row's id.
    * The enumeration is by setting NAME (the settings API offers no
    * by-value filter), each candidate's value then compared — the same walk
-   * email-connector does to find a connector's users.
+   * email-connector does to find a connector's users. Only the contexts keyed
+   * by an identity id are counted, as {@link #getUserIdentitiesOfServer(long)}
+   * reads them: a context keyed by a username is no account this registry
+   * stored, and no disconnection could clear it from the count.
    *
    * @param serverId technical identifier of the registration
    * @return number of accounts whose stored connection references the row
@@ -1363,7 +1366,7 @@ public class CaldavServerService {
                                                                                     CaldavConnectorUtils.CALDAV_SERVER_ID_KEY,
                                                                                     0,
                                                                                     Integer.MAX_VALUE);
-    return contexts.stream().filter(context -> {
+    return contexts.stream().filter(context -> NumberUtils.isDigits(context.getId())).filter(context -> {
       SettingValue<?> value = settingService.get(context,
                                                  CaldavConnectorUtils.CALDAV_CONNECTOR_SETTING_SCOPE,
                                                  CaldavConnectorUtils.CALDAV_SERVER_ID_KEY);
