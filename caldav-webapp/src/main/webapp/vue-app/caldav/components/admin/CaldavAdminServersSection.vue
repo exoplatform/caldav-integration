@@ -204,7 +204,7 @@ export default {
      */
     managedOffMessage() {
       const serverName = this.managed && this.managed.serverName || '';
-      const kept = this.$t('caldav.admin.managed.off.confirm.message', {0: serverName});
+      const kept = this.$t('caldav.admin.managed.off.confirm.kept', {0: serverName});
       const question = this.$t('caldav.admin.managed.off.confirm.question');
       if (!this.offDisconnections) {
         return `${kept} ${question}`;
