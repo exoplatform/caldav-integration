@@ -1746,6 +1746,24 @@ public class CaldavServerServiceTest {
   }
 
   /**
+   * EXO-91017. A context keyed by a username, which a user can write through the generic
+   * settings REST, is no account of the server: it is not counted as a reference, or
+   * the registration could never be deleted, since no disconnection clears it.
+   */
+  @Test
+  public void theReferencesOfAServerSkipAContextKeyedByAUsername() {
+    when(settingService.getContextsByTypeAndScopeAndSettingName(anyString(), anyString(), anyString(), anyString(), anyInt(),
+                                                                anyInt())).thenReturn(List.of(Context.USER.id("mary"),
+                                                                                              Context.USER.id("11")));
+    doReturn(SettingValue.create("7")).when(settingService).get(eq(Context.USER.id("11")), any(), anyString());
+    // What the username context would hold if read: a server id that matches. Never read
+    // once skipped.
+    lenient().doReturn(SettingValue.create("7")).when(settingService).get(eq(Context.USER.id("mary")), any(), anyString());
+
+    assertEquals(1, caldavServerService.countServerReferences(7));
+  }
+
+  /**
    * A row that never got an image answers a null stream — the REST layer's
    * cue for 404 — without ever asking the file storage anything.
    *
