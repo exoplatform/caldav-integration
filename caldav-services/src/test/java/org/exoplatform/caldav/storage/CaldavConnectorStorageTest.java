@@ -349,7 +349,7 @@ public class CaldavConnectorStorageTest {
   @Test
   public void readsNoManagedRefusalFromNothingOrAnUnreadableRecord() {
     assertNull(caldavConnectorStorage.getManagedRefusal(USER_IDENTITY_ID));
-    for (String stored : java.util.List.of("", "eric@bm.example.org", ":eric@bm.example.org", "five:eric@bm.example.org")) {
+    for (String stored : List.of("", "eric@bm.example.org", ":eric@bm.example.org", "five:eric@bm.example.org")) {
       givenManagedRefusalStored(stored);
       assertNull(caldavConnectorStorage.getManagedRefusal(USER_IDENTITY_ID), stored);
     }
