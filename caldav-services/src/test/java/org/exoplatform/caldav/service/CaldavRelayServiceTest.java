@@ -1272,7 +1272,8 @@ public class CaldavRelayServiceTest {
   /**
    * EXO-90836. A governed user's own one-click connect to the designated registration
    * disconnects the account they have on another server, as the switch does, so agenda
-   * is not left with the previous connector's record beside the new one.
+   * is not left with the previous connector's record beside the new one: once agenda has
+   * recorded the new one, the write that can still refuse.
    */
   @Test
   public void aGovernedUsersConnectDisconnectsTheAccountOnAnotherServer() throws Exception {
@@ -1285,17 +1286,18 @@ public class CaldavRelayServiceTest {
     caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
 
     InOrder order = inOrder(agendaUserSettingsService, caldavConnectorService, caldavConnectorStorage);
-    order.verify(agendaUserSettingsService).removeUserConnector("agenda.caldavCalendar.99", IDENTITY_ID);
-    order.verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
     order.verify(agendaUserSettingsService)
          .saveUserConnector("agenda.caldavCalendar." + SERVER_ID, "eric@bm.example.org", IDENTITY_ID);
+    order.verify(agendaUserSettingsService).removeUserConnector("agenda.caldavCalendar.99", IDENTITY_ID);
+    order.verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
+    order.verify(caldavConnectorService).createProviderBackedSetting(any(), eq(IDENTITY_ID));
     order.verify(caldavConnectorStorage).markConnectedByManagedMode(IDENTITY_ID, true);
   }
 
   /**
-   * EXO-90836. Once the designated server answered, the switch disconnects the previous
-   * account as the platform does - agenda's record of it, then caldav's - before the
-   * new account is recorded and marked.
+   * EXO-90836. Once the designated server answered and agenda recorded the new account,
+   * the switch disconnects the previous account as the platform does - agenda's record
+   * of it, then caldav's - before caldav records the new account and marks it.
    */
   @Test
   public void aSwitchDisconnectsThePreviousAccountOnceTheDesignatedServerAnswered() throws Exception {
@@ -1307,10 +1309,10 @@ public class CaldavRelayServiceTest {
 
     assertEquals(CaldavProbeResult.OK, outcome.getResult());
     InOrder order = inOrder(agendaUserSettingsService, caldavConnectorService, caldavConnectorStorage);
-    order.verify(agendaUserSettingsService).removeUserConnector("agenda.caldavCalendar.99", IDENTITY_ID);
-    order.verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
     order.verify(agendaUserSettingsService)
          .saveUserConnector("agenda.caldavCalendar." + SERVER_ID, "eric@bm.example.org", IDENTITY_ID);
+    order.verify(agendaUserSettingsService).removeUserConnector("agenda.caldavCalendar.99", IDENTITY_ID);
+    order.verify(caldavConnectorService).deleteCaldavSetting(IDENTITY_ID, USERNAME);
     order.verify(caldavConnectorService).createProviderBackedSetting(any(), eq(IDENTITY_ID));
     order.verify(caldavConnectorStorage).markConnectedByManagedMode(IDENTITY_ID, true);
   }
@@ -1328,6 +1330,28 @@ public class CaldavRelayServiceTest {
     caldavRelayService.switchThroughProvider(SERVER_ID, USERNAME, () -> true);
 
     org.mockito.Mockito.verifyNoInteractions(caldavConnectorService, agendaUserSettingsService);
+    verify(caldavConnectorStorage, never()).markConnectedByManagedMode(anyLong(), anyBoolean());
+  }
+
+  /**
+   * EXO-90836. A switch agenda refuses to record - its connector switched off during the
+   * probe - leaves the account the user has on another server: agenda's record of the
+   * new account is written before anything is disconnected.
+   */
+  @Test
+  public void aSwitchAgendaRefusesToRecordKeepsTheAccountOnAnotherServer() throws Exception {
+    givenOneClickConnection();
+    when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(99L));
+    lenient().when(caldavServerService.resolveServer(99L)).thenReturn(server(99L, true));
+    doThrow(new IllegalStateException("Connector agenda.caldavCalendar." + SERVER_ID + " is not enabled"))
+                       .when(agendaUserSettingsService)
+                       .saveUserConnector("agenda.caldavCalendar." + SERVER_ID, "eric@bm.example.org", IDENTITY_ID);
+
+    assertThrows(IllegalStateException.class, () -> caldavRelayService.switchThroughProvider(SERVER_ID, USERNAME, () -> true));
+
+    verify(agendaUserSettingsService, never()).removeUserConnector(anyString(), anyLong());
+    verify(caldavConnectorService, never()).deleteCaldavSetting(anyLong(), any());
+    verify(caldavConnectorService, never()).createProviderBackedSetting(any(), anyLong());
     verify(caldavConnectorStorage, never()).markConnectedByManagedMode(anyLong(), anyBoolean());
   }
 
