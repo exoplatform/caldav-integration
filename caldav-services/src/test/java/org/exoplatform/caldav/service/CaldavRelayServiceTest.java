@@ -669,6 +669,24 @@ public class CaldavRelayServiceTest {
     givenProbeAnswer(207);
   }
 
+  /**
+   * The one-click connection, with the user's identity and their account on registration
+   * 99 stubbed leniently: a re-check that declines the writes returns before either is
+   * read, and a re-check moved below the disconnection reads both.
+   */
+  private void givenOneClickConnectionWithAnAccountOnAnotherServer() throws Exception {
+    when(caldavServerService.getServerById(SERVER_ID)).thenReturn(server(SERVER_ID, true));
+    lenient().when(identityManager.getOrCreateIdentity(OrganizationIdentityProvider.NAME, USERNAME)).thenReturn(identity);
+    lenient().when(identity.getId()).thenReturn(String.valueOf(IDENTITY_ID));
+    when(caldavCredentialsResolver.requiresUserAction(PROVIDER)).thenReturn(false);
+    when(caldavCredentialsResolver.targetAccount(SERVER_ID, PROVIDER, USERNAME)).thenReturn("eric@bm.example.org");
+    when(caldavCredentialsResolver.authorization(SERVER_ID, PROVIDER, USERNAME)).thenReturn(PROVIDED_AUTH);
+    givenAgendaConnector(true);
+    givenProbeAnswer(207);
+    lenient().when(caldavConnectorStorage.getCaldavSetting(IDENTITY_ID)).thenReturn(settingOn(99L));
+    lenient().when(caldavServerService.resolveServer(99L)).thenReturn(server(99L, true));
+  }
+
   /** A connection managed mode makes at login is marked as such. */
   @Test
   public void aConnectionManagedModeMakesIsMarked() throws Exception {
@@ -1331,6 +1349,42 @@ public class CaldavRelayServiceTest {
 
     org.mockito.Mockito.verifyNoInteractions(caldavConnectorService, agendaUserSettingsService);
     verify(caldavConnectorStorage, never()).markConnectedByManagedMode(anyLong(), anyBoolean());
+  }
+
+  /**
+   * EXO-90836. A switch whose verdict changed during the probe - managed mode turned off
+   * or the user excluded - leaves the account the user has on another server: the
+   * re-check comes before anything is disconnected.
+   */
+  @Test
+  public void aSwitchWhoseVerdictChangedDuringTheProbeKeepsTheAccountOnAnotherServer() throws Exception {
+    givenOneClickConnectionWithAnAccountOnAnotherServer();
+
+    CaldavProbeResult outcome = caldavRelayService.switchThroughProvider(SERVER_ID, USERNAME, () -> false);
+
+    assertEquals(CaldavProbeResult.SUPERSEDED, outcome.getResult());
+    verify(agendaUserSettingsService, never()).removeUserConnector(anyString(), anyLong());
+    verify(agendaUserSettingsService, never()).saveUserConnector(anyString(), anyString(), anyLong());
+    verify(caldavConnectorService, never()).deleteCaldavSetting(anyLong(), any());
+    verify(caldavConnectorService, never()).createProviderBackedSetting(any(), anyLong());
+  }
+
+  /**
+   * EXO-90836. A governed user's click whose verdict changed during the probe leaves the
+   * account they have on another server, as the switch does.
+   */
+  @Test
+  public void aGovernedUsersClickWhoseVerdictChangedKeepsTheAccountOnAnotherServer() throws Exception {
+    when(caldavManagedModeService.checkUserMayChangeConnection(USERNAME, SERVER_ID)).thenReturn(SERVER_ID);
+    when(caldavManagedModeService.governingServerFor(USERNAME)).thenReturn(null);
+    givenOneClickConnectionWithAnAccountOnAnotherServer();
+
+    CaldavProbeResult outcome = caldavRelayService.connectThroughProvider(SERVER_ID, USERNAME);
+
+    assertEquals(CaldavProbeResult.SUPERSEDED, outcome.getResult());
+    verify(agendaUserSettingsService, never()).removeUserConnector(anyString(), anyLong());
+    verify(caldavConnectorService, never()).deleteCaldavSetting(anyLong(), any());
+    verify(caldavConnectorService, never()).createProviderBackedSetting(any(), anyLong());
   }
 
   /**
