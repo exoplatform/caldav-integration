@@ -20,7 +20,6 @@ import java.io.Serializable;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
-import org.springframework.cache.annotation.CachePut;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Component;
 
@@ -131,20 +130,23 @@ public class CaldavServerOwnerStorage {
   }
 
   /**
-   * The account's listing read from the server now, replacing whatever the
+   * The account's listing read from the server now, dropping whatever the
    * cache held: a pass that meets a collection the cached listing does not
    * name asks this once, so a share made after the entry was written is
-   * classified in the pass that first sees it rather than after the TTL.
+   * classified in the pass that first sees it rather than after the TTL. The
+   * entry is dropped rather than replaced: a listing put in the cache stays
+   * on the node that read it, while a drop reaches every node of a cluster,
+   * each of which reads the listing again on its next read.
    *
    * @param key the account
    * @param endpoint the account's DAV endpoint
-   * @return the fresh listing, now cached
+   * @return the fresh listing, which the cache does not hold
    * @throws UnsupportedOperationException as {@link #listing}; the stale
    *           entry is left as it was
    * @throws org.exoplatform.caldav.client.CalDavException as
    *           {@link #listing}; the stale entry is left as it was
    */
-  @CachePut(cacheNames = CACHE_NAME, key = "#p0")
+  @CacheEvict(cacheNames = CACHE_NAME, key = "#p0")
   public CalendarOwners refresh(Key key, CalDavEndpoint endpoint) {
     LOG.debug("Re-reading the calendar owners of CalDAV account {} from the server; the cached listing did not settle a collection", key);
     return calendarSubscriptionChannelRegistry.ownersOf(endpoint);
