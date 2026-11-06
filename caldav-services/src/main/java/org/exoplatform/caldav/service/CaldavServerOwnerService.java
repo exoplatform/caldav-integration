@@ -99,14 +99,16 @@ import org.exoplatform.services.log.Log;
  * <p>
  * <b>The one cost that is per pass.</b> A mismatched entry — the listing
  * names an entry other than the account's recorded principal — spends the
- * pass's refresh, and the fresh listing is kept ({@code @CachePut}) whether
- * or not it is believed. When the mismatch is a stale entry, the refresh
- * settles it and the next pass is served from the cache. When it is durable
- * — the REST session and the DAV principal naming two different entries for
- * one credential set, a case not observed — every pass and every agenda
- * open spends one REST read and gets the unavailable witness: the cost the
- * classification had before the cache, said once at warn. Dropping the
- * entry instead would make each such pass two reads rather than one.
+ * pass's refresh, which drops the entry from every node whether or not the
+ * fresh listing is believed. When the mismatch is a stale entry, the refresh
+ * settles it: the next read loads the listing once more, and the passes
+ * after it are served from the cache. When it is durable — the REST session
+ * and the DAV principal naming two different entries for one credential
+ * set, a case not observed — every pass and every agenda open spends two
+ * REST reads, the reload and the refresh, and gets the unavailable witness,
+ * said once at warn. Keeping the fresh listing instead would make such a
+ * pass one read, but would keep it on the node that read it only: the other
+ * nodes of a cluster would go on serving the entry the refresh found stale.
  *
  * <p>
  * The product using the user's stored credentials during their own pass is
