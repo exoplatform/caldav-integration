@@ -76,13 +76,13 @@ import org.exoplatform.services.log.Log;
  * TTL.
  *
  * <p>
- * <b>Node-local.</b> Each node of a cluster holds its own entries and
- * expires them on its own clock; an owner change made outside eXo — a
- * share granted in BlueMind's webmail — is seen by a node within the TTL at
- * the latest, and sooner on the node whose pass meets the new collection,
- * since that is a miss it refreshes on. A change eXo itself makes is
- * evicted at once on the node that made it ({@link #evict}), and reaches
- * the others within the TTL.
+ * <b>In a cluster.</b> Each node holds the entries it loaded and expires
+ * them on its own clock: a load never travels. An owner change made outside
+ * eXo — a share granted in BlueMind's webmail — is seen by a node within the
+ * TTL at the latest, and sooner on the node whose pass meets the new
+ * collection, since that is a miss it refreshes on. An eviction, by a change
+ * eXo itself makes ({@link #evict}) or by a {@link #refresh}, reaches every
+ * node at once: the cache is invalidated.
  */
 @Component
 public class CaldavServerOwnerStorage {
