@@ -82,7 +82,7 @@ import org.exoplatform.services.log.Log;
  * TTL at the latest, and sooner on the node whose pass meets the new
  * collection, since that is a miss it refreshes on. An eviction, by a change
  * eXo itself makes ({@link #evict}) or by a {@link #refresh}, reaches every
- * node at once: the cache is invalidated.
+ * node, asynchronously: the cache is invalidated.
  */
 @Component
 public class CaldavServerOwnerStorage {
