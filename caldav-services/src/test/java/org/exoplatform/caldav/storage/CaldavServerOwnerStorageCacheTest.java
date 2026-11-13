@@ -250,25 +250,29 @@ public class CaldavServerOwnerStorageCacheTest {
   }
 
   /**
-   * A refresh reads the server and replaces the entry; a failed refresh
-   * leaves the entry as it was.
+   * A refresh reads the server and drops the entry, which the next read loads
+   * again: a listing put in the cache would stay on the node that read it,
+   * while a drop reaches every node. A failed refresh leaves the entry as it
+   * was.
    */
   @Test
-  public void aRefreshReplacesTheEntryAndAFailedOneLeavesIt() {
+  public void aRefreshDropsTheEntryAndAFailedOneLeavesIt() {
     TestCalendarOwners fresher = new TestCalendarOwners(ROOT_UID, Map.of(PERSO, ERIC_UID, PERSONNEL, ROOT_UID, "exo-cal-new", ERIC_UID));
+    TestCalendarOwners reloaded = new TestCalendarOwners(ROOT_UID, Map.of(PERSO, ERIC_UID, PERSONNEL, ROOT_UID, "exo-cal-new", ERIC_UID));
     when(client.ownersOf(rootOnBlueMind)).thenReturn(rootsListing())
                                          .thenReturn(fresher)
+                                         .thenReturn(reloaded)
                                          .thenThrow(new CalDavUnreachableException("down"));
 
     CalendarOwners stale = storage.listing(new Key(SERVER, ROOT), rootOnBlueMind);
     CalendarOwners refreshed = storage.refresh(new Key(SERVER, ROOT), rootOnBlueMind);
 
     assertSame(fresher, refreshed);
-    assertSame(fresher, storage.listing(new Key(SERVER, ROOT), rootOnBlueMind), "the refresh replaced the entry");
     assertNotEquals(stale, refreshed);
+    assertSame(reloaded, storage.listing(new Key(SERVER, ROOT), rootOnBlueMind), "the refresh dropped the entry");
     assertThrows(CalDavUnreachableException.class, () -> storage.refresh(new Key(SERVER, ROOT), rootOnBlueMind));
-    assertSame(fresher, storage.listing(new Key(SERVER, ROOT), rootOnBlueMind), "a failed refresh left the entry");
-    verify(client, times(3)).ownersOf(any());
+    assertSame(reloaded, storage.listing(new Key(SERVER, ROOT), rootOnBlueMind), "a failed refresh left the entry");
+    verify(client, times(4)).ownersOf(any());
   }
 
   /**
