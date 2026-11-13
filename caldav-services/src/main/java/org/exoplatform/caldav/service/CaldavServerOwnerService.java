@@ -87,9 +87,10 @@ import org.exoplatform.services.log.Log;
  * <b>Evicted when eXo knows better.</b> A share eXo grants or revokes and a
  * subscription it follows change what the sharee's mailbox sees, and the
  * account itself changes hands on connect, disconnect or new credentials;
- * each drops the entry ({@link #evict}) on the node that made the change.
- * The cache is node-local: another node learns of it within the TTL, or
- * sooner through the miss-refresh above. Connect and disconnect are made by
+ * each drops the entry ({@link #evict}), and the eviction reaches every node,
+ * asynchronously. What eXo did not do — a share granted in BlueMind's webmail
+ * — is evicted nowhere: a node learns of it within the TTL, or sooner through
+ * the miss-refresh above. Connect and disconnect are made by
  * {@code CaldavConnectorServiceImpl}, a Kernel component that reaches this
  * bean through the Kernel/Spring bridge — which exports {@code @Service}
  * beans and nothing else ({@code KernelContainerLifecyclePlugin}), so this
@@ -99,14 +100,21 @@ import org.exoplatform.services.log.Log;
  * <p>
  * <b>The one cost that is per pass.</b> A mismatched entry — the listing
  * names an entry other than the account's recorded principal — spends the
- * pass's refresh, and the fresh listing is kept ({@code @CachePut}) whether
- * or not it is believed. When the mismatch is a stale entry, the refresh
- * settles it and the next pass is served from the cache. When it is durable
- * — the REST session and the DAV principal naming two different entries for
- * one credential set, a case not observed — every pass and every agenda
- * open spends one REST read and gets the unavailable witness: the cost the
- * classification had before the cache, said once at warn. Dropping the
- * entry instead would make each such pass two reads rather than one.
+ * pass's refresh, which drops the entry from every node whether or not the
+ * fresh listing is believed. When the mismatch is a stale entry, the refresh
+ * settles it: the next read loads the listing once more, and the passes
+ * after it are served from the cache. When it is durable — the REST session
+ * and the DAV principal naming two different entries for one credential
+ * set, a case not observed — every pass and every agenda open spends two
+ * REST reads, the reload and the refresh, and gets the unavailable witness,
+ * said once at warn. The same cost falls on an account whose listing durably
+ * does not name an eXo-shaped collection the pass meets (the BlueMind client
+ * keeps only the entries that carry both a container uid and an owner): each
+ * pass spends its refresh on it, so each pass reads the listing twice and
+ * evicts the entry on every node, and the cache never serves that account.
+ * Keeping the fresh listing instead would make such a
+ * pass one read, but would keep it on the node that read it only: the other
+ * nodes of a cluster would go on serving the entry the refresh found stale.
  *
  * <p>
  * The product using the user's stored credentials during their own pass is
