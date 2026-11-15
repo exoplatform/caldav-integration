@@ -25,6 +25,14 @@
     <tag>HEAD</tag>
   </scm>
   <properties>
+    <!-- Java 25: compile for and against Java 25, with the tools that read its class files -->
+    <maven.compiler.source>25</maven.compiler.source>
+    <maven.compiler.target>25</maven.compiler.target>
+    <maven.compiler.release>25</maven.compiler.release>
+    <version.jacoco.plugin>0.8.14</version.jacoco.plugin>
+    <plugin.aspectj.version>1.16.1</plugin.aspectj.version>
+    <org.aspectj.version>1.9.25.1</org.aspectj.version>
+    <org.lombok.version>1.18.46</org.lombok.version>
     <!-- 3rd party libraries versions -->
     <addon.exo.agenda.version>7.3.x-maintenance-SNAPSHOT</addon.exo.agenda.version>
     <org.exoplatform.commons-exo.version>7.3.x-maintenance-SNAPSHOT</org.exoplatform.commons-exo.version>
@@ -89,6 +97,20 @@
       </dependency>
     </dependencies>
   </dependencyManagement>
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <configuration>
+            <!-- Since JDK 23, javac runs an annotation processor found on the class path, such as Lombok, only when asked to -->
+            <proc>full</proc>
+          </configuration>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
   <!-- This profile is used to allow github action to build branches. The github action is used for sonar analysis -->
   <profiles>
     <profile>
