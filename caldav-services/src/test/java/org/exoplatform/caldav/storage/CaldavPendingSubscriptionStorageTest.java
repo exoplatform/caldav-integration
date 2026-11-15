@@ -196,18 +196,18 @@ public class CaldavPendingSubscriptionStorageTest {
    * drain can look past the rows it has to leave where they are.
    */
   @Test
-  public void theOwedRowsAreReadPageByPageOldestFirst() {
+  public void theOwedRowsAreReadPageByPageOldestFirstAfterTheLastIdRead() {
     inTransaction(() -> storage.owe(BOB, SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
     inTransaction(() -> storage.owe(BOB, SERVER, OTHER, PendingSubscriptionKind.SUBSCRIBE));
     inTransaction(() -> storage.owe(CAROL, OTHER_SERVER, CONTAINER, PendingSubscriptionKind.SUBSCRIBE));
 
     List<PendingSubscription> first = storage.attemptable(5, 0, 2);
-    List<PendingSubscription> second = storage.attemptable(5, 1, 2);
+    List<PendingSubscription> second = storage.attemptable(5, first.get(1).getId(), 2);
 
     assertEquals(2, first.size());
     assertEquals(CAROL, only(second).getUserIdentityId());
     assertTrue(first.get(0).getId() < first.get(1).getId() && first.get(1).getId() < second.get(0).getId());
-    assertTrue(storage.attemptable(5, 2, 2).isEmpty());
+    assertTrue(storage.attemptable(5, second.get(0).getId(), 2).isEmpty());
   }
 
   /**

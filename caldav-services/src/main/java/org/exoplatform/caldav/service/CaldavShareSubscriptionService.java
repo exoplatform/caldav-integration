@@ -313,12 +313,14 @@ public class CaldavShareSubscriptionService {
     List<PendingSubscription> usable = new ArrayList<>();
     Map<Long, Boolean> waiting = new HashMap<>();
     int skipped = 0;
+    long afterId = 0L;
     for (int page = 0; page < MAX_PAGES_PER_DRAIN && usable.size() < batch; page++) {
-      List<PendingSubscription> rows = caldavPendingSubscriptionStorage.attemptable(maxAttempts, page, batch);
+      List<PendingSubscription> rows = caldavPendingSubscriptionStorage.attemptable(maxAttempts, afterId, batch);
       skipped += collectUsable(rows, usable, waiting, batch);
       if (rows.size() < batch) {
         break;
       }
+      afterId = rows.get(rows.size() - 1).getId();
     }
     if (skipped > 0) {
       LOG.debug("{} owed subscription change(s) wait for their server's credentials provider", skipped);

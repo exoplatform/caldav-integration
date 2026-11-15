@@ -575,7 +575,7 @@ public class CaldavShareSubscriptionServiceTest {
     }
     secondPage.add(row(61L, CAROL, CONTAINER, PendingSubscriptionKind.SUBSCRIBE, 0));
     when(caldavPendingSubscriptionStorage.attemptable(5, 0, 50)).thenReturn(firstPage);
-    when(caldavPendingSubscriptionStorage.attemptable(5, 1, 50)).thenReturn(secondPage);
+    when(caldavPendingSubscriptionStorage.attemptable(5, 50L, 50)).thenReturn(secondPage);
     when(caldavServerService.missingProviderOf(waitingServer)).thenReturn("acme-sudo");
 
     assertEquals(1, service.retryOwed(50), "carol's row landed");
@@ -590,7 +590,7 @@ public class CaldavShareSubscriptionServiceTest {
     when(caldavServerService.missingProviderOf(waitingServer)).thenReturn(null);
     service.retryOwed(50);
     verify(caldavConnectionIdentityService).principalOf(BOB, waitingServer);
-    verify(caldavPendingSubscriptionStorage, times(1)).attemptable(5, 1, 50);
+    verify(caldavPendingSubscriptionStorage, times(1)).attemptable(5, 50L, 50);
   }
 
   /**
