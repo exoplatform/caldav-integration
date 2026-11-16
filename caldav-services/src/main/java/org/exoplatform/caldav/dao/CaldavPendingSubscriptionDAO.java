@@ -60,14 +60,23 @@ public interface CaldavPendingSubscriptionDAO extends JpaRepository<CaldavPendin
    * Table-wide on purpose: the colleague owed a
    * subscription holds no active pair and is never selected by the sweep's
    * per-account paging, so the drain reads the table rather than visiting
-   * accounts. The caller pages oldest first and groups by sharee.
+   * accounts. The caller reads oldest first and groups by sharee.
+   *
+   * <p>
+   * Keyed on the last id read rather than on an offset, so that a row added
+   * or removed between two reads does not shift the next one past a row that
+   * has not been read yet.
    *
    * @param maxAttempts the configured bound
-   * @param pageable the page, sorted by the caller
-   * @return the rows
+   * @param afterId the last id already read, 0 to start
+   * @param pageable how many rows to read, unsorted: the query orders them
+   * @return the rows above {@code afterId}, in ascending id order
    */
-  @Query("SELECT q FROM CaldavPendingSubscriptionEntity q WHERE q.attempts < :maxAttempts")
-  List<CaldavPendingSubscriptionEntity> findAttemptable(@Param("maxAttempts") int maxAttempts, Pageable pageable);
+  @Query("SELECT q FROM CaldavPendingSubscriptionEntity q WHERE q.attempts < :maxAttempts AND q.id > :afterId"
+      + " ORDER BY q.id ASC")
+  List<CaldavPendingSubscriptionEntity> findAttemptable(@Param("maxAttempts") int maxAttempts,
+                                                        @Param("afterId") long afterId,
+                                                        Pageable pageable);
 
   /**
    * The changes one colleague is owed and that are still worth attempting.
