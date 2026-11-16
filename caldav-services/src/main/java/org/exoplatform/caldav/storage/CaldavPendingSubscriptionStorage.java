@@ -198,16 +198,20 @@ public class CaldavPendingSubscriptionStorage {
   }
 
   /**
-   * One page of what is owed to anybody and still worth attempting, oldest first:
-   * what lets a drain look past rows it has to leave where they are.
+   * One page of what is owed to anybody and still worth attempting, oldest first,
+   * after a given row: what lets a drain look past rows it has to leave where
+   * they are, without a row added or removed meanwhile shifting the next page.
    *
    * @param maxAttempts how many refusals are argued with before stopping
-   * @param page the zero-based page, in the same oldest-first order
+   * @param afterId the id of the last obligation already read, 0 to start
    * @param limit the page size
-   * @return the obligations of that page, possibly none
+   * @return the obligations above {@code afterId}, possibly none
    */
-  public List<PendingSubscription> attemptable(int maxAttempts, int page, int limit) {
-    return pendingSubscriptionDAO.findAttemptable(maxAttempts, oldestFirst(page, limit)).stream().map(this::fromEntity).toList();
+  public List<PendingSubscription> attemptable(int maxAttempts, long afterId, int limit) {
+    return pendingSubscriptionDAO.findAttemptable(maxAttempts, afterId, PageRequest.of(0, limit))
+                                 .stream()
+                                 .map(this::fromEntity)
+                                 .toList();
   }
 
   /**

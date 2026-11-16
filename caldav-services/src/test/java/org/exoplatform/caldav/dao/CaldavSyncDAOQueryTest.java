@@ -157,7 +157,7 @@ public class CaldavSyncDAOQueryTest {
     List<Long> due = calendarSyncDAO.findDueAccounts(CalendarSyncStatus.ACTIVE, new Date(), List.of(), List.of(), PageRequest.of(0, 10));
     assertFalse(due.contains(bob), "the account sweep never reaches a colleague without a pair");
 
-    List<CaldavPendingSubscriptionEntity> attemptable = pendingSubscriptionDAO.findAttemptable(5, PageRequest.of(0, 10, org.springframework.data.domain.Sort.by("id")));
+    List<CaldavPendingSubscriptionEntity> attemptable = pendingSubscriptionDAO.findAttemptable(5, 0L, PageRequest.of(0, 10));
     assertEquals(2, attemptable.size(), "the spent row is left out");
     assertEquals(owed, attemptable.get(0).getId(), "oldest first, and bob is reached");
     assertTrue(attemptable.stream().noneMatch(e -> e.getId() == spent));
@@ -181,6 +181,29 @@ public class CaldavSyncDAOQueryTest {
     entityManager.clear();
     assertTrue(pendingSubscriptionDAO.findById(owed).isEmpty());
     assertTrue(pendingSubscriptionDAO.findById(spent).isPresent(), "only that row");
+  }
+
+  /**
+   * The owed rows are read after the last id of the previous page: a row
+   * removed between two pages does not shift the next page past a row that has
+   * not been read yet.
+   */
+  @Test
+  public void anOwedRowRemovedBetweenTwoPagesSkipsNothing() {
+    long first = persistPendingSubscription(1L, 5L, "exo-cal-1", PendingSubscriptionKind.SUBSCRIBE, 0);
+    long second = persistPendingSubscription(2L, 5L, "exo-cal-2", PendingSubscriptionKind.SUBSCRIBE, 0);
+    long third = persistPendingSubscription(3L, 5L, "exo-cal-3", PendingSubscriptionKind.SUBSCRIBE, 0);
+    long fourth = persistPendingSubscription(4L, 5L, "exo-cal-4", PendingSubscriptionKind.SUBSCRIBE, 0);
+
+    List<CaldavPendingSubscriptionEntity> page = pendingSubscriptionDAO.findAttemptable(5, 0L, PageRequest.of(0, 2));
+    assertEquals(List.of(first, second), page.stream().map(CaldavPendingSubscriptionEntity::getId).toList());
+
+    pendingSubscriptionDAO.deleteById(first);
+    pendingSubscriptionDAO.flush();
+    entityManager.clear();
+
+    List<CaldavPendingSubscriptionEntity> next = pendingSubscriptionDAO.findAttemptable(5, second, PageRequest.of(0, 2));
+    assertEquals(List.of(third, fourth), next.stream().map(CaldavPendingSubscriptionEntity::getId).toList());
   }
 
   /**
