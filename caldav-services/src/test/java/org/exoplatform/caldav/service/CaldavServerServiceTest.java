@@ -869,6 +869,52 @@ public class CaldavServerServiceTest {
   }
 
   /**
+   * An edit that switches a stored-inactive row on is judged like the status
+   * toggle: a row whose stored address the check refuses stays off.
+   */
+  @Test
+  public void anEditSwitchingOnAnInactiveRowWithARefusedAddressIsRefusedAndTheRowStaysInactive() {
+    withUser(ADMIN_USER, true);
+    CaldavServer stored = server(7, null, "Internal", null, "https://10.1.2.3/dav/", false);
+    when(caldavServerStorage.getServerById(7)).thenReturn(stored);
+    CaldavServer switchedOn = server(7, null, "Internal renamed", null, "https://10.1.2.3/dav/", true);
+
+    IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
+                                                    () -> caldavServerService.updateServer(switchedOn, ADMIN_USER));
+
+    assertEquals(CaldavServerUrlValidator.PRIVATE_ADDRESS_MESSAGE, refusal.getMessage());
+    verify(caldavServerStorage, never()).updateServer(any());
+    verifyNoInteractions(agendaRemoteEventService);
+  }
+
+  @Test
+  public void anEditSwitchingOnAnInactiveRowWithAnAllowedAddressActivatesIt() {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, "Public", null, SERVER_URL, false));
+    CaldavServer switchedOn = server(7, null, "Public", null, SERVER_URL, true);
+    when(caldavServerStorage.updateServer(switchedOn)).thenReturn(switchedOn);
+    when(caldavServerQuirkService.decorate(switchedOn)).thenReturn(switchedOn);
+
+    CaldavServer result = assertDoesNotThrow(() -> caldavServerService.updateServer(switchedOn, ADMIN_USER));
+
+    assertTrue(result.isActive());
+    verify(caldavServerStorage).updateServer(switchedOn);
+  }
+
+  @Test
+  public void anEditKeepingAnInactiveRowInactiveDoesNotRejudgeItsUnchangedAddress() {
+    withUser(ADMIN_USER, true);
+    when(caldavServerStorage.getServerById(7)).thenReturn(server(7, null, "Internal", null, "https://10.1.2.3/dav/", false));
+    CaldavServer renamed = server(7, null, "Internal renamed", null, "https://10.1.2.3/dav/", false);
+    when(caldavServerStorage.updateServer(renamed)).thenReturn(renamed);
+    when(caldavServerQuirkService.decorate(renamed)).thenReturn(renamed);
+
+    assertDoesNotThrow(() -> caldavServerService.updateServer(renamed, ADMIN_USER));
+
+    verify(caldavServerStorage).updateServer(renamed);
+  }
+
+  /**
    * Switching a row back ON is a declaration too: a registration stored before
    * the address check existed, or a seeded default, must not be re-activated
    * unexamined. Switching one OFF is never checked — taking a bad address out
