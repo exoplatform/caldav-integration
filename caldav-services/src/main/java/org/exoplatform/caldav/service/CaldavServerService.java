@@ -1071,13 +1071,16 @@ public class CaldavServerService {
    * @return the updated registration
    * @throws IllegalAccessException when the user is not a platform administrator
    * @throws IllegalArgumentException when the registration, its name or its
-   *           URL is missing
+   *           URL is missing, or, carrying a {@code caldav.server.url.*} code,
+   *           when the address changes, or the row is switched on, and the
+   *           address is refused
    * @throws ObjectNotFoundException when no registration carries that id
    */
   public CaldavServer updateServer(CaldavServer server, String username) throws IllegalAccessException,
                                                                          ObjectNotFoundException {
     checkCanEdit(username);
-    // The address is judged only when it CHANGES. Re-judging an unchanged one
+    // The address is judged when it changes, or when the edit switches a
+    // stored-inactive row on. Re-judging an unchanged one on any other save
     // buys no safety and costs an administrator their settings: the row is
     // already declared and already dialled by every sweep, so refusing the save
     // does not stop a single request - it only blocks renaming a server, or
@@ -1085,15 +1088,16 @@ public class CaldavServerService {
     // internal. That is the ordinary case for an on-premises install, and those
     // are the administrators who changed nothing. A hostile address still
     // cannot arrive: it cannot be introduced without editing the field, and
-    // editing the field is exactly what is checked. Activation is checked too
-    // (see setServerActive), so a row cannot be parked and switched on later.
+    // editing the field is exactly what is checked. Switching a stored-inactive
+    // row on through this edit is checked too, with the same check as
+    // setServerActive, so a row cannot be parked and switched on later.
     validateWithoutAddress(server);
     CaldavServer stored = server.getId() > 0 ? caldavServerStorage.getServerById(server.getId()) : null;
     if (stored == null) {
       throw new ObjectNotFoundException("CalDAV server with id " + server.getId() + " doesn't exist");
     }
-    if (!StringUtils.equals(stored.getServerUrl(), server.getServerUrl())) {
-      caldavServerUrlValidator.validate(server.getServerUrl());
+    if (!StringUtils.equals(stored.getServerUrl(), server.getServerUrl()) || (server.isActive() && !stored.isActive())) {
+      checkAddressAllowed(server.getServerUrl());
     }
     // The managed row may not move to a provider that asks each user for
     // something: designating it refused exactly that, and an edit must not be
@@ -1147,6 +1151,18 @@ public class CaldavServerService {
   }
 
   /**
+   * Refuses an address the platform must not be made to connect to: the one
+   * check shared by the status toggle and by an edit that switches a row on.
+   *
+   * @param serverUrl address to judge
+   * @throws IllegalArgumentException carrying a message code when the address
+   *           is refused
+   */
+  private void checkAddressAllowed(String serverUrl) {
+    caldavServerUrlValidator.validate(serverUrl);
+  }
+
+  /**
    * Activates or deactivates a declared server, propagating the switch to the
    * agenda remote provider so the connector appears in — or leaves — every
    * user's connectors list.
@@ -1178,7 +1194,7 @@ public class CaldavServerService {
       // a seeded default. Checking here is what keeps those from being switched
       // back on unexamined; deactivating is never checked, because taking a bad
       // address out of service must always be possible.
-      caldavServerUrlValidator.validate(server.getServerUrl());
+      checkAddressAllowed(server.getServerUrl());
     }
     server.setActive(active);
     // The switch changes nothing a copy carries, so the stamp must come out of
@@ -1538,8 +1554,9 @@ public class CaldavServerService {
    * The mandatory-field half of the checks, without the address check.
    *
    * <p>
-   * Split out for the one caller that must not re-judge an address it is not
-   * changing — see {@link #updateServer(CaldavServer, String)}.
+   * Split out for the one caller that must not re-judge an unchanged address
+   * unless the edit switches the row on — see
+   * {@link #updateServer(CaldavServer, String)}.
    *
    * @param server registration to validate
    */
